@@ -1,0 +1,2 @@
+{"type":"user","cwd":"/synthetic/workspace/gamma","sessionId":"dddddddd-0000-4000-8000-000000000004","timestamp":"2026-05-01T07:00:00.000Z","message":{"role":"user","content":"synthetic fixture message five"}}
+{"type":"user","cwd":"/synthetic/workspace/gamma-moved","sessionId":"dddddddd-0000-4000-8000-000000000004","timestamp":"2026-05-01T07:30:00.000Z","message":{"role":"user","content":"synthetic fixture message six"}}

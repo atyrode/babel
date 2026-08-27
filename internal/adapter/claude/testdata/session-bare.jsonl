@@ -1,0 +1,3 @@
+{"type":"summary","summary":"synthetic fixture summary","leafUuid":"33333333-0000-4000-8000-000000000301"}
+{"type":"queue-operation","operation":"enqueue","content":"synthetic fixture message three"}
+{"type":"mode","mode":"synthetic-fixture-mode"}
