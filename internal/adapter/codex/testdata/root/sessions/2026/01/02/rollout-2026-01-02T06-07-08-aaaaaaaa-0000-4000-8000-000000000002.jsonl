@@ -1,0 +1,2 @@
+{"type":"response_item","payload":{"id":"synthetic-item-1","type":"message","role":"user","content":[{"type":"input_text","text":"synthetic sparse fixture message one"}]}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"synthetic sparse fixture message two"}}
