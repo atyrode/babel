@@ -177,7 +177,9 @@ The recipes intentionally include both problems and successes. A system trained 
 
 `babel archive push` copies supported local session sources into the encrypted, host-scoped archive. Upload is append/update-only: it uses `copy`/`copyto`, never `sync`, and does not delete a remote object as an incidental consequence of local state.
 
-`babel archive pull` materializes selected host prefixes into a local snapshot. Pull is read-only with respect to the remote and records its source host, remote path, archive contract version, and fetch time. Status and verification commands expose remote reachability and round-trip integrity without requiring the analysis pipeline.
+`babel archive catalog` performs a read-only remote inventory. It lists decrypted object references and obtains only bounded metadata needed to identify sessions; it does not materialize transcript bodies. When the backend cannot satisfy a bounded metadata read, Babel records a degraded path/timestamp/size entry rather than silently downloading the full object.
+
+`babel archive pull --session ID` explicitly materializes selected session objects into a local snapshot. Pull never writes to the remote and records its source host, archive reference, contract version, digest, and fetch time. Status and verification commands expose remote reachability and round-trip integrity without requiring the analysis pipeline.
 
 The first implementation must remain compatible with the current Cellar bucket, `rclone crypt` settings, host prefixes, and object paths so archive ownership can move without migrating stored data.
 
@@ -250,8 +252,8 @@ Names are provisional. The commands represent product boundaries rather than an 
 babel
 babel archive configure --from-json FILE|-
 babel archive push
-babel archive pull [--host HOST] [--destination PATH]
-babel archive list [--host HOST]
+babel archive catalog [--host HOST] [--refresh]
+babel archive pull --session ID [--destination PATH]
 babel archive status [--json]
 babel archive verify
 babel ingest PATH...
@@ -266,7 +268,7 @@ babel run [PATH...] [analysis selection flags]
 
 Behavioral rules:
 
-- `babel run` is only orchestration for archive pull/ingest/preflight/analyze/synthesize; it does not upload sessions or hide a distinct workflow;
+- `babel run` is only orchestration for explicitly selected archive pulls plus ingest/preflight/analyze/synthesize; it does not upload sessions or materialize the entire corpus;
 - archive uploads are always explicit through `babel archive push` or an external scheduler;
 - archive commands never require the analysis subsystem to be configured;
 - no command publishes, edits, or remediates external systems;
@@ -289,21 +291,26 @@ The mature TUI has five product areas:
 
 The first prototype implements only Home, Sessions, and a metadata-only Session detail view. It is deliberately analysis-free: its purpose is to prove the public package, TUI foundation, encrypted retrieval, OMP adapter, local index, and failure behavior as one end-to-end vertical slice.
 
-On an empty first run, Home explains what will be retrieved and offers an explicit **Fetch OMP sessions** action. Launching Babel never silently starts a multi-gigabyte transfer. During retrieval the TUI shows the current host/path, object and byte progress when available, cancellation, and actionable errors. If the remote is unavailable, previously indexed sessions remain browsable and the interface clearly marks the catalog as cached.
+On an empty first run, Home explains the difference between remote metadata and decrypted local content and offers an explicit **Refresh catalog** action. Catalog refresh is read-only and metadata-first; launching Babel never silently materializes the corpus. During refresh the TUI shows the current host/path, object progress, cancellation, and actionable errors. If the remote is unavailable, the last complete catalog remains browsable and is clearly marked as cached.
 
 The initial Sessions table sorts newest activity first and shows at least:
 
-- session title, using the latest OMP title event;
+- best available session title from the OMP header or archive manifest;
 - last activity timestamp, with creation time available in detail;
 - workspace/folder, preferring the recorded `cwd` over an encoded path;
 - source machine, derived from the archive host prefix;
 - source kind (`omp` initially);
-- session identifier; and
-- local state such as cached, changed remotely, or ready for analysis.
+- session identifier;
+- stable archive reference; and
+- local state such as metadata-only, fetched, changed remotely, or ready for analysis.
 
-Search covers title, workspace, machine, and session identifier. Filters cover machine, workspace, source kind, time range, and local state. The detail view shows provenance and safe structural metadata—source path, timestamps, event count, byte size, adapter status, and related side-channel artifacts—without requiring model inference or rendering raw secrets.
+Search covers title, workspace, machine, session identifier, and archive reference. Filters cover machine, workspace, source kind, time range, and local state. The detail view shows provenance and safe structural metadata—archive reference, timestamps, remote byte size, adapter status, and known side-channel references—without model inference or transcript retrieval.
 
-The prototype retrieves only OMP session JSONL and the minimum metadata needed for the catalog, not Codex/Claude content, attachments, advisor streams, or tool logs. The catalog derives machine from the archive prefix and title, session ID, timestamps, and `cwd` from OMP events. Retrieval is incremental: unchanged local objects are reused, growing sessions are refreshed, removed remote objects are not inferred from local absence, and refresh can be run repeatedly without duplicating catalog entries.
+Titles and workspace paths are potentially sensitive and untrusted. Babel strips control sequences before rendering, provides a one-key privacy mode that masks titles and paths, and omits raw values from logs and catalog exports unless explicitly requested.
+
+Opening an unfetched session presents its metadata and an explicit **Fetch this session** action with the expected size. Only that action—or a deliberate multi-selection fetch—downloads the decrypted JSONL. Viewing transcript content or starting analysis requires a complete, digest-verified local copy.
+
+The catalog derives machine, timestamp, size, and archive reference from remote listing data, then uses an existing manifest or bounded reads of the OMP title/session header for title, session ID, and `cwd`. It never downloads an entire object merely to improve a catalog row. Metadata refresh is incremental: unchanged entries are reused, growing sessions are marked changed, remote absence does not imply deletion, and refresh never duplicates catalog entries.
 
 ## 9. Local state and reproducibility
 
@@ -355,11 +362,12 @@ The TUI is evaluated as an actual terminal surface, not from source structure al
 - publish and package a runnable public Babel binary;
 - launch the primary TUI from bare `babel`, using Bubble Tea and `atyrode/cli-kit`;
 - reuse the existing rclone crypt configuration and remote layout without migrating data;
-- explicitly fetch OMP session JSONL from selected host prefixes into a local cache;
-- parse title, session ID, timestamps, `cwd`, archive host, size, and event count;
-- present Home, a searchable/filterable Sessions table, and metadata-only Session detail;
-- support incremental refresh, cancellation, offline cached browsing, and honest partial-failure states;
-- expose the same archive list/pull/status services through headless commands; and
+- refresh a read-only, metadata-first catalog of remote OMP session objects without materializing transcript bodies;
+- derive title, session ID, timestamps, `cwd`, archive host/reference, and remote size from listings, manifests, or bounded header reads;
+- present Home, a searchable/filterable Sessions table, privacy mode, and metadata-only Session detail;
+- explicitly fetch and digest-verify one selected session while leaving the rest metadata-only;
+- support incremental catalog refresh, cancellation, offline cached browsing, and honest degraded/partial-failure states;
+- expose the same archive catalog/pull/status services through headless commands; and
 - visually verify the real TUI across representative terminal sizes and states.
 
 This phase contains no model inference and produces no findings. It proves that Babel can securely retrieve, understand, and present the corpus it will later analyze.
@@ -401,7 +409,7 @@ No phase grants Babel permission to apply its proposals.
 5. Babel owns the portable archive contract, encryption/upload/download behavior, retention semantics, and restore CLI.
 6. Dotfiles owns Babel's declarative installation, host enablement, credential delivery, and scheduling.
 7. Recovery remains possible from dotfiles bootstrap, the external secret authority, and direct rclone without a working Babel installation.
-8. The first prototype is an analysis-free vertical slice: retrieve OMP JSONL and present a trustworthy session catalog in the real TUI.
+8. The first prototype is an analysis-free, metadata-first vertical slice: catalog remote OMP sessions in the real TUI and fetch decrypted JSONL only for sessions the operator explicitly selects.
 9. Local directories remain a first-class input.
 10. Raw transcripts are untrusted and private; local inference is the default.
 11. Analysis is recipe-based, versioned, evidence-constrained, and incremental.
