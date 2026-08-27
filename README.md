@@ -6,7 +6,7 @@ It is an analyzer and recommender, not an autonomous actor. Babel reads session 
 
 The first specification is in [SPEC.md](SPEC.md). It is deliberately a discussion document: the project is still defining its boundary and output before choosing an implementation stack.
 
-Running `babel` opens the primary terminal interface. The first vertical slice connects to the encrypted archive, retrieves OMP session metadata, and presents a searchable catalog of the conversations Babel can work with before any AI analysis is introduced.
+Running `babel` opens the primary terminal interface. The first vertical slice inventories the encrypted archive without downloading transcript bodies, presents the session metadata the current archive can provide, and explicitly fetches selected OMP sessions before any AI analysis is introduced.
 
 ## Core loop
 
