@@ -1,0 +1,2 @@
+{"type":"message","id":"f0000001","parentId":null,"timestamp":"2026-01-02T03:10:00.000Z","message":{"role":"user","content":[{"type":"text","text":"synthetic fixture subagent message"}]}}
+{"type":"message","id":"f0000009","parentId":null,"timestamp":"2026-01-02T03:11:00.000Z","message":{"role":"toolResult","content":[{"type":"text","text":"nested payload: {\\\"type\\\":\\\"image\\\",\\\"data\\\":\\\"blob:sha256:dbed87385e9ab40b8663f8e37583e3d328d29c45ddc7e21e5999baf74ab3aca5\\\"}"}]}}

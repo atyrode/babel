@@ -1,0 +1,4 @@
+{"type":"title","v":1,"title":"Synthetic fixture session one","source":"auto","updatedAt":"2026-01-02T04:00:00.000Z","pad":"                                        "}
+{"type":"session","version":3,"id":"00000000-0000-4000-8000-000000000001","timestamp":"2026-01-02T03:04:05.678Z","cwd":"/synthetic/workspace/one","title":"Synthetic fixture initial title","titleSource":"auto"}
+{"type":"message","id":"f0000001","parentId":null,"timestamp":"2026-01-02T03:10:00.000Z","message":{"role":"user","content":[{"type":"text","text":"synthetic fixture message one"},{"type":"image","data":"blob:sha256:4c52cb66c34a0ec2179a503794277ad40135af36c43243942841a65a7df4686a","mimeType":"image/webp"}]}}
+{"type":"message","id":"f0000001","parentId":null,"timestamp":"2026-01-02T03:10:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"synthetic fixture reply one"}]}}
