@@ -6,6 +6,8 @@ It is an analyzer and recommender, not an autonomous actor. Babel reads session 
 
 The first specification is in [SPEC.md](SPEC.md). It is deliberately a discussion document: the project is still defining its boundary and output before choosing an implementation stack.
 
+Running `babel` opens the primary terminal interface. The first vertical slice connects to the encrypted archive, retrieves OMP session metadata, and presents a searchable catalog of the conversations Babel can work with before any AI analysis is introduced.
+
 ## Core loop
 
 1. Archive agent sessions and retrieve encrypted snapshots through Babel's archive subsystem, deployed and scheduled by `atyrode/dotfiles`.
@@ -20,6 +22,7 @@ The first specification is in [SPEC.md](SPEC.md). It is deliberately a discussio
 
 - **Evidence before conclusions.** Every finding cites the source sessions and relevant excerpts.
 - **Local and private by default.** Raw transcripts can contain source code, credentials, personal data, and adversarial instructions.
+- **Public code, private data.** Babel is public and independently packageable; archives, credentials, indexes, findings, and model inputs remain local or encrypted.
 - **Incremental by default.** Reprocess only new or changed source material, or recipes whose version changed.
 - **Suggestions, never side effects.** Integrations may render issue drafts, but publishing or applying them is out of scope.
 - **The cookbook is a product.** Analysis recipes are versioned, reviewable assets that improve as useful and harmful patterns are learned.

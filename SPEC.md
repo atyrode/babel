@@ -33,6 +33,7 @@ Babel is not an autonomous remediation system. Its boundary ends at analysis, sy
 - a versioned cookbook of AI-assisted analysis recipes;
 - incremental analysis and cross-session synthesis;
 - evidence-backed findings and proposal generation;
+- a primary, keyboard-driven terminal interface from which the complete interactive product is reachable; and
 - local review state and exports for humans or downstream tools.
 
 ### 2.2 Babel does not own
@@ -62,6 +63,14 @@ Dotfiles should invoke Babel rather than implement rclone workflows. Its eventua
 Recovery must not depend circularly on an already working Babel installation. The dotfiles bootstrap and the external secret authority must remain sufficient to reinstall Babel and recreate its archive configuration without reading the archive. Babel's on-disk configuration remains compatible with direct `rclone crypt` recovery, and a small documented escape hatch must allow an operator with rclone plus the independently stored credentials to list and restore the archive if Babel itself is unavailable. Babel must never be the sole copy of either the credentials or the knowledge required to recover its data.
 
 A local directory is always a valid Babel input. This keeps the analyzer testable and usable independently of the operator-specific deployment.
+
+### 2.4 Primary interaction model
+
+Running `babel` with no arguments opens the primary terminal interface. This is not a secondary viewer layered over a command-line application: it is the intended human product surface, comparable in ambition and polish to `atyrode/code`. Archive setup and health, retrieval, session browsing, analysis selection and progress, recipes, findings, proposals, review, and export must eventually be reachable without leaving the TUI.
+
+Headless subcommands remain required for systemd/launchd, scripting, diagnostics, reproducible tests, and recovery. The TUI and subcommands call the same application services and storage contracts; business logic must not be duplicated in view code.
+
+The implementation should reuse the Bubble Tea and `atyrode/cli-kit` ecosystem used by `code` unless a concrete prototype identifies a blocker. “Beautiful” means a coherent palette and typography, clear focus and selection states, useful empty/loading/error states, responsive layouts from an 80×24 terminal upward, keyboard discoverability, and no loss of meaning when color is unavailable.
 
 ## 3. Source data and trust model
 
@@ -238,6 +247,7 @@ Review decisions survive reanalysis. New evidence may supersede a finding, but B
 Names are provisional. The commands represent product boundaries rather than an implementation commitment.
 
 ```text
+babel
 babel archive configure --from-json FILE|-
 babel archive push
 babel archive pull [--host HOST] [--destination PATH]
@@ -265,7 +275,35 @@ Behavioral rules:
 - commands support selection by host, workspace, time range, session, source kind, and recipe; and
 - interrupted runs are resumable without duplicating observations.
 
-`review` may begin as a line-oriented CLI and later become a TUI. The storage and command contracts must not depend on a TUI existing.
+Bare `babel` is the primary interactive interface. `review` and the other headless commands expose the same capabilities for automation; the storage and command contracts never depend on the TUI being active.
+
+### 8.1 TUI information architecture
+
+The mature TUI has five product areas:
+
+1. **Home** — archive configuration and health, last successful push/pull, indexed-session counts, pending analysis, and recent findings;
+2. **Sessions** — searchable, sortable, filterable inventory of available conversations;
+3. **Recipes** — enabled analyses, versions, coverage, and evaluation quality;
+4. **Findings** — observations and consolidated evidence-backed patterns; and
+5. **Proposals** — human review, disposition, targeting, and export.
+
+The first prototype implements only Home, Sessions, and a metadata-only Session detail view. It is deliberately analysis-free: its purpose is to prove the public package, TUI foundation, encrypted retrieval, OMP adapter, local index, and failure behavior as one end-to-end vertical slice.
+
+On an empty first run, Home explains what will be retrieved and offers an explicit **Fetch OMP sessions** action. Launching Babel never silently starts a multi-gigabyte transfer. During retrieval the TUI shows the current host/path, object and byte progress when available, cancellation, and actionable errors. If the remote is unavailable, previously indexed sessions remain browsable and the interface clearly marks the catalog as cached.
+
+The initial Sessions table sorts newest activity first and shows at least:
+
+- session title, using the latest OMP title event;
+- last activity timestamp, with creation time available in detail;
+- workspace/folder, preferring the recorded `cwd` over an encoded path;
+- source machine, derived from the archive host prefix;
+- source kind (`omp` initially);
+- session identifier; and
+- local state such as cached, changed remotely, or ready for analysis.
+
+Search covers title, workspace, machine, and session identifier. Filters cover machine, workspace, source kind, time range, and local state. The detail view shows provenance and safe structural metadata—source path, timestamps, event count, byte size, adapter status, and related side-channel artifacts—without requiring model inference or rendering raw secrets.
+
+The prototype retrieves only OMP session JSONL and the minimum metadata needed for the catalog, not Codex/Claude content, attachments, advisor streams, or tool logs. The catalog derives machine from the archive prefix and title, session ID, timestamps, and `cwd` from OMP events. Retrieval is incremental: unchanged local objects are reused, growing sessions are refreshed, removed remote objects are not inferred from local absence, and refresh can be run repeatedly without duplicating catalog entries.
 
 ## 9. Local state and reproducibility
 
@@ -298,9 +336,12 @@ A useful Babel result must be:
 
 Initial evaluation should use a small, manually labeled set of real sessions. For each recipe, compare expected observations to output and record false positives, missed findings, unsupported claims, duplicate rate, and evidence quality. A recipe should not join the default set merely because its prose sounds useful.
 
+The TUI is evaluated as an actual terminal surface, not from source structure alone. Its acceptance checks cover narrow and wide terminal layouts, keyboard-only navigation, focus visibility, empty/loading/progress/error/cached states, stable rendering of long titles and paths, and responsive interaction over the real expected session count.
+
 ## 11. Failure behavior
 
 - An unavailable archive or model fails the affected stage without corrupting prior state.
+- A failed or cancelled pull leaves the last complete local catalog usable and visibly marked as cached or stale.
 - Unsupported formats are inventoried and reported.
 - Parse errors retain source paths and safe diagnostics but not raw secrets.
 - A hosted run is refused if disclosure preview or redaction cannot complete.
@@ -309,30 +350,44 @@ Initial evaluation should use a small, manually labeled set of real sessions. Fo
 
 ## 12. Delivery sequence
 
-### Phase A: prove the evidence loop
+### Phase A: prove the archive-backed product shell
 
-- ingest OMP JSONL from a local directory;
-- index sessions and preserve event provenance;
+- publish and package a runnable public Babel binary;
+- launch the primary TUI from bare `babel`, using Bubble Tea and `atyrode/cli-kit`;
+- reuse the existing rclone crypt configuration and remote layout without migrating data;
+- explicitly fetch OMP session JSONL from selected host prefixes into a local cache;
+- parse title, session ID, timestamps, `cwd`, archive host, size, and event count;
+- present Home, a searchable/filterable Sessions table, and metadata-only Session detail;
+- support incremental refresh, cancellation, offline cached browsing, and honest partial-failure states;
+- expose the same archive list/pull/status services through headless commands; and
+- visually verify the real TUI across representative terminal sizes and states.
+
+This phase contains no model inference and produces no findings. It proves that Babel can securely retrieve, understand, and present the corpus it will later analyze.
+
+### Phase B: prove the evidence loop
+
+- index normalized OMP events while preserving provenance;
 - implement deterministic sensitive-data preflight;
 - implement one local-model recipe and the common observation schema;
 - synthesize findings and export Markdown/JSON;
+- surface analysis selection, progress, findings, and evidence in the TUI; and
 - manually evaluate results on a small labeled corpus.
 
-### Phase B: make it operational
+### Phase C: make it operational
 
-- implement the archive subsystem against the existing remote layout and crypt configuration;
+- complete the archive subsystem against the existing remote layout and crypt configuration;
 - verify byte-identical restore, idempotent upload, append-only behavior, and the direct-rclone recovery path;
 - replace the dotfiles-owned upload script with declarative installation, credential delivery, and scheduling of `babel archive push`;
-- add incremental invalidation and resumable runs;
-- add the initial recipe set;
-- add proposal review state and issue-draft export;
+- add incremental analysis invalidation and resumable runs;
+- add the initial recipe set and proposal review;
+- add issue-draft export; and
 - add Codex and Claude Code adapters.
 
-### Phase C: improve the feedback system
+### Phase D: improve the feedback system
 
 - add corpus-level recurrence and contradiction analysis;
 - measure recipe precision, misses, and evidence quality over time;
-- help turn accepted proposals into recipe refinements;
+- help turn accepted proposals into recipe refinements; and
 - support comparing interaction quality before and after an accepted improvement.
 
 No phase grants Babel permission to apply its proposals.
@@ -340,27 +395,29 @@ No phase grants Babel permission to apply its proposals.
 ## 13. Decisions recorded by this draft
 
 1. Babel is an analyzer and recommender, not an actor.
-2. Babel owns the portable archive contract, encryption/upload/download behavior, retention semantics, and restore CLI.
-3. Dotfiles owns Babel's declarative installation, host enablement, credential delivery, and scheduling.
-4. Recovery remains possible from dotfiles bootstrap, the external secret authority, and direct rclone without a working Babel installation.
-5. Local directories remain a first-class input.
-6. Raw transcripts are untrusted and private; local inference is the default.
-7. Analysis is recipe-based, versioned, evidence-constrained, and incremental.
-8. The default analyzes new or invalidated material; full reanalysis is explicit.
-9. Outputs distinguish observations, findings, and proposals.
-10. Proposals may target repositories but are never published automatically.
-11. Both harmful and effective interaction patterns are in scope.
-12. The first implementation should prove one narrow end-to-end evidence loop before expanding adapters or recipes.
+2. Babel's source and distributable package are public; archives, credentials, local state, findings, and model inputs remain private.
+3. Bare `babel` opens the primary terminal interface, and the complete interactive product is reachable there.
+4. Headless commands and the TUI share one application layer; scheduling and recovery never require an interactive terminal.
+5. Babel owns the portable archive contract, encryption/upload/download behavior, retention semantics, and restore CLI.
+6. Dotfiles owns Babel's declarative installation, host enablement, credential delivery, and scheduling.
+7. Recovery remains possible from dotfiles bootstrap, the external secret authority, and direct rclone without a working Babel installation.
+8. The first prototype is an analysis-free vertical slice: retrieve OMP JSONL and present a trustworthy session catalog in the real TUI.
+9. Local directories remain a first-class input.
+10. Raw transcripts are untrusted and private; local inference is the default.
+11. Analysis is recipe-based, versioned, evidence-constrained, and incremental.
+12. The default analyzes new or invalidated material; full reanalysis is explicit.
+13. Outputs distinguish observations, findings, and proposals.
+14. Proposals may target repositories but are never published automatically.
+15. Both harmful and effective interaction patterns are in scope.
 
 ## 14. Questions still open
 
 These questions should be resolved through discussion or a narrow prototype rather than guessed in advance:
 
-1. Should the first implementation support only OMP, or include all three archived agent formats from its first usable release?
-2. Which local model and structured-output mechanism are reliable enough for the first labeled-corpus evaluation?
-3. How much verbatim evidence should appear in normal reports versus being available only through local locators?
-4. Should repository targeting be inferred from workspace/remotes, chosen during review, or both?
-5. Is a terminal review UI valuable early, or are Markdown plus JSON sufficient until analysis quality is proven?
-6. What retention policy should apply to fetched plaintext snapshots and model-ready redacted copies?
-7. Should accepted and rejected proposals feed recipe-evaluation fixtures automatically, or only through an explicit curation command?
-8. How should a private Babel release be installed reproducibly from public dotfiles: an authenticated binary cache, authenticated source access, or an eventually public package?
+1. Which local model and structured-output mechanism are reliable enough for the first labeled-corpus evaluation?
+2. How much verbatim evidence should appear in normal reports versus being available only through local locators?
+3. Should repository targeting be inferred from workspace/remotes, chosen during review, or both?
+4. What retention policy should apply to fetched plaintext snapshots and model-ready redacted copies?
+5. Should accepted and rejected proposals feed recipe-evaluation fixtures automatically, or only through an explicit curation command?
+6. Should archive push eventually write a compact per-host manifest so the TUI can discover changed sessions without listing or probing every JSONL object?
+7. Which additional structural metadata is useful enough to justify reading beyond the minimum OMP events during the first catalog refresh?
