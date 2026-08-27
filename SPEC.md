@@ -72,11 +72,40 @@ Headless subcommands remain required for systemd/launchd, scripting, diagnostics
 
 The implementation should reuse the Bubble Tea and `atyrode/cli-kit` ecosystem used by `code` unless a concrete prototype identifies a blocker. “Beautiful” means a coherent palette and typography, clear focus and selection states, useful empty/loading/error states, responsive layouts from an 80×24 terminal upward, keyboard discoverability, and no loss of meaning when color is unavailable.
 
+### 2.5 Cross-machine continuation boundary
+
+Babel enables a future `code` integration for continuing an archived OMP conversation on another machine, but two different promises must remain separate:
+
+1. **Transcript continuation** is feasible: fetch a complete, immutable session snapshot, validate it, create a new local OMP fork with lineage to the source, and continue the conversation in a chosen workspace.
+2. **Exact runtime/workspace resume** is not guaranteed: a transcript does not contain the source process tree, working tree, uncommitted files, credentials, provider sessions, installed tools, or complete machine state.
+
+The product language is **Continue here**, not seamless cloud resume. The safe default creates a new local session identity through OMP's supported fork/import behavior. Babel's fetched cache remains immutable and is never passed to OMP as a file it may append to. Continuing the same mutable identity on two machines is out of scope until a real synchronization protocol provides a canonical writer, leases, versioning, conflict handling, and faster publication than periodic backup.
+
+Responsibility remains layered:
+
+- **Babel** exposes a read-only archived-session locator, fetch, integrity, provenance, and bundle-compatibility API;
+- **Code** presents Cloud Sessions, chooses a target repository/worktree and routing profile, explains compatibility warnings, and invokes OMP; and
+- **OMP** parses the session, reconstructs supported conversation/runtime state, and creates the new local fork.
+
+Neither Code nor OMP reads Babel's private database directly. The integration uses a stable JSON command contract. Babel never chooses a workspace or launches an agent.
+
+Before Code offers **Continue here**, the combined Babel/Code preflight reports:
+
+- session format/version validity and a complete, digest-verified JSONL snapshot;
+- completeness of the sibling artifact tree and every referenced OMP blob;
+- source host, archive time, session modification time, and whether the snapshot may be stale or from a still-active source;
+- recorded `cwd`, additional directories, and any available repository remote/commit/branch/dirty-state fingerprint;
+- whether a compatible target workspace exists locally or must be selected/re-rooted;
+- whether the installed OMP can read the format; and
+- whether recorded models/providers are available under current-machine configuration, without copying credentials from the source machine.
+
+Preflight results distinguish `ready-to-fork`, `needs-target-workspace`, `incomplete-bundle`, `workspace-mismatch`, and `stale-or-possibly-active`. Warnings are evidence, not blockers hidden behind a generic score. Exact process/tool-context compatibility is never claimed.
+
 ## 3. Source data and trust model
 
 Supported sources initially use the archive layout inherited from the existing dotfiles automation:
 
-- OMP: `omp/sessions` and `omp/collab`;
+- OMP: the current archive has `omp/sessions` and `omp/collab`; continuation-grade bundles additionally require the content-addressed `~/.omp/agent/blobs` store, which the existing automation does not archive;
 - Codex: `codex/sessions`, `codex/history.jsonl`, `codex/session_index.jsonl`, and `codex/attachments`;
 - Claude Code: `claude/projects`.
 
@@ -254,6 +283,9 @@ babel archive configure --from-json FILE|-
 babel archive push
 babel archive catalog [--host HOST] [--refresh]
 babel archive pull --session ID [--destination PATH]
+babel sessions list --source archive --json
+babel sessions inspect SESSION_ID --json
+babel sessions fetch SESSION_ID --json
 babel archive status [--json]
 babel archive verify
 babel ingest PATH...
@@ -387,11 +419,14 @@ This phase contains no model inference and produces no findings. It proves that 
 ### Phase C: make it operational
 
 - complete the archive subsystem against the existing remote layout and crypt configuration;
-- verify byte-identical restore, idempotent upload, append-only behavior, and the direct-rclone recovery path;
+- add append-only upload of OMP's content-addressed blob store and fetch only the blobs referenced by a selected session;
+- define a continuation bundle covering JSONL, sibling artifacts, referenced blobs, provenance, and a stable snapshot receipt;
+- verify byte-identical restore, bundle closure, idempotent upload, append-only behavior, and the direct-rclone recovery path;
 - replace the dotfiles-owned upload script with declarative installation, credential delivery, and scheduling of `babel archive push`;
+- expose stable session locator/fetch/inspect JSON commands and compatibility preflight;
+- integrate Code's Cloud Sessions view with **Continue here** as a verified local OMP fork;
 - add incremental analysis invalidation and resumable runs;
-- add the initial recipe set and proposal review;
-- add issue-draft export; and
+- add the initial recipe set, proposal review, and issue-draft export; and
 - add Codex and Claude Code adapters.
 
 ### Phase D: improve the feedback system
@@ -413,13 +448,17 @@ No phase grants Babel permission to apply its proposals.
 6. Dotfiles owns Babel's declarative installation, host enablement, credential delivery, and scheduling.
 7. Recovery remains possible from dotfiles bootstrap, the external secret authority, and direct rclone without a working Babel installation.
 8. The first prototype is an analysis-free vertical slice: inventory the fields the current remote archive actually exposes, mark unavailable metadata honestly, and fetch decrypted JSONL only for sessions the operator explicitly selects.
-9. Local directories remain a first-class input.
-10. Raw transcripts are untrusted and private; local inference is the default.
-11. Analysis is recipe-based, versioned, evidence-constrained, and incremental.
-12. The default analyzes new or invalidated material; full reanalysis is explicit.
-13. Outputs distinguish observations, findings, and proposals.
-14. Proposals may target repositories but are never published automatically.
-15. Both harmful and effective interaction patterns are in scope.
+9. Cross-machine **Continue here** creates a new local OMP fork from an immutable verified snapshot; it does not make two machines writers of one session identity.
+10. Transcript continuation is a supported future goal; exact workspace, process, tool, credential, or provider-session restoration is not promised.
+11. Babel supplies read-only session location, fetch, provenance, bundle verification, and preflight; Code owns launch UX and target selection; OMP owns parsing and local fork creation.
+12. Continuation-grade OMP archives include sibling session artifacts and the transitive closure of referenced content-addressed blobs.
+13. Local directories remain a first-class input.
+14. Raw transcripts are untrusted and private; local inference is the default.
+15. Analysis is recipe-based, versioned, evidence-constrained, and incremental.
+16. The default analyzes new or invalidated material; full reanalysis is explicit.
+17. Outputs distinguish observations, findings, and proposals.
+18. Proposals may target repositories but are never published automatically.
+19. Both harmful and effective interaction patterns are in scope.
 
 ## 14. Questions still open
 
@@ -432,3 +471,5 @@ These questions should be resolved through discussion or a narrow prototype rath
 5. Should accepted and rejected proposals feed recipe-evaluation fixtures automatically, or only through an explicit curation command?
 6. Should Phase A add and backfill a compact per-host manifest so remote-only rows can show title and recorded `cwd`, or accept those fields as unavailable until each session is fetched?
 7. Does the exact rclone crypt/Cellar stack support demonstrably bounded header reads, and are their transfer cost and failure semantics preferable to a manifest?
+8. What minimum repository fingerprint should archive manifests capture so Code can distinguish a compatible checkout from a misleading same-path checkout?
+9. How should Babel determine that a source session is inactive and stable enough to offer for continuation when publication is periodic and host-scoped?
