@@ -1,23 +1,26 @@
 # Babel specification
 
-Status: exploration draft
+Status: audited development baseline. Phase A contract-first coding may begin, but the first durable `babel/v1` remote write remains gated by the frozen archive contract in §6.1.
 
+
+Module path: `github.com/atyrode/babel`.
 ## 1. Purpose
 
-Babel analyzes archived conversations between an operator and coding agents and turns them into evidence-backed opportunities to improve:
+Babel is an open-ended exploratory instrument for archived conversations between an operator and coding agents. It helps ideas emerge about:
 
 - the operator's systems and repositories;
 - the way the operator communicates and collaborates with agents;
 - agent instructions, rules, skills, and reusable processes;
-- missing tools and automation;
-- recurring product, code, security, and operational problems; and
-- effective patterns worth preserving and repeating.
+- missing tools, documentation, comprehension layers, and automation;
+- product, code, security, operational, and human-interface opportunities;
+- effective patterns worth preserving and repeating; and
+- Babel's own code, cookbook, retrieval, analysis, and interaction design.
 
-The project exists to close a feedback loop:
+The project closes a creative feedback loop:
 
-> conversations produce evidence; evidence produces findings; repeated findings produce proposals; human-reviewed proposals improve future conversations and systems.
+> conversations and reality produce hypotheses; exploration connects and challenges them; human review decides what becomes useful; the resulting feedback can improve systems, future interactions, and Babel itself.
 
-Babel is not an autonomous remediation system. Its boundary ends at analysis, synthesis, and reviewable suggestions.
+Babel does not promise reliable, exhaustive, or objectively correct analytical output. Its hard guarantees concern archive integrity, containment, provenance, reproducibility, and no mutating or publishing external effects. Brokered reads are observable external effects and are recorded. Hypotheses, findings, and proposals remain creative, fallible, incomplete interpretations for human review.
 
 ## 2. Product boundary
 
@@ -30,11 +33,11 @@ Babel is not an autonomous remediation system. Its boundary ends at analysis, sy
 - format adapters for supported agent session formats;
 - normalization, indexing, deduplication, and provenance;
 - deterministic preflight checks such as likely-secret detection;
-- a versioned cookbook of AI-assisted analysis recipes;
-- incremental analysis and cross-session synthesis;
-- evidence-backed findings and proposal generation;
-- a primary, keyboard-driven terminal interface from which the complete interactive product is reachable; and
-- local review state and exports for humans or downstream tools.
+- a versioned cookbook of shared investigation policies, optional domain lenses, and meta-analysis recipes;
+- open-ended, incremental exploration with a durable hypothesis frontier and cross-session/repository synthesis;
+- provenance-bearing findings and proposal generation without claiming analytical correctness;
+- a keyboard-driven terminal interface for operations plus an on-demand loopback web interface for rich exploration and review; and
+- globally committed review/refinement/output state plus rebuildable private local caches and materializations.
 
 ### 2.2 Babel does not own
 
@@ -50,27 +53,40 @@ These exclusions are safety boundaries, not a promise that no future companion a
 
 ### 2.3 Integration boundary with `atyrode/dotfiles`
 
-`atyrode/dotfiles` already archives OMP, Codex, and Claude Code sessions hourly to a Clever Cloud Cellar S3 bucket. It uses an `rclone crypt` remote named `archive`, stores machine-local configuration in `~/.config/atyrode/session-backup/env`, writes data below `archive:<hostname>/`, and uploads with `copy`/`copyto` rather than `sync`. Babel will adopt this proven archive contract without changing the existing remote layout or crypt material.
+The pre-Babel dotfiles automation is a proven operational prototype, not Babel's compatibility contract. It archives OMP, Codex, and Claude Code trees hourly to a Clever Cloud Cellar bucket through `rclone crypt`, but lacks the rich manifests, stable bundle snapshots, and OMP blob closure Babel requires.
+
+Babel starts a clean, versioned namespace in the same encrypted bucket:
+
+```text
+archive:babel/v1/hosts/<stable-host-id>/...
+```
+
+It ignores the legacy remote namespace entirely. Legacy objects remain untouched and recoverable with direct rclone, but Babel does not list, import, migrate, or preserve their layout. Source data still present on managed machines is republished through Babel's v1 contract. The existing backup job remains enabled until a real v1 Cellar round trip covers all three harnesses and the replacement timer is verified; retirement is then a clean dotfiles cutover, not an in-place migration.
 
 Ownership follows dependency direction:
 
-- **Babel owns portable archive behavior:** supported sources, archive layout, host namespacing, client-side encryption configuration, append-only upload, read-only download, status, integrity checks, retention rules, and restore commands;
-- **dotfiles owns machine convergence:** installing and pinning Babel, enabling it per host, supplying credentials from the operator's secret authority, and declaring systemd or launchd scheduling; and
-- **Babel owns interpretation:** indexing local snapshots and analyzing their contents.
+- **Babel owns one logical storage protocol:** provider-neutral configuration, source adapters, archive schemas, shared catalog/coordination, stable publication, append-only retention, selective retrieval, status, integrity, restore commands, and durable analysis/Reality/review state;
+- **S3-compatible storage owns immutable bytes:** raw session bundles, attachments/blobs, manifests and archive commit records, evidence, snapshots, diffs, large outputs, and exports;
+- **PostgreSQL owns shared structure and coordination:** deployment/instance/host identity, generation catalog, idempotency, leases/fencing, and—beginning in Phase B—client-side-encrypted hypotheses, Reality, questions, outputs, review, lineage, runs, and receipts;
+- **the object adapter owns transport:** Babel invokes external `rclone` for Cellar/rclone-crypt compatibility. Its narrow port is immutable put, stat, read, list, atomic small-pointer replace, and read-back; a local-directory implementation supports fixtures, offline development, and recovery;
+- **dotfiles owns machine convergence:** commit-pinned Nix installation, stable host and instance IDs, secret retrieval, piping a versioned storage document into Babel, and an hourly user timer after manual bootstrap acceptance; and
+- **Babel owns interpretation:** cataloging, normalizing, analyzing, and reviewing archived conversations.
 
-Dotfiles should invoke Babel rather than implement rclone workflows. Its eventual backup module should be declarative: install the package, render or pipe machine credentials into Babel's documented configuration interface, and schedule `babel archive push`. Babel must accept configuration through a provider-neutral secure file or stdin contract; it must not depend directly on a Bitwarden item name or duplicate the operator's vault implementation.
+The first operator deployment uses the existing Clever Cloud Cellar bucket and a Clever Cloud managed PostgreSQL database, while the protocol remains portable to compatible S3 and PostgreSQL services. `$XDG_CONFIG_HOME/babel/storage.json` is one mode-0600 provider-neutral document describing `local` or `shared` mode, deployment/instance identity, object-store/rclone reference, PostgreSQL/TLS settings, and external secret/key references. Babel never accepts credential-bearing URLs on argv, implements crypt, knows a Bitwarden item name, or invokes Bitwarden. Standalone installations generate stable IDs when dotfiles does not supply them.
 
-Recovery must not depend circularly on an already working Babel installation. The dotfiles bootstrap and the external secret authority must remain sufficient to reinstall Babel and recreate its archive configuration without reading the archive. Babel's on-disk configuration remains compatible with direct `rclone crypt` recovery, and a small documented escape hatch must allow an operator with rclone plus the independently stored credentials to list and restore the archive if Babel itself is unavailable. Babel must never be the sole copy of either the credentials or the knowledge required to recover its data.
+Managed setup is a one-way secret handoff, not a Babel-to-Bitwarden integration. During an explicit dotfiles activation/bootstrap, the operator unlocks Bitwarden; dotfiles retrieves common deployment/object-store/rclone-crypt/key material plus the machine-specific PostgreSQL application credential, combines them with stable host/instance IDs, and pipes the versioned document to `babel storage configure --from-json -`. Babel never receives vault authority or item names.
 
-A local directory is always a valid Babel input. This keeps the analyzer testable and usable independently of the operator-specific deployment.
+Secrets never enter Nix derivations or `/nix/store`, argv, shell history, broad process environment, logs, or persistent temporary files. Babel validates endpoints, TLS, identity, schema compatibility, and credentials before atomically replacing `storage.json`; failure preserves the previous valid configuration and prior timer state. The distinct migration credential is retrieved ephemerally only on the designated bootstrap/migration machine and is never persisted in ordinary instance configuration. After health and bootstrap gates pass, dotfiles enables the hourly timer and relocks the vault. Rotation repeats the same atomic flow; per-instance PostgreSQL credentials allow revocation without rotating the fleet.
+
+`local` mode uses the directory object store plus SQLite and is explicitly single-instance development/recovery state. The first deployed v1 uses `shared` mode. Recovery must not depend circularly on Babel or PostgreSQL: dotfiles plus the external secret authority can reinstall/reconfigure Babel, and immutable S3 manifest/commit records plus the direct-rclone fixture can rebuild the Phase A PostgreSQL catalog. Babel is never the sole copy of credentials, keys, or recovery knowledge.
 
 ### 2.4 Primary interaction model
 
-Running `babel` with no arguments opens the primary terminal interface. This is not a secondary viewer layered over a command-line application: it is the intended human product surface, comparable in ambition and polish to `atyrode/code`. Archive setup and health, retrieval, session browsing, analysis selection and progress, recipes, findings, proposals, review, and export must eventually be reachable without leaving the TUI.
+Running `babel` with no arguments opens the operational terminal interface. It owns setup, archive/database health, session retrieval, job launch/progress/cancellation, privacy controls, and quick browsing. Rich exploration and review use an on-demand local web interface launched by `babel web` or from the TUI.
 
-Headless subcommands remain required for systemd/launchd, scripting, diagnostics, reproducible tests, and recovery. The TUI and subcommands call the same application services and storage contracts; business logic must not be duplicated in view code.
+The local web application owns relationship graphs, evidence/counter-evidence inspection, Reality Ledger and Question workflows, proposal refinement, diffs, output previews, and clean/chaos comparisons. Phase A ships a thin Home/Sessions/health/fetch web shell; Phase B adds the rich exploration surfaces. CLI, TUI, and web call the same Go application services and storage contracts; business logic and authorization are never reimplemented in view code, and the browser never connects directly to PostgreSQL, SQLite, Cellar, rclone, Code, OMP, or providers.
 
-The implementation should reuse the Bubble Tea and `atyrode/cli-kit` ecosystem used by `code` unless a concrete prototype identifies a blocker. “Beautiful” means a coherent palette and typography, clear focus and selection states, useful empty/loading/error states, responsive layouts from an 80×24 terminal upward, keyboard discoverability, and no loss of meaning when color is unavailable.
+Headless subcommands remain required for systemd/launchd, scripting, diagnostics, reproducible tests, and recovery. The implementation is Go with Bubble Tea and `atyrode/cli-kit`; the TypeScript/React frontend is compiled and embedded into the static Go binary with no runtime CDN or external asset dependency.
 
 ### 2.5 Cross-machine continuation boundary
 
@@ -101,30 +117,74 @@ Before Code offers **Continue here**, the combined Babel/Code preflight reports:
 
 Preflight results distinguish `ready-to-fork`, `needs-target-workspace`, `incomplete-bundle`, `workspace-mismatch`, and `stale-or-possibly-active`. Warnings are evidence, not blockers hidden behind a generic score. Exact process/tool-context compatibility is never claimed.
 
+### 2.6 Analysis execution boundary
+
+Babel owns the analysis control plane—recipes, source selection, normalization, discovery, retrieval, batching, sandbox policy, job supervision, output validation, hypothesis lineage, evidence, synthesis, receipts, and review. Code remains the sole owner of provider/model/thinking profiles and launches OMP as the analysis worker.
+
+OMP is the investigator, not the source-format boundary. It can analyze normalized material from OMP, Codex, and Claude Code and may generate arbitrary hypotheses from any operator-approved corpus or repository scope. Broad discovery has an open hypothesis space but not ambient machine authority: each run fixes the allowed hosts, time range, sessions, repository snapshots, capabilities, and disclosure class before work starts. Resource limits bound each sandbox lease, while the durable frontier lets exploration resume indefinitely without changing what ideas are permitted.
+
+An analysis job separates the model-control process from its disposable execution sandbox. Code resolves the profile and gives the supervised OMP controller only the provider transport and credentials required for inference; it exposes no host files or general-purpose tools. Provider secrets and transport are never forwarded to model-visible tool arguments, the evidence broker, repository processes, or the execution sandbox.
+
+All filesystem and command experimentation occurs inside an ephemeral writable sandbox. It may alter a disposable repository clone, compile code, run bounded commands and tests, and create experiments, but it receives no host home directory, SSH agent, secret store, credential files, Docker socket, provider credential, or writable host mount. Approved inputs are mounted read-only; scratch state is discarded after the receipt is finalized. CPU, memory, process, disk, output, and wall-clock safety limits are mandatory, and cancellation terminates the entire process tree.
+
+The execution sandbox has no direct network access. OMP can reach only Code's scoped model transport and Babel's versioned, capability-gated evidence APIs. Babel brokers corpus search/retrieval, repository snapshot materialization, and public research. After private context is available, the broker makes no arbitrary model-controlled request: URL, query, header, body, and redirect fields are disclosure sinks. Requests use validated templates or opaque result IDs plus explicit declassification/consent; userinfo, fragments, arbitrary headers or bodies, private locators, and encoded secrets are forbidden. The broker may search/fetch public material and materialize a public repository at a pinned commit without authentication; it rejects private/link-local destinations and unsafe redirects, limits response types and sizes, and returns source URL, retrieval time, redirect chain, and content digest. Remote content and repository code remain untrusted evidence. Private remote-repository access is out of scope for v1; an explicitly approved local snapshot may still contain private code. The exact broker protocol is a Phase B acceptance gate.
+
+Repository commands execute only inside the sandbox against a pinned disposable snapshot. A run receipt records its source locator, commit and dirty-state fingerprint where available, every evidence-tool request, command, exit status, bounded output digest, generated diff, research source, and capability decision. No analysis capability can push, publish, mutate a source repository, or write outside the sandbox.
+
+Code's versioned profile-configuration and sandboxed-analysis-worker capabilities, including their capability/version handshake, are a Phase B gate. Once accepted, the configuration-only mode opens Code's existing dials, saves the result under Code's ownership, returns a stable profile ID/revision plus non-secret privacy/cost/capability metadata, and exits without launching OMP; the worker mode accepts a Babel job over stdin, resolves the named profile, starts the credential-isolated OMP controller plus disposable execution sandbox, connects only authorized evidence/tool capabilities, and streams versioned structured progress/tool/result events over stdout.
+
+Babel stores only the Code profile reference, approved guards, capability grant, and resolved non-secret execution metadata in run receipts. One selected Code profile applies to every recipe in a run. Babel keeps its TUI responsive while owning cancellation, sandbox and process-tree lifetime, tool authorization, output validation, and final exit status; analysis is never detached.
+
+Preparation is automatic; inference is explicit by default. Archive refresh, manifest ingestion, deduplication, normalization, deterministic preflight, and local index maintenance may run unattended. A model run starts only through an explicit operator action unless scheduled inference has been separately enabled. Scheduled inference names a saved Code profile and an approved source/capability/disclosure/cost envelope; only its material-change fingerprint remains scheduled-inference design material until the Phase B handshake gate is resolved.
+
+The runtime dependency is directional per operation: Babel calls Code only for analysis; Code calls Babel only for Cloud Sessions list/inspect/fetch. Neither integration calls back into the other. Code's Cloud Sessions continuation integration remains OMP-specific because it launches a local OMP fork.
+
+### 2.7 Local web security boundary
+
+`babel web` starts only on explicit request, binds an ephemeral loopback port, and stops on operator action or process exit. V1 has no LAN, remote-browser, or persistent-listener mode. Remote access is a separate future authentication/transport design, never a bind-address flag.
+
+Each launch creates a 256-bit one-time bootstrap nonce. `babel web --open` places it only in the URL fragment of the loopback bootstrap page; fragments are never sent in HTTP requests. Embedded bootstrap code immediately removes the fragment with `history.replaceState`, posts the nonce in a request body under `Referrer-Policy: no-referrer`, and receives a rotated host-only `HttpOnly; SameSite=Strict` session cookie. The nonce is single-use and expires quickly; lock/stop revokes every nonce and session. No bearer credential, transcript content, or sensitive selector appears in a query string, request log, referrer, or retained history entry.
+
+All archive, transcript, repository, model, research, Reality Ledger, and output content is untrusted. React rendering escapes text by default; any Markdown/diff renderer uses an allowlisted AST with raw HTML, active SVG, scriptable URLs, and unsafe schemes disabled. Web responses and browser-visible errors follow the same secrecy/redaction contracts as terminal surfaces. **Lock and stop server** invalidates the launch session and terminates the listener.
+
 ## 3. Source data and trust model
 
-Supported sources initially use the archive layout inherited from the existing dotfiles automation:
+Babel's core is harness-agnostic. OMP, Codex, and Claude Code implement source adapters over one manifest, normalized-event, provenance, hypothesis, observation, finding, and proposal model.
 
-- OMP: the current archive has `omp/sessions` and `omp/collab`; continuation-grade bundles additionally require the content-addressed `~/.omp/agent/blobs` store, which the existing automation does not archive;
-- Codex: `codex/sessions`, `codex/history.jsonl`, `codex/session_index.jsonl`, and `codex/attachments`;
-- Claude Code: `claude/projects`.
+The v1 archive covers all three from its first release:
 
-OMP sessions are project-scoped JSONL event logs under an encoded workspace directory. A session can also have a same-named sibling directory containing side-channel artifacts such as advisor events and tool logs. Adapters must preserve this relationship.
+- **OMP:** sessions, collaboration data, sibling session artifacts, and the content-addressed `~/.omp/agent/blobs` closure required by persisted blob references;
+- **Codex:** sessions, `history.jsonl`, `session_index.jsonl`, and attachments; and
+- **Claude Code:** project/session trees and their referenced local artifacts where the on-disk format exposes them.
 
-All archive content is untrusted data. A transcript can contain malicious instructions copied from issues, web pages, repositories, tool output, or prior agents. Babel and its model prompts must never interpret transcript text as instructions to Babel. Source content is quoted evidence only.
+Each adapter must always preserve and selectively retrieve the raw chat logs. OMP is the reference and highest-fidelity adapter. Codex and Claude Code metadata extraction is best effort where formats are undocumented, unstable, or incomplete, but inability to derive a title, workspace, lifecycle state, or artifact closure never excludes the raw transcript from backup or later analysis. Every manifest row records adapter version and metadata-completeness flags instead of pretending parity.
 
-The archive can also contain secrets, private source code, personal data, and attachments. Therefore:
+The manifest separates a portable common envelope from versioned adapter metadata. Required common fields are `manifest_schema`, `harness`, `adapter_schema`, stable host ID and display name, adapter-defined source/session identity, globally unique session key, immutable revision key, immutable bundle digest and size, encrypted object locator, and snapshot time. The session key is namespaced by stable host ID, harness, and adapter identity; the revision key additionally includes the bundle digest. Common catalog fields—title, workspace/project, creation and modification times, lifecycle state, and repository fingerprint—are nullable. Missing values remain `null` and set explicit completeness reasons; adapters never synthesize values merely to satisfy a shared shape.
+
+Each row also contains a namespaced `adapter_metadata` object whose schema version is recorded independently. Babel preserves unknown extension fields while reading a compatible manifest. V1 adapter guarantees are deliberately unequal:
+
+- **OMP:** raw session JSONL, sibling collaboration/artifact data, and the complete set of resolvable referenced blobs; unresolved references are listed and force `continuation_grade=false`;
+- **Codex:** raw session logs, `history.jsonl`, `session_index.jsonl`, and discovered referenced attachments, with title/workspace/lifecycle and attachment closure allowed to be unavailable; and
+- **Claude Code:** raw project/session logs and discovered referenced artifacts, with project, lifecycle, timestamps beyond filesystem observations, and artifact closure allowed to be unavailable.
+
+The encrypted manifest records those common fields, adapter extensions, completeness reasons, bundle object references, and available repository fingerprint. Titles, paths, and every adapter extension are encrypted by rclone crypt and remain subject to TUI privacy masking.
+
+All archive content is untrusted data. A transcript can contain malicious instructions copied from issues, web pages, repositories, tool output, or prior agents. Babel and its analysis workers treat transcript text only as quoted evidence, never as instructions.
+
+The archive can contain secrets, private source code, personal data, and attachments. Therefore:
 
 1. ingestion and deterministic secret preflight happen locally;
-2. local model execution is the default analysis mode;
-3. hosted-model use requires an explicit per-run choice and a visible disclosure of what leaves the machine;
-4. likely secrets are redacted before hosted inference, while local evidence retains references to the original locations;
+2. inference discloses the selected Code profile's local/hosted class before material is sent;
+3. hosted inference requires explicit per-run consent or a separately authorized schedule;
+4. likely secrets are redacted before hosted inference, while local evidence retains locators to the original;
 5. exports redact secret values by default; and
-6. logs must not contain raw transcript bodies or credentials.
+6. logs never contain raw transcript bodies or credentials.
+
+The public repository and CI contain only generated synthetic fixtures. Real operator transcripts, titles, paths, manifests, credentials, and analysis outputs are never committed.
 
 ## 4. Conceptual model
 
-Babel distinguishes four layers so that guesses never become facts merely through repetition.
+Babel distinguishes five layers so that unconstrained ideas can emerge without guesses becoming facts merely through repetition.
 
 ### 4.1 Source record
 
@@ -137,339 +197,549 @@ An immutable, normalized event or artifact with:
 - normalized text or artifact metadata; and
 - a locator capable of recovering the original evidence.
 
-### 4.2 Observation
+### 4.2 Candidate hypothesis
 
-A recipe's single-session or single-event claim. An observation includes evidence locators, category, confidence, impact, and recipe provenance. It cannot exist without evidence.
+An idea worth investigating, preserved even when it is speculative, uncategorized, duplicated, or not selected within the current run's budget. It records its origin cues, generating or refinement run, parent hypotheses, provisional labels, novelty/priority signals, and status: `untriaged`, `queued`, `investigating`, `deferred`, `rejected`, or `promoted`.
 
-### 4.3 Finding
+Hypotheses form a durable frontier with typed links such as `derived-from`, `corroborates`, `contradicts`, `supersedes`, and `same-concept`. Sorting never deletes a hypothesis. A candidate may develop only through the path **hypothesis → one or more observations → finding → proposal**; developed hypotheses never skip observations.
 
-One or more related observations consolidated across sessions. A finding explains the pattern, counter-evidence, recurrence, affected scope, and why it matters. Findings are deduplicated but retain all supporting observations.
+### 4.3 Observation
 
-### 4.4 Proposal
+A provenance-bearing claim over session, repository, experiment, or research evidence. An observation includes immutable evidence locators, claim category, confidence, impact, recipe provenance, and explicit counter-evidence or absence thereof. It cannot exist without evidence.
 
-A human-reviewable improvement suggested by one or more findings. A proposal contains:
+### 4.4 Finding
 
-- a concise problem statement;
-- the proposed change and expected benefit;
-- evidence and recurrence count;
-- confidence, impact, and estimated scope;
-- a possible target repository or a repository-independent destination;
-- risks, counter-evidence, and unresolved questions;
-- suggested verification criteria; and
-- review status: `new`, `accepted`, `rejected`, `deferred`, or `duplicate`.
+One or more related observations consolidated across relevant sessions, repositories, experiments, or research sources. A finding explains the pattern, counter-evidence, recurrence where applicable, affected scope, and why it matters. Findings are deduplicated but retain all supporting observations.
 
-A proposal is not an issue and has no external side effect.
+### 4.5 Proposal
+
+A proposal is the canonical private review artifact: a human-reviewable possible improvement suggested by one or more findings. It contains:
+
+- a concise title, problem/opportunity statement, and proposed outcome;
+- linked hypotheses/findings and their private provenance;
+- applicability and temporal status;
+- supporting and conflicting material, uncertainty, impact, and estimated scope;
+- zero or more suggested target repositories/systems with confidence and rationale;
+- risks, unresolved questions, prerequisites, and suggested verification criteria;
+- privacy/publication classification;
+- zero or more suggested output destinations; and
+- review status: `new`, `accepted`, `rejected`, `deferred`, `duplicate`, or `refine-requested`.
+
+A proposal is not an issue, document, or instruction and has no external side effect.
+
+### 4.6 Output projections
+
+After review, Babel can render a proposal as a sanitized GitHub issue draft, cross-system improvement brief, operator note, skill/runbook/instruction draft, investigation brief, effective-pattern note, Babel/cookbook experiment, or private security brief. A proposal may have several or no destinations; rendering never changes its canonical private record.
+
+GitHub issue draft is the primary projection for a bounded repository change. It contains a public-safe, self-contained rationale, proposed outcome, risks, acceptance criteria, material counter-evidence, and uncertainty suitable for the destination audience. Sensitive session/finding locators and excerpts remain private in Babel. Target repository and publication safety are suggestions for operator review, never automatic facts.
+
+### 4.7 Persistent review and refinement
+
+In the managed v1 deployment, hypotheses, observations, findings, proposals, review events, operator context, lineage, refinement requests, and their required evidence are durable, browseable PostgreSQL rows plus encrypted Cellar objects; no committed Babel output is authoritative only on its producing machine. Decisions are append-only disposition events: `accept`, `reject`, `defer`, or `duplicate`; rejection never deletes a record. `Reject and refine` is one atomic operation that appends a `reject` event and creates an authorized distinct refinement request in the same PostgreSQL transaction; there is no standalone `refine` disposition event. Operator context is attributed guidance, not independent evidence.
+
+A refinement run may add sources or context, runs independently of its parent, and creates immutable descendants through `refines`, `responds-to`, `supersedes`, `splits`, or `merges` links; it never overwrites originals. PostgreSQL plus encrypted Cellar objects make its output, evidence, and lineage globally browseable and continuable by any Babel instance, even when host-pinned reruns require a workspace. The CLI and TUI expose review history, lineage, context attribution, refinement requests, and separate refinement-run status.
+
+Every refinement worker receives the refusal/refinement event and attributed reviewer context in its prompt and must emit a structured **durable-learning assessment** before producing descendants. The assessment chooses `none`, `alongside`, or `instead`, with a rationale, intended scope, sensitivity, supporting evidence, and proposed destination. `none` means the correction is specific to this output; `alongside` creates both a revised descendant and a separate lasting-context proposal; `instead` creates no replacement of the rejected output and proposes only the lasting context. Destinations are explicit rather than freeform global memory: a Reality fact/policy plan, cookbook or lens change, skill/runbook/instruction draft, effective-pattern note, or operator note.
+
+The refinement agent may propose but never authorize lasting context. The proposed memory artifact follows its destination's normal evidence and review rules; Reality/entity/focus-policy changes require the existing atomic operator-plan acceptance, and other durable-learning proposals remain reviewable outputs until explicitly accepted. Rejection, assessment, any revised output, any memory proposal, and its eventual disposition retain separate immutable IDs and lineage, so accepting a revision never silently accepts the proposed memory or vice versa.
+
+### 4.8 Reality Ledger, entity identity, and Questions
+
+Babel models non-GitHub reality as a versioned **Reality Ledger**, not freeform model memory. Stable entities represent projects, repositories, machines, services, providers, environments, organizations, and other operator-defined subjects. Each entity has a global ID, typed aliases and relationships, and append-only merge/split history so repository renames, paths, chat terminology, and service moves do not lose identity and mistaken resolutions remain reversible.
+
+A fact is an immutable revision containing subject, predicate, typed value or object entity, `valid_from`/`valid_until`, `observed_at`, provenance locator, authority, confidence, sensitivity, status, and superseded/disputed links. States include `proposed`, `active`, `superseded`, `disputed`, and `stale`. Lifecycle, ownership, and analysis policy remain separate predicates: for example `active|maintenance-only|dormant|retired`, `owned|contributed|external`, and `normal|learn-only|no-code-investigation|excluded`. Lifecycle never silently implies an expenditure policy; explicit versioned focus rules perform that mapping.
+
+Only attributed operator actions and configured trusted sources may authorize facts. Initial v1 sources are operator answers/edits plus versioned provider-neutral JSON inventory import, allowing dotfiles to supply facts it owns such as stable machines, environments, intended service placement, and project/service/host relationships. Credentials are forbidden. Each trusted source declares the predicates/entities it may author; Git activity, conversations, repository inspection, and Babel analysis remain observations or proposed revisions rather than authority.
+
+Facts enter through direct edits, trusted imports, or prioritized **Reality Questions**. Questions acquire missing context, refresh stale facts, resolve source conflicts, resolve entity aliases/merges, set focus policy, clarify ambiguous answers, or fact-check suspected drift. Each durable question records its target entities/predicates, why it was asked, dependent hypotheses/work, existing/conflicting facts, sensitivity, expected authority, and state: `open`, `answered-uninterpreted`, `interpreting`, `plan-ready`, `answered`, `snoozed`, `declined`, `obsolete`, or `superseded`.
+
+Every answer is retained verbatim as an attributed immutable event and sent through a versioned Code→OMP **Answer Interpreter** with the question, relevant context snapshot, conflicts, and provenance. The interpreter emits a structured multi-action plan that may propose fact assertion/supersession/dispute, entity merge/split, focus-policy change, hypothesis creation, a request to investigate an issue-shaped output through the normal evidence pipeline, refinement, follow-up question, or no action. It never creates a proposal that bypasses **hypothesis → observation → finding → proposal**, and it can never publish an issue. If interpretation is unavailable or fails, the raw answer remains `answered-uninterpreted` for retry.
+
+Agent interpretation never silently becomes authoritative reality. Non-authoritative descendants such as hypotheses and follow-up questions may be retained immediately; any fact, entity-resolution, or focus-policy mutation requires one explicit operator acceptance of the displayed plan and commits atomically with the question disposition. The original question, answer, plan, acceptance/rejection, and resulting revisions remain linked. Freeform text is preserved as provenance but is never used as an unparsed global memory prompt.
+
+Facts have predicate-specific freshness: operator intent does not expire automatically, while volatile fleet/deployment observations carry refresh expectations or TTLs. Expiry marks a fact stale rather than deleting it; contradictions create disputes. A prioritized **Reality Inbox** ranks blocking, maintenance, and curiosity questions by affected work, avoided investigation cost, dependency count, staleness, and security/disclosure impact, while deduplication and `declined`/`unknown` outcomes suppress repeats until materially new evidence exists.
+
+Discovery persists hypotheses before context-based focus. After emergence, Babel resolves entities and attaches an immutable as-of/current context snapshot; deterministic policy may defer cloning, testing, research, or repository-specific proposals without deleting the hypothesis. Analysis queries the ledger by entity, relationship, predicate, valid time, freshness, and conflict rather than injecting the entire ledger into every prompt. Retrieval/RAG may find candidate context but never establishes authority. Context-blind controls may measure ledger-induced bias, and the challenger checks stale/disputed facts behind focus decisions.
+
+Phase A's manifest host identity/display history remains the minimal reality substrate. Full entities, facts, questions, answer interpretation, trusted inventory import, and globally durable encrypted Reality Ledger state are Phase B capabilities.
 
 ## 5. Analysis cookbook
 
-The cookbook is a first-class, versioned part of Babel. Each recipe is a reviewable Markdown document with small machine-readable front matter:
+The cookbook is executable exploratory policy, not a fixed taxonomy or one opaque prompt. It gives analysis productive starting structures while preserving arbitrary emergence. It is versioned in the public repository and has three asset kinds:
+
+- **investigation policies** define shared retrieval, experimentation, challenge, temporal, and synthesis techniques;
+- **domain lenses** define useful questions, evidence rubrics, exclusions, and classifications without limiting what discovery may propose; and
+- **meta recipes** explore Babel's cookbook, analysis process, prior outputs, and reviewer feedback.
+
+### 5.1 Recipe contract
+
+Each recipe is a reviewable Markdown document with machine-readable front matter:
 
 ```yaml
-id: interaction-friction
+id: outcome-integrity
 version: 1
-title: Interaction friction and preventable rework
-scope: session
-stage: analyze
+kind: lens
+scope: [session, corpus, repository]
+stages: [investigate, challenge, synthesize]
+capabilities: [corpus-search, repo-read, sandbox-exec]
 default: true
 ```
 
-The body defines:
+The body defines the question and why it may be fruitful; inclusion, exclusion, and ambiguity guidance; cues useful when sorting emergent hypotheses; evidence and counter-evidence to seek; temporal and present-reality checks; suggested classifications and stopping conditions; cross-session synthesis keys; capability needs; known failure modes; and examples. These are guidance, not proof that the lens is exhaustive or that complying with it makes an answer correct.
 
-- the question the recipe answers;
-- what counts and does not count;
-- required evidence;
-- useful counter-evidence;
-- classification guidance;
-- unsafe interpretations to avoid; and
-- examples of strong and weak findings.
+A recipe never selects a provider or model. Babel combines the versioned recipe with a fixed containment/provenance envelope and structured output contracts; transcript, repository, and web content are always delimited as untrusted evidence. Semantic behavior changes require a recipe-version increment.
 
-Recipes emit the common observation schema rather than inventing incompatible outputs. Changing a recipe's semantic behavior requires incrementing its version so affected material can be reanalyzed.
+### 5.2 Open discovery and the hypothesis frontier
 
-### 5.1 Initial recipe set
+Discovery is deliberately divergent. Within the approved evidence and capability boundary, it may emit any candidate hypothesis without first fitting a known lens, category, expected proposal type, evidence threshold, or likelihood score. Every candidate and its origin is persisted. Classification, clustering, deduplication, and priority sorting happen afterward; an uncategorized candidate remains valid, and recurring valuable uncategorized candidates may justify a new lens.
 
-1. **Credential and sensitive-data exposure** — leaked or unnecessarily surfaced secrets, risky handling, and evidence requiring redaction.
-2. **Security and operational decision review** — unsafe decisions, missing threat considerations, destructive commands, and weak recovery paths.
-3. **Unresolved bugs and critical failures** — failures discovered in discussion but not convincingly fixed or verified.
-4. **Agent mistakes and avoidable rework** — wrong assumptions, ignored constraints, symptom suppression, incomplete migrations, and unsupported claims.
-5. **Interaction friction** — repeated clarification, ambiguous prompts, missing context, premature questions, or feedback that could become better standing instructions.
-6. **Preferences and durable conventions** — recurring operator choices that should become explicit rules, defaults, or documentation.
-7. **Reusable processes and skill candidates** — successful multi-step methods worth codifying into a skill, checklist, or runbook.
-8. **Automation and tool gaps** — repeated manual work, missing observability, or unavailable capabilities that merit tooling.
-9. **Effective patterns** — interactions, verification strategies, and agent behaviors that consistently produced strong outcomes.
-10. **Cross-session recurring themes** — repeated findings that become materially more important when viewed across the corpus.
+Investigating a hypothesis may emit further hypotheses. Babel adds them to the durable frontier and records their relationships rather than forcing the current job to finish every branch. Finite runs defer the unexplored frontier; they do not erase it. In the unlimited-inference limit, exploration continues until further rounds yield no materially novel candidates, evidence, experiments, or contradictions.
 
-The recipes intentionally include both problems and successes. A system trained only on failures would lose the operator's strongest practices.
+Sorting optimizes operator attention rather than sanitizing ideas. It may estimate novelty, potential value, uncertainty, evidence availability, investigation cost, and similarity to prior reviewed work. Those estimates affect ordering only. Candidates remain browseable with the model's original wording, provenance, and later review outcome.
+
+### 5.3 Experimental chaos runs
+
+Exploration defaults to a `clean` run. An explicitly selected `chaos` run injects unrelated perturbation material during divergent discovery to test whether forced association yields ideas the linked clean control misses. Chaos has its own frontier branch, run receipt, random seed, atom-selection algorithm, and optional reusable chaos pack.
+
+A **chaos atom** is a bounded stimulus with provenance and a declared type. Any immutable revision of any durable Babel output or entity may be selected: hypotheses, observations, findings, proposals, review events and rejection context, refinement requests and outputs, receipts, projections/exports, generated diffs, notes/briefs, cookbook experiments, and prior chaos outputs, as well as archived discussions, public research, or bounded public-repository material. The atom records its exact immutable revision and lineage. Public atoms pass through the research broker. Selection as an atom never authorizes executing its code.
+
+Within a chaos run, `marked` presentation tells the investigator which material is non-evidence stimulus. `blind` presentation withholds why it appeared, but Babel still records every boundary and quarantines the whole branch. Ordinary clean exploration never hides injected context.
+
+A separate Code job may create **synthetic perturbation atoms** from external random seeds or atom combinations. They are recorded as model-generated descendants with their own profile and receipt, not described as true randomness. Model-produced material and any ancestor or descendant reached through recursive reuse remain stimulus only and can never become independent corroboration.
+
+An atom cannot support the hypothesis it induced. Before promotion, a chaos-origin candidate must survive a targeted clean reinvestigation that omits every atom. Evaluation compares novel useful yield, clean-survival rate, false associations, prompt-injection behavior, operator attention, and cost. Chaos defaults off.
+
+### 5.4 Shared investigation techniques
+
+After emergence, an investigator may:
+
+1. search other discussions, prior hypotheses/findings, repository snapshots, Git history, tests, and authorized public research for related concepts;
+2. seek corroboration, contradictions, alternative explanations, and older or newer states;
+3. distinguish what a conversation claimed from what was observable then and now, using `historical`, `still-applicable`, `resolved`, `regressed`, `contradicted`, or `unverifiable` where useful;
+4. modify a disposable clone and run bounded experiments to test an idea;
+5. ask a logically separate challenger to falsify or reframe the hypothesis; and
+6. synthesize evidence, dissent, uncertainty, and descendant ideas without implying certification.
+
+The challenger is a logically separate job with an intentionally skeptical brief: attack assumptions, search for disconfirming evidence and counterexamples, test whether either the operator or agent made a weak decision, identify opportunity cost, and propose stronger alternatives. It must ground criticism in evidence, consequences, missing checks, or concrete alternatives and must not infer character, ability, emotion, or intent.
+
+The challenger emits objections, counter-evidence, or new hypotheses; it cannot directly create or promote a finding. Before ordinary promotion, a standard challenger pass examines the developed observations. A separate synthesizer then judges the exploration and critique together, preserves unresolved objections, and is instructed to agree with neither side by default. Exploratory candidates may remain unchallenged, but their status makes them ineligible for promotion.
+
+Retrieval is hybrid rather than “vector RAG” by definition. V1 provides provenance-preserving full-text search, structured filters, entity/repository/session links, and temporal filters. Semantic retrieval may be added as another idea/evidence generator after evaluating its privacy, cost, retrieval diversity, and contradiction behavior. Retrieval rank never becomes evidence strength.
+
+Repository and test observations apply only to the pinned snapshot and command environment recorded in the receipt. They can establish behavior in that environment but not infer operator intent. Unavailable reality evidence remains visible as uncertainty rather than being filled from conversational confidence.
+
+### 5.5 Baseline domain lenses
+
+The initial cookbook contains eight useful but non-exhaustive lenses:
+
+1. **Outcome integrity and unresolved state** — compare requested outcomes, agent claims, observed changes, and verification; explore incomplete, falsely closed, regressed, or genuinely resolved work.
+2. **Security, privacy, and trust boundaries** — explore concrete exposure, unsafe authority, credential handling, destructive behavior, and missing containment.
+3. **Code health, maintainability, documentation, and comprehensibility** — explore dead code, complexity, missing tests/docs, misleading abstractions, absent human comprehension layers, and other improvements against snapshots and history.
+4. **Engineering decision quality and operational risk** — revisit assumptions, alternatives, constraints, reversibility, recovery, and measured consequences without treating hindsight as certainty.
+5. **Human–agent coordination and avoidable rework** — look for observable ambiguity, ignored constraints, repeated corrections, weak handoffs, comprehension friction, and operator struggle without diagnosing emotion, ability, or mental state.
+6. **Durable operator model** — explore preferences, constraints, and standing conventions while distinguishing recurring evidence from one-off instructions and retaining contradictions.
+7. **Reusable practice and capability leverage** — explore successful procedures, skill candidates, missing tooling, automation opportunities, and their prerequisites or recurring costs.
+8. **Effective patterns and enabling conditions** — preserve strategies that produced strong outcomes, their enabling context, counterexamples, and limits.
+
+Cross-session recurrence is a property available to every lens, not a ninth topic. The lenses organize and inspire what emerges; they do not constrain discovery.
+
+Phase B fully authors and default-enables five initial lens recipes: outcome integrity, security/privacy, code health/comprehensibility, human–agent coordination, and effective patterns. Decision quality, durable operator model, and capability leverage ship as reviewable drafts until corpus evaluation sharpens their overlap and guidance. Open discovery remains enabled independently and may emit hypotheses in any of these areas or none.
+
+### 5.6 Developed hypotheses and findings
+
+A developed hypothesis can record a lens or ad hoc framing, recipe/policy versions, origin and lineage, supporting and conflicting locators, source authority and timestamps, retrieval trace, sandbox/research checks, temporal interpretation, uncertainty, potential value, and the next evidence that could change it. None of those fields turns it into objective truth or substitutes for observations. A finding is created only from one or more observations developed while investigating the hypothesis; “developed enough for focused human review” does not mean “verified correct.”
+
+### 5.7 Babel analyzing Babel
+
+A self-analysis run may explicitly include Babel's pinned repository snapshot, specification, cookbook versions, prior hypothesis frontier, run receipts, resource/tool traces, reviewer outcomes, and evaluation corpora. It may inspect or experimentally modify a disposable Babel clone, run Babel in the sandbox, analyze prior analyses, and propose changes to code, UI, recipes, retrieval, evaluation, or the analysis architecture itself.
+
+Recursive lineage and depth are recorded. A descendant analysis never overwrites its ancestor, and generated material is marked as model-produced so it cannot become independent corroboration through repetition. Self-analysis has the same containment and no-publication boundaries as every other run.
+
+The `cookbook-quality` meta recipe may propose versioned changes or entirely new lenses/policies based on useful uncategorized candidates, reviewer outcomes, misses, duplicates, unsupported claims, retrieval failures, evidence coverage, creativity, cost, and latency. The analyzer never edits or promotes its active cookbook. A human reviews proposed diffs; experiments compare versions on held-out material while preserving previous recipes, hypotheses, and receipts. Optimization favors useful emergence per unit of operator attention, not a false promise of universally reliable answers.
 
 ## 6. Processing pipeline
 
-### 6.1 Archive and fetch
+### 6.1 Stable archive publication
 
-`babel archive push` copies supported local session sources into the encrypted, host-scoped archive. Upload is append/update-only: it uses `copy`/`copyto`, never `sync`, and does not delete a remote object as an incidental consequence of local state.
+`babel archive push` discovers OMP, Codex, and Claude Code sources through versioned adapters and builds stable session bundles. A source that may be changing is staged, hashed, and checked again before publication. If it changes during the snapshot, Babel retries within a bound or reports it as deferred/incomplete; it never publishes a continuation-grade manifest entry for an unstable bundle.
 
-`babel archive catalog` performs a read-only remote inventory and does not materialize transcript bodies. The current archive contains the raw session tree and no per-session manifest, so its guaranteed lightweight fields are limited to the host prefix, decrypted archive path, filename-derived timestamp/session identifier, remote modification time, and object size. Title and recorded `cwd` require either a separately verified bounded read, a future manifest, or an explicit full-session pull. Babel must show those fields as unavailable rather than silently downloading an object to fill them.
+No durable `babel/v1` remote write may occur until the pre-first-write gate freezes the canonical bundle, manifest, immutable commit-record, and `latest` bytes; schemas, Go types, and null rules; the host-generation key and total ordering; SHA-256 domain and digest semantics over plaintext; path and file-metadata rules; golden fixtures; compatibility and unknown-field rules; and a direct-rclone recovery fixture. This gate blocks remote writes only: Phase A may implement the module, adapters, local-directory backend, and synthetic fixtures contract-first before it passes.
 
-`babel archive pull --session ID` explicitly materializes selected session objects into a local snapshot. Pull never writes to the remote and records its source host, archive reference, contract version, digest, and fetch time. Status and verification commands expose remote reachability and round-trip integrity without requiring the analysis pipeline.
+The first successful push is an explicit bootstrap/backfill, not an incremental continuation of the old backup. Starting from empty Babel state, it scans every configured local source root and attempts a stable bundle for every locally available session, including sessions older than Babel's installation. Data that exists only in the ignored legacy remote namespace is not backfilled. Every manifest generation records per-adapter scanned coverage, deferred reasons and counts, and bootstrap completeness; the initial generation is committed only after the full scan finishes, with deferred or incomplete sources visible and retried rather than silently omitted. The prior backup remains enabled until all three adapters have complete real-v1 coverage.
 
-The first implementation must remain compatible with the current Cellar bucket, `rclone crypt` settings, host prefixes, and object paths so archive ownership can move without migrating stored data.
+Later pushes may use adapter watermarks for speed but periodically reconcile the full local roots. A manifest generation represents all immutable revisions known to Babel, not merely files changed in that run: records from the previous valid generation are carried forward when a local source disappears. A changed session produces a new immutable revision and designates it as the newest committed stable revision without deleting history. Host-generation metadata carries the host display name; the newest committed value wins for catalog display while prior values remain in history.
 
-### 6.2 Ingest
+Publication is resumable through a private local journal keyed by host and intended generation. Babel stages and hashes a source, uploads immutable bundle/blob objects, confirms their read-back, uploads and reads back the immutable manifest generation, then uploads and reads back the immutable commit record. That commit record is the publication boundary. Only after it is durable does Babel atomically replace `latest` with the commit locator and digest as a non-authoritative hint. A reader validates the hinted commit, enumerates commit records ordered by the frozen canonical host-generation key, validates every candidate newer than the hint, and selects the highest verified commit record. It never exposes an uncommitted manifest; an absent or invalid hint triggers the same verified-record scan.
 
-Discover supported session formats, parse them through versioned adapters, associate side-channel artifacts, normalize events, compute digests, and update the local index. Unknown event types are preserved as opaque records and reported rather than discarded.
+A crash before commit-record read-back leaves the prior committed generation current; uploaded bundles or manifests are uncommitted immutable objects and are harmless and reused by digest on retry. A crash after commit-record read-back but before `latest` replacement leaves a recoverable committed generation discoverable by verified-commit fallback. A crash after pointer replacement is complete. The local journal advances only after each remote read-back, so restarting any stage is idempotent.
 
-### 6.3 Preflight
+Bundle objects are immutable and content-addressed inside `archive:babel/v1/`. Shared blobs remain content-addressed. For each host, Babel uploads bundle objects first, then the manifest, then the immutable commit record, and updates the small `latest` hint last. Readers therefore see either the previous complete generation or a verified new commit, never an uncommitted manifest.
 
-Run deterministic checks before model inference:
+Manifest metadata is client-side encrypted with the rest of the archive. V1 is remote append/update-only: Babel never deletes a remote bundle, blob, manifest generation, commit record, or legacy object. No remote prune command exists in v1.
 
-- likely-secret and high-risk-data detection;
-- malformed or truncated session detection;
-- transcript size and attachment inventory;
-- duplicate and changed-session detection; and
-- a disclosure preview for any hosted-model run.
+### 6.2 Catalog and selective fetch
 
-Preflight findings use the same evidence model as AI-assisted findings.
+`babel archive catalog` reads encrypted v1 `latest` hints and immutable commit records and rich manifests without materializing transcript bundles. It merges every stable host into the local catalog, preserves harness-specific completeness flags, and resolves a bare session selector to its newest committed stable revision; exact `SESSION@REVISION` selects that immutable revision reproducibly.
 
-### 6.4 Analyze
+`babel sessions fetch SESSION[@REVISION]` explicitly downloads and digest-verifies one selected immutable bundle plus its declared artifact/blob closure. Decrypted bundles persist in a private local data store until the operator explicitly prunes them; they are not an ephemeral cache. Local prune never deletes the remote archive.
 
-Run enabled session-scoped recipes over new or invalidated material. Large sessions are partitioned on semantic event boundaries, not arbitrary byte offsets. Summaries retain locators to the underlying records.
+The legacy pre-Babel namespace is ignored. There is no range-read probing or best-effort legacy import in the product path.
 
-The analyzer must distinguish:
+### 6.3 Ingest and normalize
 
-- what the user reported as fact;
-- what an agent claimed or inferred;
-- what tools actually observed;
-- what changed in a repository; and
-- what verification was actually run.
+Adapters parse fetched raw logs into a common event model while preserving opaque unsupported records and exact source locators. The common layer distinguishes user reports, agent claims, tool observations, repository changes, and verification evidence. Unknown or partial Codex/Claude structures degrade explicitly rather than being discarded.
 
-This distinction is essential when judging mistakes, unresolved work, and unsupported success claims.
+### 6.4 Deterministic preflight
 
-### 6.5 Synthesize
+Before inference, Babel checks likely secrets and high-risk data, malformed/truncated sessions, transcript and attachment size, bundle closure, duplicate/changed inputs, and the selected Code profile's disclosure class. These results use the same evidence model as AI observations.
 
-Corpus-scoped recipes consolidate observations, identify recurrence, merge duplicates, surface contradictions, and create or update findings and proposals. Synthesis never drops the evidence chain.
+### 6.5 Explore through Code
 
-### 6.6 Review and export
+The operator selects a scope or explicitly starts broad discovery, chooses one Code profile, and grants capabilities for the run. Babel creates versioned jobs and launches Code's sandboxed OMP worker. The worker may explore approved sources and iteratively request corpus, repository, command/test, and brokered-public-research evidence; Babel authorizes every request and streams structured results with immutable locators.
 
-The operator reviews proposals, records disposition and notes, and exports selected material as:
+Discovery persists every candidate before sorting. Babel clusters and links candidates, maps them to known lenses when useful, and maintains a resumable frontier. Resource limits choose what is explored now, not what ideas are permitted to exist. Investigations can recursively add candidates; finite runs checkpoint the remainder.
 
-- Markdown for direct reading;
-- stable JSON for future integrations; and
-- GitHub issue-draft Markdown containing title, body, target candidate, and evidence links.
+Babel validates structured events and provenance before storing them, but it does not certify analytical correctness. The receipt records policies/lenses, hypothesis lineage, adapters, Code/profile revision, resolved provider/model/thinking metadata, sandbox and research grants, disclosure mode, source and repository digests, retrieval/tool traces, deferred/rejected candidates, failures, resource use, and timing. A run is durably committed only when its required PostgreSQL rows and encrypted Cellar objects have remotely committed; an outage leaves staged output visibly `pending-sync`, not globally committed, and idempotent sync may later complete it. A failed independent exploration does not erase successful work.
 
-Exporting a draft is allowed. Calling GitHub to publish it is not.
+### 6.6 Synthesize
+
+Recipes operating over an explicit preparation scope may consolidate observations across sessions, repositories, experiments, and research evidence, identify recurrence where applicable, deduplicate through links, expose contradictions and counter-evidence, and create immutable findings and proposals without losing provenance.
+
+### 6.7 Review and project
+
+The operator records append-only `accept`, `reject`, `defer`, or `duplicate` events for any reviewable hypothesis, finding, or proposal, with optional attributed context. `Reject and refine` atomically records a `reject` event and creates a distinct authorized refinement request in the same PostgreSQL transaction; it never edits or deletes the rejected entity. Babel preserves the complete private evidence view independently of any output projection.
+
+Phase B exports raw private run, hypothesis, observation, finding, and proposal JSON or Markdown. Phase C rendering creates sanitized destination-specific Markdown or JSON projections. GitHub issue drafts pass through secret/path/private-evidence redaction while retaining public-safe material counter-evidence and uncertainty; security briefs default private-only. Babel may suggest destinations and target repositories, but publishing, copying into an external system, or applying a proposed change occurs outside Babel.
 
 ## 7. Incremental behavior
 
-The normal mode analyzes material not yet processed under the current analysis inputs. `--all` means explicitly reconsider the selected corpus; it is not the default.
+Normal preparation indexes new or changed material. Exploration may start from newly indexed material, an explicit selection, the existing deferred frontier, or a broad-discovery scope. Re-running an unchanged scope is allowed because creative output may differ; Babel never presents cache reuse as semantic equivalence.
 
-An analysis result is keyed by at least:
+Every run records:
 
-- normalized source digest;
-- adapter identity and version;
-- recipe identity and version;
-- model/provider identity;
-- analysis prompt/runtime version; and
-- relevant redaction policy version.
+- normalized source and bundle digests;
+- source-adapter identity/version and metadata completeness;
+- cookbook policy/lens identities and versions;
+- selected frontier roots and prior-hypothesis identities;
+- Code version and profile ID/revision;
+- resolved provider/model/thinking metadata returned by Code;
+- sandbox, tool, repository, and public-research capability versions;
+- analysis job/prompt/schema version; and
+- redaction/disclosure policy version.
 
-A result is invalidated when one of those inputs changes. Because archived JSONL sessions can grow while retaining the same path, path or modification time alone is never sufficient; Babel hashes normalized content.
+Those inputs make a run reproducible enough to inspect, not deterministic enough to promise identical ideas. Review decisions survive re-exploration; descendants and new evidence link to rather than silently replace prior hypotheses or findings. Managed durability is remote: PostgreSQL and encrypted Cellar jointly preserve every committed run, receipt, evidence object, output, and lineage for browsing and continuation by any Babel instance.
 
-Review decisions survive reanalysis. New evidence may supersede a finding, but Babel records the relationship rather than silently replacing human history.
+Archive publication, catalog ingestion, and pending-output sync are independently incremental and idempotent. Manifest generations are immutable, catalog merges are idempotent, content-addressed objects are not re-uploaded, and local caches record the exact observed generation and sync state.
 
 ## 8. Proposed CLI
 
-Names are provisional. The commands represent product boundaries rather than an implementation commitment.
+Names are provisional; behavioral boundaries are not.
 
 ```text
-babel
-babel archive configure --from-json FILE|-
+babel version --json
+babel [--archive-backend rclone|local] [--archive-root PATH]
+babel web [--open]
+babel storage configure --from-json FILE|-
+babel storage status [--json]
+babel storage migrate --from-json FILE|-
 babel archive push
 babel archive catalog [--host HOST] [--refresh]
-babel archive pull --session ID [--destination PATH]
-babel sessions list --source archive --json
-babel sessions inspect SESSION_ID --json
-babel sessions fetch SESSION_ID --json
 babel archive status [--json]
 babel archive verify
-babel ingest PATH...
-babel preflight [--since TIME] [--session ID]
-babel analyze [--new | --all] [--recipe ID] [--local | --hosted PROVIDER]
-babel synthesize [--new | --all]
-babel review [--status STATUS] [--recipe ID]
-babel export [--format markdown|json|issue-drafts] [--status STATUS] OUTPUT
+babel sessions list [--harness omp|codex|claude] [--json]
+babel sessions inspect SESSION[@REVISION] [--json]
+babel sessions fetch SESSION[@REVISION] [--json]
+babel sessions prune --local [selection flags] [--yes]
+babel prepare [selection flags] [--archive-backend rclone|local] [--archive-root PATH]
+babel explore --preparation PREPARATION_ID [--new | --all | --resume ID] [--mode clean|chaos] [--chaos-pack ID] [--presentation marked|blind] [--lens ID] [--repo PATH] [--public-research] [--code-profile PROFILE_ID]
+babel analysis profile configure
+babel analysis profile edit PROFILE_ID
+babel hypotheses list [--status STATUS] [--lens ID] [--json]
+babel hypotheses inspect HYPOTHESIS_ID [--json]
+babel review [--status STATUS] [--lens ID]
+babel review decide ENTITY_ID --accept|--reject|--defer|--duplicate|--reject-and-refine [--context CONTEXT_ID]
+babel refine REQUEST_ID [--preparation PREPARATION_ID] [--source SOURCE] [--context CONTEXT_ID]
+babel export raw ENTITY_ID [--format markdown|json] OUTPUT
+babel export projection PROPOSAL_ID --destination issue|brief|operator-note|skill|investigation|pattern|cookbook|security [--format markdown|json] OUTPUT
+babel reality entities list [--type TYPE] [--json]
+babel reality inspect ENTITY_ID [--as-of TIME] [--json]
+babel reality import --source SOURCE_ID --from-json FILE|-
+babel reality questions list [--state STATE] [--json]
+babel reality questions answer QUESTION_ID --from-file FILE|-
+babel reality plans decide PLAN_ID --accept|--reject
 babel status [--json]
-babel run [PATH...] [analysis selection flags]
 ```
 
 Behavioral rules:
 
-- `babel run` is only orchestration for explicitly selected archive pulls plus ingest/preflight/analyze/synthesize; it does not upload sessions or materialize the entire corpus;
-- archive uploads are always explicit through `babel archive push` or an external scheduler;
-- archive commands never require the analysis subsystem to be configured;
-- no command publishes, edits, or remediates external systems;
-- destructive local operations, if later introduced, require an explicit command and are never part of `run`;
+- bare `babel` is the primary operational interface; `babel web` launches the rich local browser surface;
+- `--archive-backend local --archive-root PATH` provides an ad-hoc single-instance development/recovery workflow; persistent local/shared deployment configuration is otherwise read from `storage.json`;
+- `archive push` is the only normal archive command that writes S3; in shared mode it also reconciles the Phase A PostgreSQL catalog after the immutable S3 commit. Phase B exploration/review/Reality commands use the separate object-first/PostgreSQL-last state protocol. Neither path deletes remote objects;
+- catalog/inspect/fetch are read-only with respect to the remote;
+- `prepare` emits an immutable preparation/selection ID; `explore --preparation ID` makes corpus scope explicit;
+- local prune requires an explicit command and never affects Cellar;
+- archive/catalog/retrieval and the Phase A web shell do not require Code or OMP;
+- exploration and answer interpretation require a compatible Code capability and never fall back to choosing a model themselves;
+- exploration/review/refinement/Reality commands never publish issues, mutate source repositories, or apply remediation;
+- every untrusted dynamic CLI, TUI, log, diagnostic, and preview value passes through one terminal-safe renderer that escapes C0/C1, ESC/CSI/OSC/DCS, bidi, and invisible controls; raw bytes require an explicit private reveal/export;
 - machine-readable output goes to stdout and diagnostics to stderr;
-- commands support selection by host, workspace, time range, session, source kind, and recipe; and
-- interrupted runs are resumable without duplicating observations.
-
-Bare `babel` is the primary interactive interface. `review` and the other headless commands expose the same capabilities for automation; the storage and command contracts never depend on the TUI being active.
+- interrupted preparation, exploration, refinement, answer interpretation, and synchronization resume without losing or duplicating committed state;
+- the TUI can start, lock, stop, and report the local web listener but never exposes a remote-bind option;
+- the web UI uses the same application-service authorization and safe-rendering contracts as CLI/TUI;
+- raw Reality answers are durable inputs, while authoritative interpreted facts require explicit plan acceptance; and
+- trusted inventory imports may mutate only their configured predicate/entity authority.
 
 ### 8.1 TUI information architecture
 
-The mature TUI has five product areas:
+The TUI is the operational surface:
 
-1. **Home** — archive configuration and health, last successful push/pull, indexed-session counts, pending analysis, and recent findings;
-2. **Sessions** — searchable, sortable, filterable inventory of available conversations;
-3. **Recipes** — enabled analyses, versions, coverage, and evaluation quality;
-4. **Findings** — observations and consolidated evidence-backed patterns; and
-5. **Proposals** — human review, disposition, targeting, and export.
+1. **Home** — archive/database health, host generations, selected Code profile, Reality Inbox count, web-listener state, pending synchronization, and recent review;
+2. **Sessions** — searchable, sortable, filterable OMP/Codex/Claude inventory, metadata detail, fetch, and local prune;
+3. **Jobs** — preparation, exploration, refinement, answer-interpretation, synchronization, progress, failures, leases, and cancellation; and
+4. **System** — archive/database/Code configuration status, storage, privacy, Reality import health, and local-web start/lock/stop.
 
-The first prototype implements only Home, Sessions, and a metadata-only Session detail view. It is deliberately analysis-free: its purpose is to prove the public package, TUI foundation, encrypted retrieval, OMP adapter, local index, and failure behavior as one end-to-end vertical slice.
+Phase A implements Home, Sessions, System, and metadata-only Session detail. Manifest refresh does not download transcript bodies. Tables use the universal terminal-safe renderer, keyboard-only navigation, privacy masking, and explicit fetch/prune actions. Phase A contains no transcript viewer.
 
-On an empty first run, Home explains the difference between remote listing metadata and decrypted transcript content and offers an explicit **Refresh catalog** action. Catalog refresh is read-only; launching Babel never silently materializes the corpus or promises fields the current archive does not contain separately. During refresh the TUI shows the current host/path, object progress, cancellation, and actionable errors. If the remote is unavailable, the last complete catalog remains browsable and is clearly marked as cached.
+### 8.2 Local web information architecture
 
-The initial Sessions table sorts newest known activity first and has columns for:
+The mature React web UI has **Home**, **Sessions**, **Explore**, **Hypotheses**, **Reality**, **Cookbook**, and **Review** areas. Reality contains entity/relationship inspection, alias merge/split history, temporal fact history, conflicts/staleness, trusted-source sync, the prioritized Question inbox, freeform answers, interpreter plans, and atomic accept/reject previews. Review contains hypotheses, findings, proposals, append-only decisions, refinement lineage, and destination previews.
 
-- session title;
-- timestamp;
-- workspace/folder;
-- source machine;
-- source kind (`omp` initially);
-- session identifier;
-- stable archive reference;
-- remote size; and
-- local state such as remote-only, fetched, changed remotely, or ready for analysis.
+Phase A proves the secure on-demand server and implements Home, Sessions, archive health, metadata detail, explicit fetch, privacy mode, and lock/stop. Phase B adds every analysis, Reality, question, refinement, and proposal surface. TUI and web may link to the same durable entity but never maintain independent review state.
 
-The columns are stable, but their values reflect provenance honestly. Before a session is fetched, the existing archive guarantees machine, source kind, archive reference, size, filename-derived timestamp/session identifier, and an encoded workspace component. Title and recorded `cwd` display as unavailable unless a manifest or a separately verified bounded-read capability supplied them. Fetching the session enriches the row from OMP events.
+## 9. Durable and local state
 
-Search and filters operate only on available values. The detail view distinguishes remote listing facts from fields parsed from a fetched session; it never presents filename inference as transcript metadata.
+The first deployed v1 uses **shared mode**: one PostgreSQL database plus one S3-compatible object store form a single logical Babel backend for every authorized instance. The operator deployment uses Clever Cloud managed PostgreSQL and the existing Cellar bucket in the same organization/region where practical. The interfaces remain provider-neutral. There is no hosted Babel API or web service; each machine runs the binary and loopback UI locally.
 
-Titles and workspace paths are potentially sensitive and untrusted. Babel strips control sequences before rendering, provides a one-key privacy mode that masks titles and paths, and omits raw values from logs and catalog exports unless explicitly requested.
+Phase A stores immutable encrypted archives in Cellar and a minimal global catalog/coordination schema in PostgreSQL: deployments, instances, hosts, committed generation locators/digests/order, reconciliation state, idempotency keys, migrations, and server-time fenced leases. Sensitive titles, paths, and transcript metadata stay in encrypted Cellar manifests and decrypted local SQLite indexes; the Phase A PostgreSQL allowlist contains only schema/version identifiers, opaque IDs/locators/digests, ordering, sizes/counts, commit state, lease/fencing data, and timestamps.
 
-Opening an unfetched session presents its known metadata and an explicit **Fetch this session** action with the expected size. Only that action—or a deliberate multi-selection fetch—downloads the decrypted JSONL. Viewing transcript content or starting analysis requires a complete, digest-verified local copy.
+An archive publication commits to S3 first. Babel uploads and reads back immutable bundles, manifests, and archive commit records; that verified commit record is archive truth. It then idempotently inserts the shared PostgreSQL catalog record and advances the local journal. If the database step fails, the archive remains valid but is visibly `catalog-pending`; any authorized instance reconciles missing rows by scanning and verifying immutable S3 commit records. Loss of the Phase A database is recoverable from S3 plus the frozen direct-rclone fixture.
 
-Metadata refresh is incremental: unchanged entries are reused, growing sessions are marked changed, remote absence does not imply deletion, and refresh never duplicates catalog entries. Phase A does not depend on unverified range-read behavior. If a later experiment proves bounded OMP header reads over the exact rclone crypt/Cellar stack, or archive push begins producing a compact manifest, either can enrich remote-only rows without changing this provenance model.
+Phase B extends the existing shared schema with globally durable hypotheses, observations, findings, proposals, Reality entities/facts/questions/answers/plans, review/refinement events, runs, receipts, and evidence references. Large or byte-oriented data remains encrypted in Cellar. Phase B multi-store output commits are object-first and PostgreSQL-last; the PostgreSQL transaction is their visibility boundary.
 
-## 9. Local state and reproducibility
+Configuration and local state use private XDG paths:
 
-Babel keeps mutable state outside the source repository, following XDG paths by default:
+- shared/local storage configuration: `$XDG_CONFIG_HOME/babel/storage.json`;
+- local state: `$XDG_STATE_HOME/babel/babel.db`, a rebuildable SQLite catalog/cache, decrypted local full-text and Reality query index, and idempotent `catalog-pending`/`pending-sync` journal;
+- retained data: `$XDG_DATA_HOME/babel/` for rebuildable fetched bundles and local materializations of encrypted Cellar evidence/exports; and
+- cache: `$XDG_CACHE_HOME/babel/` for disposable staging, repository worktrees, sandbox roots, and model-ready redacted inputs.
 
-- cache: fetched snapshots and disposable model inputs;
-- state: SQLite index, run receipts, review dispositions, and locks;
-- data: retained findings, proposals, and exports when no output path is given.
+`babel storage configure --from-json FILE|-` validates a versioned document supplied by a private file or stdin; the managed dotfiles flow uses stdin. It checks deployment/instance identity, object-store access, PostgreSQL TLS certificate/hostname, role privileges, schema compatibility, and external key references before atomically replacing the mode-0600 file; it never logs the document. Each instance uses a distinct revocable least-privilege application credential. A separate migration credential is supplied ephemerally to `storage migrate`; normal instances cannot change schema. An unattended archive timer uses the already validated private configuration and never requires Bitwarden to remain unlocked.
 
-The exact paths and schema are implementation decisions, but these invariants are required:
+Beginning in Phase B, structured identifiers, entity kind/schema version, encrypted-object references, key ID, ciphertext size, commit/sync state, and relationship IDs form the minimal PostgreSQL plaintext allowlist. Titles, claims, operator context, findings, proposals, review notes, receipts, and other sensitive payloads use randomized versioned AEAD envelopes with associated identity/schema data and key IDs before leaving Babel. PostgreSQL never receives plaintext full-text indexes or deterministic ciphertext for search; authorized instances decrypt committed payloads into rebuildable local SQLite indexes.
 
-- source archives are never modified;
-- every derived object records provenance and a schema version;
-- writes are atomic where partial state would be misleading;
-- one failed recipe does not erase successful independent results;
-- runs produce receipts containing selection, versions, counts, failures, and disclosure mode; and
-- a JSON export plus recipe revision is sufficient to audit why a proposal exists.
+Immutable entities/events use globally unique client-generated IDs and idempotency constraints. Coordination uses PostgreSQL server time, expiring leases, and monotonically increasing fencing tokens. Each source machine archives only locally available chats under its stable host identity; another instance can browse/fetch committed data but cannot claim that host's publication lease while a valid owner exists. Repository-dependent work records an execution-host constraint.
 
-## 10. Quality requirements
+During a PostgreSQL or Cellar outage, last-synchronized content remains browseable from local cache in read-only mode. Archive objects committed to S3 while PostgreSQL is unavailable remain `catalog-pending`; Phase B outputs remain `pending-sync` and are not globally reviewable or eligible as committed chaos atoms. Reconnection reconciles both idempotently.
 
-A useful Babel result must be:
+Database URLs, encryption keys, and storage credentials remain in Babel's trusted control process and are never exposed to Code, OMP, sandboxes, recipes, browser state, tool arguments, query/bind logs, traces, or diagnostics. Every fully authorized instance can necessarily decrypt the shared corpus; compromise of one has that blast radius. Per-instance credentials, revocation, rotation, and coordinated PostgreSQL/Cellar/key backups are real operational controls.
 
-- **grounded:** every factual claim has recoverable evidence;
-- **specific:** it describes an observable problem or improvement, not generic advice;
-- **deduplicated:** recurrence strengthens one finding rather than flooding the review queue;
-- **balanced:** counter-evidence and successful outcomes are visible;
-- **actionable:** proposals name a concrete change and verification criteria;
-- **calibrated:** confidence is not used as a substitute for evidence; and
-- **private by construction:** model disclosure and redaction are explicit.
+Invariants:
 
-Initial evaluation should use a small, manually labeled set of real sessions. For each recipe, compare expected observations to output and record false positives, missed findings, unsupported claims, duplicate rate, and evidence quality. A recipe should not join the default set merely because its prose sounds useful.
+- local source sessions and fetched immutable bundles are never modified;
+- remote archive/evidence objects are never deleted by normal processing;
+- every object, row, and derived result carries a schema version and provenance;
+- Phase A archive truth is the verified immutable S3 commit record, and its PostgreSQL catalog is rebuildable;
+- Phase B output visibility follows object-first/PostgreSQL-last commits and never claims cross-service atomicity;
+- PostgreSQL leases use server time and fencing; stale owners cannot commit;
+- one process holds each local state-writer lock; read-only views remain available where safe;
+- local SQLite migrations are forward and transactional; PostgreSQL migrations are transactional, serialized, compatibility-checked, and require the separate migration role; and
+- logs and errors never contain credentials, DSNs, SQL/bind values, payload ciphertext/plaintext, or raw transcript bodies.
 
-The TUI is evaluated as an actual terminal surface, not from source structure alone. Its acceptance checks cover narrow and wide terminal layouts, keyboard-only navigation, focus visibility, empty/loading/progress/error/cached states, stable rendering of long titles and paths, and responsive interaction over the real expected session count.
+All terminal-facing values—including stdout/stderr, TUI cells, logs, diagnostics, previews, titles, paths, and model text—use the same terminal-safe renderer. Malicious fixtures cover C0/C1 controls, ESC/CSI/OSC/DCS sequences, bidi and invisible controls; only an explicit private reveal/export can emit raw bytes.
+
+## 10. Quality and acceptance requirements
+
+Babel evaluates process quality and usefulness without claiming analytical reliability. A strong developed hypothesis is interesting, inspectable, provenance-bearing, candid about uncertainty, and economical of operator attention. A promoted finding should be specific, connected to supporting and conflicting evidence, and clear about temporal/reality limits; confidence never substitutes for evidence.
+
+Adapter fixtures are generated and synthetic. Each harness has contracts for discovery, manifest metadata, stable snapshot behavior, raw-log round trip, selective retrieval, malformed inputs, and explicit metadata-completeness degradation. Synthetic transcript and credential sentinels cover every captured stdout, stderr, TUI, log, and journal surface; this proves no leakage of known sentinels, not unknown secrets. No real session data enters the public repository or CI.
+
+Archive contract tests start with populated source trees and no Babel state to prove full bootstrap/backfill rather than change-only ingestion. They freeze the canonical bytes, plaintext SHA-256 domain/digest semantics, schemas/types/null and compatibility rules, host-generation key and total ordering, path/file metadata rules, golden fixtures, direct-rclone recovery fixture, per-adapter coverage/deferred/bootstrap metadata, and immutable commit-record recovery. Injected interruption after staging, each object upload, manifest upload/read-back, commit-record upload/read-back, and `latest` replacement must prove idempotent recovery and that catalog readers expose only the highest complete, digest-valid committed generation even while a valid `latest` hint still points to an older commit.
+
+Phase A is not complete with fixtures alone. Before real deployment it provisions Clever Cloud PostgreSQL and the existing Cellar bucket through the unified shared storage configuration, migrates with the separate role, and completes manual bootstrap from the primary Linux workstation. After the pre-first-write gate passes, it publishes encrypted synthetic canaries plus real local manifests for all three harnesses, commits and reconciles the shared catalog, reads manifests back, shows all three in TUI/web, selectively fetches and byte-verifies one bundle per harness, and emits no known transcript or credential sentinel. A second independently configured Babel instance must browse and fetch the committed catalog, lose/rebuild its local SQLite cache, and recover a deliberately omitted PostgreSQL catalog row from the S3 commit record. The legacy archive remains untouched.
+
+The TUI is verified as an actual terminal surface across narrow and wide layouts, keyboard-only navigation, focus visibility, privacy mode, empty/loading/progress/error/offline states, long titles/paths, missing best-effort metadata, malicious terminal-control fixtures, and the real expected session count.
+
+The Phase A web shell is browser-driven against the actual server. Acceptance covers Home/Sessions/fetch/privacy/lock-stop behavior, narrow and wide layouts, keyboard navigation, malicious HTML/Markdown/URL/control fixtures, `Host`/`Origin`/CSRF/DNS-rebinding rejection, one-time session bootstrap, `no-store` responses, CSP/no-remote-assets/no-service-worker enforcement, and proof that no known transcript or credential sentinel reaches URLs, browser history, server logs, or cached responses.
+
+Shared-infrastructure acceptance proves provider-neutral local mode plus the real Clever Cloud shared mode; TLS hostname/certificate rejection; per-instance application-role isolation and revocation; migration-role separation; server-time fenced host leases; idempotent concurrent writers; S3-committed/`catalog-pending` database outage recovery; PostgreSQL catalog rebuild from immutable S3 commit records; coordinated PostgreSQL/S3/config-key backup documentation; and an hourly user timer on each enabled source host after manual bootstrap.
+
+Managed-provisioning acceptance runs through the actual dotfiles Bitwarden lock/unlock path. It proves stdin-only handoff, atomic configuration replacement, previous-config preservation on invalid credentials or interrupted activation, migration credentials absent from normal instance state, secrets absent from `/nix/store`, argv, environment captures, temporary files, logs, and journal output, vault relock, credential rotation, per-instance revocation, and timer enablement only after shared-storage/bootstrap health passes.
+
+Phase A rollout acceptance records the exact Babel source revision, locked Nix derivation/output path, `babel version --json` result, storage-schema version, dotfiles revision, and activation time. The Linux user units are exactly `babel-archive.service` and `babel-archive.timer`; the timer uses `OnCalendar=hourly` and `Persistent=true`, and the oneshot service executes Babel through its absolute pinned Nix-store path rather than `PATH`. Acceptance proves a missed run executes after login, overlapping activation is fenced, and the first timer run cannot precede bootstrap health.
+
+Phase B uses generated fixtures plus private operator-reviewed corpora spanning all three harnesses. Evaluation records useful novel-candidate yield, reviewer attention cost, unsupported claims, duplicates, evidence diversity, temporal-status mistakes, retrieval/tool value, sandbox containment, and adapter coverage. It defines machine-checkable minimum evidence contracts for observations and findings, model-supplied classifications, and Babel versus human evaluator responsibilities. It does not treat disagreement with a creative hypothesis as a product failure by itself. Code integration tests use a fake executable and structured events; sandbox and broker tests require no real provider or credentials.
+
+Phase B is not complete with fakes alone. It must pass the Code capability/version handshake, exact broker protocol, shared-state security/commit, and challenger/synthesizer gates; run at least one real configured-profile exploration and live containment/escape scenario in every enabled sandbox backend, with analysis disabled on any platform whose backend has not passed; execute a harmless repository experiment; retrieve brokered public evidence; preserve uncategorized and descendant hypotheses; demonstrate a critical challenger changing or preserving a conclusion with unresolved objections intact; demonstrate append-only review across hypotheses/findings/proposals and an atomic reject-and-refine operation with lineage; prove refinement prompts and structured results cover `none`, `alongside`, and `instead` durable-learning assessments without silently authorizing memory; commit and browse the required client-side-encrypted PostgreSQL rows and encrypted Cellar objects from a second Babel instance; show outage-staged output as `pending-sync` and idempotently synchronize it; restore a coordinated PostgreSQL/Cellar/key fixture; export raw run/hypothesis/observation/finding/proposal JSON and Markdown; cancel a live investigation without orphan processes; and verify that sandbox commands cannot read host files, database/provider credentials, encryption keys, agent sockets, or direct network destinations. Dependency-aware pruning applies to local materializations while authoritative remote evidence remains retained; richer retention UX remains Phase C.
+
+Phase B Reality acceptance proves stable entity identity across repository rename/path/chat aliases; reversible merge/split; as-of and current fact queries; trusted-source predicate limits; TTL staleness and conflict handling; raw-answer durability; answer-interpreter retry; one-plan atomic acceptance/rejection; no model-authorized fact mutation; prioritized/deduplicated questions; context snapshots in receipts; and preservation of hypotheses when focus policy defers expensive investigation. It includes one operator-answer flow and one versioned dotfiles inventory import covering project lifecycle plus service-to-host reality.
 
 ## 11. Failure behavior
 
-- An unavailable archive or model fails the affected stage without corrupting prior state.
-- A failed or cancelled pull leaves the last complete local catalog usable and visibly marked as cached or stale.
-- Unsupported formats are inventoried and reported.
-- Parse errors retain source paths and safe diagnostics but not raw secrets.
-- A hosted run is refused if disclosure preview or redaction cannot complete.
-- Findings without valid evidence locators are rejected at the schema boundary.
-- Partial corpus coverage is prominent in receipts and reports; Babel must not present it as corpus-wide analysis.
+- A changing source never produces a committed stable manifest entry; the previous generation remains current.
+- Upload failure before immutable commit-record read-back leaves the prior committed generation current; failure after it and before `latest` replacement is recoverable through verified-commit fallback.
+- An unavailable archive leaves the last complete local catalog browsable and marked stale.
+- A failed or cancelled fetch leaves no verified bundle and preserves prior data.
+- Unsupported or changed Codex/Claude formats preserve raw logs and mark metadata/normalization incomplete.
+- Missing or incompatible Code disables inference only; archive and deterministic preparation continue.
+- A missing saved profile or material policy change pauses scheduled inference until reauthorized.
+- Worker or refinement failure records the exact failed run and preserves independent successes and originals; an unavailable durable store leaves newly staged output visibly `pending-sync` rather than globally committed.
+- A PostgreSQL outage after an archive commit leaves it `catalog-pending`; reconciliation from the immutable S3 commit record restores shared visibility without republishing bytes.
+- A Cellar outage prevents new archive/output commits; PostgreSQL never references an object that was not uploaded and read back.
+- A failed vault retrieval, validation, or configuration rotation preserves the previous valid `storage.json`, emits no secret, and does not enable or restart the archive timer with partial state.
+- Hosted inference is refused if disclosure preview or redaction cannot complete.
+- A hypothesis with missing or invalid provenance remains a visibly degraded candidate and cannot be promoted to a provenance-bearing finding.
+- Partial session, repository, experiment, or research coverage is prominent; Babel never presents it as universal analysis.
+- No failure path falls back to remote deletion, whole-corpus download, unapproved provider selection, host mutation, direct network access, or issue publication.
 
 ## 12. Delivery sequence
 
-### Phase A: prove the archive-backed product shell
+### Phase A: prove the archive-backed public product shell
 
-- publish and package a runnable public Babel binary;
-- launch the primary TUI from bare `babel`, using Bubble Tea and `atyrode/cli-kit`;
-- reuse the existing rclone crypt configuration and remote layout without migrating data;
-- refresh a read-only catalog from the fields actually available in remote listings, without materializing transcript bodies;
-- show title/workspace columns as unavailable for remote-only entries instead of assuming the current archive has a manifest or cheap range-readable metadata;
-- present Home, a searchable/filterable Sessions table, privacy mode, and metadata-only Session detail;
-- explicitly fetch and digest-verify one selected session, enrich its title and recorded `cwd`, and leave the rest remote-only;
-- support incremental catalog refresh, cancellation, offline cached browsing, and honest degraded/partial-failure states;
-- expose the same archive catalog/pull/status services through headless commands; and
-- visually verify the real TUI across representative terminal sizes and states.
+- add the MIT-licensed Go module `github.com/atyrode/babel`, Bubble Tea/cli-kit application, synthetic fixtures, and static release builds matching Code's Linux/Darwin amd64/arm64 platforms;
+- define and freeze the pre-first-write `babel/v1` bundle/manifest/commit/latest contract, host-generation key and total ordering, canonical plaintext SHA-256 semantics, schemas/types/null/compatibility rules, path/file metadata rules, golden fixtures, and direct-rclone recovery fixture;
+- implement the injected object-store port, rclone adapter, local-directory backend, stable snapshot adapters for OMP, Codex, and Claude Code, including raw logs and best-effort metadata/artifact closure;
+- include OMP sibling artifacts and referenced content-addressed blobs;
+- provision the existing Clever Cloud Cellar bucket plus Clever Cloud PostgreSQL through one provider-neutral shared storage document supplied by dotfiles;
+- implement the Phase A PostgreSQL schema, migrations, per-instance roles, server-time fenced host leases, idempotent shared catalog, S3-to-PostgreSQL reconciliation, and catalog rebuild;
+- build the rebuildable local SQLite catalog/cache and private bundle materialization store;
+- implement bare-Babel operational Home/Sessions/System, all-harness catalog, privacy mode, metadata detail, explicit selective fetch, selection-scoped local prune, crash/outage recovery, and local-web lifecycle controls;
+- implement the embedded TypeScript/React thin web shell with Home, Sessions, shared storage health, metadata detail, fetch, privacy mode, and lock/stop;
+- implement headless storage/push/catalog/status/verify/list/inspect/fetch/web commands with local development/recovery selection;
+- prove local mode first, freeze the remote contract, manually bootstrap the primary Linux workstation, pass the real Cellar/PostgreSQL and two-instance acceptance, then enable the hourly user timer on each approved source machine;
+- package Babel as a commit-pinned Nix dependency in dotfiles; and
+- keep the old backup job enabled until all three adapters, shared reconciliation, and replacement timers are proven.
 
-This phase contains no model inference and produces no findings. It proves that Babel can securely retrieve, understand, and present the corpus it will later analyze.
+The Phase A Linux rollout contract is declarative and reversible. Dotfiles locks the Babel source revision and Nix derivation hash, renders `babel-archive.service` and `babel-archive.timer`, and records the realized executable path in bootstrap evidence. Activation configures and verifies storage first, performs the manual bootstrap/backfill and two-instance checks, then enables the timer. Rollback disables/stops the Babel timer, reactivates the immediately preceding successful dotfiles/Home Manager generation, verifies the legacy backup remains enabled, and never deletes Babel objects or rewinds shared commit records. A replacement version must pass the same manual gate before its timer is re-enabled.
 
-### Phase B: prove the evidence loop
+This phase contains no model inference or transcript viewer. Contract-first local coding and synthetic fixture work begin before the remote-write gate; remote publication begins only after it passes.
 
-- index normalized OMP events while preserving provenance;
-- implement deterministic sensitive-data preflight;
-- implement one local-model recipe and the common observation schema;
-- synthesize findings and export Markdown/JSON;
-- surface analysis selection, progress, findings, and evidence in the TUI; and
-- manually evaluate results on a small labeled corpus.
+### Phase B: prove open-ended contained exploration
 
-### Phase C: make it operational
+- normalize OMP, Codex, and Claude Code logs into the common event/provenance model, preserving opaque unsupported records;
+- build provenance-preserving full-text/structured retrieval, relationship links, the durable hypothesis frontier, and the mandatory hypothesis→observation→finding→proposal path;
+- implement stable Reality entities/aliases/relationships, immutable temporal facts, explicit source authority, trusted versioned inventory import, context snapshots, deterministic focus rules, and the prioritized Reality Inbox;
+- implement durable freeform question/answer records and the Code→OMP Answer Interpreter, with reviewable multi-action plans and operator acceptance required for authoritative fact/entity/policy changes;
+- implement automatic deterministic preparation, sensitive-data preflight, immutable preparation IDs, and machine-checkable evidence minima/classifications with Babel and human evaluator roles;
+- pass Code's versioned profile/worker capability handshake and implement its configuration and sandboxed-worker modes;
+- implement ephemeral repository snapshots, bounded command/test execution, resource controls, cancellation, and complete tool receipts;
+- pass the exact declassification-aware broker protocol gate for public research and pinned public-repository materialization;
+- ship open discovery, all eight non-exhaustive lens definitions, five default-enabled baseline lens recipes, three draft lenses, and off-by-default chaos runs with marked/blind atom presentation;
+- run broad discovery through a supervised Code→OMP worker, persist every candidate before sorting, require a separate critical challenger before promotion, synthesize exploration and critique without default agreement, and allow investigations and distinct refinement runs to emit immutable descendants;
+- extend the existing shared PostgreSQL/Cellar foundation with client-side-encrypted analysis, Reality, question, output, review, refinement, run, receipt, and evidence records through the Phase B object-first/PostgreSQL-last protocol;
+- expose globally browseable committed state and visibly pending-sync, idempotently recoverable outage staging; surface scope/capability grants, preparation/refinement/answer-interpretation status, exploration progress, frontier lineage, receipts, hypotheses, observations, findings, review history, Reality context, questions/plans, evidence, remote commitment, and pending-sync state in the TUI;
+- implement the rich React web areas for Explore, Hypotheses, Reality, Cookbook, and Review over the shared application services;
+- implement private review across hypotheses/findings/proposals, append-only decisions, attributed operator context, Reality Questions/plans, and raw run/hypothesis/observation/finding/proposal JSON and Markdown export;
+- run a self-analysis over Babel's own pinned repository, specification, cookbook, and prior analysis artifacts; and
+- keep inference explicit by default.
 
-- complete the archive subsystem against the existing remote layout and crypt configuration;
-- add append-only upload of OMP's content-addressed blob store and fetch only the blobs referenced by a selected session;
-- define a continuation bundle covering JSONL, sibling artifacts, referenced blobs, provenance, and a stable snapshot receipt;
-- verify byte-identical restore, bundle closure, idempotent upload, append-only behavior, and the direct-rclone recovery path;
-- replace the dotfiles-owned upload script with declarative installation, credential delivery, and scheduling of `babel archive push`;
-- expose stable session locator/fetch/inspect JSON commands and compatibility preflight;
-- integrate Code's Cloud Sessions view with **Continue here** as a verified local OMP fork;
-- add incremental analysis invalidation and resumable runs;
-- add the initial recipe set, proposal review, and issue-draft export; and
-- add Codex and Claude Code adapters.
+### Phase C: operationalize and integrate
 
-### Phase D: improve the feedback system
+- expand the approved source-host rollout and verify hourly archive, shared-catalog, reconciliation, and credential-revocation health across the managed fleet;
+- add richer local retention/prune UX and operational health review;
+- add per-instance database-role revocation, payload-key rotation, coordinated PostgreSQL/Cellar/key backup and restore drills, and monitoring;
+- expose continuation bundle/preflight APIs and integrate Code's Cloud Sessions **Continue here** flow for OMP;
+- add sanitized destination projections such as issue-draft export; and
+- add opt-in scheduled analysis using a named Code profile with policy guards.
 
-- add corpus-level recurrence and contradiction analysis;
-- measure recipe precision, misses, and evidence quality over time;
-- help turn accepted proposals into recipe refinements; and
-- support comparing interaction quality before and after an accepted improvement.
+### Phase D: deepen the feedback system
 
-No phase grants Babel permission to apply its proposals.
+- tune frontier scheduling, clustering, contradiction exploration, optional semantic retrieval, and controlled chaos-atom experiments;
+- improve Babel-on-Babel meta recipes and analyze the analysis process longitudinally;
+- turn selected review outcomes into curated evaluation material without converting model output into independent evidence;
+- compare interaction quality before and after accepted improvements;
+- explore authenticated private-remote materialization only with a credential-isolating broker; and
+- explore Codex/Claude continuation only if their formats and target launchers support it.
 
-## 13. Decisions recorded by this draft
+No phase grants Babel permission to publish or apply its proposals.
 
-1. Babel is an analyzer and recommender, not an actor.
-2. Babel's source and distributable package are public; archives, credentials, local state, findings, and model inputs remain private.
-3. Bare `babel` opens the primary terminal interface, and the complete interactive product is reachable there.
-4. Headless commands and the TUI share one application layer; scheduling and recovery never require an interactive terminal.
-5. Babel owns the portable archive contract, encryption/upload/download behavior, retention semantics, and restore CLI.
-6. Dotfiles owns Babel's declarative installation, host enablement, credential delivery, and scheduling.
-7. Recovery remains possible from dotfiles bootstrap, the external secret authority, and direct rclone without a working Babel installation.
-8. The first prototype is an analysis-free vertical slice: inventory the fields the current remote archive actually exposes, mark unavailable metadata honestly, and fetch decrypted JSONL only for sessions the operator explicitly selects.
-9. Cross-machine **Continue here** creates a new local OMP fork from an immutable verified snapshot; it does not make two machines writers of one session identity.
-10. Transcript continuation is a supported future goal; exact workspace, process, tool, credential, or provider-session restoration is not promised.
-11. Babel supplies read-only session location, fetch, provenance, bundle verification, and preflight; Code owns launch UX and target selection; OMP owns parsing and local fork creation.
-12. Continuation-grade OMP archives include sibling session artifacts and the transitive closure of referenced content-addressed blobs.
-13. Local directories remain a first-class input.
-14. Raw transcripts are untrusted and private; local inference is the default.
-15. Analysis is recipe-based, versioned, evidence-constrained, and incremental.
-16. The default analyzes new or invalidated material; full reanalysis is explicit.
-17. Outputs distinguish observations, findings, and proposals.
-18. Proposals may target repositories but are never published automatically.
-19. Both harmful and effective interaction patterns are in scope.
+## 13. Decisions recorded by this audit
 
-## 14. Questions still open
+1. Babel is a public MIT-licensed Go application at module path `github.com/atyrode/babel`, using Bubble Tea and `atyrode/cli-kit`.
+2. Babel is harness-agnostic across OMP, Codex, and Claude Code for backup, rich encrypted manifests, catalog, selective retrieval, normalization, and analysis.
+3. OMP is the highest-fidelity adapter; Codex/Claude preserve raw logs and report best-effort metadata completeness rather than being omitted.
+4. Babel uses a clean `babel/v1` encrypted namespace and ignores the legacy remote archive; the legacy data is never deleted.
+5. Babel exposes one logical storage backend composed of PostgreSQL for shared structure/coordination and an injected S3-compatible object store for immutable bytes; external rclone provides Cellar/rclone-crypt transport and a local-directory/SQLite mode supports development and recovery.
+6. No durable v1 remote write precedes the frozen canonical contract and recovery fixture gate; Phase A contract-first local development remains permitted.
+7. Source machines republish local data into content-addressed stable bundles, immutable manifests, and immutable commit records; `latest` is only an atomic post-commit hint.
+8. Per-adapter generation coverage, deferrals, counts, bootstrap completeness, and host-display-name history are preserved; the newest committed host name wins.
+9. Session keys are globally unique by host/harness/adapter identity and revision keys are immutable bundle-digest revisions; bare selectors choose newest committed stable revisions.
+10. Dotfiles commit-pins Babel through Nix, provides stable host/instance identity, retrieves secrets, pipes one storage document into Babel, and enables an hourly user timer only after manual bootstrap acceptance.
+11. V1 never deletes remote data. Explicitly fetched decrypted bundles persist locally until explicit prune.
+12. Bare `babel` is the primary operational interface and `babel web` is the rich local browser surface; Phase A catalogs all three harnesses and remains metadata-only despite its shared infrastructure.
+13. The first deployed Phase A uses Clever Cloud PostgreSQL plus the existing Cellar bucket, proves two-instance catalog/fetch/rebuild behavior, and requires a gated real three-harness round trip.
+14. Babel is an exploratory instrument, not a reliable automated auditor; it guarantees containment, provenance, reproducibility metadata, and no mutating/publishing external effects rather than correctness of ideas.
+15. Discovery has an open hypothesis space. Every candidate is preserved before post-hoc sorting, and finite runs checkpoint a durable recursive frontier.
+16. Observations are provenance-bearing claims over session, repository, experiment, or research evidence; candidates develop only through hypothesis→observation→finding→proposal.
+17. AI exploration of normalized material from every source harness requires compatible Code→OMP; Babel has no direct-OMP fallback, provider clients, or generic analyzer plugin system in v1.
+18. Code owns saved analysis profiles and provider/model/thinking policy; Babel owns the ephemeral sandbox, capability grants, evidence brokers, hypothesis lineage, receipts, and review.
+19. The sandbox may mutate disposable clones and run tests but cannot access credentials, mutate source repositories, push, publish, or use direct network access.
+20. Phase B includes brokered unauthenticated public research and pinned public repositories; private remote credentials never enter the worker.
+21. Babel ships shared investigation policies and non-exhaustive lenses, supports arbitrary uncategorized hypotheses, and can analyze Babel and prior analyses themselves.
+22. One Code profile applies to a run. Preparation is automatic; inference is explicit unless an operator enables a guarded schedule.
+23. Cross-machine **Continue here** creates a new local OMP fork from an immutable verified snapshot; exact machine/workspace restoration is not promised.
+24. Analysis/review/refinement never publishes issues, mutates source repositories, or applies remediation.
+25. Chaos is an explicit off-by-default run type linked to a clean control. Any durable entity revision can be an atom with exact lineage, but it is stimulus only; recursive model/ancestor/descendant reuse never becomes corroboration.
+26. The canonical output is a private proposal with suggested destinations; Phase B exports raw private artifacts, while Phase C adds sanitized projections such as self-contained GitHub issue drafts.
+27. Review and refinement are durable, browseable, append-only, and lineage-preserving: reject never deletes, operator context is guidance rather than evidence, and reject-and-refine atomically records rejection plus an authorized independent descendant run.
+28. Shared infrastructure begins in Phase A: S3 immutable commit records are recoverable archive truth and PostgreSQL is the rebuildable global archive catalog/coordination plane. Phase B extends PostgreSQL plus encrypted Cellar into the visibility boundary for globally browseable analysis, Reality, question, review, refinement, and lineage state.
+29. A hypothesis can be promoted to a finding only after a deliberately skeptical, logically separate challenger pass; the final synthesizer evaluates both exploration and criticism without defaulting to agreement and preserves unresolved objections.
+30. Babel models non-GitHub context through stable entities and an append-only temporal Reality Ledger, not freeform global memory; only operator actions and predicate-scoped trusted imports authorize facts.
+31. Discovery persists ideas before context affects focus. Immutable context snapshots and explicit rules may defer expensive investigation or targeting without deleting hypotheses; lifecycle and ownership never silently imply policy.
+32. Reality Questions are first-class outputs. Every freeform answer is retained and interpreted by a versioned Code→OMP agent into a reviewable multi-action plan; authoritative fact/entity/policy changes require operator acceptance and issue publication remains impossible.
+33. The TUI is the operational surface and the TypeScript/React local web UI is the rich exploration/review surface. Phase A ships a thin on-demand loopback-only web shell; Phase B adds Reality and analysis workflows.
+34. The web server has no v1 remote/LAN/persistent mode and enforces one-time session bootstrap, host/origin/CSRF checks, no-store, restrictive CSP, no external assets/service worker, universal untrusted rendering, and explicit lock/stop.
+35. The first deployment is multi-machine shared mode, not a hosted Babel service: each authorized machine runs its own binary/TUI/loopback web UI, archives only local chats, and connects directly to the common storage backend.
+36. The operator deployment uses Clever Cloud Cellar and managed PostgreSQL; provider compatibility remains S3 plus PostgreSQL rather than Clever Cloud-specific APIs.
+37. Development and rollout are staged: local fixtures first, manual primary-Linux bootstrap second, two-instance shared acceptance third, then hourly timers on approved source machines; Phase B capabilities build on the Phase A shared foundation.
+38. Managed fleet provisioning is dotfiles-specific: an explicit Bitwarden unlock/retrieve/relock flow pipes common storage/key material plus per-instance credentials to Babel over stdin, atomically configures it, and gates the hourly timer; Babel remains vault-agnostic.
+39. Every refinement agent must assess whether reviewer feedback is output-specific, should produce a separate durable-learning proposal alongside a revision, or should produce durable context instead of a replacement output; no proposed memory becomes authoritative without destination-appropriate operator review.
 
-These questions should be resolved through discussion or a narrow prototype rather than guessed in advance:
+## 14. Deferred decision gates
 
-1. Which local model and structured-output mechanism are reliable enough for the first labeled-corpus evaluation?
-2. How much verbatim evidence should appear in normal reports versus being available only through local locators?
-3. Should repository targeting be inferred from workspace/remotes, chosen during review, or both?
-4. What retention policy should apply to fetched plaintext snapshots and model-ready redacted copies?
-5. Should accepted and rejected proposals feed recipe-evaluation fixtures automatically, or only through an explicit curation command?
-6. Should Phase A add and backfill a compact per-host manifest so remote-only rows can show title and recorded `cwd`, or accept those fields as unavailable until each session is fetched?
-7. Does the exact rclone crypt/Cellar stack support demonstrably bounded header reads, and are their transfer cost and failure semantics preferable to a manifest?
-8. What minimum repository fingerprint should archive manifests capture so Code can distinguish a compatible checkout from a misleading same-path checkout?
-9. How should Babel determine that a source session is inactive and stable enough to offer for continuation when publication is periodic and host-scoped?
+The following gates apply before the named deployment or capability ships; they do not block earlier local fixture-driven coding.
+
+### Before the first shared Phase A deployment
+
+- Freeze the unified `storage.json` schema, deployment/instance/host IDs, provider-neutral local/shared modes, S3 locator and PostgreSQL TLS/role fields, redaction, external-secret references, compatibility rules, and atomic stdin-only configuration replacement.
+- Freeze and migrate the minimal Phase A PostgreSQL schema, plaintext allowlist, immutable S3-commit-to-catalog mapping, idempotency, server-time fenced host leases, `catalog-pending` state, reconciliation, and complete catalog rebuild from direct-rclone/S3 commit records.
+- Prove local-directory/SQLite development mode, real Clever Cloud Cellar/PostgreSQL mode, migration/application role separation, per-instance credential revocation, TLS failure behavior, concurrent writers, database/object outages, two-instance cache rebuild/browse/fetch, and no PostgreSQL dependency in direct archive recovery.
+- Document and exercise coordinated PostgreSQL catalog backup, Cellar recovery, storage configuration/key recovery, manual primary-host bootstrap, hourly timer enablement, and rollback to the still-enabled legacy backup.
+- Prove the dotfiles-specific Bitwarden unlock/retrieve/relock handoff, common versus per-instance secret split, Nix-store/argv/environment/temp/log secrecy, invalid-rotation rollback, migration-credential ephemerality, per-instance revocation, and timer gating; track that implementation in `atyrode/dotfiles` without adding Bitwarden knowledge to Babel.
+
+### Before Phase B exploration is accepted
+
+- Select and threat-model the Linux and Darwin sandbox backends, including filesystem isolation, process/resource controls, teardown, and escape assumptions.
+- Define and enforce the exact evidence-tool and public-research broker protocols: disclosure-sink handling for URL/query/header/body/redirects, validated templates or opaque IDs, declassification/consent, SSRF/redirect/content limits, provenance fields, pinned public-repository materialization, and isolation of Code/OMP provider transport and credentials from tool processes.
+- Define frontier identity, recursive and refinement lineage, checkpoint/resume, novelty, clustering, generated-evidence rules, and append-only review semantics.
+- Define machine-checkable observation/finding evidence minima, model-supplied classifications, and Babel versus human evaluator responsibilities.
+- Define chunking and context strategy from measured OMP/Codex/Claude corpus sizes without making retrieval limits constrain hypothesis categories.
+- Decide how much verbatim evidence normal views show versus reveal through private locators.
+- Define the operator-approved scope/capability UX and how current local repositories are snapshotted without exposing ambient machine state.
+- Define evaluation and review sampling for useful emergence, operator attention, unsafe behavior, provenance loss, and retrieval diversity.
+- Decide whether one profile per run is sufficient or measured workloads justify Code-owned profile mappings.
+- Define clean-control matching, chaos atom schemas/sources, immutable revision/lineage recording, reusable packs, marked/blind presentation, synthetic-atom lineage, randomization, quarantine, clean-reinvestigation, and reviewer-blinding rules before enabling chaos outside development.
+- Extend the Phase A PostgreSQL/Cellar protocol for Phase B object-first/database-last commits, required object/row closure, global entity IDs/idempotency, host-pinned analysis work, second-instance review/continuation, and `pending-sync` behavior.
+- Freeze client-side randomized AEAD payload envelopes, key IDs/rotation compatibility, sensitive payload schemas, local-only decrypted search indexing, and the compromised-authorized-instance blast-radius statement.
+- Prove a coordinated Phase B PostgreSQL ciphertext/Cellar object/external-key backup and restore fixture; recurring rotation/restore drills and monitoring ship in Phase C.
+- Define challenger and synthesizer input/output schemas, their logical separation from the explorer and each other, evidence-authority limits, objection-preservation representation, promotion eligibility and ownership, and evaluation of whether criticism improves conclusions without rewarding performative negativity. The synthesizer may consolidate only locator-backed observations and recorded challenger objections/counter-evidence; unsupported additions remain hypotheses, and only Babel's control plane may apply the promotion transition after validating the structured result.
+- Freeze Reality entity/alias/relationship schemas, reversible merge/split, fact revision/authority/freshness/conflict semantics, trusted-source predicate scopes, context snapshots, focus-rule evaluation, question/answer/plan states, Answer Interpreter schema, retry/idempotency, and atomic operator acceptance before Reality context may control Phase B expenditure.
+- Define the React application/API contract and prove that Reality/review mutations share the Go service authorization path rather than becoming browser-owned state.
+
+### Before scheduled inference
+
+- Define the exact material-change fingerprint.
+- Define allowed disclosure classes, cost guards, retry ceilings, and schedule cadence.
+- Define how profile reauthorization is recorded and how a paused schedule is surfaced.
+
+### Before OMP Cloud Sessions continuation
+
+- Define the minimum repository fingerprint that distinguishes a compatible checkout from a misleading same-path checkout.
+- Define stable/inactive snapshot criteria under periodic host-scoped publication.
+- Verify complete OMP artifact/blob closure and the local fork/import path against current OMP.
+
+### Later product questions
+
+- Decide whether selected review outcomes become evaluation material automatically or only through explicit curation.
+- Evaluate semantic retrieval as a diversity mechanism rather than assuming vector similarity is necessary.
+- Explore authenticated private-remote materialization only after a broker can prove credential non-exposure and no push authority.
+- Explore Codex/Claude continuation only after archive and analysis adapters expose reliable semantics.
