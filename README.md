@@ -8,7 +8,7 @@ The first specification is in [SPEC.md](SPEC.md). It is deliberately a discussio
 
 ## Core loop
 
-1. Materialize encrypted agent-session archives locally through the existing `atyrode/dotfiles` backup system.
+1. Archive agent sessions and retrieve encrypted snapshots through Babel's archive subsystem, deployed and scheduled by `atyrode/dotfiles`.
 2. Discover, normalize, hash, and index sessions without modifying their source.
 3. Analyze new or explicitly selected material with versioned recipes.
 4. Preserve evidence for every conclusion.
