@@ -63,10 +63,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   hosts, names a different host, or contains a snapshot recorded without
   `--host` is refused before anything is written, and host ids are validated
   with the same rule `--host`, `BABEL_HOST_ID`, and `storage.json` enforce.
-  Session metadata cannot come from the snapshot list (restic reports counts on
-  its backup message, not in `snapshots --json`), so a rebuilt host has no
-  session rows until its owner pushes again - stated explicitly rather than
-  silently approximated.
+  Session rows cannot come from the snapshot list, so a rebuilt host has none
+  until its owner pushes again.
+- **Correction.** An earlier entry in this release claimed restic reports
+  backup counts only on its backup message and not in `snapshots --json`. That
+  was wrong: restic stores a summary in the snapshot record, so `files_new`,
+  `files_changed`, `files_unmodified`, and `data_added` are available from the
+  listing. The claim came from reading Babel's own wrapper struct, which did
+  not parse the field, instead of restic's actual output. `Snapshots` now reads
+  it, and reconciliation and rebuild record real counts instead of discarding
+  recoverable truth.
+- Unknown counts are stored as SQL NULL rather than zero. A snapshot whose
+  restic record carries no summary has counts that are unknown, and writing
+  zero would assert it backed up nothing; the owning host's next push replaces
+  NULL with real values. Session count is nullable for the same reason -
+  reconciliation cannot know it without reading the snapshot's file tree.
+- `restic ls` is wrapped, so a snapshot's file tree can be enumerated from
+  metadata alone without downloading contents - the primitive cross-host fetch
+  needs.
 
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25

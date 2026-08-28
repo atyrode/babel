@@ -252,6 +252,22 @@ type Snapshot struct {
 	Host    string
 	Tags    []string
 	Paths   []string
+
+	// Summary carries the counts restic recorded when the snapshot was made.
+	// It is nil when the snapshot record has none: the field is optional in
+	// restic's output, and a snapshot lacking it has no counts to report rather
+	// than counts of zero. Callers must treat nil as "unknown", never as zero.
+	Summary *SnapshotSummary
+}
+
+// SnapshotSummary is the subset of restic's stored backup summary Babel records.
+type SnapshotSummary struct {
+	FilesNew            int64
+	FilesChanged        int64
+	FilesUnmodified     int64
+	DataAdded           int64
+	TotalFilesProcessed int64
+	TotalBytesProcessed int64
 }
 
 // snapshotJSON is one element of `restic snapshots --json`.
@@ -262,6 +278,14 @@ type snapshotJSON struct {
 	Hostname string    `json:"hostname"`
 	Tags     []string  `json:"tags"`
 	Paths    []string  `json:"paths"`
+	Summary  *struct {
+		FilesNew            int64 `json:"files_new"`
+		FilesChanged        int64 `json:"files_changed"`
+		FilesUnmodified     int64 `json:"files_unmodified"`
+		DataAdded           int64 `json:"data_added"`
+		TotalFilesProcessed int64 `json:"total_files_processed"`
+		TotalBytesProcessed int64 `json:"total_bytes_processed"`
+	} `json:"summary"`
 }
 
 // shortIDLen is the length of restic's abbreviated snapshot identifier.
@@ -278,22 +302,42 @@ func (r *Repo) Snapshots(ctx context.Context) ([]Snapshot, error) {
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("restic snapshots: parsing json: %w", err)
 	}
+	return snapshotsFromJSON(raw), nil
+}
+
+// snapshotsFromJSON converts restic's records, kept separate from the command
+// so optional-field handling can be tested against fixtures without a binary.
+func snapshotsFromJSON(raw []snapshotJSON) []Snapshot {
 	snaps := make([]Snapshot, 0, len(raw))
 	for _, s := range raw {
 		short := s.ShortID
 		if short == "" && len(s.ID) >= shortIDLen {
 			short = s.ID[:shortIDLen]
 		}
-		snaps = append(snaps, Snapshot{
+		snap := Snapshot{
 			ID:      s.ID,
 			ShortID: short,
 			Time:    s.Time,
 			Host:    s.Hostname,
 			Tags:    s.Tags,
 			Paths:   s.Paths,
-		})
+		}
+		// Preserve absence: a snapshot without a stored summary reports nil
+		// rather than a row of zeros, so a caller cannot mistake "unknown" for
+		// "nothing was backed up".
+		if s.Summary != nil {
+			snap.Summary = &SnapshotSummary{
+				FilesNew:            s.Summary.FilesNew,
+				FilesChanged:        s.Summary.FilesChanged,
+				FilesUnmodified:     s.Summary.FilesUnmodified,
+				DataAdded:           s.Summary.DataAdded,
+				TotalFilesProcessed: s.Summary.TotalFilesProcessed,
+				TotalBytesProcessed: s.Summary.TotalBytesProcessed,
+			}
+		}
+		snaps = append(snaps, snap)
 	}
-	return snaps, nil
+	return snaps
 }
 
 // Check verifies repository integrity. With readData false it validates
