@@ -40,6 +40,10 @@ type Server struct {
 // New generates an access token and binds a loopback listener. Port zero asks
 // the kernel for an available port. The listener is held until Serve begins so
 // URL is immediately stable and safe to launch.
+//
+// The token is placed in the URL fragment, which browsers never transmit
+// (SPEC.md §146), so it reaches neither the request line nor anything that
+// records one.
 func New(opts Options) (*Server, error) {
 	if opts.Port < 0 || opts.Port > 65535 {
 		return nil, fmt.Errorf("port %d is out of range", opts.Port)
@@ -58,11 +62,13 @@ func New(opts Options) (*Server, error) {
 		opts:     opts,
 		listener: listener,
 		token:    token,
-		url:      fmt.Sprintf("http://127.0.0.1:%d/?token=%s", port, token),
+		url:      fmt.Sprintf("http://127.0.0.1:%d/#token=%s", port, token),
 	}, nil
 }
 
-// URL is the launch URL, including its generated bearer-equivalent token.
+// URL is the launch URL. The token rides in the fragment, so opening this URL
+// sends no credential to the server; the bootstrap code reads it and presents
+// it as a bearer header instead.
 func (s *Server) URL() string { return s.url }
 
 // Serve handles requests until ctx is canceled or the server fails. A Server
@@ -120,6 +126,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		}()
 
 		rw.Header().Set("Content-Security-Policy", "default-src 'self'")
+		rw.Header().Set("Referrer-Policy", "no-referrer")
 		if strings.HasPrefix(r.URL.Path, "/api") {
 			rw.Header().Set("Cache-Control", "no-store")
 			if !s.authorized(r) {
@@ -160,23 +167,22 @@ func (w *statusWriter) statusCode() int {
 	return w.status
 }
 
+// authorized accepts the launch token from the Authorization header only.
+// SPEC.md §146 keeps the token in the URL fragment precisely because
+// fragments are never sent in HTTP requests, so a token arriving in a query
+// string is either a paste mistake or an attempt to move a live credential
+// through a channel that gets logged, cached, and put in a Referer. It is
+// refused rather than honoured.
 func (s *Server) authorized(r *http.Request) bool {
-	candidates := make([]string, 0, 2)
-	if authorization := r.Header.Get("Authorization"); authorization != "" {
-		scheme, credential, ok := strings.Cut(authorization, " ")
-		if ok && strings.EqualFold(scheme, "Bearer") && credential != "" && !strings.ContainsAny(credential, " \t") {
-			candidates = append(candidates, credential)
-		}
+	authorization := r.Header.Get("Authorization")
+	if authorization == "" {
+		return false
 	}
-	if queryToken := r.URL.Query().Get("token"); queryToken != "" {
-		candidates = append(candidates, queryToken)
+	scheme, credential, ok := strings.Cut(authorization, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || credential == "" || strings.ContainsAny(credential, " \t") {
+		return false
 	}
-	for _, candidate := range candidates {
-		if subtle.ConstantTimeCompare([]byte(candidate), []byte(s.token)) == 1 {
-			return true
-		}
-	}
-	return false
+	return subtle.ConstantTimeCompare([]byte(credential), []byte(s.token)) == 1
 }
 
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {

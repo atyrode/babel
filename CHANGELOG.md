@@ -104,18 +104,36 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - A leak-channel acceptance for the web shell (SPEC.md §548): a unique
   sentinel is planted inside transcript content and a second one as the
   repository credential, then every API route, both error paths, the 401, and
-  the browser's actual first load (token in the query string) are exercised
-  and searched. The credential reaches no response body, header, or log line;
-  transcript content is confined to the transcript endpoint and *required* to
-  appear there, so the confinement check cannot pass vacuously; every `/api`
-  response is `no-store`; the launch token reaches no log line; and no
-  selector carries either sentinel. Each search was mutation-tested against a
-  planted leak. Scope limit: this drives the server's HTTP surface, not a
-  browser, so it does not exercise `history` entries or back/forward
-  navigation. Selectors are the only API value the client interpolates into a
-  URL (`web/src/App.tsx`), so a sentinel-free selector is what the URL and
-  history channels rest on — established by reading the client's route table,
-  not enforced by a test ([#34]).
+  the browser's first load are exercised and searched. The credential reaches
+  no response body, header, or log line; transcript content is confined to the
+  transcript endpoint and *required* to appear there, so the confinement check
+  cannot pass vacuously; every `/api` response is `no-store`; the launch token
+  reaches no log line; and no selector carries either sentinel. Each search
+  was mutation-tested against a planted leak. Scope limit: it drives the
+  server's HTTP surface, not a browser. The client is a hash router, so
+  selectors are never transmitted in a URL at all, but they do enter the
+  history entry, which is why sentinel-free selectors are what the history
+  channel rests on — established by reading the route table, not enforced by
+  a test ([#34]).
+
+### Changed
+
+- **The web launch token moved from the query string to the URL fragment**, as
+  SPEC.md §146 always specified. The token now appears in exactly one place —
+  the launch URL's fragment — and the bootstrap erases it from the address bar
+  and the history entry on first load. Fragments are never transmitted, so it
+  reaches no request line, access log, cache key, or `Referer`. A token
+  supplied in a query string is refused rather than honoured, because
+  accepting it would reopen every one of those channels. `Referrer-Policy:
+  no-referrer` is now set on every response; CSP restricts load destinations
+  and never governed the referrer. The nonce-to-cookie exchange §146 also
+  describes remains unbuilt, and the bootstrap now documents its one implicit
+  coupling: it must read the fragment before the hash router mounts, which ES
+  module evaluation order guarantees. Verified in a real browser against a
+  synthetic corpus: first load, reload, deep link, and back/forward all
+  authenticate with the token absent from every transmitted URL and from the
+  address bar after bootstrap, and a context without the token is refused
+  ([#35]).
 
 ### Fixed
 
@@ -131,6 +149,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 [#25]: https://github.com/atyrode/babel/pull/25
 [#26]: https://github.com/atyrode/babel/pull/26
 [#34]: https://github.com/atyrode/babel/pull/34
+[#35]: https://github.com/atyrode/babel/pull/35
 
 ## [0.2.1] - 2026-08-28
 

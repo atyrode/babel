@@ -119,16 +119,35 @@ func TestServeUsesLaunchURLAndStopsWithContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if launch.Hostname() != "127.0.0.1" || launch.Query().Get("token") != s.token || len(s.token) != 64 {
+	// The token rides in the fragment and nowhere else, so opening the launch
+	// URL transmits no credential at all (SPEC.md §146).
+	fragment, err := url.ParseQuery(launch.Fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.Hostname() != "127.0.0.1" || fragment.Get("token") != s.token || len(s.token) != 64 {
 		t.Fatalf("launch URL = %q", s.URL())
+	}
+	if launch.Query().Get("token") != "" {
+		t.Fatalf("launch URL carries the token in the query string: %q", s.URL())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- s.Serve(ctx) }()
 
+	// Because the fragment never leaves the browser, the bootstrap presents the
+	// token as a bearer header instead; the launch URL alone authenticates
+	// nothing.
 	launch.Path = "/api/version"
-	response, err := http.Get(launch.String())
+	launch.Fragment = ""
+	request, err := http.NewRequest(http.MethodGet, launch.String(), nil)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+s.token)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -173,13 +192,20 @@ func TestAuthentication(t *testing.T) {
 			if got := response.Header.Get("Content-Security-Policy"); got != "default-src 'self'" {
 				t.Errorf("CSP = %q", got)
 			}
+			if got := response.Header.Get("Referrer-Policy"); got != "no-referrer" {
+				t.Errorf("Referrer-Policy = %q", got)
+			}
 		})
 	}
 
+	// A correct token in the query string is refused. The fragment is the only
+	// place a launch token belongs (SPEC.md §146): a query string reaches the
+	// request line, so honouring it would invite a live credential into access
+	// logs, caches, and Referer headers.
 	response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/version?token="+s.token, "")
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("query token status = %d", response.StatusCode)
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("query token status = %d, want 401", response.StatusCode)
 	}
 }
 
