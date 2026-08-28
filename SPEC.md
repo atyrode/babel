@@ -167,7 +167,7 @@ Each row also contains a namespaced `adapter_metadata` object whose schema versi
 - **Codex:** raw session logs, `history.jsonl`, `session_index.jsonl`, and discovered referenced attachments, with title/workspace/lifecycle and attachment closure allowed to be unavailable; and
 - **Claude Code:** raw project/session logs and discovered referenced artifacts, with project, lifecycle, timestamps beyond filesystem observations, and artifact closure allowed to be unavailable.
 
-The catalog records those common fields, adapter extensions, completeness reasons, and available repository fingerprint. Titles, paths, and adapter extensions never enter PostgreSQL in plaintext (§9) and remain subject to TUI privacy masking; repository bytes are encrypted by restic itself.
+The catalog records those common fields, adapter extensions, completeness reasons, and available repository fingerprint. Titles, paths, and adapter extensions never enter PostgreSQL in plaintext (§9); repository bytes are encrypted by restic itself.
 
 All archive content is untrusted data. A transcript can contain malicious instructions copied from issues, web pages, repositories, tool output, or prior agents. Babel and its analysis workers treat transcript text only as quoted evidence, never as instructions.
 
@@ -490,7 +490,7 @@ The terminal surface is intentionally small: bare `babel` is an instant, offline
 
 The React web UI ships in Phase A with **Sessions** (searchable, sortable, filterable OMP/Codex/Claude inventory with metadata detail, artifact/blob closure, completeness reasons, and a paginated best-effort transcript viewer over local files with explicit raw degradation for unknown records) and **Archive** (per-host snapshot coverage, standard and deep verification, snapshot-scoped fetch). The mature Phase B UI adds **Explore**, **Hypotheses**, **Reality**, **Cookbook**, and **Review** areas. Reality contains entity/relationship inspection, alias merge/split history, temporal fact history, conflicts/staleness, trusted-source sync, the prioritized Question inbox, freeform answers, interpreter plans, and atomic accept/reject previews. Review contains hypotheses, findings, proposals, append-only decisions, refinement lineage, and destination previews.
 
-Phase A proves the secure on-demand loopback server (per-launch token, no non-loopback binding) and implements Sessions, session detail with transcript viewing, archive health, verification, and explicit fetch. Privacy masking and an explicit lock/stop control are Phase A follow-ups; Phase B adds every analysis, Reality, question, refinement, and proposal surface. Terminal and web may link to the same durable entity but never maintain independent review state.
+Phase A proves the secure on-demand loopback server (per-launch token, no non-loopback binding) and implements Sessions, session detail with transcript viewing, archive health, verification, and explicit fetch. An explicit lock/stop control is a Phase A follow-up; Phase B adds every analysis, Reality, question, refinement, and proposal surface. Terminal and web may link to the same durable entity but never maintain independent review state.
 
 ## 9. Durable and local state
 
@@ -543,9 +543,9 @@ Archive integration tests start with populated source trees and no Babel state t
 
 Phase A is not complete with fixtures alone. Before real deployment it provisions the Cellar restic repository and Clever Cloud PostgreSQL through the unified shared storage configuration, migrates with the separate role, and completes manual bootstrap from the primary Linux workstation: real pushes covering all three harnesses against Cellar, catalog rows committed and reconciled, all three harnesses visible in TUI/web, one session per harness selectively fetched and byte-verified from a snapshot, and no known transcript or credential sentinel emitted. A second independently configured Babel instance must browse the shared catalog, fetch a session archived by the first host, lose and rebuild its local SQLite cache, and recover cleanly.
 
-The TUI is verified as an actual terminal surface across narrow and wide layouts, keyboard-only navigation, focus visibility, privacy mode, empty/loading/progress/error/offline states, long titles/paths, missing best-effort metadata, malicious terminal-control fixtures, and the real expected session count.
+The TUI is verified as an actual terminal surface across narrow and wide layouts, keyboard-only navigation, focus visibility, empty/loading/progress/error/offline states, long titles/paths, missing best-effort metadata, malicious terminal-control fixtures, and the real expected session count.
 
-The Phase A web shell is browser-driven against the actual server. Acceptance covers Home/Sessions/fetch/privacy/lock-stop behavior, narrow and wide layouts, keyboard navigation, malicious HTML/Markdown/URL/control fixtures, `Host`/`Origin`/CSRF/DNS-rebinding rejection, one-time session bootstrap, `no-store` responses, CSP/no-remote-assets/no-service-worker enforcement, and proof that no known transcript or credential sentinel reaches URLs, browser history, server logs, or cached responses.
+The Phase A web shell is browser-driven against the actual server. Acceptance covers Home/Sessions/fetch/lock-stop behavior, narrow and wide layouts, keyboard navigation, malicious HTML/Markdown/URL/control fixtures, `Host`/`Origin`/CSRF/DNS-rebinding rejection, one-time session bootstrap, `no-store` responses, CSP/no-remote-assets/no-service-worker enforcement, and proof that no known transcript or credential sentinel reaches URLs, browser history, server logs, or cached responses.
 
 Shared-infrastructure acceptance proves provider-neutral local mode plus the real Clever Cloud shared mode; TLS hostname/certificate rejection; per-instance application-role isolation and revocation; migration-role separation; server-time fenced host leases; idempotent concurrent writers; snapshot-committed/`catalog-pending` database outage recovery; PostgreSQL catalog rebuild from the repository snapshot list plus source rescans; coordinated PostgreSQL/repository/config-key backup documentation, including restic repository password custody; and an hourly user timer on each enabled source host after manual bootstrap.
 
@@ -589,8 +589,8 @@ Phase B Reality acceptance proves stable entity identity across repository renam
 - provision the Cellar restic repository plus Clever Cloud PostgreSQL through one provider-neutral shared storage document supplied by dotfiles;
 - implement the Phase A PostgreSQL schema, migrations, per-instance roles, server-time fenced host leases, idempotent shared catalog, snapshot-to-catalog reconciliation, and catalog rebuild;
 - build the rebuildable local SQLite catalog/cache and private session materialization store;
-- implement bare-Babel operational Home/Sessions/System, all-harness catalog, privacy mode, metadata detail, explicit selective fetch, selection-scoped local prune, crash/outage recovery, and local-web lifecycle controls;
-- implement the embedded TypeScript/React thin web shell with Home, Sessions, shared storage health, metadata detail, fetch, privacy mode, and lock/stop;
+- implement bare-Babel operational Home/Sessions/System, all-harness catalog, metadata detail, explicit selective fetch, selection-scoped local prune, crash/outage recovery, and local-web lifecycle controls;
+- implement the embedded TypeScript/React thin web shell with Home, Sessions, shared storage health, metadata detail, fetch, and lock/stop;
 - implement headless storage/push/status/verify/list/inspect/fetch/web commands with local development/recovery selection;
 - prove local-path repositories first, manually bootstrap the primary Linux workstation, pass the real Cellar/PostgreSQL and two-instance acceptance, then enable the hourly user timer on each approved source machine;
 - package Babel as a commit-pinned Nix dependency in dotfiles; and
@@ -685,6 +685,7 @@ No phase grants Babel permission to publish or apply its proposals.
 42. `archive verify` is tiered: the default runs restic's structural check; `--deep` reads and verifies every repository byte.
 43. The session catalog is built from live local sources by adapters and shared via PostgreSQL; it is rebuildable convenience state, never archive truth.
 44. Adapters declare backup roots separately from discovery roots; OMP's backup roots include the content-addressed blob store so every snapshot holds a continuation-grade closure superset.
+45. Privacy masking is not a Phase A deliverable. It is a screen-visibility convenience rather than a security control, and workspace names leak through readable session selectors regardless of masking. The explicit lock/stop control remains required.
 
 ## 14. Deferred decision gates
 
