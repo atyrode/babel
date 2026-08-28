@@ -25,14 +25,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   opaque digest rather than their selector (which embeds a workspace-derived
   project slug), hosts carry no display name, and no session quality verdict
   is stored ([#25]).
-- Migration and application role separation for the shared catalog: an
-  application role receives DML on catalog tables, read-only access to the
-  migration ledger, and no DDL, so a normal instance cannot change schema or
-  claim a migration it did not apply. Credentials are per-instance and
-  revocable without disturbing other instances. DDL identifiers and passwords
-  are quoted by PostgreSQL's own `format()` rather than string concatenation,
-  the rendered statement is never included in an error, and the supplied
-  password is redacted from any error it does produce ([#26]).
+- Migration and application role separation for the shared catalog, usable only
+  where a provider permits creating database users: an application role
+  receives DML on catalog tables, read-only access to the migration ledger, and
+  no DDL, so a normal instance cannot change schema or claim a migration it did
+  not apply, and credentials are per-instance and revocable without disturbing
+  other instances. DDL identifiers and passwords are quoted by PostgreSQL's own
+  `format()` rather than string concatenation, the rendered statement is never
+  included in an error, and the supplied password is redacted from any error it
+  does produce ([#26]). **Clever Cloud's managed PostgreSQL cannot create
+  database users** (provider confirmation, 2026-08-28), so this is not the
+  operator deployment's arrangement and nothing outside its own tests calls it;
+  see the SPEC amendment under Changed.
 - The migration ledger is covered by the same enforcement as the rest of the
   schema: it is created by the runner (so it can be read before deciding what
   to apply), its live shape is asserted against PostgreSQL's own catalog rather
@@ -157,6 +161,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   authenticate with the token absent from every transmitted URL and from the
   address bar after bootstrap, and a context without the token is refused
   ([#35]).
+
+### Changed
+
+- **SPEC amended: shared mode's supported default is one database credential,
+  not a role-separated pair.** A Clever Cloud employee confirmed their managed
+  PostgreSQL cannot create database users, so the arrangement SPEC promised in
+  eight places — a per-instance least-privilege application role plus a
+  separate migration credential — is unavailable on the deployment provider.
+  What the default gives up is recorded rather than softened: schema change is
+  restrained by operator procedure instead of by privilege, and no
+  database-level control can revoke a single instance, leaving fleet-wide
+  rotation and repository-password custody as the honest remaining controls.
+  Closing that gap with application-level instance revocation is now a Phase A
+  requirement and a pre-deployment gate rather than something the code claims
+  today. Role separation stays specified and implemented for providers that
+  permit it; granting least privilege to a provider-created user is explicitly
+  untested on Clever Cloud and may not be relied on until proven against the
+  real add-on (decision 46).
 
 ### Fixed
 
