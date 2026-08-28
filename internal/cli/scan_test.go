@@ -78,7 +78,7 @@ func newWebHarness(t *testing.T, f *fixture) *webHarness {
 			t.Error("server did not stop within 20s, well past its own 5s shutdown budget")
 		}
 	})
-	base, token, ok := strings.Cut(srv.URL(), "/?token=")
+	base, token, ok := strings.Cut(srv.URL(), "/#token=")
 	if !ok {
 		t.Fatalf("launch URL %q carries no token", srv.URL())
 	}

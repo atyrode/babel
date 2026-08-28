@@ -136,20 +136,33 @@ export interface FetchResult {
 
 const TOKEN_KEY = "babel.web.token";
 
+// The launch token arrives in the URL fragment, which the browser never sends
+// to any server (SPEC.md §146). It is copied into session storage and the
+// fragment is erased from the address bar and the history entry immediately,
+// so a reload or a screenshot carries no credential. Every later request
+// presents it as a bearer header.
+//
+// The app is a HashRouter, so the fragment is also route state, and this must
+// read it before the router mounts. ES module evaluation guarantees that:
+// main.tsx imports App, which imports this module, so this function runs
+// during import and therefore before createRoot().render(). Lazy-loading this
+// module would let the router rewrite the fragment to "#/sessions" first and
+// silently break authentication. The nonce-to-cookie exchange in SPEC.md §146
+// would remove this coupling by using the fragment exactly once.
 function bootstrapToken(): string {
-  const url = new URL(window.location.href);
-  if (url.searchParams.has("token")) {
-    const supplied = url.searchParams.get("token") ?? "";
+  const hash = window.location.hash.replace(/^#/u, "");
+  const supplied = new URLSearchParams(hash).get("token") ?? "";
+  if (supplied) {
     try {
       window.sessionStorage.setItem(TOKEN_KEY, supplied);
     } catch {
       // A locked-down browser can disable session storage; the current request still works.
     }
-    url.searchParams.delete("token");
+    const url = new URL(window.location.href);
     window.history.replaceState(
       window.history.state,
       "",
-      `${url.pathname}${url.search}${url.hash}`,
+      `${url.pathname}${url.search}`,
     );
     return supplied;
   }

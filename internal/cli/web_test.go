@@ -37,7 +37,7 @@ func TestWebServerServesCLIBackedAPI(t *testing.T) {
 		}
 	}()
 
-	base, token, ok := strings.Cut(srv.URL(), "/?token=")
+	base, token, ok := strings.Cut(srv.URL(), "/#token=")
 	if !ok {
 		t.Fatalf("launch URL %q carries no token", srv.URL())
 	}

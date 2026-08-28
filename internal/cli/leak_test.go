@@ -30,18 +30,22 @@ type observed struct {
 // a URL, the browser history, the server's logs, or a cacheable response.
 //
 // This drives the server's HTTP surface, not a browser: it does not read
-// history entries and does not navigate back or forward. What it does prove
+// history entries and does not navigate back or forward. What it proves
 // directly is that no selector carries a sentinel, and selectors are the
-// bridge to the two browser-side channels: web/src/App.tsx routes exactly
-// "/sessions", "/sessions/:selector", and "/archive", and the only value it
-// interpolates is a selector the API issued, so history holds only those
-// URLs. That premise is established by reading the client's route table, and
-// nothing here enforces it — a client change that puts a title or a path into
-// a URL would defeat the inference without failing this test.
+// bridge to the two browser-side channels. The client is a hash router
+// (web/src/main.tsx), so its routes live in the fragment: "#/sessions",
+// "#/sessions/<selector>", and "#/archive". Fragments are never transmitted,
+// so a selector reaches the server only as an explicit "?selector=" query on
+// /api/session and /api/transcript — but it does enter the history entry, so
+// sentinel-free selectors are what the history channel rests on. That premise
+// comes from reading the route table, and nothing here enforces it: a client
+// change that puts a title or a workspace path into a route would defeat the
+// inference without failing this test.
 //
-// The launch token is the deliberate exception (SPEC.md §8.2): it is in the
-// URL by design, so it is held to the log channel instead, which is what
-// keeps a shared diagnostic transcript free of a live credential.
+// The launch token is not exempt here. SPEC.md §146 keeps it in the URL
+// fragment, which is never transmitted, so it must appear in no request line
+// and no log line even when a client mistakenly supplies it as a query
+// parameter — which this exercises, and which the server now refuses.
 func TestNoSentinelReachesLeakChannels(t *testing.T) {
 	f := newFixture(t).withRepoPassword(credentialSentinel + "\n")
 	f.writeSession(sessionSpec{
@@ -126,9 +130,13 @@ func TestNoSentinelReachesLeakChannels(t *testing.T) {
 		// only manufactures a false positive.
 		call(http.MethodGet, "/api/session?selector="+url.QueryEscape("omp/does-not-exist"), true),
 		call(http.MethodGet, "/api/nope", true),
-		// The browser's actual first load: the token arrives in the query
-		// string, which is what makes the log assertion below load-bearing.
-		call(http.MethodGet, "/?token="+h.token, false),
+		// The browser's real first load sends no credential at all: the token
+		// lives in the fragment, which no browser transmits.
+		call(http.MethodGet, "/", false),
+		// A token pasted into a query string is refused, and must not be logged
+		// on the way to being refused. This is what keeps the token assertion
+		// below load-bearing.
+		call(http.MethodGet, "/api/version?token="+h.token, false),
 		call(http.MethodPost, "/api/version", true),
 		call(http.MethodGet, "/api/sessions", false),
 	}
@@ -143,6 +151,19 @@ func TestNoSentinelReachesLeakChannels(t *testing.T) {
 		if r.status != http.StatusOK {
 			t.Fatalf("%s: status %d, want 200 so the sentinel credential is exercised: %s",
 				r.path, r.status, r.body)
+		}
+	}
+
+	// A query-string token must not authenticate. If that regressed, live
+	// credentials would travel in request lines again and the token assertion
+	// below would become this file's only guard against it. The token value is
+	// deliberately kept out of the failure message.
+	for _, r := range responses {
+		if !strings.Contains(r.path, "token=") {
+			continue
+		}
+		if r.status != http.StatusUnauthorized {
+			t.Errorf("query-string token authenticated: status %d, want 401", r.status)
 		}
 	}
 
