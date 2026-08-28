@@ -341,6 +341,10 @@ test.skipIf(!chrome)("no reachable history entry retains the token", async () =>
       const after = trail.url();
       if (after === before) break;
       landed.push(after);
+      // The blank entry is the bottom of a fresh context's stack, so stopping
+      // here is the normal exit. Without it the next iteration has nowhere to
+      // go and pays the full progress timeout to discover that.
+      if (after === "about:blank") break;
     }
 
     // Reaching the context's initial blank entry is what proves the whole stack
