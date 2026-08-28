@@ -82,19 +82,27 @@ const sessionsFetchUsage = `Usage: babel sessions fetch SELECTOR --repo REPOSITO
 
 Restores one session's file closure — its primary log, sibling artifacts,
 and resolved blobs — out of a snapshot into a private directory under
-Babel's data directory. The closure is resolved from the live source, so a
-session that no longer exists locally cannot be addressed by selector.
+Babel's data directory.
+
+By default the closure is resolved from the live source, so a session that
+no longer exists locally cannot be addressed by selector. With --host, the
+session is instead identified from the snapshot's own file listing, which
+addresses any session that host archived — including one this machine never
+had, or one whose local files are gone. Nothing is downloaded to identify
+it: only the listing is read.
 
 Flags:
   --repo REPOSITORY    restic repository (default $BABEL_RESTIC_REPO)
   --password-file FILE password file (default $BABEL_RESTIC_PASSWORD_FILE)
   --restic-binary PATH restic executable (default "restic" from $PATH)
   --snapshot ID        snapshot id, short id, or prefix (default "latest")
+  --host ID            resolve the selector inside that host's snapshot
   --roots DIR[,DIR]    scan these roots instead of the adapters' defaults
   --json               emit the outcome as JSON on stdout
 
 Fetching is idempotent: an already materialized target is reported and
-left untouched.
+left untouched. A closure the snapshot does not fully hold is reported as
+incomplete rather than silently partial.
 `
 
 const sessionsPruneUsage = `Usage: babel sessions prune --local --yes (--all | SELECTOR...)
@@ -728,20 +736,6 @@ func (a *app) sessionsFetch(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sessions, _ := a.scan(ctx, adapters(), sf.rootList())
-	target, err := resolveSelector(c, sessions, selector)
-	if err != nil {
-		return err
-	}
-	desc, err := describe(ctx, target)
-	if err != nil {
-		return err
-	}
-	includes := closurePaths(desc)
-	if len(includes) == 0 {
-		return fmt.Errorf("session %s has no restorable file closure", target.key())
-	}
-
 	repo, err := rf.open(c, d, nil)
 	if err != nil {
 		return err
@@ -750,14 +744,57 @@ func (a *app) sessionsFetch(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("list snapshots: %w", err)
 	}
-	chosen, err := pickSnapshot(c, snapshots, *snapshot)
-	if err != nil {
-		return err
+
+	var key string
+	var includes []string
+	var chosen restic.Snapshot
+
+	if rf.host != "" {
+		// Cross-host: the session's files may not exist here at all, so both
+		// its identity and its closure come from the snapshot's file listing.
+		// Snapshot selection therefore happens first - the opposite order from
+		// a local fetch, where the closure is known before a snapshot is
+		// chosen.
+		hostSnapshots, err := snapshotsForHost(c, snapshots, rf.host)
+		if err != nil {
+			return err
+		}
+		chosen, err = pickSnapshot(c, hostSnapshots, *snapshot)
+		if err != nil {
+			return err
+		}
+		archived, err := identifyArchived(ctx, repo, chosen.ID)
+		if err != nil {
+			return err
+		}
+		target, err := resolveArchivedSelector(c, archived, selector)
+		if err != nil {
+			return err
+		}
+		key, includes = target.key(), target.sess.Files
+	} else {
+		sessions, _ := a.scan(ctx, adapters(), sf.rootList())
+		target, err := resolveSelector(c, sessions, selector)
+		if err != nil {
+			return err
+		}
+		desc, err := describe(ctx, target)
+		if err != nil {
+			return err
+		}
+		key, includes = target.key(), closurePaths(desc)
+		chosen, err = pickSnapshot(c, snapshots, *snapshot)
+		if err != nil {
+			return err
+		}
+	}
+	if len(includes) == 0 {
+		return fmt.Errorf("session %s has no restorable file closure", key)
 	}
 
-	dir := filepath.Join(d.sessionsRoot(), safeSessionDir(target.key()), shortID(chosen))
+	dir := filepath.Join(d.sessionsRoot(), safeSessionDir(key), shortID(chosen))
 	res := fetchResult{
-		Selector:        Sanitize(target.key()),
+		Selector:        Sanitize(key),
 		SnapshotID:      Sanitize(chosen.ID),
 		SnapshotShortID: Sanitize(shortID(chosen)),
 		SnapshotTime:    formatTime(chosen.Time),
@@ -786,7 +823,7 @@ func (a *app) sessionsFetch(ctx context.Context, args []string) error {
 	}
 	if err := repo.Restore(ctx, chosen.ID, includes, staging); err != nil {
 		os.RemoveAll(staging)
-		return fmt.Errorf("restore %s: %w", target.key(), err)
+		return fmt.Errorf("restore %s: %w", key, err)
 	}
 	files, bytes, err := treeSize(staging)
 	if err != nil {
@@ -795,7 +832,7 @@ func (a *app) sessionsFetch(ctx context.Context, args []string) error {
 	}
 	if files == 0 {
 		os.RemoveAll(staging)
-		return fmt.Errorf("restore %s: snapshot %s holds none of the session's files", target.key(), shortID(chosen))
+		return fmt.Errorf("restore %s: snapshot %s holds none of the session's files", key, shortID(chosen))
 	}
 	if err := os.Rename(staging, dir); err != nil {
 		os.RemoveAll(staging)
