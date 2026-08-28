@@ -115,7 +115,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   navigation. Selectors are the only API value the client interpolates into a
   URL (`web/src/App.tsx`), so a sentinel-free selector is what the URL and
   history channels rest on — established by reading the client's route table,
-  not enforced by a test.
+  not enforced by a test ([#34]).
 
 ### Fixed
 
@@ -130,6 +130,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25
 [#26]: https://github.com/atyrode/babel/pull/26
+[#34]: https://github.com/atyrode/babel/pull/34
 
 ## [0.2.1] - 2026-08-28
 
