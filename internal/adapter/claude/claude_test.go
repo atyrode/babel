@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
-	"github.com/atyrode/babel/internal/archive"
+	"github.com/atyrode/babel/internal/digest"
 )
 
 // The adapter must satisfy the frozen port.
@@ -37,7 +37,7 @@ var bareMTime = time.Date(2026, 6, 15, 11, 22, 33, 0, time.UTC)
 // newSyntheticRoot materializes a synthetic Claude Code root in a
 // temporary directory: two projects, three sessions, one sibling subagent
 // tree, and root-relative task/session-env trees for the alpha session
-// plus decoys that discovery and staging must ignore.
+// plus decoys that discovery and description must ignore.
 func newSyntheticRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -102,16 +102,16 @@ func discover(t *testing.T, root string) ([]adapter.SourceSession, map[string]ad
 	return sessions, byID
 }
 
-func snapshot(t *testing.T, src adapter.SourceSession) *adapter.Snapshot {
+func describe(t *testing.T, src adapter.SourceSession) *adapter.Description {
 	t.Helper()
-	snap, err := New().Snapshot(context.Background(), src, t.TempDir())
+	desc, err := New().Describe(context.Background(), src)
 	if err != nil {
-		t.Fatalf("Snapshot(%s): %v", src.SourceID, err)
+		t.Fatalf("Describe(%s): %v", src.SourceID, err)
 	}
-	return snap
+	return desc
 }
 
-// reasonFields lists the completeness fields recorded on a snapshot.
+// reasonFields lists the completeness fields recorded on a description.
 func reasonFields(meta adapter.CommonMeta) []string {
 	fields := make([]string, 0, len(meta.Completeness))
 	for _, r := range meta.Completeness {
@@ -137,13 +137,20 @@ func sourceIDs(sessions []adapter.SourceSession) []string {
 	return ids
 }
 
-func metadataMap(t *testing.T, snap *adapter.Snapshot) map[string]any {
+func metadataMap(t *testing.T, desc *adapter.Description) map[string]any {
 	t.Helper()
-	if snap.AdapterMetadataSchema != metadataSchema {
-		t.Fatalf("AdapterMetadataSchema = %d, want %d", snap.AdapterMetadataSchema, metadataSchema)
+	if desc.AdapterMetadataSchema != metadataSchema {
+		t.Fatalf("AdapterMetadataSchema = %d, want %d", desc.AdapterMetadataSchema, metadataSchema)
+	}
+	canonical, err := adapter.CanonicalRawMessage(desc.AdapterMetadata)
+	if err != nil {
+		t.Fatalf("adapter metadata is not canonical JSON: %v", err)
+	}
+	if string(canonical) != string(desc.AdapterMetadata) {
+		t.Errorf("adapter metadata is not already canonical:\n got %s\nwant %s", desc.AdapterMetadata, canonical)
 	}
 	var out map[string]any
-	if err := json.Unmarshal(snap.AdapterMetadata, &out); err != nil {
+	if err := json.Unmarshal(desc.AdapterMetadata, &out); err != nil {
 		t.Fatalf("unmarshal adapter metadata: %v", err)
 	}
 	return out
@@ -203,8 +210,8 @@ func TestDiscoverSyntheticRoot(t *testing.T) {
 		if !ok {
 			t.Fatalf("Discover missing session %q, got %v", id, sourceIDs(sessions))
 		}
-		if !archive.ValidSourceID(src.SourceID) {
-			t.Errorf("SourceID %q is not a valid archive source id", src.SourceID)
+		if !adapter.ValidSourceID(src.SourceID) {
+			t.Errorf("SourceID %q is not a valid source id", src.SourceID)
 		}
 		if src.Harness != "claude" {
 			t.Errorf("session %q harness = %q, want claude", id, src.Harness)
@@ -268,72 +275,65 @@ func TestDiscoverHonorsContextCancellation(t *testing.T) {
 	}
 }
 
-func TestSnapshotExtractsInFileMetadata(t *testing.T) {
+func TestDescribeExtractsInFileMetadata(t *testing.T) {
 	root := newSyntheticRoot(t)
 	_, byID := discover(t, root)
-	snap := snapshot(t, byID[projectAlpha+"/"+sessionAlpha])
+	src := byID[projectAlpha+"/"+sessionAlpha]
+	desc := describe(t, src)
 
 	raw := fixtureBytes(t, "session-rich.jsonl")
-	wantRel := filepath.Join("projects", projectAlpha, sessionAlpha+".jsonl")
-	if got := snap.StagedPrimary; !strings.HasSuffix(got, wantRel) {
-		t.Errorf("StagedPrimary = %q, want a path ending in %q", got, wantRel)
+	if desc.Source.PrimaryPath != src.PrimaryPath {
+		t.Errorf("Source.PrimaryPath = %q, want the live transcript %q", desc.Source.PrimaryPath, src.PrimaryPath)
 	}
-	staged, err := os.ReadFile(snap.StagedPrimary)
-	if err != nil {
-		t.Fatalf("read staged primary: %v", err)
+	if desc.PrimarySize != int64(len(raw)) {
+		t.Errorf("PrimarySize = %d, want %d", desc.PrimarySize, len(raw))
 	}
-	if string(staged) != string(raw) {
-		t.Error("staged primary bytes differ from the source transcript")
+	if desc.DescribedAt.IsZero() || desc.DescribedAt.Location() != time.UTC {
+		t.Errorf("DescribedAt = %v, want a non-zero UTC time", desc.DescribedAt)
 	}
-	if snap.PrimarySize != int64(len(raw)) {
-		t.Errorf("PrimarySize = %d, want %d", snap.PrimarySize, len(raw))
+	if desc.ContinuationGrade {
+		t.Error("ContinuationGrade = true, want false for Claude Code descriptions")
 	}
-	if snap.SnapshotTime.IsZero() || snap.SnapshotTime.Location() != time.UTC {
-		t.Errorf("SnapshotTime = %v, want a non-zero UTC time", snap.SnapshotTime)
-	}
-	if snap.ContinuationGrade {
-		t.Error("ContinuationGrade = true, want false for Claude Code snapshots")
-	}
-	if len(snap.Blobs) != 0 || len(snap.UnresolvedBlobRefs) != 0 {
-		t.Errorf("blob closure = %v/%v, want empty", snap.Blobs, snap.UnresolvedBlobRefs)
+	if len(desc.Blobs) != 0 || len(desc.UnresolvedBlobRefs) != 0 {
+		t.Errorf("blob closure = %v/%v, want empty", desc.Blobs, desc.UnresolvedBlobRefs)
 	}
 
-	if snap.Meta.Title == nil || *snap.Meta.Title != "Synthetic fixture session alpha" {
-		t.Errorf("Title = %v, want the latest ai-title record", snap.Meta.Title)
+	if desc.Meta.Title == nil || *desc.Meta.Title != "Synthetic fixture session alpha" {
+		t.Errorf("Title = %v, want the latest ai-title record", desc.Meta.Title)
 	}
-	if snap.Meta.Workspace == nil || *snap.Meta.Workspace != "/synthetic/workspace/alpha" {
-		t.Errorf("Workspace = %v, want the in-file cwd", snap.Meta.Workspace)
+	if desc.Meta.Workspace == nil || *desc.Meta.Workspace != "/synthetic/workspace/alpha" {
+		t.Errorf("Workspace = %v, want the in-file cwd", desc.Meta.Workspace)
 	}
 	wantCreated := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
 	wantModified := time.Date(2026, 3, 3, 10, 0, 0, 0, time.UTC)
-	if snap.Meta.CreatedAt == nil || !snap.Meta.CreatedAt.Equal(wantCreated) {
-		t.Errorf("CreatedAt = %v, want %v", snap.Meta.CreatedAt, wantCreated)
+	if desc.Meta.CreatedAt == nil || !desc.Meta.CreatedAt.Equal(wantCreated) {
+		t.Errorf("CreatedAt = %v, want %v", desc.Meta.CreatedAt, wantCreated)
 	}
-	if snap.Meta.ModifiedAt == nil || !snap.Meta.ModifiedAt.Equal(wantModified) {
-		t.Errorf("ModifiedAt = %v, want %v", snap.Meta.ModifiedAt, wantModified)
+	if desc.Meta.ModifiedAt == nil || !desc.Meta.ModifiedAt.Equal(wantModified) {
+		t.Errorf("ModifiedAt = %v, want %v", desc.Meta.ModifiedAt, wantModified)
 	}
-	if snap.Meta.Repo == nil || snap.Meta.Repo.Branch != "feature/synthetic-branch" {
-		t.Errorf("Repo = %v, want the latest in-file gitBranch", snap.Meta.Repo)
+	if desc.Meta.Repo == nil || desc.Meta.Repo.Branch != "feature/synthetic-branch" {
+		t.Errorf("Repo = %v, want the latest in-file gitBranch", desc.Meta.Repo)
 	}
-	if snap.Meta.Lifecycle != nil {
-		t.Errorf("Lifecycle = %v, want nil", snap.Meta.Lifecycle)
+	if desc.Meta.Lifecycle != nil {
+		t.Errorf("Lifecycle = %v, want nil", desc.Meta.Lifecycle)
 	}
 	for _, field := range []string{"title", "workspace", "created_at"} {
-		if hasReason(snap.Meta, field) {
-			t.Errorf("unexpected completeness reason for %q: %v", field, reasonFields(snap.Meta))
+		if hasReason(desc.Meta, field) {
+			t.Errorf("unexpected completeness reason for %q: %v", field, reasonFields(desc.Meta))
 		}
 	}
 	for _, field := range []string{"lifecycle", "repo", "artifacts"} {
-		if !hasReason(snap.Meta, field) {
-			t.Errorf("missing completeness reason for %q: %v", field, reasonFields(snap.Meta))
+		if !hasReason(desc.Meta, field) {
+			t.Errorf("missing completeness reason for %q: %v", field, reasonFields(desc.Meta))
 		}
 	}
 
-	md := metadataMap(t, snap)
+	md := metadataMap(t, desc)
 	wantStr(t, md, "project_dir", projectAlpha)
 	wantStr(t, md, "session_uuid", sessionAlpha)
 	wantStr(t, md, "primary_rel_path", "projects/"+projectAlpha+"/"+sessionAlpha+".jsonl")
-	wantStr(t, md, "primary_digest", string(archive.DigestBytes(raw)))
+	wantStr(t, md, "primary_digest", string(digest.Bytes(raw)))
 	wantStr(t, md, "in_file_session_id", sessionAlpha)
 	wantStr(t, md, "claude_version", "9.9.999")
 	wantStr(t, md, "workspace_source", workspaceFromTranscript)
@@ -354,74 +354,81 @@ func TestSnapshotExtractsInFileMetadata(t *testing.T) {
 	}
 }
 
-func TestSnapshotStagesSessionLinkedArtifacts(t *testing.T) {
+func TestDescribeFindsSessionLinkedArtifacts(t *testing.T) {
 	root := newSyntheticRoot(t)
 	_, byID := discover(t, root)
-	snap := snapshot(t, byID[projectAlpha+"/"+sessionAlpha])
+	desc := describe(t, byID[projectAlpha+"/"+sessionAlpha])
 
 	want := []string{
 		"projects/" + projectAlpha + "/" + sessionAlpha + "/subagents/" + subagentName,
 		"tasks/" + sessionAlpha + "/1.json",
 		"session-env/" + sessionAlpha + "/env.json",
 	}
-	got := make([]string, 0, len(snap.Artifacts))
-	for _, a := range snap.Artifacts {
+	got := make([]string, 0, len(desc.Artifacts))
+	for _, a := range desc.Artifacts {
 		got = append(got, a.RelPath)
 	}
 	if len(got) != len(want) {
-		t.Fatalf("staged artifacts = %v, want %v", got, want)
+		t.Fatalf("described artifacts = %v, want %v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("artifact %d rel path = %q, want %q", i, got[i], want[i])
+		artifact := desc.Artifacts[i]
+		if artifact.RelPath != want[i] {
+			t.Errorf("artifact %d rel path = %q, want %q", i, artifact.RelPath, want[i])
 		}
-		info, err := os.Stat(snap.Artifacts[i].StagedPath)
+		if !filepath.IsAbs(artifact.SourcePath) {
+			t.Errorf("artifact %q source path %q is not absolute", want[i], artifact.SourcePath)
+		}
+		if wantPath := filepath.Join(root, filepath.FromSlash(want[i])); artifact.SourcePath != wantPath {
+			t.Errorf("artifact %q source path = %q, want %q", want[i], artifact.SourcePath, wantPath)
+		}
+		info, err := os.Stat(artifact.SourcePath)
 		if err != nil {
-			t.Fatalf("stat staged artifact %q: %v", want[i], err)
+			t.Fatalf("stat artifact %q: %v", want[i], err)
 		}
-		if info.Size() != snap.Artifacts[i].Size {
-			t.Errorf("artifact %q staged size = %d, recorded %d", want[i], info.Size(), snap.Artifacts[i].Size)
+		if info.Size() != artifact.Size {
+			t.Errorf("artifact %q live size = %d, recorded %d", want[i], info.Size(), artifact.Size)
 		}
 	}
-	subagent, err := os.ReadFile(snap.Artifacts[0].StagedPath)
+	subagent, err := os.ReadFile(desc.Artifacts[0].SourcePath)
 	if err != nil {
-		t.Fatalf("read staged subagent transcript: %v", err)
+		t.Fatalf("read subagent transcript: %v", err)
 	}
 	if string(subagent) != string(fixtureBytes(t, "artifact-subagent.jsonl")) {
-		t.Error("staged subagent transcript bytes differ from the source")
+		t.Error("described subagent transcript is not the fixture file")
 	}
 }
 
-func TestSnapshotRecordsReasonsWhenMetadataIsAbsent(t *testing.T) {
+func TestDescribeRecordsReasonsWhenMetadataIsAbsent(t *testing.T) {
 	root := newSyntheticRoot(t)
 	_, byID := discover(t, root)
-	snap := snapshot(t, byID[projectBeta+"/"+sessionBare])
+	desc := describe(t, byID[projectBeta+"/"+sessionBare])
 
-	if snap.Meta.Title != nil {
-		t.Errorf("Title = %v, want nil", snap.Meta.Title)
+	if desc.Meta.Title != nil {
+		t.Errorf("Title = %v, want nil", desc.Meta.Title)
 	}
-	if snap.Meta.Workspace == nil || *snap.Meta.Workspace != projectBeta {
-		t.Errorf("Workspace = %v, want the encoded project directory name %q", snap.Meta.Workspace, projectBeta)
+	if desc.Meta.Workspace == nil || *desc.Meta.Workspace != projectBeta {
+		t.Errorf("Workspace = %v, want the encoded project directory name %q", desc.Meta.Workspace, projectBeta)
 	}
-	if snap.Meta.CreatedAt != nil {
-		t.Errorf("CreatedAt = %v, want nil", snap.Meta.CreatedAt)
+	if desc.Meta.CreatedAt != nil {
+		t.Errorf("CreatedAt = %v, want nil", desc.Meta.CreatedAt)
 	}
-	if snap.Meta.ModifiedAt == nil || !snap.Meta.ModifiedAt.Equal(bareMTime) {
-		t.Errorf("ModifiedAt = %v, want the file mtime %v", snap.Meta.ModifiedAt, bareMTime)
+	if desc.Meta.ModifiedAt == nil || !desc.Meta.ModifiedAt.Equal(bareMTime) {
+		t.Errorf("ModifiedAt = %v, want the file mtime %v", desc.Meta.ModifiedAt, bareMTime)
 	}
-	if snap.Meta.Repo != nil {
-		t.Errorf("Repo = %v, want nil", snap.Meta.Repo)
+	if desc.Meta.Repo != nil {
+		t.Errorf("Repo = %v, want nil", desc.Meta.Repo)
 	}
 	for _, field := range []string{"title", "workspace", "created_at", "lifecycle", "repo", "artifacts"} {
-		if !hasReason(snap.Meta, field) {
-			t.Errorf("missing completeness reason for %q: %v", field, reasonFields(snap.Meta))
+		if !hasReason(desc.Meta, field) {
+			t.Errorf("missing completeness reason for %q: %v", field, reasonFields(desc.Meta))
 		}
 	}
-	if len(snap.Artifacts) != 0 {
-		t.Errorf("staged artifacts = %v, want none", snap.Artifacts)
+	if len(desc.Artifacts) != 0 {
+		t.Errorf("described artifacts = %v, want none", desc.Artifacts)
 	}
 
-	md := metadataMap(t, snap)
+	md := metadataMap(t, desc)
 	wantStr(t, md, "workspace_source", workspaceFromProjectDir)
 	wantNum(t, md, "record_count", 3)
 	wantNum(t, md, "artifact_count", 0)
@@ -430,31 +437,37 @@ func TestSnapshotRecordsReasonsWhenMetadataIsAbsent(t *testing.T) {
 	}
 }
 
-func TestSnapshotPreservesMalformedTranscript(t *testing.T) {
+// TestDescribeToleratesMalformedAndTornLines defends the recorded
+// consistency boundary: restic snapshots are crash-consistent per file, so
+// garbage lines, a JSON array where an object belongs, and a torn
+// mid-object line must be counted and skipped while the raw file and every
+// fact the readable records expose are still described.
+func TestDescribeToleratesMalformedAndTornLines(t *testing.T) {
 	root := newSyntheticRoot(t)
 	_, byID := discover(t, root)
-	snap := snapshot(t, byID[projectBeta+"/"+sessionMalformed])
+	src := byID[projectBeta+"/"+sessionMalformed]
+	desc := describe(t, src)
 
 	raw := fixtureBytes(t, "session-malformed.jsonl")
-	staged, err := os.ReadFile(snap.StagedPrimary)
-	if err != nil {
-		t.Fatalf("read staged primary: %v", err)
+	if desc.PrimarySize != int64(len(raw)) {
+		t.Errorf("PrimarySize = %d, want %d: raw bytes are described regardless", desc.PrimarySize, len(raw))
 	}
-	if string(staged) != string(raw) {
-		t.Error("staged primary bytes differ from the malformed source transcript")
+	if desc.Source.PrimaryPath != src.PrimaryPath {
+		t.Errorf("Source.PrimaryPath = %q, want the live transcript %q", desc.Source.PrimaryPath, src.PrimaryPath)
 	}
-	if snap.Meta.Workspace == nil || *snap.Meta.Workspace != "/synthetic/workspace/beta" {
-		t.Errorf("Workspace = %v, want the cwd from the parseable records", snap.Meta.Workspace)
+	if desc.Meta.Workspace == nil || *desc.Meta.Workspace != "/synthetic/workspace/beta" {
+		t.Errorf("Workspace = %v, want the cwd from the parseable records", desc.Meta.Workspace)
 	}
-	if snap.Meta.Title != nil {
-		t.Errorf("Title = %v, want nil", snap.Meta.Title)
+	if desc.Meta.Title != nil {
+		t.Errorf("Title = %v, want nil", desc.Meta.Title)
 	}
-	md := metadataMap(t, snap)
+	md := metadataMap(t, desc)
 	wantNum(t, md, "record_count", 5)
 	wantNum(t, md, "malformed_records", 3)
+	wantNum(t, md, "oversized_records", 0)
 }
 
-func TestSnapshotSkipsOversizedRecordsForMetadataOnly(t *testing.T) {
+func TestDescribeSkipsOversizedRecordsForMetadataOnly(t *testing.T) {
 	root := t.TempDir()
 	sessionID := "eeeeeeee-0000-4000-8000-000000000005"
 	huge := strings.Repeat("x", maxRecordBytes+16)
@@ -463,19 +476,16 @@ func TestSnapshotSkipsOversizedRecordsForMetadataOnly(t *testing.T) {
 	writeBytes(t, filepath.Join(root, "projects", projectAlpha, sessionID+".jsonl"), raw)
 
 	_, byID := discover(t, root)
-	snap := snapshot(t, byID[projectAlpha+"/"+sessionID])
+	desc := describe(t, byID[projectAlpha+"/"+sessionID])
 
-	staged, err := os.ReadFile(snap.StagedPrimary)
-	if err != nil {
-		t.Fatalf("read staged primary: %v", err)
+	if desc.PrimarySize != int64(len(raw)) {
+		t.Errorf("PrimarySize = %d, want %d: the oversized line is still archived", desc.PrimarySize, len(raw))
 	}
-	if string(staged) != string(raw) {
-		t.Error("staged primary bytes differ from the source transcript")
+	if desc.Meta.Title == nil || *desc.Meta.Title != "Synthetic fixture oversized session" {
+		t.Errorf("Title = %v, want the title from the record after the oversized line", desc.Meta.Title)
 	}
-	if snap.Meta.Title == nil || *snap.Meta.Title != "Synthetic fixture oversized session" {
-		t.Errorf("Title = %v, want the title from the record after the oversized line", snap.Meta.Title)
-	}
-	md := metadataMap(t, snap)
+	md := metadataMap(t, desc)
+	wantStr(t, md, "primary_digest", string(digest.Bytes(raw)))
 	wantNum(t, md, "record_count", 2)
 	wantNum(t, md, "oversized_records", 1)
 	wantNum(t, md, "malformed_records", 0)
@@ -484,64 +494,62 @@ func TestSnapshotSkipsOversizedRecordsForMetadataOnly(t *testing.T) {
 	wantStr(t, md, "workspace_source", workspaceFromProjectDir)
 }
 
-func TestSnapshotRecordsConflictingCwd(t *testing.T) {
+func TestDescribeRecordsConflictingCwd(t *testing.T) {
 	root := t.TempDir()
 	sessionID := "dddddddd-0000-4000-8000-000000000004"
 	writeFixture(t, "session-cwd-conflict.jsonl",
 		filepath.Join(root, "projects", projectAlpha, sessionID+".jsonl"))
 
 	_, byID := discover(t, root)
-	snap := snapshot(t, byID[projectAlpha+"/"+sessionID])
+	desc := describe(t, byID[projectAlpha+"/"+sessionID])
 
-	if snap.Meta.Workspace == nil || *snap.Meta.Workspace != "/synthetic/workspace/gamma" {
-		t.Errorf("Workspace = %v, want the first observed cwd", snap.Meta.Workspace)
+	if desc.Meta.Workspace == nil || *desc.Meta.Workspace != "/synthetic/workspace/gamma" {
+		t.Errorf("Workspace = %v, want the first observed cwd", desc.Meta.Workspace)
 	}
-	if !hasReason(snap.Meta, "workspace") {
-		t.Errorf("missing completeness reason for the conflicting cwd: %v", reasonFields(snap.Meta))
+	if !hasReason(desc.Meta, "workspace") {
+		t.Errorf("missing completeness reason for the conflicting cwd: %v", reasonFields(desc.Meta))
 	}
 }
 
-func TestSnapshotUnstableSource(t *testing.T) {
+// TestDescribeSurvivesConcurrentAppend records the consistency model: a
+// live Claude Code process appending between two descriptions never fails
+// the adapter; the later description simply supersedes the earlier one.
+func TestDescribeSurvivesConcurrentAppend(t *testing.T) {
 	root := newSyntheticRoot(t)
 	_, byID := discover(t, root)
 	src := byID[projectAlpha+"/"+sessionAlpha]
 
-	stagedPrimaryHook = func() {
-		f, err := os.OpenFile(src.PrimaryPath, os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
-			t.Fatalf("open transcript for mutation: %v", err)
-		}
-		defer f.Close()
-		if _, err := f.WriteString(`{"type":"user","timestamp":"2026-03-04T10:00:00.000Z"}` + "\n"); err != nil {
-			t.Fatalf("mutate transcript: %v", err)
-		}
+	before := describe(t, src)
+
+	f, err := os.OpenFile(src.PrimaryPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open transcript for append: %v", err)
 	}
-	t.Cleanup(func() { stagedPrimaryHook = nil })
-
-	if _, err := New().Snapshot(context.Background(), src, t.TempDir()); !errors.Is(err, adapter.ErrUnstable) {
-		t.Fatalf("Snapshot error = %v, want adapter.ErrUnstable", err)
+	appended := `{"type":"user","timestamp":"2026-03-04T10:00:00.000Z"}` + "\n"
+	if _, err := f.WriteString(appended); err != nil {
+		t.Fatalf("append to transcript: %v", err)
 	}
-}
-
-func TestSnapshotAcceptsTouchedButUnchangedSource(t *testing.T) {
-	root := newSyntheticRoot(t)
-	_, byID := discover(t, root)
-	src := byID[projectAlpha+"/"+sessionAlpha]
-
-	stagedPrimaryHook = func() {
-		later := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-		if err := os.Chtimes(src.PrimaryPath, later, later); err != nil {
-			t.Fatalf("touch transcript: %v", err)
-		}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
 	}
-	t.Cleanup(func() { stagedPrimaryHook = nil })
 
-	if _, err := New().Snapshot(context.Background(), src, t.TempDir()); err != nil {
-		t.Fatalf("Snapshot of a touched but unchanged transcript: %v", err)
+	after := describe(t, src)
+	if after.PrimarySize != before.PrimarySize+int64(len(appended)) {
+		t.Errorf("PrimarySize = %d, want %d after the append", after.PrimarySize, before.PrimarySize+int64(len(appended)))
+	}
+	beforeMD, afterMD := metadataMap(t, before), metadataMap(t, after)
+	if beforeMD["primary_digest"] == afterMD["primary_digest"] {
+		t.Error("primary_digest did not change after the transcript grew")
+	}
+	wantNum(t, afterMD, "record_count", 7)
+	// The appended record is newer than every prior timestamp.
+	wantAfter := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
+	if after.Meta.ModifiedAt == nil || !after.Meta.ModifiedAt.Equal(wantAfter) {
+		t.Errorf("ModifiedAt = %v, want %v", after.Meta.ModifiedAt, wantAfter)
 	}
 }
 
-func TestSnapshotRejectsInvalidInput(t *testing.T) {
+func TestDescribeRejectsInvalidInput(t *testing.T) {
 	root := newSyntheticRoot(t)
 	_, byID := discover(t, root)
 	valid := byID[projectAlpha+"/"+sessionAlpha]
@@ -557,8 +565,8 @@ func TestSnapshotRejectsInvalidInput(t *testing.T) {
 		},
 	}
 	for name, src := range cases {
-		if _, err := New().Snapshot(context.Background(), src, t.TempDir()); err == nil {
-			t.Errorf("Snapshot(%s) succeeded, want an error", name)
+		if _, err := New().Describe(context.Background(), src); err == nil {
+			t.Errorf("Describe(%s) succeeded, want an error", name)
 		}
 	}
 }
@@ -579,14 +587,14 @@ func TestSourceIDSanitization(t *testing.T) {
 		if got != c.want {
 			t.Errorf("sourceID(%q, %q) = %q, want %q", c.project, c.session, got, c.want)
 		}
-		if !archive.ValidSourceID(got) {
-			t.Errorf("sourceID(%q, %q) = %q, which is not a valid archive source id", c.project, c.session, got)
+		if !adapter.ValidSourceID(got) {
+			t.Errorf("sourceID(%q, %q) = %q, which is not a valid source id", c.project, c.session, got)
 		}
 	}
 
 	long := strings.Repeat("a", 4*maxSegmentLen)
 	id := sourceID(long, long)
-	if !archive.ValidSourceID(id) {
+	if !adapter.ValidSourceID(id) {
 		t.Errorf("over-long names produced an invalid source id of length %d", len(id))
 	}
 	if id != sourceID(long, long) {
@@ -617,7 +625,7 @@ func TestDiscoverRealRootSmoke(t *testing.T) {
 		t.Fatalf("Discover on the real root: %v", err)
 	}
 	for i, s := range sessions {
-		if !archive.ValidSourceID(s.SourceID) {
+		if !adapter.ValidSourceID(s.SourceID) {
 			t.Fatalf("discovered session %d has an invalid source id", i)
 		}
 	}

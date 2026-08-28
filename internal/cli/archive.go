@@ -8,90 +8,74 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/atyrode/babel/internal/adapter"
-	"github.com/atyrode/babel/internal/adapter/claude"
-	"github.com/atyrode/babel/internal/adapter/codex"
-	"github.com/atyrode/babel/internal/adapter/omp"
-	"github.com/atyrode/babel/internal/archive"
-	"github.com/atyrode/babel/internal/catalog"
-	"github.com/atyrode/babel/internal/objectstore"
-	"github.com/atyrode/babel/internal/publish"
+	"github.com/atyrode/babel/internal/restic"
 )
 
 const archiveUsage = `Usage: babel archive <command> [flags]
 
 Commands:
-  push      publish this host's local sessions as a new immutable generation
-  catalog   list every host's committed generation and session counts
-  status    report head generation, bootstrap, hint, and journal state
-  verify    verify committed state; --deep also re-reads every object
+  push     back up this host's source roots into the restic repository
+  status   report snapshots per host
+  verify   check repository integrity
+
+Repository selection:
+  --repo REPOSITORY           else $BABEL_RESTIC_REPO
+  --password-file FILE        else $BABEL_RESTIC_PASSWORD_FILE
 
 Run "babel archive <command> -h" for a command's flags.
 `
 
-const archivePushUsage = `Usage: babel archive push --archive-backend local|rclone --archive-root PATH [flags]
+const archivePushUsage = `Usage: babel archive push --repo REPOSITORY --password-file FILE [flags]
 
-Publish every locally discovered OMP, Codex, and Claude Code session as one
-new immutable generation. Push is the only archive command that writes; it
-never deletes remote objects and re-running it converges.
+Backs up every source adapter's default root that exists on this host into
+one restic snapshot, tagged "babel" and attributed to this host's identity.
+Sources are read in place: no staging copy is made, and the snapshot is
+crash-consistent per file rather than transactional across files, so the
+next push supersedes any torn write.
 
 Flags:
-  --archive-backend local|rclone   archive backend (required)
-  --archive-root PATH              local root directory, or rclone remote (required)
-  --host ID                        this host's archive identity
-                                   (default: $BABEL_HOST_ID, else the system hostname)
-  --display-name NAME              human host name recorded in the commit record
-  --json                           emit the result as a JSON object on stdout
+  --repo REPOSITORY           restic repository (default $BABEL_RESTIC_REPO)
+  --password-file FILE        password file (default $BABEL_RESTIC_PASSWORD_FILE)
+  --restic-binary PATH        restic executable (default "restic" from $PATH)
+  --host ID                   host identity (default $BABEL_HOST_ID, else hostname)
+  --json                      emit the summary as JSON on stdout
+
+Exits 1 when restic could back up only part of the source tree; the
+summary of what was committed is still reported.
 `
 
-const archiveCatalogUsage = `Usage: babel archive catalog --archive-backend local|rclone --archive-root PATH [flags]
+const archiveStatusUsage = `Usage: babel archive status --repo REPOSITORY --password-file FILE [flags]
 
-List each host's exposed committed generation with its session and revision
-counts. Read-only with respect to the archive.
+Reports the repository's snapshots grouped by host: how many, when the
+latest was taken, its id, and the tags observed. Read-only.
 
 Flags:
-  --archive-backend local|rclone   archive backend (required)
-  --archive-root PATH              local root directory, or rclone remote (required)
-  --host ID                        restrict to one host; repeatable
-  --json                           emit the result as a JSON object on stdout
+  --repo REPOSITORY           restic repository (default $BABEL_RESTIC_REPO)
+  --password-file FILE        password file (default $BABEL_RESTIC_PASSWORD_FILE)
+  --restic-binary PATH        restic executable (default "restic" from $PATH)
+  --json                      emit the report as JSON on stdout
 `
 
-const archiveStatusUsage = `Usage: babel archive status --archive-backend local|rclone --archive-root PATH [flags]
+const archiveVerifyUsage = `Usage: babel archive verify --repo REPOSITORY --password-file FILE [flags]
 
-Report, per host, the head generation Babel would read, whether its
-bootstrap scan was complete, how the non-authoritative latest hint compares,
-and whether this machine holds a local publication journal for the host.
-
-Flags:
-  --archive-backend local|rclone   archive backend (required)
-  --archive-root PATH              local root directory, or rclone remote (required)
-  --host ID                        restrict to one host; repeatable
-  --json                           emit the result as a JSON object on stdout
-`
-
-const archiveVerifyUsage = `Usage: babel archive verify --archive-backend local|rclone --archive-root PATH [flags]
-
-Verify committed state: commit records against their write-once keys,
-generation indexes and manifest segments against their digests, entry and
-append-chain contracts, and referenced object presence and size. --deep
-additionally reads every referenced object end to end and reassembles every
-append-delta chain.
-
-Errors exit 1; warnings (such as two commit records at one generation) are
-printed to stderr and exit 0.
+Checks repository structure with "restic check". With --deep, pack data is
+re-read and re-hashed, which costs a full download of the repository.
+Read-only.
 
 Flags:
-  --archive-backend local|rclone   archive backend (required)
-  --archive-root PATH              local root directory, or rclone remote (required)
-  --deep                           also verify every object's bytes
-  --host ID                        restrict to one host; repeatable
-  --json                           emit the result as a JSON object on stdout
+  --repo REPOSITORY           restic repository (default $BABEL_RESTIC_REPO)
+  --password-file FILE        password file (default $BABEL_RESTIC_PASSWORD_FILE)
+  --restic-binary PATH        restic executable (default "restic" from $PATH)
+  --deep                      also read and re-hash all pack data
+  --json                      emit the outcome as JSON on stdout
+
+Exits 1 on any integrity failure; restic's detail goes to stderr.
 `
 
 // archive routes `babel archive <verb>`.
 func (a *app) archive(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return &usageError{msg: "archive needs a command", usage: archiveUsage}
+		return &usageError{msg: "archive requires a subcommand", usage: archiveUsage}
 	}
 	switch args[0] {
 	case "-h", "--help", "help":
@@ -99,67 +83,47 @@ func (a *app) archive(ctx context.Context, args []string) error {
 		return nil
 	case "push":
 		return a.archivePush(ctx, args[1:])
-	case "catalog":
-		return a.archiveCatalog(ctx, args[1:])
 	case "status":
 		return a.archiveStatus(ctx, args[1:])
 	case "verify":
 		return a.archiveVerify(ctx, args[1:])
 	default:
-		return &usageError{msg: fmt.Sprintf("unknown archive command %q", args[0]), usage: archiveUsage}
+		return &usageError{msg: fmt.Sprintf("unknown archive subcommand %q", args[0]), usage: archiveUsage}
 	}
 }
 
-// coverageRow is one adapter's scan coverage in machine-readable output.
-type coverageRow struct {
-	Harness         string   `json:"harness"`
-	AdapterSchema   int      `json:"adapter_schema"`
-	Scanned         int      `json:"scanned"`
-	Published       int      `json:"published"`
-	CarriedForward  int      `json:"carried_forward"`
-	Deferred        int      `json:"deferred"`
-	Complete        bool     `json:"complete"`
-	DeferredReasons []string `json:"deferred_reasons,omitempty"`
-}
-
-// pushResult is the machine-readable outcome of one publication.
+// pushResult is the machine-readable outcome of one backup. Byte and file
+// counts come straight from restic's own summary: Babel reports what the
+// repository recorded rather than what it hoped to send.
 type pushResult struct {
-	HostID            string        `json:"host_id"`
-	Generation        uint64        `json:"generation"`
-	Changed           bool          `json:"changed"`
-	Bootstrap         bool          `json:"bootstrap"`
-	BootstrapComplete bool          `json:"bootstrap_complete"`
-	Sessions          int           `json:"sessions"`
-	Revisions         int           `json:"revisions"`
-	Published         int           `json:"published"`
-	CarriedForward    int           `json:"carried_forward"`
-	Deferred          int           `json:"deferred"`
-	CommitKey         string        `json:"commit_key,omitempty"`
-	CommitDigest      string        `json:"commit_digest,omitempty"`
-	Coverage          []coverageRow `json:"coverage"`
+	Host            string   `json:"host"`
+	Tags            []string `json:"tags"`
+	Roots           []string `json:"roots"`
+	SnapshotID      string   `json:"snapshot_id"`
+	FilesNew        int      `json:"files_new"`
+	FilesChanged    int      `json:"files_changed"`
+	FilesUnmodified int      `json:"files_unmodified"`
+	DataAdded       int64    `json:"data_added"`
+	FilesProcessed  int      `json:"total_files_processed"`
+	BytesProcessed  int64    `json:"total_bytes_processed"`
+	// Incomplete records that restic reported a partial backup: the
+	// snapshot exists and is usable, but some source files were not read.
+	Incomplete bool `json:"incomplete"`
 }
 
-// archivePush implements `babel archive push`: it wires the three source
-// adapters into the publication pipeline with Babel's private XDG state and
-// staging directories and reports what was committed.
+// archivePush implements `babel archive push`.
 func (a *app) archivePush(ctx context.Context, args []string) error {
 	c := newCmd("archive push", archivePushUsage)
-	var sf storeFlags
-	sf.bind(c.fs)
-	host := c.fs.String("host", "", "this host's archive identity")
-	displayName := c.fs.String("display-name", "", "human host name recorded in the commit record")
-	asJSON := c.fs.Bool("json", false, "emit the result as JSON")
+	var rf repoFlags
+	rf.bind(c.fs)
+	asJSON := c.fs.Bool("json", false, "emit the summary as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
 	}
 	if err := c.noArgs(); err != nil {
 		return err
 	}
-	st, err := sf.open(c)
-	if err != nil {
-		return err
-	}
-	hostID, err := resolveHostID(c, *host)
+	host, err := rf.hostID(c)
 	if err != nil {
 		return err
 	}
@@ -167,486 +131,269 @@ func (a *app) archivePush(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := ensureDir(d.state); err != nil {
-		return err
-	}
-	staging := d.stagingRoot()
-	if err := ensureDir(staging); err != nil {
-		return err
+
+	roots := existingRoots()
+	res := pushResult{Host: Sanitize(host), Tags: []string{babelTag}, Roots: sanitizeAll(roots)}
+	if len(roots) == 0 {
+		// Nothing to back up is not a failure: a machine may simply run no
+		// harness yet. It must not look like a successful backup either,
+		// so the empty summary is reported alongside an explicit warning.
+		a.diagf("warning: no source root exists on this host; nothing to back up\n")
+		return a.reportPush(res, *asJSON)
 	}
 
-	pub, err := publish.New(publish.Config{
-		Store:           st,
-		Adapters:        []adapter.Adapter{omp.New(), codex.New(), claude.New()},
-		HostID:          hostID,
-		HostDisplayName: *displayName,
-		StateDir:        d.state,
-		StagingDir:      staging,
-		BabelVersion:    readBuildIdentity().provenance(),
-	})
+	repo, err := rf.open(c, d, &sanitizingWriter{w: a.stderr, prefix: "restic: "})
 	if err != nil {
 		return err
 	}
+	if err := repo.EnsureInit(ctx); err != nil {
+		return fmt.Errorf("initialize repository: %w", err)
+	}
+	a.diagf("backing up %d %s as host %s\n", len(roots), plural(len(roots), "root", "roots"), Sanitize(host))
 
-	a.diagf("babel: publishing host %s to %s archive %s\n", Sanitize(hostID), Sanitize(sf.backend), Sanitize(sf.root))
-	res, err := pub.Push(ctx)
-	if err != nil {
-		return fmt.Errorf("archive push: %w", err)
+	summary, backupErr := repo.Backup(ctx, roots, host, []string{babelTag})
+	if summary == nil {
+		if backupErr == nil {
+			return errors.New("back up: restic reported no summary")
+		}
+		return fmt.Errorf("back up: %w", backupErr)
 	}
+	res.SnapshotID = Sanitize(summary.SnapshotID)
+	res.FilesNew = summary.FilesNew
+	res.FilesChanged = summary.FilesChanged
+	res.FilesUnmodified = summary.FilesUnmodified
+	res.DataAdded = summary.DataAdded
+	res.FilesProcessed = summary.TotalFilesProcessed
+	res.BytesProcessed = summary.TotalBytesProcessed
+	res.Incomplete = backupErr != nil
 
-	rows := make([]coverageRow, 0, len(res.Coverage))
-	for _, cov := range res.Coverage {
-		rows = append(rows, coverageRow{
-			Harness:         Sanitize(cov.Harness),
-			AdapterSchema:   cov.AdapterSchema,
-			Scanned:         cov.Scanned,
-			Published:       cov.Published,
-			CarriedForward:  cov.CarriedForward,
-			Deferred:        cov.Deferred,
-			Complete:        cov.Complete,
-			DeferredReasons: sanitizeAll(cov.DeferredReasons),
-		})
+	if err := a.reportPush(res, *asJSON); err != nil {
+		return err
 	}
-	a.coverageTable(rows)
-
-	out := pushResult{
-		HostID:            Sanitize(hostID),
-		Generation:        res.Generation,
-		Changed:           res.Changed,
-		Bootstrap:         res.Bootstrap,
-		BootstrapComplete: res.BootstrapComplete,
-		Sessions:          res.Sessions,
-		Revisions:         res.Revisions,
-		Published:         res.Published,
-		CarriedForward:    res.CarriedForward,
-		Deferred:          res.Deferred,
-		CommitKey:         Sanitize(res.CommitKey),
-		CommitDigest:      Sanitize(string(res.CommitDigest)),
-		Coverage:          rows,
-	}
-	if *asJSON {
-		return a.emitJSON(out)
-	}
-	state := "unchanged at"
-	if res.Changed {
-		state = "committed"
-	}
-	fmt.Fprintf(a.stdout, "%s generation %d for host %s\n", state, res.Generation, out.HostID)
-	fmt.Fprintf(a.stdout, "%d %s, %d %s (%d published, %d carried forward, %d deferred)\n",
-		res.Sessions, plural(res.Sessions, "session", "sessions"),
-		res.Revisions, plural(res.Revisions, "revision", "revisions"),
-		res.Published, res.CarriedForward, res.Deferred)
-	if out.CommitKey != "" {
-		fmt.Fprintf(a.stdout, "commit %s\n", out.CommitKey)
+	if backupErr != nil {
+		// A partial backup is a failure the operator must see, but the
+		// snapshot it produced is real and already reported.
+		return fmt.Errorf("back up: %w", backupErr)
 	}
 	return nil
 }
 
-// coverageTable writes per-adapter scan coverage to stderr: it is
-// diagnostic context for the operator, never the command's result.
-func (a *app) coverageTable(rows []coverageRow) {
-	table := make([][]string, 0, len(rows))
-	for _, r := range rows {
-		table = append(table, []string{
-			r.Harness,
-			fmt.Sprint(r.AdapterSchema),
-			fmt.Sprint(r.Scanned),
-			fmt.Sprint(r.Published),
-			fmt.Sprint(r.CarriedForward),
-			fmt.Sprint(r.Deferred),
-			yesNo(r.Complete, "complete", "incomplete"),
-		})
+// reportPush writes one push summary to stdout.
+func (a *app) reportPush(res pushResult, asJSON bool) error {
+	if asJSON {
+		return a.emitJSON(res)
 	}
-	_ = writeTable(a.stderr, []string{"HARNESS", "SCHEMA", "SCANNED", "PUBLISHED", "CARRIED", "DEFERRED", "COVERAGE"}, table)
-	for _, r := range rows {
-		for _, reason := range r.DeferredReasons {
-			a.diagf("babel: %s deferred: %s\n", r.Harness, reason)
+	if res.SnapshotID == "" {
+		fmt.Fprintf(a.stdout, "no snapshot created\n")
+		return nil
+	}
+	rows := [][2]string{
+		{"snapshot", res.SnapshotID},
+		{"host", res.Host},
+		{"files new", fmt.Sprint(res.FilesNew)},
+		{"files changed", fmt.Sprint(res.FilesChanged)},
+		{"files unmodified", fmt.Sprint(res.FilesUnmodified)},
+		{"files processed", fmt.Sprint(res.FilesProcessed)},
+		{"bytes processed", fmt.Sprint(res.BytesProcessed)},
+		{"data added", fmt.Sprint(res.DataAdded)},
+		{"complete", yesNo(!res.Incomplete, "yes", "no")},
+	}
+	for _, root := range res.Roots {
+		rows = append(rows, [2]string{"root", root})
+	}
+	return writeDetail(a.stdout, rows)
+}
+
+// existingRoots is the set of adapter backup roots that exist on this
+// host, deduplicated and ordered. A root an adapter proposes but that this
+// machine does not have is silently absent rather than a failure: harness
+// coverage is a property of the machine, not an error condition.
+func existingRoots() []string {
+	var found []string
+	for _, ad := range adapters() {
+		for _, root := range ad.BackupRoots() {
+			if root == "" {
+				continue
+			}
+			if info, err := os.Stat(root); err != nil || !info.IsDir() {
+				continue
+			}
+			found = append(found, root)
 		}
 	}
+	return sortedUnique(found)
 }
 
-// catalogHostRow is one host's contribution in machine-readable output.
-type catalogHostRow struct {
-	HostID            string   `json:"host_id"`
-	DisplayName       string   `json:"display_name,omitempty"`
-	Generation        uint64   `json:"generation"`
-	CommitDigest      string   `json:"commit_digest,omitempty"`
-	CommittedAt       string   `json:"committed_at,omitempty"`
-	Sessions          int      `json:"sessions"`
-	Revisions         int      `json:"revisions"`
-	Bootstrap         bool     `json:"bootstrap"`
-	BootstrapComplete bool     `json:"bootstrap_complete"`
-	BabelVersion      string   `json:"babel_version,omitempty"`
-	HintPresent       bool     `json:"hint_present"`
-	HintGeneration    uint64   `json:"hint_generation,omitempty"`
-	HintStale         bool     `json:"hint_stale"`
-	Skipped           []string `json:"skipped,omitempty"`
-	Anomalies         []string `json:"anomalies,omitempty"`
-	Error             string   `json:"error,omitempty"`
-}
-
-// catalogResult is the machine-readable catalog summary.
-type catalogResult struct {
-	Hosts     []catalogHostRow `json:"hosts"`
-	Sessions  int              `json:"sessions"`
-	Revisions int              `json:"revisions"`
-}
-
-// archiveCatalog implements `babel archive catalog`.
-func (a *app) archiveCatalog(ctx context.Context, args []string) error {
-	c := newCmd("archive catalog", archiveCatalogUsage)
-	var sf storeFlags
-	sf.bind(c.fs)
-	var hosts stringList
-	c.fs.Var(&hosts, "host", "restrict to one host; repeatable")
-	asJSON := c.fs.Bool("json", false, "emit the result as JSON")
-	if err := c.parse(a, args); err != nil {
-		return err
-	}
-	if err := c.noArgs(); err != nil {
-		return err
-	}
-	cat, _, err := a.loadCatalog(ctx, c, &sf, hosts)
-	if err != nil {
-		return err
-	}
-
-	out := catalogResult{Hosts: make([]catalogHostRow, 0, len(cat.Hosts()))}
-	for _, h := range cat.Hosts() {
-		out.Hosts = append(out.Hosts, catalogHostRow{
-			HostID:            Sanitize(h.HostID),
-			DisplayName:       Sanitize(h.DisplayName),
-			Generation:        h.Generation,
-			CommitDigest:      Sanitize(string(h.CommitDigest)),
-			CommittedAt:       formatTime(h.CommittedAt),
-			Sessions:          h.Sessions,
-			Revisions:         h.Revisions,
-			Bootstrap:         h.Bootstrap,
-			BootstrapComplete: h.BootstrapComplete,
-			BabelVersion:      Sanitize(h.BabelVersion),
-			HintPresent:       h.HintPresent,
-			HintGeneration:    h.HintGeneration,
-			HintStale:         h.HintStale,
-			Skipped:           sanitizeAll(h.Skipped),
-			Anomalies:         sanitizeAll(h.Anomalies),
-			Error:             Sanitize(h.Err),
-		})
-	}
-	for _, s := range cat.Sessions() {
-		out.Sessions++
-		out.Revisions += s.RevisionCount()
-	}
-	a.reportHostDefects(cat.Hosts())
-
-	if *asJSON {
-		return a.emitJSON(out)
-	}
-	rows := make([][]string, 0, len(out.Hosts))
-	for _, h := range out.Hosts {
-		gen := fmt.Sprintf("g%d", h.Generation)
-		if h.Generation == 0 {
-			gen = missingValue
-		}
-		rows = append(rows, []string{
-			h.HostID,
-			gen,
-			fmt.Sprint(h.Sessions),
-			fmt.Sprint(h.Revisions),
-			yesNo(h.BootstrapComplete, "complete", "incomplete"),
-			orMissing(h.DisplayName),
-		})
-	}
-	if err := writeTable(a.stdout, []string{"HOST", "GENERATION", "SESSIONS", "REVISIONS", "BOOTSTRAP", "DISPLAY NAME"}, rows); err != nil {
-		return err
-	}
-	fmt.Fprintf(a.stdout, "%d %s, %d %s across %d %s\n",
-		out.Sessions, plural(out.Sessions, "session", "sessions"),
-		out.Revisions, plural(out.Revisions, "revision", "revisions"),
-		len(out.Hosts), plural(len(out.Hosts), "host", "hosts"))
-	return nil
-}
-
-// statusHostRow is one host's health line.
+// statusHostRow is one host's snapshot state in the repository.
 type statusHostRow struct {
-	HostID            string   `json:"host_id"`
-	Generation        uint64   `json:"generation"`
-	CommittedAt       string   `json:"committed_at,omitempty"`
-	Bootstrap         bool     `json:"bootstrap"`
-	BootstrapComplete bool     `json:"bootstrap_complete"`
-	Sessions          int      `json:"sessions"`
-	Revisions         int      `json:"revisions"`
-	HintPresent       bool     `json:"hint_present"`
-	HintGeneration    uint64   `json:"hint_generation,omitempty"`
-	HintStale         bool     `json:"hint_stale"`
-	JournalPresent    bool     `json:"journal_present"`
-	Skipped           []string `json:"skipped,omitempty"`
-	Anomalies         []string `json:"anomalies,omitempty"`
-	Error             string   `json:"error,omitempty"`
+	Host          string   `json:"host"`
+	Snapshots     int      `json:"snapshots"`
+	LatestTime    string   `json:"latest_time"`
+	LatestID      string   `json:"latest_id"`
+	LatestShortID string   `json:"latest_short_id"`
+	Tags          []string `json:"tags,omitempty"`
 }
 
 // statusResult is the machine-readable archive status.
 type statusResult struct {
-	StateDir string `json:"state_dir"`
-	// Journals lists the hosts this machine holds local publication
-	// journals for.
-	Journals []string        `json:"journals,omitempty"`
-	Hosts    []statusHostRow `json:"hosts"`
+	Repository string          `json:"repository"`
+	Snapshots  int             `json:"snapshots"`
+	Hosts      []statusHostRow `json:"hosts"`
 }
 
-// archiveStatus implements `babel archive status`. The publication journal
-// is only probed for existence: it is private local resumption state and
-// never an authority, so its contents are not interpreted here and its
-// presence is reported as presence, not as a claim about outstanding work
-// (SPEC.md §6.1).
+// archiveStatus implements `babel archive status`.
 func (a *app) archiveStatus(ctx context.Context, args []string) error {
 	c := newCmd("archive status", archiveStatusUsage)
-	var sf storeFlags
-	sf.bind(c.fs)
-	var hosts stringList
-	c.fs.Var(&hosts, "host", "restrict to one host; repeatable")
-	asJSON := c.fs.Bool("json", false, "emit the result as JSON")
+	var rf repoFlags
+	rf.bind(c.fs)
+	asJSON := c.fs.Bool("json", false, "emit the report as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
 	}
 	if err := c.noArgs(); err != nil {
 		return err
 	}
-	cat, _, err := a.loadCatalog(ctx, c, &sf, hosts)
-	if err != nil {
-		return err
-	}
 	d, err := babelDirs()
 	if err != nil {
 		return err
 	}
-	journals, err := journalHosts(d.state)
+	repo, err := rf.open(c, d, nil)
 	if err != nil {
 		return err
 	}
-
-	out := statusResult{StateDir: Sanitize(d.state), Journals: sanitizeAll(journals)}
-	hasJournal := make(map[string]bool, len(journals))
-	for _, h := range journals {
-		hasJournal[h] = true
+	snapshots, err := repo.Snapshots(ctx)
+	if err != nil {
+		return fmt.Errorf("list snapshots: %w", err)
 	}
-	for _, h := range cat.Hosts() {
-		out.Hosts = append(out.Hosts, statusHostRow{
-			HostID:            Sanitize(h.HostID),
-			Generation:        h.Generation,
-			CommittedAt:       formatTime(h.CommittedAt),
-			Bootstrap:         h.Bootstrap,
-			BootstrapComplete: h.BootstrapComplete,
-			Sessions:          h.Sessions,
-			Revisions:         h.Revisions,
-			HintPresent:       h.HintPresent,
-			HintGeneration:    h.HintGeneration,
-			HintStale:         h.HintStale,
-			JournalPresent:    hasJournal[h.HostID],
-			Skipped:           sanitizeAll(h.Skipped),
-			Anomalies:         sanitizeAll(h.Anomalies),
-			Error:             Sanitize(h.Err),
-		})
-	}
-	a.reportHostDefects(cat.Hosts())
 
+	res := statusResult{
+		Repository: Sanitize(rf.repository),
+		Snapshots:  len(snapshots),
+		Hosts:      groupByHost(snapshots),
+	}
+	if len(snapshots) == 0 {
+		a.diagf("warning: repository holds no snapshots yet\n")
+	}
 	if *asJSON {
-		return a.emitJSON(out)
+		return a.emitJSON(res)
 	}
-	rows := make([][]string, 0, len(out.Hosts))
-	for _, h := range out.Hosts {
-		gen := fmt.Sprintf("g%d", h.Generation)
-		if h.Generation == 0 {
-			gen = missingValue
-		}
+	if len(res.Hosts) == 0 {
+		fmt.Fprint(a.stdout, "no snapshots\n")
+		return nil
+	}
+	rows := make([][]string, 0, len(res.Hosts))
+	for _, h := range res.Hosts {
 		rows = append(rows, []string{
-			h.HostID,
-			gen,
-			yesNo(h.BootstrapComplete, "complete", "incomplete"),
-			hintState(h),
-			yesNo(h.JournalPresent, "present", missingValue),
+			h.Host,
+			fmt.Sprint(h.Snapshots),
+			orMissing(h.LatestTime),
+			orMissing(h.LatestShortID),
+			orMissing(joinCell(h.Tags)),
 		})
 	}
-	if err := writeTable(a.stdout, []string{"HOST", "HEAD", "BOOTSTRAP", "HINT", "JOURNAL"}, rows); err != nil {
-		return err
-	}
-	fmt.Fprintf(a.stdout, "state %s\n", out.StateDir)
-	return nil
+	return writeTable(a.stdout, []string{"HOST", "SNAPSHOTS", "LATEST", "LATEST ID", "TAGS"}, rows)
 }
 
-// hintState renders how a host's non-authoritative latest pointer compares
-// with the generation selection actually chose.
-func hintState(h statusHostRow) string {
-	switch {
-	case !h.HintPresent:
-		return "absent"
-	case h.HintStale:
-		return fmt.Sprintf("stale g%d", h.HintGeneration)
-	default:
-		return fmt.Sprintf("g%d", h.HintGeneration)
+// groupByHost folds the repository's snapshots into one row per host. Host
+// names and tags come from the repository, which any machine sharing it
+// can write, so both are rendered through Sanitize.
+func groupByHost(snapshots []restic.Snapshot) []statusHostRow {
+	if len(snapshots) == 0 {
+		return nil
 	}
-}
-
-// journalHosts lists the hosts this machine holds a publication journal
-// for. The journal is a private accelerator whose contents are not part of
-// any contract, so only its existence is reported (SPEC.md §6.1).
-func journalHosts(stateDir string) ([]string, error) {
-	entries, err := os.ReadDir(stateDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read state directory %s: %w", stateDir, err)
+	type acc struct {
+		count  int
+		latest restic.Snapshot
+		tags   []string
 	}
-	const prefix, suffix = "publish-journal-", ".json"
-	var hosts []string
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
-			continue
+	byHost := make(map[string]*acc)
+	for _, s := range snapshots {
+		a, ok := byHost[s.Host]
+		if !ok {
+			a = &acc{}
+			byHost[s.Host] = a
 		}
-		host := name[len(prefix) : len(name)-len(suffix)]
-		if archive.ValidName(host) {
-			hosts = append(hosts, host)
+		a.count++
+		a.tags = append(a.tags, s.Tags...)
+		if a.latest.ID == "" || s.Time.After(a.latest.Time) {
+			a.latest = s
 		}
+	}
+	hosts := make([]string, 0, len(byHost))
+	for host := range byHost {
+		hosts = append(hosts, host)
 	}
 	sort.Strings(hosts)
-	return hosts, nil
+
+	rows := make([]statusHostRow, 0, len(hosts))
+	for _, host := range hosts {
+		a := byHost[host]
+		rows = append(rows, statusHostRow{
+			Host:          Sanitize(host),
+			Snapshots:     a.count,
+			LatestTime:    formatTime(a.latest.Time),
+			LatestID:      Sanitize(a.latest.ID),
+			LatestShortID: Sanitize(a.latest.ShortID),
+			Tags:          sanitizeAll(sortedUnique(a.tags)),
+		})
+	}
+	return rows
 }
 
-// verifyHostRow is one host's verification outcome.
-type verifyHostRow struct {
-	HostID      string   `json:"host_id"`
-	Records     int      `json:"records"`
-	Generations int      `json:"generations"`
-	Revisions   int      `json:"revisions"`
-	Objects     int      `json:"objects"`
-	Warnings    []string `json:"warnings,omitempty"`
-	Errors      []string `json:"errors,omitempty"`
-}
-
-// verifyResult is the machine-readable verification report.
+// verifyResult is the machine-readable verification outcome.
 type verifyResult struct {
-	Deep  bool            `json:"deep"`
-	OK    bool            `json:"ok"`
-	Hosts []verifyHostRow `json:"hosts"`
+	Repository string `json:"repository"`
+	Deep       bool   `json:"deep"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
 }
 
 // archiveVerify implements `babel archive verify`.
 func (a *app) archiveVerify(ctx context.Context, args []string) error {
 	c := newCmd("archive verify", archiveVerifyUsage)
-	var sf storeFlags
-	sf.bind(c.fs)
-	var hosts stringList
-	c.fs.Var(&hosts, "host", "restrict to one host; repeatable")
-	deep := c.fs.Bool("deep", false, "also verify every referenced object's bytes")
-	asJSON := c.fs.Bool("json", false, "emit the result as JSON")
+	var rf repoFlags
+	rf.bind(c.fs)
+	deep := c.fs.Bool("deep", false, "also read and re-hash all pack data")
+	asJSON := c.fs.Bool("json", false, "emit the outcome as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
 	}
 	if err := c.noArgs(); err != nil {
 		return err
 	}
-	st, err := sf.open(c)
+	d, err := babelDirs()
 	if err != nil {
 		return err
 	}
-	selected, err := hostFilter(c, hosts)
-	if err != nil {
-		return err
-	}
-	tier := "default"
-	if *deep {
-		tier = "deep"
-	}
-	a.diagf("babel: verifying %s archive %s (%s tier)\n", Sanitize(sf.backend), Sanitize(sf.root), tier)
-	rep, err := catalog.Verify(ctx, st, selected, *deep)
+	repo, err := rf.open(c, d, nil)
 	if err != nil {
 		return err
 	}
 
-	out := verifyResult{Deep: rep.Deep, OK: rep.OK(), Hosts: make([]verifyHostRow, 0, len(rep.Hosts))}
-	for _, h := range rep.Hosts {
-		row := verifyHostRow{
-			HostID:      Sanitize(h.HostID),
-			Records:     h.Records,
-			Generations: h.Generations,
-			Revisions:   h.Revisions,
-			Objects:     h.Objects,
-			Warnings:    sanitizeAll(h.Warnings),
-			Errors:      sanitizeAll(h.Errors),
-		}
-		out.Hosts = append(out.Hosts, row)
-		for _, w := range row.Warnings {
-			a.diagf("babel: warning: %s: %s\n", row.HostID, w)
-		}
-		for _, e := range row.Errors {
-			a.diagf("babel: error: %s: %s\n", row.HostID, e)
-		}
+	checkErr := repo.Check(ctx, *deep)
+	res := verifyResult{Repository: Sanitize(rf.repository), Deep: *deep, OK: checkErr == nil}
+	if checkErr != nil {
+		res.Error = Sanitize(checkErr.Error())
 	}
-
+	// The outcome is a result even when it is bad news, so a --json caller
+	// always gets a document; the failure detail is repeated on stderr and
+	// the exit code carries the verdict.
 	if *asJSON {
-		if err := a.emitJSON(out); err != nil {
+		if err := a.emitJSON(res); err != nil {
 			return err
 		}
 	} else {
-		rows := make([][]string, 0, len(out.Hosts))
-		for _, h := range out.Hosts {
-			rows = append(rows, []string{
-				h.HostID,
-				fmt.Sprint(h.Records),
-				fmt.Sprint(h.Generations),
-				fmt.Sprint(h.Revisions),
-				fmt.Sprint(h.Objects),
-				fmt.Sprint(len(h.Warnings)),
-				fmt.Sprint(len(h.Errors)),
-			})
-		}
-		if err := writeTable(a.stdout, []string{"HOST", "RECORDS", "GENERATIONS", "REVISIONS", "OBJECTS", "WARNINGS", "ERRORS"}, rows); err != nil {
-			return err
-		}
-		fmt.Fprintf(a.stdout, "verify %s (%s tier)\n", yesNo(out.OK, "ok", "failed"), tier)
+		fmt.Fprintf(a.stdout, "%s (%s)\n", yesNo(res.OK, "ok", "FAILED"), yesNo(*deep, "deep", "structure"))
 	}
-	if !out.OK {
-		return errors.New("archive verify found errors in committed state")
+	if checkErr != nil {
+		return fmt.Errorf("verify repository: %w", checkErr)
 	}
 	return nil
 }
 
-// loadCatalog opens the selected store and loads the merged committed view.
-// It is the shared read path of every read-only command.
-func (a *app) loadCatalog(ctx context.Context, c *cmd, sf *storeFlags, hosts stringList) (*catalog.Catalog, objectstore.Store, error) {
-	st, err := sf.open(c)
-	if err != nil {
-		return nil, nil, err
-	}
-	selected, err := hostFilter(c, hosts)
-	if err != nil {
-		return nil, nil, err
-	}
-	cat, err := catalog.Load(ctx, st, selected)
-	if err != nil {
-		return nil, nil, err
-	}
-	return cat, st, nil
-}
-
-// reportHostDefects sends every host-level defect to stderr. A damaged host
-// never hides the rest of the archive, so these are diagnostics rather than
-// failures (SPEC.md §11).
-func (a *app) reportHostDefects(hosts []catalog.HostInfo) {
-	for _, h := range hosts {
-		id := Sanitize(h.HostID)
-		if h.Err != "" {
-			a.diagf("babel: host %s contributes nothing: %s\n", id, Sanitize(h.Err))
-		}
-		for _, s := range h.Skipped {
-			a.diagf("babel: host %s skipped generation: %s\n", id, Sanitize(s))
-		}
-		for _, an := range h.Anomalies {
-			a.diagf("babel: host %s anomaly: %s\n", id, Sanitize(an))
-		}
-		if h.HintStale {
-			a.diagf("babel: host %s latest hint is stale (hint g%d, head g%d)\n", id, h.HintGeneration, h.Generation)
-		}
-	}
+// joinCell renders a small already-sanitized list inside one table cell.
+// Sanitize escapes separators, so the list is joined after rendering,
+// never before: the comma is layout, not part of any value.
+func joinCell(values []string) string {
+	return strings.Join(values, ",")
 }

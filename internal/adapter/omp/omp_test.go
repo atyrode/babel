@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,7 +12,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
-	"github.com/atyrode/babel/internal/archive"
+	"github.com/atyrode/babel/internal/digest"
 )
 
 // realRootsEnv opts the real-tree smoke test in. Every adapter package
@@ -77,22 +76,22 @@ func session(t *testing.T, sessions []adapter.SourceSession, prefix string) adap
 	return adapter.SourceSession{}
 }
 
-func snapshot(t *testing.T, a *Adapter, src adapter.SourceSession) *adapter.Snapshot {
+func describe(t *testing.T, src adapter.SourceSession) *adapter.Description {
 	t.Helper()
-	snap, err := a.Snapshot(context.Background(), src, filepath.Join(t.TempDir(), "staging"))
+	desc, err := New().Describe(context.Background(), src)
 	if err != nil {
-		t.Fatalf("Snapshot(%s): %v", src.SourceID, err)
+		t.Fatalf("Describe(%s): %v", src.SourceID, err)
 	}
-	return snap
+	return desc
 }
 
-func digestOf(t *testing.T, path string) archive.Digest {
+func digestOf(t *testing.T, path string) digest.Digest {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", filepath.Base(path), err)
 	}
-	return archive.NewDigest(sha256.Sum256(data))
+	return digest.New(sha256.Sum256(data))
 }
 
 func TestPortIdentity(t *testing.T) {
@@ -126,7 +125,7 @@ func TestDiscoverFindsSyntheticSessions(t *testing.T) {
 		if s.Harness != "omp" {
 			t.Errorf("session %d harness = %q, want omp", i, s.Harness)
 		}
-		if !archive.ValidSourceID(s.SourceID) {
+		if !adapter.ValidSourceID(s.SourceID) {
 			t.Errorf("session %d source id %q is not a valid source id", i, s.SourceID)
 		}
 		if i > 0 && sessions[i-1].SourceID >= s.SourceID {
@@ -187,69 +186,69 @@ func TestSourceIDSanitizesUnsafePathComponents(t *testing.T) {
 	if len(first) != len("-synthetic-dir-odd")+9 {
 		t.Errorf("project segment %q is not the sanitized name plus a digest suffix", first)
 	}
-	if !archive.ValidSourceID(got.SourceID) {
+	if !adapter.ValidSourceID(got.SourceID) {
 		t.Errorf("sanitized source id %q is invalid", got.SourceID)
 	}
 }
 
-func TestSnapshotStagesPrimaryArtifactsAndBlobs(t *testing.T) {
+func TestDescribeReadsPrimaryArtifactsAndBlobs(t *testing.T) {
 	t.Parallel()
 	root := fixtureRoot(t)
 	src := session(t, discover(t, root), "-synthetic-project/")
-	snap := snapshot(t, New(), src)
+	desc := describe(t, src)
 
-	// Primary log: staged bytes are the source bytes.
+	// Primary log: described in place, never copied.
 	sourceDigest := digestOf(t, src.PrimaryPath)
-	if got := digestOf(t, snap.StagedPrimary); got != sourceDigest {
-		t.Errorf("staged primary digest %s, want %s", got, sourceDigest)
-	}
 	info, err := os.Stat(src.PrimaryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.PrimarySize != info.Size() {
-		t.Errorf("PrimarySize = %d, want %d", snap.PrimarySize, info.Size())
+	if desc.PrimarySize != info.Size() {
+		t.Errorf("PrimarySize = %d, want %d", desc.PrimarySize, info.Size())
 	}
-	if filepath.Base(snap.StagedPrimary) != filepath.Base(src.PrimaryPath) {
-		t.Errorf("staged primary name %q, want %q", filepath.Base(snap.StagedPrimary), filepath.Base(src.PrimaryPath))
+	if desc.Source.PrimaryPath != src.PrimaryPath {
+		t.Errorf("Source.PrimaryPath = %q, want the live source path %q", desc.Source.PrimaryPath, src.PrimaryPath)
 	}
 
-	// Artifact tree: source-relative paths, staged copies present.
+	// Artifact tree: adapter-root-relative names pointing at live files.
 	wantRel := []string{"Helper.jsonl", "nested/7.bash.log"}
-	if len(snap.Artifacts) != len(wantRel) {
-		t.Fatalf("staged %d artifacts, want %d", len(snap.Artifacts), len(wantRel))
+	if len(desc.Artifacts) != len(wantRel) {
+		t.Fatalf("described %d artifacts, want %d", len(desc.Artifacts), len(wantRel))
 	}
 	artifactDir := strings.TrimSuffix(src.PrimaryPath, ".jsonl")
-	for i, artifact := range snap.Artifacts {
+	for i, artifact := range desc.Artifacts {
 		if artifact.RelPath != wantRel[i] {
 			t.Errorf("artifact %d rel path = %q, want %q", i, artifact.RelPath, wantRel[i])
 		}
-		want := digestOf(t, filepath.Join(artifactDir, filepath.FromSlash(artifact.RelPath)))
-		if got := digestOf(t, artifact.StagedPath); got != want {
-			t.Errorf("artifact %s staged digest %s, want %s", artifact.RelPath, got, want)
+		want := filepath.Join(artifactDir, filepath.FromSlash(wantRel[i]))
+		if artifact.SourcePath != want {
+			t.Errorf("artifact %s source path = %q, want %q", artifact.RelPath, artifact.SourcePath, want)
 		}
-		staged, err := os.Stat(artifact.StagedPath)
+		if !filepath.IsAbs(artifact.SourcePath) {
+			t.Errorf("artifact %s source path %q is not absolute", artifact.RelPath, artifact.SourcePath)
+		}
+		live, err := os.Stat(artifact.SourcePath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if artifact.Size != staged.Size() {
-			t.Errorf("artifact %s size = %d, want %d", artifact.RelPath, artifact.Size, staged.Size())
+		if artifact.Size != live.Size() {
+			t.Errorf("artifact %s size = %d, want %d", artifact.RelPath, artifact.Size, live.Size())
 		}
 	}
 
-	// Blob closure: one reference from the primary log, one from a staged
+	// Blob closure: one reference from the primary log, one from an
 	// artifact, both digest-verified against the blob store.
-	if len(snap.UnresolvedBlobRefs) != 0 {
-		t.Errorf("UnresolvedBlobRefs = %v, want none", snap.UnresolvedBlobRefs)
+	if len(desc.UnresolvedBlobRefs) != 0 {
+		t.Errorf("UnresolvedBlobRefs = %v, want none", desc.UnresolvedBlobRefs)
 	}
-	if !snap.ContinuationGrade {
+	if !desc.ContinuationGrade {
 		t.Error("ContinuationGrade = false, want true with a complete closure")
 	}
-	if len(snap.Blobs) != 2 {
-		t.Fatalf("resolved %d blobs, want 2", len(snap.Blobs))
+	if len(desc.Blobs) != 2 {
+		t.Fatalf("resolved %d blobs, want 2", len(desc.Blobs))
 	}
 	extensionResolved := false
-	for _, blob := range snap.Blobs {
+	for _, blob := range desc.Blobs {
 		if !blob.Digest.Valid() {
 			t.Errorf("blob digest %q is not canonical", blob.Digest)
 		}
@@ -265,7 +264,7 @@ func TestSnapshotStagesPrimaryArtifactsAndBlobs(t *testing.T) {
 		}
 		if filepath.Ext(blob.SourcePath) == ".webp" {
 			// Proves the store's extension-suffixed copy is accepted;
-			// this reference is only reachable from a staged artifact.
+			// this reference is only reachable from an artifact file.
 			extensionResolved = true
 		}
 	}
@@ -274,35 +273,35 @@ func TestSnapshotStagesPrimaryArtifactsAndBlobs(t *testing.T) {
 	}
 
 	// Portable metadata the format actually exposes.
-	if snap.Meta.Title == nil || *snap.Meta.Title != "Synthetic fixture session one" {
-		t.Errorf("Title = %v, want the current padded title record", snap.Meta.Title)
+	if desc.Meta.Title == nil || *desc.Meta.Title != "Synthetic fixture session one" {
+		t.Errorf("Title = %v, want the current padded title record", desc.Meta.Title)
 	}
-	if snap.Meta.Workspace == nil || *snap.Meta.Workspace != "/synthetic/workspace/one" {
-		t.Errorf("Workspace = %v, want the recorded cwd", snap.Meta.Workspace)
+	if desc.Meta.Workspace == nil || *desc.Meta.Workspace != "/synthetic/workspace/one" {
+		t.Errorf("Workspace = %v, want the recorded cwd", desc.Meta.Workspace)
 	}
-	if snap.Meta.CreatedAt == nil || snap.Meta.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z") != "2026-01-02T03:04:05.678Z" {
-		t.Errorf("CreatedAt = %v, want the session record timestamp", snap.Meta.CreatedAt)
+	if desc.Meta.CreatedAt == nil || desc.Meta.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z") != "2026-01-02T03:04:05.678Z" {
+		t.Errorf("CreatedAt = %v, want the session record timestamp", desc.Meta.CreatedAt)
 	}
-	if snap.Meta.ModifiedAt == nil || !snap.Meta.ModifiedAt.Equal(info.ModTime().UTC()) {
-		t.Errorf("ModifiedAt = %v, want the source log modification time", snap.Meta.ModifiedAt)
+	if desc.Meta.ModifiedAt == nil || !desc.Meta.ModifiedAt.Equal(info.ModTime().UTC()) {
+		t.Errorf("ModifiedAt = %v, want the source log modification time", desc.Meta.ModifiedAt)
 	}
-	if snap.SnapshotTime.IsZero() || snap.SnapshotTime.Location() != time.UTC {
-		t.Errorf("SnapshotTime = %v, want a UTC instant", snap.SnapshotTime)
+	if desc.DescribedAt.IsZero() || desc.DescribedAt.Location() != time.UTC {
+		t.Errorf("DescribedAt = %v, want a UTC instant", desc.DescribedAt)
 	}
 
 	// Versioned adapter metadata, canonical and compact.
-	if snap.AdapterMetadataSchema != 1 {
-		t.Errorf("AdapterMetadataSchema = %d, want 1", snap.AdapterMetadataSchema)
+	if desc.AdapterMetadataSchema != 1 {
+		t.Errorf("AdapterMetadataSchema = %d, want 1", desc.AdapterMetadataSchema)
 	}
-	canonical, err := archive.CanonicalRawMessage(snap.AdapterMetadata)
+	canonical, err := adapter.CanonicalRawMessage(desc.AdapterMetadata)
 	if err != nil {
 		t.Fatalf("adapter metadata is not canonical JSON: %v", err)
 	}
-	if string(canonical) != string(snap.AdapterMetadata) {
-		t.Errorf("adapter metadata is not already canonical:\n got %s\nwant %s", snap.AdapterMetadata, canonical)
+	if string(canonical) != string(desc.AdapterMetadata) {
+		t.Errorf("adapter metadata is not already canonical:\n got %s\nwant %s", desc.AdapterMetadata, canonical)
 	}
 	var meta adapterMetadata
-	if err := json.Unmarshal(snap.AdapterMetadata, &meta); err != nil {
+	if err := json.Unmarshal(desc.AdapterMetadata, &meta); err != nil {
 		t.Fatalf("decode adapter metadata: %v", err)
 	}
 	if meta.OMPSessionID != "00000000-0000-4000-8000-000000000001" {
@@ -317,45 +316,59 @@ func TestSnapshotStagesPrimaryArtifactsAndBlobs(t *testing.T) {
 	if meta.PrimaryDigest != sourceDigest {
 		t.Errorf("primary_digest = %s, want %s", meta.PrimaryDigest, sourceDigest)
 	}
+	if meta.PrimarySize != info.Size() {
+		t.Errorf("primary_size = %d, want %d", meta.PrimarySize, info.Size())
+	}
 	if meta.ArtifactCount != 2 || meta.BlobRefCount != 2 || meta.ResolvedBlobCount != 2 || meta.UnresolvedBlobCount != 0 {
 		t.Errorf("adapter metadata counts = %+v", meta)
+	}
+	var wantBytes int64
+	for _, rel := range wantRel {
+		fi, err := os.Stat(filepath.Join(artifactDir, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantBytes += fi.Size()
+	}
+	if meta.ArtifactBytes != wantBytes {
+		t.Errorf("artifact_bytes = %d, want %d recomputed from the live files", meta.ArtifactBytes, wantBytes)
 	}
 	if !meta.BlobStoreFound {
 		t.Error("blob_store_found = false, want true for the fixture store")
 	}
 }
 
-func TestSnapshotReportsUnresolvedBlobReferences(t *testing.T) {
+func TestDescribeReportsUnresolvedBlobReferences(t *testing.T) {
 	t.Parallel()
 	src := session(t, discover(t, fixtureRoot(t)), "-synthetic-other/")
-	snap := snapshot(t, New(), src)
+	desc := describe(t, src)
 
-	if len(snap.Blobs) != 1 {
-		t.Errorf("resolved %d blobs, want 1", len(snap.Blobs))
+	if len(desc.Blobs) != 1 {
+		t.Errorf("resolved %d blobs, want 1", len(desc.Blobs))
 	}
 	// One reference has no stored object; one has a stored object whose
 	// bytes do not hash to the referenced digest. Neither may enter the
 	// closure, and both must be listed.
-	if len(snap.UnresolvedBlobRefs) != 2 {
-		t.Fatalf("UnresolvedBlobRefs = %v, want 2 entries", snap.UnresolvedBlobRefs)
+	if len(desc.UnresolvedBlobRefs) != 2 {
+		t.Fatalf("UnresolvedBlobRefs = %v, want 2 entries", desc.UnresolvedBlobRefs)
 	}
-	for _, ref := range snap.UnresolvedBlobRefs {
+	for _, ref := range desc.UnresolvedBlobRefs {
 		if !strings.HasPrefix(ref, "blob:sha256:") {
 			t.Errorf("unresolved reference %q is not a blob reference", ref)
 		}
-		if archive.Digest(strings.TrimPrefix(ref, "blob:")) == snap.Blobs[0].Digest {
-			t.Errorf("resolved blob %s also listed as unresolved", snap.Blobs[0].Digest)
+		if digest.Digest(strings.TrimPrefix(ref, "blob:")) == desc.Blobs[0].Digest {
+			t.Errorf("resolved blob %s also listed as unresolved", desc.Blobs[0].Digest)
 		}
 	}
-	if snap.ContinuationGrade {
+	if desc.ContinuationGrade {
 		t.Error("ContinuationGrade = true, want false while references are unresolved")
 	}
-	if snap.UnresolvedBlobRefs[0] >= snap.UnresolvedBlobRefs[1] {
-		t.Errorf("UnresolvedBlobRefs not deduplicated and sorted: %v", snap.UnresolvedBlobRefs)
+	if desc.UnresolvedBlobRefs[0] >= desc.UnresolvedBlobRefs[1] {
+		t.Errorf("UnresolvedBlobRefs not deduplicated and sorted: %v", desc.UnresolvedBlobRefs)
 	}
 
 	var meta adapterMetadata
-	if err := json.Unmarshal(snap.AdapterMetadata, &meta); err != nil {
+	if err := json.Unmarshal(desc.AdapterMetadata, &meta); err != nil {
 		t.Fatalf("decode adapter metadata: %v", err)
 	}
 	if meta.ParentSessionID != "00000000-0000-4000-8000-000000000001" {
@@ -364,37 +377,70 @@ func TestSnapshotReportsUnresolvedBlobReferences(t *testing.T) {
 	if meta.UnresolvedBlobCount != 2 || meta.ResolvedBlobCount != 1 || meta.BlobRefCount != 3 {
 		t.Errorf("adapter metadata blob counts = %+v", meta)
 	}
-	if meta.ArtifactCount != 0 {
-		t.Errorf("artifact_count = %d, want 0 for a session without an artifact tree", meta.ArtifactCount)
+	if meta.ArtifactCount != 0 || meta.ArtifactBytes != 0 {
+		t.Errorf("artifact_count/bytes = %d/%d, want 0/0 for a session without an artifact tree", meta.ArtifactCount, meta.ArtifactBytes)
 	}
 }
 
-func TestSnapshotExplainsAbsentMetadata(t *testing.T) {
+// TestDescribeTreatsCorruptBlobAsUnresolved isolates the digest
+// verification: a store entry whose name is a valid reference but whose
+// bytes hash to something else must never enter the closure, and its
+// reference must withhold continuation grade.
+func TestDescribeTreatsCorruptBlobAsUnresolved(t *testing.T) {
+	t.Parallel()
+	root := fixtureRoot(t)
+	src := session(t, discover(t, root), "-synthetic-project/")
+
+	// Overwrite one referenced blob with different bytes, leaving its
+	// content-addressed name intact.
+	before := describe(t, src)
+	if len(before.Blobs) != 2 {
+		t.Fatalf("fixture no longer resolves 2 blobs: %+v", before.Blobs)
+	}
+	corrupted := before.Blobs[0]
+	if err := os.WriteFile(corrupted.SourcePath, []byte("synthetic fixture corrupted blob bytes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	desc := describe(t, src)
+	if len(desc.Blobs) != 1 {
+		t.Errorf("resolved %d blobs, want 1 after corrupting one store entry", len(desc.Blobs))
+	}
+	want := "blob:" + string(corrupted.Digest)
+	if len(desc.UnresolvedBlobRefs) != 1 || desc.UnresolvedBlobRefs[0] != want {
+		t.Errorf("UnresolvedBlobRefs = %v, want [%s]", desc.UnresolvedBlobRefs, want)
+	}
+	if desc.ContinuationGrade {
+		t.Error("ContinuationGrade = true, want false: a corrupt blob is unresolved")
+	}
+}
+
+func TestDescribeExplainsAbsentMetadata(t *testing.T) {
 	t.Parallel()
 	src := session(t, discover(t, fixtureRoot(t)), "-synthetic-sparse/")
-	snap := snapshot(t, New(), src)
+	desc := describe(t, src)
 
-	if snap.Meta.Title != nil {
-		t.Errorf("Title = %q, want nil for a log without a title", *snap.Meta.Title)
+	if desc.Meta.Title != nil {
+		t.Errorf("Title = %q, want nil for a log without a title", *desc.Meta.Title)
 	}
-	if snap.Meta.Workspace != nil {
-		t.Errorf("Workspace = %q, want nil for a session record without cwd", *snap.Meta.Workspace)
+	if desc.Meta.Workspace != nil {
+		t.Errorf("Workspace = %q, want nil for a session record without cwd", *desc.Meta.Workspace)
 	}
-	if snap.Meta.Lifecycle != nil {
-		t.Errorf("Lifecycle = %q, want nil: omp persists no lifecycle state", *snap.Meta.Lifecycle)
+	if desc.Meta.Lifecycle != nil {
+		t.Errorf("Lifecycle = %q, want nil: omp persists no lifecycle state", *desc.Meta.Lifecycle)
 	}
-	if snap.Meta.Repo != nil {
-		t.Errorf("Repo = %+v, want nil: the adapter never reads the workspace", snap.Meta.Repo)
+	if desc.Meta.Repo != nil {
+		t.Errorf("Repo = %+v, want nil: the adapter never reads the workspace", desc.Meta.Repo)
 	}
-	if snap.Meta.CreatedAt == nil {
+	if desc.Meta.CreatedAt == nil {
 		t.Error("CreatedAt = nil, want the session record timestamp")
 	}
-	if snap.Meta.ModifiedAt == nil {
+	if desc.Meta.ModifiedAt == nil {
 		t.Error("ModifiedAt = nil, want the source log modification time")
 	}
 
-	reasons := make(map[string]string, len(snap.Meta.Completeness))
-	for _, reason := range snap.Meta.Completeness {
+	reasons := make(map[string]string, len(desc.Meta.Completeness))
+	for _, reason := range desc.Meta.Completeness {
 		if reason.Reason == "" {
 			t.Errorf("completeness entry for %q has no reason", reason.Field)
 		}
@@ -410,55 +456,69 @@ func TestSnapshotExplainsAbsentMetadata(t *testing.T) {
 			t.Errorf("present field %q must not carry a completeness reason", field)
 		}
 	}
-	if !snap.ContinuationGrade {
+	if !desc.ContinuationGrade {
 		t.Error("ContinuationGrade = false, want true: a session with no references has a complete closure")
 	}
 }
 
-func TestSnapshotDetectsPrimaryLogChangedWhileStaging(t *testing.T) {
+// TestDescribeToleratesTornAndGarbageLines defends the recorded
+// consistency boundary: restic snapshots are crash-consistent per file,
+// so a log whose head or tail is torn or garbage must still describe
+// whatever the readable records expose instead of failing.
+func TestDescribeToleratesTornAndGarbageLines(t *testing.T) {
 	t.Parallel()
-	src := session(t, discover(t, fixtureRoot(t)), "-synthetic-project/")
+	root := filepath.Join(t.TempDir(), "agent", "sessions")
+	project := filepath.Join(root, "-torn-project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	log := strings.Join([]string{
+		`{"type":"title","title":"Synthetic fixture torn session"}`,
+		`not json at all`,
+		`{"type":"session","version":3,"id":"00000000-0000-4000-8000-00000000000d",` +
+			`"timestamp":"2026-01-07T00:00:00.000Z","cwd":"/synthetic/workspace/torn"}`,
+		`{"type":"message","id":"f0000001","message":{"role":"user","content":[{"type":"te`,
+	}, "\n")
+	primary := filepath.Join(project, "2026-01-07T00-00-00-000Z_00000000-0000-4000-8000-00000000000d.jsonl")
+	if err := os.WriteFile(primary, []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	a := New()
-	a.afterStage = func() {
-		f, err := os.OpenFile(src.PrimaryPath, os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
-			t.Fatalf("append to source log: %v", err)
+	src := session(t, discover(t, root), "-torn-project/")
+	desc := describe(t, src)
+
+	// The title record precedes the garbage line, so it is observed; the
+	// session record after it is not reached by the head decoder, which
+	// stops at the first undecodable record.
+	if desc.Meta.Title == nil || *desc.Meta.Title != "Synthetic fixture torn session" {
+		t.Errorf("Title = %v, want the record preceding the garbage line", desc.Meta.Title)
+	}
+	if desc.Meta.Workspace != nil {
+		t.Errorf("Workspace = %v, want nil: the garbage line hides the session record", desc.Meta.Workspace)
+	}
+	for _, field := range []string{"workspace", "created_at"} {
+		found := false
+		for _, reason := range desc.Meta.Completeness {
+			if reason.Field == field {
+				found = true
+			}
 		}
-		if _, err := f.WriteString(`{"type":"message","id":"f000000e","message":{"role":"user","content":[{"type":"text","text":"synthetic fixture appended message"}]}}` + "\n"); err != nil {
-			t.Fatalf("append to source log: %v", err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatalf("append to source log: %v", err)
+		if !found {
+			t.Errorf("unreadable field %q carries no completeness reason", field)
 		}
 	}
-	_, err := a.Snapshot(context.Background(), src, filepath.Join(t.TempDir(), "staging"))
-	if !errors.Is(err, adapter.ErrUnstable) {
-		t.Fatalf("Snapshot error = %v, want adapter.ErrUnstable", err)
+	if desc.PrimarySize != int64(len(log)) {
+		t.Errorf("PrimarySize = %d, want %d: raw bytes are described regardless", desc.PrimarySize, len(log))
+	}
+	if !desc.ContinuationGrade {
+		t.Error("ContinuationGrade = false, want true: the torn log references no blobs")
 	}
 }
 
-func TestSnapshotDetectsArtifactTreeChangedWhileStaging(t *testing.T) {
-	t.Parallel()
-	src := session(t, discover(t, fixtureRoot(t)), "-synthetic-project/")
-
-	a := New()
-	a.afterStage = func() {
-		added := filepath.Join(strings.TrimSuffix(src.PrimaryPath, ".jsonl"), "Late.jsonl")
-		if err := os.WriteFile(added, []byte("synthetic fixture late artifact\n"), 0o600); err != nil {
-			t.Fatalf("add artifact: %v", err)
-		}
-	}
-	_, err := a.Snapshot(context.Background(), src, filepath.Join(t.TempDir(), "staging"))
-	if !errors.Is(err, adapter.ErrUnstable) {
-		t.Fatalf("Snapshot error = %v, want adapter.ErrUnstable", err)
-	}
-}
-
-// TestSnapshotFindsBlobReferenceAcrossReadChunks defends the chunked
+// TestDescribeFindsBlobReferenceAcrossReadChunks defends the chunked
 // reference scan: a reference straddling the internal chunk boundary of a
 // multi-megabyte log must still enter the closure.
-func TestSnapshotFindsBlobReferenceAcrossReadChunks(t *testing.T) {
+func TestDescribeFindsBlobReferenceAcrossReadChunks(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join(t.TempDir(), "agent", "sessions")
 	project := filepath.Join(root, "-chunk-project")
@@ -470,8 +530,8 @@ func TestSnapshotFindsBlobReferenceAcrossReadChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := []byte("synthetic fixture chunk-boundary blob\n")
-	digest := archive.NewDigest(sha256.Sum256(payload))
-	if err := os.WriteFile(filepath.Join(blobStore, digest.Hex()), payload, 0o600); err != nil {
+	want := digest.Bytes(payload)
+	if err := os.WriteFile(filepath.Join(blobStore, want.Hex()), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -479,19 +539,35 @@ func TestSnapshotFindsBlobReferenceAcrossReadChunks(t *testing.T) {
 	// Place the reference so it starts a few bytes before the 1 MiB
 	// boundary the scanner reads in.
 	pad := 1<<20 - len(head) - 4
-	log := head + strings.Repeat("x", pad) + `blob:` + string(digest) + `"}` + "\n"
+	log := head + strings.Repeat("x", pad) + `blob:` + string(want) + `"}` + "\n"
 	primary := filepath.Join(project, "2026-01-06T00-00-00-000Z_00000000-0000-4000-8000-00000000000c.jsonl")
 	if err := os.WriteFile(primary, []byte(log), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	src := session(t, discover(t, root), "-chunk-project/")
-	snap := snapshot(t, New(), src)
-	if len(snap.Blobs) != 1 || snap.Blobs[0].Digest != digest {
-		t.Fatalf("blobs = %+v, want the chunk-boundary reference resolved to %s", snap.Blobs, digest)
+	desc := describe(t, src)
+	if len(desc.Blobs) != 1 || desc.Blobs[0].Digest != want {
+		t.Fatalf("blobs = %+v, want the chunk-boundary reference resolved to %s", desc.Blobs, want)
 	}
-	if !snap.ContinuationGrade {
-		t.Errorf("ContinuationGrade = false, unresolved = %v", snap.UnresolvedBlobRefs)
+	if !desc.ContinuationGrade {
+		t.Errorf("ContinuationGrade = false, unresolved = %v", desc.UnresolvedBlobRefs)
+	}
+}
+
+func TestDescribeRejectsForeignSource(t *testing.T) {
+	t.Parallel()
+	src := session(t, discover(t, fixtureRoot(t)), "-synthetic-project/")
+
+	foreign := src
+	foreign.Harness = "codex"
+	if _, err := New().Describe(context.Background(), foreign); err == nil {
+		t.Error("Describe accepted a session from another harness")
+	}
+	pathless := src
+	pathless.PrimaryPath = ""
+	if _, err := New().Describe(context.Background(), pathless); err == nil {
+		t.Error("Describe accepted a session with no primary path")
 	}
 }
 
@@ -516,7 +592,7 @@ func TestDiscoverRealRootSmoke(t *testing.T) {
 	}
 	invalid := 0
 	for _, s := range sessions {
-		if !archive.ValidSourceID(s.SourceID) {
+		if !adapter.ValidSourceID(s.SourceID) {
 			invalid++
 		}
 	}

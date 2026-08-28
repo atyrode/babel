@@ -107,6 +107,10 @@ type Adapter interface {
 	Schema() int
 	// DefaultRoots returns the default local source roots to scan.
 	DefaultRoots() []string
+	// BackupRoots returns the local roots `archive push` must capture: a
+	// superset of DefaultRoots. OMP adds its content-addressed blob store,
+	// which holds referenced content but no discoverable sessions.
+	BackupRoots() []string
 	// Discover enumerates locally available sessions under roots. Roots
 	// that do not exist are skipped silently; unreadable content degrades
 	// per session, never by aborting the scan.

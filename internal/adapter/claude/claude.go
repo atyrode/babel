@@ -10,20 +10,24 @@
 // <root>/session-env/<session-uuid>/ — hold the session-linked local
 // artifacts the format exposes.
 //
-// The adapter always preserves the raw transcript bytes. The format is
-// undocumented and unstable, so title, project identity, lifecycle,
-// timestamps beyond filesystem observation, repository fingerprint, and
-// artifact closure are allowed to be unavailable; every absent value
-// carries an explicit archive.CompletenessReason instead of a synthesized
-// substitute. Claude Code declares no referenced-artifact closure, so
-// snapshots are never continuation grade.
+// The format is undocumented and unstable, so title, project identity,
+// lifecycle, timestamps beyond filesystem observation, repository
+// fingerprint, and artifact closure are allowed to be unavailable; every
+// absent value carries an explicit adapter.CompletenessReason instead of a
+// synthesized substitute. Claude Code declares no referenced-artifact
+// closure, so descriptions are never continuation grade.
+//
+// Every file is read in place and never copied: durability belongs to
+// restic, whose snapshots are crash-consistent per file rather than
+// transactional across files. A description is therefore a best-effort
+// view of the live tree, unparseable or oversized lines are counted and
+// skipped, and the next description supersedes it.
 package claude
 
 import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,18 +41,17 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
-	"github.com/atyrode/babel/internal/archive"
+	"github.com/atyrode/babel/internal/digest"
 )
 
 const (
-	// harnessName is the stable lowercase harness name recorded in
-	// manifests.
+	// harnessName is the stable lowercase harness name.
 	harnessName = "claude"
 	// adapterSchema is the adapter_schema version of this adapter's
-	// discovery and staging behavior.
+	// discovery and description behavior.
 	adapterSchema = 1
 	// metadataSchema versions the adapter_metadata object independently of
-	// the manifest envelope.
+	// the common description shape.
 	metadataSchema = 1
 
 	// projectsDirName is the root-relative directory holding one
@@ -60,25 +63,18 @@ const (
 	// maxSegmentLen bounds one SourceID segment; longer names are
 	// shortened deterministically so the identity stays stable across
 	// runs and the two-segment identity stays inside the 512-byte
-	// archive.ValidSourceID limit.
+	// adapter.ValidSourceID limit.
 	maxSegmentLen = 200
 	// maxRecordBytes bounds the bytes retained while parsing one
 	// transcript line for metadata. Longer lines are counted and skipped
-	// for metadata only; the staged copy keeps every byte verbatim.
+	// for metadata only; the file restic archives keeps every byte.
 	maxRecordBytes = 1 << 20
-	// copyBufBytes is the staging copy buffer size.
-	copyBufBytes = 128 << 10
 )
 
 // sessionArtifactDirs are root-relative trees whose immediate children are
 // named after a session UUID, which is the only positive association the
 // on-disk format offers.
 var sessionArtifactDirs = []string{"tasks", "session-env"}
-
-// stagedPrimaryHook runs, when non-nil, after the primary transcript has
-// been copied and before stability is re-verified. Only tests set it, to
-// make a concurrent source change deterministic.
-var stagedPrimaryHook func()
 
 // Adapter is the Claude Code source adapter. It holds no state and is safe
 // for concurrent use.
@@ -87,10 +83,12 @@ type Adapter struct{}
 // New returns the Claude Code source adapter.
 func New() *Adapter { return &Adapter{} }
 
+var _ adapter.Adapter = (*Adapter)(nil)
+
 // Harness returns the stable lowercase harness name.
 func (*Adapter) Harness() string { return harnessName }
 
-// Schema returns the adapter_schema version recorded in manifests.
+// Schema returns the adapter_schema version of this adapter.
 func (*Adapter) Schema() int { return adapterSchema }
 
 // DefaultRoots returns the Claude Code home directory. It returns nil when
@@ -103,6 +101,10 @@ func (*Adapter) DefaultRoots() []string {
 	}
 	return []string{filepath.Join(home, ".claude")}
 }
+
+// BackupRoots matches DefaultRoots: every Claude Code file worth
+// capturing lives under the single Claude home root.
+func (a *Adapter) BackupRoots() []string { return a.DefaultRoots() }
 
 // Discover enumerates one session per transcript file directly inside a
 // project directory. Missing or unreadable roots and project directories
@@ -160,74 +162,57 @@ func (*Adapter) Discover(ctx context.Context, roots []string) ([]adapter.SourceS
 	return out, nil
 }
 
-// Snapshot stages the raw transcript plus every positively associated
-// session-linked artifact into stagingDir, mirroring the root-relative
-// source layout. The digest of the staged transcript bytes is compared
-// against a re-read of the source afterwards; any change during staging
-// returns a wrapped adapter.ErrUnstable and no snapshot. Metadata is
-// derived from the staged bytes, so it always describes exactly what was
-// published, and a malformed transcript still yields a snapshot of the
-// raw bytes.
-func (*Adapter) Snapshot(ctx context.Context, src adapter.SourceSession, stagingDir string) (*adapter.Snapshot, error) {
+// Describe reads the live transcript plus every positively associated
+// session-linked artifact in place, naming them by their root-relative
+// path and absolute source path. Nothing is copied and the source is never
+// re-verified: a description is a best-effort view rather than a
+// transaction, so a concurrent Claude Code write yields a slightly older
+// or newer view — a torn trailing line is counted and skipped — and the
+// next description supersedes it.
+func (*Adapter) Describe(ctx context.Context, src adapter.SourceSession) (*adapter.Description, error) {
 	if src.Harness != harnessName {
 		return nil, fmt.Errorf("claude: source session harness %q is not %q", src.Harness, harnessName)
 	}
-	if !archive.ValidSourceID(src.SourceID) {
+	if !adapter.ValidSourceID(src.SourceID) {
 		return nil, fmt.Errorf("claude: invalid source id %q", src.SourceID)
 	}
 	root, project, session, err := splitPrimaryPath(src.PrimaryPath)
 	if err != nil {
 		return nil, err
 	}
-	if stagingDir == "" {
-		return nil, errors.New("claude: empty staging directory")
-	}
 
-	before, err := os.Stat(src.PrimaryPath)
+	info, err := os.Stat(src.PrimaryPath)
 	if err != nil {
 		return nil, fmt.Errorf("claude: stat transcript: %w", err)
 	}
-	if !before.Mode().IsRegular() {
+	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("claude: transcript %q is not a regular file", src.PrimaryPath)
 	}
 
 	relPrimary := path.Join(projectsDirName, project, session+sessionExt)
-	stagedPrimary := filepath.Join(stagingDir, filepath.FromSlash(relPrimary))
-	stagedDigest, stagedSize, err := stageFile(ctx, src.PrimaryPath, stagedPrimary)
+	primaryDigest, primarySize, err := digestFile(ctx, src.PrimaryPath)
+	if err != nil {
+		return nil, fmt.Errorf("claude: digest transcript: %w", err)
+	}
+
+	scan, err := scanTranscript(ctx, src.PrimaryPath)
+	if err != nil {
+		return nil, fmt.Errorf("claude: read transcript: %w", err)
+	}
+
+	artifacts, failures, err := collectArtifacts(ctx, root, project, session)
 	if err != nil {
 		return nil, err
 	}
 
-	if stagedPrimaryHook != nil {
-		stagedPrimaryHook()
-	}
+	meta, workspaceSource := buildMeta(scan, project, info.ModTime(), len(artifacts), failures)
 
-	sourceDigest, _, err := digestFile(ctx, src.PrimaryPath)
-	if err != nil {
-		return nil, fmt.Errorf("claude: re-read transcript: %w", err)
-	}
-	if sourceDigest != stagedDigest {
-		return nil, fmt.Errorf("claude: transcript %q changed while staging: %w", src.PrimaryPath, adapter.ErrUnstable)
-	}
-
-	scan, err := scanTranscript(ctx, stagedPrimary)
-	if err != nil {
-		return nil, fmt.Errorf("claude: read staged transcript: %w", err)
-	}
-
-	artifacts, failures, err := stageArtifacts(ctx, root, project, session, stagingDir)
-	if err != nil {
-		return nil, err
-	}
-
-	meta, workspaceSource := buildMeta(scan, project, before.ModTime(), len(artifacts), failures)
-
-	rawMeta, err := archive.MarshalCanonical(adapterMetadata{
+	rawMeta, err := adapter.MarshalCanonical(adapterMetadata{
 		ProjectDir:       project,
 		SessionUUID:      session,
 		PrimaryRelPath:   relPrimary,
-		PrimaryDigest:    stagedDigest,
-		PrimarySize:      stagedSize,
+		PrimaryDigest:    primaryDigest,
+		PrimarySize:      primarySize,
 		InFileSessionID:  scan.sessionID,
 		ClaudeVersion:    scan.version,
 		WorkspaceSource:  workspaceSource,
@@ -241,16 +226,15 @@ func (*Adapter) Snapshot(ctx context.Context, src adapter.SourceSession, staging
 	if err != nil {
 		return nil, fmt.Errorf("claude: marshal adapter metadata: %w", err)
 	}
-	canonicalMeta, err := archive.CanonicalRawMessage(rawMeta)
+	canonicalMeta, err := adapter.CanonicalRawMessage(rawMeta)
 	if err != nil {
 		return nil, fmt.Errorf("claude: canonicalize adapter metadata: %w", err)
 	}
 
-	return &adapter.Snapshot{
+	return &adapter.Description{
 		Source:                src,
-		SnapshotTime:          time.Now().UTC(),
-		StagedPrimary:         stagedPrimary,
-		PrimarySize:           stagedSize,
+		DescribedAt:           time.Now().UTC(),
+		PrimarySize:           primarySize,
 		Meta:                  meta,
 		AdapterMetadataSchema: metadataSchema,
 		AdapterMetadata:       canonicalMeta,
@@ -269,7 +253,7 @@ type adapterMetadata struct {
 	ProjectDir       string         `json:"project_dir"`
 	SessionUUID      string         `json:"session_uuid"`
 	PrimaryRelPath   string         `json:"primary_rel_path"`
-	PrimaryDigest    archive.Digest `json:"primary_digest"`
+	PrimaryDigest    digest.Digest  `json:"primary_digest"`
 	PrimarySize      int64          `json:"primary_size"`
 	InFileSessionID  string         `json:"in_file_session_id,omitempty"`
 	ClaudeVersion    string         `json:"claude_version,omitempty"`
@@ -296,7 +280,7 @@ const (
 func buildMeta(scan *transcriptScan, project string, mtime time.Time, artifacts, failures int) (adapter.CommonMeta, string) {
 	var meta adapter.CommonMeta
 	reason := func(field, why string) {
-		meta.Completeness = append(meta.Completeness, archive.CompletenessReason{Field: field, Reason: why})
+		meta.Completeness = append(meta.Completeness, adapter.CompletenessReason{Field: field, Reason: why})
 	}
 
 	if scan.title != "" {
@@ -339,19 +323,19 @@ func buildMeta(scan *transcriptScan, project string, mtime time.Time, artifacts,
 	reason("lifecycle", "The Claude Code on-disk format records no session lifecycle state.")
 
 	if scan.branch != "" {
-		meta.Repo = &archive.RepoFingerprint{Branch: scan.branch}
+		meta.Repo = &adapter.RepoFingerprint{Branch: scan.branch}
 		reason("repo", "Only the gitBranch recorded in the transcript is available; repository remote, commit, and dirty state are not exposed by the format.")
 	} else {
 		reason("repo", "No transcript record carried a gitBranch and the format exposes no repository remote, commit, or dirty state.")
 	}
 
 	if artifacts > 0 {
-		reason("artifacts", "Claude Code declares no referenced-artifact closure; only session-linked trees named after the session UUID were staged, so the set may be incomplete.")
+		reason("artifacts", "Claude Code declares no referenced-artifact closure; only session-linked trees named after the session UUID were found, so the set may be incomplete.")
 	} else {
 		reason("artifacts", "Claude Code declares no referenced-artifact closure and no session-linked tree named after the session UUID was found.")
 	}
 	if failures > 0 {
-		reason("artifacts", "One or more session-linked artifact files could not be read and were omitted from the snapshot.")
+		reason("artifacts", "One or more session-linked artifact files could not be read and were omitted from the description.")
 	}
 
 	return meta, workspaceSource
@@ -387,12 +371,12 @@ type transcriptScan struct {
 	last        time.Time
 }
 
-// scanTranscript reads a staged transcript line by line and extracts the
+// scanTranscript reads a live transcript line by line and extracts the
 // best-effort metadata the format exposes. Unparseable and oversized lines
-// are counted and skipped rather than failing the snapshot, because the
-// raw bytes are preserved regardless.
-func scanTranscript(ctx context.Context, staged string) (*transcriptScan, error) {
-	f, err := os.Open(staged)
+// are counted and skipped rather than failing the description, because the
+// raw bytes are archived regardless.
+func scanTranscript(ctx context.Context, primary string) (*transcriptScan, error) {
+	f, err := os.Open(primary)
 	if err != nil {
 		return nil, err
 	}
@@ -493,19 +477,19 @@ func readLine(br *bufio.Reader, buf []byte) ([]byte, bool, error) {
 	}
 }
 
-// stageArtifacts copies every session-linked artifact tree it can
-// positively associate with the session into stagingDir, mirroring the
-// root-relative source layout. Dot-prefixed entries such as lock files are
-// skipped because they hold transient state, and unreadable files are
-// counted instead of failing the snapshot.
-func stageArtifacts(ctx context.Context, root, project, session, stagingDir string) ([]adapter.StagedFile, int, error) {
+// collectArtifacts lists every session-linked artifact file the adapter can
+// positively associate with the session, named by its root-relative path
+// and absolute source path. Dot-prefixed entries such as lock files are
+// skipped because they hold transient state, and unreadable entries are
+// counted instead of failing the description.
+func collectArtifacts(ctx context.Context, root, project, session string) ([]adapter.SourceFile, int, error) {
 	trees := make([]string, 0, 1+len(sessionArtifactDirs))
 	trees = append(trees, path.Join(projectsDirName, project, session))
 	for _, dir := range sessionArtifactDirs {
 		trees = append(trees, path.Join(dir, session))
 	}
 
-	var staged []adapter.StagedFile
+	var found []adapter.SourceFile
 	failures := 0
 	for _, tree := range trees {
 		treePath := filepath.Join(root, filepath.FromSlash(tree))
@@ -541,74 +525,27 @@ func stageArtifacts(ctx context.Context, root, project, session, stagingDir stri
 				failures++
 				return nil
 			}
-			relPath := path.Join(tree, filepath.ToSlash(rel))
-			stagedPath := filepath.Join(stagingDir, filepath.FromSlash(relPath))
-			_, size, err := stageFile(ctx, p, stagedPath)
+			fi, err := d.Info()
 			if err != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
 				failures++
 				return nil
 			}
-			staged = append(staged, adapter.StagedFile{RelPath: relPath, StagedPath: stagedPath, Size: size})
+			found = append(found, adapter.SourceFile{
+				RelPath:    path.Join(tree, filepath.ToSlash(rel)),
+				SourcePath: p,
+				Size:       fi.Size(),
+			})
 			return nil
 		})
 		if walkErr != nil && ctx.Err() != nil {
 			return nil, 0, ctx.Err()
 		}
 	}
-	return staged, failures, nil
+	return found, failures, nil
 }
 
-// stageFile copies srcPath to dstPath, creating parent directories, and
-// returns the digest and size of the bytes actually written.
-func stageFile(ctx context.Context, srcPath, dstPath string) (archive.Digest, int64, error) {
-	if err := os.MkdirAll(filepath.Dir(dstPath), 0o700); err != nil {
-		return "", 0, fmt.Errorf("claude: create staging directory: %w", err)
-	}
-	in, err := os.Open(srcPath)
-	if err != nil {
-		return "", 0, err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return "", 0, err
-	}
-	h := sha256.New()
-	buf := make([]byte, copyBufBytes)
-	var size int64
-	for {
-		if err := ctx.Err(); err != nil {
-			out.Close()
-			return "", 0, err
-		}
-		n, rerr := in.Read(buf)
-		if n > 0 {
-			h.Write(buf[:n])
-			if _, werr := out.Write(buf[:n]); werr != nil {
-				out.Close()
-				return "", 0, werr
-			}
-			size += int64(n)
-		}
-		if rerr == io.EOF {
-			break
-		}
-		if rerr != nil {
-			out.Close()
-			return "", 0, rerr
-		}
-	}
-	if err := out.Close(); err != nil {
-		return "", 0, err
-	}
-	return archive.NewDigest([sha256.Size]byte(h.Sum(nil))), size, nil
-}
-
-// digestFile returns the canonical digest and size of a file's bytes.
-func digestFile(ctx context.Context, p string) (archive.Digest, int64, error) {
+// digestFile returns the canonical digest and size of a file's live bytes.
+func digestFile(ctx context.Context, p string) (digest.Digest, int64, error) {
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
 	}
@@ -617,7 +554,7 @@ func digestFile(ctx context.Context, p string) (archive.Digest, int64, error) {
 		return "", 0, err
 	}
 	defer f.Close()
-	return archive.ComputeDigest(f)
+	return digest.Compute(f)
 }
 
 // splitPrimaryPath decomposes a transcript path into the Claude Code root,
@@ -644,7 +581,7 @@ func splitPrimaryPath(primary string) (root, project, session string, err error)
 }
 
 // sourceID builds the stable "<project-dir>/<session-uuid>" identity. Both
-// segments are sanitized into archive.ValidSourceID's alphabet and
+// segments are sanitized into adapter.ValidSourceID's alphabet and
 // deterministically shortened when necessary, so the identity is stable
 // across runs for the same on-disk session.
 func sourceID(project, session string) string {
@@ -678,5 +615,5 @@ func sanitizeSegment(s string) string {
 
 // nameDigest returns a short stable discriminator for an on-disk name.
 func nameDigest(s string) string {
-	return archive.DigestBytes([]byte(s)).Hex()[:12]
+	return digest.Bytes([]byte(s)).Hex()[:12]
 }

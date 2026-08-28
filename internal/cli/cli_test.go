@@ -7,62 +7,119 @@ import (
 	"encoding/json"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
-
-	"github.com/atyrode/babel/internal/archive"
 )
 
-// testHostID is the host identity every fixture publishes under.
+// testHostID is the host identity every fixture backs up under.
 const testHostID = "testhost"
 
+// resticPinnedPath is the restic build this project develops against. It is
+// only consulted when the binary is absent from PATH; when neither is
+// available the repository-dependent tests skip rather than fail, because
+// they assert Babel's behavior against real restic, not a fake.
+const resticPinnedPath = "/nix/store/h43lp2dls4gyj6zfxssywk9d8s49qisn-restic-0.19.1/bin/restic"
+
+// testRepoPassword is a synthetic repository password. Nothing in this test
+// suite is derived from a real session, credential, or transcript
+// (SPEC.md §10).
+const testRepoPassword = "synthetic-fixture-password\n"
+
+// hostileTitle is the presentation-attack fixture: an SGR sequence, an OSC
+// introducer, a raw C1 CSI, and a bidi override, all inside a value a
+// session log is free to carry. No byte of it may reach stdout raw
+// (SPEC.md §8, §9).
+const hostileTitle = "\x1b[31mred\x1b[0m \x1b]0;retitled\x07 \x9b2J \u202egnitirw-thgir\u202c"
+
 // fixture is one hermetic CLI environment: a synthetic OMP source tree
-// under a private HOME, private XDG state/data/cache directories, and an
-// empty local archive root. Tests drive Run exactly as cmd/babel does, so
-// what they exercise is the shipped wiring, not a parallel harness.
+// under a private HOME, private XDG data and cache directories, and a
+// private restic repository. Tests drive Run exactly as cmd/babel does, so
+// what they exercise is the shipped wiring rather than a parallel harness.
 //
 // All fixture content is synthetic; no transcript ever comes from a real
 // session (SPEC.md §10).
 type fixture struct {
-	t           *testing.T
-	root        string
-	home        string
-	sessionsDir string
-	blobsDir    string
-	archiveRoot string
-	stateDir    string
-	dataDir     string
+	t            *testing.T
+	root         string
+	home         string
+	sessionsDir  string
+	blobsDir     string
+	repoDir      string
+	passwordFile string
+	dataDir      string
+	cacheDir     string
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	root := t.TempDir()
 	f := &fixture{
-		t:           t,
-		root:        root,
-		home:        filepath.Join(root, "home"),
-		archiveRoot: filepath.Join(root, "archive"),
-		stateDir:    filepath.Join(root, "state", "babel"),
-		dataDir:     filepath.Join(root, "data", "babel"),
+		t:            t,
+		root:         root,
+		home:         filepath.Join(root, "home"),
+		repoDir:      filepath.Join(root, "repo"),
+		passwordFile: filepath.Join(root, "password"),
+		dataDir:      filepath.Join(root, "data", "babel"),
+		cacheDir:     filepath.Join(root, "cache", "babel"),
 	}
 	f.sessionsDir = filepath.Join(f.home, ".omp", "agent", "sessions")
 	f.blobsDir = filepath.Join(f.home, ".omp", "agent", "blobs")
-	for _, dir := range []string{f.sessionsDir, f.blobsDir, f.archiveRoot} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.MkdirAll(f.home, 0o700); err != nil {
+		t.Fatal(err)
 	}
 	t.Setenv("HOME", f.home)
-	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	// The environment defaults must not leak in from the developer's own
+	// shell: repository selection is what several tests assert.
+	t.Setenv("BABEL_RESTIC_REPO", "")
+	t.Setenv("BABEL_RESTIC_PASSWORD_FILE", "")
 	t.Setenv("BABEL_HOST_ID", testHostID)
-	// The Codex and Claude adapters must find nothing: this fixture only
-	// synthesizes an OMP tree, and their default roots live under the
-	// private HOME, which has none.
+	// Codex and Claude must find nothing: this fixture synthesizes only an
+	// OMP tree, and their default roots live under the private HOME, which
+	// has none.
 	t.Setenv("CODEX_HOME", filepath.Join(root, "absent-codex"))
 	return f
+}
+
+// withRepo prepares the restic side of the fixture: it puts the restic
+// binary on PATH, so the commands exercise the wrapper's default binary
+// resolution, and writes the password file. The repository itself is
+// created by `archive push`, whose initialization must be idempotent.
+func (f *fixture) withRepo() *fixture {
+	f.t.Helper()
+	f.t.Setenv("PATH", filepath.Dir(resticBinary(f.t))+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(f.passwordFile, []byte(testRepoPassword), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	return f
+}
+
+// resticBinary locates the restic to test against, skipping when the host
+// has none.
+func resticBinary(t *testing.T) string {
+	t.Helper()
+	if path, err := exec.LookPath("restic"); err == nil {
+		return path
+	}
+	if info, err := os.Stat(resticPinnedPath); err == nil && info.Mode().IsRegular() {
+		return resticPinnedPath
+	}
+	t.Skip("restic binary not available")
+	return ""
+}
+
+// repoArgs is this fixture's explicit repository selection.
+func (f *fixture) repoArgs() []string {
+	return []string{"--repo", f.repoDir, "--password-file", f.passwordFile}
+}
+
+// with appends the repository selection to a command.
+func (f *fixture) with(args ...string) []string {
+	return append(args, f.repoArgs()...)
 }
 
 // run drives one invocation and returns its stdout, stderr, and exit code.
@@ -83,15 +140,24 @@ func (f *fixture) ok(args ...string) (stdout, stderr string) {
 	return stdout, stderr
 }
 
-// withStore appends this fixture's local archive selection to a command.
-func (f *fixture) withStore(args ...string) []string {
-	return append(args, "--archive-backend", "local", "--archive-root", f.archiveRoot)
+// mustExit drives one invocation that must exit with a specific code.
+func (f *fixture) mustExit(want int, args ...string) (stdout, stderr string) {
+	f.t.Helper()
+	stdout, stderr, code := f.run(args...)
+	if code != want {
+		f.t.Fatalf("babel %s exited %d, want %d\nstdout:\n%s\nstderr:\n%s",
+			strings.Join(args, " "), code, want, stdout, stderr)
+	}
+	return stdout, stderr
 }
 
 // blob writes one synthetic blob into the OMP blob store and returns the
 // "blob:sha256:<hex>" reference a session log embeds.
 func (f *fixture) blob(content string) string {
 	f.t.Helper()
+	if err := os.MkdirAll(f.blobsDir, 0o700); err != nil {
+		f.t.Fatal(err)
+	}
 	sum := sha256.Sum256([]byte(content))
 	name := hex.EncodeToString(sum[:])
 	if err := os.WriteFile(filepath.Join(f.blobsDir, name), []byte(content), 0o600); err != nil {
@@ -104,22 +170,23 @@ func (f *fixture) blob(content string) string {
 type sessionSpec struct {
 	project   string
 	stem      string
+	id        string
 	title     string
 	workspace string
 	blobRef   string
 	artifacts map[string]string
 }
 
-// writeSession materializes one synthetic session in the OMP layout the
+// writeSession materializes one synthetic session in the layout the OMP
 // adapter documents: "<sessions>/<project>/<stem>.jsonl" for the primary
 // log plus a sibling "<stem>/" directory for its artifact tree.
-func (f *fixture) writeSession(spec sessionSpec) {
+func (f *fixture) writeSession(spec sessionSpec) string {
 	f.t.Helper()
 	dir := filepath.Join(f.sessionsDir, spec.project)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		f.t.Fatal(err)
 	}
-	var b strings.Builder
+	var b bytes.Buffer
 	b.Write(jsonLine(f.t, map[string]any{
 		"type":      "title",
 		"v":         1,
@@ -131,7 +198,7 @@ func (f *fixture) writeSession(spec sessionSpec) {
 	b.Write(jsonLine(f.t, map[string]any{
 		"type":        "session",
 		"version":     3,
-		"id":          "00000000-0000-4000-8000-0000000000" + spec.stem[len(spec.stem)-2:],
+		"id":          spec.id,
 		"timestamp":   "2026-01-02T03:04:05.678Z",
 		"cwd":         spec.workspace,
 		"titleSource": "auto",
@@ -146,7 +213,8 @@ func (f *fixture) writeSession(spec sessionSpec) {
 		"timestamp": "2026-01-02T03:10:00.000Z",
 		"message":   map[string]any{"role": "user", "content": content},
 	}))
-	if err := os.WriteFile(filepath.Join(dir, spec.stem+".jsonl"), []byte(b.String()), 0o600); err != nil {
+	primary := filepath.Join(dir, spec.stem+".jsonl")
+	if err := os.WriteFile(primary, b.Bytes(), 0o600); err != nil {
 		f.t.Fatal(err)
 	}
 	for rel, body := range spec.artifacts {
@@ -158,25 +226,28 @@ func (f *fixture) writeSession(spec sessionSpec) {
 			f.t.Fatal(err)
 		}
 	}
+	return primary
 }
 
-// jsonLine renders one canonical JSONL record.
-func jsonLine(t *testing.T, rec map[string]any) []byte {
-	t.Helper()
-	raw, err := json.Marshal(rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return append(raw, '\n')
-}
+// richSessionStem names the fixture session that carries an artifact tree
+// and a resolvable blob.
+const richSessionStem = "2026-01-02T03-04-05-678Z_00000000-0000-4000-8000-000000000001"
 
-// twoSessions populates the fixture with a rich session (artifact tree plus
-// a resolvable blob) and a bare one.
-func (f *fixture) twoSessions() {
+// bareSessionStem names the fixture session with no closure beyond its log.
+const bareSessionStem = "2026-01-03T06-07-08-900Z_00000000-0000-4000-8000-000000000002"
+
+// hostileSessionStem names the fixture session whose title is a
+// presentation attack.
+const hostileSessionStem = "2026-01-04T09-10-11-121Z_00000000-0000-4000-8000-000000000003"
+
+// threeSessions populates the fixture with a rich session, a bare one, and
+// one whose title is hostile. It returns the rich session's primary path.
+func (f *fixture) threeSessions() string {
 	f.t.Helper()
-	f.writeSession(sessionSpec{
-		project:   "-synthetic-project",
-		stem:      "2026-01-02T03-04-05-678Z_00000000-0000-4000-8000-000000000001",
+	primary := f.writeSession(sessionSpec{
+		project:   "synthetic-project",
+		stem:      richSessionStem,
+		id:        "00000000-0000-4000-8000-000000000001",
 		title:     "Synthetic fixture session one",
 		workspace: "/synthetic/workspace/one",
 		blobRef:   f.blob("synthetic blob payload"),
@@ -186,11 +257,30 @@ func (f *fixture) twoSessions() {
 		},
 	})
 	f.writeSession(sessionSpec{
-		project:   "-synthetic-other",
-		stem:      "2026-01-03T06-07-08-900Z_00000000-0000-4000-8000-000000000002",
+		project:   "synthetic-other",
+		stem:      bareSessionStem,
+		id:        "00000000-0000-4000-8000-000000000002",
 		title:     "Synthetic fixture session two",
 		workspace: "/synthetic/workspace/two",
 	})
+	f.writeSession(sessionSpec{
+		project:   "synthetic-hostile",
+		stem:      hostileSessionStem,
+		id:        "00000000-0000-4000-8000-000000000003",
+		title:     hostileTitle,
+		workspace: "/synthetic/workspace/" + hostileTitle,
+	})
+	return primary
+}
+
+// jsonLine renders one JSONL record.
+func jsonLine(t *testing.T, rec map[string]any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(raw, '\n')
 }
 
 // decode parses a --json result document, proving stdout carries exactly
@@ -209,9 +299,9 @@ func decode[T any](t *testing.T, stdout string) T {
 	return v
 }
 
-// storeSnapshot digests every object in the local archive so a test can
-// prove a command left the store byte-identical.
-func storeSnapshot(t *testing.T, root string) map[string]string {
+// treeDigest digests every file below root so a test can prove a command
+// left a tree byte-identical.
+func treeDigest(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -239,6 +329,26 @@ func storeSnapshot(t *testing.T, root string) map[string]string {
 	return out
 }
 
+// assertInert fails when a stream carries a byte or rune that could move a
+// terminal's cursor, reorder its text, or hide characters.
+func assertInert(t *testing.T, label, out string) {
+	t.Helper()
+	for _, bad := range []struct {
+		name string
+		text string
+	}{
+		{"ESC", "\x1b"},
+		{"BEL", "\x07"},
+		{"C1 CSI", "\u009b"},
+		{"bidi override", "\u202e"},
+		{"bidi pop", "\u202c"},
+	} {
+		if strings.Contains(out, bad.text) {
+			t.Fatalf("%s leaked a raw %s:\n%q", label, bad.name, out)
+		}
+	}
+}
+
 func TestVersionReportsBuildIdentity(t *testing.T) {
 	f := newFixture(t)
 
@@ -263,7 +373,7 @@ func TestVersionReportsBuildIdentity(t *testing.T) {
 	}
 }
 
-func TestBareBabelAnnouncesTUIAndSucceeds(t *testing.T) {
+func TestBareBabelAnnouncesTUIAndHelpGoesToStdout(t *testing.T) {
 	f := newFixture(t)
 	stdout, stderr, code := f.run()
 	if code != exitOK {
@@ -275,22 +385,18 @@ func TestBareBabelAnnouncesTUIAndSucceeds(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("bare babel wrote diagnostics: %q", stderr)
 	}
-}
 
-func TestHelpGoesToStdout(t *testing.T) {
-	f := newFixture(t)
 	for _, args := range [][]string{
 		{"-h"},
 		{"archive", "-h"},
 		{"sessions", "-h"},
 		{"version", "-h"},
 		{"archive", "push", "-h"},
+		{"archive", "verify", "-h"},
+		{"sessions", "fetch", "-h"},
 		{"sessions", "prune", "-h"},
 	} {
-		stdout, stderr, code := f.run(args...)
-		if code != exitOK {
-			t.Fatalf("babel %s exited %d", strings.Join(args, " "), code)
-		}
+		stdout, stderr := f.ok(args...)
 		if !strings.Contains(stdout, "Usage:") {
 			t.Fatalf("babel %s printed no usage on stdout: %q", strings.Join(args, " "), stdout)
 		}
@@ -300,666 +406,609 @@ func TestHelpGoesToStdout(t *testing.T) {
 	}
 }
 
-// TestPushThenReadCommands is the milestone's end-to-end contract: a real
-// publication over a synthetic OMP tree, then every read command against
-// the committed generation.
-func TestPushThenReadCommands(t *testing.T) {
-	f := newFixture(t)
-	f.twoSessions()
+// TestPushThenStatusAndVerify is the milestone's end-to-end contract: a
+// real backup of a synthetic source tree into a real restic repository,
+// then every read command against it.
+func TestPushThenStatusAndVerify(t *testing.T) {
+	f := newFixture(t).withRepo()
+	f.threeSessions()
 
-	stdout, stderr := f.ok(f.withStore("archive", "push", "--json", "--display-name", "Synthetic Workstation")...)
+	stdout, stderr := f.ok(f.with("archive", "push", "--json")...)
 	push := decode[pushResult](t, stdout)
-	if push.Generation != 1 || !push.Changed || !push.Bootstrap {
-		t.Fatalf("unexpected push result: %+v", push)
+	if push.SnapshotID == "" {
+		t.Fatalf("push reported no snapshot: %+v", push)
 	}
-	if push.HostID != testHostID {
-		t.Fatalf("push host = %q", push.HostID)
+	if push.Host != testHostID {
+		t.Fatalf("push host = %q, want %q", push.Host, testHostID)
 	}
-	if push.Sessions != 2 || push.Revisions != 2 || push.Published != 2 || push.Deferred != 0 {
-		t.Fatalf("unexpected push counts: %+v", push)
+	if push.Incomplete {
+		t.Fatalf("push reported an incomplete backup: %+v", push)
 	}
-	if push.CommitKey == "" || push.CommitDigest == "" {
-		t.Fatalf("push reported no commit: %+v", push)
+	if push.FilesNew == 0 || push.FilesProcessed == 0 || push.BytesProcessed == 0 {
+		t.Fatalf("push processed nothing: %+v", push)
 	}
-	omp := coverageFor(t, push.Coverage, "omp")
-	if omp.Scanned != 2 || omp.Published != 2 || !omp.Complete {
-		t.Fatalf("unexpected omp coverage: %+v", omp)
+	// BackupRoots must add OMP's blob store to the session root, so a
+	// snapshot can restore a continuation-grade closure (SPEC.md §3).
+	wantRoots := []string{
+		filepath.Join(f.home, ".omp", "agent", "blobs"),
+		filepath.Join(f.home, ".omp", "agent", "sessions"),
 	}
-	if len(push.Coverage) != 3 {
-		t.Fatalf("expected coverage for three adapters, got %d", len(push.Coverage))
+	if !slices.Equal(push.Roots, wantRoots) {
+		t.Fatalf("push roots = %v, want %v", push.Roots, wantRoots)
 	}
-	// The coverage table is diagnostic context, so it must be on stderr and
-	// must not pollute the machine-readable document.
-	if !strings.Contains(stderr, "HARNESS") {
-		t.Fatalf("coverage table missing from stderr:\n%s", stderr)
-	}
-	if strings.Contains(stdout, "HARNESS") {
-		t.Fatalf("coverage table leaked into stdout:\n%s", stdout)
+	if strings.Contains(stderr, "{") {
+		t.Fatalf("push wrote result data to stderr: %q", stderr)
 	}
 
-	stdout, _ = f.ok(f.withStore("archive", "catalog", "--json")...)
-	cat := decode[catalogResult](t, stdout)
-	if len(cat.Hosts) != 1 || cat.Hosts[0].HostID != testHostID {
-		t.Fatalf("unexpected catalog hosts: %+v", cat.Hosts)
-	}
-	if cat.Hosts[0].Generation != 1 || cat.Hosts[0].Sessions != 2 {
-		t.Fatalf("unexpected catalog host: %+v", cat.Hosts[0])
-	}
-	if cat.Hosts[0].DisplayName != "Synthetic Workstation" {
-		t.Fatalf("display name = %q", cat.Hosts[0].DisplayName)
-	}
-	if cat.Sessions != 2 || cat.Revisions != 2 {
-		t.Fatalf("unexpected catalog totals: %+v", cat)
+	// A second push is a no-op backup: nothing is unreadable and the
+	// repository already holds every file.
+	stdout, _ = f.ok(f.with("archive", "push", "--json")...)
+	second := decode[pushResult](t, stdout)
+	if second.SnapshotID == "" || second.FilesUnmodified == 0 {
+		t.Fatalf("second push did not deduplicate: %+v", second)
 	}
 
-	stdout, _ = f.ok(f.withStore("archive", "status", "--json")...)
+	stdout, stderr = f.ok(f.with("archive", "status", "--json")...)
 	status := decode[statusResult](t, stdout)
+	if status.Snapshots != 2 {
+		t.Fatalf("status snapshots = %d, want 2", status.Snapshots)
+	}
 	if len(status.Hosts) != 1 {
-		t.Fatalf("unexpected status hosts: %+v", status.Hosts)
+		t.Fatalf("status hosts = %+v, want exactly one", status.Hosts)
 	}
 	host := status.Hosts[0]
-	if host.Generation != 1 || !host.BootstrapComplete {
-		t.Fatalf("unexpected status host: %+v", host)
+	if host.Host != testHostID || host.Snapshots != 2 {
+		t.Fatalf("status host row = %+v", host)
 	}
-	if !host.HintPresent || host.HintStale || host.HintGeneration != 1 {
-		t.Fatalf("unexpected hint state: %+v", host)
+	if host.LatestID != second.SnapshotID {
+		t.Fatalf("status latest id = %q, want the newest push %q", host.LatestID, second.SnapshotID)
 	}
-	if !host.JournalPresent || len(status.Journals) != 1 || status.Journals[0] != testHostID {
-		t.Fatalf("push did not leave a local journal for its host: %+v", status)
+	if host.LatestTime == "" || host.LatestShortID == "" {
+		t.Fatalf("status host row is missing latest state: %+v", host)
 	}
-	if status.StateDir != f.stateDir {
-		t.Fatalf("state dir = %q, want %q", status.StateDir, f.stateDir)
+	if len(host.Tags) != 1 || host.Tags[0] != babelTag {
+		t.Fatalf("status tags = %v, want [%s]", host.Tags, babelTag)
+	}
+	if strings.Contains(stderr, "{") {
+		t.Fatalf("status wrote result data to stderr: %q", stderr)
 	}
 
-	stdout, _ = f.ok(f.withStore("sessions", "list", "--json")...)
+	// The human table names the host and its snapshot without help.
+	stdout, _ = f.ok(f.with("archive", "status")...)
+	if !strings.Contains(stdout, testHostID) || !strings.Contains(stdout, host.LatestShortID) {
+		t.Fatalf("status table = %q", stdout)
+	}
+
+	stdout, stderr = f.ok(f.with("archive", "verify", "--json")...)
+	verify := decode[verifyResult](t, stdout)
+	if !verify.OK || verify.Deep || verify.Error != "" {
+		t.Fatalf("verify = %+v", verify)
+	}
+	if strings.Contains(stderr, "{") {
+		t.Fatalf("verify wrote result data to stderr: %q", stderr)
+	}
+
+	// --restic-binary selects the executable without any help from PATH,
+	// which is what makes Babel usable where restic is not installed
+	// system-wide.
+	t.Setenv("PATH", "")
+	stdout, _ = f.ok(f.with("archive", "verify", "--restic-binary", resticBinary(t))...)
+	if !strings.HasPrefix(stdout, "ok") {
+		t.Fatalf("verify with an explicit binary = %q", stdout)
+	}
+}
+
+func TestPushWarnsWhenNoSourceRootExists(t *testing.T) {
+	f := newFixture(t).withRepo()
+
+	stdout, stderr := f.ok(f.with("archive", "push", "--json")...)
+	push := decode[pushResult](t, stdout)
+	if push.SnapshotID != "" || len(push.Roots) != 0 {
+		t.Fatalf("push invented work: %+v", push)
+	}
+	if !strings.Contains(stderr, "no source root exists") {
+		t.Fatalf("push did not warn about the empty host: %q", stderr)
+	}
+	if _, err := os.Stat(f.repoDir); !os.IsNotExist(err) {
+		t.Fatalf("push touched the repository with nothing to back up: %v", err)
+	}
+}
+
+// TestPushReportsAnIncompleteBackup covers restic's partial-backup exit:
+// the snapshot it produced is real and must still be summarized, the
+// per-file diagnostics must reach stderr sanitized, and the invocation
+// must fail so an operator's wrapper notices.
+func TestPushReportsAnIncompleteBackup(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads unreadable files, so no partial backup can be provoked")
+	}
+	f := newFixture(t).withRepo()
+	f.threeSessions()
+	unreadable := filepath.Join(f.sessionsDir, "synthetic-project", "unreadable.jsonl")
+	if err := os.WriteFile(unreadable, []byte("{\"type\":\"title\",\"title\":\"synthetic\"}\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr := f.mustExit(exitFailure, f.with("archive", "push", "--json")...)
+	push := decode[pushResult](t, stdout)
+	if !push.Incomplete {
+		t.Fatalf("a partial backup was reported as complete: %+v", push)
+	}
+	if push.SnapshotID == "" {
+		t.Fatalf("a partial backup reported no snapshot: %+v", push)
+	}
+	if !strings.Contains(stderr, "restic") || !strings.Contains(stderr, "unreadable.jsonl") {
+		t.Fatalf("restic's per-file diagnostic never reached stderr: %q", stderr)
+	}
+	assertInert(t, "push stderr", stderr)
+
+	// The snapshot it did commit is usable: status sees it and verify
+	// passes over it.
+	stdout, _ = f.ok(f.with("archive", "status", "--json")...)
+	if status := decode[statusResult](t, stdout); status.Snapshots != 1 {
+		t.Fatalf("status after a partial backup = %+v", status)
+	}
+	f.ok(f.with("archive", "verify")...)
+}
+
+func TestEnvironmentSelectsRepository(t *testing.T) {
+	f := newFixture(t).withRepo()
+	f.threeSessions()
+	t.Setenv("BABEL_RESTIC_REPO", f.repoDir)
+	t.Setenv("BABEL_RESTIC_PASSWORD_FILE", f.passwordFile)
+
+	stdout, _ := f.ok("archive", "push", "--json")
+	if push := decode[pushResult](t, stdout); push.SnapshotID == "" {
+		t.Fatalf("push through the environment reported no snapshot: %+v", push)
+	}
+	stdout, _ = f.ok("archive", "status", "--json")
+	if status := decode[statusResult](t, stdout); status.Snapshots != 1 {
+		t.Fatalf("status through the environment = %+v", status)
+	}
+}
+
+func TestSessionsListDescribesEverySessionInertly(t *testing.T) {
+	f := newFixture(t)
+	f.threeSessions()
+
+	stdout, stderr := f.ok("sessions", "list", "--json")
+	if stderr != "" {
+		t.Fatalf("sessions list wrote diagnostics: %q", stderr)
+	}
+	assertInert(t, "sessions list --json stdout", stdout)
 	list := decode[sessionsResult](t, stdout)
-	if len(list.Sessions) != 2 {
-		t.Fatalf("unexpected session count: %+v", list.Sessions)
+	if len(list.Sessions) != 3 {
+		t.Fatalf("listed %d sessions, want 3: %+v", len(list.Sessions), list.Sessions)
 	}
-	first := list.Sessions[0]
-	if first.Harness != "omp" || first.HostID != testHostID {
-		t.Fatalf("unexpected session row: %+v", first)
+	var hostile *sessionRow
+	for i, row := range list.Sessions {
+		if row.Harness != "omp" {
+			t.Fatalf("row %d harness = %q", i, row.Harness)
+		}
+		if row.Size == 0 {
+			t.Fatalf("row %d reports no size: %+v", i, row)
+		}
+		if row.Modified == nil || *row.Modified == "" {
+			t.Fatalf("row %d has no modification time: %+v", i, row)
+		}
+		if row.Selector != row.Harness+"/"+row.SourceID {
+			t.Fatalf("row %d selector = %q", i, row.Selector)
+		}
+		if strings.Contains(row.SourceID, hostileSessionStem) {
+			hostile = &list.Sessions[i]
+		}
 	}
-	if first.Title == nil || !strings.HasPrefix(*first.Title, "Synthetic fixture session") {
-		t.Fatalf("unexpected title: %+v", first.Title)
+	if hostile == nil {
+		t.Fatalf("the hostile session is missing from the listing: %+v", list.Sessions)
 	}
-	if first.Workspace == nil || !strings.HasPrefix(*first.Workspace, "/synthetic/workspace/") {
-		t.Fatalf("unexpected workspace: %+v", first.Workspace)
+	if hostile.Title == nil || !strings.Contains(*hostile.Title, `\u{1B}`) {
+		t.Fatalf("hostile title was not escaped: %+v", hostile.Title)
 	}
-	if first.Revisions != 1 {
-		t.Fatalf("unexpected revision count: %d", first.Revisions)
-	}
-
-	// The harness filter selects a harness that published nothing.
-	stdout, _ = f.ok(f.withStore("sessions", "list", "--json", "--harness", "codex")...)
-	if got := decode[sessionsResult](t, stdout); len(got.Sessions) != 0 {
-		t.Fatalf("codex filter returned %d sessions", len(got.Sessions))
-	}
-
-	// The rich session is the one carrying artifacts and a blob.
-	rich := richSession(t, list.Sessions)
-	stdout, _ = f.ok(f.withStore("sessions", "inspect", rich.SessionKey, "--json")...)
-	insp := decode[inspectResult](t, stdout)
-	if insp.SessionKey != rich.SessionKey || insp.RevisionKey != rich.NewestRevision {
-		t.Fatalf("inspect resolved %+v, want session %s", insp, rich.SessionKey)
-	}
-	if insp.Encoding != "full" || insp.ChainDepth != 0 {
-		t.Fatalf("unexpected encoding/chain: %+v", insp)
-	}
-	if insp.Artifacts != 2 || insp.Blobs != 1 {
-		t.Fatalf("unexpected closure counts: %+v", insp)
-	}
-	if insp.ContentSize == 0 || !strings.HasPrefix(insp.ContentDigest, "sha256:") {
-		t.Fatalf("unexpected content reference: %+v", insp)
-	}
-	if insp.Generation != 1 || insp.GenerationAdded != 1 || insp.SessionRevisions != 1 {
-		t.Fatalf("unexpected generation detail: %+v", insp)
-	}
-	if !insp.ContinuationGrade {
-		t.Fatal("omp snapshot with a resolved closure should be continuation grade")
+	if hostile.Workspace == nil || !strings.Contains(*hostile.Workspace, `\u{202E}`) {
+		t.Fatalf("hostile workspace was not escaped: %+v", hostile.Workspace)
 	}
 
-	// Human output is a table, and diagnostics never reach stdout.
-	stdout, _ = f.ok(f.withStore("sessions", "list")...)
-	if !strings.Contains(stdout, "SESSION") || !strings.Contains(stdout, "REVISIONS") {
-		t.Fatalf("human listing = %q", stdout)
+	// The human table is equally inert, and absent nullable fields are
+	// displayed as absence rather than filled in (SPEC.md §3).
+	stdout, _ = f.ok("sessions", "list")
+	assertInert(t, "sessions list stdout", stdout)
+	if !strings.Contains(stdout, "HARNESS") || !strings.Contains(stdout, richSessionStem) {
+		t.Fatalf("sessions list table = %q", stdout)
 	}
 
-	stdout, _ = f.ok(f.withStore("sessions", "fetch", rich.SessionKey, "--json")...)
-	fetched := decode[fetchResult](t, stdout)
-	if fetched.AlreadyFetched {
-		t.Fatalf("first fetch reported an existing bundle: %+v", fetched)
+	// --harness restricts the scan; the harnesses with no local tree list
+	// nothing at all rather than failing.
+	stdout, _ = f.ok("sessions", "list", "--harness", "claude", "--json")
+	if claude := decode[sessionsResult](t, stdout); len(claude.Sessions) != 0 {
+		t.Fatalf("claude listed sessions from an omp tree: %+v", claude.Sessions)
 	}
-	if fetched.Files != 4 {
-		// primary transcript, two artifacts, one blob
-		t.Fatalf("unexpected file count: %+v", fetched)
-	}
-	wantPrefix := filepath.Join(f.dataDir, "bundles")
-	if !strings.HasPrefix(fetched.Dir, wantPrefix) {
-		t.Fatalf("bundle %q is not under %q", fetched.Dir, wantPrefix)
-	}
-	if got := filepath.Base(fetched.Dir); len(got) != digestPrefixLen {
-		t.Fatalf("bundle leaf %q does not name a digest prefix", got)
-	}
-	if files, _, err := treeSize(fetched.Dir); err != nil || files != fetched.Files {
-		t.Fatalf("materialized tree has %d files (err %v), reported %d", files, err, fetched.Files)
+	stdout, _ = f.ok("sessions", "list", "--harness", "omp", "--json")
+	if only := decode[sessionsResult](t, stdout); len(only.Sessions) != 3 {
+		t.Fatalf("--harness omp listed %d sessions, want 3", len(only.Sessions))
 	}
 
-	stdout, _ = f.ok(f.withStore("archive", "verify", "--json")...)
-	rep := decode[verifyResult](t, stdout)
-	if !rep.OK || rep.Deep {
-		t.Fatalf("unexpected verify report: %+v", rep)
-	}
-	if len(rep.Hosts) != 1 || rep.Hosts[0].Revisions != 2 || rep.Hosts[0].Objects == 0 {
-		t.Fatalf("unexpected verify hosts: %+v", rep.Hosts)
-	}
-	if len(rep.Hosts[0].Errors) != 0 {
-		t.Fatalf("verify reported errors: %+v", rep.Hosts[0].Errors)
-	}
-
-	stdout, _ = f.ok(f.withStore("archive", "verify", "--deep", "--json")...)
-	if deep := decode[verifyResult](t, stdout); !deep.OK || !deep.Deep {
-		t.Fatalf("unexpected deep verify report: %+v", deep)
+	// An explicit root override replaces the adapter defaults.
+	stdout, _ = f.ok("sessions", "list", "--roots", filepath.Join(f.root, "absent"), "--json")
+	if empty := decode[sessionsResult](t, stdout); len(empty.Sessions) != 0 {
+		t.Fatalf("an empty root override still listed sessions: %+v", empty.Sessions)
 	}
 }
 
-// TestInspectRevisionKeyRoundTripsIntoFetch guards the operator workflow the
-// renderer must not break: a revision key printed by the human detail view
-// is complete and can be pasted straight into the next command.
-func TestInspectRevisionKeyRoundTripsIntoFetch(t *testing.T) {
+func TestSessionsInspectShowsTheWholeClosure(t *testing.T) {
 	f := newFixture(t)
-	f.twoSessions()
-	f.ok(f.withStore("archive", "push")...)
+	f.threeSessions()
 
-	stdout, _ := f.ok(f.withStore("sessions", "list", "--json")...)
-	session := decode[sessionsResult](t, stdout).Sessions[0]
-
-	human, _ := f.ok(f.withStore("sessions", "inspect", session.SessionKey)...)
-	if !strings.Contains(human, session.NewestRevision) {
-		t.Fatalf("human inspect did not print the full revision key:\n%s", human)
+	// A segment-aligned suffix is enough to address a session.
+	stdout, stderr := f.ok("sessions", "inspect", richSessionStem, "--json")
+	if stderr != "" {
+		t.Fatalf("sessions inspect wrote diagnostics: %q", stderr)
+	}
+	assertInert(t, "sessions inspect --json stdout", stdout)
+	got := decode[inspectResult](t, stdout)
+	if got.Harness != "omp" || !strings.HasSuffix(got.SourceID, richSessionStem) {
+		t.Fatalf("inspect resolved the wrong session: %+v", got)
+	}
+	if got.PrimarySize == 0 || got.PrimaryPath == "" || got.DescribedAt == "" {
+		t.Fatalf("inspect reported no primary state: %+v", got)
+	}
+	if len(got.Artifacts) != 2 {
+		t.Fatalf("inspect artifacts = %+v, want 2", got.Artifacts)
+	}
+	if len(got.Blobs) != 1 {
+		t.Fatalf("inspect blobs = %+v, want 1", got.Blobs)
+	}
+	if !strings.HasPrefix(got.Blobs[0].Digest, "sha256:") {
+		t.Fatalf("blob digest is not canonical: %+v", got.Blobs[0])
+	}
+	if len(got.UnresolvedBlobRefs) != 0 || !got.ContinuationGrade {
+		t.Fatalf("a complete closure was not graded continuable: %+v", got)
+	}
+	if len(got.Completeness) == 0 {
+		t.Fatal("inspect reported no reasons for its absent fields")
+	}
+	for _, reason := range got.Completeness {
+		if reason.Field == "" || reason.Reason == "" {
+			t.Fatalf("empty completeness reason: %+v", reason)
+		}
+	}
+	if got.Lifecycle != nil {
+		t.Fatalf("lifecycle was synthesized: %+v", got.Lifecycle)
+	}
+	if len(got.AdapterMetadata) == 0 || got.AdapterMetadataSchema == 0 {
+		t.Fatalf("inspect dropped the adapter metadata: %+v", got)
 	}
 
-	stdout, _ = f.ok(f.withStore("sessions", "fetch", session.NewestRevision, "--json")...)
-	if got := decode[fetchResult](t, stdout); got.RevisionKey != session.NewestRevision {
-		t.Fatalf("fetch resolved %q, want %q", got.RevisionKey, session.NewestRevision)
+	// The selector reported by list feeds straight back into inspect, and
+	// the human rendering stays inert for the hostile session.
+	stdout, _ = f.ok("sessions", "list", "--json")
+	for _, row := range decode[sessionsResult](t, stdout).Sessions {
+		if !strings.Contains(row.SourceID, hostileSessionStem) {
+			continue
+		}
+		detail, _ := f.ok("sessions", "inspect", row.Selector)
+		assertInert(t, "sessions inspect stdout", detail)
+		if !strings.Contains(detail, `\u{1B}`) {
+			t.Fatalf("hostile title was not escaped in the detail view: %q", detail)
+		}
 	}
 }
 
-func TestPushIsIdempotentAndFetchIsIdempotent(t *testing.T) {
-	f := newFixture(t)
-	f.twoSessions()
-	f.ok(f.withStore("archive", "push")...)
+func TestFetchMaterializesTheSessionAndIsIdempotent(t *testing.T) {
+	f := newFixture(t).withRepo()
+	primary := f.threeSessions()
+	f.ok(f.with("archive", "push")...)
 
-	stdout, _ := f.ok(f.withStore("archive", "push", "--json")...)
-	second := decode[pushResult](t, stdout)
-	if second.Changed || second.Generation != 1 {
-		t.Fatalf("unchanged corpus committed a generation: %+v", second)
+	stdout, stderr := f.ok(f.with("sessions", "fetch", richSessionStem, "--json")...)
+	fetch := decode[fetchResult](t, stdout)
+	if fetch.AlreadyPresent {
+		t.Fatalf("the first fetch claimed the target already existed: %+v", fetch)
 	}
-	if second.Published != 0 || second.CarriedForward != 2 {
-		t.Fatalf("unexpected second push counts: %+v", second)
+	if fetch.Files == 0 || fetch.Bytes == 0 {
+		t.Fatalf("fetch restored nothing: %+v", fetch)
 	}
-
-	stdout, _ = f.ok(f.withStore("sessions", "list", "--json")...)
-	key := decode[sessionsResult](t, stdout).Sessions[0].SessionKey
-
-	stdout, _ = f.ok(f.withStore("sessions", "fetch", key, "--json")...)
-	first := decode[fetchResult](t, stdout)
-	if first.AlreadyFetched {
-		t.Fatal("first fetch reported an existing bundle")
+	if fetch.SnapshotID == "" || fetch.SnapshotShortID == "" || fetch.SnapshotTime == "" {
+		t.Fatalf("fetch did not report its snapshot: %+v", fetch)
 	}
-
-	stdout, stderr, code := f.run(f.withStore("sessions", "fetch", key, "--json")...)
-	if code != exitOK {
-		t.Fatalf("second fetch exited %d\nstderr:\n%s", code, stderr)
+	if !strings.HasPrefix(fetch.Target, f.dataDir) {
+		t.Fatalf("fetch target %q is outside the data directory %q", fetch.Target, f.dataDir)
 	}
-	again := decode[fetchResult](t, stdout)
-	if !again.AlreadyFetched {
-		t.Fatalf("second fetch did not report idempotence: %+v", again)
-	}
-	if again.Dir != first.Dir || again.Files != first.Files || again.TotalSize != first.TotalSize {
-		t.Fatalf("second fetch disagrees with the first: %+v vs %+v", again, first)
-	}
-	if !strings.Contains(stderr, "already fetched") {
-		t.Fatalf("idempotent fetch printed no diagnostic: %q", stderr)
-	}
-}
-
-func TestPruneLocalRemovesOnlyBundles(t *testing.T) {
-	f := newFixture(t)
-	f.twoSessions()
-	f.ok(f.withStore("archive", "push")...)
-
-	stdout, _ := f.ok(f.withStore("sessions", "list", "--json")...)
-	sessions := decode[sessionsResult](t, stdout).Sessions
-	if len(sessions) != 2 {
-		t.Fatalf("expected two sessions, got %d", len(sessions))
-	}
-	for _, s := range sessions {
-		f.ok(f.withStore("sessions", "fetch", s.SessionKey)...)
+	if _, err := os.Stat(fetch.Target + ".partial"); !os.IsNotExist(err) {
+		t.Fatalf("fetch left its staging directory behind: %v", err)
 	}
 
-	bundles := filepath.Join(f.dataDir, "bundles")
-	before := storeSnapshot(t, f.archiveRoot)
-	if len(before) == 0 {
-		t.Fatal("archive is empty")
-	}
-	sourcesBefore := storeSnapshot(t, f.sessionsDir)
-
-	// Pruning exactly one session leaves the other bundle in place.
-	stdout, _ = f.ok("sessions", "prune", "--local", "--yes", "--json", sessions[0].SessionKey)
-	pruned := decode[pruneResult](t, stdout)
-	if len(pruned.Removed) != 1 || pruned.Files == 0 || pruned.BytesFreed == 0 {
-		t.Fatalf("unexpected prune result: %+v", pruned)
-	}
-	gone := filepath.Join(bundles, safeSessionDir(sessions[0].SessionKey))
-	if pruned.Removed[0].Path != gone {
-		t.Fatalf("pruned %q, want %q", pruned.Removed[0].Path, gone)
-	}
-	if _, err := os.Stat(gone); !os.IsNotExist(err) {
-		t.Fatalf("bundle %s survived prune (err %v)", gone, err)
-	}
-	kept := filepath.Join(bundles, safeSessionDir(sessions[1].SessionKey))
-	if _, err := os.Stat(kept); err != nil {
-		t.Fatalf("prune removed an unselected bundle: %v", err)
-	}
-
-	// Pruning everything empties the bundle root and nothing else.
-	stdout, _ = f.ok("sessions", "prune", "--local", "--all", "--yes", "--json")
-	if rest := decode[pruneResult](t, stdout); len(rest.Removed) != 1 {
-		t.Fatalf("unexpected --all prune result: %+v", rest)
-	}
-	entries, err := os.ReadDir(bundles)
+	// restic recreates absolute source paths beneath the target, so the
+	// restored primary log must be byte-identical to the source it was
+	// backed up from.
+	restored := filepath.Join(fetch.Target, primary)
+	want, err := os.ReadFile(primary)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("bundle root still holds %d entries", len(entries))
+	got, err := os.ReadFile(restored)
+	if err != nil {
+		t.Fatalf("restored primary log is missing: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("restored primary log differs from the source: %d vs %d bytes", len(got), len(want))
+	}
+	// The sibling artifact tree came back with it.
+	artifact := filepath.Join(fetch.Target, strings.TrimSuffix(primary, ".jsonl"), "nested", "7.bash.log")
+	if _, err := os.Stat(artifact); err != nil {
+		t.Fatalf("restored artifact is missing: %v", err)
 	}
 
-	if after := storeSnapshot(t, f.archiveRoot); !equalSnapshots(before, after) {
-		t.Fatal("local prune modified the object store")
+	// Fetch accounts for its whole requested closure: every included path
+	// is either materialized under the target or reported as absent from
+	// the snapshot, and the primary log is never merely assumed present.
+	if len(fetch.Included) == 0 {
+		t.Fatal("fetch reported no closure paths")
 	}
-	if after := storeSnapshot(t, f.sessionsDir); !equalSnapshots(sourcesBefore, after) {
-		t.Fatal("local prune modified local source sessions")
+	for _, path := range fetch.Included {
+		absent := containsString(fetch.Missing, path)
+		_, err := os.Lstat(filepath.Join(fetch.Target, path))
+		switch {
+		case err == nil && absent:
+			t.Fatalf("%s was restored but reported missing", path)
+		case err != nil && !absent:
+			t.Fatalf("%s was neither restored nor reported missing", path)
+		}
+	}
+	if containsString(fetch.Missing, primary) {
+		t.Fatalf("the primary log was reported missing from the snapshot: %+v", fetch.Missing)
 	}
 
-	// A second --all prune is a no-op that still succeeds.
+	before := treeDigest(t, fetch.Target)
+	stdout, stderr = f.ok(f.with("sessions", "fetch", richSessionStem, "--json")...)
+	again := decode[fetchResult](t, stdout)
+	if !again.AlreadyPresent {
+		t.Fatalf("the second fetch re-restored the session: %+v", again)
+	}
+	if again.Target != fetch.Target || again.Files != fetch.Files {
+		t.Fatalf("the second fetch disagreed with the first: %+v vs %+v", again, fetch)
+	}
+	if !strings.Contains(stderr, "already materialized") {
+		t.Fatalf("the second fetch did not note the existing target: %q", stderr)
+	}
+	if diff := diffTrees(before, treeDigest(t, fetch.Target)); diff != "" {
+		t.Fatalf("the second fetch rewrote the target: %s", diff)
+	}
+
+	// An explicit snapshot id resolves the same way "latest" did.
+	stdout, _ = f.ok(f.with("sessions", "fetch", richSessionStem, "--snapshot", fetch.SnapshotShortID, "--json")...)
+	if pinned := decode[fetchResult](t, stdout); pinned.Target != fetch.Target {
+		t.Fatalf("--snapshot resolved a different target: %q", pinned.Target)
+	}
+	if _, _, code := f.run(f.with("sessions", "fetch", richSessionStem, "--snapshot", "deadbeef")...); code != exitFailure {
+		t.Fatalf("an unknown snapshot exited %d, want %d", code, exitFailure)
+	}
+}
+
+func TestPruneLocalRemovesOnlyFetchedCopies(t *testing.T) {
+	f := newFixture(t).withRepo()
+	f.threeSessions()
+	f.ok(f.with("archive", "push")...)
+
+	stdout, _ := f.ok(f.with("sessions", "fetch", richSessionStem, "--json")...)
+	rich := decode[fetchResult](t, stdout)
+	stdout, _ = f.ok(f.with("sessions", "fetch", bareSessionStem, "--json")...)
+	bare := decode[fetchResult](t, stdout)
+
+	repoBefore := treeDigest(t, f.repoDir)
+	sourceBefore := treeDigest(t, f.sessionsDir)
+
+	stdout, stderr := f.ok("sessions", "prune", "--local", "--yes", rich.Selector, "--json")
+	prune := decode[pruneResult](t, stdout)
+	if len(prune.Removed) != 1 {
+		t.Fatalf("prune removed %+v, want exactly the fetched rich session", prune.Removed)
+	}
+	if prune.Files == 0 || prune.Bytes == 0 {
+		t.Fatalf("prune reported nothing removed: %+v", prune)
+	}
+	if strings.Contains(stderr, "{") {
+		t.Fatalf("prune wrote result data to stderr: %q", stderr)
+	}
+	if _, err := os.Stat(rich.Target); !os.IsNotExist(err) {
+		t.Fatalf("prune left the fetched rich session behind: %v", err)
+	}
+	if _, err := os.Stat(bare.Target); err != nil {
+		t.Fatalf("prune removed an unselected session: %v", err)
+	}
+	if diff := diffTrees(repoBefore, treeDigest(t, f.repoDir)); diff != "" {
+		t.Fatalf("prune touched the repository: %s", diff)
+	}
+	if diff := diffTrees(sourceBefore, treeDigest(t, f.sessionsDir)); diff != "" {
+		t.Fatalf("prune touched the harness sources: %s", diff)
+	}
+
+	// Pruning the same selector twice is a note, not a failure.
+	stdout, stderr = f.ok("sessions", "prune", "--local", "--yes", rich.Selector, "--json")
+	if repeat := decode[pruneResult](t, stdout); len(repeat.Removed) != 0 {
+		t.Fatalf("the second prune removed something: %+v", repeat.Removed)
+	}
+	if !strings.Contains(stderr, "no fetched directory matches") {
+		t.Fatalf("the second prune did not explain itself: %q", stderr)
+	}
+
+	// --all clears what is left, and still cannot reach the repository.
 	stdout, _ = f.ok("sessions", "prune", "--local", "--all", "--yes", "--json")
-	if empty := decode[pruneResult](t, stdout); len(empty.Removed) != 0 || empty.BytesFreed != 0 {
-		t.Fatalf("second prune removed something: %+v", empty)
+	if all := decode[pruneResult](t, stdout); len(all.Removed) != 1 {
+		t.Fatalf("--all removed %+v, want the remaining fetch", all.Removed)
+	}
+	if _, err := os.Stat(bare.Target); !os.IsNotExist(err) {
+		t.Fatalf("--all left a fetched session behind: %v", err)
+	}
+	if diff := diffTrees(repoBefore, treeDigest(t, f.repoDir)); diff != "" {
+		t.Fatalf("--all touched the repository: %s", diff)
 	}
 }
 
-func TestPruneRevisionSelectorTargetsOneBundle(t *testing.T) {
-	f := newFixture(t)
-	f.twoSessions()
-	f.ok(f.withStore("archive", "push")...)
+func TestVerifyDeepDetectsATamperedPack(t *testing.T) {
+	f := newFixture(t).withRepo()
+	f.threeSessions()
+	f.ok(f.with("archive", "push")...)
+	f.ok(f.with("archive", "verify")...)
 
-	stdout, _ := f.ok(f.withStore("sessions", "list", "--json")...)
-	session := decode[sessionsResult](t, stdout).Sessions[0]
-	stdout, _ = f.ok(f.withStore("sessions", "fetch", session.NewestRevision, "--json")...)
-	dir := decode[fetchResult](t, stdout).Dir
+	flipOneByte(t, largestPack(t, filepath.Join(f.repoDir, "data")))
+	// restic serves metadata from its cache; a deep check must read the
+	// repository itself, so the cache is dropped first.
+	if err := os.RemoveAll(f.cacheDir); err != nil {
+		t.Fatal(err)
+	}
 
-	stdout, _ = f.ok("sessions", "prune", "--local", "--yes", "--json", session.NewestRevision)
-	pruned := decode[pruneResult](t, stdout)
-	if len(pruned.Removed) != 1 || pruned.Removed[0].Path != dir {
-		t.Fatalf("revision selector pruned %+v, want %s", pruned.Removed, dir)
+	stdout, stderr := f.mustExit(exitFailure, f.with("archive", "verify", "--deep", "--json")...)
+	verify := decode[verifyResult](t, stdout)
+	if verify.OK || !verify.Deep || verify.Error == "" {
+		t.Fatalf("deep verify passed over a tampered pack: %+v", verify)
 	}
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Fatalf("revision bundle survived prune (err %v)", err)
+	if !strings.Contains(stderr, "verify repository") {
+		t.Fatalf("deep verify gave no detail on stderr: %q", stderr)
 	}
-	// The session directory itself remains, since only one revision was named.
-	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
-		t.Fatalf("session bundle directory was removed: %v", err)
-	}
+	assertInert(t, "verify stderr", stderr)
 }
 
-func TestVerifyDeepDetectsTamperedObject(t *testing.T) {
-	f := newFixture(t)
-	f.twoSessions()
-	f.ok(f.withStore("archive", "push")...)
+// largestPack picks the biggest pack file below dir, which is the one
+// holding the fixture's file data rather than its tree metadata.
+func largestPack(t *testing.T, dir string) string {
+	t.Helper()
+	var best string
+	var bestSize int64
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() > bestSize {
+			best, bestSize = path, info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if best == "" {
+		t.Fatalf("no pack file below %s", dir)
+	}
+	return best
+}
 
-	stdout, _ := f.ok(f.withStore("sessions", "list", "--json")...)
-	session := decode[sessionsResult](t, stdout).Sessions[0]
-	stdout, _ = f.ok(f.withStore("sessions", "inspect", session.SessionKey, "--json")...)
-	digest := archive.Digest(decode[inspectResult](t, stdout).ContentDigest)
-
-	// Flip one bit of a payload object, preserving its size: only the deep
-	// tier reads object bytes, so this is exactly the damage presence and
-	// size checks cannot see.
-	path := filepath.Join(f.archiveRoot, filepath.FromSlash(archive.CASKey(digest)))
+// flipOneByte corrupts exactly one byte of a file, leaving its length
+// untouched so only a content check can notice.
+func flipOneByte(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw[len(raw)/2] ^= 0x20
+	if len(raw) == 0 {
+		t.Fatalf("%s is empty", path)
+	}
+	raw[len(raw)/2] ^= 0xff
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
-	}
-
-	stdout, stderr, code := f.run(f.withStore("archive", "verify", "--json")...)
-	if code != exitOK {
-		t.Fatalf("default verify tier failed on a same-size flip (exit %d)\nstderr:\n%s", code, stderr)
-	}
-	if rep := decode[verifyResult](t, stdout); !rep.OK {
-		t.Fatalf("default tier reported errors: %+v", rep.Hosts)
-	}
-
-	stdout, stderr, code = f.run(f.withStore("archive", "verify", "--deep", "--json")...)
-	if code != exitFailure {
-		t.Fatalf("deep verify exited %d, want %d\nstderr:\n%s", code, exitFailure, stderr)
-	}
-	rep := decode[verifyResult](t, stdout)
-	if rep.OK || len(rep.Hosts) != 1 || len(rep.Hosts[0].Errors) == 0 {
-		t.Fatalf("deep verify did not report the tampered object: %+v", rep)
-	}
-	if !strings.Contains(stderr, "error:") {
-		t.Fatalf("deep verify printed no diagnostic:\n%s", stderr)
-	}
-
-	// A fetch of the damaged revision must fail rather than yield bytes.
-	if _, _, code := f.run(f.withStore("sessions", "fetch", session.SessionKey)...); code != exitFailure {
-		t.Fatalf("fetch of a tampered revision exited %d", code)
-	}
-}
-
-func TestVerifyWarnsWithoutFailing(t *testing.T) {
-	f := newFixture(t)
-	f.twoSessions()
-	f.ok(f.withStore("archive", "push")...)
-
-	// A latest hint that names no readable record is anomalous but never
-	// authoritative: verify warns and still succeeds.
-	hint := filepath.Join(f.archiveRoot, filepath.FromSlash(archive.LatestKey(testHostID)))
-	if err := os.WriteFile(hint, []byte(`{"hint_schema":1,"host_id":"testhost","generation":9,"commit":{"digest":"sha256:`+strings.Repeat("0", 64)+`","size":1}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	stdout, stderr, code := f.run(f.withStore("archive", "verify", "--json")...)
-	if code != exitOK {
-		t.Fatalf("verify exited %d on a warning-only archive\nstderr:\n%s", code, stderr)
-	}
-	rep := decode[verifyResult](t, stdout)
-	if !rep.OK || len(rep.Hosts[0].Warnings) == 0 {
-		t.Fatalf("expected warnings and success: %+v", rep.Hosts)
-	}
-	if !strings.Contains(stderr, "warning:") {
-		t.Fatalf("warnings did not reach stderr:\n%s", stderr)
-	}
-
-	// The same anomaly shows up as hint staleness in status.
-	stdout, _ = f.ok(f.withStore("archive", "status", "--json")...)
-	if host := decode[statusResult](t, stdout).Hosts[0]; !host.HintStale {
-		t.Fatalf("status did not report a stale hint: %+v", host)
-	}
-}
-
-// TestHostileMetadataIsAlwaysEscaped is the malicious-fixture contract of
-// SPEC.md §9: a title full of terminal control sequences must reach neither
-// stdout nor stderr in raw form, in table or JSON output.
-func TestHostileMetadataIsAlwaysEscaped(t *testing.T) {
-	f := newFixture(t)
-	const hostileTitle = "\x1b[31mred\x1b[0m \x1b]0;pwned\x07 \u202ereversed\u202c \u200bhidden\ufeff"
-	const hostileWorkspace = "/synthetic/\x1b[2Jworkspace\u2066/evil"
-	f.writeSession(sessionSpec{
-		project:   "-synthetic-project",
-		stem:      "2026-01-02T03-04-05-678Z_00000000-0000-4000-8000-000000000001",
-		title:     hostileTitle,
-		workspace: hostileWorkspace,
-	})
-	f.ok(f.withStore("archive", "push")...)
-
-	stdout, _ := f.ok(f.withStore("sessions", "list", "--json")...)
-	list := decode[sessionsResult](t, stdout)
-	if len(list.Sessions) != 1 {
-		t.Fatalf("expected one session, got %d", len(list.Sessions))
-	}
-	key := list.Sessions[0].SessionKey
-	if list.Sessions[0].Title == nil {
-		t.Fatal("hostile title was dropped instead of escaped")
-	}
-	if !strings.Contains(*list.Sessions[0].Title, "\\u{1B}") || !strings.Contains(*list.Sessions[0].Title, "\\u{202E}") {
-		t.Fatalf("title was not escaped: %q", *list.Sessions[0].Title)
-	}
-
-	for _, args := range [][]string{
-		{"sessions", "list"},
-		{"sessions", "list", "--json"},
-		{"sessions", "inspect", key},
-		{"sessions", "inspect", key, "--json"},
-	} {
-		stdout, stderr := f.ok(f.withStore(args...)...)
-		for name, out := range map[string]string{"stdout": stdout, "stderr": stderr} {
-			assertInert(t, strings.Join(args, " ")+" "+name, out)
-		}
-		if !strings.Contains(stdout, "\\u{1B}") {
-			t.Fatalf("babel %s did not escape ESC on stdout:\n%s", strings.Join(args, " "), stdout)
-		}
-		if !strings.Contains(stdout, "\\u{202E}") {
-			t.Fatalf("babel %s did not escape the bidi override on stdout:\n%s", strings.Join(args, " "), stdout)
-		}
-		if !strings.Contains(stdout, "\\u{200B}") || !strings.Contains(stdout, "\\u{FEFF}") {
-			t.Fatalf("babel %s did not escape invisible controls on stdout:\n%s", strings.Join(args, " "), stdout)
-		}
-	}
-}
-
-// assertInert fails when rendered output carries a raw control, bidi, or
-// invisible character.
-func assertInert(t *testing.T, label, out string) {
-	t.Helper()
-	for i, r := range out {
-		if r == '\n' || r == '\t' {
-			continue // layout emitted by the printer, never by a value
-		}
-		if r < 0x20 || r == 0x7f || unsafeRune(r) {
-			t.Fatalf("%s leaked raw %U at byte %d:\n%q", label, r, i, out)
-		}
 	}
 }
 
 func TestUsageErrorsExitTwo(t *testing.T) {
 	f := newFixture(t)
+	f.threeSessions()
+	// Two sessions sharing a stem across projects make a bare-stem
+	// selector ambiguous.
+	f.writeSession(sessionSpec{
+		project:   "synthetic-twin",
+		stem:      richSessionStem,
+		id:        "00000000-0000-4000-8000-000000000004",
+		title:     "Synthetic fixture twin",
+		workspace: "/synthetic/workspace/twin",
+	})
+
 	cases := []struct {
 		name string
 		args []string
+		want string
 	}{
-		{"unknown command", []string{"bogus"}},
-		{"unknown archive verb", []string{"archive", "bogus"}},
-		{"unknown sessions verb", []string{"sessions", "bogus"}},
-		{"archive without verb", []string{"archive"}},
-		{"sessions without verb", []string{"sessions"}},
-		{"missing backend", []string{"archive", "push"}},
-		{"missing root", []string{"archive", "push", "--archive-backend", "local"}},
-		{"unknown backend", []string{"sessions", "list", "--archive-backend", "sqlite", "--archive-root", f.archiveRoot}},
-		{"unknown flag", []string{"version", "--nope"}},
-		{"version with arguments", []string{"version", "extra"}},
-		{"unknown harness", f.withStore("sessions", "list", "--harness", "gemini")},
-		{"invalid host", f.withStore("archive", "catalog", "--host", "Not A Host")},
-		{"inspect without selector", f.withStore("sessions", "inspect")},
-		{"inspect with two selectors", f.withStore("sessions", "inspect", "a", "b")},
-		{"fetch without selector", f.withStore("sessions", "fetch")},
-		{"prune without --local", []string{"sessions", "prune", "--all", "--yes"}},
-		{"prune without --yes", []string{"sessions", "prune", "--local", "--all"}},
-		{"prune without selection", []string{"sessions", "prune", "--local", "--yes"}},
-		{"prune with --all and selector", []string{"sessions", "prune", "--local", "--all", "--yes", "omp/testhost/x"}},
-		{"prune invalid selector", []string{"sessions", "prune", "--local", "--yes", "not a key"}},
+		{"unknown command", []string{"frobnicate"}, "unknown command"},
+		{"unknown archive verb", []string{"archive", "wibble"}, "unknown archive subcommand"},
+		{"unknown sessions verb", []string{"sessions", "wibble"}, "unknown sessions subcommand"},
+		{"missing repository", []string{"archive", "status"}, "no restic repository selected"},
+		{"missing password file", []string{"archive", "status", "--repo", f.repoDir}, "no repository password file selected"},
+		{"missing repository on push", []string{"archive", "push"}, "no restic repository selected"},
+		{"unknown flag", []string{"archive", "status", "--nope"}, "flag provided but not defined"},
+		{"unknown harness", []string{"sessions", "list", "--harness", "emacs"}, "unknown --harness"},
+		{"no selector", []string{"sessions", "inspect"}, "requires a SELECTOR"},
+		{"ambiguous selector", []string{"sessions", "inspect", richSessionStem}, "is ambiguous"},
+		{"prune without local", []string{"sessions", "prune", "--yes", "--all"}, "requires --local"},
+		{"prune without yes", []string{"sessions", "prune", "--local", "--all"}, "without --yes"},
+		{"prune without a target", []string{"sessions", "prune", "--local", "--yes"}, "needs --all or at least one SELECTOR"},
+		{"prune with both", []string{"sessions", "prune", "--local", "--yes", "--all", "omp/x"}, "--all takes no selectors"},
+		{"push positional", []string{"archive", "push", "extra"}, "takes no positional arguments"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			stdout, stderr, code := f.run(tc.args...)
-			if code != exitUsage {
-				t.Fatalf("babel %s exited %d, want %d\nstdout:\n%s\nstderr:\n%s",
-					strings.Join(tc.args, " "), code, exitUsage, stdout, stderr)
-			}
+			stdout, stderr := f.mustExit(exitUsage, tc.args...)
 			if stdout != "" {
-				t.Fatalf("rejected invocation wrote to stdout: %q", stdout)
+				t.Fatalf("a rejected invocation wrote to stdout: %q", stdout)
 			}
-			if !strings.HasPrefix(stderr, "babel: ") || !strings.Contains(stderr, "Usage:") {
-				t.Fatalf("unhelpful usage error: %q", stderr)
+			if !strings.Contains(stderr, tc.want) {
+				t.Fatalf("stderr = %q, want it to mention %q", stderr, tc.want)
+			}
+			if !strings.Contains(stderr, "Usage:") {
+				t.Fatalf("a rejected invocation printed no usage: %q", stderr)
 			}
 		})
 	}
+
+	// An ambiguous selector names its candidates so the operator can
+	// qualify it.
+	_, stderr := f.mustExit(exitUsage, "sessions", "inspect", richSessionStem)
+	if !strings.Contains(stderr, "synthetic-project/"+richSessionStem) ||
+		!strings.Contains(stderr, "synthetic-twin/"+richSessionStem) {
+		t.Fatalf("ambiguity report listed no candidates: %q", stderr)
+	}
+
+	// A selector matching nothing is a failure, not a rejected invocation:
+	// the syntax was fine, the session simply is not here.
+	f.mustExit(exitFailure, "sessions", "inspect", "omp/absent/session")
+
+	// A hostile selector is echoed inertly.
+	_, stderr = f.mustExit(exitFailure, "sessions", "inspect", "omp/"+hostileTitle)
+	assertInert(t, "selector error stderr", stderr)
 }
 
-func TestUnknownSelectorFails(t *testing.T) {
-	f := newFixture(t)
-	f.twoSessions()
-	f.ok(f.withStore("archive", "push")...)
-
-	stdout, stderr, code := f.run(f.withStore("sessions", "inspect", "omp/testhost/absent/session")...)
-	if code != exitFailure {
-		t.Fatalf("unknown selector exited %d, want %d", code, exitFailure)
-	}
-	if stdout != "" {
-		t.Fatalf("failed inspect wrote to stdout: %q", stdout)
-	}
-	if !strings.Contains(stderr, "babel: ") {
-		t.Fatalf("unexpected diagnostic: %q", stderr)
-	}
-}
-
-func TestJournalPresenceIsReported(t *testing.T) {
-	f := newFixture(t)
-	f.twoSessions()
-
-	// Before any publication this machine holds no journal for the host.
-	stdout, _ := f.ok(f.withStore("archive", "status", "--json")...)
-	if before := decode[statusResult](t, stdout); len(before.Journals) != 0 {
-		t.Fatalf("unpublished archive reported journals: %+v", before.Journals)
-	}
-
-	f.ok(f.withStore("archive", "push")...)
-
-	// The journal is private local resumption state; status reports that it
-	// exists without interpreting its contents.
-	journal := filepath.Join(f.stateDir, "publish-journal-"+testHostID+".json")
-	if _, err := os.Stat(journal); err != nil {
-		t.Fatalf("push wrote no journal: %v", err)
-	}
-	stdout, _ = f.ok(f.withStore("archive", "status", "--json")...)
-	status := decode[statusResult](t, stdout)
-	if len(status.Journals) != 1 || status.Journals[0] != testHostID {
-		t.Fatalf("unexpected journals: %+v", status.Journals)
-	}
-	if !status.Hosts[0].JournalPresent {
-		t.Fatalf("host did not report its journal: %+v", status.Hosts[0])
-	}
-
-	stdout, _ = f.ok(f.withStore("archive", "status")...)
-	if !strings.Contains(stdout, "JOURNAL") || !strings.Contains(stdout, "present") {
-		t.Fatalf("human status hid the journal:\n%s", stdout)
-	}
-}
-
-func TestEmptyArchiveReadsCleanly(t *testing.T) {
-	f := newFixture(t)
-
-	stdout, _ := f.ok(f.withStore("archive", "catalog", "--json")...)
-	if cat := decode[catalogResult](t, stdout); len(cat.Hosts) != 0 || cat.Sessions != 0 {
-		t.Fatalf("empty archive reported content: %+v", cat)
-	}
-	stdout, _ = f.ok(f.withStore("sessions", "list", "--json")...)
-	if list := decode[sessionsResult](t, stdout); len(list.Sessions) != 0 {
-		t.Fatalf("empty archive listed sessions: %+v", list)
-	}
-	stdout, _ = f.ok(f.withStore("archive", "verify", "--json")...)
-	if rep := decode[verifyResult](t, stdout); !rep.OK {
-		t.Fatalf("empty archive failed verification: %+v", rep)
-	}
-}
-
-func TestHostIdentityAndHostFilter(t *testing.T) {
-	f := newFixture(t)
-	f.twoSessions()
-	f.ok(f.withStore("archive", "push")...)
-	// --host overrides $BABEL_HOST_ID, so the same corpus publishes a second
-	// host identity into the same archive.
-	f.ok(f.withStore("archive", "push", "--host", "secondhost")...)
-
-	stdout, _ := f.ok(f.withStore("archive", "catalog", "--json")...)
-	all := decode[catalogResult](t, stdout)
-	if len(all.Hosts) != 2 || all.Sessions != 4 {
-		t.Fatalf("expected two hosts and four sessions: %+v", all)
-	}
-
-	stdout, _ = f.ok(f.withStore("archive", "catalog", "--json", "--host", testHostID)...)
-	one := decode[catalogResult](t, stdout)
-	if len(one.Hosts) != 1 || one.Hosts[0].HostID != testHostID || one.Sessions != 2 {
-		t.Fatalf("host filter returned %+v", one)
-	}
-
-	stdout, _ = f.ok(f.withStore("sessions", "list", "--json", "--host", "secondhost")...)
-	list := decode[sessionsResult](t, stdout)
-	if len(list.Sessions) != 2 {
-		t.Fatalf("host filter listed %d sessions", len(list.Sessions))
-	}
-	for _, s := range list.Sessions {
-		if s.HostID != "secondhost" {
-			t.Fatalf("host filter leaked host %q", s.HostID)
+// diffTrees describes the first difference between two digest maps, and the
+// empty string when they are identical.
+func diffTrees(before, after map[string]string) string {
+	for path, sum := range before {
+		other, ok := after[path]
+		if !ok {
+			return "missing " + path
+		}
+		if other != sum {
+			return "changed " + path
 		}
 	}
-
-	// A host that has never published is reported as contributing nothing
-	// rather than as a failure.
-	stdout, _ = f.ok(f.withStore("archive", "catalog", "--json", "--host", "absenthost")...)
-	absent := decode[catalogResult](t, stdout)
-	if len(absent.Hosts) != 1 || absent.Hosts[0].Generation != 0 || absent.Sessions != 0 {
-		t.Fatalf("unknown host reported content: %+v", absent)
-	}
-}
-
-func TestRcloneBackendFailsCleanly(t *testing.T) {
-	f := newFixture(t)
-	// The rclone backend is selectable; without a configured remote the
-	// command must fail as a failure (exit 1), not as a usage error, and must
-	// keep stdout free of anything but a result.
-	stdout, stderr, code := f.run("archive", "catalog", "--archive-backend", "rclone",
-		"--archive-root", "babel-absent-remote:archive/babel/v1")
-	if code != exitFailure {
-		t.Fatalf("rclone catalog exited %d, want %d\nstdout:\n%s\nstderr:\n%s", code, exitFailure, stdout, stderr)
-	}
-	if stdout != "" {
-		t.Fatalf("failed catalog wrote to stdout: %q", stdout)
-	}
-	if !strings.HasPrefix(stderr, "babel: ") {
-		t.Fatalf("unexpected diagnostic: %q", stderr)
-	}
-}
-
-// coverageFor returns one adapter's coverage row.
-func coverageFor(t *testing.T, rows []coverageRow, harness string) coverageRow {
-	t.Helper()
-	for _, r := range rows {
-		if r.Harness == harness {
-			return r
+	for path := range after {
+		if _, ok := before[path]; !ok {
+			return "added " + path
 		}
 	}
-	t.Fatalf("no coverage for harness %q in %+v", harness, rows)
-	return coverageRow{}
+	return ""
 }
 
-// richSession picks the fixture session that carries an artifact closure.
-func richSession(t *testing.T, rows []sessionRow) sessionRow {
-	t.Helper()
-	for _, r := range rows {
-		if strings.Contains(r.SessionKey, "synthetic-project") {
-			return r
+// containsString reports whether values holds want.
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
 		}
 	}
-	t.Fatalf("no rich session in %+v", rows)
-	return sessionRow{}
-}
-
-// equalSnapshots compares two store digests maps.
-func equalSnapshots(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
+	return false
 }

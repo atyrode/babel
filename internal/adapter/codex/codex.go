@@ -8,8 +8,15 @@
 // referenced attachments; title, workspace, lifecycle, and attachment
 // closure are explicitly allowed to be unavailable. This adapter therefore
 // extracts only what the records actually expose and records a
-// completeness reason for every field it cannot observe. Raw preservation
-// always wins: a malformed or unparsable log still snapshots its bytes.
+// completeness reason for every field it cannot observe.
+//
+// Every file is read in place and never copied: durability belongs to
+// restic, whose snapshots are crash-consistent per file rather than
+// transactional across files. A live Codex process appending to a log
+// while it is read therefore degrades the description — a torn or
+// malformed trailing record is counted and skipped — and the next
+// description supersedes it. Raw preservation always wins: a malformed or
+// unparsable log still names its bytes for archival.
 package codex
 
 import (
@@ -30,23 +37,24 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
-	"github.com/atyrode/babel/internal/archive"
+	"github.com/atyrode/babel/internal/digest"
 )
 
 const (
 	// HarnessName is the stable lowercase harness name (SPEC.md §3).
 	HarnessName = "codex"
-	// AdapterSchema is the adapter_schema version recorded in manifests.
+	// AdapterSchema is the adapter_schema version of this adapter's
+	// discovery and description behavior.
 	AdapterSchema = 1
 	// MetadataSchema versions the codex adapter_metadata document
-	// independently of the manifest envelope.
+	// independently of the common description shape.
 	MetadataSchema = 1
 
 	// StateSourceID is the source identity of the single host-state
 	// session: `history.jsonl` as its primary raw log with
 	// `session_index.jsonl` as its artifact. Codex keeps both at the root
-	// rather than per session, so they are archived as one dedicated
-	// session instead of being duplicated into every rollout bundle.
+	// rather than per session, so they are described as one dedicated
+	// session instead of being duplicated into every rollout.
 	StateSourceID = "state"
 
 	// KindSession and KindState are the adapter_metadata "kind" values.
@@ -64,16 +72,13 @@ const (
 	// maxRecordBytes bounds how much of one JSONL record is held in memory.
 	// Logs are untrusted data (SPEC.md §3) and a single pathological line
 	// must not exhaust the process; the excess is discarded for metadata
-	// purposes only, never from the staged bytes.
+	// purposes only, never from the file restic archives.
 	maxRecordBytes = 4 << 20
 
 	// maxAttachmentRefs bounds distinct attachment directories honoured
 	// from one log, for the same reason: the references are scraped from
 	// free-form message text.
 	maxAttachmentRefs = 1024
-
-	dirPerm  = 0o700
-	filePerm = 0o600
 )
 
 // attachmentRefPattern matches the recoverable part of an attachment
@@ -84,11 +89,6 @@ const (
 var attachmentRefPattern = regexp.MustCompile(`attachments/([A-Za-z0-9._-]{1,128})/`)
 
 var attachmentMarker = []byte(attachmentsDir + "/")
-
-// testHookStaged runs after the primary log is staged and before the
-// source is re-verified. It is nil outside tests, which use it to mutate
-// the source inside the stability window.
-var testHookStaged func()
 
 // Adapter is the Codex source adapter. It holds no state and is safe for
 // concurrent use.
@@ -102,7 +102,7 @@ var _ adapter.Adapter = (*Adapter)(nil)
 // Harness returns the stable harness name.
 func (*Adapter) Harness() string { return HarnessName }
 
-// Schema returns the adapter_schema version recorded in manifests.
+// Schema returns the adapter_schema version of this adapter.
 func (*Adapter) Schema() int { return AdapterSchema }
 
 // DefaultRoots returns the default local Codex root: $CODEX_HOME when the
@@ -119,13 +119,17 @@ func (*Adapter) DefaultRoots() []string {
 	return []string{filepath.Join(home, ".codex")}
 }
 
+// BackupRoots matches DefaultRoots: every Codex file worth capturing
+// lives under the single Codex home root.
+func (a *Adapter) BackupRoots() []string { return a.DefaultRoots() }
+
 // Discover enumerates one session per rollout log under "<root>/sessions"
 // plus, when "<root>/history.jsonl" exists, the host-state session. Roots
 // that do not exist are skipped silently and unreadable subtrees degrade
 // to their readable part rather than aborting the scan. Results are sorted
 // by SourceID and deduplicated, so two scans of an unchanged tree return
 // identical identities.
-func (a *Adapter) Discover(ctx context.Context, roots []string) ([]adapter.SourceSession, error) {
+func (*Adapter) Discover(ctx context.Context, roots []string) ([]adapter.SourceSession, error) {
 	var out []adapter.SourceSession
 	seen := make(map[string]struct{})
 
@@ -205,7 +209,7 @@ func discoverRollouts(ctx context.Context, root string) ([]adapter.SourceSession
 	return out, nil
 }
 
-// sourceIDFor derives a stable archive.ValidSourceID from a root-relative
+// sourceIDFor derives a stable adapter.ValidSourceID from a root-relative
 // rollout path. Path separators become "/" segments, which is already a
 // valid identity for every name Codex generates. A path outside the
 // identity alphabet or length limit degrades to a collision-resistant
@@ -214,27 +218,31 @@ func discoverRollouts(ctx context.Context, root string) ([]adapter.SourceSession
 // another session.
 func sourceIDFor(rel string) string {
 	slash := filepath.ToSlash(rel)
-	if archive.ValidSourceID(slash) && slash != StateSourceID {
+	if adapter.ValidSourceID(slash) && slash != StateSourceID {
 		return slash
 	}
-	return "path-" + archive.DigestBytes([]byte(slash)).Hex()
+	return "path-" + digest.Bytes([]byte(slash)).Hex()
 }
 
-// Snapshot stages a stable copy of one session into stagingDir. The
-// primary log is digested before and after staging, with metadata and
-// artifact discovery inside that window, so any concurrent write by a live
-// Codex process surfaces as adapter.ErrUnstable instead of a torn bundle.
+// Describe reads one session's live files in place: the primary log's
+// records for metadata, and the attachment directories (or, for the
+// host-state session, `session_index.jsonl`) as its artifact closure.
+// Nothing is copied and the source is never re-verified, because a
+// description is a best-effort view rather than a transaction: a
+// concurrent Codex write yields a slightly older or newer view whose
+// torn trailing record is counted and skipped, and the next description
+// supersedes it.
 //
 // ContinuationGrade is always false for this adapter: attachment closure
 // is not guaranteed by the format. References are scraped from message
 // text, non-textual references are invisible, and Codex records no
-// artifact manifest, so the adapter can never prove it staged the complete
-// closure a continuation would need (SPEC.md §3).
-func (a *Adapter) Snapshot(ctx context.Context, src adapter.SourceSession, stagingDir string) (*adapter.Snapshot, error) {
+// artifact manifest, so the adapter can never prove it observed the
+// complete closure a continuation would need (SPEC.md §3).
+func (*Adapter) Describe(ctx context.Context, src adapter.SourceSession) (*adapter.Description, error) {
 	if src.Harness != "" && src.Harness != HarnessName {
 		return nil, fmt.Errorf("codex: source belongs to harness %q", src.Harness)
 	}
-	if !archive.ValidSourceID(src.SourceID) {
+	if !adapter.ValidSourceID(src.SourceID) {
 		return nil, fmt.Errorf("codex: invalid source id %q", src.SourceID)
 	}
 	if err := ctx.Err(); err != nil {
@@ -244,71 +252,52 @@ func (a *Adapter) Snapshot(ctx context.Context, src adapter.SourceSession, stagi
 	if err != nil {
 		return nil, err
 	}
-
-	before, _, err := digestFile(src.PrimaryPath)
+	primaryInfo, err := os.Stat(src.PrimaryPath)
 	if err != nil {
-		return nil, fmt.Errorf("codex: digest %s: %w", src.SourceID, err)
+		return nil, fmt.Errorf("codex: stat %s: %w", src.SourceID, err)
 	}
-	stagedPrimary := filepath.Join(stagingDir, filepath.FromSlash(primaryRel))
-	staged, size, err := stageFile(src.PrimaryPath, stagedPrimary)
-	if err != nil {
-		return nil, fmt.Errorf("codex: stage %s: %w", src.SourceID, err)
-	}
-	if staged != before {
-		return nil, fmt.Errorf("codex: %s changed while being staged: %w", src.SourceID, adapter.ErrUnstable)
-	}
-	if testHookStaged != nil {
-		testHookStaged()
+	if !primaryInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("codex: primary log %s is not a regular file", src.PrimaryPath)
 	}
 
-	// Metadata is read from the staged copy: those bytes are the published
-	// content, so extraction can never describe a state that was not
-	// archived.
 	kind := KindSession
 	if src.SourceID == StateSourceID {
 		kind = KindState
 	}
 	var scan *scanResult
 	if kind == KindState {
-		scan, err = scanHistory(ctx, stagedPrimary)
+		scan, err = scanHistory(ctx, src.PrimaryPath)
 	} else {
-		scan, err = scanRollout(ctx, stagedPrimary)
+		scan, err = scanRollout(ctx, src.PrimaryPath)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("codex: read staged %s: %w", src.SourceID, err)
+		return nil, fmt.Errorf("codex: read %s: %w", src.SourceID, err)
 	}
 
 	var (
-		artifacts         []adapter.StagedFile
-		unresolved        []string
-		attachmentsStaged int
-		indexOK           *bool
+		artifacts       []adapter.SourceFile
+		unresolved      []string
+		attachmentFiles int
+		indexFound      *bool
 	)
 	if kind == KindState {
-		ok := false
-		if fi, statErr := os.Stat(filepath.Join(root, sessionIndexFile)); statErr == nil && fi.Mode().IsRegular() {
-			f, stageErr := stageArtifact(root, sessionIndexFile, stagingDir)
-			if stageErr != nil {
-				return nil, fmt.Errorf("codex: stage %s: %w", sessionIndexFile, stageErr)
-			}
-			artifacts = append(artifacts, f)
-			ok = true
+		found := false
+		indexPath := filepath.Join(root, sessionIndexFile)
+		if fi, statErr := os.Stat(indexPath); statErr == nil && fi.Mode().IsRegular() {
+			artifacts = append(artifacts, adapter.SourceFile{
+				RelPath:    sessionIndexFile,
+				SourcePath: indexPath,
+				Size:       fi.Size(),
+			})
+			found = true
 		}
-		indexOK = &ok
+		indexFound = &found
 	} else {
-		artifacts, unresolved, err = stageAttachments(ctx, root, stagingDir, scan.attachments)
+		artifacts, unresolved, err = resolveAttachments(ctx, root, scan.attachments)
 		if err != nil {
 			return nil, err
 		}
-		attachmentsStaged = len(artifacts)
-	}
-
-	after, _, err := digestFile(src.PrimaryPath)
-	if err != nil {
-		return nil, fmt.Errorf("codex: re-digest %s: %w", src.SourceID, err)
-	}
-	if after != staged {
-		return nil, fmt.Errorf("codex: %s changed during snapshot: %w", src.SourceID, adapter.ErrUnstable)
+		attachmentFiles = len(artifacts)
 	}
 
 	md := &Metadata{
@@ -331,23 +320,22 @@ func (a *Adapter) Snapshot(ctx context.Context, src adapter.SourceSession, stagi
 		TruncatedRecords:     scan.truncated,
 		AttachmentRefs:       len(scan.attachments),
 		AttachmentRefsCapped: scan.attachmentsCapped,
-		AttachmentsStaged:    attachmentsStaged,
-		SessionIndexStaged:   indexOK,
+		AttachmentFiles:      attachmentFiles,
+		SessionIndexFound:    indexFound,
 	}
-	rawMeta, err := archive.MarshalCanonical(md)
+	rawMeta, err := adapter.MarshalCanonical(md)
 	if err != nil {
 		return nil, fmt.Errorf("codex: encode adapter metadata for %s: %w", src.SourceID, err)
 	}
-	canonical, err := archive.CanonicalRawMessage(rawMeta)
+	canonical, err := adapter.CanonicalRawMessage(rawMeta)
 	if err != nil {
 		return nil, fmt.Errorf("codex: canonicalize adapter metadata for %s: %w", src.SourceID, err)
 	}
 
-	return &adapter.Snapshot{
+	return &adapter.Description{
 		Source:                src,
-		SnapshotTime:          time.Now().UTC(),
-		StagedPrimary:         stagedPrimary,
-		PrimarySize:           size,
+		DescribedAt:           time.Now().UTC(),
+		PrimarySize:           primaryInfo.Size(),
 		Meta:                  commonMeta(kind, scan),
 		AdapterMetadataSchema: MetadataSchema,
 		AdapterMetadata:       canonical,
@@ -383,12 +371,14 @@ type Metadata struct {
 
 	AttachmentRefs       int  `json:"attachment_refs,omitempty"`
 	AttachmentRefsCapped bool `json:"attachment_refs_capped,omitempty"`
-	AttachmentsStaged    int  `json:"attachments_staged,omitempty"`
+	// AttachmentFiles counts the regular files found inside the resolved
+	// attachment directories.
+	AttachmentFiles int `json:"attachment_files,omitempty"`
 
-	// SessionIndexStaged is set only for the host-state session and
+	// SessionIndexFound is set only for the host-state session and
 	// reports whether `session_index.jsonl` was present alongside
 	// `history.jsonl`.
-	SessionIndexStaged *bool `json:"session_index_staged,omitempty"`
+	SessionIndexFound *bool `json:"session_index_found,omitempty"`
 }
 
 // locate recovers the Codex root and the root-relative primary path of a
@@ -431,7 +421,7 @@ func codexRoot(dir string) string {
 func commonMeta(kind string, scan *scanResult) adapter.CommonMeta {
 	var m adapter.CommonMeta
 	reason := func(field, why string) {
-		m.Completeness = append(m.Completeness, archive.CompletenessReason{Field: field, Reason: why})
+		m.Completeness = append(m.Completeness, adapter.CompletenessReason{Field: field, Reason: why})
 	}
 
 	// Codex records no session title in a rollout log; `session_index.jsonl`
@@ -467,12 +457,12 @@ func commonMeta(kind string, scan *scanResult) adapter.CommonMeta {
 	return m
 }
 
-// stageAttachments copies every file of each referenced attachment
-// directory into the staging tree. Missing or unreadable directories are
-// reported as unresolved references rather than failing the snapshot.
-func stageAttachments(ctx context.Context, root, stagingDir string, refs []string) ([]adapter.StagedFile, []string, error) {
+// resolveAttachments lists the live files of each referenced attachment
+// directory. Missing, unreadable, or empty directories are reported as
+// unresolved references rather than failing the description.
+func resolveAttachments(ctx context.Context, root string, refs []string) ([]adapter.SourceFile, []string, error) {
 	var (
-		out        []adapter.StagedFile
+		out        []adapter.SourceFile
 		unresolved []string
 	)
 	for _, id := range refs {
@@ -486,8 +476,11 @@ func stageAttachments(ctx context.Context, root, stagingDir string, refs []strin
 			unresolved = append(unresolved, relDir)
 			continue
 		}
-		staged := 0
+		found := 0
 		walkErr := filepath.WalkDir(srcDir, func(p string, d fs.DirEntry, err error) error {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			if err != nil {
 				if d != nil && d.IsDir() {
 					return fs.SkipDir
@@ -501,72 +494,34 @@ func stageAttachments(ctx context.Context, root, stagingDir string, refs []strin
 			if relErr != nil {
 				return nil
 			}
-			f, stageErr := stageArtifact(root, path.Join(relDir, filepath.ToSlash(rel)), stagingDir)
-			if stageErr != nil {
-				return stageErr
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				return nil
 			}
-			out = append(out, f)
-			staged++
+			out = append(out, adapter.SourceFile{
+				RelPath:    path.Join(relDir, filepath.ToSlash(rel)),
+				SourcePath: p,
+				Size:       info.Size(),
+			})
+			found++
 			return nil
 		})
 		if walkErr != nil {
-			return nil, nil, fmt.Errorf("codex: stage attachment %s: %w", relDir, walkErr)
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
+			return nil, nil, fmt.Errorf("codex: read attachment %s: %w", relDir, walkErr)
 		}
-		if staged == 0 {
+		if found == 0 {
 			unresolved = append(unresolved, relDir)
 		}
 	}
 	return out, unresolved, nil
 }
 
-// stageArtifact copies one root-relative artifact into the staging tree,
-// preserving its relative path.
-func stageArtifact(root, rel, stagingDir string) (adapter.StagedFile, error) {
-	dst := filepath.Join(stagingDir, filepath.FromSlash(rel))
-	_, size, err := stageFile(filepath.Join(root, filepath.FromSlash(rel)), dst)
-	if err != nil {
-		return adapter.StagedFile{}, err
-	}
-	return adapter.StagedFile{RelPath: rel, StagedPath: dst, Size: size}, nil
-}
-
-// stageFile copies srcPath to dstPath, returning the digest and size of
-// the bytes actually written.
-func stageFile(srcPath, dstPath string) (archive.Digest, int64, error) {
-	if err := os.MkdirAll(filepath.Dir(dstPath), dirPerm); err != nil {
-		return "", 0, err
-	}
-	in, err := os.Open(srcPath)
-	if err != nil {
-		return "", 0, err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
-	if err != nil {
-		return "", 0, err
-	}
-	digest, size, err := archive.ComputeDigest(io.TeeReader(in, out))
-	if closeErr := out.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return "", 0, err
-	}
-	return digest, size, nil
-}
-
-func digestFile(name string) (archive.Digest, int64, error) {
-	f, err := os.Open(name)
-	if err != nil {
-		return "", 0, err
-	}
-	defer f.Close()
-	return archive.ComputeDigest(f)
-}
-
-// scanResult is everything one pass over a staged log observed. Absent
+// scanResult is everything one pass over a live log observed. Absent
 // values stay zero and become completeness reasons; a parse failure only
-// increments a counter, because the raw bytes are already staged.
+// increments a counter, because the raw bytes are archived regardless.
 type scanResult struct {
 	records     int
 	malformed   int
@@ -624,21 +579,21 @@ type turnContextPayload struct {
 
 // historyRecord is the observable envelope of one `history.jsonl` entry.
 // The recorded prompt text is deliberately not modelled: the adapter
-// stages those bytes but never reads or reports them.
+// names those bytes for archival but never reads or reports them.
 type historyRecord struct {
 	TS int64 `json:"ts"`
 }
 
 // scanRollout extracts session metadata and attachment references from a
-// staged rollout log in one streaming pass.
-func scanRollout(ctx context.Context, staged string) (*scanResult, error) {
+// live rollout log in one streaming pass.
+func scanRollout(ctx context.Context, primary string) (*scanResult, error) {
 	res := &scanResult{recordTypes: map[string]int{}}
 	models := newStringSet()
 	roots := newStringSet()
 	attach := newStringSet()
 	var lastTurnCWD string
 
-	err := eachRecord(ctx, staged, func(line []byte, truncated bool) {
+	err := eachRecord(ctx, primary, func(line []byte, truncated bool) {
 		res.records++
 		if truncated {
 			res.truncated++
@@ -729,9 +684,9 @@ func (r *scanResult) collectAttachments(line []byte, attach *stringSet) {
 // scanHistory extracts the observable span of the host history log. Only
 // the timestamp field is interpreted; the recorded prompt text is never
 // parsed or reported.
-func scanHistory(ctx context.Context, staged string) (*scanResult, error) {
+func scanHistory(ctx context.Context, primary string) (*scanResult, error) {
 	res := &scanResult{}
-	err := eachRecord(ctx, staged, func(line []byte, truncated bool) {
+	err := eachRecord(ctx, primary, func(line []byte, truncated bool) {
 		res.records++
 		if truncated {
 			res.truncated++

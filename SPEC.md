@@ -1,6 +1,6 @@
 # Babel specification
 
-Status: audited development baseline. Phase A contract-first coding may begin, but the first durable `babel/v1` remote write remains gated by the frozen archive contract in §6.1.
+Status: audited development baseline, revised 2026-08-27: archival is delegated to restic (operator decision); the bespoke `babel/v1` object contract is retired. Phase A local coding may proceed against local-path repositories; the first shared deployment remains gated by §14.
 
 
 Module path: `github.com/atyrode/babel`.
@@ -26,8 +26,8 @@ Babel does not promise reliable, exhaustive, or objectively correct analytical o
 
 ### 2.1 Babel owns
 
-- the agent-session archive format, source catalog, host namespacing, and retention semantics;
-- client-side encryption configuration and append-only upload/read-only retrieval behavior;
+- archival orchestration: source roots, snapshot cadence, stable host identity, tags, and the never-delete retention policy;
+- repository configuration and append-only backup/read-only retrieval behavior (repository encryption itself belongs to restic);
 - archive status, integrity verification, and recovery-compatible restore commands;
 - read-only ingestion of materialized chat archives;
 - format adapters for supported agent session formats;
@@ -53,32 +53,32 @@ These exclusions are safety boundaries, not a promise that no future companion a
 
 ### 2.3 Integration boundary with `atyrode/dotfiles`
 
-The pre-Babel dotfiles automation is a proven operational prototype, not Babel's compatibility contract. It archives OMP, Codex, and Claude Code trees hourly to a Clever Cloud Cellar bucket through `rclone crypt`, but lacks the rich manifests, stable bundle snapshots, and OMP blob closure Babel requires.
+The pre-Babel dotfiles automation is a proven operational prototype, not Babel's compatibility contract. It archives OMP, Codex, and Claude Code trees hourly to a Clever Cloud Cellar bucket through `rclone crypt`, but lacks the session-aware catalog, integrity verification, deduplicated growing-session storage, and selective restore Babel requires.
 
-Babel starts a clean, versioned namespace in the same encrypted bucket:
+Babel starts a clean restic repository in the same Cellar account, under its own prefix:
 
 ```text
-archive:babel/v1/hosts/<stable-host-id>/...
+s3:<cellar-endpoint>/<bucket>/babel/restic
 ```
 
-It ignores the legacy remote namespace entirely. Legacy objects remain untouched and recoverable with direct rclone, but Babel does not list, import, migrate, or preserve their layout. Source data still present on managed machines is republished through Babel's v1 contract. The existing backup job remains enabled until a real v1 Cellar round trip covers all three harnesses and the replacement timer is verified; retirement is then a clean dotfiles cutover, not an in-place migration.
+It ignores the legacy remote namespace entirely. Legacy objects remain untouched and recoverable with direct rclone, but Babel does not list, import, migrate, or preserve their layout. Source data still present on managed machines is captured by Babel's first restic push. The existing backup job remains enabled until a real Cellar round trip covers all three harnesses and the replacement timer is verified; retirement is then a clean dotfiles cutover, not an in-place migration.
 
 Ownership follows dependency direction:
 
-- **Babel owns one logical storage protocol:** provider-neutral configuration, source adapters, archive schemas, shared catalog/coordination, stable publication, append-only retention, selective retrieval, status, integrity, restore commands, and durable analysis/Reality/review state;
-- **S3-compatible storage owns immutable bytes:** raw session bundles, attachments/blobs, manifests and archive commit records, evidence, snapshots, diffs, large outputs, and exports;
-- **PostgreSQL owns shared structure and coordination:** deployment/instance/host identity, generation catalog, idempotency, leases/fencing, and—beginning in Phase B—client-side-encrypted hypotheses, Reality, questions, outputs, review, lineage, runs, and receipts;
-- **the object adapter owns transport:** Babel invokes external `rclone` for Cellar/rclone-crypt compatibility. Its narrow port is immutable put, stat, read, list, atomic small-pointer replace, and read-back; a local-directory implementation supports fixtures, offline development, and recovery;
+- **Babel owns orchestration:** provider-neutral configuration, source adapters, snapshot cadence/tagging/host identity, the session catalog, shared coordination, append-only retention policy, selective restore, status/integrity commands, and durable analysis/Reality/review state;
+- **restic owns the archive repository:** encryption, content-defined deduplication, snapshot format, integrity checking, and S3 transport (the operator deployment uses restic's native S3 backend against Cellar);
+- **PostgreSQL owns shared structure and coordination:** deployment/instance/host identity, the session/snapshot catalog, idempotency, leases/fencing, and—beginning in Phase B—client-side-encrypted hypotheses, Reality, questions, outputs, review, lineage, runs, and receipts;
+- **the archive adapter owns transport:** Babel invokes the external `restic` binary through a narrow injected port—init, backup, snapshots, check, dump, restore—and never runs `forget` or `prune`; a local-path repository supports fixtures, offline development, and recovery. Phase B evidence, diffs, large outputs, and exports are separate encrypted S3 objects outside the restic repository;
 - **dotfiles owns machine convergence:** commit-pinned Nix installation, stable host and instance IDs, secret retrieval, piping a versioned storage document into Babel, and an hourly user timer after manual bootstrap acceptance; and
 - **Babel owns interpretation:** cataloging, normalizing, analyzing, and reviewing archived conversations.
 
-The first operator deployment uses the existing Clever Cloud Cellar bucket and a Clever Cloud managed PostgreSQL database, while the protocol remains portable to compatible S3 and PostgreSQL services. `$XDG_CONFIG_HOME/babel/storage.json` is one mode-0600 provider-neutral document describing `local` or `shared` mode, deployment/instance identity, object-store/rclone reference, PostgreSQL/TLS settings, and external secret/key references. Babel never accepts credential-bearing URLs on argv, implements crypt, knows a Bitwarden item name, or invokes Bitwarden. Standalone installations generate stable IDs when dotfiles does not supply them.
+The first operator deployment uses the existing Clever Cloud Cellar account and a Clever Cloud managed PostgreSQL database, while the protocol remains portable to compatible S3 and PostgreSQL services. `$XDG_CONFIG_HOME/babel/storage.json` is one mode-0600 provider-neutral document describing `local` or `shared` mode, deployment/instance identity, the restic repository locator, PostgreSQL/TLS settings, and external secret/key references. Babel never accepts credential-bearing URLs on argv, implements repository encryption itself, knows a Bitwarden item name, or invokes Bitwarden. Standalone installations generate stable IDs when dotfiles does not supply them.
 
-Managed setup is a one-way secret handoff, not a Babel-to-Bitwarden integration. During an explicit dotfiles activation/bootstrap, the operator unlocks Bitwarden; dotfiles retrieves common deployment/object-store/rclone-crypt/key material plus the machine-specific PostgreSQL application credential, combines them with stable host/instance IDs, and pipes the versioned document to `babel storage configure --from-json -`. Babel never receives vault authority or item names.
+Managed setup is a one-way secret handoff, not a Babel-to-Bitwarden integration. During an explicit dotfiles activation/bootstrap, the operator unlocks Bitwarden; dotfiles retrieves common deployment material and the shared restic repository password plus the machine-specific PostgreSQL application credential, combines them with stable host/instance IDs, and pipes the versioned document to `babel storage configure --from-json -`. Babel never receives vault authority or item names.
 
 Secrets never enter Nix derivations or `/nix/store`, argv, shell history, broad process environment, logs, or persistent temporary files. Babel validates endpoints, TLS, identity, schema compatibility, and credentials before atomically replacing `storage.json`; failure preserves the previous valid configuration and prior timer state. The distinct migration credential is retrieved ephemerally only on the designated bootstrap/migration machine and is never persisted in ordinary instance configuration. After health and bootstrap gates pass, dotfiles enables the hourly timer and relocks the vault. Rotation repeats the same atomic flow; per-instance PostgreSQL credentials allow revocation without rotating the fleet.
 
-`local` mode uses the directory object store plus SQLite and is explicitly single-instance development/recovery state. The first deployed v1 uses `shared` mode. Recovery must not depend circularly on Babel or PostgreSQL: dotfiles plus the external secret authority can reinstall/reconfigure Babel, and immutable S3 manifest/commit records plus the direct-rclone fixture can rebuild the Phase A PostgreSQL catalog. Babel is never the sole copy of credentials, keys, or recovery knowledge.
+`local` mode uses a local-path restic repository plus SQLite and is explicitly single-instance development/recovery state. The first deployed v1 uses `shared` mode. Recovery must not depend circularly on Babel or PostgreSQL: dotfiles plus the external secret authority can reinstall/reconfigure Babel, the restic binary alone can restore every archived source tree, and the Phase A PostgreSQL catalog is rebuildable from the repository snapshot list plus rescans of live or restored sources. Babel is never the sole copy of credentials, keys, or recovery knowledge. Loss of the repository password is loss of the archive, so password custody and backup are gated operational controls (§14).
 
 ### 2.4 Primary interaction model
 
@@ -149,7 +149,7 @@ All archive, transcript, repository, model, research, Reality Ledger, and output
 
 ## 3. Source data and trust model
 
-Babel's core is harness-agnostic. OMP, Codex, and Claude Code implement source adapters over one manifest, normalized-event, provenance, hypothesis, observation, finding, and proposal model.
+Babel's core is harness-agnostic. OMP, Codex, and Claude Code implement source adapters over one metadata, normalized-event, provenance, hypothesis, observation, finding, and proposal model.
 
 The v1 archive covers all three from its first release:
 
@@ -157,17 +157,17 @@ The v1 archive covers all three from its first release:
 - **Codex:** sessions, `history.jsonl`, `session_index.jsonl`, and attachments; and
 - **Claude Code:** project/session trees and their referenced local artifacts where the on-disk format exposes them.
 
-Each adapter must always preserve and selectively retrieve the raw chat logs. OMP is the reference and highest-fidelity adapter. Codex and Claude Code metadata extraction is best effort where formats are undocumented, unstable, or incomplete, but inability to derive a title, workspace, lifecycle state, or artifact closure never excludes the raw transcript from backup or later analysis. Every manifest row records adapter version and metadata-completeness flags instead of pretending parity.
+Each adapter must always preserve and selectively retrieve the raw chat logs. OMP is the reference and highest-fidelity adapter. Codex and Claude Code metadata extraction is best effort where formats are undocumented, unstable, or incomplete, but inability to derive a title, workspace, lifecycle state, or artifact closure never excludes the raw transcript from backup or later analysis. Every catalog row records adapter version and metadata-completeness flags instead of pretending parity.
 
-The manifest separates a portable common envelope from versioned adapter metadata. Required common fields are `manifest_schema`, `harness`, `adapter_schema`, stable host ID and display name, adapter-defined source/session identity, globally unique session key, immutable revision key, immutable bundle digest and size, encrypted object locator, and snapshot time. The session key is namespaced by stable host ID, harness, and adapter identity; the revision key additionally includes the bundle digest. Common catalog fields—title, workspace/project, creation and modification times, lifecycle state, and repository fingerprint—are nullable. Missing values remain `null` and set explicit completeness reasons; adapters never synthesize values merely to satisfy a shared shape.
+The catalog separates a portable common shape from versioned adapter metadata. Required common fields are `harness`, `adapter_schema`, stable host ID and display name, adapter-defined source/session identity, and description time. Historical captures are addressed by restic snapshot ID plus the session's source paths, not by bespoke revision keys. Common catalog fields—title, workspace/project, creation and modification times, lifecycle state, and repository fingerprint—are nullable. Missing values remain `null` and set explicit completeness reasons; adapters never synthesize values merely to satisfy a shared shape.
 
-Each row also contains a namespaced `adapter_metadata` object whose schema version is recorded independently. Babel preserves unknown extension fields while reading a compatible manifest. V1 adapter guarantees are deliberately unequal:
+Each row also contains a namespaced `adapter_metadata` object whose schema version is recorded independently. Babel preserves unknown extension fields while reading a compatible catalog row. V1 adapter guarantees are deliberately unequal:
 
 - **OMP:** raw session JSONL, sibling collaboration/artifact data, and the complete set of resolvable referenced blobs; unresolved references are listed and force `continuation_grade=false`;
 - **Codex:** raw session logs, `history.jsonl`, `session_index.jsonl`, and discovered referenced attachments, with title/workspace/lifecycle and attachment closure allowed to be unavailable; and
 - **Claude Code:** raw project/session logs and discovered referenced artifacts, with project, lifecycle, timestamps beyond filesystem observations, and artifact closure allowed to be unavailable.
 
-The encrypted manifest records those common fields, adapter extensions, completeness reasons, bundle object references, and available repository fingerprint. Titles, paths, and every adapter extension are encrypted by rclone crypt and remain subject to TUI privacy masking.
+The catalog records those common fields, adapter extensions, completeness reasons, and available repository fingerprint. Titles, paths, and adapter extensions never enter PostgreSQL in plaintext (§9) and remain subject to TUI privacy masking; repository bytes are encrypted by restic itself.
 
 All archive content is untrusted data. A transcript can contain malicious instructions copied from issues, web pages, repositories, tool output, or prior agents. Babel and its analysis workers treat transcript text only as quoted evidence, never as instructions.
 
@@ -359,34 +359,21 @@ The `cookbook-quality` meta recipe may propose versioned changes or entirely new
 
 ## 6. Processing pipeline
 
-### 6.1 Stable archive publication
+### 6.1 Archive publication
 
-`babel archive push` discovers OMP, Codex, and Claude Code sources through versioned adapters and builds stable session bundles. A source that may be changing is staged, hashed, and checked again before publication. If it changes during the snapshot, Babel retries within a bound or reports it as deferred/incomplete; it never publishes a continuation-grade manifest entry for an unstable bundle.
+`babel archive push` discovers OMP, Codex, and Claude Code source roots through versioned adapters and backs them up with restic into one shared repository under the machine's stable host identity, tagged `babel`. Babel initializes the repository idempotently, backs up whole source roots—raw session logs, sibling artifacts, and OMP's content-addressed blob store—and reports restic's summary (snapshot ID, files new/changed, bytes added) as the push result. Hourly publication and permanent storage cost scale with the change rate: restic deduplicates content-defined chunks, so a grown session uploads only its new chunks and an unchanged corpus uploads almost nothing.
 
-No durable `babel/v1` remote write may occur until the pre-first-write gate freezes the canonical bundle, manifest-segment, generation-index, immutable commit-record, and `latest` bytes; revision encodings and append-chain reassembly rules; schemas, Go types, and null rules; the host-generation key and total ordering; SHA-256 domain and digest semantics over plaintext; path and file-metadata rules; golden fixtures; compatibility and unknown-field rules; and a direct-rclone recovery fixture. This gate blocks remote writes only: Phase A may implement the module, adapters, local-directory backend, and synthetic fixtures contract-first before it passes.
+Captures are crash-consistent per file, not transactional across files (recorded decision). Session logs are append-mostly, so a capture taken mid-write yields a prefix plus at most a torn final line; adapters and normalization tolerate torn or malformed lines by counting and skipping them, and the next hourly snapshot supersedes the capture. OMP's blob store is content-addressed and never rewritten, so closure races cannot corrupt stored blobs. A snapshot's existence never implies a stable continuation-grade capture; continuation-grade claims (§2.5) require adapter-verified closure at read time.
 
-The first successful push is an explicit bootstrap/backfill, not an incremental continuation of the old backup. Starting from empty Babel state, it scans every configured local source root and attempts a stable bundle for every locally available session, including sessions older than Babel's installation. Data that exists only in the ignored legacy remote namespace is not backfilled. Every manifest generation records per-adapter scanned coverage, deferred reasons and counts, and bootstrap completeness; the initial generation is committed only after the full scan finishes, with deferred or incomplete sources visible and retried rather than silently omitted. The prior backup remains enabled until all three adapters have complete real-v1 coverage.
+The first successful push is an explicit bootstrap/backfill, not an incremental continuation of the old backup: starting from empty state it backs up every configured local source root in full, including sessions older than Babel's installation. Data that exists only in the ignored legacy remote namespace is not backfilled. The push result reports which adapter roots existed and were captured; the prior dotfiles backup remains enabled until a real Cellar round trip covers all three harnesses.
 
-Later pushes may use adapter watermarks for speed but periodically reconcile the full local roots. A manifest generation represents all immutable revisions known to Babel, not merely files changed in that run: records from the previous valid generation are carried forward when a local source disappears. A changed session produces a new immutable revision and designates it as the newest committed stable revision without deleting history. Host-generation metadata carries the host display name; the newest committed value wins for catalog display while prior values remain in history.
-
-A bundle revision declares its canonical encoding. A `full` revision contains the complete raw bytes. An `append-delta` revision records its parent revision digest plus only the appended bytes and is valid only when the parent's plaintext is an exact byte prefix of the new content; forks, rewrites, truncations, and any prefix mismatch publish a `full` revision. Digest and size semantics always describe the reassembled plaintext, never the delta object. Append chains are bounded by a frozen chain-length/size limit that forces a periodic `full` revision, so restore walks a short verified chain and a single damaged object cannot strand long history; the direct-rclone recovery fixture documents chain reassembly with standard tools. Readers reject unknown encodings; adding an encoding is an additive contract version increment that never rewrites stored objects.
-
-A manifest generation is stored as a small generation index referencing content-addressed manifest segment objects. Unchanged segments are reused by digest, so hourly publication and permanent storage cost scale with the change rate rather than the total corpus, while the index plus its segments remain a complete, self-contained description of the generation.
-
-Publication is resumable through a private local journal keyed by host and intended generation. Babel stages and hashes a source, uploads immutable bundle/blob objects, confirms their read-back, uploads and reads back the immutable manifest segments and generation index, then uploads and reads back the immutable commit record. That commit record is the publication boundary. Only after it is durable does Babel atomically replace `latest` with the commit locator and digest as a non-authoritative hint. A reader validates the hinted commit, enumerates commit records ordered by the frozen canonical host-generation key, validates every candidate newer than the hint, and selects the highest verified commit record. It never exposes an uncommitted manifest; an absent or invalid hint triggers the same verified-record scan.
-A writer derives its next generation number as the successor of the highest verified remote commit record for its host, cross-checked against the shared PostgreSQL catalog in shared mode; the local journal accelerates resumption but is never the ordering authority, so a host that loses local state cannot collide with or regress its own history. Content-addressed objects are fully read back and digest-verified when first uploaded; a retry that finds an object already present verifies existence and size rather than re-reading bytes.
-
-A crash before commit-record read-back leaves the prior committed generation current; uploaded bundles or manifests are uncommitted immutable objects and are harmless and reused by digest on retry. A crash after commit-record read-back but before `latest` replacement leaves a recoverable committed generation discoverable by verified-commit fallback. A crash after pointer replacement is complete. The local journal advances only after each remote read-back, so restarting any stage is idempotent.
-
-Bundle objects are immutable and content-addressed inside `archive:babel/v1/`. Shared blobs remain content-addressed. For each host, Babel uploads bundle objects first, then manifest segments and the generation index, then the immutable commit record, and updates the small `latest` hint last. Readers therefore see either the previous complete generation or a verified new commit, never an uncommitted manifest.
-
-Manifest metadata is client-side encrypted with the rest of the archive. V1 is remote append/update-only: Babel never deletes a remote bundle, blob, manifest generation, commit record, or legacy object. No remote prune command exists in v1.
+Retention is append-only. Babel never invokes `restic forget` or `restic prune`, never deletes a snapshot or legacy object, and no remote prune command exists in v1. Concurrent pushes from multiple machines are safe: restic serializes writers with repository locks, and snapshots are per-host by construction. An interrupted backup never publishes a partial snapshot—restic writes the snapshot record last—and a re-run uploads only chunks the repository does not already contain.
 
 ### 6.2 Catalog and selective fetch
 
-`babel archive catalog` reads encrypted v1 `latest` hints and immutable commit records and rich manifests without materializing transcript bundles. It merges every stable host into the local catalog, preserves harness-specific completeness flags, and resolves a bare session selector to its newest committed stable revision; exact `SESSION@REVISION` selects that immutable revision reproducibly.
+The session catalog is built from live local source trees, not decoded from remote objects: adapters discover and describe sessions—title, workspace, timestamps, repository fingerprint, completeness reasons, artifact/blob closure—on each machine, and shared mode publishes catalog rows to PostgreSQL (within its plaintext allowlist, §9) so every instance can browse the fleet. Historical states are addressed by restic snapshot: a session selector plus an optional snapshot ID (default: the latest snapshot) identifies one immutable capture reproducibly.
 
-`babel sessions fetch SESSION[@REVISION]` explicitly downloads and digest-verifies one selected immutable bundle plus its declared artifact/blob closure, reassembling its bounded parent chain when the selected revision is an append delta. Decrypted bundles persist in a private local data store until the operator explicitly prunes them; they are not an ephemeral cache. Local prune never deletes the remote archive.
+`babel sessions fetch SELECTOR [--snapshot ID]` restores the selected session's file closure—primary log, sibling artifacts, resolved blobs—from the chosen snapshot into the private local data store. Fetched sessions persist until explicit prune, are never modified, and local prune never touches the repository.
 
 The legacy pre-Babel namespace is ignored. There is no range-read probing or best-effort legacy import in the product path.
 

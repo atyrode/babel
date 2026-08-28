@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
-	"github.com/atyrode/babel/internal/archive"
 )
 
 // Fixture identities. The trees under testdata are synthetic: no real
@@ -29,7 +28,7 @@ const (
 )
 
 // fixtureRoot copies the synthetic Codex tree into a temporary directory so
-// stability tests may mutate it without touching the repository.
+// tests may mutate it without touching the repository.
 func fixtureRoot(t *testing.T) string {
 	t.Helper()
 	dst := filepath.Join(t.TempDir(), "codex")
@@ -75,32 +74,56 @@ func sourceIDs(sessions []adapter.SourceSession) []string {
 	return out
 }
 
-func snapshotOf(t *testing.T, root, sourceID string) *adapter.Snapshot {
+func describeOf(t *testing.T, root, sourceID string) *adapter.Description {
 	t.Helper()
 	for _, s := range discover(t, root) {
 		if s.SourceID != sourceID {
 			continue
 		}
-		snap, err := New().Snapshot(context.Background(), s, t.TempDir())
+		desc, err := New().Describe(context.Background(), s)
 		if err != nil {
-			t.Fatalf("snapshot %s: %v", sourceID, err)
+			t.Fatalf("describe %s: %v", sourceID, err)
 		}
-		return snap
+		return desc
 	}
 	t.Fatalf("source %s not discovered", sourceID)
 	return nil
 }
 
-func metadataOf(t *testing.T, snap *adapter.Snapshot) Metadata {
+func metadataOf(t *testing.T, desc *adapter.Description) Metadata {
 	t.Helper()
-	if snap.AdapterMetadataSchema != MetadataSchema {
-		t.Errorf("adapter metadata schema = %d, want %d", snap.AdapterMetadataSchema, MetadataSchema)
+	if desc.AdapterMetadataSchema != MetadataSchema {
+		t.Errorf("adapter metadata schema = %d, want %d", desc.AdapterMetadataSchema, MetadataSchema)
+	}
+	canonical, err := adapter.CanonicalRawMessage(desc.AdapterMetadata)
+	if err != nil {
+		t.Fatalf("adapter metadata is not canonical JSON: %v", err)
+	}
+	if !bytes.Equal(canonical, desc.AdapterMetadata) {
+		t.Errorf("adapter metadata is not already canonical:\n got %s\nwant %s", desc.AdapterMetadata, canonical)
 	}
 	var md Metadata
-	if err := json.Unmarshal(snap.AdapterMetadata, &md); err != nil {
+	if err := json.Unmarshal(desc.AdapterMetadata, &md); err != nil {
 		t.Fatalf("decode adapter metadata: %v", err)
 	}
 	return md
+}
+
+// requireDescribesRawFile asserts the invariant that survives the pivot to
+// restic: the description names the live file and its full size, so the
+// bytes archived are exactly the bytes on disk.
+func requireDescribesRawFile(t *testing.T, desc *adapter.Description, path string) {
+	t.Helper()
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	if desc.Source.PrimaryPath != path {
+		t.Errorf("Source.PrimaryPath = %q, want the live source %q", desc.Source.PrimaryPath, path)
+	}
+	if desc.PrimarySize != int64(len(source)) {
+		t.Errorf("PrimarySize = %d, want %d", desc.PrimarySize, len(source))
+	}
 }
 
 // requireCompleteness asserts the contract that binds nullable catalog
@@ -135,7 +158,7 @@ func requireCompleteness(t *testing.T, m adapter.CommonMeta) {
 }
 
 func TestAdapterIdentity(t *testing.T) {
-	a := New()
+	var a adapter.Adapter = New()
 	if got := a.Harness(); got != "codex" {
 		t.Errorf("Harness() = %q, want codex", got)
 	}
@@ -174,7 +197,7 @@ func TestDiscoverFindsRolloutsAndHostState(t *testing.T) {
 		if s.Harness != HarnessName {
 			t.Errorf("%s: harness = %q", s.SourceID, s.Harness)
 		}
-		if !archive.ValidSourceID(s.SourceID) {
+		if !adapter.ValidSourceID(s.SourceID) {
 			t.Errorf("%s is not a valid source id", s.SourceID)
 		}
 		if fi, err := os.Stat(s.PrimaryPath); err != nil || !fi.Mode().IsRegular() {
@@ -217,65 +240,60 @@ func TestDiscoverDeduplicatesRepeatedRoots(t *testing.T) {
 	}
 }
 
-func TestSnapshotSessionStagesPrimaryAndAttachments(t *testing.T) {
+func TestDescribeSessionResolvesPrimaryAndAttachments(t *testing.T) {
 	root := fixtureRoot(t)
-	snap := snapshotOf(t, root, fullID)
+	primary := filepath.Join(root, filepath.FromSlash(fullID))
+	desc := describeOf(t, root, fullID)
 
-	source, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(fullID)))
-	if err != nil {
-		t.Fatalf("read source: %v", err)
-	}
-	stagedBytes, err := os.ReadFile(snap.StagedPrimary)
-	if err != nil {
-		t.Fatalf("read staged primary: %v", err)
-	}
-	if !bytes.Equal(source, stagedBytes) {
-		t.Error("staged primary differs from the source log")
-	}
-	if snap.PrimarySize != int64(len(source)) {
-		t.Errorf("PrimarySize = %d, want %d", snap.PrimarySize, len(source))
-	}
-	if snap.SnapshotTime.IsZero() || snap.SnapshotTime.Location() != time.UTC {
-		t.Errorf("SnapshotTime = %v, want a UTC instant", snap.SnapshotTime)
+	requireDescribesRawFile(t, desc, primary)
+	if desc.DescribedAt.IsZero() || desc.DescribedAt.Location() != time.UTC {
+		t.Errorf("DescribedAt = %v, want a UTC instant", desc.DescribedAt)
 	}
 
-	// Attachment closure is best effort, so a resolvable directory is
-	// staged whole (including names the reference pattern cannot match)
-	// and a missing one is reported rather than fabricated.
+	// Attachment closure is best effort, so a resolvable directory
+	// contributes every file it holds (including names the reference
+	// pattern cannot match) and a missing one is reported, not fabricated.
 	wantArtifacts := []string{
 		presentAttachment + "/synthetic capture 0001.txt",
 		presentAttachment + "/synthetic-attachment-0001.png",
 	}
 	var gotArtifacts []string
-	for _, f := range snap.Artifacts {
+	for _, f := range desc.Artifacts {
 		gotArtifacts = append(gotArtifacts, f.RelPath)
-		if fi, err := os.Stat(f.StagedPath); err != nil || fi.Size() != f.Size {
-			t.Errorf("artifact %s not staged with the recorded size", f.RelPath)
+		if !filepath.IsAbs(f.SourcePath) {
+			t.Errorf("artifact %s source path %q is not absolute", f.RelPath, f.SourcePath)
+		}
+		if want := filepath.Join(root, filepath.FromSlash(f.RelPath)); f.SourcePath != want {
+			t.Errorf("artifact %s source path = %q, want %q", f.RelPath, f.SourcePath, want)
+		}
+		fi, err := os.Stat(f.SourcePath)
+		if err != nil || fi.Size() != f.Size {
+			t.Errorf("artifact %s does not name a live file of the recorded size", f.RelPath)
 		}
 	}
 	if !reflect.DeepEqual(gotArtifacts, wantArtifacts) {
 		t.Errorf("artifacts = %v, want %v", gotArtifacts, wantArtifacts)
 	}
-	if want := []string{missingAttachment}; !reflect.DeepEqual(snap.UnresolvedBlobRefs, want) {
-		t.Errorf("unresolved refs = %v, want %v", snap.UnresolvedBlobRefs, want)
+	if want := []string{missingAttachment}; !reflect.DeepEqual(desc.UnresolvedBlobRefs, want) {
+		t.Errorf("unresolved refs = %v, want %v", desc.UnresolvedBlobRefs, want)
 	}
 	// Closure is never guaranteed for this harness (SPEC.md §3).
-	if snap.ContinuationGrade {
+	if desc.ContinuationGrade {
 		t.Error("ContinuationGrade must be false for codex")
 	}
 
-	requireCompleteness(t, snap.Meta)
-	if snap.Meta.Workspace == nil || *snap.Meta.Workspace != "/synthetic/workspace" {
-		t.Errorf("workspace = %v, want /synthetic/workspace", snap.Meta.Workspace)
+	requireCompleteness(t, desc.Meta)
+	if desc.Meta.Workspace == nil || *desc.Meta.Workspace != "/synthetic/workspace" {
+		t.Errorf("workspace = %v, want /synthetic/workspace", desc.Meta.Workspace)
 	}
-	if snap.Meta.CreatedAt == nil || snap.Meta.CreatedAt.Format("2006-01-02T15:04:05.000Z") != "2026-01-02T03:04:05.100Z" {
-		t.Errorf("created_at = %v", snap.Meta.CreatedAt)
+	if desc.Meta.CreatedAt == nil || desc.Meta.CreatedAt.Format("2006-01-02T15:04:05.000Z") != "2026-01-02T03:04:05.100Z" {
+		t.Errorf("created_at = %v", desc.Meta.CreatedAt)
 	}
-	if snap.Meta.ModifiedAt == nil || snap.Meta.ModifiedAt.Format("2006-01-02T15:04:05.000Z") != "2026-01-02T03:04:09.500Z" {
-		t.Errorf("modified_at = %v", snap.Meta.ModifiedAt)
+	if desc.Meta.ModifiedAt == nil || desc.Meta.ModifiedAt.Format("2006-01-02T15:04:05.000Z") != "2026-01-02T03:04:09.500Z" {
+		t.Errorf("modified_at = %v", desc.Meta.ModifiedAt)
 	}
 
-	md := metadataOf(t, snap)
+	md := metadataOf(t, desc)
 	if md.Kind != KindSession || md.PrimaryPath != fullID {
 		t.Errorf("metadata kind/path = %q/%q", md.Kind, md.PrimaryPath)
 	}
@@ -297,172 +315,190 @@ func TestSnapshotSessionStagesPrimaryAndAttachments(t *testing.T) {
 	if md.RecordTypes["turn_context"] != 2 || md.RecordTypes["response_item"] != 2 {
 		t.Errorf("record types = %v", md.RecordTypes)
 	}
-	if md.AttachmentRefs != 2 || md.AttachmentsStaged != 2 {
-		t.Errorf("attachment refs = %d, staged = %d, want 2/2", md.AttachmentRefs, md.AttachmentsStaged)
+	if md.AttachmentRefs != 2 || md.AttachmentFiles != 2 {
+		t.Errorf("attachment refs = %d, files = %d, want 2/2", md.AttachmentRefs, md.AttachmentFiles)
 	}
-	if md.SessionIndexStaged != nil {
-		t.Error("session_index_staged must be absent for a session snapshot")
+	if md.SessionIndexFound != nil {
+		t.Error("session_index_found must be absent for a session description")
 	}
 }
 
-func TestSnapshotRecordsReasonsForUnavailableFields(t *testing.T) {
+func TestDescribeRecordsReasonsForUnavailableFields(t *testing.T) {
 	root := fixtureRoot(t)
-	snap := snapshotOf(t, root, sparseID)
+	desc := describeOf(t, root, sparseID)
 
-	requireCompleteness(t, snap.Meta)
-	if snap.Meta.Title != nil || snap.Meta.Workspace != nil || snap.Meta.CreatedAt != nil ||
-		snap.Meta.ModifiedAt != nil || snap.Meta.Lifecycle != nil || snap.Meta.Repo != nil {
-		t.Fatalf("sparse log yielded synthesized catalog fields: %+v", snap.Meta)
+	requireCompleteness(t, desc.Meta)
+	if desc.Meta.Title != nil || desc.Meta.Workspace != nil || desc.Meta.CreatedAt != nil ||
+		desc.Meta.ModifiedAt != nil || desc.Meta.Lifecycle != nil || desc.Meta.Repo != nil {
+		t.Fatalf("sparse log yielded synthesized catalog fields: %+v", desc.Meta)
 	}
 	want := map[string]bool{"title": true, "workspace": true, "created_at": true, "modified_at": true, "lifecycle": true, "repo": true}
-	for _, r := range snap.Meta.Completeness {
+	for _, r := range desc.Meta.Completeness {
 		delete(want, r.Field)
 	}
 	if len(want) != 0 {
 		t.Errorf("missing completeness reasons for %v", want)
 	}
-	if md := metadataOf(t, snap); md.Records != 2 {
+	if md := metadataOf(t, desc); md.Records != 2 {
 		t.Errorf("records = %d, want 2", md.Records)
 	}
 }
 
-func TestSnapshotMalformedLogStillPreservesRawBytes(t *testing.T) {
+// TestDescribeToleratesMalformedAndTornRecords defends the recorded
+// consistency boundary: restic snapshots are crash-consistent per file, so
+// a log containing garbage lines, a wrong-shaped payload, and a torn
+// trailing record must count and skip them while still describing the raw
+// file and every fact the readable records expose.
+func TestDescribeToleratesMalformedAndTornRecords(t *testing.T) {
 	root := fixtureRoot(t)
-	snap := snapshotOf(t, root, malformedID)
+	primary := filepath.Join(root, filepath.FromSlash(malformedID))
+	desc := describeOf(t, root, malformedID)
 
-	source, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(malformedID)))
-	if err != nil {
-		t.Fatalf("read source: %v", err)
-	}
-	staged, err := os.ReadFile(snap.StagedPrimary)
-	if err != nil {
-		t.Fatalf("read staged primary: %v", err)
-	}
-	if !bytes.Equal(source, staged) {
-		t.Error("malformed log was not staged byte for byte")
-	}
-	requireCompleteness(t, snap.Meta)
+	requireDescribesRawFile(t, desc, primary)
+	requireCompleteness(t, desc.Meta)
 
-	md := metadataOf(t, snap)
-	if md.MalformedRecords < 2 {
-		t.Errorf("malformed records = %d, want at least 2", md.MalformedRecords)
+	md := metadataOf(t, desc)
+	// Six records: one good session_meta, one wrong-shaped payload, one
+	// garbage line, two parsable records, and one torn trailing record
+	// with no newline.
+	if md.Records != 6 {
+		t.Errorf("records = %d, want 6", md.Records)
+	}
+	if md.MalformedRecords != 3 {
+		t.Errorf("malformed records = %d, want 3 (wrong shape, garbage, torn tail)", md.MalformedRecords)
+	}
+	if md.TruncatedRecords != 0 {
+		t.Errorf("truncated records = %d, want 0: no record exceeds the parser limit", md.TruncatedRecords)
 	}
 	// The one well-formed session_meta record still yields its facts.
 	if md.SessionID != "aaaaaaaa-0000-4000-8000-00000000000c" {
 		t.Errorf("session id = %q, want the parsable record's value", md.SessionID)
 	}
-	if snap.Meta.Workspace == nil || *snap.Meta.Workspace != "/synthetic/malformed-workspace" {
-		t.Errorf("workspace = %v", snap.Meta.Workspace)
+	if desc.Meta.Workspace == nil || *desc.Meta.Workspace != "/synthetic/malformed-workspace" {
+		t.Errorf("workspace = %v", desc.Meta.Workspace)
 	}
 }
 
-func TestSnapshotHostStateStagesHistoryAndIndex(t *testing.T) {
+func TestDescribeHostStateResolvesHistoryAndIndex(t *testing.T) {
 	root := fixtureRoot(t)
-	snap := snapshotOf(t, root, StateSourceID)
+	desc := describeOf(t, root, StateSourceID)
 
-	if want := filepath.Base(snap.StagedPrimary); want != "history.jsonl" {
-		t.Errorf("staged primary = %s, want history.jsonl", snap.StagedPrimary)
+	requireDescribesRawFile(t, desc, filepath.Join(root, "history.jsonl"))
+	if len(desc.Artifacts) != 1 || desc.Artifacts[0].RelPath != "session_index.jsonl" {
+		t.Fatalf("artifacts = %+v, want session_index.jsonl", desc.Artifacts)
 	}
-	if len(snap.Artifacts) != 1 || snap.Artifacts[0].RelPath != "session_index.jsonl" {
-		t.Fatalf("artifacts = %+v, want session_index.jsonl", snap.Artifacts)
+	index := desc.Artifacts[0]
+	if want := filepath.Join(root, "session_index.jsonl"); index.SourcePath != want {
+		t.Errorf("index source path = %q, want %q", index.SourcePath, want)
 	}
-	index, err := os.ReadFile(snap.Artifacts[0].StagedPath)
+	fi, err := os.Stat(index.SourcePath)
 	if err != nil {
-		t.Fatalf("read staged index: %v", err)
+		t.Fatalf("stat source index: %v", err)
 	}
-	source, err := os.ReadFile(filepath.Join(root, "session_index.jsonl"))
-	if err != nil {
-		t.Fatalf("read source index: %v", err)
-	}
-	if !bytes.Equal(index, source) {
-		t.Error("staged session index differs from the source")
+	if index.Size != fi.Size() {
+		t.Errorf("index size = %d, want %d", index.Size, fi.Size())
 	}
 
-	requireCompleteness(t, snap.Meta)
-	if snap.Meta.Workspace != nil {
+	requireCompleteness(t, desc.Meta)
+	if desc.Meta.Workspace != nil {
 		t.Error("host state must not claim a workspace")
 	}
-	if snap.Meta.CreatedAt == nil || snap.Meta.CreatedAt.Unix() != 1767322000 {
-		t.Errorf("created_at = %v, want the earliest history timestamp", snap.Meta.CreatedAt)
+	if desc.Meta.CreatedAt == nil || desc.Meta.CreatedAt.Unix() != 1767322000 {
+		t.Errorf("created_at = %v, want the earliest history timestamp", desc.Meta.CreatedAt)
 	}
-	if snap.Meta.ModifiedAt == nil || snap.Meta.ModifiedAt.Unix() != 1767409000 {
-		t.Errorf("modified_at = %v, want the latest history timestamp", snap.Meta.ModifiedAt)
+	if desc.Meta.ModifiedAt == nil || desc.Meta.ModifiedAt.Unix() != 1767409000 {
+		t.Errorf("modified_at = %v, want the latest history timestamp", desc.Meta.ModifiedAt)
 	}
 
-	md := metadataOf(t, snap)
+	md := metadataOf(t, desc)
 	if md.Kind != KindState || md.PrimaryPath != "history.jsonl" {
 		t.Errorf("metadata kind/path = %q/%q", md.Kind, md.PrimaryPath)
 	}
 	if md.Records != 3 || md.MalformedRecords != 0 {
 		t.Errorf("records = %d, malformed = %d, want 3/0", md.Records, md.MalformedRecords)
 	}
-	if md.SessionIndexStaged == nil || !*md.SessionIndexStaged {
-		t.Errorf("session_index_staged = %v, want true", md.SessionIndexStaged)
+	if md.SessionIndexFound == nil || !*md.SessionIndexFound {
+		t.Errorf("session_index_found = %v, want true", md.SessionIndexFound)
 	}
 }
 
-func TestSnapshotHostStateWithoutSessionIndex(t *testing.T) {
+func TestDescribeHostStateWithoutSessionIndex(t *testing.T) {
 	root := fixtureRoot(t)
 	if err := os.Remove(filepath.Join(root, "session_index.jsonl")); err != nil {
 		t.Fatalf("remove index: %v", err)
 	}
-	snap := snapshotOf(t, root, StateSourceID)
-	if len(snap.Artifacts) != 0 {
-		t.Errorf("artifacts = %+v, want none", snap.Artifacts)
+	desc := describeOf(t, root, StateSourceID)
+	if len(desc.Artifacts) != 0 {
+		t.Errorf("artifacts = %+v, want none", desc.Artifacts)
 	}
-	md := metadataOf(t, snap)
-	if md.SessionIndexStaged == nil || *md.SessionIndexStaged {
-		t.Errorf("session_index_staged = %v, want false", md.SessionIndexStaged)
+	md := metadataOf(t, desc)
+	if md.SessionIndexFound == nil || *md.SessionIndexFound {
+		t.Errorf("session_index_found = %v, want false", md.SessionIndexFound)
 	}
 }
 
-func TestSnapshotSourceChangedDuringStagingIsUnstable(t *testing.T) {
+// TestDescribeSurvivesConcurrentAppend records the consistency model: a
+// live Codex process appending between two descriptions never fails the
+// adapter; the later description simply supersedes the earlier one.
+func TestDescribeSurvivesConcurrentAppend(t *testing.T) {
 	root := fixtureRoot(t)
 	primary := filepath.Join(root, filepath.FromSlash(fullID))
 
-	appended := false
-	testHookStaged = func() {
-		if appended {
-			return
-		}
-		appended = true
-		f, err := os.OpenFile(primary, os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
-			t.Fatalf("open source for append: %v", err)
-		}
-		if _, err := f.WriteString(`{"timestamp":"2026-01-02T03:04:10.000Z","type":"event_msg","payload":{"type":"agent_message","message":"synthetic fixture message four"}}` + "\n"); err != nil {
-			t.Fatalf("append to source: %v", err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatalf("close source: %v", err)
-		}
-	}
-	t.Cleanup(func() { testHookStaged = nil })
+	before := describeOf(t, root, fullID)
 
+	f, err := os.OpenFile(primary, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open source for append: %v", err)
+	}
+	appended := `{"timestamp":"2026-01-02T03:04:10.000Z","type":"event_msg","payload":{"type":"agent_message","message":"synthetic fixture message four"}}` + "\n"
+	if _, err := f.WriteString(appended); err != nil {
+		t.Fatalf("append to source: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close source: %v", err)
+	}
+
+	after := describeOf(t, root, fullID)
+	if after.PrimarySize != before.PrimarySize+int64(len(appended)) {
+		t.Errorf("PrimarySize = %d, want %d after the append", after.PrimarySize, before.PrimarySize+int64(len(appended)))
+	}
+	beforeMD, afterMD := metadataOf(t, before), metadataOf(t, after)
+	if afterMD.Records != beforeMD.Records+1 {
+		t.Errorf("records = %d, want %d after the append", afterMD.Records, beforeMD.Records+1)
+	}
+	if !after.DescribedAt.After(before.DescribedAt) && !after.DescribedAt.Equal(before.DescribedAt) {
+		t.Errorf("DescribedAt went backwards: %v then %v", before.DescribedAt, after.DescribedAt)
+	}
+}
+
+func TestDescribeRejectsForeignSource(t *testing.T) {
+	root := fixtureRoot(t)
+	src := adapter.SourceSession{Harness: "omp", SourceID: fullID, PrimaryPath: filepath.Join(root, filepath.FromSlash(fullID))}
+	if _, err := New().Describe(context.Background(), src); err == nil {
+		t.Fatal("describe accepted a source from another harness")
+	}
+	src = adapter.SourceSession{Harness: HarnessName, SourceID: "with spaces", PrimaryPath: "x"}
+	if _, err := New().Describe(context.Background(), src); err == nil {
+		t.Fatal("describe accepted an invalid source id")
+	}
+	src = adapter.SourceSession{Harness: HarnessName, SourceID: fullID}
+	if _, err := New().Describe(context.Background(), src); err == nil {
+		t.Fatal("describe accepted a source with no primary path")
+	}
+}
+
+func TestDescribeHonorsContextCancellation(t *testing.T) {
+	root := fixtureRoot(t)
 	var src adapter.SourceSession
 	for _, s := range discover(t, root) {
 		if s.SourceID == fullID {
 			src = s
 		}
 	}
-	_, err := New().Snapshot(context.Background(), src, t.TempDir())
-	if !errors.Is(err, adapter.ErrUnstable) {
-		t.Fatalf("snapshot error = %v, want adapter.ErrUnstable", err)
-	}
-	if !appended {
-		t.Fatal("stability window never reached the test hook")
-	}
-}
-
-func TestSnapshotRejectsForeignSource(t *testing.T) {
-	root := fixtureRoot(t)
-	src := adapter.SourceSession{Harness: "omp", SourceID: fullID, PrimaryPath: filepath.Join(root, filepath.FromSlash(fullID))}
-	if _, err := New().Snapshot(context.Background(), src, t.TempDir()); err == nil {
-		t.Fatal("snapshot accepted a source from another harness")
-	}
-	src = adapter.SourceSession{Harness: HarnessName, SourceID: "with spaces", PrimaryPath: "x"}
-	if _, err := New().Snapshot(context.Background(), src, t.TempDir()); err == nil {
-		t.Fatal("snapshot accepted an invalid source id")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := New().Describe(ctx, src); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Describe error = %v, want context.Canceled", err)
 	}
 }
 
@@ -474,7 +510,7 @@ func TestSourceIDForUnusualPaths(t *testing.T) {
 
 	odd := filepath.Join("sessions", "2026", "a name with spaces.jsonl")
 	got := sourceIDFor(odd)
-	if !archive.ValidSourceID(got) {
+	if !adapter.ValidSourceID(got) {
 		t.Errorf("sourceIDFor(%q) = %q, which is not a valid source id", odd, got)
 	}
 	if got != sourceIDFor(odd) {
@@ -488,11 +524,11 @@ func TestSourceIDForUnusualPaths(t *testing.T) {
 	}
 }
 
-// TestSnapshotOversizedRecords covers the bounded record reader: a record
+// TestDescribeOversizedRecords covers the bounded record reader: a record
 // larger than the read buffer must still be parsed whole, and one larger
-// than the parser limit must degrade to a flagged truncation while its raw
-// bytes are staged intact.
-func TestSnapshotOversizedRecords(t *testing.T) {
+// than the parser limit must degrade to a flagged truncation while the
+// described file keeps every byte.
+func TestDescribeOversizedRecords(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "codex")
 	rel := "sessions/2026/01/04/rollout-2026-01-04T00-00-00-aaaaaaaa-0000-4000-8000-000000000004.jsonl"
 	log := filepath.Join(root, filepath.FromSlash(rel))
@@ -512,16 +548,10 @@ func TestSnapshotOversizedRecords(t *testing.T) {
 		t.Fatalf("write oversized log: %v", err)
 	}
 
-	snap := snapshotOf(t, root, rel)
-	staged, err := os.ReadFile(snap.StagedPrimary)
-	if err != nil {
-		t.Fatalf("read staged primary: %v", err)
-	}
-	if !bytes.Equal(staged, buf.Bytes()) {
-		t.Error("oversized log was not staged byte for byte")
-	}
+	desc := describeOf(t, root, rel)
+	requireDescribesRawFile(t, desc, log)
 
-	md := metadataOf(t, snap)
+	md := metadataOf(t, desc)
 	if md.Records != 3 {
 		t.Errorf("records = %d, want 3", md.Records)
 	}
@@ -534,8 +564,8 @@ func TestSnapshotOversizedRecords(t *testing.T) {
 	if want := []string{"synthetic-model-big"}; !reflect.DeepEqual(md.Models, want) {
 		t.Errorf("models = %v, want %v: a multi-chunk record must parse whole", md.Models, want)
 	}
-	if snap.Meta.Workspace == nil || *snap.Meta.Workspace != "/synthetic/oversized" {
-		t.Errorf("workspace = %v", snap.Meta.Workspace)
+	if desc.Meta.Workspace == nil || *desc.Meta.Workspace != "/synthetic/oversized" {
+		t.Errorf("workspace = %v", desc.Meta.Workspace)
 	}
 }
 
@@ -560,7 +590,7 @@ func TestSmokeRealRoots(t *testing.T) {
 	}
 	state := 0
 	for _, s := range found {
-		if !archive.ValidSourceID(s.SourceID) {
+		if !adapter.ValidSourceID(s.SourceID) {
 			t.Fatal("real root produced an invalid source id")
 		}
 		if s.SourceID == StateSourceID {

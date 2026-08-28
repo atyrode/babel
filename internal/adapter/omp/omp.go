@@ -1,5 +1,5 @@
 // Package omp implements the OMP source adapter (SPEC.md §3). OMP is the
-// reference, highest-fidelity harness: a snapshot always carries the raw
+// reference, highest-fidelity harness: a description always names the raw
 // session JSONL, the complete sibling artifact tree, and every resolvable
 // referenced blob from the content-addressed blob store, so unresolved
 // references are the only reason continuation grade is withheld.
@@ -18,6 +18,12 @@
 // record payloads, both directly and escaped inside nested JSON strings,
 // so references are found by scanning raw bytes rather than by walking a
 // record schema that would miss the nested form.
+//
+// Every file is read in place and never copied: durability belongs to
+// restic, whose snapshots are crash-consistent per file rather than
+// transactional across files. A description is therefore a best-effort
+// view of the live tree at one instant, refreshed on every call, and a
+// concurrent OMP write degrades the view instead of failing it.
 package omp
 
 import (
@@ -37,26 +43,22 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
-	"github.com/atyrode/babel/internal/archive"
+	"github.com/atyrode/babel/internal/digest"
 )
 
 const (
 	harnessName = "omp"
-	// adapterSchema is the adapter_schema version recorded in manifests.
+	// adapterSchema is the adapter_schema version of this adapter's
+	// discovery and description behavior.
 	adapterSchema = 1
 	// adapterMetadataSchema versions the omp-specific metadata object
-	// independently of the manifest envelope.
+	// independently of the common description shape.
 	adapterMetadataSchema = 1
 
 	dataDirName    = ".omp"
 	sessionsSubdir = "sessions"
 	blobsSubdir    = "blobs"
 	sessionExt     = ".jsonl"
-
-	// artifactsSubdir separates the staged sibling artifact tree from the
-	// staged primary log, so no artifact relative path can collide with
-	// the primary file name.
-	artifactsSubdir = "artifacts"
 
 	// blobRefPrefix is the persisted blob-reference scheme; the remainder
 	// of a reference is the blob's lowercase SHA-256 hex, which makes
@@ -71,43 +73,60 @@ const (
 	headerScanRecords = 8
 
 	// maxIDSegment bounds one source-id segment so a composed source id
-	// always satisfies archive.ValidSourceID's 512-byte limit.
+	// always satisfies adapter.ValidSourceID's 512-byte limit.
 	maxIDSegment = 128
-
-	dirPerm  = 0o700
-	filePerm = 0o600
 )
 
 var blobRefPattern = regexp.MustCompile(`blob:sha256:[0-9a-f]{64}`)
 
 // Adapter is the OMP source adapter. It is stateless and safe for
 // concurrent use.
-type Adapter struct {
-	// afterStage runs after every source file has been staged and before
-	// stability is re-verified. It exists so tests can mutate the source
-	// exactly inside the window Snapshot must detect; it is nil in
-	// production.
-	afterStage func()
-}
+type Adapter struct{}
 
 // New returns the OMP source adapter.
 func New() *Adapter { return &Adapter{} }
 
-// Harness returns the stable lowercase harness name.
-func (a *Adapter) Harness() string { return harnessName }
+var _ adapter.Adapter = (*Adapter)(nil)
 
-// Schema returns the adapter_schema version recorded in manifests.
-func (a *Adapter) Schema() int { return adapterSchema }
+// Harness returns the stable lowercase harness name.
+func (*Adapter) Harness() string { return harnessName }
+
+// Schema returns the adapter_schema version of this adapter.
+func (*Adapter) Schema() int { return adapterSchema }
 
 // DefaultRoots returns the default OMP session root, "~/.omp/agent/sessions".
 // It returns nil when the home directory cannot be determined; a caller
 // that configures roots explicitly never depends on this.
-func (a *Adapter) DefaultRoots() []string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+func (*Adapter) DefaultRoots() []string {
+	agent, ok := agentDir()
+	if !ok {
 		return nil
 	}
-	return []string{filepath.Join(home, dataDirName, "agent", sessionsSubdir)}
+	return []string{filepath.Join(agent, sessionsSubdir)}
+}
+
+// BackupRoots adds the content-addressed blob store to the session root:
+// referenced blobs live outside the session trees, so a backup that
+// captured only DefaultRoots could never restore a continuation-grade
+// closure (SPEC.md §3).
+func (*Adapter) BackupRoots() []string {
+	agent, ok := agentDir()
+	if !ok {
+		return nil
+	}
+	return []string{
+		filepath.Join(agent, sessionsSubdir),
+		filepath.Join(agent, blobsSubdir),
+	}
+}
+
+// agentDir locates "~/.omp/agent", the parent of both default roots.
+func agentDir() (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", false
+	}
+	return filepath.Join(home, dataDirName, "agent"), true
 }
 
 // Discover enumerates primary session logs under roots. A session log is
@@ -117,7 +136,7 @@ func (a *Adapter) DefaultRoots() []string {
 // sessions. Roots and project directories that do not exist or cannot be
 // read are skipped silently; results are ordered by source id and
 // deduplicated across overlapping roots.
-func (a *Adapter) Discover(ctx context.Context, roots []string) ([]adapter.SourceSession, error) {
+func (*Adapter) Discover(ctx context.Context, roots []string) ([]adapter.SourceSession, error) {
 	var found []adapter.SourceSession
 	seen := make(map[string]struct{})
 	for _, root := range roots {
@@ -146,7 +165,7 @@ func (a *Adapter) Discover(ctx context.Context, roots []string) ([]adapter.Sourc
 				}
 				stem := strings.TrimSuffix(entry.Name(), sessionExt)
 				id := idSegment(project.Name()) + "/" + idSegment(stem)
-				if !archive.ValidSourceID(id) {
+				if !adapter.ValidSourceID(id) {
 					continue
 				}
 				if _, dup := seen[id]; dup {
@@ -166,71 +185,40 @@ func (a *Adapter) Discover(ctx context.Context, roots []string) ([]adapter.Sourc
 	return found, nil
 }
 
-// Snapshot stages a stable copy of one session: the primary log, its
-// sibling artifact tree, and the closure of referenced blobs it can
-// resolve. The primary log is digested while it is copied and digested
-// again afterwards, and the artifact tree is re-walked, so any change
-// underneath the snapshot surfaces as a wrapped adapter.ErrUnstable
-// instead of an inconsistent bundle.
-func (a *Adapter) Snapshot(ctx context.Context, src adapter.SourceSession, stagingDir string) (*adapter.Snapshot, error) {
+// Describe reads one session in place: the primary log's digest and size,
+// its sibling artifact tree, and the closure of referenced blobs it can
+// resolve. Nothing is copied and the source is never re-verified, because
+// a description is a best-effort view rather than a transaction: an OMP
+// process appending to the log while it is read yields a slightly older
+// or slightly newer view, and the next call supersedes it.
+func (*Adapter) Describe(ctx context.Context, src adapter.SourceSession) (*adapter.Description, error) {
 	if src.Harness != "" && src.Harness != harnessName {
 		return nil, fmt.Errorf("omp: session %q belongs to harness %q", src.SourceID, src.Harness)
 	}
 	if src.PrimaryPath == "" {
 		return nil, fmt.Errorf("omp: session %q has no primary path", src.SourceID)
 	}
-	if err := os.MkdirAll(stagingDir, dirPerm); err != nil {
-		return nil, err
-	}
 
 	primaryInfo, err := os.Stat(src.PrimaryPath)
 	if err != nil {
 		return nil, err
 	}
-
-	stagedPrimary := filepath.Join(stagingDir, filepath.Base(src.PrimaryPath))
-	primaryDigest, primarySize, err := stageFile(ctx, src.PrimaryPath, stagedPrimary)
+	primaryDigest, primarySize, err := digestFile(ctx, src.PrimaryPath)
 	if err != nil {
 		return nil, err
 	}
 
 	artifactDir := strings.TrimSuffix(src.PrimaryPath, sessionExt)
-	before, err := collectArtifacts(ctx, artifactDir)
+	artifacts, err := collectArtifacts(ctx, artifactDir)
 	if err != nil {
 		return nil, err
 	}
-	stagedArtifactRoot := filepath.Join(stagingDir, artifactsSubdir)
-	artifacts := make([]adapter.StagedFile, 0, len(before))
 	var artifactBytes int64
-	for _, entry := range before {
-		staged := filepath.Join(stagedArtifactRoot, filepath.FromSlash(entry.rel))
-		if err := os.MkdirAll(filepath.Dir(staged), dirPerm); err != nil {
-			return nil, err
-		}
-		_, size, err := stageFile(ctx, filepath.Join(artifactDir, filepath.FromSlash(entry.rel)), staged)
-		if err != nil {
-			return nil, err
-		}
-		artifacts = append(artifacts, adapter.StagedFile{RelPath: entry.rel, StagedPath: staged, Size: size})
-		artifactBytes += size
+	for _, artifact := range artifacts {
+		artifactBytes += artifact.Size
 	}
 
-	if a.afterStage != nil {
-		a.afterStage()
-	}
-
-	if err := verifyPrimary(ctx, src.PrimaryPath, primaryDigest, primarySize, primaryInfo); err != nil {
-		return nil, err
-	}
-	after, err := collectArtifacts(ctx, artifactDir)
-	if err != nil {
-		return nil, err
-	}
-	if err := sameArtifacts(before, after); err != nil {
-		return nil, fmt.Errorf("%w: artifact tree of %s: %v", adapter.ErrUnstable, src.SourceID, err)
-	}
-
-	refs, err := scanStagedRefs(ctx, stagedPrimary, artifacts)
+	refs, err := scanRefs(ctx, src.PrimaryPath, artifacts)
 	if err != nil {
 		return nil, err
 	}
@@ -250,16 +238,17 @@ func (a *Adapter) Snapshot(ctx context.Context, src adapter.SourceSession, stagi
 		blobs = append(blobs, blob)
 	}
 
-	head := readHeader(stagedPrimary)
+	head := readHeader(src.PrimaryPath)
 	meta := head.commonMeta(primaryInfo.ModTime())
 
-	rawMeta, err := archive.MarshalCanonical(&adapterMetadata{
+	rawMeta, err := adapter.MarshalCanonical(&adapterMetadata{
 		OMPSessionID:         head.sessionID,
 		SessionRecordVersion: head.recordVersion,
 		ParentSessionID:      head.parentSession,
 		TitleSource:          head.titleSource,
 		ProjectDir:           filepath.Base(filepath.Dir(src.PrimaryPath)),
 		PrimaryDigest:        primaryDigest,
+		PrimarySize:          primarySize,
 		ArtifactCount:        len(artifacts),
 		ArtifactBytes:        artifactBytes,
 		BlobRefCount:         len(refs),
@@ -270,20 +259,19 @@ func (a *Adapter) Snapshot(ctx context.Context, src adapter.SourceSession, stagi
 	if err != nil {
 		return nil, err
 	}
-	canonicalMeta, err := archive.CanonicalRawMessage(rawMeta)
+	canonicalMeta, err := adapter.CanonicalRawMessage(rawMeta)
 	if err != nil {
 		return nil, err
 	}
 
-	return &adapter.Snapshot{
+	return &adapter.Description{
 		Source: adapter.SourceSession{
 			Harness:     harnessName,
 			SourceID:    src.SourceID,
 			PrimaryPath: src.PrimaryPath,
 			Hint:        src.Hint,
 		},
-		SnapshotTime:          time.Now().UTC(),
-		StagedPrimary:         stagedPrimary,
+		DescribedAt:           time.Now().UTC(),
 		PrimarySize:           primarySize,
 		Meta:                  meta,
 		AdapterMetadataSchema: adapterMetadataSchema,
@@ -295,43 +283,35 @@ func (a *Adapter) Snapshot(ctx context.Context, src adapter.SourceSession, stagi
 	}, nil
 }
 
-// adapterMetadata is the versioned omp-specific manifest extension. Field
-// order is the canonical encoding order (archive.MarshalCanonical).
+// adapterMetadata is the versioned omp-specific metadata document. Field
+// order is the canonical encoding order (adapter.MarshalCanonical).
 type adapterMetadata struct {
-	OMPSessionID         string         `json:"omp_session_id,omitempty"`
-	SessionRecordVersion int            `json:"session_record_version,omitempty"`
-	ParentSessionID      string         `json:"parent_session_id,omitempty"`
-	TitleSource          string         `json:"title_source,omitempty"`
-	ProjectDir           string         `json:"project_dir,omitempty"`
-	PrimaryDigest        archive.Digest `json:"primary_digest"`
-	ArtifactCount        int            `json:"artifact_count"`
-	ArtifactBytes        int64          `json:"artifact_bytes"`
-	BlobRefCount         int            `json:"blob_ref_count"`
-	ResolvedBlobCount    int            `json:"resolved_blob_count"`
-	UnresolvedBlobCount  int            `json:"unresolved_blob_count"`
-	BlobStoreFound       bool           `json:"blob_store_found"`
-}
-
-// artifactEntry is one observed artifact file: the slash-separated path
-// relative to the artifact tree plus the stability signals compared
-// before and after staging.
-type artifactEntry struct {
-	rel     string
-	size    int64
-	modTime time.Time
+	OMPSessionID         string        `json:"omp_session_id,omitempty"`
+	SessionRecordVersion int           `json:"session_record_version,omitempty"`
+	ParentSessionID      string        `json:"parent_session_id,omitempty"`
+	TitleSource          string        `json:"title_source,omitempty"`
+	ProjectDir           string        `json:"project_dir,omitempty"`
+	PrimaryDigest        digest.Digest `json:"primary_digest"`
+	PrimarySize          int64         `json:"primary_size"`
+	ArtifactCount        int           `json:"artifact_count"`
+	ArtifactBytes        int64         `json:"artifact_bytes"`
+	BlobRefCount         int           `json:"blob_ref_count"`
+	ResolvedBlobCount    int           `json:"resolved_blob_count"`
+	UnresolvedBlobCount  int           `json:"unresolved_blob_count"`
+	BlobStoreFound       bool          `json:"blob_store_found"`
 }
 
 // collectArtifacts lists the regular files of a session's sibling
-// artifact tree in ascending relative-path order. A missing tree is not
-// an error: many sessions have none. Irregular entries (symlinks,
-// devices, sockets) are never staged, so staging cannot follow a link out
-// of the tree.
-func collectArtifacts(ctx context.Context, dir string) ([]artifactEntry, error) {
+// artifact tree in ascending relative-path order, with paths relative to
+// the artifact tree itself. A missing tree is not an error: many sessions
+// have none. Irregular entries (symlinks, devices, sockets) are excluded,
+// so the closure can never follow a link out of the tree.
+func collectArtifacts(ctx context.Context, dir string) ([]adapter.SourceFile, error) {
 	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
 		return nil, nil
 	}
-	var out []artifactEntry
+	var out []adapter.SourceFile
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// An unreadable subtree degrades this session's artifact
@@ -355,102 +335,44 @@ func collectArtifacts(ctx context.Context, dir string) ([]artifactEntry, error) 
 		if err != nil {
 			return nil
 		}
-		out = append(out, artifactEntry{rel: filepath.ToSlash(rel), size: fi.Size(), modTime: fi.ModTime()})
+		out = append(out, adapter.SourceFile{
+			RelPath:    filepath.ToSlash(rel),
+			SourcePath: path,
+			Size:       fi.Size(),
+		})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].rel < out[j].rel })
+	sort.Slice(out, func(i, j int) bool { return out[i].RelPath < out[j].RelPath })
 	return out, nil
 }
 
-// sameArtifacts reports why two observations of an artifact tree differ.
-func sameArtifacts(before, after []artifactEntry) error {
-	if len(before) != len(after) {
-		return fmt.Errorf("file count changed from %d to %d", len(before), len(after))
-	}
-	for i := range before {
-		switch {
-		case before[i].rel != after[i].rel:
-			return fmt.Errorf("file %s replaced by %s", before[i].rel, after[i].rel)
-		case before[i].size != after[i].size:
-			return fmt.Errorf("file %s changed size", before[i].rel)
-		case !before[i].modTime.Equal(after[i].modTime):
-			return fmt.Errorf("file %s changed modification time", before[i].rel)
-		}
-	}
-	return nil
-}
-
-// stageFile copies srcPath to dstPath and returns the digest and size of
-// the bytes it copied, which are by construction the staged bytes.
-func stageFile(ctx context.Context, srcPath, dstPath string) (archive.Digest, int64, error) {
+// digestFile returns the canonical digest and size of a file's live bytes.
+func digestFile(ctx context.Context, path string) (digest.Digest, int64, error) {
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
-	}
-	in, err := os.Open(srcPath)
-	if err != nil {
-		return "", 0, err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
-	if err != nil {
-		return "", 0, err
-	}
-	sum := sha256.New()
-	size, err := io.Copy(io.MultiWriter(out, sum), in)
-	if cerr := out.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return "", 0, err
-	}
-	var raw [sha256.Size]byte
-	copy(raw[:], sum.Sum(nil))
-	return archive.NewDigest(raw), size, nil
-}
-
-// verifyPrimary re-reads the source log and reports a wrapped
-// adapter.ErrUnstable when its bytes, size, or modification time no
-// longer match what was staged.
-func verifyPrimary(ctx context.Context, path string, staged archive.Digest, size int64, before os.FileInfo) error {
-	if err := ctx.Err(); err != nil {
-		return err
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return "", 0, err
 	}
 	defer f.Close()
-	digest, n, err := archive.ComputeDigest(f)
-	if err != nil {
-		return err
-	}
-	after, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if digest != staged || n != size {
-		return fmt.Errorf("%w: primary log of %s changed content while staging", adapter.ErrUnstable, filepath.Base(path))
-	}
-	if !after.ModTime().Equal(before.ModTime()) {
-		return fmt.Errorf("%w: primary log of %s was rewritten while staging", adapter.ErrUnstable, filepath.Base(path))
-	}
-	return nil
+	return digest.Compute(f)
 }
 
-// scanStagedRefs returns the deduplicated, ascending blob references of
-// the staged primary log and every staged artifact. Artifacts are scanned
-// because subagent logs carry their own blob references, and the closure
-// a continuation needs spans the whole session tree.
-func scanStagedRefs(ctx context.Context, stagedPrimary string, artifacts []adapter.StagedFile) ([]string, error) {
+// scanRefs returns the deduplicated, ascending blob references of the
+// primary log and every artifact. Artifacts are scanned because subagent
+// logs carry their own blob references, and the closure a continuation
+// needs spans the whole session tree.
+func scanRefs(ctx context.Context, primaryPath string, artifacts []adapter.SourceFile) ([]string, error) {
 	refs := make(map[string]struct{})
-	if err := scanBlobRefs(ctx, stagedPrimary, refs); err != nil {
+	if err := scanBlobRefs(ctx, primaryPath, refs); err != nil {
 		return nil, err
 	}
 	for _, artifact := range artifacts {
-		if err := scanBlobRefs(ctx, artifact.StagedPath, refs); err != nil {
+		if err := scanBlobRefs(ctx, artifact.SourcePath, refs); err != nil {
 			return nil, err
 		}
 	}
@@ -465,11 +387,13 @@ func scanStagedRefs(ctx context.Context, stagedPrimary string, artifacts []adapt
 // scanBlobRefs adds every blob reference in path to refs. It reads in
 // bounded chunks that overlap by one reference length, so a reference
 // split across chunk boundaries is still found and memory use does not
-// scale with a multi-megabyte log.
+// scale with a multi-megabyte log. A file that disappears or becomes
+// unreadable between the walk and the scan contributes no references
+// instead of failing the description.
 func scanBlobRefs(ctx context.Context, path string, refs map[string]struct{}) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil
 	}
 	defer f.Close()
 	const chunk = 1 << 20
@@ -509,7 +433,7 @@ func blobsDir(primaryPath string) string {
 // file, an unreadable file, or a digest mismatch leaves the reference
 // unresolved rather than admitting unverified bytes into the closure.
 func resolveBlob(store, ref string) (adapter.BlobRef, bool) {
-	want := archive.Digest(strings.TrimPrefix(ref, "blob:"))
+	want := digest.Digest(strings.TrimPrefix(ref, "blob:"))
 	if !want.Valid() {
 		return adapter.BlobRef{}, false
 	}
@@ -537,7 +461,7 @@ func resolveBlob(store, ref string) (adapter.BlobRef, bool) {
 		return adapter.BlobRef{}, false
 	}
 	defer f.Close()
-	got, size, err := archive.ComputeDigest(f)
+	got, size, err := digest.Compute(f)
 	if err != nil || got != want {
 		return adapter.BlobRef{}, false
 	}
@@ -580,8 +504,8 @@ type header struct {
 	hasCreatedAt  bool
 }
 
-// readHeader extracts metadata from the head of a staged log. Every
-// absent value stays absent: a log whose head is truncated, malformed, or
+// readHeader extracts metadata from the head of a live log. Every absent
+// value stays absent: a log whose head is truncated, malformed, or
 // missing records yields a header whose empty fields become explicit
 // completeness reasons.
 func readHeader(path string) header {
@@ -592,7 +516,7 @@ func readHeader(path string) header {
 	}
 	defer f.Close()
 	dec := json.NewDecoder(io.LimitReader(f, headerScanLimit))
-	for i := 0; i < headerScanRecords; i++ {
+	for range headerScanRecords {
 		var rec sessionRecord
 		if err := dec.Decode(&rec); err != nil {
 			break
@@ -629,7 +553,7 @@ func readHeader(path string) header {
 func (h header) commonMeta(sourceModTime time.Time) adapter.CommonMeta {
 	var meta adapter.CommonMeta
 	missing := func(field, reason string) {
-		meta.Completeness = append(meta.Completeness, archive.CompletenessReason{Field: field, Reason: reason})
+		meta.Completeness = append(meta.Completeness, adapter.CompletenessReason{Field: field, Reason: reason})
 	}
 
 	if h.title != "" {
@@ -685,7 +609,7 @@ func validSegment(s string) bool {
 	if s == "" || s == "." || s == ".." {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		if !segmentByteOK(s[i]) {
 			return false
 		}
