@@ -84,7 +84,7 @@ func TestMigrationLedgerPersistsAcrossConnections(t *testing.T) {
 	db.Close()
 
 	// A completely separate connection, as a restarted instance would make.
-	u, err := url.Parse(baseDSN)
+	u, err := url.Parse(baseDSN())
 	if err != nil {
 		t.Fatalf("parse base DSN: %v", err)
 	}

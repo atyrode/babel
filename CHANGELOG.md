@@ -39,6 +39,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   than the migration text, its recorded version persists across connections so
   a restarted instance reapplies nothing, and dropping it is a discrepancy
   `Verify` reports.
+- Server-time fenced host leases and exactly-once publication: acquire, renew,
+  and release with a monotonic per-host fence, and `PublishSnapshot`, which
+  records a snapshot and its session rows under a lease it validates with a row
+  lock both before writing and immediately before commit. A writer with a
+  superseded fence, or whose lease expires mid-publication, lands nothing. A
+  repeated idempotency key is a no-op, so a retried push after a lost response
+  is safe. Session identity is an opaque digest over deployment, host, harness,
+  and source id.
+- Lease expiry is judged against `clock_timestamp()` rather than `now()`.
+  PostgreSQL's `now()` is the transaction timestamp and is frozen for the whole
+  transaction, so a lease validated inside a long publication could never
+  observe an expiry that happened while that transaction ran, and the TTL
+  bounded nothing.
 
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25

@@ -23,7 +23,7 @@ func openAs(t *testing.T, db *sql.DB, role, password string) *sql.DB {
 	if err := db.QueryRow(`SELECT current_database()`).Scan(&database); err != nil {
 		t.Fatalf("read database name: %v", err)
 	}
-	u, err := url.Parse(baseDSN)
+	u, err := url.Parse(baseDSN())
 	if err != nil {
 		t.Fatalf("parse base DSN: %v", err)
 	}

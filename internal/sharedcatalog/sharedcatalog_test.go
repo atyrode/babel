@@ -4,109 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
-	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
-// The suite needs a real PostgreSQL: the contract it defends is transactional
-// DDL, server-authoritative time, and information_schema reflection, none of
-// which a fake reproduces honestly. It provisions a throwaway cluster when
-// initdb is on PATH (the case inside `nix develop`), honours
-// BABEL_TEST_POSTGRES when an external server is preferred, and skips
-// otherwise rather than passing vacuously.
-var baseDSN string
+// The harness lives in the internal test package (harness_test.go) because
+// lease tests need an unexported seam, and only one TestMain may exist per test
+// binary. Exported identifiers declared in a package's own _test.go files are
+// visible from its external test package - the standard export_test.go idiom.
+func newDB(t *testing.T) *sql.DB { return sharedcatalog.NewTestDB(t) }
 
-func TestMain(m *testing.M) {
-	if dsn := os.Getenv("BABEL_TEST_POSTGRES"); dsn != "" {
-		baseDSN = dsn
-		os.Exit(m.Run())
-	}
-	if _, err := exec.LookPath("initdb"); err != nil {
-		fmt.Fprintln(os.Stderr, "skipping: no BABEL_TEST_POSTGRES and initdb is not on PATH")
-		os.Exit(0)
-	}
-	stop, dsn, err := startCluster()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "provision postgres: %v\n", err)
-		os.Exit(1)
-	}
-	baseDSN = dsn
-	code := m.Run()
-	stop()
-	os.Exit(code)
-}
-
-func startCluster() (func(), string, error) {
-	dir, err := os.MkdirTemp("", "babel-pg-*")
-	if err != nil {
-		return nil, "", err
-	}
-	cleanup := func() { os.RemoveAll(dir) }
-	data := filepath.Join(dir, "data")
-
-	// Trust auth on a loopback port with a private data directory: this cluster
-	// exists for the length of one test binary and holds only synthetic rows.
-	if out, err := exec.Command("initdb", "-A", "trust", "-U", "babel", "--no-sync", "-D", data).CombinedOutput(); err != nil {
-		cleanup()
-		return nil, "", fmt.Errorf("initdb: %v: %s", err, out)
-	}
-	port := "5" + fmt.Sprint(1000+os.Getpid()%8000)
-	opts := fmt.Sprintf("-k %s -h 127.0.0.1 -p %s", dir, port)
-	if out, err := exec.Command("pg_ctl", "-D", data, "-o", opts, "-l", filepath.Join(dir, "log"), "-w", "start").CombinedOutput(); err != nil {
-		cleanup()
-		return nil, "", fmt.Errorf("pg_ctl start: %v: %s", err, out)
-	}
-	stop := func() {
-		exec.Command("pg_ctl", "-D", data, "-m", "immediate", "-w", "stop").Run()
-		cleanup()
-	}
-	return stop, fmt.Sprintf("postgres://babel@127.0.0.1:%s/postgres?sslmode=disable", port), nil
-}
-
-var dbSeq atomic.Int64
-
-// newDB hands each test its own database so migrations, dropped columns, and
-// deliberately corrupted schemas cannot leak between cases.
-func newDB(t *testing.T) *sql.DB {
-	t.Helper()
-	ctx := context.Background()
-
-	admin, err := sharedcatalog.Open(ctx, baseDSN)
-	if err != nil {
-		t.Fatalf("open admin connection: %v", err)
-	}
-	defer admin.Close()
-
-	name := fmt.Sprintf("babel_test_%d", dbSeq.Add(1))
-	if _, err := admin.ExecContext(ctx, "DROP DATABASE IF EXISTS "+name); err != nil {
-		t.Fatalf("drop database: %v", err)
-	}
-	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatalf("create database: %v", err)
-	}
-
-	// Swap only the database path, whatever shape the DSN has.
-	u, err := url.Parse(baseDSN)
-	if err != nil {
-		t.Fatalf("parse base DSN: %v", err)
-	}
-	u.Path = "/" + name
-
-	db, err := sharedcatalog.Open(ctx, u.String())
-	if err != nil {
-		t.Fatalf("open %s: %v", name, err)
-	}
-	t.Cleanup(func() { db.Close() })
-	return db
-}
+func baseDSN() string { return sharedcatalog.TestingBaseDSN() }
 
 func mustMigrate(t *testing.T, db *sql.DB) []string {
 	t.Helper()
