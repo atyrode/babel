@@ -9,6 +9,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Added
+
+- A `flake.nix` dev shell pinning the full toolchain (Go, restic, Bun,
+  PostgreSQL client, `CGO_ENABLED=0` matching the release builds), so
+  `nix develop` replaces ad-hoc `PATH` exports to nix store paths ([#24]).
+
+[#24]: https://github.com/atyrode/babel/pull/24
+
 ## [0.2.1] - 2026-08-28
 
 Makes the first catalog scan observable, and stops it being needlessly slow.
