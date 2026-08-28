@@ -2,6 +2,7 @@ import { extname, join, resolve, sep } from "node:path";
 import type {
   ArchiveStatus,
   FetchResult,
+  ScanState,
   SessionDetail,
   SessionSummary,
   TranscriptEvent,
@@ -196,6 +197,142 @@ const version: VersionInfo = {
   platform: "linux/amd64",
 };
 
+// The real catalog scan describes hundreds of sessions, so the mock needs a
+// catalog large enough for the progress bar and the incremental row reveal to be
+// observable. Filler sessions are generated, never copied from real data.
+const fillerHarnesses = ["omp", "codex", "claude-code"];
+
+function fillerSession(index: number): SessionSummary {
+  const harness = fillerHarnesses[index % fillerHarnesses.length];
+  const sourceId = `synthetic-filler-${String(index + 1).padStart(2, "0")}`;
+  return {
+    harness,
+    source_id: sourceId,
+    selector: `${harness}:${sourceId}`,
+    size: 12_000 + index * 37_119,
+    modified: new Date(Date.UTC(2026, 7, 27, 6, index * 17)).toISOString(),
+    title: index % 4 === 0 ? null : `Synthetic preview session ${index + 1}`,
+    workspace: `/home/demo/projects/synthetic-${index % 5}`,
+    continuation_grade: index % 3 !== 0,
+  };
+}
+
+function fillerDetail(summary: SessionSummary): SessionDetail {
+  return {
+    harness: summary.harness,
+    source_id: summary.source_id,
+    selector: summary.selector,
+    primary_path: `/home/demo/.${summary.harness}/sessions/${summary.source_id}.jsonl`,
+    primary_size: summary.size,
+    described_at: "2026-08-28T10:45:00Z",
+    hint: "Generated filler session for the Babel web mock",
+    title: summary.title,
+    workspace: summary.workspace,
+    created_at: summary.modified,
+    modified_at: summary.modified,
+    lifecycle: summary.continuation_grade ? "complete" : null,
+    repo: null,
+    completeness: summary.title ? [] : [{ field: "title", reason: "This generated fixture has no title event." }],
+    adapter_metadata_schema: 1,
+    adapter_metadata: { fixture: true, filler: true },
+    artifacts: [],
+    blobs: [],
+    unresolved_blob_refs: [],
+    continuation_grade: summary.continuation_grade,
+  };
+}
+
+const catalog: SessionSummary[] = [...sessions];
+for (let index = 0; index < 15; index += 1) {
+  const summary = fillerSession(index);
+  catalog.push(summary);
+  details[summary.selector] = fillerDetail(summary);
+  transcripts[summary.selector] = [
+    { index: 0, role: "user", kind: "message", time: summary.modified, text: `Generated filler prompt for ${summary.selector}.` },
+    { index: 1, role: "assistant", kind: "message", time: summary.modified, text: "Generated filler response. No real transcript content is present." },
+  ];
+}
+
+// Scan simulation. MOCK_SCAN=running (default) starts from a cold cache and
+// advances one describe per /api/scan poll; MOCK_SCAN=error fails part-way;
+// MOCK_SCAN=idle presents a fully warm cache; MOCK_SCAN=empty presents a cold
+// cache with no scan running.
+const scanMode = Bun.env.MOCK_SCAN ?? "running";
+const failAfter = 6;
+
+interface ScanSimulation {
+  state: ScanState;
+  described: number;
+  refreshedAt: string;
+}
+
+function startScan(): ScanSimulation {
+  return {
+    state: {
+      running: true,
+      described: 0,
+      total: catalog.length,
+      failed: 0,
+      harness: catalog[0].harness,
+      started_at: new Date().toISOString(),
+    },
+    described: 0,
+    refreshedAt: new Date().toISOString(),
+  };
+}
+
+function warmScan(): ScanSimulation {
+  return {
+    state: {
+      running: false,
+      described: catalog.length,
+      total: catalog.length,
+      failed: 0,
+      started_at: "2026-08-28T10:43:00Z",
+      finished_at: "2026-08-28T10:43:30Z",
+    },
+    described: catalog.length,
+    refreshedAt: "2026-08-28T10:43:30Z",
+  };
+}
+
+function emptyScan(): ScanSimulation {
+  return {
+    state: { running: false, described: 0, total: 0, failed: 0 },
+    described: 0,
+    refreshedAt: "2026-08-28T10:43:30Z",
+  };
+}
+
+const openings: Record<string, () => ScanSimulation> = {
+  idle: warmScan,
+  empty: emptyScan,
+  error: startScan,
+  running: startScan,
+};
+
+let simulation = (openings[scanMode] ?? startScan)();
+
+function stepScan(): void {
+  const { state } = simulation;
+  if (!state.running) return;
+  if (scanMode === "error" && state.described >= failAfter) {
+    state.running = false;
+    state.finished_at = new Date().toISOString();
+    state.error = `synthetic scan failure: cannot read /home/demo/.codex/sessions/${catalog[state.described].source_id}.jsonl: permission denied`;
+    return;
+  }
+  state.described += 1;
+  state.harness = catalog[Math.min(state.described, catalog.length - 1)].harness;
+  simulation.described = state.described;
+  simulation.refreshedAt = new Date().toISOString();
+  if (state.described >= state.total) {
+    state.running = false;
+    state.harness = undefined;
+    state.finished_at = new Date().toISOString();
+  }
+}
+
 function json(body: unknown, status = 200): Response {
   return Response.json(body, {
     status,
@@ -210,7 +347,21 @@ function apiResponse(request: Request, url: URL): Response | null {
     return json({ configured: true, repository: archiveStatus.repository, host_id: "demo-laptop" });
   }
   if (request.method === "GET" && url.pathname === "/api/sessions") {
-    return json({ sessions, refreshed_at: "2026-08-28T10:43:30Z" });
+    return json({
+      sessions: catalog.slice(0, simulation.described),
+      refreshed_at: simulation.refreshedAt,
+      scan: simulation.state,
+    });
+  }
+  if (request.method === "GET" && url.pathname === "/api/scan") {
+    stepScan();
+    return json(simulation.state);
+  }
+  if (request.method === "POST" && url.pathname === "/api/sessions/refresh") {
+    // The mock restarts from a cold cache so the incremental reveal stays easy
+    // to preview; the real server keeps already-described rows.
+    if (!simulation.state.running) simulation = startScan();
+    return json(simulation.state);
   }
   if (request.method === "GET" && url.pathname === "/api/session") {
     const selector = url.searchParams.get("selector") ?? "";
@@ -287,3 +438,4 @@ const server = Bun.serve({
 });
 
 console.log(`Babel mock: http://${server.hostname}:${server.port}/?token=synthetic-preview-token`);
+console.log(`Scan simulation: MOCK_SCAN=${scanMode} (running | error | idle | empty)`);

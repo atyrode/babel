@@ -355,6 +355,81 @@ h3 {
   background: var(--accent-soft);
 }
 
+.heading-meta {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.scan-card {
+  margin-bottom: 1rem;
+  padding: 1.3rem;
+}
+
+.scan-counter {
+  color: var(--accent-bright);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.scan-bar {
+  overflow: hidden;
+  height: 0.5rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 2rem;
+  background: var(--surface-inset);
+}
+
+.scan-bar-fill {
+  display: block;
+  height: 100%;
+  min-width: 0.5rem;
+  border-radius: 2rem;
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+  transition: width 300ms ease-out;
+}
+
+.scan-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.3rem;
+  margin-top: 0.85rem;
+  color: var(--subtle);
+  font-size: 0.78rem;
+}
+
+.scan-facts strong {
+  margin-left: 0.35rem;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.scan-note {
+  max-width: 62rem;
+  margin: 0.85rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.scan-error-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.scan-error-actions button {
+  margin-top: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-bar-fill {
+    transition: none;
+  }
+}
+
 .table-card {
   overflow: hidden;
 }

@@ -44,6 +44,15 @@ export function formatTime(value: string | null | undefined): FormattedTime | nu
   };
 }
 
+export function formatDuration(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}s`;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

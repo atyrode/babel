@@ -26,6 +26,7 @@ type Options struct {
 	Diagnostics io.Writer
 	State       StateProvider
 	Lister      SessionLister
+	Scanner     Scanner
 	Inspector   SessionInspector
 	Archive     ArchiveOperations
 	Transcripts TranscriptReader
@@ -61,11 +62,39 @@ type SessionRow struct {
 	ContinuationGrade bool    `json:"continuation_grade"`
 }
 
+// ScanState mirrors internal/cli scanState field-for-field. It reports the
+// background catalog scan that describes sessions: describing a large corpus
+// takes minutes, so every listing surface reports its progress rather than
+// waiting on it.
+type ScanState struct {
+	Running    bool   `json:"running"`
+	Described  int    `json:"described"`
+	Total      int    `json:"total"`
+	Failed     int    `json:"failed"`
+	Harness    string `json:"harness,omitempty"`
+	StartedAt  string `json:"started_at,omitempty"`
+	FinishedAt string `json:"finished_at,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// Scanner reports and starts the background catalog scan behind
+// GET /api/scan and POST /api/sessions/refresh. Both methods return
+// immediately: a scan is owned by the server process, never by the request
+// that asked for it, so a canceled request never discards described
+// sessions and concurrent requests share one scan.
+type Scanner interface {
+	State() ScanState
+	StartRefresh() ScanState
+}
+
 // SessionsResult extends internal/cli sessionsResult with the cache refresh
-// time required by GET /api/sessions.
+// time and the scan state required by GET /api/sessions. The rows are
+// whatever the catalog already holds, which is why they are served without
+// waiting for the scan the request may have started.
 type SessionsResult struct {
 	Sessions    []SessionRow `json:"sessions"`
 	RefreshedAt string       `json:"refreshed_at"`
+	Scan        ScanState    `json:"scan"`
 }
 
 // SessionLister supplies the cached local session listing.

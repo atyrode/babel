@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -46,6 +47,31 @@ func (f *fakeArchive) ArchiveVerify(_ context.Context, deep bool) (VerifyResult,
 func (f *fakeArchive) FetchSession(_ context.Context, selector, snapshot string) (FetchResult, error) {
 	f.fetchSelector, f.fetchSnapshot = selector, snapshot
 	return FetchResult{Selector: selector, SnapshotID: "snapshot", Included: []string{"primary.jsonl"}}, nil
+}
+
+// fakeScanner mirrors the coordinator's contract: State never blocks and
+// StartRefresh attaches to a running scan instead of starting a second one.
+type fakeScanner struct {
+	mu     sync.Mutex
+	state  ScanState
+	starts int
+}
+
+func (f *fakeScanner) State() ScanState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state
+}
+
+func (f *fakeScanner) StartRefresh() ScanState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.state.Running {
+		return f.state
+	}
+	f.starts++
+	f.state = ScanState{Running: true, Total: 3, StartedAt: "2026-01-02T03:04:05Z"}
+	return f.state
 }
 
 func testServer(t *testing.T, opts Options) (*Server, *httptest.Server) {
@@ -160,6 +186,7 @@ func TestAuthentication(t *testing.T) {
 func TestEveryAPIEndpoint(t *testing.T) {
 	modified := "2026-01-02T03:04:05Z"
 	archive := &fakeArchive{}
+	scanning := &fakeScanner{state: ScanState{Described: 3, Total: 3, FinishedAt: modified}}
 	inspector := fakeInspector{"omp/one": {
 		Harness: "omp", SourceID: "one", Selector: "omp/one", PrimaryPath: "/synthetic/one.jsonl",
 		AdapterMetadataSchema: 1, AdapterMetadata: json.RawMessage(`{"fixture":"yes"}`),
@@ -169,8 +196,13 @@ func TestEveryAPIEndpoint(t *testing.T) {
 			return State{Configured: true, Repository: "repo", HostID: "host"}, nil
 		}),
 		Lister: SessionListerFunc(func(context.Context) (SessionsResult, error) {
-			return SessionsResult{Sessions: []SessionRow{{Harness: "omp", SourceID: "one", Selector: "omp/one", Modified: &modified}}, RefreshedAt: modified}, nil
+			return SessionsResult{
+				Sessions:    []SessionRow{{Harness: "omp", SourceID: "one", Selector: "omp/one", Modified: &modified}},
+				RefreshedAt: modified,
+				Scan:        ScanState{Described: 3, Total: 3, FinishedAt: modified},
+			}, nil
 		}),
+		Scanner:   scanning,
 		Inspector: inspector,
 		Archive:   archive,
 		Transcripts: TranscriptReaderFunc(func(path, harness string, offset, limit int) (int, []transcript.Event, error) {
@@ -200,8 +232,26 @@ func TestEveryAPIEndpoint(t *testing.T) {
 			}
 		}},
 		{name: "sessions", method: http.MethodGet, path: "/api/sessions", check: func(got map[string]any) {
-			if len(got["sessions"].([]any)) != 1 || got["refreshed_at"] != modified {
+			scan, ok := got["scan"].(map[string]any)
+			if len(got["sessions"].([]any)) != 1 || got["refreshed_at"] != modified || !ok {
 				t.Errorf("sessions = %#v", got)
+				return
+			}
+			if scan["running"] != false || scan["described"] != float64(3) {
+				t.Errorf("sessions scan = %#v", scan)
+			}
+		}},
+		{name: "scan", method: http.MethodGet, path: "/api/scan", check: func(got map[string]any) {
+			if got["running"] != false || got["described"] != float64(3) || got["finished_at"] != modified {
+				t.Errorf("scan = %#v", got)
+			}
+			if _, ok := got["harness"]; ok {
+				t.Errorf("idle scan names a harness: %#v", got)
+			}
+		}},
+		{name: "sessions refresh", method: http.MethodPost, path: "/api/sessions/refresh", check: func(got map[string]any) {
+			if got["running"] != true || got["total"] != float64(3) {
+				t.Errorf("refresh = %#v", got)
 			}
 		}},
 		{name: "session", method: http.MethodGet, path: "/api/session?selector=omp%2Fone", check: func(got map[string]any) {
@@ -244,6 +294,81 @@ func TestEveryAPIEndpoint(t *testing.T) {
 	}
 	if !archive.verifiedDeep || archive.fetchSelector != "omp/one" || archive.fetchSnapshot != "abc1" {
 		t.Fatalf("archive calls = %#v", archive)
+	}
+	if scanning.starts != 1 {
+		t.Fatalf("refresh started %d scans, want 1", scanning.starts)
+	}
+}
+
+// TestScanEndpoints pins the behavior a progress-reporting client depends on:
+// a running scan is reported rather than restarted, a repeated refresh
+// attaches to it, and the endpoints answer honestly when no scanner is wired.
+func TestScanEndpoints(t *testing.T) {
+	scanning := &fakeScanner{}
+	s, httpServer := testServer(t, Options{Scanner: scanning})
+	client := httpServer.Client()
+
+	// Idle: nothing running, nothing described.
+	var idle ScanState
+	response := request(t, client, http.MethodGet, httpServer.URL+"/api/scan", s.token)
+	decodeResponse(t, response, &idle)
+	if idle != (ScanState{}) {
+		t.Fatalf("idle scan = %+v", idle)
+	}
+
+	// Two refreshes are one scan, and both callers learn it is running.
+	for attempt := range 2 {
+		var started ScanState
+		response := request(t, client, http.MethodPost, httpServer.URL+"/api/sessions/refresh", s.token)
+		decodeResponse(t, response, &started)
+		if !started.Running || started.Total != 3 {
+			t.Fatalf("refresh %d = %+v", attempt, started)
+		}
+	}
+	if scanning.starts != 1 {
+		t.Fatalf("two refreshes started %d scans, want 1", scanning.starts)
+	}
+	var running ScanState
+	response = request(t, client, http.MethodGet, httpServer.URL+"/api/scan", s.token)
+	decodeResponse(t, response, &running)
+	if !running.Running || running.StartedAt == "" {
+		t.Fatalf("running scan = %+v", running)
+	}
+
+	// Both endpoints are behind the token and accept exactly one method.
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+		token  string
+		status int
+	}{
+		{name: "scan unauthenticated", method: http.MethodGet, path: "/api/scan", status: http.StatusUnauthorized},
+		{name: "refresh unauthenticated", method: http.MethodPost, path: "/api/sessions/refresh", status: http.StatusUnauthorized},
+		{name: "scan wrong method", method: http.MethodPost, path: "/api/scan", token: s.token, status: http.StatusBadRequest},
+		{name: "refresh wrong method", method: http.MethodGet, path: "/api/sessions/refresh", token: s.token, status: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := request(t, client, test.method, httpServer.URL+test.path, test.token)
+			defer response.Body.Close()
+			if response.StatusCode != test.status {
+				t.Fatalf("status = %d, want %d", response.StatusCode, test.status)
+			}
+		})
+	}
+
+	// With no scanner wired, the endpoints report that rather than inventing
+	// an idle scan the client would trust.
+	bare, bareServer := testServer(t, Options{})
+	for _, endpoint := range []struct{ method, path string }{
+		{http.MethodGet, "/api/scan"},
+		{http.MethodPost, "/api/sessions/refresh"},
+	} {
+		response := request(t, bareServer.Client(), endpoint.method, bareServer.URL+endpoint.path, bare.token)
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusInternalServerError {
+			t.Errorf("%s without a scanner = %d", endpoint.path, response.StatusCode)
+		}
 	}
 }
 

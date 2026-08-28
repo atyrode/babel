@@ -23,9 +23,21 @@ export interface SessionSummary {
   continuation_grade: boolean;
 }
 
+export interface ScanState {
+  running: boolean;
+  described: number;
+  total: number;
+  failed: number;
+  harness?: string;
+  started_at?: string;
+  finished_at?: string;
+  error?: string;
+}
+
 export interface SessionsResponse {
   sessions: SessionSummary[];
   refreshed_at: string;
+  scan: ScanState;
 }
 
 export interface CompletenessReason {
@@ -183,11 +195,22 @@ export class APIError extends Error {
   }
 }
 
+// Every request is bounded so a stalled server surfaces an error instead of an
+// interface that spins forever.
+const REQUEST_TIMEOUT_MS = 20_000;
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${token}`);
-    const response = await fetch(path, { ...init, headers, cache: "no-store" });
+    const response = await fetch(path, {
+      ...init,
+      headers,
+      cache: "no-store",
+      signal: controller.signal,
+    });
     if (!response.ok) {
       let message = `${response.status} ${response.statusText}`;
       try {
@@ -200,8 +223,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     return (await response.json()) as T;
   } catch (error) {
-    publishError(error);
-    throw error;
+    const failure = controller.signal.aborted
+      ? new APIError(408, `${path} did not respond within ${REQUEST_TIMEOUT_MS / 1000}s`)
+      : error;
+    publishError(failure);
+    throw failure;
+  } finally {
+    window.clearTimeout(timer);
   }
 }
 
@@ -221,6 +249,14 @@ export function getState(): Promise<StateInfo> {
 
 export function getSessions(): Promise<SessionsResponse> {
   return request<SessionsResponse>("/api/sessions");
+}
+
+export function getScan(): Promise<ScanState> {
+  return request<ScanState>("/api/scan");
+}
+
+export function refreshSessions(): Promise<ScanState> {
+  return request<ScanState>("/api/sessions/refresh", { method: "POST" });
 }
 
 export function getSession(selector: string): Promise<SessionDetail> {

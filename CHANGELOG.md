@@ -9,6 +9,46 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-28
+
+Makes the first catalog scan observable, and stops it being needlessly slow.
+
+### Added
+
+- Determinate scan progress in the web UI: described/total with percentage,
+  current harness, elapsed time, and rows-cached, with sessions appearing in
+  the table as they are described so browsing can start immediately. An
+  explicit empty state and error state replace the indefinite spinner, and a
+  Refresh button reports its own in-flight state ([#12]).
+- `GET /api/scan` and `POST /api/sessions/refresh`; `GET /api/sessions` now
+  carries a `scan` object and returns cached rows immediately instead of
+  blocking on a scan ([#12]).
+- `sessions list` narrates cold runs on stderr (`describing 250/836 (codex)…`),
+  throttled, with stdout still exactly one JSON document ([#12]).
+
+### Fixed
+
+- **A filtered listing wiped the rest of the catalog.** `sessions list
+  --harness omp` deleted every cached Codex and Claude row, so the next full
+  listing re-described the whole corpus. Pruning is now scoped to the
+  harnesses a refresh actually covered, and an empty scope prunes nothing.
+  Measured on an 836-session corpus: a warm unfiltered listing went from
+  64.8s to 165ms ([#12]).
+- **Cancelling a scan discarded all of its work.** Describes were committed
+  in a single transaction at the end, so closing or reloading the page threw
+  away everything described so far. Work is now committed in batches and a
+  cancelled scan keeps what it finished, so scans resume instead of
+  restarting ([#12]).
+- Concurrent requests each started their own full scan; scans are now
+  single-flight per data directory and run on a background context, so no
+  HTTP request can cancel one ([#12]).
+- The catalog is opened in WAL mode with a busy timeout, so readers see
+  batches a running scan has already committed ([#12]).
+- Frontend requests had no timeout and could spin indefinitely; every call
+  now aborts after 20s and surfaces an error ([#12]).
+
+[#12]: https://github.com/atyrode/babel/pull/12
+
 ## [0.2.0] - 2026-08-28
 
 The web GUI becomes Babel's primary surface.
@@ -71,6 +111,7 @@ storage configuration yet — repository selection is per-invocation
   (ea65a45…85fe13f), replaced in 8636960 and a879067. SPEC.md and README.md
   rewritten around the restic model (5b8d593).
 
-[Unreleased]: https://github.com/atyrode/babel/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/atyrode/babel/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/atyrode/babel/releases/tag/v0.2.1
 [0.2.0]: https://github.com/atyrode/babel/releases/tag/v0.2.0
 [0.1.0]: https://github.com/atyrode/babel/releases/tag/v0.1.0

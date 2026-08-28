@@ -192,11 +192,14 @@ func (sf *scanFlags) rootList() []string {
 	return out
 }
 
-// scan discovers every local session the selected adapters can see. A
-// harness whose discovery fails is reported on stderr and skipped: one
-// broken harness never hides the rest of the machine (SPEC.md §11).
-func (a *app) scan(ctx context.Context, ads []adapter.Adapter, roots []string) []localSession {
+// scan discovers every local session the selected adapters can see and
+// reports which harnesses discovery actually covered. A harness whose
+// discovery fails is reported on stderr and skipped: one broken harness
+// never hides the rest of the machine (SPEC.md §11), and it is left out of
+// the covered set so nothing prunes rows it was unable to look at.
+func (a *app) scan(ctx context.Context, ads []adapter.Adapter, roots []string) ([]localSession, []string) {
 	var found []localSession
+	var covered []string
 	seen := make(map[string]struct{})
 	for _, ad := range ads {
 		use := roots
@@ -208,6 +211,7 @@ func (a *app) scan(ctx context.Context, ads []adapter.Adapter, roots []string) [
 			a.diagf("warning: discover %s: %s\n", Sanitize(ad.Harness()), Sanitize(err.Error()))
 			continue
 		}
+		covered = append(covered, ad.Harness())
 		for _, src := range discovered {
 			s := localSession{owner: ad, src: src}
 			k := s.key()
@@ -219,7 +223,19 @@ func (a *app) scan(ctx context.Context, ads []adapter.Adapter, roots []string) [
 		}
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].key() < found[j].key() })
-	return found
+	return found, covered
+}
+
+// refreshScope is the set of harnesses a catalog refresh may prune. Complete
+// discovery of a harness is what licenses deleting its vanished rows, so a
+// harness whose discovery failed is excluded, and a --roots override — which
+// deliberately scans a subtree rather than the machine — licenses no pruning
+// at all.
+func refreshScope(covered, roots []string) []string {
+	if len(roots) > 0 {
+		return nil
+	}
+	return covered
 }
 
 // resolveSelector maps a selector onto exactly one discovered session.
@@ -321,7 +337,8 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sessions := a.scan(ctx, ads, sf.rootList())
+	roots := sf.rootList()
+	sessions, covered := a.scan(ctx, ads, roots)
 	dataDir := ""
 	if !*noCache {
 		d, err := babelDirs()
@@ -330,7 +347,10 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 		}
 		dataDir = d.data
 	}
-	rows, err := a.listSessionRows(ctx, sessions, dataDir, *noCache, describe)
+	// A cold listing describes every session on the machine, which takes
+	// minutes on a large corpus: it reports its progress on stderr so the
+	// wait is never silent, while stdout keeps carrying exactly one document.
+	rows, err := a.listSessionRows(ctx, sessions, refreshScope(covered, roots), dataDir, *noCache, describe, a.scanProgress().report)
 	if err != nil {
 		return err
 	}
@@ -359,8 +379,10 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 type sessionDescribeFunc func(context.Context, localSession) (*adapter.Description, error)
 
 // listSessionRows is the cache boundary kept separate from flag parsing so its
-// incremental behavior can be exercised with an instrumented describer.
-func (a *app) listSessionRows(ctx context.Context, sessions []localSession, dataDir string, noCache bool, describeSession sessionDescribeFunc) ([]sessionRow, error) {
+// incremental behavior can be exercised with an instrumented describer. scope
+// names the harnesses discovery covered, which is the only set the catalog may
+// prune; onProgress, when non-nil, receives one report per describe attempt.
+func (a *app) listSessionRows(ctx context.Context, sessions []localSession, scope []string, dataDir string, noCache bool, describeSession sessionDescribeFunc, onProgress func(catalog.Progress)) ([]sessionRow, error) {
 	if noCache {
 		rows := make([]sessionRow, 0, len(sessions))
 		for _, session := range sessions {
@@ -380,6 +402,17 @@ func (a *app) listSessionRows(ctx context.Context, sessions []localSession, data
 	}
 	defer cache.Close()
 
+	refs, bySelector := catalogRefs(sessions)
+	cached, err := cache.Refresh(ctx, scope, refs, a.catalogDescriber(ctx, bySelector, describeSession), onProgress)
+	if err != nil {
+		return nil, fmt.Errorf("refresh session catalog: %w", err)
+	}
+	return decodeCatalogRows(cached, bySelector)
+}
+
+// catalogRefs restates one discovery result in the catalog's terms, together
+// with the index the describer resolves a ref back to its session through.
+func catalogRefs(sessions []localSession) ([]catalog.Ref, map[string]localSession) {
 	refs := make([]catalog.Ref, 0, len(sessions))
 	bySelector := make(map[string]localSession, len(sessions))
 	for _, session := range sessions {
@@ -392,7 +425,14 @@ func (a *app) listSessionRows(ctx context.Context, sessions []localSession, data
 		})
 		bySelector[selector] = session
 	}
-	cached, err := cache.Refresh(ctx, refs, func(ref catalog.Ref) (catalog.Row, bool) {
+	return refs, bySelector
+}
+
+// catalogDescriber turns one stale ref into the row the catalog caches. A
+// session that cannot be described or encoded is reported and omitted, so the
+// catalog never holds a row it could not round-trip.
+func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localSession, describeSession sessionDescribeFunc) func(catalog.Ref) (catalog.Row, bool) {
+	return func(ref catalog.Ref) (catalog.Row, bool) {
 		session := bySelector[ref.Selector]
 		desc, err := describeSession(ctx, session)
 		if err != nil {
@@ -413,13 +453,21 @@ func (a *app) listSessionRows(ctx context.Context, sessions []localSession, data
 			ContinuationGrade: row.Continuous,
 			RowJSON:           rowJSON,
 		}, true
-	})
-	if err != nil {
-		return nil, fmt.Errorf("refresh session catalog: %w", err)
 	}
+}
 
+// decodeCatalogRows renders cached rows back into listing rows. When keep is
+// non-nil the listing is narrowed to the sessions discovery actually saw, so a
+// harness-restricted or root-restricted invocation reports exactly what it
+// scanned even though the catalog holds the whole machine.
+func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession) ([]sessionRow, error) {
 	rows := make([]sessionRow, 0, len(cached))
 	for _, cachedRow := range cached {
+		if keep != nil {
+			if _, ok := keep[cachedRow.Selector]; !ok {
+				continue
+			}
+		}
 		var row sessionRow
 		if err := json.Unmarshal(cachedRow.RowJSON, &row); err != nil {
 			return nil, fmt.Errorf("decode cached session %q: %w", cachedRow.Selector, err)
@@ -511,7 +559,7 @@ func (a *app) sessionsInspect(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sessions := a.scan(ctx, adapters(), sf.rootList())
+	sessions, _ := a.scan(ctx, adapters(), sf.rootList())
 	target, err := resolveSelector(c, sessions, selector)
 	if err != nil {
 		return err
@@ -680,7 +728,7 @@ func (a *app) sessionsFetch(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sessions := a.scan(ctx, adapters(), sf.rootList())
+	sessions, _ := a.scan(ctx, adapters(), sf.rootList())
 	target, err := resolveSelector(c, sessions, selector)
 	if err != nil {
 		return err
