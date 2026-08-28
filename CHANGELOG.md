@@ -174,7 +174,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   roughly one run in six. Each step now waits for its destination's own
   content — or for an authorization failure, so a genuinely broken credential
   still fails fast and by name instead of timing out. Diagnosed from the
-  captured failure rather than guessed, and clean across 22 subsequent runs.
+  captured failure rather than guessed, and clean across 22 subsequent runs
+  ([#38]).
 
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25
@@ -182,6 +183,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 [#34]: https://github.com/atyrode/babel/pull/34
 [#35]: https://github.com/atyrode/babel/pull/35
 [#36]: https://github.com/atyrode/babel/pull/36
+[#38]: https://github.com/atyrode/babel/pull/38
 
 ## [0.2.1] - 2026-08-28
 
