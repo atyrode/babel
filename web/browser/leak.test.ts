@@ -218,15 +218,39 @@ test.skipIf(!chrome)("a reload stays authenticated with no credential in the URL
   expect(page.url()).not.toContain(token);
 });
 
+// Back and forward change the hash immediately, but the view behind it renders
+// asynchronously, so waiting on `location.hash` alone would let the content
+// assertions read a half-rendered page. Each step therefore waits for the
+// destination's own content to settle. Waiting for "expected content OR an
+// authorization failure" keeps the credential assertion fast and precise: if
+// back/forward ever dropped authentication, this reports that rather than
+// timing out after 30s with no explanation.
 test.skipIf(!chrome)("back and forward keep working and stay credential-free", async () => {
   await page.evaluate(() => history.back());
   await page.waitForFunction(() => location.hash === "#/sessions", { timeout: 30_000 });
+  await page.waitForFunction(
+    (title: string) => {
+      const text = document.body.innerText;
+      return text.includes(title) || /unauthorized/i.test(text);
+    },
+    { timeout: 30_000 },
+    SESSION_TITLE,
+  );
   await show(page);
   expect(await page.evaluate(() => document.body.innerText)).not.toMatch(/unauthorized/i);
 
   await page.evaluate(() => history.forward());
   await page.waitForFunction(() => location.hash.startsWith("#/sessions/"), { timeout: 30_000 });
+  await page.waitForFunction(
+    (needle: string) => {
+      const text = document.body.innerText;
+      return text.includes(needle) || /unauthorized/i.test(text);
+    },
+    { timeout: 30_000 },
+    TRANSCRIPT_SENTINEL,
+  );
   await show(page);
+  expect(await page.evaluate(() => document.body.innerText)).not.toMatch(/unauthorized/i);
   expect(await page.evaluate(() => document.body.innerText)).toContain(TRANSCRIPT_SENTINEL);
 });
 
@@ -284,7 +308,19 @@ test.skipIf(!chrome)("a context without the token is refused", async () => {
     const fresh = await isolated.newPage();
     const base = launchURL.split("/#token=")[0];
     await fresh.goto(`${base}/#/sessions`, { waitUntil: "networkidle2" });
-    await fresh.waitForFunction(() => document.body.innerText.length > 80, { timeout: 30_000 });
+    // Waiting for a character count would race the shell against the 401: the
+    // app frame can exceed any threshold before the refusal arrives. Waiting
+    // for either outcome keeps the failure fast and named — if an unauthorized
+    // context were ever served real content, this resolves on the title and the
+    // assertion below says so.
+    await fresh.waitForFunction(
+      (title: string) => {
+        const text = document.body.innerText;
+        return /unauthorized/i.test(text) || text.includes(title);
+      },
+      { timeout: 30_000 },
+      SESSION_TITLE,
+    );
 
     const text = await fresh.evaluate(() => document.body.innerText);
     expect(text).toMatch(/unauthorized/i);
