@@ -373,14 +373,16 @@ func TestVersionReportsBuildIdentity(t *testing.T) {
 	}
 }
 
-func TestBareBabelAnnouncesTUIAndHelpGoesToStdout(t *testing.T) {
+func TestBareBabelPrintsStatusOverview(t *testing.T) {
 	f := newFixture(t)
 	stdout, stderr, code := f.run()
 	if code != exitOK {
 		t.Fatalf("bare babel exited %d", code)
 	}
-	if !strings.Contains(stdout, "TUI is not implemented") || !strings.Contains(stdout, "Usage: babel") {
-		t.Fatalf("bare babel stdout = %q", stdout)
+	for _, want := range []string{"babel ", "storage:", "babel web", "Usage: babel"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("bare babel stdout missing %q: %q", want, stdout)
+		}
 	}
 	if stderr != "" {
 		t.Fatalf("bare babel wrote diagnostics: %q", stderr)
@@ -395,6 +397,7 @@ func TestBareBabelAnnouncesTUIAndHelpGoesToStdout(t *testing.T) {
 		{"archive", "verify", "-h"},
 		{"sessions", "fetch", "-h"},
 		{"sessions", "prune", "-h"},
+		{"web", "-h"},
 	} {
 		stdout, stderr := f.ok(args...)
 		if !strings.Contains(stdout, "Usage:") {

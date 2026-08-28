@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
+	"github.com/atyrode/babel/internal/catalog"
 	"github.com/atyrode/babel/internal/digest"
 	"github.com/atyrode/babel/internal/restic"
 )
@@ -57,6 +58,7 @@ read in place; nothing is copied and the repository is never opened.
 Flags:
   --harness NAME       restrict to one harness: omp, codex, or claude
   --roots DIR[,DIR]    scan these roots instead of the adapters' defaults
+  --no-cache           bypass the catalog and describe every session
   --json               emit the listing as JSON on stdout
 
 Absent nullable fields are displayed as "-": Babel never synthesizes a
@@ -297,14 +299,16 @@ type sessionsResult struct {
 	Sessions []sessionRow `json:"sessions"`
 }
 
-// sessionsList implements `babel sessions list`. Every session is
-// described, which costs one read of each log's head: the listing reports
-// what the sources say right now rather than a cached claim.
+// sessionsList implements `babel sessions list`. Discovery is always live,
+// while descriptions are reused until the primary file's path, size, or
+// modification time changes. --no-cache retains the full live-description
+// path for diagnostics and troubleshooting.
 func (a *app) sessionsList(ctx context.Context, args []string) error {
 	c := newCmd("sessions list", sessionsListUsage)
 	var sf scanFlags
 	sf.bindHarness(c)
 	sf.bindRoots(c)
+	noCache := c.fs.Bool("no-cache", false, "bypass the catalog and describe every session")
 	asJSON := c.fs.Bool("json", false, "emit the listing as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -318,24 +322,19 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 	}
 
 	sessions := a.scan(ctx, ads, sf.rootList())
-	res := sessionsResult{Sessions: make([]sessionRow, 0, len(sessions))}
-	for _, s := range sessions {
-		desc, err := describe(ctx, s)
+	dataDir := ""
+	if !*noCache {
+		d, err := babelDirs()
 		if err != nil {
-			a.diagf("warning: %s\n", Sanitize(err.Error()))
-			continue
+			return err
 		}
-		res.Sessions = append(res.Sessions, sessionRow{
-			Harness:    Sanitize(s.src.Harness),
-			SourceID:   Sanitize(s.src.SourceID),
-			Selector:   Sanitize(s.key()),
-			Size:       desc.PrimarySize,
-			Modified:   timePtr(desc.Meta.ModifiedAt),
-			Title:      sanitizePtr(desc.Meta.Title),
-			Workspace:  sanitizePtr(desc.Meta.Workspace),
-			Continuous: desc.ContinuationGrade,
-		})
+		dataDir = d.data
 	}
+	rows, err := a.listSessionRows(ctx, sessions, dataDir, *noCache, describe)
+	if err != nil {
+		return err
+	}
+	res := sessionsResult{Sessions: rows}
 	if *asJSON {
 		return a.emitJSON(res)
 	}
@@ -343,9 +342,9 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 		fmt.Fprint(a.stdout, "no local sessions\n")
 		return nil
 	}
-	rows := make([][]string, 0, len(res.Sessions))
+	tableRows := make([][]string, 0, len(res.Sessions))
 	for _, s := range res.Sessions {
-		rows = append(rows, []string{
+		tableRows = append(tableRows, []string{
 			s.Harness,
 			s.SourceID,
 			fmt.Sprint(s.Size),
@@ -354,7 +353,94 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 			derefOrMissing(s.Workspace),
 		})
 	}
-	return writeTable(a.stdout, []string{"HARNESS", "SOURCE ID", "SIZE", "MODIFIED", "TITLE", "WORKSPACE"}, rows)
+	return writeTable(a.stdout, []string{"HARNESS", "SOURCE ID", "SIZE", "MODIFIED", "TITLE", "WORKSPACE"}, tableRows)
+}
+
+type sessionDescribeFunc func(context.Context, localSession) (*adapter.Description, error)
+
+// listSessionRows is the cache boundary kept separate from flag parsing so its
+// incremental behavior can be exercised with an instrumented describer.
+func (a *app) listSessionRows(ctx context.Context, sessions []localSession, dataDir string, noCache bool, describeSession sessionDescribeFunc) ([]sessionRow, error) {
+	if noCache {
+		rows := make([]sessionRow, 0, len(sessions))
+		for _, session := range sessions {
+			desc, err := describeSession(ctx, session)
+			if err != nil {
+				a.diagf("warning: %s\n", Sanitize(err.Error()))
+				continue
+			}
+			rows = append(rows, rowFromDescription(session, desc))
+		}
+		return rows, nil
+	}
+
+	cache, err := catalog.Open(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("open session catalog: %w", err)
+	}
+	defer cache.Close()
+
+	refs := make([]catalog.Ref, 0, len(sessions))
+	bySelector := make(map[string]localSession, len(sessions))
+	for _, session := range sessions {
+		selector := session.key()
+		refs = append(refs, catalog.Ref{
+			Selector:    selector,
+			Harness:     session.src.Harness,
+			SourceID:    session.src.SourceID,
+			PrimaryPath: session.src.PrimaryPath,
+		})
+		bySelector[selector] = session
+	}
+	cached, err := cache.Refresh(ctx, refs, func(ref catalog.Ref) (catalog.Row, bool) {
+		session := bySelector[ref.Selector]
+		desc, err := describeSession(ctx, session)
+		if err != nil {
+			a.diagf("warning: %s\n", Sanitize(err.Error()))
+			return catalog.Row{}, false
+		}
+		row := rowFromDescription(session, desc)
+		rowJSON, err := json.Marshal(row)
+		if err != nil {
+			a.diagf("warning: encode %s: %s\n", Sanitize(ref.Selector), Sanitize(err.Error()))
+			return catalog.Row{}, false
+		}
+		return catalog.Row{
+			Title:             row.Title,
+			Workspace:         row.Workspace,
+			CreatedAt:         timePtr(desc.Meta.CreatedAt),
+			ModifiedAt:        row.Modified,
+			ContinuationGrade: row.Continuous,
+			RowJSON:           rowJSON,
+		}, true
+	})
+	if err != nil {
+		return nil, fmt.Errorf("refresh session catalog: %w", err)
+	}
+
+	rows := make([]sessionRow, 0, len(cached))
+	for _, cachedRow := range cached {
+		var row sessionRow
+		if err := json.Unmarshal(cachedRow.RowJSON, &row); err != nil {
+			return nil, fmt.Errorf("decode cached session %q: %w", cachedRow.Selector, err)
+		}
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Selector < rows[j].Selector })
+	return rows, nil
+}
+
+func rowFromDescription(session localSession, desc *adapter.Description) sessionRow {
+	return sessionRow{
+		Harness:    Sanitize(session.src.Harness),
+		SourceID:   Sanitize(session.src.SourceID),
+		Selector:   Sanitize(session.key()),
+		Size:       desc.PrimarySize,
+		Modified:   timePtr(desc.Meta.ModifiedAt),
+		Title:      sanitizePtr(desc.Meta.Title),
+		Workspace:  sanitizePtr(desc.Meta.Workspace),
+		Continuous: desc.ContinuationGrade,
+	}
 }
 
 // completenessRow explains one absent nullable field.
