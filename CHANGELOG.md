@@ -16,7 +16,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `nix develop` replaces ad-hoc `PATH` exports to nix store paths ([#24]).
 - The Phase A shared catalog schema and migrations: deployments, instances,
   hosts, snapshots, opaque session identity, server-time fenced host leases,
-  and idempotency keys, applied transactionally from embedded SQL.
+  and idempotency keys, applied transactionally from embedded SQL ([#25]).
 - **The SPEC.md §9 plaintext allowlist is now enforced, not documented.**
   Every shared-catalog column is enumerated with its permitted data class, and
   `Verify` reflects the live schema and fails on any column or table outside
@@ -24,9 +24,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   widen the plaintext boundary fails at apply time. Sessions are keyed by an
   opaque digest rather than their selector (which embeds a workspace-derived
   project slug), hosts carry no display name, and no session quality verdict
-  is stored.
+  is stored ([#25]).
 
 [#24]: https://github.com/atyrode/babel/pull/24
+[#25]: https://github.com/atyrode/babel/pull/25
 
 
 ## [0.2.1] - 2026-08-28
