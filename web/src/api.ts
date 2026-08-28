@@ -138,17 +138,30 @@ const TOKEN_KEY = "babel.web.token";
 
 // The launch token arrives in the URL fragment, which the browser never sends
 // to any server (SPEC.md §146). It is copied into session storage and the
-// fragment is erased from the address bar and the history entry immediately,
-// so a reload or a screenshot carries no credential. Every later request
-// presents it as a bearer header.
+// fragment is erased immediately, so a reload or a screenshot carries no
+// credential. Every later request presents it as a bearer header.
 //
-// The app is a HashRouter, so the fragment is also route state, and this must
-// read it before the router mounts. ES module evaluation guarantees that:
-// main.tsx imports App, which imports this module, so this function runs
-// during import and therefore before createRoot().render(). Lazy-loading this
-// module would let the router rewrite the fragment to "#/sessions" first and
-// silently break authentication. The nonce-to-cookie exchange in SPEC.md §146
-// would remove this coupling by using the fragment exactly once.
+// Honest accounting of that erasure: there are two independent mechanisms, and
+// this replaceState is only one of them. "#token=…" matches no route, so it
+// falls through to App.tsx's catch-all, which is <Navigate to="/sessions"
+// replace /> — a replacing redirect that drops the token-bearing entry on its
+// own. Measured rather than assumed, by disabling each in turn and running the
+// browser acceptance: scrub off with the redirect replacing passes; scrub on
+// with the redirect pushing passes; with both disabled the history walk fails
+// and names the retained "#token=" entry.
+//
+// Both are kept because either alone is a single point of failure for a
+// credential, and the redirect's `replace` is easy to drop while editing
+// routes. The test defends the property, not the mechanism: no reachable
+// history entry retains the token.
+//
+// The fragment is also route state, so this must read it before the router
+// mounts. ES module evaluation guarantees that: main.tsx imports App, which
+// imports this module, so this function runs during import and therefore
+// before createRoot().render(). Lazy-loading this module would let the router
+// rewrite the fragment to "#/sessions" first and silently break
+// authentication. The nonce-to-cookie exchange in SPEC.md §146 would remove
+// this coupling by using the fragment exactly once.
 function bootstrapToken(): string {
   const hash = window.location.hash.replace(/^#/u, "");
   const supplied = new URLSearchParams(hash).get("token") ?? "";

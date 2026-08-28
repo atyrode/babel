@@ -113,8 +113,31 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   server's HTTP surface, not a browser. The client is a hash router, so
   selectors are never transmitted in a URL at all, but they do enter the
   history entry, which is why sentinel-free selectors are what the history
-  channel rests on — established by reading the route table, not enforced by
-  a test ([#34]).
+  channel rests on — established there by reading the route table, and now
+  enforced by the browser acceptance below ([#34]).
+- A browser-driven leak acceptance for the channels Go cannot observe
+  (SPEC.md §548). A real headless Chrome drives the served bundle against a
+  synthetic corpus carrying a sentinel in a transcript and a sentinel as the
+  repository password, and proves: the fragment token authenticates; a reload
+  and a back/forward navigation stay authenticated; the transcript actually
+  renders, so the page is not passing vacuously empty; no history entry or
+  request URL holds either sentinel or the token; no `/api` response is served
+  from the browser cache; and a context without the token is refused. A new
+  `browser` CI job runs it, and the test hard-fails rather than skipping when
+  CI has no Chrome, because a silent skip would retire the gate. The
+  address-bar assertion is **non-discriminating**, and the reason was measured
+  rather than guessed: two independent mechanisms keep the token out of
+  history, the bootstrap's `replaceState` and App.tsx's catch-all
+  `<Navigate to="/sessions" replace />`, which the unmatched `#token=…`
+  fragment falls through to. Disabling either alone still passes; disabling
+  both fails the history walk, which is bounded by the stack the browser
+  reports and proves completion by landing on the context's initial blank
+  entry, so a traversal that stops early — as it does when a retained token
+  entry redirects away on arrival — is a failure rather than a silently checked
+  prefix. Failure output reports the traversal with the token redacted. Both
+  mechanisms are kept, since either alone is a single point of failure for a
+  credential, and the route now says so where an editor would remove it
+  ([#36]).
 
 ### Changed
 
@@ -150,6 +173,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 [#26]: https://github.com/atyrode/babel/pull/26
 [#34]: https://github.com/atyrode/babel/pull/34
 [#35]: https://github.com/atyrode/babel/pull/35
+[#36]: https://github.com/atyrode/babel/pull/36
 
 ## [0.2.1] - 2026-08-28
 
