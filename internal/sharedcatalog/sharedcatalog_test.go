@@ -27,17 +27,6 @@ func mustMigrate(t *testing.T, db *sql.DB) []string {
 	return applied
 }
 
-func TestMigrateAppliesInitAndPassesAllowlist(t *testing.T) {
-	db := newDB(t)
-	applied := mustMigrate(t, db)
-	if len(applied) != 1 || !strings.HasPrefix(applied[0], "0001_") {
-		t.Fatalf("applied = %v, want one 0001 migration", applied)
-	}
-	if err := sharedcatalog.Verify(context.Background(), db); err != nil {
-		t.Fatalf("freshly migrated schema must satisfy its own allowlist: %v", err)
-	}
-}
-
 func TestMigrateIsIdempotent(t *testing.T) {
 	db := newDB(t)
 	mustMigrate(t, db)

@@ -24,13 +24,26 @@ import (
 // hostname, and adopting one of those would put infrastructure identity into
 // the shared catalog - outside the SPEC.md 9 allowlist.
 //
-// The snapshot list carries no backup summary: files_new, data_added and the
-// other counts arrive on restic's backup message, not on `snapshots --json`.
-// Rebuilt rows therefore have no counts, which is why they are catalog-pending.
+// Counts is the summary restic stored with the snapshot, or nil when the record
+// has none. restic does keep these counts in the snapshot list, so a rebuilt
+// snapshot carries its real file counts and bytes rather than zeros. Session
+// rows are the part that genuinely cannot be reconstructed from the listing,
+// which is why a rebuilt host stays catalog-pending.
 type RepoSnapshot struct {
 	SnapshotID string
 	Host       string
 	Time       time.Time
+	Counts     *SnapshotCounts
+}
+
+// SnapshotCounts mirrors the allowlisted measures Babel records for a snapshot.
+// A nil *SnapshotCounts means restic recorded none, which is distinct from all
+// four being zero.
+type SnapshotCounts struct {
+	FilesNew        int64
+	FilesChanged    int64
+	FilesUnmodified int64
+	BytesAdded      int64
 }
 
 // ErrHostMismatch reports a snapshot attributed to a different host than the one
@@ -94,11 +107,21 @@ func Reconcile(ctx context.Context, db *sql.DB, hostID string, repo []RepoSnapsh
 			continue
 		}
 		maxOrder++
+		// nil counts become SQL NULL, not zeros: a snapshot whose restic record
+		// carries no summary has counts that are unknown, and claiming zero
+		// would assert the snapshot backed up nothing.
+		var filesNew, filesChanged, filesUnmodified, bytesAdded any
+		if n := s.Counts; n != nil {
+			filesNew, filesChanged = n.FilesNew, n.FilesChanged
+			filesUnmodified, bytesAdded = n.FilesUnmodified, n.BytesAdded
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO snapshots (snapshot_id, host_id, publication_order, snapshot_time,
-			                       commit_state, reconciled_at)
-			VALUES ($1, $2, $3, $4, $5, `+serverNow+`)`,
-			s.SnapshotID, hostID, maxOrder, s.Time, CommitPending); err != nil {
+			                       commit_state, files_new, files_changed,
+			                       files_unmodified, bytes_added, reconciled_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, `+serverNow+`)`,
+			s.SnapshotID, hostID, maxOrder, s.Time, CommitPending,
+			filesNew, filesChanged, filesUnmodified, bytesAdded); err != nil {
 			return rep, fmt.Errorf("reconcile: record snapshot: %w", err)
 		}
 		rep.Added++
@@ -210,11 +233,18 @@ func Rebuild(ctx context.Context, db *sql.DB, deploymentID, hostID string, repo 
 	// next push reasserts its own numbering; until then this ordering is what
 	// readers use to find a newest snapshot.
 	for i, s := range ordered {
+		var filesNew, filesChanged, filesUnmodified, bytesAdded any
+		if n := s.Counts; n != nil {
+			filesNew, filesChanged = n.FilesNew, n.FilesChanged
+			filesUnmodified, bytesAdded = n.FilesUnmodified, n.BytesAdded
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO snapshots (snapshot_id, host_id, publication_order, snapshot_time,
-			                       commit_state, reconciled_at)
-			VALUES ($1, $2, $3, $4, $5, `+serverNow+`)`,
-			s.SnapshotID, hostID, int64(i+1), s.Time, CommitPending); err != nil {
+			                       commit_state, files_new, files_changed,
+			                       files_unmodified, bytes_added, reconciled_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, `+serverNow+`)`,
+			s.SnapshotID, hostID, int64(i+1), s.Time, CommitPending,
+			filesNew, filesChanged, filesUnmodified, bytesAdded); err != nil {
 			return rep, fmt.Errorf("rebuild: record snapshot: %w", err)
 		}
 		rep.Added++

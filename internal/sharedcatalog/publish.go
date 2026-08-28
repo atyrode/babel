@@ -121,15 +121,23 @@ func PublishSnapshot(
 		return false, fmt.Errorf("publish snapshot: claim idempotency key: %w", err)
 	}
 
+	// On conflict the counts are overwritten too: a snapshot first recorded by
+	// reconciliation carries NULL counts when restic stored no summary, and the
+	// owning host's push is the authority that replaces them.
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO snapshots (snapshot_id, host_id, publication_order, snapshot_time,
 		                       commit_state, files_new, files_changed, files_unmodified,
 		                       bytes_added, session_count, published_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (snapshot_id) DO UPDATE
-		   SET commit_state  = excluded.commit_state,
-		       session_count = excluded.session_count,
-		       updated_at    = now()`,
+		   SET commit_state     = excluded.commit_state,
+		       files_new        = excluded.files_new,
+		       files_changed    = excluded.files_changed,
+		       files_unmodified = excluded.files_unmodified,
+		       bytes_added      = excluded.bytes_added,
+		       session_count    = excluded.session_count,
+		       published_by     = excluded.published_by,
+		       updated_at       = now()`,
 		snap.SnapshotID, l.HostID, snap.PublicationOrder, snap.SnapshotTime,
 		snap.CommitState, snap.FilesNew, snap.FilesChanged, snap.FilesUnmodified,
 		snap.BytesAdded, snap.SessionCount, snap.PublishedBy); err != nil {
