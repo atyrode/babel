@@ -101,6 +101,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   snapshot's file listing, so no transcript bytes are downloaded to find a
   session. Selecting a host with no snapshots names the hosts that do have
   them rather than falling back to another machine's.
+- A leak-channel acceptance for the web shell (SPEC.md §548): a unique
+  sentinel is planted inside transcript content and a second one as the
+  repository credential, then every API route, both error paths, the 401, and
+  the browser's actual first load (token in the query string) are exercised
+  and searched. The credential reaches no response body, header, or log line;
+  transcript content is confined to the transcript endpoint and *required* to
+  appear there, so the confinement check cannot pass vacuously; every `/api`
+  response is `no-store`; the launch token reaches no log line; and no
+  selector carries either sentinel. Each search was mutation-tested against a
+  planted leak. Scope limit: this drives the server's HTTP surface, not a
+  browser, so it does not exercise `history` entries or back/forward
+  navigation. Selectors are the only API value the client interpolates into a
+  URL (`web/src/App.tsx`), so a sentinel-free selector is what the URL and
+  history channels rest on — established by reading the client's route table,
+  not enforced by a test ([#34]).
 
 ### Fixed
 
@@ -115,6 +130,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25
 [#26]: https://github.com/atyrode/babel/pull/26
+[#34]: https://github.com/atyrode/babel/pull/34
 
 ## [0.2.1] - 2026-08-28
 
