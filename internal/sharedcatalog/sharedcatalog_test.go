@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,7 +93,14 @@ func newDB(t *testing.T) *sql.DB {
 		t.Fatalf("create database: %v", err)
 	}
 
-	db, err := sharedcatalog.Open(ctx, strings.Replace(baseDSN, "/postgres?", "/"+name+"?", 1))
+	// Swap only the database path, whatever shape the DSN has.
+	u, err := url.Parse(baseDSN)
+	if err != nil {
+		t.Fatalf("parse base DSN: %v", err)
+	}
+	u.Path = "/" + name
+
+	db, err := sharedcatalog.Open(ctx, u.String())
 	if err != nil {
 		t.Fatalf("open %s: %v", name, err)
 	}

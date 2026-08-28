@@ -25,10 +25,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   opaque digest rather than their selector (which embeds a workspace-derived
   project slug), hosts carry no display name, and no session quality verdict
   is stored ([#25]).
+- Migration and application role separation for the shared catalog: an
+  application role receives DML on catalog tables, read-only access to the
+  migration ledger, and no DDL, so a normal instance cannot change schema or
+  claim a migration it did not apply. Credentials are per-instance and
+  revocable without disturbing other instances. DDL identifiers and passwords
+  are quoted by PostgreSQL's own `format()` rather than string concatenation,
+  the rendered statement is never included in an error, and the supplied
+  password is redacted from any error it does produce ([#26]).
 
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25
-
+[#26]: https://github.com/atyrode/babel/pull/26
 
 ## [0.2.1] - 2026-08-28
 
