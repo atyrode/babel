@@ -1,0 +1,51 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w" -o dist/babel ./cmd/babel
+            tar -czf "dist/babel_${GITHUB_REF_NAME}_${target%/*}_${target#*/}.tar.gz" -C dist babel
+            rm dist/babel
+          done
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+
+      - name: Extract changelog section
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { grab = 1; next }
+            grab && (/^## / || /^\[/) { exit }
+            grab { print }
+          ' CHANGELOG.md > dist/notes.md
+          test -s dist/notes.md || echo "See CHANGELOG.md." > dist/notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Babel $GITHUB_REF_NAME" \
+            --notes-file dist/notes.md \
+            --verify-tag \
+            dist/*.tar.gz dist/SHA256SUMS
