@@ -66,10 +66,16 @@ func newWebHarness(t *testing.T, f *fixture) *webHarness {
 	go func() { done <- srv.Serve(ctx) }()
 	t.Cleanup(func() {
 		cancel()
+		// The server's own graceful shutdown budget is 5s (internal/web:
+		// Serve gives httpServer.Shutdown a 5s context). Waiting exactly that
+		// long here makes a correct-but-slow shutdown and this deadline fire at
+		// the same instant, so the test reports a hang that never happened -
+		// which is what it did under full-suite load. This bound must stay
+		// strictly greater than the server's.
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("server did not stop")
+		case <-time.After(20 * time.Second):
+			t.Error("server did not stop within 20s, well past its own 5s shutdown budget")
 		}
 	})
 	base, token, ok := strings.Cut(srv.URL(), "/?token=")

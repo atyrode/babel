@@ -121,6 +121,53 @@ type Adapter interface {
 	Describe(ctx context.Context, src SourceSession) (*Description, error)
 }
 
+// ArchivedFile is one file inside a snapshot, as the repository records it.
+//
+// Paths are absolute in the source machine's layout, so they may name a home
+// directory that does not exist here - that is the point: cross-host fetch
+// identifies another machine's sessions without those files being local.
+//
+// This type deliberately mirrors internal/restic.Entry rather than importing
+// it, keeping the adapter port free of the storage engine.
+type ArchivedFile struct {
+	Path string
+	Size int64
+}
+
+// ArchivedSession is one session identified from a snapshot's file listing.
+//
+// It is metadata only. Nothing has been downloaded: identification reads the
+// snapshot's tree, and Files names what a fetch would have to restore.
+type ArchivedSession struct {
+	// SourceID is the same adapter-defined identity Discover assigns to the
+	// session when its files are local, so a session archived from one machine
+	// and discovered on another carries one identity.
+	SourceID string
+	// PrimaryPath is the session's main log, as recorded in the snapshot.
+	PrimaryPath string
+	// PrimarySize is that log's size in the snapshot.
+	PrimarySize int64
+	// Files is the session's closure inside this snapshot: the primary log,
+	// its sibling artifacts, and any content-addressed blobs the snapshot
+	// happens to contain. A blob the snapshot lacks is simply absent - the
+	// listing cannot say whether the session referenced it, because that
+	// requires reading the log.
+	Files []string
+}
+
+// SnapshotIdentifier is implemented by adapters that can recognize their own
+// sessions in an archived file listing.
+//
+// Identification is pure: it takes a listing and returns sessions, with no
+// filesystem or network access. An entry it does not recognize is ignored
+// rather than rejected, because one snapshot holds several harnesses' trees.
+type SnapshotIdentifier interface {
+	// IdentifyArchived enumerates this adapter's sessions in a snapshot
+	// listing. Results are ordered by SourceID and deduplicated, matching
+	// Discover's contract so the two can be compared.
+	IdentifyArchived(files []ArchivedFile) ([]ArchivedSession, error)
+}
+
 // ValidSourceID validates adapter-defined source identities: one or more
 // "/"-separated segments of [A-Za-z0-9._-]+, no empty or "." / ".."
 // segments, at most 512 bytes.

@@ -98,6 +98,7 @@ type Adapter struct{}
 func New() *Adapter { return &Adapter{} }
 
 var _ adapter.Adapter = (*Adapter)(nil)
+var _ adapter.SnapshotIdentifier = (*Adapter)(nil)
 
 // Harness returns the stable harness name.
 func (*Adapter) Harness() string { return HarnessName }
@@ -222,6 +223,217 @@ func sourceIDFor(rel string) string {
 		return slash
 	}
 	return "path-" + digest.Bytes([]byte(slash)).Hex()
+}
+
+// archivedRoot is one directory of a snapshot listing viewed as a candidate
+// Codex root: the host-state entries it holds, whatever its "sessions" tree
+// showed, and the rollout logs finally attributed to it.
+type archivedRoot struct {
+	history     *adapter.ArchivedFile
+	index       *adapter.ArchivedFile
+	hasSessions bool
+	dated       bool
+	rollouts    []archivedRollout
+}
+
+// archivedRollout is one archived rollout log together with the root-relative
+// path its identity is derived from.
+type archivedRollout struct {
+	file *adapter.ArchivedFile
+	rel  string
+}
+
+// IdentifyArchived recognizes Codex sessions in a snapshot's file listing
+// using the recorded paths alone. It reads nothing: the files it names live
+// on the machine the snapshot came from and need not exist here.
+//
+// The rule mirrors Discover. A directory is a Codex root when the listing
+// itself proves it — it holds `session_index.jsonl`, or a date-partitioned
+// rollout under its "sessions" tree, or `history.jsonl` beside such a tree —
+// and then every "*.jsonl" under "<root>/sessions" is a session whose
+// identity is its root-relative path (sourceIDFor), while "<root>/history.jsonl"
+// is the single host-state session, exactly as Discover treats it.
+//
+// Requiring that proof is what keeps foreign trees out: a listing cannot say
+// which ancestor of a log was the scanned root, and other harnesses also
+// store logs under a "sessions" directory (OMP does), but none of them keeps
+// Codex's host-state files or its "<yyyy>/<mm>/<dd>" partitioning. Entries
+// that fail the test are ignored, never rejected.
+func (*Adapter) IdentifyArchived(files []adapter.ArchivedFile) ([]adapter.ArchivedSession, error) {
+	roots := make(map[string]*archivedRoot)
+	at := func(dir string) *archivedRoot {
+		r := roots[dir]
+		if r == nil {
+			r = &archivedRoot{}
+			roots[dir] = r
+		}
+		return r
+	}
+
+	// First pass: collect the evidence. A rollout is offered to every
+	// ancestor that could be its root, because only the listing as a whole
+	// decides which one actually is.
+	for i := range files {
+		f := &files[i]
+		if !attributable(f.Path) {
+			continue
+		}
+		switch path.Base(f.Path) {
+		case historyFile:
+			at(path.Dir(f.Path)).history = f
+		case sessionIndexFile:
+			at(path.Dir(f.Path)).index = f
+		}
+		if !strings.HasSuffix(f.Path, rolloutExt) {
+			continue
+		}
+		eachSessionsSplit(f.Path, func(root, rel string) bool {
+			r := at(root)
+			r.hasSessions = true
+			r.dated = r.dated || datePartitioned(rel)
+			return false
+		})
+	}
+
+	// Second pass: attribute each rollout to the outermost evidenced root,
+	// which is the root Discover would have been given.
+	for i := range files {
+		f := &files[i]
+		if !attributable(f.Path) || !strings.HasSuffix(f.Path, rolloutExt) {
+			continue
+		}
+		eachSessionsSplit(f.Path, func(root, rel string) bool {
+			r := roots[root]
+			if r == nil || !r.identified() {
+				return false
+			}
+			r.rollouts = append(r.rollouts, archivedRollout{file: f, rel: rel})
+			return true
+		})
+	}
+
+	names := make([]string, 0, len(roots))
+	for name, r := range roots {
+		if r.identified() {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	var out []adapter.ArchivedSession
+	seen := make(map[string]struct{})
+	add := func(s adapter.ArchivedSession) {
+		if _, dup := seen[s.SourceID]; dup {
+			return
+		}
+		seen[s.SourceID] = struct{}{}
+		out = append(out, s)
+	}
+
+	for _, name := range names {
+		r := roots[name]
+		// StateSourceID is a single identity per host, so a snapshot holding
+		// several Codex roots keeps the lexicographically first one, the way
+		// Discover keeps the first root that carried it.
+		if r.history != nil {
+			closure := newStringSet()
+			closure.add(r.history.Path)
+			if r.index != nil {
+				closure.add(r.index.Path)
+			}
+			add(adapter.ArchivedSession{
+				SourceID:    StateSourceID,
+				PrimaryPath: r.history.Path,
+				PrimarySize: r.history.Size,
+				Files:       closure.sorted(),
+			})
+		}
+		sort.Slice(r.rollouts, func(i, j int) bool { return r.rollouts[i].rel < r.rollouts[j].rel })
+		for _, ro := range r.rollouts {
+			// A rollout's closure is its own log and nothing else.
+			// Describe's artifacts are the attachment directories scraped
+			// from message text, and that attribution is unavailable here:
+			// which log referenced "attachments/<id>/" — or whether any did,
+			// since unreferenced directories exist — can only be answered by
+			// reading the log, which identification never does.
+			add(adapter.ArchivedSession{
+				SourceID:    sourceIDFor(ro.rel),
+				PrimaryPath: ro.file.Path,
+				PrimarySize: ro.file.Size,
+				Files:       []string{ro.file.Path},
+			})
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].SourceID < out[j].SourceID })
+	return out, nil
+}
+
+// identified reports whether the listing proves this directory is a Codex
+// root rather than some other harness's directory that happens to contain a
+// "sessions" tree.
+func (r *archivedRoot) identified() bool {
+	return r.index != nil || r.dated || (r.history != nil && r.hasSessions)
+}
+
+// attributable reports whether a recorded path can yield an identity at all.
+// A ".", ".." or empty segment means the listing did not record a normalized
+// path, and Discover — which relativizes paths it actually walked — can never
+// produce such an identity, so the entry is ignored instead of guessed at.
+func attributable(p string) bool {
+	return p != "" && p == path.Clean(p)
+}
+
+// eachSessionsSplit calls fn with every "<root>", "<root>-relative path"
+// split of a snapshot path at a "sessions" segment, outermost first, and
+// stops when fn returns true. Snapshot paths are always "/"-separated, so
+// they are split as such rather than with filepath, whose behavior would
+// depend on the host reading the snapshot.
+func eachSessionsSplit(p string, fn func(root, rel string) bool) {
+	segs := strings.Split(p, "/")
+	for i, seg := range segs {
+		if seg != sessionsDir || i == len(segs)-1 {
+			continue
+		}
+		root := strings.Join(segs[:i], "/")
+		if root == "" {
+			// "sessions" is the first segment: the root is the listing's
+			// root directory itself.
+			if strings.HasPrefix(p, "/") {
+				root = "/"
+			} else {
+				root = "."
+			}
+		}
+		if fn(root, strings.Join(segs[i:], "/")) {
+			return
+		}
+	}
+}
+
+// datePartitioned reports whether a root-relative path has the
+// "sessions/<yyyy>/<mm>/<dd>/<log>" shape Codex writes rollouts into. It is
+// evidence of a Codex root, not a requirement on sessions: once a root is
+// identified, every "*.jsonl" under its "sessions" tree counts, matching
+// Discover's recursive walk.
+func datePartitioned(rel string) bool {
+	segs := strings.Split(rel, "/")
+	if len(segs) != 5 {
+		return false
+	}
+	return isDigits(segs[1], 4) && isDigits(segs[2], 2) && isDigits(segs[3], 2)
+}
+
+func isDigits(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Describe reads one session's live files in place: the primary log's
