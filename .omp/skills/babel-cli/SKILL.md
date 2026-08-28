@@ -70,6 +70,9 @@ babel sessions prune --local --yes (--all | SELECTOR...)    # delete locally fet
   use a throwaway local path repository and delete it afterwards.
 - Session content is sensitive: do not paste transcript bodies into logs,
   commits, or chat; the test suites use synthetic fixtures only.
+- Create password files with owner-only permissions — `(umask 077 && echo
+  PASSWORD > FILE)` or `chmod 600 FILE` immediately after writing — and
+  remove them together with throwaway repositories when finished.
 
 ## Testing
 
