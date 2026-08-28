@@ -11,6 +11,29 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # The shared-catalog suite defends a frozen schema contract (SPEC.md 9), so
+    # it must run here rather than only where a developer happens to have
+    # PostgreSQL. Without BABEL_TEST_POSTGRES the suite skips itself, which
+    # would silently retire the allowlist gate.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: babel
+          POSTGRES_PASSWORD: babel
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      BABEL_TEST_POSTGRES: postgres://babel:babel@127.0.0.1:5432/postgres?sslmode=disable
+
     steps:
       - uses: actions/checkout@v4
 
