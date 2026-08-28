@@ -204,6 +204,16 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleSessions(w, r)
+	case "/api/scan":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleScan(w)
+	case "/api/sessions/refresh":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleSessionsRefresh(w)
 	case "/api/session":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return
@@ -273,6 +283,27 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		result.Sessions = []SessionRow{}
 	}
 	s.writeJSON(w, http.StatusOK, result)
+}
+
+// handleScan is the cheap poll target: it reports the scan's progress
+// without touching the catalog, so a client can follow a long scan without
+// re-serializing the whole listing.
+func (s *Server) handleScan(w http.ResponseWriter) {
+	if s.opts.Scanner == nil {
+		s.writeError(w, http.StatusInternalServerError, "session scanner unavailable")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, s.opts.Scanner.State())
+}
+
+// handleSessionsRefresh starts a scan when none is running and attaches to
+// the running one otherwise, so a client that asks twice gets one scan.
+func (s *Server) handleSessionsRefresh(w http.ResponseWriter) {
+	if s.opts.Scanner == nil {
+		s.writeError(w, http.StatusInternalServerError, "session scanner unavailable")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, s.opts.Scanner.StartRefresh())
 }
 
 func (s *Server) selector(w http.ResponseWriter, r *http.Request) (string, bool) {

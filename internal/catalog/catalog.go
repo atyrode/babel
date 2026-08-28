@@ -42,6 +42,16 @@ type Row struct {
 	RowJSON              []byte
 }
 
+// Progress reports describe throughput while Refresh runs. Total counts the
+// stale sessions this run has to describe; Described counts the attempts it
+// has finished, so Described reaches Total exactly once the run is complete.
+type Progress struct {
+	Total     int
+	Described int
+	Failed    int
+	Harness   string
+}
+
 // Cache is a catalog database rooted in Babel's private XDG data directory.
 type Cache struct {
 	db   *sql.DB
@@ -113,6 +123,19 @@ func (c *Cache) init() error {
 		return fmt.Errorf("check catalog integrity: %s", integrity)
 	}
 
+	// WAL lets a reader (the web process answering /api/sessions) see
+	// batches a running scan has already committed, instead of blocking on
+	// the writer or being skipped entirely; busy_timeout absorbs the brief
+	// overlap when a batch commits while a read is starting. Both are set
+	// per connection, and journal_mode persists in the file.
+	var journal string
+	if err := c.db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
+		return fmt.Errorf("enable catalog WAL: %w", err)
+	}
+	if _, err := c.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		return fmt.Errorf("set catalog busy timeout: %w", err)
+	}
+
 	const schema = `
 CREATE TABLE IF NOT EXISTS sessions(
 	selector TEXT PRIMARY KEY,
@@ -175,10 +198,38 @@ type liveRef struct {
 	mtimeNano int64
 }
 
+// refreshBatchSize bounds how many pending writes Refresh accumulates before
+// committing. Small batches keep a cancelled run's completed describes durable
+// without paying a transaction per session.
+const refreshBatchSize = 25
+
 // Refresh reconciles the cache with the inexpensive discovery result. It calls
-// describe only for new or changed primary files. A false result is omitted
-// and removes any stale cached row for that selector.
-func (c *Cache) Refresh(ctx context.Context, refs []Ref, describe func(Ref) (Row, bool)) ([]Row, error) {
+// describe only for new or changed primary files.
+//
+// scope names the harnesses this refresh actually covered, and is the only
+// authority for deletion: a cached row is pruned only when its harness is in
+// scope and the session is either gone or failed to describe. An empty scope
+// therefore prunes nothing, so a partial refresh can never gut the rows it did
+// not look at, while an in-scope harness whose sessions have all vanished does
+// lose its rows. The returned rows are restricted to the scoped harnesses;
+// an empty scope returns the whole catalog.
+//
+// Describing happens outside any transaction and the resulting writes are
+// committed in batches, so a cancelled run keeps every describe it already
+// finished: the next Refresh resumes instead of starting over. Cancellation
+// commits the batch in flight and then returns ctx.Err(). onProgress may be
+// nil; otherwise it is called once before the describe loop with Total set and
+// Described zero, then after every describe attempt.
+func (c *Cache) Refresh(ctx context.Context, scope []string, refs []Ref, describe func(Ref) (Row, bool), onProgress func(Progress)) ([]Row, error) {
+	scoped := make(map[string]struct{}, len(scope))
+	for _, harness := range scope {
+		scoped[harness] = struct{}{}
+	}
+	inScope := func(harness string) bool {
+		_, ok := scoped[harness]
+		return ok
+	}
+
 	cached, err := c.readRows(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read catalog: %w", err)
@@ -200,9 +251,8 @@ func (c *Cache) Refresh(ctx context.Context, refs []Ref, describe func(Ref) (Row
 	}
 	sort.Strings(selectors)
 
-	live := make(map[string]liveRef, len(selectors))
-	updates := make(map[string]Row)
-	failed := make(map[string]struct{})
+	live := make(map[string]struct{}, len(selectors))
+	stale := make([]liveRef, 0, len(selectors))
 	for _, selector := range selectors {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -210,69 +260,138 @@ func (c *Cache) Refresh(ctx context.Context, refs []Ref, describe func(Ref) (Row
 		ref := unique[selector]
 		info, err := os.Stat(ref.PrimaryPath)
 		if err != nil || !info.Mode().IsRegular() {
-			failed[selector] = struct{}{}
 			continue
 		}
+		live[selector] = struct{}{}
 		current := liveRef{ref: ref, size: info.Size(), mtimeNano: info.ModTime().UnixNano()}
-		live[selector] = current
 		old, found := bySelector[selector]
 		if found && old.PrimaryPath == ref.PrimaryPath && old.PrimarySize == current.size &&
 			old.PrimaryMtimeUnixNano == current.mtimeNano && json.Valid(old.RowJSON) {
 			continue
 		}
+		stale = append(stale, current)
+	}
 
+	// Writes use a context detached from the caller's: a cancelled scan still
+	// has to commit the describes it completed.
+	writeCtx := context.WithoutCancel(ctx)
+	removals := make([]string, 0)
+	for selector, row := range bySelector {
+		if !inScope(row.Harness) {
+			continue
+		}
+		if _, stillLive := live[selector]; !stillLive {
+			removals = append(removals, selector)
+		}
+	}
+	sort.Strings(removals)
+	if err := c.commit(writeCtx, removals, nil); err != nil {
+		return nil, err
+	}
+
+	progress := Progress{Total: len(stale)}
+	report := func() {
+		if onProgress != nil {
+			onProgress(progress)
+		}
+	}
+	report()
+
+	removals = removals[:0]
+	pending := make([]Row, 0, refreshBatchSize)
+	flush := func() error {
+		if err := c.commit(writeCtx, removals, pending); err != nil {
+			return err
+		}
+		removals = removals[:0]
+		pending = pending[:0]
+		return nil
+	}
+
+	var cancelled error
+	for _, current := range stale {
+		if err := ctx.Err(); err != nil {
+			cancelled = err
+			break
+		}
+		ref := current.ref
 		row, ok := describe(ref)
-		if !ok {
-			failed[selector] = struct{}{}
-			continue
+		if ok {
+			row.Selector = ref.Selector
+			row.Harness = ref.Harness
+			row.SourceID = ref.SourceID
+			row.PrimaryPath = ref.PrimaryPath
+			row.PrimarySize = current.size
+			row.PrimaryMtimeUnixNano = current.mtimeNano
+			ok = json.Valid(row.RowJSON)
 		}
-		row.Selector = ref.Selector
-		row.Harness = ref.Harness
-		row.SourceID = ref.SourceID
-		row.PrimaryPath = ref.PrimaryPath
-		row.PrimarySize = current.size
-		row.PrimaryMtimeUnixNano = current.mtimeNano
-		if !json.Valid(row.RowJSON) {
-			failed[selector] = struct{}{}
-			continue
+		if ok {
+			pending = append(pending, row)
+		} else {
+			progress.Failed++
+			if old, found := bySelector[ref.Selector]; found && inScope(old.Harness) {
+				removals = append(removals, ref.Selector)
+			}
 		}
-		updates[selector] = row
-	}
+		progress.Described++
+		progress.Harness = ref.Harness
+		report()
 
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin catalog refresh: %w", err)
-	}
-	defer tx.Rollback()
-
-	for selector := range bySelector {
-		_, stillLive := live[selector]
-		_, describeFailed := failed[selector]
-		if stillLive && !describeFailed {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE selector = ?`, selector); err != nil {
-			return nil, fmt.Errorf("delete catalog row: %w", err)
+		if len(pending)+len(removals) >= refreshBatchSize {
+			if err := flush(); err != nil {
+				return nil, err
+			}
 		}
 	}
-	for _, selector := range selectors {
-		row, ok := updates[selector]
-		if !ok {
-			continue
-		}
-		if err := upsert(ctx, tx, row); err != nil {
-			return nil, err
-		}
+	if err := flush(); err != nil {
+		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit catalog refresh: %w", err)
+	if cancelled != nil {
+		return nil, cancelled
 	}
 
 	rows, err := c.readRows(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read refreshed catalog: %w", err)
 	}
-	return rows, nil
+	if len(scoped) == 0 {
+		return rows, nil
+	}
+	inside := make([]Row, 0, len(rows))
+	for _, row := range rows {
+		if inScope(row.Harness) {
+			inside = append(inside, row)
+		}
+	}
+	return inside, nil
+}
+
+// commit applies one batch of catalog writes in a single transaction. The
+// database allows one connection, so batches never overlap.
+func (c *Cache) commit(ctx context.Context, removals []string, rows []Row) error {
+	if len(removals) == 0 && len(rows) == 0 {
+		return nil
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin catalog refresh: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, selector := range removals {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE selector = ?`, selector); err != nil {
+			return fmt.Errorf("delete catalog row: %w", err)
+		}
+	}
+	for _, row := range rows {
+		if err := upsert(ctx, tx, row); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit catalog refresh: %w", err)
+	}
+	return nil
 }
 
 func upsert(ctx context.Context, tx *sql.Tx, row Row) error {

@@ -89,18 +89,33 @@ func TestWebServerServesCLIBackedAPI(t *testing.T) {
 		t.Fatalf("SPA shell: status %d body %.120q", shell.StatusCode, shellBody)
 	}
 
+	// The listing never blocks on a scan: the first request answers from the
+	// catalog — cold, so empty — and reports the scan it started.
 	var listing struct {
 		Sessions []struct {
 			Selector string `json:"selector"`
 			Harness  string `json:"harness"`
 		} `json:"sessions"`
 		RefreshedAt string `json:"refreshed_at"`
+		Scan        struct {
+			Running   bool `json:"running"`
+			Described int  `json:"described"`
+			Total     int  `json:"total"`
+		} `json:"scan"`
 	}
 	if code := get("/api/sessions", &listing); code != http.StatusOK {
 		t.Fatalf("/api/sessions: %d", code)
 	}
-	if len(listing.Sessions) == 0 || listing.RefreshedAt == "" {
-		t.Fatalf("listing = %+v", listing)
+	if listing.RefreshedAt == "" {
+		t.Fatalf("cold listing = %+v", listing)
+	}
+	waitForScan(t, get)
+	listing.Sessions = nil
+	if code := get("/api/sessions", &listing); code != http.StatusOK {
+		t.Fatalf("/api/sessions after scan: %d", code)
+	}
+	if len(listing.Sessions) == 0 || listing.Scan.Running {
+		t.Fatalf("scanned listing = %+v", listing)
 	}
 
 	sel := listing.Sessions[0].Selector

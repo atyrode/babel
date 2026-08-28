@@ -1,31 +1,117 @@
-import { useCallback, useMemo, useState, useEffect } from "react";
+import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { getSessions, type SessionSummary, type SessionsResponse } from "../api";
-import { errorMessage, formatBytes, formatTime } from "../format";
+import {
+  getScan,
+  getSessions,
+  refreshSessions,
+  type ScanState,
+  type SessionSummary,
+  type SessionsResponse,
+} from "../api";
+import { errorMessage, formatBytes, formatDuration, formatTime } from "../format";
 
 type SortColumn = "harness" | "title" | "workspace" | "size" | "modified" | "continuation";
 type SortDirection = "asc" | "desc";
 
+// The server returns cached rows immediately and describes stale sessions on a
+// background scan, so the page polls the cheap scan endpoint frequently and
+// re-reads the row set less often to show partial results as they land.
+const SCAN_POLL_MS = 750;
+const ROW_REFRESH_MS = 3_000;
+const ELAPSED_TICK_MS = 1_000;
+
 function SessionsPage() {
   const navigate = useNavigate();
   const [data, setData] = useState<SessionsResponse | null>(null);
+  const [scan, setScan] = useState<ScanState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [scanErrorDismissed, setScanErrorDismissed] = useState(false);
+  const [announcement, setAnnouncement] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [clock, setClock] = useState(() => Date.now());
   const [search, setSearch] = useState("");
   const [harness, setHarness] = useState<string | null>(null);
   const [sortColumn, setSortColumn] = useState<SortColumn>("modified");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const scanWasRunning = useRef(false);
 
-  const loadSessions = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    getSessions()
-      .then(setData)
-      .catch((reason) => setError(errorMessage(reason)))
-      .finally(() => setLoading(false));
+  const loadSessions = useCallback((mode: "blocking" | "quiet") => {
+    if (mode === "blocking") setLoading(true);
+    return getSessions()
+      .then((value) => {
+        setData(value);
+        setScan(value.scan);
+        setError(null);
+        return value;
+      })
+      .catch((reason) => {
+        setError(errorMessage(reason));
+        return null;
+      })
+      .finally(() => {
+        if (mode === "blocking") setLoading(false);
+      });
   }, []);
 
-  useEffect(loadSessions, [loadSessions]);
+  useEffect(() => {
+    void loadSessions("blocking");
+  }, [loadSessions]);
+
+  const running = scan?.running ?? false;
+
+  useEffect(() => {
+    if (!running) return;
+    let live = true;
+    const progressTimer = window.setInterval(() => {
+      getScan()
+        .then((value) => {
+          if (live) setScan(value);
+        })
+        .catch(() => undefined);
+    }, SCAN_POLL_MS);
+    const rowTimer = window.setInterval(() => {
+      if (live) void loadSessions("quiet");
+    }, ROW_REFRESH_MS);
+    const clockTimer = window.setInterval(() => {
+      if (live) setClock(Date.now());
+    }, ELAPSED_TICK_MS);
+    return () => {
+      live = false;
+      window.clearInterval(progressTimer);
+      window.clearInterval(rowTimer);
+      window.clearInterval(clockTimer);
+    };
+  }, [running, loadSessions]);
+
+  useEffect(() => {
+    if (!scan) return;
+    if (scan.running) {
+      scanWasRunning.current = true;
+      return;
+    }
+    if (!scanWasRunning.current) return;
+    scanWasRunning.current = false;
+    const { described, failed } = scan;
+    void loadSessions("quiet").then((value) => {
+      const rows = value?.sessions.length ?? 0;
+      const failures = failed > 0 ? ` ${failed} could not be described.` : "";
+      setAnnouncement(`Scan complete. Described ${described} sessions.${failures} ${rows} sessions in the catalog.`);
+    });
+  }, [scan, loadSessions]);
+
+  const startScan = useCallback(async () => {
+    setStarting(true);
+    setScanErrorDismissed(false);
+    setAnnouncement("");
+    try {
+      setScan(await refreshSessions());
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setStarting(false);
+    }
+  }, []);
 
   const harnesses = useMemo(
     () => Array.from(new Set(data?.sessions.map((session) => session.harness) ?? [])).sort(),
@@ -75,6 +161,10 @@ function SessionsPage() {
     navigate(`/sessions/${encodeURIComponent(session.selector)}`);
   }
 
+  const rowCount = data?.sessions.length ?? 0;
+  const scanError = scan?.error && !scanErrorDismissed ? scan.error : null;
+  const showEmptyState = data !== null && rowCount === 0 && !running && !scanError;
+
   return (
     <section className="page sessions-page">
       <div className="page-heading">
@@ -83,8 +173,26 @@ function SessionsPage() {
           <h1>Sessions</h1>
           <p className="subtitle">Browse sessions discovered across local harnesses.</p>
         </div>
-        {data && <span className="refresh-time">Refreshed {formatTime(data.refreshed_at)?.relative ?? data.refreshed_at}</span>}
+        <div className="heading-meta">
+          <span className="count-label">{rowCount} cached {rowCount === 1 ? "session" : "sessions"}</span>
+          {data && <span className="refresh-time">Refreshed {formatTime(data.refreshed_at)?.relative ?? data.refreshed_at}</span>}
+        </div>
       </div>
+
+      <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
+
+      {running && scan && <ScanProgress scan={scan} rowCount={rowCount} clock={clock} />}
+
+      {scanError && (
+        <div className="state-card error-state" role="alert">
+          <strong>The session scan failed.</strong>
+          <span>{scanError}</span>
+          <div className="scan-error-actions">
+            <button type="button" onClick={startScan} disabled={starting}>Scan again</button>
+            <button type="button" className="chip" onClick={() => setScanErrorDismissed(true)}>Dismiss</button>
+          </div>
+        </div>
+      )}
 
       <div className="toolbar card">
         <label className="search-field">
@@ -105,23 +213,28 @@ function SessionsPage() {
             </button>
           ))}
         </div>
+        <button type="button" onClick={startScan} disabled={running || starting}>
+          {running ? "Scanning…" : "Refresh"}
+        </button>
       </div>
 
-      {loading && !data && <div className="state-card"><span className="spinner" /> Loading sessions…</div>}
+      {loading && !data && <div className="state-card"><span className="spinner" /> Reading the cached catalog…</div>}
       {error && !data && (
         <div className="state-card error-state">
           <strong>Sessions could not be loaded.</strong>
           <span>{error}</span>
-          <button type="button" onClick={loadSessions}>Try again</button>
+          <button type="button" onClick={() => loadSessions("blocking")}>Try again</button>
         </div>
       )}
-      {data && data.sessions.length === 0 && (
+      {showEmptyState && (
         <div className="state-card empty-state">
-          <strong>No sessions found</strong>
-          <span>Babel has not discovered any local harness sessions yet.</span>
+          <span className="empty-icon" aria-hidden="true">◇</span>
+          <strong>No sessions cached</strong>
+          <span>Babel has not described any local harness sessions yet. Start a scan to read the session files on this host.</span>
+          <button type="button" onClick={startScan} disabled={starting}>Scan now</button>
         </div>
       )}
-      {data && data.sessions.length > 0 && sessions.length === 0 && (
+      {rowCount > 0 && sessions.length === 0 && (
         <div className="state-card empty-state">
           <strong>No matching sessions</strong>
           <span>Clear the search or choose another harness.</span>
@@ -174,6 +287,55 @@ function SessionsPage() {
         </div>
       )}
     </section>
+  );
+}
+
+interface ScanProgressProps {
+  scan: ScanState;
+  rowCount: number;
+  clock: number;
+}
+
+function ScanProgress({ scan, rowCount, clock }: ScanProgressProps) {
+  const ceiling = Math.max(scan.total, scan.described, 1);
+  const percent = Math.min(100, Math.round((scan.described / ceiling) * 100));
+  const startedAt = scan.started_at ? new Date(scan.started_at).getTime() : Number.NaN;
+  const elapsed = Number.isNaN(startedAt) ? "—" : formatDuration(clock - startedAt);
+
+  return (
+    <article className="card scan-card">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Catalog scan running</p>
+          <h2>Describing sessions</h2>
+        </div>
+        <span className="scan-counter mono">
+          {scan.described} / {scan.total} ({percent}%)
+        </span>
+      </div>
+      <div
+        className="scan-bar"
+        role="progressbar"
+        aria-label="Session scan progress"
+        aria-valuemin={0}
+        aria-valuemax={ceiling}
+        aria-valuenow={scan.described}
+        aria-valuetext={`${scan.described} of ${scan.total} sessions described`}
+      >
+        <span className="scan-bar-fill" style={{ width: `${percent}%` }} />
+      </div>
+      <div className="scan-facts">
+        <span>Harness <strong>{scan.harness || "—"}</strong></span>
+        <span>Elapsed <strong>{elapsed}</strong></span>
+        <span>Rows cached <strong>{rowCount}</strong></span>
+        {scan.failed > 0 && <span>Failed <strong>{scan.failed}</strong></span>}
+      </div>
+      <p className="scan-note">
+        The first scan reads every session file on this host once, so it can take a couple of
+        minutes on a large corpus. Described sessions are cached, so every later load stays fast.
+        Rows appear in the table below as they are described — you can start browsing right away.
+      </p>
+    </article>
   );
 }
 

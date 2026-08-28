@@ -11,7 +11,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/transcript"
@@ -83,6 +82,10 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	d, err := babelDirs()
+	if err != nil {
+		return nil, err
+	}
 	repository := firstNonEmpty(rf.repository, os.Getenv("BABEL_RESTIC_REPO"), cfg.Repository)
 	passwordFile := firstNonEmpty(rf.passwordFile, os.Getenv("BABEL_RESTIC_PASSWORD_FILE"), cfg.PasswordFile)
 	configured := repository != "" && passwordFile != ""
@@ -108,6 +111,13 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 		}
 	}
 
+	// One coordinator per catalog, shared by every request this process
+	// serves, so concurrent listings can never multiply the scan. Its
+	// diagnostics go to the process's own stderr because a scan outlives
+	// the request that started it.
+	sc := scanner(d.data)
+	sc.attach(a.stderr)
+
 	opts := web.Options{
 		Port:        port,
 		Static:      webdist.Dist(),
@@ -119,14 +129,19 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 				HostID:     Sanitize(hostID),
 			}, nil
 		}),
-		Lister: web.SessionListerFunc(func(ctx context.Context) (web.SessionsResult, error) {
-			var res web.SessionsResult
-			if err := a.runJSON(ctx, &res, "sessions", "list", "--json"); err != nil {
-				return web.SessionsResult{}, err
-			}
-			res.RefreshedAt = formatTime(time.Now().UTC())
-			return res, nil
+		Lister: web.SessionListerFunc(func(context.Context) (web.SessionsResult, error) {
+			// The request's context is deliberately unused: the listing is
+			// answered from the catalog immediately, and the scan that keeps
+			// the catalog current belongs to this process, so a browser
+			// reload can never cancel work already done.
+			rows, refreshedAt, state := sc.Listing(adapters(), nil)
+			return web.SessionsResult{
+				Sessions:    webSessionRows(rows),
+				RefreshedAt: refreshedAt,
+				Scan:        webScanState(state),
+			}, nil
 		}),
+		Scanner: &webScanner{coordinator: sc},
 		Inspector: web.SessionInspectorFunc(func(ctx context.Context, selector string) (web.InspectResult, error) {
 			var res web.InspectResult
 			err := a.runJSON(ctx, &res, "sessions", "inspect", selector, "--json")
@@ -138,6 +153,51 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 		opts.Archive = &webArchive{app: a, forward: forward}
 	}
 	return web.New(opts)
+}
+
+// webScanner exposes the process-wide background scanner to the server.
+type webScanner struct {
+	coordinator *scanCoordinator
+}
+
+func (w *webScanner) State() web.ScanState { return webScanState(w.coordinator.State()) }
+
+func (w *webScanner) StartRefresh() web.ScanState {
+	return webScanState(w.coordinator.Start(adapters(), nil))
+}
+
+// webScanState maps the CLI's scan state onto its web mirror.
+func webScanState(state scanState) web.ScanState {
+	return web.ScanState{
+		Running:    state.Running,
+		Described:  state.Described,
+		Total:      state.Total,
+		Failed:     state.Failed,
+		Harness:    state.Harness,
+		StartedAt:  state.StartedAt,
+		FinishedAt: state.FinishedAt,
+		Error:      state.Error,
+	}
+}
+
+// webSessionRows maps the CLI's listing rows onto their web mirrors. Both
+// shapes are already sanitized; this is the same document the headless
+// `sessions list --json` emits, restated in the server's types.
+func webSessionRows(rows []sessionRow) []web.SessionRow {
+	out := make([]web.SessionRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, web.SessionRow{
+			Harness:           row.Harness,
+			SourceID:          row.SourceID,
+			Selector:          row.Selector,
+			Size:              row.Size,
+			Modified:          row.Modified,
+			Title:             row.Title,
+			Workspace:         row.Workspace,
+			ContinuationGrade: row.Continuous,
+		})
+	}
+	return out
 }
 
 // webArchive drives the archive commands in process. Only status, verify,
