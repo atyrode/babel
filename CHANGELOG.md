@@ -167,6 +167,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - `--host` was bound by every repository-taking command, so
   `sessions fetch --host ID` was accepted and silently did nothing. It now
   selects the cross-host path; previously the flag parsed and was ignored.
+- **Two browser leak assertions raced the page they were asserting about.**
+  Back/forward and the unauthorized negative control waited on `location.hash`
+  or a character count, both of which settle before the view behind them
+  renders, so the content assertion could read `Loading session…` and fail
+  roughly one run in six. Each step now waits for its destination's own
+  content — or for an authorization failure, so a genuinely broken credential
+  still fails fast and by name instead of timing out. Diagnosed from the
+  captured failure rather than guessed, and clean across 22 subsequent runs.
 
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25
