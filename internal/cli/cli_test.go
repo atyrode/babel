@@ -91,8 +91,18 @@ func newFixture(t *testing.T) *fixture {
 // created by `archive push`, whose initialization must be idempotent.
 func (f *fixture) withRepo() *fixture {
 	f.t.Helper()
+	return f.withRepoPassword(testRepoPassword)
+}
+
+// withRepoPassword is withRepo with a caller-chosen password, so a test can
+// make the credential a unique sentinel and then search the surfaces that
+// must never carry it. The password must be selected before the first
+// `archive push`, because that push is what initializes the repository with
+// it; overwriting the file afterwards would not re-key the repository.
+func (f *fixture) withRepoPassword(password string) *fixture {
+	f.t.Helper()
 	f.t.Setenv("PATH", filepath.Dir(resticBinary(f.t))+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := os.WriteFile(f.passwordFile, []byte(testRepoPassword), 0o600); err != nil {
+	if err := os.WriteFile(f.passwordFile, []byte(password), 0o600); err != nil {
 		f.t.Fatal(err)
 	}
 	return f
@@ -175,6 +185,9 @@ type sessionSpec struct {
 	workspace string
 	blobRef   string
 	artifacts map[string]string
+	// message overrides the synthetic user message in the primary log, so a
+	// test can plant a unique string inside transcript content.
+	message string
 }
 
 // writeSession materializes one synthetic session in the layout the OMP
@@ -203,7 +216,11 @@ func (f *fixture) writeSession(spec sessionSpec) string {
 		"cwd":         spec.workspace,
 		"titleSource": "auto",
 	}))
-	content := []any{map[string]any{"type": "text", "text": "synthetic fixture message"}}
+	text := spec.message
+	if text == "" {
+		text = "synthetic fixture message"
+	}
+	content := []any{map[string]any{"type": "text", "text": text}}
 	if spec.blobRef != "" {
 		content = append(content, map[string]any{"type": "image", "data": spec.blobRef, "mimeType": "image/webp"})
 	}
