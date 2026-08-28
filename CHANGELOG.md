@@ -9,6 +9,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-28
+
+The web GUI becomes Babel's primary surface.
+
 ### Added
 
 - `babel web`: the self-hosted loopback web GUI, now Babel's primary surface
@@ -67,5 +71,6 @@ storage configuration yet — repository selection is per-invocation
   (ea65a45…85fe13f), replaced in 8636960 and a879067. SPEC.md and README.md
   rewritten around the restic model (5b8d593).
 
-[Unreleased]: https://github.com/atyrode/babel/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/atyrode/babel/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/atyrode/babel/releases/tag/v0.2.0
 [0.1.0]: https://github.com/atyrode/babel/releases/tag/v0.1.0
