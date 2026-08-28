@@ -296,13 +296,18 @@ test.skipIf(!chrome)("a context without the token is refused", async () => {
   }
 });
 
-// The property that matters is not "we call replaceState" but "no history
-// entry the operator can navigate to holds the token". Two mechanisms
-// independently satisfy it today — the bootstrap's scrub and the HashRouter's
-// replacing first navigation — so removing either is not observable here. That
-// is recorded rather than hidden: this walks the whole stack and would fail if
-// the router ever pushed the launch entry instead of replacing it, which is
-// the regression that would actually expose the credential.
+// The property that matters is not "we call replaceState" but "no history entry
+// the operator can navigate to holds the token". Two mechanisms independently
+// satisfy it today — the bootstrap's scrub, and App.tsx's catch-all
+// <Navigate to="/sessions" replace />, which the unmatched "#token=…" fragment
+// falls through to — so removing either alone is not observable here. Removing
+// both is: the walk fails and names the retained entry.
+//
+// The walk is bounded by the stack the browser reports, and completion is
+// proven by landing on the context's initial blank entry rather than by the
+// loop finishing. A fixed bound, or trusting goBack's return value, would let
+// part of the stack go unexamined while the test still claimed every reachable
+// entry was checked.
 test.skipIf(!chrome)("no reachable history entry retains the token", async () => {
   const walker = await browser!.createBrowserContext();
   try {
@@ -319,19 +324,45 @@ test.skipIf(!chrome)("no reachable history entry retains the token", async () =>
     await row?.click();
     await trail.waitForFunction(() => location.hash.startsWith("#/sessions/"), { timeout: 30_000 });
 
+    const depth = await trail.evaluate(() => history.length);
     const landed: string[] = [trail.url()];
-    for (let step = 0; step < 6; step += 1) {
+    for (let step = 0; step <= depth + 1; step += 1) {
       const before = trail.url();
+      // goBack resolves null for same-document (hash) navigations, so its
+      // return value says nothing about whether the stack moved. It can also
+      // resolve before the URL settles, because waitUntil describes document
+      // loads and a hash change is not one. Progress is therefore awaited
+      // explicitly; the catches cover a back-navigation that destroys the
+      // document, where the URL has already changed.
       await trail.goBack({ waitUntil: "domcontentloaded" }).catch(() => null);
+      await trail
+        .waitForFunction((previous: string) => location.href !== previous, { timeout: 5_000 }, before)
+        .catch(() => null);
       const after = trail.url();
-      landed.push(after);
       if (after === before) break;
+      landed.push(after);
     }
 
-    // Non-vacuity: the walk must actually have moved, or it proves nothing.
-    expect(new Set(landed).size).toBeGreaterThan(1);
+    // Reaching the context's initial blank entry is what proves the whole stack
+    // was traversed. URL-progress alone could stop early if two adjacent
+    // entries happened to share a URL, and the launch entry is the first one,
+    // so an early stop is precisely the failure that would hide a token. It
+    // also stops early when a retained token entry redirects away on arrival,
+    // which is why the trail is reported: that is what a reviewer needs to see.
+    // The token is redacted, since a test about credential hygiene should not
+    // print one into CI output.
+    const trailText = landed.map((url) => url.replace(token, "<TOKEN>")).join(" -> ");
+    expect(landed.at(-1), `the walk stopped before the bottom of the stack: ${trailText}`).toBe(
+      "about:blank",
+    );
+    expect(landed.length).toBeGreaterThan(1);
     for (const url of landed) {
-      expect(url, `history entry ${url} retains the launch token`).not.toContain(token);
+      // Compared in redacted form deliberately: asserting on the raw URL would
+      // make Bun print the received string, and the token with it.
+      const redacted = url.replace(token, "<TOKEN>");
+      expect(redacted, `a history entry retains the launch token: ${trailText}`).not.toContain(
+        "<TOKEN>",
+      );
     }
   } finally {
     await walker.close();

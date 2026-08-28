@@ -130,9 +130,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   history, the bootstrap's `replaceState` and App.tsx's catch-all
   `<Navigate to="/sessions" replace />`, which the unmatched `#token=…`
   fragment falls through to. Disabling either alone still passes; disabling
-  both fails the history-stack walk, which names the retained entry. Both are
-  kept, since either alone is a single point of failure for a credential, and
-  the route now says so where an editor would remove it ([#36]).
+  both fails the history walk, which is bounded by the stack the browser
+  reports and proves completion by landing on the context's initial blank
+  entry, so a traversal that stops early — as it does when a retained token
+  entry redirects away on arrival — is a failure rather than a silently checked
+  prefix. Failure output reports the traversal with the token redacted. Both
+  mechanisms are kept, since either alone is a single point of failure for a
+  credential, and the route now says so where an editor would remove it
+  ([#36]).
 
 ### Changed
 
