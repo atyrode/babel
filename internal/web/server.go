@@ -1,0 +1,609 @@
+// Package web provides Babel's authenticated loopback management server.
+package web
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"mime"
+	"net"
+	"net/http"
+	"path"
+	"runtime"
+	"runtime/debug"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+)
+
+const defaultTranscriptLimit = 200
+
+// Server is a single-use authenticated HTTP server bound to the IPv4
+// loopback interface.
+type Server struct {
+	opts     Options
+	listener net.Listener
+	token    string
+	url      string
+	logMu    sync.Mutex
+}
+
+// New generates an access token and binds a loopback listener. Port zero asks
+// the kernel for an available port. The listener is held until Serve begins so
+// URL is immediately stable and safe to launch.
+func New(opts Options) (*Server, error) {
+	if opts.Port < 0 || opts.Port > 65535 {
+		return nil, fmt.Errorf("port %d is out of range", opts.Port)
+	}
+	var tokenBytes [32]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		return nil, fmt.Errorf("generate web token: %w", err)
+	}
+	listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(opts.Port)))
+	if err != nil {
+		return nil, fmt.Errorf("listen on loopback: %w", err)
+	}
+	token := hex.EncodeToString(tokenBytes[:])
+	port := listener.Addr().(*net.TCPAddr).Port
+	return &Server{
+		opts:     opts,
+		listener: listener,
+		token:    token,
+		url:      fmt.Sprintf("http://127.0.0.1:%d/?token=%s", port, token),
+	}, nil
+}
+
+// URL is the launch URL, including its generated bearer-equivalent token.
+func (s *Server) URL() string { return s.url }
+
+// Serve handles requests until ctx is canceled or the server fails. A Server
+// is single-use because New reserves exactly one listener.
+func (s *Server) Serve(ctx context.Context) error {
+	httpServer := &http.Server{
+		Handler:           s.middleware(http.HandlerFunc(s.route)),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		BaseContext: func(net.Listener) context.Context {
+			return ctx
+		},
+	}
+	serveResult := make(chan error, 1)
+	go func() {
+		serveResult <- httpServer.Serve(s.listener)
+	}()
+
+	select {
+	case err := <-serveResult:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		// Closing the listener first also covers cancellation racing with
+		// http.Server's listener registration.
+		_ = s.listener.Close()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownErr := httpServer.Shutdown(shutdownCtx)
+		serveErr := <-serveResult
+		if shutdownErr != nil {
+			return shutdownErr
+		}
+		if errors.Is(serveErr, http.ErrServerClosed) || errors.Is(serveErr, net.ErrClosed) {
+			return nil
+		}
+		return serveErr
+	}
+}
+
+func (s *Server) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &statusWriter{ResponseWriter: w}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				s.logf("panic serving %s %s: %v", r.Method, r.URL.Path, recovered)
+				if !rw.wroteHeader {
+					s.writeError(rw, http.StatusInternalServerError, "internal server error")
+				}
+			}
+			s.logf("%s %s %d %s", r.Method, r.URL.Path, rw.statusCode(), time.Since(start).Round(time.Millisecond))
+		}()
+
+		rw.Header().Set("Content-Security-Policy", "default-src 'self'")
+		if strings.HasPrefix(r.URL.Path, "/api") {
+			rw.Header().Set("Cache-Control", "no-store")
+			if !s.authorized(r) {
+				s.writeError(rw, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+		}
+		next.ServeHTTP(rw, r)
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.status = status
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *statusWriter) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	candidates := make([]string, 0, 2)
+	if authorization := r.Header.Get("Authorization"); authorization != "" {
+		scheme, credential, ok := strings.Cut(authorization, " ")
+		if ok && strings.EqualFold(scheme, "Bearer") && credential != "" && !strings.ContainsAny(credential, " \t") {
+			candidates = append(candidates, credential)
+		}
+	}
+	if queryToken := r.URL.Query().Get("token"); queryToken != "" {
+		candidates = append(candidates, queryToken)
+	}
+	for _, candidate := range candidates {
+		if subtle.ConstantTimeCompare([]byte(candidate), []byte(s.token)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) route(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api") {
+		s.routeAPI(w, r)
+		return
+	}
+	s.serveStatic(w, r)
+}
+
+func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/api/version":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.writeJSON(w, http.StatusOK, readVersion())
+	case "/api/state":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleState(w, r)
+	case "/api/sessions":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleSessions(w, r)
+	case "/api/session":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleSession(w, r)
+	case "/api/transcript":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleTranscript(w, r)
+	case "/api/archive/status":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleArchiveStatus(w, r)
+	case "/api/archive/verify":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleArchiveVerify(w, r)
+	case "/api/fetch":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleFetch(w, r)
+	default:
+		s.writeError(w, http.StatusNotFound, "not found")
+	}
+}
+
+func (s *Server) requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method == method {
+		return true
+	}
+	s.writeError(w, http.StatusBadRequest, "unsupported method")
+	return false
+}
+
+func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	if s.opts.State == nil {
+		s.writeJSON(w, http.StatusOK, State{})
+		return
+	}
+	state, err := s.opts.State.WebState(r.Context())
+	if err != nil {
+		s.operationError(w, err)
+		return
+	}
+	if !state.Configured {
+		state.Repository = ""
+		state.HostID = ""
+	}
+	s.writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Lister == nil {
+		s.writeError(w, http.StatusInternalServerError, "session lister unavailable")
+		return
+	}
+	result, err := s.opts.Lister.ListSessions(r.Context())
+	if err != nil {
+		s.operationError(w, err)
+		return
+	}
+	if result.Sessions == nil {
+		result.Sessions = []SessionRow{}
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) selector(w http.ResponseWriter, r *http.Request) (string, bool) {
+	selector := r.URL.Query().Get("selector")
+	if selector == "" {
+		s.writeError(w, http.StatusBadRequest, "selector is required")
+		return "", false
+	}
+	return selector, true
+}
+
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	selector, ok := s.selector(w, r)
+	if !ok {
+		return
+	}
+	if s.opts.Inspector == nil {
+		s.writeError(w, http.StatusInternalServerError, "session inspector unavailable")
+		return
+	}
+	result, err := s.opts.Inspector.InspectSession(r.Context(), selector)
+	if err != nil {
+		s.operationError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
+	selector, ok := s.selector(w, r)
+	if !ok {
+		return
+	}
+	offset, ok := queryInt(r, "offset", 0)
+	if !ok || offset < 0 {
+		s.writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+		return
+	}
+	limit, ok := queryInt(r, "limit", defaultTranscriptLimit)
+	if !ok || limit < 0 {
+		s.writeError(w, http.StatusBadRequest, "limit must be a non-negative integer")
+		return
+	}
+	if s.opts.Inspector == nil || s.opts.Transcripts == nil {
+		s.writeError(w, http.StatusInternalServerError, "transcript reader unavailable")
+		return
+	}
+	inspected, err := s.opts.Inspector.InspectSession(r.Context(), selector)
+	if err != nil {
+		s.operationError(w, err)
+		return
+	}
+	total, events, err := s.opts.Transcripts.Events(inspected.PrimaryPath, inspected.Harness, offset, limit)
+	if err != nil {
+		s.operationError(w, err)
+		return
+	}
+	responseEvents := any(events)
+	if events == nil {
+		responseEvents = []any{}
+	}
+	s.writeJSON(w, http.StatusOK, struct {
+		Total  int `json:"total"`
+		Events any `json:"events"`
+	}{Total: total, Events: responseEvents})
+}
+
+func queryInt(r *http.Request, key string, fallback int) (int, bool) {
+	value := r.URL.Query().Get(key)
+	if value == "" {
+		return fallback, true
+	}
+	n, err := strconv.Atoi(value)
+	return n, err == nil
+}
+
+func (s *Server) handleArchiveStatus(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Archive == nil {
+		s.writeError(w, http.StatusConflict, "repository is not configured")
+		return
+	}
+	result, err := s.opts.Archive.ArchiveStatus(r.Context())
+	if err != nil {
+		s.operationError(w, err)
+		return
+	}
+	if result.Hosts == nil {
+		result.Hosts = []StatusHostRow{}
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleArchiveVerify(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Archive == nil {
+		s.writeError(w, http.StatusConflict, "repository is not configured")
+		return
+	}
+	deepValue := r.URL.Query().Get("deep")
+	if deepValue == "" {
+		deepValue = "0"
+	}
+	if deepValue != "0" && deepValue != "1" {
+		s.writeError(w, http.StatusBadRequest, "deep must be 0 or 1")
+		return
+	}
+	result, err := s.opts.Archive.ArchiveVerify(r.Context(), deepValue == "1")
+	if err != nil {
+		s.operationError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Archive == nil {
+		s.writeError(w, http.StatusConflict, "repository is not configured")
+		return
+	}
+	selector, ok := s.selector(w, r)
+	if !ok {
+		return
+	}
+	result, err := s.opts.Archive.FetchSession(r.Context(), selector, r.URL.Query().Get("snapshot"))
+	if err != nil {
+		s.operationError(w, err)
+		return
+	}
+	if result.Included == nil {
+		result.Included = []string{}
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) operationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrBadRequest):
+		s.writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, ErrNotFound):
+		s.writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrConflict):
+		s.writeError(w, http.StatusConflict, err.Error())
+	default:
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+func (s *Server) serveStatic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		s.writeError(w, http.StatusBadRequest, "unsupported method")
+		return
+	}
+	if s.opts.Static == nil {
+		http.NotFound(w, r)
+		return
+	}
+	name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+	if name == "." || name == "" {
+		name = "index.html"
+	}
+	info, err := fs.Stat(s.opts.Static, name)
+	if err != nil || info.IsDir() {
+		name = "index.html"
+		info, err = fs.Stat(s.opts.Static, name)
+	}
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	contents, err := fs.ReadFile(s.opts.Static, name)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if contentType := mime.TypeByExtension(path.Ext(name)); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	http.ServeContent(w, r, name, info.ModTime(), bytes.NewReader(contents))
+}
+
+func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
+	s.writeJSON(w, status, struct {
+		Error string `json:"error"`
+	}{Error: message})
+}
+
+func (s *Server) writeJSON(w http.ResponseWriter, status int, value any) {
+	safe, err := sanitizedJSON(value)
+	if err != nil {
+		status = http.StatusInternalServerError
+		safe = map[string]any{"error": "encode response"}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(safe)
+}
+
+func sanitizedJSON(value any) (any, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, err
+	}
+	return sanitizeValue(decoded), nil
+}
+
+func sanitizeValue(value any) any {
+	switch value := value.(type) {
+	case string:
+		return sanitize(value)
+	case []any:
+		for i := range value {
+			value[i] = sanitizeValue(value[i])
+		}
+	case map[string]any:
+		for key, entry := range value {
+			value[key] = sanitizeValue(entry)
+		}
+	}
+	return value
+}
+
+func (s *Server) logf(format string, args ...any) {
+	if s.opts.Diagnostics == nil {
+		return
+	}
+	line := sanitize(fmt.Sprintf(format, args...))
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	_, _ = io.WriteString(s.opts.Diagnostics, line+"\n")
+}
+
+type versionResult struct {
+	Version  string `json:"version"`
+	Commit   string `json:"commit"`
+	Dirty    bool   `json:"dirty"`
+	Go       string `json:"go"`
+	Platform string `json:"platform"`
+}
+
+func readVersion() versionResult {
+	result := versionResult{Version: "devel", Go: runtime.Version(), Platform: runtime.GOOS + "/" + runtime.GOARCH}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return result
+	}
+	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+		result.Version = info.Main.Version
+	}
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			result.Commit = setting.Value
+		case "vcs.modified":
+			result.Dirty = setting.Value == "true"
+		}
+	}
+	return result
+}
+
+func sanitize(value string) string {
+	if !mayNeedEscape(value) {
+		return value
+	}
+	var builder strings.Builder
+	builder.Grow(len(value) + 8)
+	for i := 0; i < len(value); {
+		if c := value[i]; c < utf8.RuneSelf {
+			if c < 0x20 || c == 0x7f {
+				writeEscape(&builder, "\\u{", uint32(c), 1)
+			} else {
+				builder.WriteByte(c)
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(value[i:])
+		if r == utf8.RuneError && size == 1 {
+			writeEscape(&builder, "\\x{", uint32(value[i]), 2)
+			i++
+			continue
+		}
+		if unsafeRune(r) {
+			writeEscape(&builder, "\\u{", uint32(r), 1)
+		} else {
+			builder.WriteString(value[i : i+size])
+		}
+		i += size
+	}
+	return builder.String()
+}
+
+func mayNeedEscape(value string) bool {
+	for i := range len(value) {
+		if value[i] < 0x20 || value[i] >= 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func unsafeRune(r rune) bool {
+	return r >= 0x80 && r <= 0x9f ||
+		r >= 0x200b && r <= 0x200f ||
+		r == 0x2028 || r == 0x2029 ||
+		r >= 0x202a && r <= 0x202e ||
+		r >= 0x2066 && r <= 0x2069 ||
+		r == 0xfeff
+}
+
+const hexDigits = "0123456789ABCDEF"
+
+func writeEscape(builder *strings.Builder, prefix string, value uint32, minDigits int) {
+	builder.WriteString(prefix)
+	var buf [8]byte
+	n := 0
+	for shift := 28; shift >= 0; shift -= 4 {
+		digit := (value >> uint(shift)) & 0xf
+		if digit == 0 && n == 0 && shift > 0 {
+			continue
+		}
+		buf[n] = hexDigits[digit]
+		n++
+	}
+	for pad := n; pad < minDigits; pad++ {
+		builder.WriteByte('0')
+	}
+	builder.Write(buf[:n])
+	builder.WriteByte('}')
+}

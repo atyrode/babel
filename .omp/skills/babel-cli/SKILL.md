@@ -36,9 +36,11 @@ Host identity for snapshots: `--host ID`, else `$BABEL_HOST_ID`, else the
 sanitized system hostname. Host ids are `[a-z0-9._-]`, 1-64 chars.
 
 ## Commands
-
 ```sh
 babel version [--json]                     # build identity
+babel web [--port N] [--open]              # loopback web GUI (primary surface); prints a token URL
+babel storage configure --from-json FILE|- # persist repository selection in storage.json (0600)
+babel storage status [--json]              # report persistent configuration
 babel archive push [--json]                # snapshot every adapter root on this host
 babel archive status [--json]              # snapshots grouped by host (read-only)
 babel archive verify [--deep] [--json]     # structural check; --deep re-reads all pack data
@@ -55,6 +57,9 @@ babel sessions prune --local --yes (--all | SELECTOR...)    # delete locally fet
 - `fetch` defaults to the latest snapshot; `--snapshot ID` restores the exact
   bytes of an older capture. Restores land in a private directory under the
   XDG data dir and are idempotent (`already_present` in the JSON result).
+- `storage configure` makes flags/env unnecessary: precedence is flag >
+  env > storage.json. `babel web` works unconfigured for read-only browsing;
+  archive actions then report "not configured".
 
 ## Exit codes and JSON contract
 

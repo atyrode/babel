@@ -39,3 +39,22 @@ jobs:
 
       - name: go test
         run: go test -count=1 ./...
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: web
+        run: bunx tsc --noEmit
+
+      - name: Build
+        working-directory: web
+        run: bun run build

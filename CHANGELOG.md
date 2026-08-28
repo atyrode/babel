@@ -11,10 +11,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- `babel web`: the self-hosted loopback web GUI, now Babel's primary surface
+  (operator decision 2026-08-28) — token-guarded 127.0.0.1 server with an
+  embedded React app: session browsing with instant filter/sort, session
+  detail with artifacts/blobs/completeness, a paginated transcript viewer
+  with explicit raw degradation, and archive status/verify/fetch. The web
+  API is served by the in-process headless CLI, so both surfaces share one
+  implementation and one never-delete command set ([#10]).
+- `babel storage configure --from-json FILE|-` and `babel storage status`:
+  persistent repository configuration in `storage.json` (0600, atomic),
+  resolved as flag > environment > storage.json ([#10]).
+- SQLite session catalog cache: `sessions list` re-describes only new or
+  changed sessions and drops vanished ones; `--no-cache` bypasses ([#10]).
+- Bare `babel` is now a fast offline status overview (build identity,
+  storage state, cached catalog size, web pointer) ([#10]).
 - CI test gates (gofmt/vet/build/test with pinned restic) on every push and
-  PR, and tag-driven GitHub Releases with cross-platform binaries ([#1]).
+  PR, tag-driven GitHub Releases with cross-platform binaries ([#1]), and a
+  frontend typecheck/build job ([#10]).
 
 [#1]: https://github.com/atyrode/babel/pull/1
+[#10]: https://github.com/atyrode/babel/pull/10
 
 ## [0.1.0] - 2026-08-28
 

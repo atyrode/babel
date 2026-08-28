@@ -36,7 +36,7 @@ Babel does not promise reliable, exhaustive, or objectively correct analytical o
 - a versioned cookbook of shared investigation policies, optional domain lenses, and meta-analysis recipes;
 - open-ended, incremental exploration with a durable hypothesis frontier and cross-session/repository synthesis;
 - provenance-bearing findings and proposal generation without claiming analytical correctness;
-- a keyboard-driven terminal interface for operations plus an on-demand loopback web interface for rich exploration and review; and
+- a self-hosted loopback web interface as the primary management and exploration surface, plus a minimal terminal status overview and headless commands for operations; and
 - globally committed review/refinement/output state plus rebuildable private local caches and materializations.
 
 ### 2.2 Babel does not own
@@ -82,11 +82,11 @@ Secrets never enter Nix derivations or `/nix/store`, argv, shell history, broad 
 
 ### 2.4 Primary interaction model
 
-Running `babel` with no arguments opens the operational terminal interface. It owns setup, archive/database health, session retrieval, job launch/progress/cancellation, privacy controls, and quick browsing. Rich exploration and review use an on-demand local web interface launched by `babel web` or from the TUI.
+The web interface is Babel's primary interactive surface (operator decision 2026-08-28): `babel web` serves a loopback-only, token-guarded browser application owning session browsing and search, transcript viewing, session detail with artifact/blob closure and completeness reasons, archive status, verify, and fetch, and — in Phase B — relationship graphs, evidence/counter-evidence inspection, Reality Ledger and Question workflows, proposal refinement, diffs, output previews, and clean/chaos comparisons.
 
-The local web application owns relationship graphs, evidence/counter-evidence inspection, Reality Ledger and Question workflows, proposal refinement, diffs, output previews, and clean/chaos comparisons. Phase A ships a thin Home/Sessions/health/fetch web shell; Phase B adds the rich exploration surfaces. CLI, TUI, and web call the same Go application services and storage contracts; business logic and authorization are never reimplemented in view code, and the browser never connects directly to PostgreSQL, SQLite, Cellar, rclone, Code, OMP, or providers.
+The terminal stays deliberately minimal: bare `babel` prints a fast offline status overview (build identity, storage configuration, cached catalog size, and the web pointer), and a richer TUI is deferred until the web surface settles rather than being built in parallel. Headless subcommands remain required for systemd/launchd, scripting, diagnostics, reproducible tests, and recovery.
 
-Headless subcommands remain required for systemd/launchd, scripting, diagnostics, reproducible tests, and recovery. The implementation is Go with Bubble Tea and `atyrode/cli-kit`; the TypeScript/React frontend is compiled and embedded into the static Go binary with no runtime CDN or external asset dependency.
+CLI and web call the same Go application services and storage contracts; the web API is served by the same process over the same command implementations, so business logic, sanitization, and authorization are never reimplemented in view code, and the browser never connects directly to PostgreSQL, SQLite, Cellar, restic, Code, OMP, or providers. The TypeScript/React frontend is compiled and embedded into the static Go binary with no runtime CDN or external asset dependency.
 
 ### 2.5 Cross-machine continuation boundary
 
@@ -430,7 +430,7 @@ Names are provisional; behavioral boundaries are not.
 ```text
 babel version --json
 babel [--repo LOCATOR] [--password-file FILE]
-babel web [--open]
+babel web [--port N] [--open]
 babel storage configure --from-json FILE|-
 babel storage status [--json]
 babel storage migrate --from-json FILE|-
@@ -463,7 +463,7 @@ babel status [--json]
 
 Behavioral rules:
 
-- bare `babel` is the primary operational interface; `babel web` launches the rich local browser surface;
+- bare `babel` is a fast offline status overview; `babel web` serves the primary browser surface on 127.0.0.1 only, guarded by a per-launch random token, with archive actions limited to the same read/verify/fetch surface the CLI exposes;
 - `--repo LOCATOR --password-file FILE` provides an ad-hoc single-instance development/recovery workflow; persistent local/shared deployment configuration is otherwise read from `storage.json`;
 - `archive push` is the only normal archive command that writes the restic repository; in shared mode it also publishes catalog rows to PostgreSQL after the backup. Phase B exploration/review/Reality commands use the separate object-first/PostgreSQL-last state protocol. Neither path deletes remote objects, and Babel never invokes `restic forget` or `prune`;
 - status/verify/inspect/fetch are read-only with respect to the repository;
@@ -482,22 +482,15 @@ Behavioral rules:
 - raw Reality answers are durable inputs, while authoritative interpreted facts require explicit plan acceptance; and
 - trusted inventory imports may mutate only their configured predicate/entity authority.
 
-### 8.1 TUI information architecture
+### 8.1 Terminal information architecture
 
-The TUI is the operational surface:
-
-1. **Home** — archive/database health, host snapshots, selected Code profile, Reality Inbox count, web-listener state, pending synchronization, and recent review;
-2. **Sessions** — searchable, sortable, filterable OMP/Codex/Claude inventory, metadata detail, fetch, and local prune;
-3. **Jobs** — preparation, exploration, refinement, answer-interpretation, synchronization, progress, failures, leases, and cancellation; and
-4. **System** — archive/database/Code configuration status, storage, privacy, Reality import health, and local-web start/lock/stop.
-
-Phase A implements Home, Sessions, System, and metadata-only Session detail. Catalog refresh scans local sources and snapshot lists; it never downloads transcript bodies. Tables use the universal terminal-safe renderer, keyboard-only navigation, privacy masking, and explicit fetch/prune actions. Phase A contains no transcript viewer.
+The terminal surface is intentionally small: bare `babel` is an instant, offline status overview (build identity, storage configuration state, cached catalog count, web pointer) that never opens the repository. Operational depth lives in the headless subcommands and the web surface. A richer keyboard-driven TUI (jobs, leases, cancellation) is deferred work, reconsidered after Phase B lands its job model; it must never grow a transcript viewer.
 
 ### 8.2 Local web information architecture
 
-The mature React web UI has **Home**, **Sessions**, **Explore**, **Hypotheses**, **Reality**, **Cookbook**, and **Review** areas. Reality contains entity/relationship inspection, alias merge/split history, temporal fact history, conflicts/staleness, trusted-source sync, the prioritized Question inbox, freeform answers, interpreter plans, and atomic accept/reject previews. Review contains hypotheses, findings, proposals, append-only decisions, refinement lineage, and destination previews.
+The React web UI ships in Phase A with **Sessions** (searchable, sortable, filterable OMP/Codex/Claude inventory with metadata detail, artifact/blob closure, completeness reasons, and a paginated best-effort transcript viewer over local files with explicit raw degradation for unknown records) and **Archive** (per-host snapshot coverage, standard and deep verification, snapshot-scoped fetch). The mature Phase B UI adds **Explore**, **Hypotheses**, **Reality**, **Cookbook**, and **Review** areas. Reality contains entity/relationship inspection, alias merge/split history, temporal fact history, conflicts/staleness, trusted-source sync, the prioritized Question inbox, freeform answers, interpreter plans, and atomic accept/reject previews. Review contains hypotheses, findings, proposals, append-only decisions, refinement lineage, and destination previews.
 
-Phase A proves the secure on-demand server and implements Home, Sessions, archive health, metadata detail, explicit fetch, privacy mode, and lock/stop. Phase B adds every analysis, Reality, question, refinement, and proposal surface. TUI and web may link to the same durable entity but never maintain independent review state.
+Phase A proves the secure on-demand loopback server (per-launch token, no non-loopback binding) and implements Sessions, session detail with transcript viewing, archive health, verification, and explicit fetch. Privacy masking and an explicit lock/stop control are Phase A follow-ups; Phase B adds every analysis, Reality, question, refinement, and proposal surface. Terminal and web may link to the same durable entity but never maintain independent review state.
 
 ## 9. Durable and local state
 
@@ -648,7 +641,7 @@ No phase grants Babel permission to publish or apply its proposals.
 
 ## 13. Decisions recorded by this audit
 
-1. Babel is a public MIT-licensed Go application at module path `github.com/atyrode/babel`, using Bubble Tea and `atyrode/cli-kit`.
+1. Babel is a public MIT-licensed Go application at module path `github.com/atyrode/babel`; the embedded TypeScript/React web application is the primary surface and the terminal dependency stays minimal (Bubble Tea and `atyrode/cli-kit` enter only if the deferred TUI is revived).
 2. Babel is harness-agnostic across OMP, Codex, and Claude Code for backup, cataloging, selective retrieval, normalization, and analysis.
 3. OMP is the highest-fidelity adapter; Codex/Claude preserve raw logs and report best-effort metadata completeness rather than being omitted.
 4. Babel uses a clean restic repository under its own prefix and ignores the legacy remote archive; the legacy data is never deleted.
@@ -659,7 +652,7 @@ No phase grants Babel permission to publish or apply its proposals.
 9. Session identity is host/harness/adapter-defined source identity; historical captures are addressed by restic snapshot ID, and bare selectors choose the latest snapshot.
 10. Dotfiles commit-pins Babel through Nix, provides stable host/instance identity, retrieves secrets, pipes one storage document into Babel, and enables an hourly user timer only after manual bootstrap acceptance.
 11. V1 never deletes remote data — Babel never runs `restic forget` or `prune`. Explicitly fetched session materializations persist locally until explicit prune.
-12. Bare `babel` is the primary operational interface and `babel web` is the rich local browser surface; Phase A catalogs all three harnesses and remains metadata-only despite its shared infrastructure.
+12. The web interface is the primary interactive surface and bare `babel` is a minimal offline status overview (operator decision 2026-08-28, revising the earlier TUI-first record); Phase A catalogs all three harnesses and remains metadata-only despite its shared infrastructure.
 13. The first deployed Phase A uses Clever Cloud PostgreSQL plus a Cellar restic repository, proves two-instance catalog/fetch/rebuild behavior, and requires a gated real three-harness round trip.
 14. Babel is an exploratory instrument, not a reliable automated auditor; it guarantees containment, provenance, reproducibility metadata, and no mutating/publishing external effects rather than correctness of ideas.
 15. Discovery has an open hypothesis space. Every candidate is preserved before post-hoc sorting, and finite runs checkpoint a durable recursive frontier.

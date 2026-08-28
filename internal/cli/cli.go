@@ -18,16 +18,14 @@
 //     policy, so no command exposes them;
 //   - exit codes are 0 for success, 1 for failure, and 2 for a rejected
 //     invocation;
-//   - bare `babel` is reserved for the future TUI (SPEC.md §2.4, §8.1); it
-//     prints a notice plus usage and succeeds.
+//   - bare `babel` prints a fast offline status overview; the web
+//     interface (`babel web`) is the primary interactive surface
+//     (operator decision 2026-08-28) and the TUI stays minimal.
 //
-// Repository selection is the ad-hoc `--repo`/`--password-file`
-// development workflow of SPEC.md §8; persistent configuration
-// (`storage.json`) is out of scope for this milestone, so a repository
-// must be named by flag or environment wherever one is needed. The
-// password itself never appears on the child process's argv: only a
-// password *file* is accepted, and it is handed to restic through the
-// environment.
+// Repository selection is resolved from per-invocation flags, environment
+// variables, and persistent storage.json configuration. The password itself
+// never appears on the child process's argv: only a password file is accepted,
+// and it is handed to restic through the environment.
 package cli
 
 import (
@@ -47,6 +45,8 @@ import (
 	"github.com/atyrode/babel/internal/adapter/claude"
 	"github.com/atyrode/babel/internal/adapter/codex"
 	"github.com/atyrode/babel/internal/adapter/omp"
+	"github.com/atyrode/babel/internal/catalog"
+	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/restic"
 )
 
@@ -73,6 +73,9 @@ const rootUsage = `Usage: babel <command> [flags]
 
 Commands:
   version                     print Babel's build identity
+  web                         serve the local web interface (primary surface)
+  storage configure           replace persistent repository configuration
+  storage status              report persistent repository configuration
   archive push                back up this host's source roots into restic
   archive status              report snapshots per host
   archive verify              check repository integrity
@@ -84,8 +87,8 @@ Commands:
 A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one.
 
 Repository selection for the archive commands and for sessions fetch:
-  --repo REPOSITORY           else $BABEL_RESTIC_REPO
-  --password-file FILE        else $BABEL_RESTIC_PASSWORD_FILE
+  --repo REPOSITORY           else $BABEL_RESTIC_REPO, else storage.json
+  --password-file FILE        else $BABEL_RESTIC_PASSWORD_FILE, else storage.json
 
 Machine-readable output goes to stdout; diagnostics go to stderr.
 Run "babel <command> -h" for a command's flags.
@@ -107,7 +110,11 @@ func (e *usageError) Error() string { return e.msg }
 // args excludes the program name. Run never touches os.Stdout or
 // os.Stderr, so tests drive the whole surface in-process.
 func Run(args []string, stdout, stderr io.Writer) int {
-	a := &app{stdout: stdout, stderr: stderr}
+	return run(args, os.Stdin, stdout, stderr)
+}
+
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	a := &app{stdin: stdin, stdout: stdout, stderr: stderr}
 	err := a.dispatch(context.Background(), args)
 	switch {
 	case err == nil, errors.Is(err, errHelp):
@@ -128,8 +135,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	return exitFailure
 }
 
-// app carries one invocation's output streams.
+// app carries one invocation's input and output streams.
 type app struct {
+	stdin  io.Reader
 	stdout io.Writer
 	stderr io.Writer
 }
@@ -145,21 +153,47 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return nil
 	case "version":
 		return a.version(args[1:])
+	case "storage":
+		return a.storage(args[1:])
 	case "archive":
 		return a.archive(ctx, args[1:])
 	case "sessions":
 		return a.sessions(ctx, args[1:])
+	case "web":
+		return a.webCmd(ctx, args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown command %q", args[0]), usage: rootUsage}
 	}
 }
 
-// bare serves `babel` with no arguments. The interactive TUI is the
-// intended primary surface (SPEC.md §2.4, §8.1) and lands with its own
-// phase; until then the name prints a notice plus the headless usage and
-// exits successfully rather than pretending to be a TUI.
+// bare serves `babel` with no arguments: a fast, offline status overview.
+// The web interface is the primary interactive surface (operator decision
+// 2026-08-28); bare stays a dashboard pointer rather than growing into a
+// rich TUI. It never opens the repository, so it is safe and instant.
 func (a *app) bare() error {
-	fmt.Fprint(a.stdout, "babel: the interactive TUI is not implemented yet; the headless commands below are the current surface.\n\n")
+	fmt.Fprintf(a.stdout, "%s\n\n", readBuildIdentity().String())
+
+	cfg, found, err := config.Load()
+	repository := firstNonEmpty(os.Getenv("BABEL_RESTIC_REPO"), cfg.Repository)
+	passwordFile := firstNonEmpty(os.Getenv("BABEL_RESTIC_PASSWORD_FILE"), cfg.PasswordFile)
+	switch {
+	case err != nil:
+		fmt.Fprintf(a.stdout, "storage:  unreadable configuration: %s\n", Sanitize(err.Error()))
+	case repository != "" && passwordFile != "":
+		fmt.Fprintf(a.stdout, "storage:  %s\n", Sanitize(repository))
+	case found || repository != "" || passwordFile != "":
+		fmt.Fprint(a.stdout, "storage:  incomplete; run \"babel storage status\"\n")
+	default:
+		fmt.Fprint(a.stdout, "storage:  not configured; run \"babel storage configure\"\n")
+	}
+
+	if d, err := babelDirs(); err == nil {
+		if n, err := catalog.Count(d.data); err == nil {
+			fmt.Fprintf(a.stdout, "catalog:  %d cached sessions (\"babel sessions list\" refreshes)\n", n)
+		}
+	}
+
+	fmt.Fprint(a.stdout, "web:      run \"babel web\" for the browser interface\n\n")
 	fmt.Fprint(a.stdout, rootUsage)
 	return nil
 }
@@ -242,11 +276,10 @@ func (c *cmd) oneSelector() (string, error) {
 
 // repoHint is the one-line remedy attached to every rejected repository
 // selection, so a bad invocation is self-correcting.
-const repoHint = `pass --repo REPOSITORY --password-file FILE, or set $BABEL_RESTIC_REPO and $BABEL_RESTIC_PASSWORD_FILE`
+const repoHint = `pass --repo REPOSITORY --password-file FILE, set $BABEL_RESTIC_REPO and $BABEL_RESTIC_PASSWORD_FILE, or run "babel storage configure --from-json FILE"`
 
-// repoFlags is the ad-hoc repository selection of SPEC.md §8. Persistent
-// storage configuration is not implemented yet, so a repository must be
-// named per invocation, by flag or by environment.
+// repoFlags holds repository selection from flags. Resolution adds environment
+// variables and persistent storage configuration in that order.
 type repoFlags struct {
 	repository   string
 	passwordFile string
@@ -255,10 +288,10 @@ type repoFlags struct {
 }
 
 func (rf *repoFlags) bind(fs *flag.FlagSet) {
-	fs.StringVar(&rf.repository, "repo", "", "restic repository (default $BABEL_RESTIC_REPO)")
-	fs.StringVar(&rf.passwordFile, "password-file", "", "file holding the repository password (default $BABEL_RESTIC_PASSWORD_FILE)")
-	fs.StringVar(&rf.binary, "restic-binary", "", `restic executable to run (default "restic" from $PATH)`)
-	fs.StringVar(&rf.host, "host", "", "archive host identity (default $BABEL_HOST_ID, else the system hostname)")
+	fs.StringVar(&rf.repository, "repo", "", "restic repository (default $BABEL_RESTIC_REPO, else storage.json)")
+	fs.StringVar(&rf.passwordFile, "password-file", "", "file holding the repository password (default $BABEL_RESTIC_PASSWORD_FILE, else storage.json)")
+	fs.StringVar(&rf.binary, "restic-binary", "", `restic executable to run (default storage.json, else "restic" from $PATH)`)
+	fs.StringVar(&rf.host, "host", "", "archive host identity (default $BABEL_HOST_ID, else storage.json, else the system hostname)")
 }
 
 // open resolves the repository selection and opens it. Open performs no
@@ -269,14 +302,19 @@ func (rf *repoFlags) bind(fs *flag.FlagSet) {
 // lines; callers pass a sanitizing writer because those lines carry
 // source paths.
 func (rf *repoFlags) open(c *cmd, d dirs, diagnostics io.Writer) (*restic.Repo, error) {
-	rf.repository = firstNonEmpty(rf.repository, os.Getenv("BABEL_RESTIC_REPO"))
+	cfg, _, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	rf.repository = firstNonEmpty(rf.repository, os.Getenv("BABEL_RESTIC_REPO"), cfg.Repository)
 	if rf.repository == "" {
 		return nil, c.usagef("no restic repository selected: %s", repoHint)
 	}
-	rf.passwordFile = firstNonEmpty(rf.passwordFile, os.Getenv("BABEL_RESTIC_PASSWORD_FILE"))
+	rf.passwordFile = firstNonEmpty(rf.passwordFile, os.Getenv("BABEL_RESTIC_PASSWORD_FILE"), cfg.PasswordFile)
 	if rf.passwordFile == "" {
 		return nil, c.usagef("no repository password file selected: %s", repoHint)
 	}
+	rf.binary = firstNonEmpty(rf.binary, cfg.ResticBinary)
 	cacheDir := filepath.Join(d.cache, "restic")
 	if err := ensureDir(cacheDir); err != nil {
 		return nil, err
@@ -295,9 +333,9 @@ func (rf *repoFlags) open(c *cmd, d dirs, diagnostics io.Writer) (*restic.Repo, 
 }
 
 // hostID resolves this host's stable archive identity (SPEC.md §6.1): the
-// --host flag, else $BABEL_HOST_ID, else the system hostname lowercased
-// and sanitized. It becomes the restic snapshot host, which is how status
-// groups an archive shared by several machines.
+// --host flag, else $BABEL_HOST_ID, else storage.json, else the system
+// hostname lowercased and sanitized. It becomes the restic snapshot host,
+// which is how status groups an archive shared by several machines.
 func (rf *repoFlags) hostID(c *cmd) (string, error) {
 	if rf.host != "" {
 		if !validHostID(rf.host) {
@@ -311,9 +349,19 @@ func (rf *repoFlags) hostID(c *cmd) (string, error) {
 		}
 		return v, nil
 	}
+	cfg, _, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	if cfg.HostID != "" {
+		if !validHostID(cfg.HostID) {
+			return "", fmt.Errorf("storage configuration host_id %q is not a valid host id", cfg.HostID)
+		}
+		return cfg.HostID, nil
+	}
 	name, err := os.Hostname()
 	if err != nil || name == "" {
-		return "", errors.New("cannot determine host identity: pass --host ID or set BABEL_HOST_ID")
+		return "", errors.New("cannot determine host identity: pass --host ID, set BABEL_HOST_ID, or configure host_id")
 	}
 	id := sanitizeHostID(name)
 	if !validHostID(id) {
@@ -322,22 +370,10 @@ func (rf *repoFlags) hostID(c *cmd) (string, error) {
 	return id, nil
 }
 
-// validHostID reports whether s is a usable host identity: 1 to
-// maxHostIDLen characters of [a-z0-9._-] starting alphanumeric.
+// validHostID delegates to the persistent configuration package so flags,
+// environment variables, and storage.json share one validation rule.
 func validHostID(s string) bool {
-	if s == "" || len(s) > maxHostIDLen {
-		return false
-	}
-	for i := range len(s) {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		case (c == '.' || c == '_' || c == '-') && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
+	return config.ValidHostID(s)
 }
 
 // sanitizeHostID maps a system hostname onto validHostID: lowercased,
