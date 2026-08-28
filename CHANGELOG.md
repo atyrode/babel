@@ -4,10 +4,17 @@ All notable changes to Babel are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) with a `0.x` pre-stability series.
 
-Entries reference the commits (and, once development moves to pull requests,
-the PR numbers) that landed them.
+Entries up to v0.1.0 reference commit hashes; development is PR-based from
+2026-08-28 onward, so later entries reference pull-request numbers.
 
 ## [Unreleased]
+
+### Added
+
+- CI test gates (gofmt/vet/build/test with pinned restic) on every push and
+  PR, and tag-driven GitHub Releases with cross-platform binaries ([#1]).
+
+[#1]: https://github.com/atyrode/babel/pull/1
 
 ## [0.1.0] - 2026-08-28
 
