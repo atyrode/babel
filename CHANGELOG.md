@@ -52,6 +52,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   transaction, so a lease validated inside a long publication could never
   observe an expiry that happened while that transaction ran, and the TTL
   bounded nothing.
+- Reconciliation and catalog rebuild: the repository snapshot list is truth, so
+  `Reconcile` adopts snapshots the catalog lacks as `catalog-pending`, never
+  downgrades what a push already committed, and reports snapshots the
+  repository no longer lists as an anomaly rather than deleting them (retention
+  is append-only). `Rebuild` reconstructs a host from the listing alone, which
+  is the recovery path for a lost Phase A database, and is deterministic so two
+  instances recovering independently agree on ordering.
+- Snapshot attribution is checked rather than assumed: a listing that mixes
+  hosts, names a different host, or contains a snapshot recorded without
+  `--host` is refused before anything is written, and host ids are validated
+  with the same rule `--host`, `BABEL_HOST_ID`, and `storage.json` enforce.
+  Session metadata cannot come from the snapshot list (restic reports counts on
+  its backup message, not in `snapshots --json`), so a rebuilt host has no
+  session rows until its owner pushes again - stated explicitly rather than
+  silently approximated.
 
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25
