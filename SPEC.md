@@ -99,7 +99,7 @@ The product language is **Continue here**, not seamless cloud resume. The safe d
 
 Responsibility remains layered:
 
-- **Babel** exposes a read-only archived-session locator, fetch, integrity, provenance, and bundle-compatibility API;
+- **Babel** exposes a read-only archived-session locator, fetch, integrity, provenance, and capture-compatibility API;
 - **Code** presents Cloud Sessions, chooses a target repository/worktree and routing profile, explains compatibility warnings, and invokes OMP; and
 - **OMP** parses the session, reconstructs supported conversation/runtime state, and creates the new local fork.
 
@@ -115,7 +115,7 @@ Before Code offers **Continue here**, the combined Babel/Code preflight reports:
 - whether the installed OMP can read the format; and
 - whether recorded models/providers are available under current-machine configuration, without copying credentials from the source machine.
 
-Preflight results distinguish `ready-to-fork`, `needs-target-workspace`, `incomplete-bundle`, `workspace-mismatch`, and `stale-or-possibly-active`. Warnings are evidence, not blockers hidden behind a generic score. Exact process/tool-context compatibility is never claimed.
+Preflight results distinguish `ready-to-fork`, `needs-target-workspace`, `incomplete-capture`, `workspace-mismatch`, and `stale-or-possibly-active`. Warnings are evidence, not blockers hidden behind a generic score. Exact process/tool-context compatibility is never claimed.
 
 ### 2.6 Analysis execution boundary
 
@@ -180,7 +180,7 @@ The archive can contain secrets, private source code, personal data, and attachm
 5. exports redact secret values by default; and
 6. logs never contain raw transcript bodies or credentials.
 
-The public repository and CI contain only generated synthetic fixtures. Real operator transcripts, titles, paths, manifests, credentials, and analysis outputs are never committed.
+The public repository and CI contain only generated synthetic fixtures. Real operator transcripts, titles, paths, catalogs, credentials, and analysis outputs are never committed.
 
 ## 4. Conceptual model
 
@@ -261,7 +261,7 @@ Facts have predicate-specific freshness: operator intent does not expire automat
 
 Discovery persists hypotheses before context-based focus. After emergence, Babel resolves entities and attaches an immutable as-of/current context snapshot; deterministic policy may defer cloning, testing, research, or repository-specific proposals without deleting the hypothesis. Analysis queries the ledger by entity, relationship, predicate, valid time, freshness, and conflict rather than injecting the entire ledger into every prompt. Retrieval/RAG may find candidate context but never establishes authority. Context-blind controls may measure ledger-induced bias, and the challenger checks stale/disputed facts behind focus decisions.
 
-Phase A's manifest host identity/display history remains the minimal reality substrate. Full entities, facts, questions, answer interpretation, trusted inventory import, and globally durable encrypted Reality Ledger state are Phase B capabilities.
+Phase A's catalog host identity/display history remains the minimal reality substrate. Full entities, facts, questions, answer interpretation, trusted inventory import, and globally durable encrypted Reality Ledger state are Phase B capabilities.
 
 ## 5. Analysis cookbook
 
@@ -367,13 +367,13 @@ Captures are crash-consistent per file, not transactional across files (recorded
 
 The first successful push is an explicit bootstrap/backfill, not an incremental continuation of the old backup: starting from empty state it backs up every configured local source root in full, including sessions older than Babel's installation. Data that exists only in the ignored legacy remote namespace is not backfilled. The push result reports which adapter roots existed and were captured; the prior dotfiles backup remains enabled until a real Cellar round trip covers all three harnesses.
 
-Retention is append-only. Babel never invokes `restic forget` or `restic prune`, never deletes a snapshot or legacy object, and no remote prune command exists in v1. Concurrent pushes from multiple machines are safe: restic serializes writers with repository locks, and snapshots are per-host by construction. An interrupted backup never publishes a partial snapshot—restic writes the snapshot record last—and a re-run uploads only chunks the repository does not already contain.
+Retention is append-only. Babel never invokes `restic forget` or `restic prune`, never deletes a snapshot or legacy object, and no remote prune command exists in v1. Concurrent pushes from multiple machines are safe: restic serializes writers with repository locks, and snapshots are per-host by construction. An interrupted backup never publishes a partial snapshot—restic writes the snapshot record last—and a re-run uploads only chunks the repository does not already contain. Distinct from interruption, a backup that completes with unreadable files publishes a visibly incomplete snapshot: restic exits with its incomplete status, push fails loudly while still reporting the summary, per-file diagnostics name the unreadable paths, and the snapshot remains usable for everything it holds.
 
 ### 6.2 Catalog and selective fetch
 
 The session catalog is built from live local source trees, not decoded from remote objects: adapters discover and describe sessions—title, workspace, timestamps, repository fingerprint, completeness reasons, artifact/blob closure—on each machine, and shared mode publishes catalog rows to PostgreSQL (within its plaintext allowlist, §9) so every instance can browse the fleet. Historical states are addressed by restic snapshot: a session selector plus an optional snapshot ID (default: the latest snapshot) identifies one immutable capture reproducibly.
 
-`babel sessions fetch SELECTOR [--snapshot ID]` restores the selected session's file closure—primary log, sibling artifacts, resolved blobs—from the chosen snapshot into the private local data store. Fetched sessions persist until explicit prune, are never modified, and local prune never touches the repository.
+`babel sessions fetch SELECTOR [--snapshot ID]` restores the selected session's file closure—primary log, sibling artifacts, resolved blobs—from the chosen snapshot into the private local data store. Today the closure is resolved from live local sources, so fetch covers sessions this machine has (or had at capture time under the same paths). Cross-host fetch is shared-mode work gated in §14: source-file paths never enter PostgreSQL, so a second instance resolves another host's selector by listing the snapshot's own encrypted file tree (`restic ls`) and deriving session identity from those paths with the same deterministic adapter rules used at discovery; the two-instance acceptance in §10 exercises exactly that path. Fetched sessions persist until explicit prune, are never modified, and local prune never touches the repository.
 
 The legacy pre-Babel namespace is ignored. There is no range-read probing or best-effort legacy import in the product path.
 
@@ -383,7 +383,7 @@ Adapters parse fetched raw logs into a common event model while preserving opaqu
 
 ### 6.4 Deterministic preflight
 
-Before inference, Babel checks likely secrets and high-risk data, malformed/truncated sessions, transcript and attachment size, bundle closure, duplicate/changed inputs, and the selected Code profile's disclosure class. These results use the same evidence model as AI observations.
+Before inference, Babel checks likely secrets and high-risk data, malformed/truncated sessions, transcript and attachment size, artifact/blob closure, duplicate/changed inputs, and the selected Code profile's disclosure class. These results use the same evidence model as AI observations.
 
 ### 6.5 Explore through Code
 
@@ -409,7 +409,7 @@ Normal preparation indexes new or changed material. Exploration may start from n
 
 Every run records:
 
-- normalized source and bundle digests;
+- normalized source and capture digests;
 - source-adapter identity/version and metadata completeness;
 - cookbook policy/lens identities and versions;
 - selected frontier roots and prior-hypothesis identities;
@@ -421,7 +421,7 @@ Every run records:
 
 Those inputs make a run reproducible enough to inspect, not deterministic enough to promise identical ideas. Review decisions survive re-exploration; descendants and new evidence link to rather than silently replace prior hypotheses or findings. Managed durability is remote: PostgreSQL and encrypted Cellar jointly preserve every committed run, receipt, evidence object, output, and lineage for browsing and continuation by any Babel instance.
 
-Archive publication, catalog ingestion, and pending-output sync are independently incremental and idempotent. Manifest generations are immutable, catalog merges are idempotent, content-addressed objects are not re-uploaded, and local caches record the exact observed generation and sync state.
+Archive publication, catalog ingestion, and pending-output sync are independently incremental and idempotent. Snapshots are immutable, catalog merges are idempotent, deduplicated chunks are not re-uploaded, and local caches record the exact observed snapshot and sync state.
 
 ## 8. Proposed CLI
 
@@ -429,20 +429,19 @@ Names are provisional; behavioral boundaries are not.
 
 ```text
 babel version --json
-babel [--archive-backend rclone|local] [--archive-root PATH]
+babel [--repo LOCATOR] [--password-file FILE]
 babel web [--open]
 babel storage configure --from-json FILE|-
 babel storage status [--json]
 babel storage migrate --from-json FILE|-
-babel archive push
-babel archive catalog [--host HOST] [--refresh]
+babel archive push [--json]
 babel archive status [--json]
-babel archive verify [--deep] [selection flags]
+babel archive verify [--deep] [--json]
 babel sessions list [--harness omp|codex|claude] [--json]
-babel sessions inspect SESSION[@REVISION] [--json]
-babel sessions fetch SESSION[@REVISION] [--json]
+babel sessions inspect SESSION [--json]
+babel sessions fetch SESSION [--snapshot ID] [--json]
 babel sessions prune --local [selection flags] [--yes]
-babel prepare [selection flags] [--archive-backend rclone|local] [--archive-root PATH]
+babel prepare [selection flags]
 babel explore --preparation PREPARATION_ID [--new | --all | --resume ID] [--mode clean|chaos] [--chaos-pack ID] [--presentation marked|blind] [--lens ID] [--repo PATH] [--public-research] [--code-profile PROFILE_ID]
 babel analysis profile configure
 babel analysis profile edit PROFILE_ID
@@ -465,10 +464,10 @@ babel status [--json]
 Behavioral rules:
 
 - bare `babel` is the primary operational interface; `babel web` launches the rich local browser surface;
-- `--archive-backend local --archive-root PATH` provides an ad-hoc single-instance development/recovery workflow; persistent local/shared deployment configuration is otherwise read from `storage.json`;
-- `archive push` is the only normal archive command that writes S3; in shared mode it also reconciles the Phase A PostgreSQL catalog after the immutable S3 commit. Phase B exploration/review/Reality commands use the separate object-first/PostgreSQL-last state protocol. Neither path deletes remote objects;
-- catalog/inspect/fetch are read-only with respect to the remote;
-- `archive verify` defaults to verifying commit records, generation indexes, manifest segments, and object presence/size; `--deep` additionally downloads, decrypts, and digest-verifies the selected content;
+- `--repo LOCATOR --password-file FILE` provides an ad-hoc single-instance development/recovery workflow; persistent local/shared deployment configuration is otherwise read from `storage.json`;
+- `archive push` is the only normal archive command that writes the restic repository; in shared mode it also publishes catalog rows to PostgreSQL after the backup. Phase B exploration/review/Reality commands use the separate object-first/PostgreSQL-last state protocol. Neither path deletes remote objects, and Babel never invokes `restic forget` or `prune`;
+- status/verify/inspect/fetch are read-only with respect to the repository;
+- `archive verify` is tiered: the default runs restic's structural repository check; `--deep` additionally reads and verifies every repository byte;
 - `prepare` emits an immutable preparation/selection ID; `explore --preparation ID` makes corpus scope explicit;
 - local prune requires an explicit command and never affects Cellar;
 - archive/catalog/retrieval and the Phase A web shell do not require Code or OMP;
@@ -487,12 +486,12 @@ Behavioral rules:
 
 The TUI is the operational surface:
 
-1. **Home** — archive/database health, host generations, selected Code profile, Reality Inbox count, web-listener state, pending synchronization, and recent review;
+1. **Home** — archive/database health, host snapshots, selected Code profile, Reality Inbox count, web-listener state, pending synchronization, and recent review;
 2. **Sessions** — searchable, sortable, filterable OMP/Codex/Claude inventory, metadata detail, fetch, and local prune;
 3. **Jobs** — preparation, exploration, refinement, answer-interpretation, synchronization, progress, failures, leases, and cancellation; and
 4. **System** — archive/database/Code configuration status, storage, privacy, Reality import health, and local-web start/lock/stop.
 
-Phase A implements Home, Sessions, System, and metadata-only Session detail. Manifest refresh does not download transcript bodies. Tables use the universal terminal-safe renderer, keyboard-only navigation, privacy masking, and explicit fetch/prune actions. Phase A contains no transcript viewer.
+Phase A implements Home, Sessions, System, and metadata-only Session detail. Catalog refresh scans local sources and snapshot lists; it never downloads transcript bodies. Tables use the universal terminal-safe renderer, keyboard-only navigation, privacy masking, and explicit fetch/prune actions. Phase A contains no transcript viewer.
 
 ### 8.2 Local web information architecture
 
@@ -502,11 +501,11 @@ Phase A proves the secure on-demand server and implements Home, Sessions, archiv
 
 ## 9. Durable and local state
 
-The first deployed v1 uses **shared mode**: one PostgreSQL database plus one S3-compatible object store form a single logical Babel backend for every authorized instance. The operator deployment uses Clever Cloud managed PostgreSQL and the existing Cellar bucket in the same organization/region where practical. The interfaces remain provider-neutral. There is no hosted Babel API or web service; each machine runs the binary and loopback UI locally.
+The first deployed v1 uses **shared mode**: one PostgreSQL database plus one shared restic repository on S3-compatible storage form a single logical Babel backend for every authorized instance. The operator deployment uses Clever Cloud managed PostgreSQL and a Cellar-hosted repository in the same organization/region where practical. The interfaces remain provider-neutral. There is no hosted Babel API or web service; each machine runs the binary and loopback UI locally.
 
-Phase A stores immutable encrypted archives in Cellar and a minimal global catalog/coordination schema in PostgreSQL: deployments, instances, hosts, committed generation locators/digests/order, reconciliation state, idempotency keys, migrations, and server-time fenced leases. Sensitive titles, paths, and transcript metadata stay in encrypted Cellar manifests and decrypted local SQLite indexes; the Phase A PostgreSQL allowlist contains only schema/version identifiers, opaque IDs/locators/digests, ordering, sizes/counts, commit state, lease/fencing data, and timestamps.
+Phase A stores the encrypted archive in the Cellar restic repository and a minimal global catalog/coordination schema in PostgreSQL: deployments, instances, hosts, snapshot IDs/times/order, session identity rows, reconciliation state, idempotency keys, migrations, and server-time fenced leases. Sensitive titles, paths, and transcript metadata stay out of PostgreSQL: they live in the encrypted repository, in live local sources, and in decrypted local SQLite indexes; the Phase A PostgreSQL allowlist contains only schema/version identifiers, opaque IDs/locators, ordering, sizes/counts, commit state, lease/fencing data, and timestamps. Cross-machine browsing of titles and other sensitive metadata therefore arrives with Phase B's encrypted rows, not in Phase A.
 
-An archive publication commits to S3 first. Babel uploads and reads back immutable bundles, manifests, and archive commit records; that verified commit record is archive truth. It then idempotently inserts the shared PostgreSQL catalog record and advances the local journal. If the database step fails, the archive remains valid but is visibly `catalog-pending`; any authorized instance reconciles missing rows by scanning and verifying immutable S3 commit records. Loss of the Phase A database is recoverable from S3 plus the frozen direct-rclone fixture.
+An archive publication commits to the repository first: restic writes its snapshot record only after every chunk is durable, and that committed snapshot is archive truth. Babel then idempotently upserts the host's snapshot and session rows into the shared PostgreSQL catalog. If the database step fails, the snapshot remains valid but visibly `catalog-pending`; any authorized instance reconciles snapshot rows from the repository snapshot list, and session rows are reconciled by the owning host's next push or a restore-and-rescan. Loss of the Phase A database is recoverable from the repository plus source rescans.
 
 Phase B extends the existing shared schema with globally durable hypotheses, observations, findings, proposals, Reality entities/facts/questions/answers/plans, review/refinement events, runs, receipts, and evidence references. Large or byte-oriented data remains encrypted in Cellar. Phase B multi-store output commits are object-first and PostgreSQL-last; the PostgreSQL transaction is their visibility boundary.
 
@@ -514,10 +513,10 @@ Configuration and local state use private XDG paths:
 
 - shared/local storage configuration: `$XDG_CONFIG_HOME/babel/storage.json`;
 - local state: `$XDG_STATE_HOME/babel/babel.db`, a rebuildable SQLite catalog/cache, decrypted local full-text and Reality query index, and idempotent `catalog-pending`/`pending-sync` journal;
-- retained data: `$XDG_DATA_HOME/babel/` for rebuildable fetched bundles and local materializations of encrypted Cellar evidence/exports; and
-- cache: `$XDG_CACHE_HOME/babel/` for disposable staging, repository worktrees, sandbox roots, and model-ready redacted inputs.
+- retained data: `$XDG_DATA_HOME/babel/` for rebuildable fetched sessions and local materializations of encrypted Cellar evidence/exports; and
+- cache: `$XDG_CACHE_HOME/babel/` for the restic cache, disposable staging, repository worktrees, sandbox roots, and model-ready redacted inputs.
 
-`babel storage configure --from-json FILE|-` validates a versioned document supplied by a private file or stdin; the managed dotfiles flow uses stdin. It checks deployment/instance identity, object-store access, PostgreSQL TLS certificate/hostname, role privileges, schema compatibility, and external key references before atomically replacing the mode-0600 file; it never logs the document. Each instance uses a distinct revocable least-privilege application credential. A separate migration credential is supplied ephemerally to `storage migrate`; normal instances cannot change schema. An unattended archive timer uses the already validated private configuration and never requires Bitwarden to remain unlocked.
+`babel storage configure --from-json FILE|-` validates a versioned document supplied by a private file or stdin; the managed dotfiles flow uses stdin. It checks deployment/instance identity, repository access, PostgreSQL TLS certificate/hostname, role privileges, schema compatibility, and external key references before atomically replacing the mode-0600 file; it never logs the document. Each instance uses a distinct revocable least-privilege application credential. A separate migration credential is supplied ephemerally to `storage migrate`; normal instances cannot change schema. An unattended archive timer uses the already validated private configuration and never requires Bitwarden to remain unlocked.
 
 Beginning in Phase B, structured identifiers, entity kind/schema version, encrypted-object references, key ID, ciphertext size, commit/sync state, and relationship IDs form the minimal PostgreSQL plaintext allowlist. Titles, claims, operator context, findings, proposals, review notes, receipts, and other sensitive payloads use randomized versioned AEAD envelopes with associated identity/schema data and key IDs before leaving Babel. PostgreSQL never receives plaintext full-text indexes or deterministic ciphertext for search; authorized instances decrypt committed payloads into rebuildable local SQLite indexes.
 
@@ -529,10 +528,10 @@ Database URLs, encryption keys, and storage credentials remain in Babel's truste
 
 Invariants:
 
-- local source sessions and fetched immutable bundles are never modified;
+- local source sessions and fetched session materializations are never modified;
 - remote archive/evidence objects are never deleted by normal processing;
 - every object, row, and derived result carries a schema version and provenance;
-- Phase A archive truth is the verified immutable S3 commit record, and its PostgreSQL catalog is rebuildable;
+- Phase A archive truth is the restic repository's committed snapshots, and the PostgreSQL catalog is rebuildable;
 - Phase B output visibility follows object-first/PostgreSQL-last commits and never claims cross-service atomicity;
 - PostgreSQL leases use server time and fencing; stale owners cannot commit;
 - one process holds each local state-writer lock; read-only views remain available where safe;
@@ -545,17 +544,17 @@ All terminal-facing values—including stdout/stderr, TUI cells, logs, diagnosti
 
 Babel evaluates process quality and usefulness without claiming analytical reliability. A strong developed hypothesis is interesting, inspectable, provenance-bearing, candid about uncertainty, and economical of operator attention. A promoted finding should be specific, connected to supporting and conflicting evidence, and clear about temporal/reality limits; confidence never substitutes for evidence.
 
-Adapter fixtures are generated and synthetic. Each harness has contracts for discovery, manifest metadata, stable snapshot behavior, raw-log round trip, selective retrieval, malformed inputs, and explicit metadata-completeness degradation. Synthetic transcript and credential sentinels cover every captured stdout, stderr, TUI, log, and journal surface; this proves no leakage of known sentinels, not unknown secrets. No real session data enters the public repository or CI.
+Adapter fixtures are generated and synthetic. Each harness has contracts for discovery, catalog metadata, description behavior, raw-log round trip, selective retrieval, malformed inputs including torn lines, and explicit metadata-completeness degradation. Synthetic transcript and credential sentinels cover every captured stdout, stderr, TUI, log, and journal surface; this proves no leakage of known sentinels, not unknown secrets. No real session data enters the public repository or CI.
 
-Archive contract tests start with populated source trees and no Babel state to prove full bootstrap/backfill rather than change-only ingestion. They freeze the canonical bytes, plaintext SHA-256 domain/digest semantics, revision encodings and append-chain reassembly, manifest segmentation and generation indexes, schemas/types/null and compatibility rules, host-generation key and total ordering, path/file metadata rules, golden fixtures, direct-rclone recovery fixture, per-adapter coverage/deferred/bootstrap metadata, and immutable commit-record recovery. Injected interruption after staging, each object upload, manifest segment and generation-index upload/read-back, commit-record upload/read-back, and `latest` replacement must prove idempotent recovery and that catalog readers expose only the highest complete, digest-valid committed generation even while a valid `latest` hint still points to an older commit.
+Archive integration tests start with populated source trees and no Babel state to prove full bootstrap/backfill rather than change-only ingestion. Against the real restic binary and a local-path repository they prove: push captures every adapter backup root, including OMP's blob store; an appended session deduplicates, with added bytes bounded by the change; old and new captures are independently restorable byte-exactly by snapshot ID; the default and `--deep` verify tiers distinguish structural health from full data verification against injected pack corruption; an interrupted backup never yields a partial snapshot, while a backup completing with unreadable files yields a visibly incomplete snapshot and a failing exit; and fetch materializes a session's primary log, artifacts, and resolved blobs byte-exactly and idempotently, while local prune never touches the repository.
 
-Phase A is not complete with fixtures alone. Before real deployment it provisions Clever Cloud PostgreSQL and the existing Cellar bucket through the unified shared storage configuration, migrates with the separate role, and completes manual bootstrap from the primary Linux workstation. After the pre-first-write gate passes, it publishes encrypted synthetic canaries plus real local manifests for all three harnesses, commits and reconciles the shared catalog, reads manifests back, shows all three in TUI/web, selectively fetches and byte-verifies one bundle per harness, and emits no known transcript or credential sentinel. A second independently configured Babel instance must browse and fetch the committed catalog, lose/rebuild its local SQLite cache, and recover a deliberately omitted PostgreSQL catalog row from the S3 commit record. The legacy archive remains untouched.
+Phase A is not complete with fixtures alone. Before real deployment it provisions the Cellar restic repository and Clever Cloud PostgreSQL through the unified shared storage configuration, migrates with the separate role, and completes manual bootstrap from the primary Linux workstation: real pushes covering all three harnesses against Cellar, catalog rows committed and reconciled, all three harnesses visible in TUI/web, one session per harness selectively fetched and byte-verified from a snapshot, and no known transcript or credential sentinel emitted. A second independently configured Babel instance must browse the shared catalog, fetch a session archived by the first host, lose and rebuild its local SQLite cache, and recover cleanly.
 
 The TUI is verified as an actual terminal surface across narrow and wide layouts, keyboard-only navigation, focus visibility, privacy mode, empty/loading/progress/error/offline states, long titles/paths, missing best-effort metadata, malicious terminal-control fixtures, and the real expected session count.
 
 The Phase A web shell is browser-driven against the actual server. Acceptance covers Home/Sessions/fetch/privacy/lock-stop behavior, narrow and wide layouts, keyboard navigation, malicious HTML/Markdown/URL/control fixtures, `Host`/`Origin`/CSRF/DNS-rebinding rejection, one-time session bootstrap, `no-store` responses, CSP/no-remote-assets/no-service-worker enforcement, and proof that no known transcript or credential sentinel reaches URLs, browser history, server logs, or cached responses.
 
-Shared-infrastructure acceptance proves provider-neutral local mode plus the real Clever Cloud shared mode; TLS hostname/certificate rejection; per-instance application-role isolation and revocation; migration-role separation; server-time fenced host leases; idempotent concurrent writers; S3-committed/`catalog-pending` database outage recovery; PostgreSQL catalog rebuild from immutable S3 commit records; coordinated PostgreSQL/S3/config-key backup documentation; and an hourly user timer on each enabled source host after manual bootstrap.
+Shared-infrastructure acceptance proves provider-neutral local mode plus the real Clever Cloud shared mode; TLS hostname/certificate rejection; per-instance application-role isolation and revocation; migration-role separation; server-time fenced host leases; idempotent concurrent writers; snapshot-committed/`catalog-pending` database outage recovery; PostgreSQL catalog rebuild from the repository snapshot list plus source rescans; coordinated PostgreSQL/repository/config-key backup documentation, including restic repository password custody; and an hourly user timer on each enabled source host after manual bootstrap.
 
 Managed-provisioning acceptance runs through the actual dotfiles Bitwarden lock/unlock path. It proves stdin-only handoff, atomic configuration replacement, previous-config preservation on invalid credentials or interrupted activation, migration credentials absent from normal instance state, secrets absent from `/nix/store`, argv, environment captures, temporary files, logs, and journal output, vault relock, credential rotation, per-instance revocation, and timer enablement only after shared-storage/bootstrap health passes.
 
@@ -569,17 +568,17 @@ Phase B Reality acceptance proves stable entity identity across repository renam
 
 ## 11. Failure behavior
 
-- A changing source never produces a committed stable manifest entry; the previous generation remains current.
-- Upload failure before immutable commit-record read-back leaves the prior committed generation current; failure after it and before `latest` replacement is recoverable through verified-commit fallback.
+- A source changing during capture yields a crash-consistent file, never a claimed stable one; parsers tolerate torn lines and the next snapshot supersedes it.
+- An interrupted backup publishes no partial snapshot; a re-run uploads only chunks the repository does not already hold, and the repository remains valid throughout.
 - An unavailable archive leaves the last complete local catalog browsable and marked stale.
-- A failed or cancelled fetch leaves no verified bundle and preserves prior data.
-- An append-delta revision whose parent chain cannot be fully verified is reported as incomplete by verify and fetch rather than silently reassembled; bounded chains limit the affected history, and the newest verified `full` revision remains fetchable.
+- A failed or cancelled fetch leaves no claimed session materialization and preserves prior data.
+- Repository damage is detected by `verify` (structural) or `verify --deep` (every byte); never-pruned history plus restic's repair tooling bound the loss, and Babel never masks a failed check.
 - Unsupported or changed Codex/Claude formats preserve raw logs and mark metadata/normalization incomplete.
 - Missing or incompatible Code disables inference only; archive and deterministic preparation continue.
 - A missing saved profile or material policy change pauses scheduled inference until reauthorized.
 - Worker or refinement failure records the exact failed run and preserves independent successes and originals; an unavailable durable store leaves newly staged output visibly `pending-sync` rather than globally committed.
-- A PostgreSQL outage after an archive commit leaves it `catalog-pending`; reconciliation from the immutable S3 commit record restores shared visibility without republishing bytes.
-- A Cellar outage prevents new archive/output commits; PostgreSQL never references an object that was not uploaded and read back.
+- A PostgreSQL outage after a backup leaves it `catalog-pending`; reconciliation from the repository snapshot list restores shared visibility without republishing bytes.
+- A Cellar outage prevents new snapshots; PostgreSQL never references a snapshot restic did not report committed.
 - A failed vault retrieval, validation, or configuration rotation preserves the previous valid `storage.json`, emits no secret, and does not enable or restart the archive timer with partial state.
 - Hosted inference is refused if disclosure preview or redaction cannot complete.
 - A hypothesis with missing or invalid provenance remains a visibly degraded candidate and cannot be promoted to a provenance-bearing finding.
@@ -591,22 +590,22 @@ Phase B Reality acceptance proves stable entity identity across repository renam
 ### Phase A: prove the archive-backed public product shell
 
 - add the MIT-licensed Go module `github.com/atyrode/babel`, Bubble Tea/cli-kit application, synthetic fixtures, and static release builds matching Code's Linux/Darwin amd64/arm64 platforms;
-- define and freeze the pre-first-write `babel/v1` bundle/manifest/commit/latest contract, revision encodings (`full` and `append-delta`) with bounded chains, manifest segmentation and generation indexes, host-generation key and total ordering, canonical plaintext SHA-256 semantics, schemas/types/null/compatibility rules, path/file metadata rules, golden fixtures, and direct-rclone recovery fixture;
-- implement the injected object-store port, rclone adapter, local-directory backend, stable snapshot adapters for OMP, Codex, and Claude Code, including raw logs and best-effort metadata/artifact closure;
-- include OMP sibling artifacts and referenced content-addressed blobs;
-- provision the existing Clever Cloud Cellar bucket plus Clever Cloud PostgreSQL through one provider-neutral shared storage document supplied by dotfiles;
-- implement the Phase A PostgreSQL schema, migrations, per-instance roles, server-time fenced host leases, idempotent shared catalog, S3-to-PostgreSQL reconciliation, and catalog rebuild;
-- build the rebuildable local SQLite catalog/cache and private bundle materialization store;
+- adopt restic as the archival engine behind a narrow injected wrapper (init/backup/snapshots/check/dump/restore), pin its version range in dotfiles, and record the never-forget/never-prune retention policy plus the crash-consistent capture model;
+- implement staging-free Discover/Describe adapters for OMP, Codex, and Claude Code, including raw logs, best-effort metadata, artifact closure, and per-adapter backup roots;
+- capture OMP sibling artifacts and the content-addressed blob store as backup roots;
+- provision the Cellar restic repository plus Clever Cloud PostgreSQL through one provider-neutral shared storage document supplied by dotfiles;
+- implement the Phase A PostgreSQL schema, migrations, per-instance roles, server-time fenced host leases, idempotent shared catalog, snapshot-to-catalog reconciliation, and catalog rebuild;
+- build the rebuildable local SQLite catalog/cache and private session materialization store;
 - implement bare-Babel operational Home/Sessions/System, all-harness catalog, privacy mode, metadata detail, explicit selective fetch, selection-scoped local prune, crash/outage recovery, and local-web lifecycle controls;
 - implement the embedded TypeScript/React thin web shell with Home, Sessions, shared storage health, metadata detail, fetch, privacy mode, and lock/stop;
-- implement headless storage/push/catalog/status/verify/list/inspect/fetch/web commands with local development/recovery selection;
-- prove local mode first, freeze the remote contract, manually bootstrap the primary Linux workstation, pass the real Cellar/PostgreSQL and two-instance acceptance, then enable the hourly user timer on each approved source machine;
+- implement headless storage/push/status/verify/list/inspect/fetch/web commands with local development/recovery selection;
+- prove local-path repositories first, manually bootstrap the primary Linux workstation, pass the real Cellar/PostgreSQL and two-instance acceptance, then enable the hourly user timer on each approved source machine;
 - package Babel as a commit-pinned Nix dependency in dotfiles; and
 - keep the old backup job enabled until all three adapters, shared reconciliation, and replacement timers are proven.
 
-The Phase A Linux rollout contract is declarative and reversible. Dotfiles locks the Babel source revision and Nix derivation hash, renders `babel-archive.service` and `babel-archive.timer`, and records the realized executable path in bootstrap evidence. Activation configures and verifies storage first, performs the manual bootstrap/backfill and two-instance checks, then enables the timer. Rollback disables/stops the Babel timer, reactivates the immediately preceding successful dotfiles/Home Manager generation, verifies the legacy backup remains enabled, and never deletes Babel objects or rewinds shared commit records. A replacement version must pass the same manual gate before its timer is re-enabled.
+The Phase A Linux rollout contract is declarative and reversible. Dotfiles locks the Babel source revision and Nix derivation hash, renders `babel-archive.service` and `babel-archive.timer`, and records the realized executable path in bootstrap evidence. Activation configures and verifies storage first, performs the manual bootstrap/backfill and two-instance checks, then enables the timer. Rollback disables/stops the Babel timer, reactivates the immediately preceding successful dotfiles/Home Manager generation, verifies the legacy backup remains enabled, and never deletes Babel snapshots or rewinds the shared catalog. A replacement version must pass the same manual gate before its timer is re-enabled.
 
-This phase contains no model inference or transcript viewer. Contract-first local coding and synthetic fixture work begin before the remote-write gate; remote publication begins only after it passes.
+This phase contains no model inference or transcript viewer. Local coding and synthetic fixture work precede the shared-deployment gates (§14); publication to the shared Cellar repository begins only after they pass.
 
 ### Phase B: prove open-ended contained exploration
 
@@ -632,7 +631,7 @@ This phase contains no model inference or transcript viewer. Contract-first loca
 - expand the approved source-host rollout and verify hourly archive, shared-catalog, reconciliation, and credential-revocation health across the managed fleet;
 - add richer local retention/prune UX and operational health review;
 - add per-instance database-role revocation, payload-key rotation, coordinated PostgreSQL/Cellar/key backup and restore drills, and monitoring;
-- expose continuation bundle/preflight APIs and integrate Code's Cloud Sessions **Continue here** flow for OMP;
+- expose continuation capture/preflight APIs and integrate Code's Cloud Sessions **Continue here** flow for OMP;
 - add sanitized destination projections such as issue-draft export; and
 - add opt-in scheduled analysis using a named Code profile with policy guards.
 
@@ -650,18 +649,18 @@ No phase grants Babel permission to publish or apply its proposals.
 ## 13. Decisions recorded by this audit
 
 1. Babel is a public MIT-licensed Go application at module path `github.com/atyrode/babel`, using Bubble Tea and `atyrode/cli-kit`.
-2. Babel is harness-agnostic across OMP, Codex, and Claude Code for backup, rich encrypted manifests, catalog, selective retrieval, normalization, and analysis.
+2. Babel is harness-agnostic across OMP, Codex, and Claude Code for backup, cataloging, selective retrieval, normalization, and analysis.
 3. OMP is the highest-fidelity adapter; Codex/Claude preserve raw logs and report best-effort metadata completeness rather than being omitted.
-4. Babel uses a clean `babel/v1` encrypted namespace and ignores the legacy remote archive; the legacy data is never deleted.
-5. Babel exposes one logical storage backend composed of PostgreSQL for shared structure/coordination and an injected S3-compatible object store for immutable bytes; external rclone provides Cellar/rclone-crypt transport and a local-directory/SQLite mode supports development and recovery.
-6. No durable v1 remote write precedes the frozen canonical contract and recovery fixture gate; Phase A contract-first local development remains permitted.
-7. Source machines republish local data into content-addressed stable bundles, immutable manifests, and immutable commit records; `latest` is only an atomic post-commit hint.
-8. Per-adapter generation coverage, deferrals, counts, bootstrap completeness, and host-display-name history are preserved; the newest committed host name wins.
-9. Session keys are globally unique by host/harness/adapter identity and revision keys are immutable bundle-digest revisions; bare selectors choose newest committed stable revisions.
+4. Babel uses a clean restic repository under its own prefix and ignores the legacy remote archive; the legacy data is never deleted.
+5. Babel exposes one logical storage backend composed of PostgreSQL for shared structure/coordination and a shared restic repository for immutable archive bytes; the external `restic` binary provides encryption/deduplication/transport, and a local-path repository plus SQLite supports development and recovery.
+6. Archival is delegated to restic (operator decision 2026-08-27), replacing the audited bespoke `babel/v1` object contract; local development needs no gate, and shared deployment is gated by §14.
+7. Source machines snapshot their local source roots hourly under stable host identities; snapshots are per-host, append-only, and never rewritten.
+8. Push results report per-adapter backup-root coverage; host display names are catalog rows where the newest value wins.
+9. Session identity is host/harness/adapter-defined source identity; historical captures are addressed by restic snapshot ID, and bare selectors choose the latest snapshot.
 10. Dotfiles commit-pins Babel through Nix, provides stable host/instance identity, retrieves secrets, pipes one storage document into Babel, and enables an hourly user timer only after manual bootstrap acceptance.
-11. V1 never deletes remote data. Explicitly fetched decrypted bundles persist locally until explicit prune.
+11. V1 never deletes remote data — Babel never runs `restic forget` or `prune`. Explicitly fetched session materializations persist locally until explicit prune.
 12. Bare `babel` is the primary operational interface and `babel web` is the rich local browser surface; Phase A catalogs all three harnesses and remains metadata-only despite its shared infrastructure.
-13. The first deployed Phase A uses Clever Cloud PostgreSQL plus the existing Cellar bucket, proves two-instance catalog/fetch/rebuild behavior, and requires a gated real three-harness round trip.
+13. The first deployed Phase A uses Clever Cloud PostgreSQL plus a Cellar restic repository, proves two-instance catalog/fetch/rebuild behavior, and requires a gated real three-harness round trip.
 14. Babel is an exploratory instrument, not a reliable automated auditor; it guarantees containment, provenance, reproducibility metadata, and no mutating/publishing external effects rather than correctness of ideas.
 15. Discovery has an open hypothesis space. Every candidate is preserved before post-hoc sorting, and finite runs checkpoint a durable recursive frontier.
 16. Observations are provenance-bearing claims over session, repository, experiment, or research evidence; candidates develop only through hypothesis→observation→finding→proposal.
@@ -676,7 +675,7 @@ No phase grants Babel permission to publish or apply its proposals.
 25. Chaos is an explicit off-by-default run type linked to a clean control. Any durable entity revision can be an atom with exact lineage, but it is stimulus only; recursive model/ancestor/descendant reuse never becomes corroboration.
 26. The canonical output is a private proposal with suggested destinations; Phase B exports raw private artifacts, while Phase C adds sanitized projections such as self-contained GitHub issue drafts.
 27. Review and refinement are durable, browseable, append-only, and lineage-preserving: reject never deletes, operator context is guidance rather than evidence, and reject-and-refine atomically records rejection plus an authorized independent descendant run.
-28. Shared infrastructure begins in Phase A: S3 immutable commit records are recoverable archive truth and PostgreSQL is the rebuildable global archive catalog/coordination plane. Phase B extends PostgreSQL plus encrypted Cellar into the visibility boundary for globally browseable analysis, Reality, question, review, refinement, and lineage state.
+28. Shared infrastructure begins in Phase A: the restic repository's committed snapshots are recoverable archive truth and PostgreSQL is the rebuildable global catalog/coordination plane. Phase B extends PostgreSQL plus encrypted Cellar into the visibility boundary for globally browseable analysis, Reality, question, review, refinement, and lineage state.
 29. A hypothesis can be promoted to a finding only after a deliberately skeptical, logically separate challenger pass; the final synthesizer evaluates both exploration and criticism without defaulting to agreement and preserves unresolved objections.
 30. Babel models non-GitHub context through stable entities and an append-only temporal Reality Ledger, not freeform global memory; only operator actions and predicate-scoped trusted imports authorize facts.
 31. Discovery persists ideas before context affects focus. Immutable context snapshots and explicit rules may defer expensive investigation or targeting without deleting hypotheses; lifecycle and ownership never silently imply policy.
@@ -688,11 +687,11 @@ No phase grants Babel permission to publish or apply its proposals.
 37. Development and rollout are staged: local fixtures first, manual primary-Linux bootstrap second, two-instance shared acceptance third, then hourly timers on approved source machines; Phase B capabilities build on the Phase A shared foundation.
 38. Managed fleet provisioning is dotfiles-specific: an explicit Bitwarden unlock/retrieve/relock flow pipes common storage/key material plus per-instance credentials to Babel over stdin, atomically configures it, and gates the hourly timer; Babel remains vault-agnostic.
 39. Every refinement agent must assess whether reviewer feedback is output-specific, should produce a separate durable-learning proposal alongside a revision, or should produce durable context instead of a replacement output; no proposed memory becomes authoritative without destination-appropriate operator review.
-40. A changed session publishes an `append-delta` revision only when the prior committed plaintext is an exact byte prefix; forks, rewrites, and prefix mismatches publish `full` revisions, chains are bounded by periodic full snapshots, digest/size semantics always describe reassembled plaintext, and each revision records its encoding so future encodings are additive contract increments.
-41. Manifest generations are small generation indexes over content-addressed manifest segments reused by digest; publication cost scales with change rate, not corpus size.
-42. `archive verify` is tiered: the default verifies commit records, generation indexes, manifest segments, and object presence/size; full download/decrypt/digest verification requires explicit `--deep` selection.
-43. A writer derives its next host generation from the highest verified remote commit record, cross-checked against the shared catalog in shared mode; the local journal accelerates resumption but is never the ordering authority.
-44. Content-addressed objects are fully read back and digest-verified on first upload; retries that find an existing object verify presence and size rather than re-reading bytes.
+40. Archival is restic's: encryption, content-defined deduplication, snapshot format, and integrity checking. Babel wraps init/backup/snapshots/check/dump/restore behind an injected port and never invokes `forget` or `prune`.
+41. Captures are crash-consistent per file, not transactional across files; parsers tolerate torn lines, the next hourly snapshot supersedes, and continuation-grade claims require adapter-verified closure at read time.
+42. `archive verify` is tiered: the default runs restic's structural check; `--deep` reads and verifies every repository byte.
+43. The session catalog is built from live local sources by adapters and shared via PostgreSQL; it is rebuildable convenience state, never archive truth.
+44. Adapters declare backup roots separately from discovery roots; OMP's backup roots include the content-addressed blob store so every snapshot holds a continuation-grade closure superset.
 
 ## 14. Deferred decision gates
 
@@ -700,10 +699,10 @@ The following gates apply before the named deployment or capability ships; they 
 
 ### Before the first shared Phase A deployment
 
-- Freeze the unified `storage.json` schema, deployment/instance/host IDs, provider-neutral local/shared modes, S3 locator and PostgreSQL TLS/role fields, redaction, external-secret references, compatibility rules, and atomic stdin-only configuration replacement.
-- Freeze and migrate the minimal Phase A PostgreSQL schema, plaintext allowlist, immutable S3-commit-to-catalog mapping, idempotency, server-time fenced host leases, `catalog-pending` state, reconciliation, and complete catalog rebuild from direct-rclone/S3 commit records.
-- Prove local-directory/SQLite development mode, real Clever Cloud Cellar/PostgreSQL mode, migration/application role separation, per-instance credential revocation, TLS failure behavior, concurrent writers, database/object outages, two-instance cache rebuild/browse/fetch, and no PostgreSQL dependency in direct archive recovery.
-- Document and exercise coordinated PostgreSQL catalog backup, Cellar recovery, storage configuration/key recovery, manual primary-host bootstrap, hourly timer enablement, and rollback to the still-enabled legacy backup.
+- Freeze the unified `storage.json` schema, deployment/instance/host IDs, provider-neutral local/shared modes, restic repository locator and PostgreSQL TLS/role fields, redaction, external-secret references, compatibility rules, and atomic stdin-only configuration replacement.
+- Freeze and migrate the minimal Phase A PostgreSQL schema, plaintext allowlist, snapshot/session-to-catalog mapping, idempotency, server-time fenced host leases, `catalog-pending` state, reconciliation, and complete catalog rebuild from the repository snapshot list plus source rescans.
+- Prove local-path-repository/SQLite development mode, real Clever Cloud Cellar/PostgreSQL mode, migration/application role separation, per-instance credential revocation, TLS failure behavior, concurrent writers, database/repository outages, two-instance cache rebuild/browse/fetch, and no PostgreSQL dependency in direct archive recovery: the restic binary plus the repository password alone restore every source tree.
+- Document and exercise coordinated PostgreSQL catalog backup, repository recovery, restic repository password custody and backup, storage configuration recovery, manual primary-host bootstrap, hourly timer enablement, and rollback to the still-enabled legacy backup.
 - Prove the dotfiles-specific Bitwarden unlock/retrieve/relock handoff, common versus per-instance secret split, Nix-store/argv/environment/temp/log secrecy, invalid-rotation rollback, migration-credential ephemerality, per-instance revocation, and timer gating; track that implementation in `atyrode/dotfiles` without adding Bitwarden knowledge to Babel.
 
 ### Before Phase B exploration is accepted
