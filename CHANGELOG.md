@@ -132,7 +132,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   module evaluation order guarantees. Verified in a real browser against a
   synthetic corpus: first load, reload, deep link, and back/forward all
   authenticate with the token absent from every transmitted URL and from the
-  address bar after bootstrap, and a context without the token is refused.
+  address bar after bootstrap, and a context without the token is refused
+  ([#35]).
 
 ### Fixed
 
@@ -148,6 +149,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 [#25]: https://github.com/atyrode/babel/pull/25
 [#26]: https://github.com/atyrode/babel/pull/26
 [#34]: https://github.com/atyrode/babel/pull/34
+[#35]: https://github.com/atyrode/babel/pull/35
 
 ## [0.2.1] - 2026-08-28
 
