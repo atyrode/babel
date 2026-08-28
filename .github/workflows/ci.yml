@@ -81,3 +81,46 @@ jobs:
       - name: Build
         working-directory: web
         run: bun run build
+
+  # The browser channels SPEC.md §548 names - what the address bar and history
+  # actually hold, and whether a reload or back/forward re-serves a cached
+  # response - are unobservable from Go. This job is the only place they are
+  # checked, and the test hard-fails rather than skipping when CI has no
+  # Chrome, because skipping would retire the gate silently.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The acceptance drives the real archive surface, so the credential under
+      # test is genuinely in use rather than reported as unconfigured.
+      - name: Install restic (pinned)
+        run: |
+          curl -sSL -o restic.bz2 \
+            https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2
+          echo "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c  restic.bz2" | sha256sum -c -
+          bunzip2 restic.bz2
+          chmod +x restic
+          sudo mv restic /usr/local/bin/restic
+          restic version
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Locate Chrome
+        run: |
+          chrome="$(command -v google-chrome || command -v google-chrome-stable || true)"
+          test -n "$chrome" || { echo "no Chrome on the runner"; exit 1; }
+          "$chrome" --version
+          echo "BABEL_TEST_CHROME=$chrome" >> "$GITHUB_ENV"
+
+      - name: Browser leak acceptance
+        working-directory: web
+        run: bun run test:browser

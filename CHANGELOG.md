@@ -113,8 +113,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   server's HTTP surface, not a browser. The client is a hash router, so
   selectors are never transmitted in a URL at all, but they do enter the
   history entry, which is why sentinel-free selectors are what the history
-  channel rests on — established by reading the route table, not enforced by
-  a test ([#34]).
+  channel rests on — established there by reading the route table, and now
+  enforced by the browser acceptance below ([#34]).
+- A browser-driven leak acceptance for the channels Go cannot observe
+  (SPEC.md §548). A real headless Chrome drives the served bundle against a
+  synthetic corpus carrying a sentinel in a transcript and a sentinel as the
+  repository password, and proves: the fragment token authenticates; a reload
+  and a back/forward navigation stay authenticated; the transcript actually
+  renders, so the page is not passing vacuously empty; no history entry or
+  request URL holds either sentinel or the token; no `/api` response is served
+  from the browser cache; and a context without the token is refused. A new
+  `browser` CI job runs it, and the test hard-fails rather than skipping when
+  CI has no Chrome, because a silent skip would retire the gate. Two results
+  are recorded rather than smoothed over: the assertion that the token leaves
+  the address bar is **non-discriminating**, because the hash router's
+  replacing first navigation clears the token independently of the bootstrap's
+  scrub — proven by mutating the scrub away and watching every test still
+  pass; while the walk over the whole history stack **is** discriminating, and
+  catches the scrub changed to `pushState`, which leaves a reachable entry
+  holding `#token=`.
 
 ### Changed
 

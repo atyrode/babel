@@ -138,17 +138,25 @@ const TOKEN_KEY = "babel.web.token";
 
 // The launch token arrives in the URL fragment, which the browser never sends
 // to any server (SPEC.md §146). It is copied into session storage and the
-// fragment is erased from the address bar and the history entry immediately,
-// so a reload or a screenshot carries no credential. Every later request
-// presents it as a bearer header.
+// fragment is erased immediately, so a reload or a screenshot carries no
+// credential. Every later request presents it as a bearer header.
 //
-// The app is a HashRouter, so the fragment is also route state, and this must
-// read it before the router mounts. ES module evaluation guarantees that:
-// main.tsx imports App, which imports this module, so this function runs
-// during import and therefore before createRoot().render(). Lazy-loading this
-// module would let the router rewrite the fragment to "#/sessions" first and
-// silently break authentication. The nonce-to-cookie exchange in SPEC.md §146
-// would remove this coupling by using the fragment exactly once.
+// Honest accounting of that erasure: the HashRouter's own first navigation
+// replaces the entry with "#/sessions", which clears the token as well, so
+// this replaceState is not the only thing keeping it out of the address bar.
+// It is kept because dropping it would make a security property depend on
+// react-router continuing to replace rather than push. Removing it is not
+// observable today — a browser test cannot distinguish the two mechanisms, and
+// one written to try was proven non-discriminating. What the test defends is
+// the property itself: no reachable history entry retains the token.
+//
+// The fragment is also route state, so this must read it before the router
+// mounts. ES module evaluation guarantees that: main.tsx imports App, which
+// imports this module, so this function runs during import and therefore
+// before createRoot().render(). Lazy-loading this module would let the router
+// rewrite the fragment to "#/sessions" first and silently break
+// authentication. The nonce-to-cookie exchange in SPEC.md §146 would remove
+// this coupling by using the fragment exactly once.
 function bootstrapToken(): string {
   const hash = window.location.hash.replace(/^#/u, "");
   const supplied = new URLSearchParams(hash).get("token") ?? "";
