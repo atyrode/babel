@@ -33,6 +33,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   are quoted by PostgreSQL's own `format()` rather than string concatenation,
   the rendered statement is never included in an error, and the supplied
   password is redacted from any error it does produce ([#26]).
+- The migration ledger is covered by the same enforcement as the rest of the
+  schema: it is created by the runner (so it can be read before deciding what
+  to apply), its live shape is asserted against PostgreSQL's own catalog rather
+  than the migration text, its recorded version persists across connections so
+  a restarted instance reapplies nothing, and dropping it is a discrepancy
+  `Verify` reports.
 
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25
