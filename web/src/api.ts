@@ -141,14 +141,19 @@ const TOKEN_KEY = "babel.web.token";
 // fragment is erased immediately, so a reload or a screenshot carries no
 // credential. Every later request presents it as a bearer header.
 //
-// Honest accounting of that erasure: the HashRouter's own first navigation
-// replaces the entry with "#/sessions", which clears the token as well, so
-// this replaceState is not the only thing keeping it out of the address bar.
-// It is kept because dropping it would make a security property depend on
-// react-router continuing to replace rather than push. Removing it is not
-// observable today — a browser test cannot distinguish the two mechanisms, and
-// one written to try was proven non-discriminating. What the test defends is
-// the property itself: no reachable history entry retains the token.
+// Honest accounting of that erasure: there are two independent mechanisms, and
+// this replaceState is only one of them. "#token=…" matches no route, so it
+// falls through to App.tsx's catch-all, which is <Navigate to="/sessions"
+// replace /> — a replacing redirect that drops the token-bearing entry on its
+// own. Measured rather than assumed, by disabling each in turn and running the
+// browser acceptance: scrub off with the redirect replacing passes; scrub on
+// with the redirect pushing passes; with both disabled the history walk fails
+// and names the retained "#token=" entry.
+//
+// Both are kept because either alone is a single point of failure for a
+// credential, and the redirect's `replace` is easy to drop while editing
+// routes. The test defends the property, not the mechanism: no reachable
+// history entry retains the token.
 //
 // The fragment is also route state, so this must read it before the router
 // mounts. ES module evaluation guarantees that: main.tsx imports App, which

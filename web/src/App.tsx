@@ -67,6 +67,11 @@ function App() {
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/sessions/:selector" element={<SessionPage />} />
           <Route path="/archive" element={<ArchivePage />} />
+          {/* `replace` is load-bearing, not styling: the launch URL's
+              "#token=…" fragment matches no route and lands here, so a
+              replacing redirect drops that entry instead of leaving it
+              reachable by Back with a live credential in it. web/browser
+              asserts the property; see api.ts for the measurement. */}
           <Route path="*" element={<Navigate to="/sessions" replace />} />
         </Routes>
       </main>

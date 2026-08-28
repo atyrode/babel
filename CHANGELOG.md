@@ -124,14 +124,15 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   request URL holds either sentinel or the token; no `/api` response is served
   from the browser cache; and a context without the token is refused. A new
   `browser` CI job runs it, and the test hard-fails rather than skipping when
-  CI has no Chrome, because a silent skip would retire the gate. Two results
-  are recorded rather than smoothed over: the assertion that the token leaves
-  the address bar is **non-discriminating**, because the hash router's
-  replacing first navigation clears the token independently of the bootstrap's
-  scrub — proven by mutating the scrub away and watching every test still
-  pass; while the walk over the whole history stack **is** discriminating, and
-  catches the scrub changed to `pushState`, which leaves a reachable entry
-  holding `#token=`.
+  CI has no Chrome, because a silent skip would retire the gate. The
+  address-bar assertion is **non-discriminating**, and the reason was measured
+  rather than guessed: two independent mechanisms keep the token out of
+  history, the bootstrap's `replaceState` and App.tsx's catch-all
+  `<Navigate to="/sessions" replace />`, which the unmatched `#token=…`
+  fragment falls through to. Disabling either alone still passes; disabling
+  both fails the history-stack walk, which names the retained entry. Both are
+  kept, since either alone is a single point of failure for a credential, and
+  the route now says so where an editor would remove it ([#36]).
 
 ### Changed
 
@@ -167,6 +168,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 [#26]: https://github.com/atyrode/babel/pull/26
 [#34]: https://github.com/atyrode/babel/pull/34
 [#35]: https://github.com/atyrode/babel/pull/35
+[#36]: https://github.com/atyrode/babel/pull/36
 
 ## [0.2.1] - 2026-08-28
 
