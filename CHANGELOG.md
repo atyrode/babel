@@ -94,6 +94,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   log, and identification does not read logs, so a closure derived from the
   listing covers the primary log and path-attributable sibling artifacts only.
   Guessing would fabricate a closure a fetch could not honour.
+- `sessions fetch --host ID` materializes a session archived by any host,
+  resolving the selector inside that host's snapshot instead of against local
+  sources. It addresses a session this machine never had, or one whose local
+  files are gone, and restores it byte-exactly. Identification reads only the
+  snapshot's file listing, so no transcript bytes are downloaded to find a
+  session. Selecting a host with no snapshots names the hosts that do have
+  them rather than falling back to another machine's.
 
 ### Fixed
 
@@ -101,6 +108,9 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   gives itself (5s), so a correct-but-slow shutdown and the test's deadline
   raced; under full-suite load the test reported a hang that had not happened.
   The bound now exceeds the server's own budget.
+- `--host` was bound by every repository-taking command, so
+  `sessions fetch --host ID` was accepted and silently did nothing. It now
+  selects the cross-host path; previously the flag parsed and was ignored.
 
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25
