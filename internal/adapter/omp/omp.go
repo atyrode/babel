@@ -38,6 +38,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -86,7 +87,10 @@ type Adapter struct{}
 // New returns the OMP source adapter.
 func New() *Adapter { return &Adapter{} }
 
-var _ adapter.Adapter = (*Adapter)(nil)
+var (
+	_ adapter.Adapter            = (*Adapter)(nil)
+	_ adapter.SnapshotIdentifier = (*Adapter)(nil)
+)
 
 // Harness returns the stable lowercase harness name.
 func (*Adapter) Harness() string { return harnessName }
@@ -183,6 +187,139 @@ func (*Adapter) Discover(ctx context.Context, roots []string) ([]adapter.SourceS
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].SourceID < found[j].SourceID })
 	return found, nil
+}
+
+// IdentifyArchived recognizes OMP sessions in a snapshot's file listing,
+// the cross-host twin of Discover: the files belong to another machine, so
+// nothing may be read and the layout alone has to carry the identity.
+//
+// It applies exactly Discover's rule to paths instead of directory
+// entries. A session log is a "*.jsonl" file two levels below a path
+// segment named "sessions", so the sibling artifact tree - a directory
+// sharing the session's stem - keeps its own JSONL files one level deeper,
+// where this rule never sees them. Source ids are composed by the same
+// idSegment pair and validated the same way, which is what lets a session
+// archived here be recognized as the same session there. Entries that do
+// not fit are ignored, because one snapshot holds several harnesses' trees.
+func (*Adapter) IdentifyArchived(files []adapter.ArchivedFile) ([]adapter.ArchivedSession, error) {
+	// Entries are examined in ascending path order so identification does
+	// not depend on the caller's listing order: two distinct paths can
+	// sanitize to one source id, and the survivor must be reproducible.
+	order := make([]int, len(files))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(a, b int) bool { return files[order[a]].Path < files[order[b]].Path })
+
+	sessions := make(map[string]*adapter.ArchivedSession)
+	// artifactOwner maps a session's sibling artifact tree to its source
+	// id, so the closure is assembled in one further pass rather than by
+	// rescanning the listing per session.
+	artifactOwner := make(map[string]string)
+	for _, i := range order {
+		f := files[i]
+		id, artifactDir, ok := archivedSession(f.Path)
+		if !ok {
+			continue
+		}
+		if _, dup := sessions[id]; dup {
+			continue
+		}
+		sessions[id] = &adapter.ArchivedSession{
+			SourceID:    id,
+			PrimaryPath: f.Path,
+			PrimarySize: f.Size,
+			Files:       []string{f.Path},
+		}
+		artifactOwner[artifactDir] = id
+	}
+
+	for _, i := range order {
+		p := files[i].Path
+		if !walkablePath(p) {
+			continue
+		}
+		// The nearest enclosing artifact tree owns the file. A primary log
+		// is never inside one, because a log two levels below "sessions" is
+		// a sibling of the artifact trees rather than a member of one.
+		for dir := p; ; {
+			slash := strings.LastIndexByte(dir, '/')
+			if slash <= 0 {
+				break
+			}
+			dir = dir[:slash]
+			if id, ok := artifactOwner[dir]; ok {
+				s := sessions[id]
+				s.Files = append(s.Files, p)
+				break
+			}
+		}
+	}
+
+	// Blobs are deliberately absent from Files. The blob store is a
+	// sibling of the sessions root (blobsDir), so the listing does name the
+	// store's files, but which blobs a session references is recorded only
+	// inside the primary log, and identification does not read bytes. An
+	// attribution guessed from the layout would be a fabrication, and
+	// attaching the whole store to every session would be worse, so blobs
+	// stay out until a fetch restores the log and Describe resolves them.
+	out := make([]adapter.ArchivedSession, 0, len(sessions))
+	for _, s := range sessions {
+		// The closure is normalized here rather than inferred from the
+		// order the listing happened to arrive in.
+		slices.Sort(s.Files)
+		s.Files = slices.Compact(s.Files)
+		out = append(out, *s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SourceID < out[j].SourceID })
+	return out, nil
+}
+
+// archivedSession matches one snapshot path against the OMP session
+// layout, returning the source id Discover would assign the same file and
+// the sibling artifact tree that carries the rest of its closure.
+func archivedSession(p string) (id, artifactDir string, ok bool) {
+	// The extension is tested first because it rejects most of a
+	// snapshot's entries before their paths are split.
+	if !strings.HasSuffix(p, sessionExt) || !walkablePath(p) {
+		return "", "", false
+	}
+	// Snapshot paths are "/"-separated whatever host reads them, so they
+	// are split explicitly rather than with filepath, whose separator is
+	// the local machine's.
+	segs := strings.Split(p, "/")
+	n := len(segs)
+	if n < 3 || segs[n-3] != sessionsSubdir {
+		return "", "", false
+	}
+	stem := strings.TrimSuffix(segs[n-1], sessionExt)
+	id = idSegment(segs[n-2]) + "/" + idSegment(stem)
+	if !adapter.ValidSourceID(id) {
+		return "", "", false
+	}
+	// The artifact tree is the primary log's path without the extension.
+	return id, p[:len(p)-len(sessionExt)], true
+}
+
+// walkablePath reports whether a snapshot path is one a local walk could
+// have produced. os.ReadDir never yields an empty, "." or ".." component,
+// so a path carrying one names a tree Discover could not have reached and
+// its components are not a trustworthy identity - idSegment would happily
+// sanitize ".." into the source-id alphabet.
+func walkablePath(p string) bool {
+	rest := strings.TrimPrefix(p, "/") // an absolute path's leading "/"
+	for {
+		seg, more := rest, false
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			seg, rest, more = rest[:i], rest[i+1:], true
+		}
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+		if !more {
+			return true
+		}
+	}
 }
 
 // Describe reads one session in place: the primary log's digest and size,

@@ -81,6 +81,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - `restic ls` is wrapped, so a snapshot's file tree can be enumerated from
   metadata alone without downloading contents - the primitive cross-host fetch
   needs.
+- Archived-session identification: each source adapter can recognize its own
+  sessions in a snapshot's file listing, assigning the same source identity a
+  local scan would. Identification is a pure function of the listing - no
+  filesystem, no downloads - which is what lets one machine enumerate another
+  machine's archived sessions. Each adapter is proved equivalent to its own
+  `Discover` over the shared fixtures, and a combined listing holding all three
+  harnesses' trees is proved to partition cleanly, so no adapter can claim
+  another's files.
+- Blob and attachment attribution is deliberately not inferred from paths.
+  Which content-addressed blobs a session references lives inside its primary
+  log, and identification does not read logs, so a closure derived from the
+  listing covers the primary log and path-attributable sibling artifacts only.
+  Guessing would fabricate a closure a fetch could not honour.
+
+### Fixed
+
+- A web-harness test waited exactly as long for graceful shutdown as the server
+  gives itself (5s), so a correct-but-slow shutdown and the test's deadline
+  raced; under full-suite load the test reported a hang that had not happened.
+  The bound now exceeds the server's own budget.
 
 [#24]: https://github.com/atyrode/babel/pull/24
 [#25]: https://github.com/atyrode/babel/pull/25
