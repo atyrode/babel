@@ -73,6 +73,12 @@ func newFixture(t *testing.T) *fixture {
 	t.Setenv("HOME", f.home)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	// storage.json must be private to this fixture too. Without this, a test
+	// that installs a configuration is visible to every later test in the
+	// process whenever the developer or CI has XDG_CONFIG_HOME set, because
+	// os.UserConfigDir prefers it over the fixture's HOME. That surfaced as
+	// two unrelated tests observing a configuration they never wrote.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	// The environment defaults must not leak in from the developer's own
 	// shell: repository selection is what several tests assert.
 	t.Setenv("BABEL_RESTIC_REPO", "")

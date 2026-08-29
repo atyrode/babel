@@ -121,8 +121,8 @@ func EnsureAppRole(ctx context.Context, db *sql.DB, role, password string) error
 //
 // Like EnsureAppRole this requires a provider that permits creating database
 // users. Under the single-credential default there is no database-level
-// equivalent, and per-instance eviction is instead the application-level
-// instance revocation required by SPEC.md 11.
+// equivalent: a machine that must stop writing is stopped by rotating the
+// credential, and Babel ships no application-level substitute (SPEC.md 9).
 func RevokeAppRole(ctx context.Context, db *sql.DB, role string) error {
 	if !validRoleName.MatchString(role) {
 		return fmt.Errorf("invalid application role name: must match %s", validRoleName)

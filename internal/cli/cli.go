@@ -154,7 +154,7 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 	case "version":
 		return a.version(args[1:])
 	case "storage":
-		return a.storage(args[1:])
+		return a.storage(ctx, args[1:])
 	case "archive":
 		return a.archive(ctx, args[1:])
 	case "sessions":

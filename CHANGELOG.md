@@ -17,6 +17,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - The Phase A shared catalog schema and migrations: deployments, instances,
   hosts, snapshots, opaque session identity, server-time fenced host leases,
   and idempotency keys, applied transactionally from embedded SQL ([#25]).
+- **Shared mode in `storage.json`, at schema 2.** The document now carries
+  `mode`, deployment/instance identity, and a `catalog` section: PostgreSQL
+  endpoint, TLS mode with an optional root CA, one credential by default, and
+  an optional separate migration credential where a provider can issue one. A
+  schema-1 document loads as local mode, so existing configurations keep
+  working; a newer schema is refused by name. Golden fixtures cover local,
+  single-credential shared, and separate-migration-credential documents.
+- **Credential privileges are detected rather than assumed** (SPEC.md §9,
+  decision 46). `storage verify` reports what the credential is observed to
+  hold — superuser, role-creating, DDL, or application — read from PostgreSQL's
+  own catalogs with no destructive probe. Role attributes are not inherited
+  through membership in PostgreSQL, so the check tests reachability by
+  `SET ROLE` rather than inherited usage; the inherited-usage form silently
+  reports a `NOINHERIT` member of a superuser role as an application
+  credential, which was confirmed on a throwaway cluster before choosing.
+- `storage migrate`, which applies pending migrations with the configured
+  credential by default, or with an ephemeral document's migration credential
+  that is used and never persisted. `storage verify` checks a configured
+  catalog live: TLS as the server reports it, observed privileges, and schema
+  compatibility.
 - **The SPEC.md §9 plaintext allowlist is now enforced, not documented.**
   Every shared-catalog column is enumerated with its permitted data class, and
   `Verify` reflects the live schema and fails on any column or table outside
@@ -145,6 +165,29 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- `AcquireHostLease` now refuses write authority against an incompatible
+  schema rather than leaving the check unwired, so a binary cannot publish into
+  a database migrated by a newer one. This is deliberately *not* downgrade
+  protection: an older binary performs no version check, so nothing in Go
+  constrains it — only what PostgreSQL evaluates for it, such as a lease's own
+  SQL expiry predicate. The schema stays at version 1; an unmigrated database
+  is named as such, with the command that fixes it, rather than surfacing
+  whichever missing relation a query happened to hit first.
+- Errors that carry a connection string now redact the password on its own as
+  well as the whole DSN. A driver may reconstruct a connection string from
+  parsed fields rather than echo the one it was given, and the whole-string
+  replacement could not match that; pgx happens to omit the password when it
+  does so, which made the guarantee depend on a dependency's discretion.
+  Mutation-tested: both new arrangements survive redaction under the previous
+  implementation.
+- `storage verify` reported "pending migration: yes" on a catalog it had just
+  finished migrating. It inferred pending-ness from the deployment's recorded
+  `schema_version`, which answers a different question and is written at first
+  publication rather than by migrating, so the two sources disagree in exactly
+  the state a first-time operator sees. Pending migrations now come from the
+  migration ledger, and a version of 0 renders as "not recorded yet" rather
+  than as a bare zero beside a compatible schema. Found by driving the real
+  binary against a live TLS-enabled PostgreSQL, not by reading the code.
 - **The web launch token moved from the query string to the URL fragment**, as
   SPEC.md §146 always specified. The token now appears in exactly one place —
   the launch URL's fragment — and the bootstrap erases it from the address bar
@@ -170,9 +213,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   restrained by operator procedure instead of by privilege, and no
   database-level control can revoke a single instance, leaving fleet-wide
   rotation and repository-password custody as the honest remaining controls.
-  Closing that gap with application-level instance revocation is now a Phase A
-  requirement and a pre-deployment gate rather than something the code claims
-  today. Role separation stays specified and implemented for providers that
+  Per-instance eviction is therefore absent rather than replaced. An
+  application-level `revoke-instance` was built, measured, and **removed
+  before shipping** (operator decision, 2026-08-29): revocation is ordinary DML
+  on `instances` — a table every instance must already write to register
+  itself — so any credential that can publish could revoke any instance and
+  clear its own revocation, which a test demonstrated directly. A control whose
+  authority cannot be authenticated reads as containment without being it, and
+  the honest alternative is not to offer it. A retired machine's slot now frees
+  when its lease expires. Whether per-instance eviction should exist at all,
+  enforced by column-level grants and per-instance roles, is a §14
+  pre-deployment decision and §12 Phase C work.
+  Role separation stays specified and implemented for providers that
   permit it; granting least privilege to a provider-created user is explicitly
   untested on Clever Cloud and may not be relied on until proven against the
   real add-on (decision 46).

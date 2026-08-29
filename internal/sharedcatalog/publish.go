@@ -72,6 +72,9 @@ func SessionUID(deploymentID, hostID, harness, sourceID string) string {
 // writes, so a takeover cannot commit between validation and publication: a
 // stealing instance must update the lease row, and that row is locked until this
 // transaction ends. A writer whose fence is stale is refused and lands nothing.
+//
+// Both validations assert the lease is still live, so a publication whose lease
+// expired while a long push was in flight lands nothing either.
 func PublishSnapshot(
 	ctx context.Context,
 	db *sql.DB,
@@ -198,7 +201,7 @@ func PublishSnapshot(
 }
 
 // publishDelayForTests runs after the row upserts and before the final lease
-// revalidation. It exists so the expired-mid-publication path can be exercised
+// revalidation. It exists so the refused-mid-publication paths can be exercised
 // deterministically: with the lease row locked, no other connection can move
 // expires_at, so only real elapsed time can make a lease expire in flight.
 var publishDelayForTests func()

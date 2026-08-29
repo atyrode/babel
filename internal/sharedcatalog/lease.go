@@ -17,6 +17,12 @@ var ErrLeaseHeld = errors.New("host lease is held by another instance")
 // stops a stale writer from landing a late publication.
 var ErrLeaseLost = errors.New("host lease is no longer held")
 
+// ErrUnknownInstance reports an instance id the deployment never registered.
+// An instance must record its own identity before it can take a lease, so this
+// names a missing registration step rather than letting it read as contention
+// with an instance that does not exist.
+var ErrUnknownInstance = errors.New("unknown instance")
+
 // Every timestamp here comes from PostgreSQL rather than the client (SPEC.md 9),
 // so an instance with a skewed clock cannot extend its own lease or judge
 // whether it still holds one.
@@ -47,14 +53,26 @@ type Lease struct {
 // instances racing for a free or expired lease produce one winner and one
 // ErrLeaseHeld, never two holders. A holder re-acquiring its own lease gets a
 // fresh fence, which deliberately invalidates its earlier epoch.
+// The row it would write is selected from instances, so an instance that never
+// registered takes nothing.
+//
+// Write authority is also refused against an incompatible schema. This is the
+// once-per-push gate: a binary must not publish into a database migrated by a
+// newer one, and against an unmigrated database the error names the command to
+// run. It constrains this binary only - an older one performs no such check.
 func AcquireHostLease(ctx context.Context, db *sql.DB, hostID, instanceID string, ttl time.Duration) (Lease, error) {
 	if ttl <= 0 {
 		return Lease{}, errors.New("lease ttl must be positive")
 	}
+	if err := EnsureCompatible(ctx, db); err != nil {
+		return Lease{}, err
+	}
 	l := Lease{HostID: hostID}
 	err := db.QueryRowContext(ctx, `
 		INSERT INTO host_leases (host_id, holder_id, fence, acquired_at, expires_at)
-		VALUES ($1, $2, 1, `+serverNow+`, `+serverNow+` + make_interval(secs => $3))
+		SELECT $1::text, $2::text, 1, `+serverNow+`, `+serverNow+` + make_interval(secs => $3)
+		  FROM instances
+		 WHERE instance_id = $2
 		ON CONFLICT (host_id) DO UPDATE
 		   SET holder_id   = excluded.holder_id,
 		       fence       = host_leases.fence + 1,
@@ -66,9 +84,10 @@ func AcquireHostLease(ctx context.Context, db *sql.DB, hostID, instanceID string
 		hostID, instanceID, ttl.Seconds()).Scan(&l.HolderID, &l.Fence, &l.ExpiresAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		// The WHERE clause on DO UPDATE suppressed the write: a live lease
-		// belongs to someone else.
-		return Lease{}, ErrLeaseHeld
+		// The statement declined to write: either this instance never
+		// registered, so the gating select produced no candidate row, or the
+		// DO UPDATE WHERE clause found a live lease belonging to someone else.
+		return Lease{}, refusalReason(ctx, db, instanceID, ErrLeaseHeld)
 	case err != nil:
 		return Lease{}, fmt.Errorf("acquire host lease: %w", err)
 	}
@@ -113,20 +132,22 @@ func ReleaseHostLease(ctx context.Context, db *sql.DB, l Lease) error {
 
 // checkLease asserts inside a transaction that a lease is still current, taking
 // a row lock so a concurrent steal cannot slip between the check and the writes
-// it guards: a stealing instance must update this row, and it stays locked until
-// the transaction ends.
+// it guards: a stealing instance must update this row, and it stays locked
+// until the transaction ends.
 //
 // Called twice by a publication - once before writing and once immediately
 // before commit - because the lock stops other writers but not the passage of
-// time.
+// time, and a slow publisher must not commit under a lease that expired while
+// it worked.
 func checkLease(ctx context.Context, tx *sql.Tx, l Lease) error {
-	var ok bool
+	var one int
 	err := tx.QueryRowContext(ctx, `
-		SELECT true FROM host_leases
-		 WHERE host_id = $1 AND holder_id = $2 AND fence = $3
-		   AND expires_at > `+serverNow+`
-		   FOR UPDATE`,
-		l.HostID, l.HolderID, l.Fence).Scan(&ok)
+		SELECT 1
+		  FROM host_leases l
+		 WHERE l.host_id = $1 AND l.holder_id = $2 AND l.fence = $3
+		   AND l.expires_at > `+serverNow+`
+		   FOR UPDATE OF l`,
+		l.HostID, l.HolderID, l.Fence).Scan(&one)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return ErrLeaseLost
@@ -134,4 +155,23 @@ func checkLease(ctx context.Context, tx *sql.Tx, l Lease) error {
 		return fmt.Errorf("check host lease: %w", err)
 	}
 	return nil
+}
+
+// refusalReason explains why a write statement that gates on registration
+// declined to write.
+//
+// The decision itself was already made atomically inside that statement; this
+// read only chooses which error to report, so it adds no race. Fallback is the
+// reason that applies when the instance is registered.
+func refusalReason(ctx context.Context, db *sql.DB, instanceID string, fallback error) error {
+	var one int
+	err := db.QueryRowContext(ctx,
+		`SELECT 1 FROM instances WHERE instance_id = $1`, instanceID).Scan(&one)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrUnknownInstance
+	case err != nil:
+		return fmt.Errorf("read instance registration: %w", err)
+	}
+	return fallback
 }

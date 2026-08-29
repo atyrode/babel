@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +31,11 @@ var migrationFS embed.FS
 
 // SchemaVersion is the Phase A schema version. A deployment records it, and an
 // instance refuses to operate against a newer one rather than guessing.
+//
+// It buys no protection against an OLDER binary, and no comment here should
+// imply otherwise: a binary that predates a check does not perform it. What
+// constrains an old binary is only what PostgreSQL evaluates for it - a lease's
+// SQL expiry predicate, a fence comparison, a constraint.
 const SchemaVersion = 1
 
 // ErrSchemaTooNew reports a database migrated by a newer Babel. Downgrading
@@ -102,9 +108,22 @@ func Migrate(ctx context.Context, db *sql.DB) (applied []string, err error) {
 }
 
 // EnsureCompatible reports whether this binary may operate against the
-// database. A newer schema is refused; an older one means migrations are
-// pending and the caller should run `babel storage migrate`.
+// database. A newer schema is refused; anything else that is not ready reports
+// what to run.
+//
+// An entirely unmigrated database is a normal state for a new deployment, not a
+// malfunction, so it must not surface as a raw "relation does not exist" from
+// whichever query happened to run first.
 func EnsureCompatible(ctx context.Context, db *sql.DB) error {
+	var ready bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT to_regclass('public.deployments') IS NOT NULL`).Scan(&ready); err != nil {
+		return fmt.Errorf("look for the shared catalog schema: %w", err)
+	}
+	if !ready {
+		return errors.New("shared catalog has no schema yet: run `babel storage migrate`")
+	}
+
 	var version int
 	err := db.QueryRowContext(ctx,
 		`SELECT coalesce(max(schema_version), 0) FROM deployments`).Scan(&version)
@@ -125,6 +144,39 @@ func EnsureCompatible(ctx context.Context, db *sql.DB) error {
 type migration struct {
 	version string
 	body    string
+}
+
+// PendingMigrations reports embedded migrations the database has not recorded
+// yet, in apply order.
+//
+// The ledger is the only honest source for this question. A deployment's
+// recorded schema_version answers a different one - which version the fleet
+// bootstrapped as - and it is written at first publication, not by migrating,
+// so reading it here would report a fully migrated catalog as pending until
+// something published into it.
+func PendingMigrations(ctx context.Context, db *sql.DB) ([]string, error) {
+	all, err := migrations()
+	if err != nil {
+		return nil, err
+	}
+	var ledgerExists bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&ledgerExists); err != nil {
+		return nil, fmt.Errorf("look for the migration ledger: %w", err)
+	}
+	done := map[string]bool{}
+	if ledgerExists {
+		if done, err = appliedVersions(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	var pending []string
+	for _, m := range all {
+		if !done[m.version] {
+			pending = append(pending, m.version)
+		}
+	}
+	return pending, nil
 }
 
 func migrations() ([]migration, error) {
@@ -194,10 +246,22 @@ func applyOne(ctx context.Context, db *sql.DB, m migration) error {
 
 // redactDSN keeps a connection string out of an error message. Driver errors
 // sometimes echo the DSN, which would put the catalog password in a log.
+//
+// Replacing the whole DSN is not sufficient on its own: a driver may
+// reconstruct a connection string from parsed fields rather than echo the one
+// it was handed, and that reconstruction would not match. pgx happens to omit
+// the password when it does this, but relying on a dependency's discretion is
+// not a guarantee, so the password is redacted on its own as well - it is the
+// part that must never appear, in any arrangement.
 func redactDSN(err error, dsn string) error {
 	if dsn == "" {
 		return err
 	}
 	msg := strings.ReplaceAll(err.Error(), dsn, "[redacted dsn]")
+	if u, parseErr := url.Parse(dsn); parseErr == nil {
+		if password, ok := u.User.Password(); ok && password != "" {
+			msg = strings.ReplaceAll(msg, password, "[redacted]")
+		}
+	}
 	return errors.New(msg)
 }
