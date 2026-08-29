@@ -16,6 +16,7 @@ Commands:
   status                         report persistent storage configuration
   migrate [--from-json FILE|-]   apply pending shared catalog migrations
   verify                         check the configured shared catalog live
+  rebuild --host ID --yes        rebuild one host's catalog rows from the repository
 
 Run "babel storage <command> -h" for a command's flags.
 `
@@ -60,6 +61,8 @@ func (a *app) storage(ctx context.Context, args []string) error {
 		return a.storageMigrate(ctx, args[1:])
 	case "verify":
 		return a.storageVerify(ctx, args[1:])
+	case "rebuild":
+		return a.storageRebuild(ctx, args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown storage subcommand %q", args[0]), usage: storageUsage}
 	}

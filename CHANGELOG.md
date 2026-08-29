@@ -264,10 +264,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   connection is TLS — shared mode cannot express `sslmode=disable`. A new
   `internal/pgtest` provisions throwaway clusters with a self-signed
   certificate for that reason, and its own tests assert the server's view of
-  the connection (`pg_stat_ssl`) rather than the client's request, because a
-  cluster started *without* `ssl=on` can still accept an `sslmode=require`
-  client and would let a CLI-level test pass while proving nothing about
-  encryption. `internal/sharedcatalog`'s harness now provisions through the
+  the connection (`pg_stat_ssl`) rather than trusting the client's request. A
+  server without `ssl=on` refuses a `require` client outright — measured:
+  `server does not support SSL, but SSL was required` — so a successful
+  connection already proves encryption; what the server's view adds is the
+  negotiated protocol, which is the same thing `storage verify` reports to an
+  operator rather than echoing the mode that was asked for. `internal/sharedcatalog`'s harness now provisions through the
   same package.
 - **`archive status` reports what the shared catalog holds, per host**, so a
   second instance can browse it rather than only compare totals against the
@@ -322,6 +324,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   *historical* snapshot held, so those rows come back `catalog-pending` and
   stay there. The test asserts that asymmetry rather than a total, which is the
   difference between checking a rebuild and checking a number.
+- **`babel storage rebuild --host HOST --yes`** exposes the catalog rebuild
+  SPEC.md §12 lists as a Phase A deliverable. `sharedcatalog.Rebuild` had
+  implemented it correctly, with tests, since the schema landed — and no command
+  could invoke it, so it was reachable only from its own unit tests. A
+  deliverable nothing can reach is not delivered.
+
+  Its doc comment also called it *"the recovery path that makes losing the Phase
+  A database survivable"*, which the rebuild gate had just disproved by
+  recovering without it: an empty catalog needs only `storage migrate` and each
+  host's next push. Rebuild is the **repair** path, for rows that are present
+  but wrong — which no push corrects, because a push appends its own snapshot
+  rather than auditing the ones already recorded. The doc now says that.
+
+  `--host` is required rather than defaulting to this machine, and `--yes` is
+  required too, because the command discards derived rows and the wrong host
+  would be a silent loss. An unknown host is refused naming the hosts that do
+  exist, since a mistyped one would otherwise rebuild to empty. Ordering is
+  rederived from restic's recorded times; session rows are discarded rather than
+  invented, so the snapshots come back `catalog-pending` and identity returns
+  with the owning host's next push.
 
 ### Changed
 

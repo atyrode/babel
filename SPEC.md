@@ -435,6 +435,7 @@ babel storage configure --from-json FILE|-
 babel storage status [--json]
 babel storage migrate [--from-json FILE|-]
 babel storage verify [--json]
+babel storage rebuild --host HOST --yes [--json]
 babel archive init [--json]
 babel archive push [--json]
 babel archive status [--json]

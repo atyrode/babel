@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/atyrode/babel/internal/config"
+	"github.com/atyrode/babel/internal/restic"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
@@ -34,6 +35,37 @@ whether the schema is compatible with this binary. It reports observations; it
 never changes the database or the configuration.
 
 Flags:
+  --json                      emit the report as JSON
+`
+
+const storageRebuildUsage = `Usage: babel storage rebuild --host HOST --yes [flags]
+
+Rebuilds one host's catalog rows from the repository's snapshot list, discarding
+what the catalog held for that host. The repository is never touched, and no
+snapshot it still reports is ever dropped.
+
+This is the repair path for a catalog whose rows for a host are wrong or lost.
+It is not needed for an empty catalog: after "storage migrate", each host's next
+"archive push" registers and reconciles its own snapshots, which is the ordinary
+recovery and the one the acceptance suite exercises.
+
+What comes back is what the snapshot list can support: snapshot identity,
+ordering rederived from restic's recorded times, and restic's counts where the
+listing carries them. Session rows cannot be rebuilt from a listing, because
+their sizes and counts are read from the sessions themselves, so the rebuilt
+snapshots arrive "catalog-pending" and session identity returns with the owning
+host's next push (SPEC.md 9).
+
+--host is required rather than defaulting to this machine, because rebuilding
+discards derived rows and the wrong host would be a silent loss. --yes is
+required for the same reason.
+
+Flags:
+  --host ID                   host whose catalog rows to rebuild
+  --yes                       confirm discarding that host's derived rows
+  --repo REPOSITORY           restic repository (default $BABEL_RESTIC_REPO)
+  --password-file FILE        password file (default $BABEL_RESTIC_PASSWORD_FILE)
+  --restic-binary PATH        restic executable (default "restic" from $PATH)
   --json                      emit the report as JSON
 `
 
@@ -371,4 +403,97 @@ func (a *app) decodeConfigDocument(from string) (config.Config, error) {
 		return config.Config{}, fmt.Errorf("decode configuration input: %w", err)
 	}
 	return cfg, nil
+}
+
+// rebuildResult is the machine-readable outcome of a host-scoped catalog
+// rebuild. Rebuilt counts snapshots reinserted from the repository listing; it
+// is the whole of that host's catalog state afterwards, because a rebuild
+// discards what was there rather than merging into it.
+type rebuildResult struct {
+	Host     string `json:"host"`
+	Rebuilt  int    `json:"rebuilt"`
+	Sessions int    `json:"sessions"`
+}
+
+func (a *app) storageRebuild(ctx context.Context, args []string) error {
+	c := newCmd("storage rebuild", storageRebuildUsage)
+	var rf repoFlags
+	rf.bind(c.fs)
+	yes := c.fs.Bool("yes", false, "confirm discarding the host's derived rows")
+	asJSON := c.fs.Bool("json", false, "emit the report as JSON")
+	if err := c.parse(a, args); err != nil {
+		return err
+	}
+	if err := c.noArgs(); err != nil {
+		return err
+	}
+	if rf.host == "" {
+		return c.usagef("storage rebuild requires --host ID: it discards that host's catalog rows")
+	}
+	if !*yes {
+		return c.usagef("storage rebuild discards host %q's catalog rows; pass --yes to confirm", rf.host)
+	}
+
+	cfg, err := loadShared()
+	if err != nil {
+		return err
+	}
+	d, err := babelDirs()
+	if err != nil {
+		return err
+	}
+	repo, err := rf.open(c, d, &sanitizingWriter{w: a.stderr, prefix: "restic: "})
+	if err != nil {
+		return err
+	}
+	// The repository is the authority a rebuild reads from, so its absence is a
+	// refusal rather than something to create: rebuilding from a repository this
+	// command had just made would empty the host's catalog rows.
+	if err := repo.Require(ctx); err != nil {
+		if errors.Is(err, restic.ErrRepoMissing) {
+			return fmt.Errorf("no repository at %s: nothing to rebuild from", Sanitize(rf.repository))
+		}
+		return fmt.Errorf("open repository: %w", err)
+	}
+
+	listing, err := repo.Snapshots(ctx)
+	if err != nil {
+		return fmt.Errorf("list the repository's snapshots: %w", err)
+	}
+	// snapshotsForHost is the same host resolution cross-host fetch uses, so a
+	// mistyped host is an error naming the hosts that exist rather than a rebuild
+	// to empty - which is what an unfiltered listing would produce.
+	if _, err := snapshotsForHost(c, listing, rf.host); err != nil {
+		return err
+	}
+	// hostSnapshots restates them in the catalog's terms, carrying restic's own
+	// counts where the snapshot record has them. Rebuild refuses a listing
+	// attributed to another host, and one repository holds every machine's.
+	rows := hostSnapshots(listing, rf.host)
+
+	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
+	if err != nil {
+		return fmt.Errorf("reach the shared catalog: %w", err)
+	}
+	defer db.Close()
+
+	rep, err := sharedcatalog.Rebuild(ctx, db, cfg.DeploymentID, rf.host, rows)
+	if err != nil {
+		return fmt.Errorf("rebuild the catalog: %w", err)
+	}
+
+	res := rebuildResult{Host: Sanitize(rf.host), Rebuilt: rep.Added, Sessions: 0}
+	if *asJSON {
+		return a.emitJSON(res)
+	}
+	if err := writeDetail(a.stdout, [][2]string{
+		{"host", res.Host},
+		{"snapshots rebuilt", fmt.Sprint(res.Rebuilt)},
+		{"session rows", fmt.Sprint(res.Sessions)},
+	}); err != nil {
+		return err
+	}
+	a.diagf("note: session identity is not derivable from a snapshot listing; these snapshots are catalog-pending until host %s pushes again\n",
+		Sanitize(rf.host))
+	return nil
 }
