@@ -29,8 +29,10 @@ There is no persistent configuration yet. Name the repository per invocation:
 - `$BABEL_RESTIC_REPO` and `$BABEL_RESTIC_PASSWORD_FILE`.
 
 A local path works as a repository (e.g. `/tmp/babel-repo`) — ideal for
-experiments; S3/Cellar locators work the same way. `babel archive push`
-initializes the repository idempotently on first use.
+experiments; S3/Cellar locators work the same way. Create it once with
+`babel archive init`: `babel archive push` deliberately refuses to create a
+repository, so a mistyped locator fails instead of silently becoming a second
+empty archive.
 
 Host identity for snapshots: `--host ID`, else `$BABEL_HOST_ID`, else the
 sanitized system hostname. Host ids are `[a-z0-9._-]`, 1-64 chars.
@@ -41,10 +43,12 @@ babel version [--json]                     # build identity
 babel web [--port N] [--open]              # loopback web GUI (primary surface); prints a token URL
 babel storage configure --from-json FILE|- # persist repository selection in storage.json (0600)
 babel storage status [--json]              # report persistent configuration
+babel archive init [--json]                # create the repository, once per deployment
 babel archive push [--json]                # snapshot every adapter root on this host
 babel archive status [--json]              # snapshots grouped by host (read-only)
 babel archive verify [--deep] [--json]     # structural check; --deep re-reads all pack data
 babel sessions list [--harness omp|codex|claude] [--json]   # discover local sessions in place
+babel sessions list --host HOST [--snapshot ID] [--json]     # list another host's archived sessions
 babel sessions inspect SELECTOR [--json]   # one session: metadata, artifacts, blob closure
 babel sessions fetch SELECTOR [--snapshot ID] [--json]      # restore a session's file closure
 babel sessions prune --local --yes (--all | SELECTOR...)    # delete locally fetched copies only
