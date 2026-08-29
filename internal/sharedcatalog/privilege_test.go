@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -78,12 +79,17 @@ func TestDetectPrivilegesReportsApplicationLevel(t *testing.T) {
 	db := newDB(t)
 	const role = "babel_priv_app"
 
-	// PostgreSQL 15 and later already withhold CREATE on public from PUBLIC;
+	// Migrate first so Babel's schema exists. Without it current_schema() is
+	// NULL, DetectPrivileges takes its database-CREATE fallback, and this test
+	// would pass without ever exercising the schema ACL it exists to check.
+	mustMigrate(t, db)
+
+	// PostgreSQL 15 and later already withhold CREATE on a schema from PUBLIC;
 	// revoking explicitly keeps the fixture honest on an older external server.
 	newFixtureRole(t, db, role, "NOSUPERUSER NOCREATEDB NOCREATEROLE",
-		"REVOKE CREATE ON SCHEMA public FROM PUBLIC",
-		"REVOKE CREATE ON SCHEMA public FROM "+role,
-		"GRANT USAGE ON SCHEMA public TO "+role,
+		"REVOKE CREATE ON SCHEMA "+sharedcatalog.Schema+" FROM PUBLIC",
+		"REVOKE CREATE ON SCHEMA "+sharedcatalog.Schema+" FROM "+role,
+		"GRANT USAGE ON SCHEMA "+sharedcatalog.Schema+" TO "+role,
 	)
 
 	p := detect(t, openAs(t, db, role, fixtureSecret))
@@ -106,8 +112,9 @@ func TestDetectPrivilegesReportsDDLLevel(t *testing.T) {
 	db := newDB(t)
 	const role = "babel_priv_ddl"
 
+	mustMigrate(t, db)
 	newFixtureRole(t, db, role, "NOSUPERUSER NOCREATEDB NOCREATEROLE",
-		"GRANT USAGE, CREATE ON SCHEMA public TO "+role,
+		"GRANT USAGE, CREATE ON SCHEMA "+sharedcatalog.Schema+" TO "+role,
 	)
 
 	p := detect(t, openAs(t, db, role, fixtureSecret))
@@ -156,6 +163,7 @@ func TestDetectPrivilegesReportsRoleCreating(t *testing.T) {
 // application credential while SET ROLE is one statement away.
 func TestDetectPrivilegesSeesSuperuserViaMembership(t *testing.T) {
 	db := newDB(t)
+	mustMigrate(t, db)
 	const parent = "babel_priv_super"
 
 	dropRole(db, parent)
@@ -171,9 +179,9 @@ func TestDetectPrivilegesSeesSuperuserViaMembership(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			newFixtureRole(t, db, tc.role,
 				"NOSUPERUSER NOCREATEDB NOCREATEROLE "+tc.inherit+" IN ROLE "+parent,
-				"REVOKE CREATE ON SCHEMA public FROM PUBLIC",
-				"REVOKE CREATE ON SCHEMA public FROM "+tc.role,
-				"GRANT USAGE ON SCHEMA public TO "+tc.role,
+				"REVOKE CREATE ON SCHEMA "+sharedcatalog.Schema+" FROM PUBLIC",
+				"REVOKE CREATE ON SCHEMA "+sharedcatalog.Schema+" FROM "+tc.role,
+				"GRANT USAGE ON SCHEMA "+sharedcatalog.Schema+" TO "+tc.role,
 			)
 
 			p := detect(t, openAs(t, db, tc.role, fixtureSecret))
@@ -190,5 +198,50 @@ func TestDetectPrivilegesSeesSuperuserViaMembership(t *testing.T) {
 				t.Errorf("effective superuser reported as unable to migrate or issue roles: %+v", p)
 			}
 		})
+	}
+}
+
+// On a database Babel has never migrated there is no schema to hold an ACL, so
+// the question "can this credential migrate?" has to be answered another way.
+// The right to create the schema is that answer, and getting it wrong is not
+// academic: `configure` runs before `migrate`, so this is the state a first
+// deployment reports from. A real Clever Cloud add-on reaches this path.
+func TestDetectPrivilegesUsesDatabaseCreateBeforeTheSchemaExists(t *testing.T) {
+	db := newDB(t)
+	const role = "babel_priv_fresh"
+
+	var database string
+	if err := db.QueryRow(`SELECT current_database()`).Scan(&database); err != nil {
+		t.Fatalf("read database name: %v", err)
+	}
+
+	// Deliberately not migrated: current_schema() must resolve to nothing.
+	newFixtureRole(t, db, role, "NOSUPERUSER NOCREATEDB NOCREATEROLE",
+		"GRANT CREATE ON DATABASE "+database+" TO "+role,
+	)
+
+	conn := openAs(t, db, role, fixtureSecret)
+	var schema sql.NullString
+	if err := conn.QueryRow(`SELECT current_schema()`).Scan(&schema); err != nil {
+		t.Fatalf("read current schema: %v", err)
+	}
+	if schema.Valid {
+		t.Fatalf("this test requires an absent schema, got %q", schema.String)
+	}
+
+	p := detect(t, conn)
+	if !p.CanDDL {
+		t.Errorf("a credential that may create Babel's schema reported as unable to migrate: %+v", p)
+	}
+	if p.Level != sharedcatalog.PrivilegeDDL {
+		t.Errorf("Level = %q, want %q (%+v)", p.Level, sharedcatalog.PrivilegeDDL, p)
+	}
+}
+
+// Schema is concatenated into DDL at compile time, so it must never be able to
+// carry anything but a bare identifier.
+func TestSchemaNameIsABareIdentifier(t *testing.T) {
+	if !regexp.MustCompile(`^[a-z][a-z0-9_]*$`).MatchString(sharedcatalog.Schema) {
+		t.Fatalf("Schema = %q, which is not a bare lowercase identifier", sharedcatalog.Schema)
 	}
 }

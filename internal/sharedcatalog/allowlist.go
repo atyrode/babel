@@ -120,8 +120,15 @@ func Allowlist() []string {
 // makes SPEC.md 9 enforceable rather than aspirational: an instance can run it
 // against a real deployment, and the test suite runs it after migrating.
 //
+// It reads Babel's own schema (see Schema), not whatever schema the connection
+// would otherwise default to. That is what lets an unknown table be a hard
+// failure: a managed provider may pre-install extensions that put their own
+// relations in `public`, and rejecting those would be wrong while ignoring them
+// would blind the gate to a Babel migration adding an unlisted table.
+//
 // Errors name every discrepancy at once rather than the first, because a
-// migration review wants the whole picture.
+// migration review wants the whole picture. An unknown table is named once
+// rather than once per column it happens to have.
 func Verify(ctx context.Context, db *sql.DB) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT table_name, column_name
@@ -134,6 +141,7 @@ func Verify(ctx context.Context, db *sql.DB) error {
 	defer rows.Close()
 
 	live := make(map[string]map[string]bool)
+	unknownTables := make(map[string]bool)
 	var disallowed []string
 	for rows.Next() {
 		var table, column string
@@ -147,7 +155,11 @@ func Verify(ctx context.Context, db *sql.DB) error {
 
 		columns, known := allowlist[table]
 		if !known {
-			disallowed = append(disallowed, fmt.Sprintf("table %q is not in the allowlist", table))
+			if !unknownTables[table] {
+				unknownTables[table] = true
+				disallowed = append(disallowed,
+					fmt.Sprintf("table %q is not in the allowlist", table))
+			}
 			continue
 		}
 		if _, ok := columns[column]; !ok {

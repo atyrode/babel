@@ -92,9 +92,23 @@ const danglingBlobRef = "blob:sha256:" +
 // than one chunk has none to spare. The padding is random, so it is
 // incompressible enough that "data added is smaller than the file" states
 // dedup rather than compression.
+//
+// The size is not arbitrary. restic picks a random chunker polynomial per
+// repository, so identical bytes chunk differently in each run's fresh
+// repository, and a file below restic's 8 MiB maximum chunk size can legally
+// come out as a single chunk - in which case appending re-stores all of it and
+// the dedup assertion fails. That made this suite flake roughly one run in six
+// with content that was otherwise byte-identical. Exceeding the maximum forces
+// at least two chunks under every polynomial, which is what makes the
+// assertion an invariant instead of a probability.
 const (
-	padRecords     = 1024
-	padRecordBytes = 2048
+	padRecords     = 1400
+	padRecordBytes = 4096
+
+	// resticMaxChunkBytes is restic's chunker upper bound. The padded log must
+	// exceed it; assertAppendCanDeduplicate enforces that rather than trusting
+	// the arithmetic above to survive editing.
+	resticMaxChunkBytes = 8 << 20
 )
 
 // env is one hermetic Babel environment: a private HOME holding synthetic
@@ -514,6 +528,20 @@ func TestPhaseALoopEndToEnd(t *testing.T) {
 	if second.FilesUnmodified == 0 {
 		t.Fatalf("the second push re-read every file: %+v", second)
 	}
+	// Assert the precondition rather than trusting the padding constants to
+	// survive editing: below restic's maximum chunk size the file may be a
+	// single chunk under an unlucky per-repository polynomial, and then an
+	// append genuinely re-stores everything. Without this the assertion below
+	// silently becomes a coin flip.
+	if len(appended) <= resticMaxChunkBytes {
+		t.Fatalf("the padded log is %d bytes, which does not exceed restic's %d-byte maximum chunk: "+
+			"an append is not guaranteed to leave any chunk untouched, so the dedup assertion would be a probability",
+			len(appended), resticMaxChunkBytes)
+	}
+	// Report the accounting so a future tightening of this bound can be argued
+	// from observed numbers rather than from reasoning about restic internals.
+	t.Logf("append dedup: file=%d bytes, first push added=%d, second push added=%d",
+		len(appended), first.DataAdded, second.DataAdded)
 	if second.DataAdded >= int64(len(appended)) {
 		t.Fatalf("the second push added %d bytes for a %d-byte file: an appended log must deduplicate",
 			second.DataAdded, len(appended))

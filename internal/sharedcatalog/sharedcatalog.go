@@ -23,7 +23,8 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 //go:embed migrations/*.sql
@@ -42,18 +43,41 @@ const SchemaVersion = 1
 // silently would risk writing rows an older writer cannot represent.
 var ErrSchemaTooNew = errors.New("shared catalog schema is newer than this babel")
 
+// Schema is the schema Babel owns. Every catalog object lives in it, and
+// nothing else may.
+//
+// Babel does not own the database. A managed provider may pre-install
+// extensions - Clever Cloud's PostgreSQL ships PostGIS, pg_stat_statements and
+// dozens more, which put their own tables and views in `public` - and an
+// operator may keep unrelated data there. Sharing a schema with them would make
+// the allowlist gate in allowlist.go unenforceable: it could no longer tell a
+// relation Babel created from one that was always there, so it would have to
+// either reject the provider's own extensions or stop checking for unexpected
+// tables. A schema Babel creates and owns keeps that check exact.
+const Schema = "babel"
+
+// createSchemaDDL is built at compile time from Schema, which is why Schema must
+// stay a bare lowercase identifier.
+const createSchemaDDL = `CREATE SCHEMA IF NOT EXISTS ` + Schema
+
 // Open connects to the shared catalog. The DSN is supplied by validated storage
 // configuration and never logged; callers pass it through and must not echo it.
 //
 // The pool is deliberately small: an instance publishes from one goroutine under
 // a host lease, and a wide pool would only add ways to interleave writes.
 func Open(ctx context.Context, dsn string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", dsn)
+	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		// sql.Open does not dial, so an error here is a malformed DSN. Do not
+		// Parsing does not dial, so an error here is a malformed DSN. Do not
 		// wrap it with the DSN itself: it carries credentials.
 		return nil, errors.New("open shared catalog: invalid connection string")
 	}
+	// Pin the schema on every connection in the pool rather than qualifying
+	// each statement. Unqualified DDL in a migration then lands in Babel's
+	// schema, and a query can never silently resolve to a same-named relation
+	// that a provider extension or an operator put in `public`.
+	cfg.RuntimeParams["search_path"] = Schema
+	db := stdlib.OpenDB(*cfg)
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxLifetime(30 * time.Minute)
@@ -65,14 +89,22 @@ func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
-// Migrate applies every pending migration in one transaction per migration and
-// records it in schema_migrations, then verifies the resulting schema against
-// the Phase A allowlist. A migration that widens the plaintext boundary
-// therefore fails at apply time rather than after data has been written.
+// Migrate creates Babel's schema if it is absent, applies every pending
+// migration in one transaction per migration, records it in schema_migrations,
+// then verifies the resulting schema against the Phase A allowlist. A migration
+// that widens the plaintext boundary therefore fails at apply time rather than
+// after data has been written.
 //
-// It requires the migration credential: normal instances hold an application
-// role without DDL rights (SPEC.md 9).
+// It requires a credential that may create a schema and the objects in it.
+// Where a provider can issue more than one user, normal instances hold an
+// application role without those rights (SPEC.md 9).
 func Migrate(ctx context.Context, db *sql.DB) (applied []string, err error) {
+	// Schema is a compile-time constant matching a bare identifier, asserted by
+	// TestSchemaNameIsABareIdentifier, so it is concatenated rather than routed
+	// through the role-DDL renderer that exists for operator-supplied names.
+	if _, err := db.ExecContext(ctx, createSchemaDDL); err != nil {
+		return nil, fmt.Errorf("create schema %s: %w", Schema, err)
+	}
 	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 		    version    text        PRIMARY KEY,
@@ -117,7 +149,7 @@ func Migrate(ctx context.Context, db *sql.DB) (applied []string, err error) {
 func EnsureCompatible(ctx context.Context, db *sql.DB) error {
 	var ready bool
 	if err := db.QueryRowContext(ctx,
-		`SELECT to_regclass('public.deployments') IS NOT NULL`).Scan(&ready); err != nil {
+		`SELECT to_regclass($1) IS NOT NULL`, Schema+".deployments").Scan(&ready); err != nil {
 		return fmt.Errorf("look for the shared catalog schema: %w", err)
 	}
 	if !ready {
@@ -161,7 +193,7 @@ func PendingMigrations(ctx context.Context, db *sql.DB) ([]string, error) {
 	}
 	var ledgerExists bool
 	if err := db.QueryRowContext(ctx,
-		`SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&ledgerExists); err != nil {
+		`SELECT to_regclass($1) IS NOT NULL`, Schema+".schema_migrations").Scan(&ledgerExists); err != nil {
 		return nil, fmt.Errorf("look for the migration ledger: %w", err)
 	}
 	done := map[string]bool{}
