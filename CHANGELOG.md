@@ -161,9 +161,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   authenticate with the token absent from every transmitted URL and from the
   address bar after bootstrap, and a context without the token is refused
   ([#35]).
-
-### Changed
-
 - **SPEC amended: shared mode's supported default is one database credential,
   not a role-separated pair.** A Clever Cloud employee confirmed their managed
   PostgreSQL cannot create database users, so the arrangement SPEC promised in
