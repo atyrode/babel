@@ -37,11 +37,15 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   cannot offer. Revoking force-expires the instance's host leases so another
   machine can take over at once, and acquire, renew, and both of a
   publication's lease checks refuse it — including the pre-commit check, so an
-  instance revoked mid-push lands nothing. It is honest about its limit in code
-  and in `--help`: it stops a cooperating instance and bounds a compromised one
-  until noticed, but whoever holds the shared credential can clear their own
-  revocation, and an older binary does not consult it at all. Fleet-wide
-  rotation and repository-password custody remain the controls for that case.
+  instance revoked mid-push lands nothing. Two limits are stated in code, in
+  `--help`, and here rather than left for a reader to discover. Whoever holds
+  the shared credential can clear their own revocation. And an older binary
+  consults none of this: a force-expired lease still stops its in-flight push,
+  because PostgreSQL evaluates the expiry predicate, but nothing prevents it
+  from re-acquiring the lease immediately afterwards, since its acquire never
+  learned about `revoked_at`. So revocation binds instances running a binary
+  that implements it; fleet-wide credential rotation and repository-password
+  custody remain the controls for everything else.
 - `storage migrate`, which applies pending migrations with the configured
   credential by default, or with an ephemeral document's migration credential
   that is used and never persisted. `storage verify` checks a configured
@@ -190,6 +194,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   does so, which made the guarantee depend on a dependency's discretion.
   Mutation-tested: both new arrangements survive redaction under the previous
   implementation.
+- `storage verify` reported "pending migration: yes" on a catalog it had just
+  finished migrating. It inferred pending-ness from the deployment's recorded
+  `schema_version`, which answers a different question and is written at first
+  publication rather than by migrating, so the two sources disagree in exactly
+  the state a first-time operator sees. Pending migrations now come from the
+  migration ledger, and a version of 0 renders as "not recorded yet" rather
+  than as a bare zero beside a compatible schema. Found by driving the real
+  binary against a live TLS-enabled PostgreSQL, not by reading the code.
 - **The web launch token moved from the query string to the URL fragment**, as
   SPEC.md §146 always specified. The token now appears in exactly one place —
   the launch URL's fragment — and the bootstrap erases it from the address bar

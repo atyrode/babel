@@ -160,33 +160,50 @@ func observeTLS(ctx context.Context, db *sql.DB) (tlsObserved, error) {
 	return tlsObserved{Active: active, Protocol: protocol.String}, nil
 }
 
-// observeSchema reports the deployment's recorded schema version, whether this
-// binary may operate against it, and whether migrations are pending. A database
-// with no schema yet reports version 0 with migrations pending.
+// schemaVersionLabel renders the recorded deployment version. Zero is not a
+// version: it means no deployment has published into this catalog yet, which
+// reads as an error if printed bare next to a compatible schema.
+func schemaVersionLabel(version int) string {
+	if version == 0 {
+		return "not recorded yet"
+	}
+	return fmt.Sprint(version)
+}
+
+// observeSchema reports three separate facts that are easy to conflate.
+//
+// Pending migrations come from the migration ledger. The deployment's recorded
+// schema_version answers a different question - which version the fleet
+// bootstrapped as - and it is written at first publication rather than by
+// migrating, so a version of 0 means "no deployment has published yet", not
+// "unmigrated". Reading it as the latter reported a fully migrated catalog as
+// pending, which is what this shape fixes.
+//
+// A recorded version newer than this binary is fatal: no migration this binary
+// runs can reconcile it.
 func observeSchema(ctx context.Context, db *sql.DB) (version int, compatible, pending bool, err error) {
-	err = db.QueryRowContext(ctx, `
-		SELECT coalesce(max(schema_version), 0) FROM deployments`).Scan(&version)
+	pendingList, err := sharedcatalog.PendingMigrations(ctx, db)
 	if err != nil {
-		// An unmigrated database has no deployments table. Distinguishing that
-		// from a real failure by error text is fragile, so ask the catalog.
-		var exists bool
-		if probe := db.QueryRowContext(ctx, `
-			SELECT to_regclass('public.deployments') IS NOT NULL`).Scan(&exists); probe != nil {
-			return 0, false, false, fmt.Errorf("read schema version: %w", probe)
-		}
-		if exists {
-			return 0, false, false, fmt.Errorf("read schema version: %w", err)
-		}
-		return 0, false, true, nil
+		return 0, false, false, err
 	}
-	switch {
-	case version > sharedcatalog.SchemaVersion:
-		return version, false, false, fmt.Errorf("%w: database is version %d, this babel implements %d",
+	pending = len(pendingList) > 0
+
+	var recorded bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT to_regclass('public.deployments') IS NOT NULL`).Scan(&recorded); err != nil {
+		return 0, false, pending, fmt.Errorf("look for the deployment table: %w", err)
+	}
+	if recorded {
+		if err := db.QueryRowContext(ctx, `
+			SELECT coalesce(max(schema_version), 0) FROM deployments`).Scan(&version); err != nil {
+			return 0, false, pending, fmt.Errorf("read schema version: %w", err)
+		}
+	}
+	if version > sharedcatalog.SchemaVersion {
+		return version, false, pending, fmt.Errorf("%w: database is version %d, this babel implements %d",
 			sharedcatalog.ErrSchemaTooNew, version, sharedcatalog.SchemaVersion)
-	case version < sharedcatalog.SchemaVersion:
-		return version, false, true, nil
 	}
-	return version, true, false, nil
+	return version, !pending, pending, nil
 }
 
 // loadShared reads the configuration and refuses commands that only mean
@@ -320,7 +337,7 @@ func (a *app) storageVerify(ctx context.Context, args []string) error {
 		{"tls mode", Sanitize(got.TLSMode)},
 		{"tls active", yesNo(got.TLS.Active, "yes", "no")},
 		{"tls protocol", Sanitize(got.TLS.Protocol)},
-		{"schema version", fmt.Sprint(got.SchemaVersion)},
+		{"schema version", schemaVersionLabel(got.SchemaVersion)},
 		{"schema compatible", yesNo(got.SchemaCompatible, "yes", "no")},
 		{"pending migration", yesNo(got.PendingMigration, "yes", "no")},
 		{"credential", Sanitize(got.Application.User)},

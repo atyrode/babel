@@ -139,6 +139,39 @@ type migration struct {
 	body    string
 }
 
+// PendingMigrations reports embedded migrations the database has not recorded
+// yet, in apply order.
+//
+// The ledger is the only honest source for this question. A deployment's
+// recorded schema_version answers a different one - which version the fleet
+// bootstrapped as - and it is written at first publication, not by migrating,
+// so reading it here would report a fully migrated catalog as pending until
+// something published into it.
+func PendingMigrations(ctx context.Context, db *sql.DB) ([]string, error) {
+	all, err := migrations()
+	if err != nil {
+		return nil, err
+	}
+	var ledgerExists bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&ledgerExists); err != nil {
+		return nil, fmt.Errorf("look for the migration ledger: %w", err)
+	}
+	done := map[string]bool{}
+	if ledgerExists {
+		if done, err = appliedVersions(ctx, db); err != nil {
+			return nil, err
+		}
+	}
+	var pending []string
+	for _, m := range all {
+		if !done[m.version] {
+			pending = append(pending, m.version)
+		}
+	}
+	return pending, nil
+}
+
 func migrations() ([]migration, error) {
 	entries, err := fs.ReadDir(migrationFS, "migrations")
 	if err != nil {
