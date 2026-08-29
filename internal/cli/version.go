@@ -14,6 +14,28 @@ const fallbackVersion = "devel"
 // shortCommitLen bounds the displayed VCS revision.
 const shortCommitLen = 12
 
+// buildVersion, buildCommit and buildTime are injected at link time with
+// `-ldflags -X` by builds that compile outside a VCS checkout, where
+// `-buildvcs` can stamp nothing: the Nix derivation builds from a source
+// copy with no `.git`, so build info alone would report no provenance at
+// all. An injected value wins over build info; with nothing injected the
+// reported identity is exactly what build info carries.
+var (
+	buildVersion string
+	buildCommit  string
+	buildTime    string
+)
+
+// dirtyRevSuffix marks an injected revision taken from a modified working
+// tree (Nix's `dirtyRev`): the injected equivalent of `vcs.modified=true`.
+const dirtyRevSuffix = "-dirty"
+
+// unknownRev is the placeholder a builder injects when it has no revision to
+// report, such as a flake evaluated from a tree carrying no git metadata. It
+// is deliberately not recorded as a commit: an empty `commit` field says
+// "no provenance" honestly, where the literal string would masquerade as one.
+const unknownRev = "unknown"
+
 const versionUsage = `Usage: babel version [--json]
 
 Print Babel's build identity: module version, VCS revision and dirty state
@@ -43,24 +65,41 @@ func readBuildIdentity() buildIdentity {
 		GoVersion: runtime.Version(),
 		Platform:  runtime.GOOS + "/" + runtime.GOARCH,
 	}
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return id
-	}
-	if v := info.Main.Version; v != "" && v != "(devel)" {
-		id.Version = v
-	}
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			id.Commit = s.Value
-		case "vcs.modified":
-			id.Dirty = s.Value == "true"
-		case "vcs.time":
-			id.BuildTime = s.Value
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			id.Version = v
+		}
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				id.Commit = s.Value
+			case "vcs.modified":
+				id.Dirty = s.Value == "true"
+			case "vcs.time":
+				id.BuildTime = s.Value
+			}
 		}
 	}
+	id.applyInjected()
 	return id
+}
+
+// applyInjected overlays the link-time values onto the build info result.
+// An injected revision comes from a source snapshot whose cleanliness the
+// builder already resolved, so it settles the dirty flag too: dirty exactly
+// when the revision itself carries the marker. A build with an unknown
+// revision reports clean, because there is no tree left to have modified.
+func (id *buildIdentity) applyInjected() {
+	if buildVersion != "" {
+		id.Version = buildVersion
+	}
+	if buildCommit != "" && buildCommit != unknownRev {
+		id.Commit = strings.TrimSuffix(buildCommit, dirtyRevSuffix)
+		id.Dirty = strings.HasSuffix(buildCommit, dirtyRevSuffix)
+	}
+	if buildTime != "" {
+		id.BuildTime = buildTime
+	}
 }
 
 // String renders the human one-line form.
