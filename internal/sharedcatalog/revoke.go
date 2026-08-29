@@ -20,14 +20,25 @@ var ErrUnknownInstance = errors.New("unknown instance")
 // gate 14). It is idempotent: re-running it is how an operator confirms the
 // state, and it never moves the timestamp of the original eviction.
 //
-// The eviction is enforced by this package, not by the database, because the
-// first deployment's provider cannot issue a database user per instance
-// (migrations/0003_instance_revocation.sql). It is therefore only as strong as
-// the instance's cooperation: it stops a machine that is out of service - a
-// decommissioned server, a retired laptop - and it bounds a compromised
-// instance only until someone notices, because whoever holds the shared
-// credential can clear their own revoked_at. Against a hostile holder the real
-// controls are fleet-wide credential rotation and repository-password custody.
+// Actor model, which is weaker than the name suggests. Revocation is DML on
+// instances, and every instance's credential holds DML on that table by design
+// - it is in dataTables, because an instance must register itself and refresh
+// last_seen_at. So this call expresses an operator's decision; it does not
+// authenticate one. Any holder of any catalog credential can revoke any
+// instance id, which means a compromised instance can evict the rest of the
+// fleet as readily as an operator can evict it, and can clear its own
+// revoked_at afterwards.
+//
+// That is true under per-instance credentials too, not only under the single
+// shared credential the first deployment runs, so it is a property of the
+// mechanism rather than of the provider. Making it database-enforced would take
+// column-level grants - UPDATE (last_seen_at) to application roles, revoked_at
+// reserved to an operator role - which needs per-instance roles the first
+// provider cannot issue, and a decision recorded in SPEC.md 9. Until then the
+// honest reading is: this stops a machine that is out of service - a
+// decommissioned server, a retired laptop - and bounds a compromised instance
+// only until someone notices. Against a hostile holder the real controls are
+// fleet-wide credential rotation and repository-password custody.
 //
 // Both effects land in one transaction: the instance is marked, and every live
 // lease it holds is force-expired so another instance can take that host over

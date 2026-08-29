@@ -90,8 +90,12 @@ func DetectPrivileges(ctx context.Context, db *sql.DB) (Privileges, error) {
 	var super, createRole, createDB, schemaCreate bool
 	if err := db.QueryRowContext(ctx, privilegeQuery).
 		Scan(&user, &super, &createRole, &createDB, &schemaCreate); err != nil {
-		// The query carries no arguments and names no credential, so the driver
-		// error is safe to return as-is.
+		// Returned unredacted deliberately. A query error on an open
+		// connection carries no connection string: observed against a
+		// password-authenticated cluster for a missing relation, a permission
+		// denial, a syntax error, a runtime error, a cancelled context, and a
+		// closed pool - none reproduced the password or the DSN. Connect-time
+		// errors are the ones that echo a DSN, and Open redacts those.
 		return Privileges{}, fmt.Errorf("detect catalog credential privileges: %w", err)
 	}
 

@@ -42,11 +42,16 @@ const storageRevokeInstanceUsage = `Usage: babel storage revoke-instance INSTANC
 Refuses an instance's lease acquisition, renewal, and publication, and
 force-expires any lease it holds so another instance can take over immediately.
 
-This is an application-level control, not a database one. Where the provider
-cannot issue per-instance credentials, revocation stops a cooperating instance
-and bounds a compromised one until it is noticed; it cannot stop a holder of the
-shared credential from clearing its own revocation. Fleet-wide credential
-rotation and repository-password custody remain the controls for that case.
+This is an application-level control, not a database one, and its authority is
+weaker than the name suggests. Revocation is an ordinary write to a table every
+instance must already write, so any credential that can publish can also revoke
+any instance and clear its own revocation. That is true whether the provider
+issues one shared credential or one per instance.
+
+So this evicts a machine that is out of service - a decommissioned server, a
+retired laptop - and bounds a compromised one until someone notices. It is not
+a control against an attacker holding a credential: for that, rotate the
+credential and review repository-password custody.
 
 Flags:
   --json                      emit the result as JSON
@@ -395,7 +400,7 @@ func (a *app) storageRevokeInstance(ctx context.Context, args []string) error {
 		return a.emitJSON(res)
 	}
 	fmt.Fprintf(a.stdout, "instance %s is revoked: its leases are expired and its publications are refused\n", res.InstanceID)
-	a.diagf("note: this is an application-level control; a holder of the shared credential can clear it, so rotate credentials if the instance is compromised rather than merely retired\n")
+	a.diagf("note: any credential that can publish can also revoke and un-revoke, so this evicts a retired machine rather than containing a compromised one; rotate the credential for that\n")
 	return nil
 }
 

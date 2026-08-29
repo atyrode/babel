@@ -37,15 +37,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   cannot offer. Revoking force-expires the instance's host leases so another
   machine can take over at once, and acquire, renew, and both of a
   publication's lease checks refuse it — including the pre-commit check, so an
-  instance revoked mid-push lands nothing. Two limits are stated in code, in
-  `--help`, and here rather than left for a reader to discover. Whoever holds
-  the shared credential can clear their own revocation. And an older binary
-  consults none of this: a force-expired lease still stops its in-flight push,
-  because PostgreSQL evaluates the expiry predicate, but nothing prevents it
-  from re-acquiring the lease immediately afterwards, since its acquire never
-  learned about `revoked_at`. So revocation binds instances running a binary
-  that implements it; fleet-wide credential rotation and repository-password
-  custody remain the controls for everything else.
+  instance revoked mid-push lands nothing.
+
+  Three limits are recorded in code, in `--help`, in SPEC.md §9, and here,
+  because the name promises more than the mechanism delivers. **Its authority
+  is not authenticated:** revocation is ordinary DML on `instances`, a table
+  every instance must already write to register itself, so the least-privileged
+  application role Babel issues can revoke any instance and clear its own
+  revocation — proven by a test that pins that behaviour, so tightening it
+  later has to update this text. That holds under per-instance credentials too,
+  making it a property of the mechanism rather than of Clever Cloud.
+  **An older binary consults none of it:** a force-expired lease still stops
+  its in-flight push, because PostgreSQL evaluates the expiry predicate, but
+  nothing prevents it re-acquiring afterwards. So revocation evicts a machine
+  that is out of service and bounds a compromised one until someone notices; it
+  is not containment. Fleet-wide rotation and repository-password custody are
+  today's controls for that, and whether revocation should be restricted by
+  privilege — column-level grants reserving `revoked_at` to an operator role —
+  is now an explicit pre-deployment decision rather than an unexamined gap.
 - `storage migrate`, which applies pending migrations with the configured
   credential by default, or with an ephemeral document's migration credential
   that is used and never persisted. `storage verify` checks a configured
