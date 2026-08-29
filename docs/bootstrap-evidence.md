@@ -96,6 +96,20 @@ Landed 2026-08-29 in atyrode/dotfiles (#442), replacing the pre-Babel
 flake input, so `ExecStart` is an absolute store path — the provenance the first
 publication above could not claim.
 
+| | |
+|---|---|
+| pinned revision | `f8d4d87562ea25415a59622a3c4c887d1ef8196a`, `dirty: false` |
+| dotfiles revision | `c02c096` (atyrode/dotfiles#442) |
+| wrapper | `/nix/store/…-babel-archive-push/bin/babel-archive-push` |
+| schedule | `OnCalendar=hourly`, `RandomizedDelaySec=10m`, `Persistent=true` |
+
+The legacy `atyrode-session-backup` unit, its `atyrode backup` CLI, its
+machine-local credential file, and `rclone`'s place on the profile are all gone
+(decision 52). The credential file held a Cellar access key and the crypt
+password for the deleted bucket; it was shredded, as were the two rclone remotes
+that duplicated those credentials in plaintext. Babel's own mode-0600
+`storage.json` and password file are now the only copies on this machine.
+
 | proof | result |
 |---|---|
 | unconfigured machine | exit 0, no stamp, points at the ceremony script |
