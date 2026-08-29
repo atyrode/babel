@@ -498,6 +498,162 @@ func TestSanitizesErrorsAndDiagnostics(t *testing.T) {
 	}
 }
 
+// TestLockRefusesForgeableRequests pins the guard that keeps the stop control
+// from becoming a denial of service: a page the operator merely visited must
+// not be able to reach it, and neither must a request that only looks like a
+// state change. Each refusal is followed by proof the server is still serving,
+// because a guard that stopped the server while rejecting the request would
+// otherwise pass every assertion here.
+func TestLockRefusesForgeableRequests(t *testing.T) {
+	s, httpServer := testServer(t, Options{})
+	client := httpServer.Client()
+
+	for _, test := range []struct {
+		name   string
+		method string
+		token  string
+		origin string
+		host   string
+		status int
+	}{
+		{name: "get is not a state change", method: http.MethodGet, token: s.token, status: http.StatusBadRequest},
+		{name: "cross-origin post", method: http.MethodPost, token: s.token, origin: "http://evil.example", status: http.StatusForbidden},
+		{name: "rebound host", method: http.MethodPost, token: s.token, host: "evil.example", status: http.StatusForbidden},
+		{name: "no credential", method: http.MethodPost, status: http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req, err := http.NewRequest(test.method, httpServer.URL+"/api/lock", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.token != "" {
+				req.Header.Set("Authorization", "Bearer "+test.token)
+			}
+			if test.origin != "" {
+				req.Header.Set("Origin", test.origin)
+			}
+			if test.host != "" {
+				req.Host = test.host
+			}
+			response, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != test.status {
+				t.Fatalf("status = %d, want %d", response.StatusCode, test.status)
+			}
+
+			alive := request(t, client, http.MethodGet, httpServer.URL+"/api/version", s.token)
+			alive.Body.Close()
+			if alive.StatusCode != http.StatusOK {
+				t.Fatalf("a refused lock revoked the session anyway: /api/version = %d", alive.StatusCode)
+			}
+		})
+	}
+}
+
+// TestLockRevokesTheLaunchSession covers the half of the contract that must
+// hold while the process is still answering: the token is dead the moment the
+// lock is accepted, so a tab the operator left open cannot act on it during
+// the shutdown.
+func TestLockRevokesTheLaunchSession(t *testing.T) {
+	var diagnostics bytes.Buffer
+	s, httpServer := testServer(t, Options{Diagnostics: &diagnostics})
+	client := httpServer.Client()
+
+	response := request(t, client, http.MethodPost, httpServer.URL+"/api/lock", s.token)
+	if response.StatusCode != http.StatusOK {
+		response.Body.Close()
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	if got := response.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q", got)
+	}
+	var got lockResult
+	decodeResponse(t, response, &got)
+	if !got.Revoked || !got.Stopping {
+		t.Fatalf("lock result = %+v", got)
+	}
+
+	// The same credential that worked a moment ago is now worth nothing, and
+	// the lock itself cannot be replayed.
+	for _, target := range []struct {
+		method, path string
+	}{
+		{http.MethodGet, "/api/version"},
+		{http.MethodPost, "/api/lock"},
+	} {
+		after := request(t, client, target.method, httpServer.URL+target.path, s.token)
+		after.Body.Close()
+		if after.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s %s after lock = %d, want 401", target.method, target.path, after.StatusCode)
+		}
+	}
+
+	// The confirmation is written and flushed before the listener is asked to
+	// go away, so it does not depend on the drain. The handler reports a flush
+	// it could not perform, which is the only way that regression would be
+	// visible from outside.
+	if strings.Contains(diagnostics.String(), "not flushed") {
+		t.Fatalf("the lock confirmation was not flushed: %q", diagnostics.String())
+	}
+	if !strings.Contains(diagnostics.String(), "locked by operator") {
+		t.Fatalf("the lock was not recorded in diagnostics: %q", diagnostics.String())
+	}
+}
+
+// TestLockStopsTheListener drives the real listener, because the second half of
+// the contract is a process that stops accepting connections and exits
+// successfully. Serve's return is the synchronization point: it happens only
+// after the graceful drain completes, so nothing here waits on a clock.
+func TestLockStopsTheListener(t *testing.T) {
+	s, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A safety net only: the assertions below require Serve to have returned
+	// before this runs, so cancellation never explains a passing test.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- s.Serve(ctx) }()
+
+	launch, err := url.Parse(s.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch.Fragment = ""
+	base := launch.String()
+
+	response := request(t, http.DefaultClient, http.MethodPost, base+"api/lock", s.token)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	var got lockResult
+	decodeResponse(t, response, &got)
+	if !got.Revoked || !got.Stopping {
+		t.Fatalf("lock result = %+v", got)
+	}
+
+	select {
+	case err := <-result:
+		// The operator asked for this, so it is a success, not a failure.
+		if err != nil {
+			t.Fatalf("Serve after lock: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the lock did not stop the listener")
+	}
+
+	// The port is no longer served at all, which is the difference between a
+	// revoked session and a stopped server.
+	if _, err := http.Get(base + "api/version"); err == nil {
+		t.Fatal("the listener still accepts connections after the lock")
+	}
+}
+
 type errorsWithControl string
 
 func (e errorsWithControl) Error() string { return string(e) }

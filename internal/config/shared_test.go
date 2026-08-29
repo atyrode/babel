@@ -32,8 +32,12 @@ func installFixture(t *testing.T, name string) []byte {
 
 func sharedConfig() Config {
 	return Config{
-		Mode:         ModeShared,
-		Repository:   "s3:s3.example.invalid/babel-archive",
+		Mode:       ModeShared,
+		Repository: "s3:s3.example.invalid/babel-archive",
+		RepositoryStore: &RepositoryStore{
+			AccessKeyID:     "SYNTHETICACCESSKEYID",
+			SecretAccessKey: "synthetic-secret-access-key",
+		},
 		PasswordFile: "/etc/babel/repository-password",
 		DeploymentID: "example-deployment",
 		InstanceID:   "workstation",
@@ -142,6 +146,21 @@ func TestValidateModesAndCatalogFields(t *testing.T) {
 		build func() Config
 		field string
 	}{
+		{"object store locator requires a credential", func() Config {
+			cfg := sharedConfig()
+			cfg.RepositoryStore = nil
+			return cfg
+		}, "repository_store"},
+		{"half a credential is refused", func() Config {
+			cfg := sharedConfig()
+			cfg.RepositoryStore = &RepositoryStore{AccessKeyID: "SYNTHETICACCESSKEYID"}
+			return cfg
+		}, "repository_store"},
+		{"an empty credential block is refused", func() Config {
+			cfg := sharedConfig()
+			cfg.RepositoryStore = &RepositoryStore{}
+			return cfg
+		}, "repository_store"},
 		{"local mode rejects a catalog", func() Config {
 			cfg := sharedConfig()
 			cfg.Mode = ModeLocal

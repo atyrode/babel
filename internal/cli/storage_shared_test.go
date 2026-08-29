@@ -16,6 +16,11 @@ import (
 // channels for this exact string.
 const catalogPassword = "SYNTHETICCATALOGPASSWORD5d41402a"
 
+// objectStoreSecret is the S3 secret access key sentinel. It is a distinct value
+// from the catalog password so an absence check cannot pass by matching the
+// wrong secret.
+const objectStoreSecret = "OBJECTSTORESECRET9f1c4d2ba7e60358"
+
 // closedPort returns a loopback port with nothing listening on it. Binding and
 // releasing is how the port is known to be closed rather than merely unusual,
 // which makes "the catalog is unreachable" a fact of the test rather than an
@@ -163,6 +168,12 @@ func TestStorageStatusReportsSharedIdentityWithoutCredentials(t *testing.T) {
 	cfg := sharedDocument(closedPort(t))
 	cfg.Catalog.MigrationUser = "babel_migration"
 	cfg.Catalog.MigrationPassword = catalogPassword + "-migration"
+	// The object-store credential is the third secret the document carries, and
+	// the newest, so the report must withhold it too.
+	cfg.RepositoryStore = &config.RepositoryStore{
+		AccessKeyID:     "SYNTHETICKEYID",
+		SecretAccessKey: objectStoreSecret,
+	}
 	if err := config.Save(cfg); err != nil {
 		t.Fatalf("install a shared configuration: %v", err)
 	}
@@ -199,5 +210,17 @@ func TestStorageStatusReportsSharedIdentityWithoutCredentials(t *testing.T) {
 	}
 	if strings.Contains(stdout, catalogPassword) || strings.Contains(stderr, catalogPassword) {
 		t.Error("storage status emitted a catalog password")
+	}
+	if !strings.Contains(string(installed), objectStoreSecret) {
+		t.Fatal("the fixture must install a document that actually holds the object-store secret")
+	}
+	if strings.Contains(stdout, objectStoreSecret) || strings.Contains(stderr, objectStoreSecret) {
+		t.Error("storage status emitted an object-store secret")
+	}
+	// The key id is an identifier rather than a secret, but the report has no
+	// use for it either, and a status that grew credential fields by accident is
+	// what this guards.
+	if strings.Contains(stdout, "SYNTHETICKEYID") {
+		t.Error("storage status emitted the object-store key id")
 	}
 }

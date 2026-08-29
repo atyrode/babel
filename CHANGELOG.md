@@ -344,6 +344,54 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   rederived from restic's recorded times; session rows are discarded rather than
   invented, so the snapshots come back `catalog-pending` and identity returns
   with the owning host's next push.
+- **Babel can reach an object store at all**, which it could not before. The
+  restic child process gets a deliberately strict environment allowlist —
+  `RESTIC_REPOSITORY`, `RESTIC_PASSWORD_FILE`, `RESTIC_CACHE_DIR`, `HOME`,
+  `PATH`, `TMPDIR` — carrying no access key, and the storage document had no
+  field for one. Every archive test ran against a local path, which needs no
+  credential, which is exactly why nothing caught it. "Nothing has written a
+  byte to Cellar" was not caution; it was impossible.
+
+  `repository_store.access_key_id` and `repository_store.secret_access_key` now
+  live inline in the document beside the catalog's password (decision 50). They
+  are required for an `s3:` locator, refused in halves, and refused as an empty
+  block, because deferring a credential error to the first backup is the worst
+  moment to find it. They reach restic as `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY`: restic offers no file reference for them the way it
+  does for the repository password, so this is the one secret this path puts in
+  a child environment, and the reason is recorded where the code does it.
+
+  Proven against the real Clever Cloud Cellar add-on with synthetic fixtures:
+  `archive init` created the repository, a push committed a snapshot and
+  published its session rows to the real managed PostgreSQL, `verify` passed
+  over S3, a second independently configured instance browsed the catalog and
+  listed and fetched the first host's session, and **restic alone restored all
+  five files byte-identically** with no Babel and no PostgreSQL involved.
+  Neither credential nor the repository password appeared anywhere in the
+  captured output.
+- **The web lock/stop control**, the last named Phase A deliverable that was
+  absent (§12's deliverable bullet, §2's contract, decisions 34 and 45). A
+  same-origin `POST /api/lock` revokes the launch token **before** the listener
+  closes, so a winding-down process cannot still honour it, and the page
+  replaces its whole shell with a terminal state rather than appearing to work.
+  `babel web` exits 0 when the operator asked it to stop.
+
+  Implementing it surfaced that **`Host`/`Origin`/DNS-rebinding checks did not
+  exist** — decision 34 requires them and the bearer token was carrying the
+  whole CSRF defence alone. There is now one shared guard for every `/api` path,
+  checked before the credential is read: `Host` must be the loopback literal,
+  and `Origin`, when a browser sends it, must match. The token remains the
+  primary defence; this closes the weaker signal that decision 34 names, and it
+  matters most for lock/stop, where a forged request is a denial of service.
+
+### Removed
+
+- **`babel status` from §8's command list.** It appeared exactly once in the
+  whole specification, with no behavioural rule, no §12 deliverable, and no
+  acceptance text, at the tail of the Phase B commands. Bare `babel` is the
+  offline status overview and has a rule, §8.1, and decision 12 behind it, so a
+  second command with none of that was a list artifact rather than unbuilt work
+  (operator decision 2026-08-29).
 
 ### Changed
 

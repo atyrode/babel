@@ -134,6 +134,11 @@ export interface FetchResult {
   already_present: boolean;
 }
 
+export interface LockResult {
+  revoked: boolean;
+  stopping: boolean;
+}
+
 const TOKEN_KEY = "babel.web.token";
 
 // The launch token arrives in the URL fragment, which the browser never sends
@@ -313,4 +318,11 @@ export function fetchSession(selector: string, snapshot?: string): Promise<Fetch
   const values: Record<string, string> = { selector };
   if (snapshot?.trim()) values.snapshot = snapshot.trim();
   return request<FetchResult>(`/api/fetch?${query(values)}`, { method: "POST" });
+}
+
+// lockServer is one-way. The server revokes the launch token as it answers, so
+// there is no second attempt to make and no way to re-read the confirmation:
+// whatever this resolves or rejects with is the last thing this page learns.
+export function lockServer(): Promise<LockResult> {
+  return request<LockResult>("/api/lock", { method: "POST" });
 }

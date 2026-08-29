@@ -319,12 +319,18 @@ func (rf *repoFlags) open(c *cmd, d dirs, diagnostics io.Writer) (*restic.Repo, 
 	if err := ensureDir(cacheDir); err != nil {
 		return nil, err
 	}
+	var keyID, keySecret string
+	if s := cfg.RepositoryStore; s != nil {
+		keyID, keySecret = s.AccessKeyID, s.SecretAccessKey
+	}
 	repo, err := restic.Open(restic.Config{
-		Repository:   rf.repository,
-		PasswordFile: rf.passwordFile,
-		Binary:       rf.binary,
-		CacheDir:     cacheDir,
-		Diagnostics:  diagnostics,
+		Repository:      rf.repository,
+		PasswordFile:    rf.passwordFile,
+		Binary:          rf.binary,
+		CacheDir:        cacheDir,
+		AccessKeyID:     keyID,
+		SecretAccessKey: keySecret,
+		Diagnostics:     diagnostics,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("select repository: %w", err)
