@@ -11,6 +11,29 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The two §14 pre-deployment schemas are frozen, and the freeze is
+  enforced by tests rather than asserted in prose.** `storage.json` at
+  `config_schema` 2 and the catalog at `SchemaVersion` 1 with migrations
+  `0001_init` and `0002_unknown_counts` — both having run against real Cellar
+  and the real managed PostgreSQL, which is the strongest evidence they were
+  going to get before carrying data.
+
+  `internal/config` pins the exact JSON names at every level, the schema
+  number, and that a pre-freeze schema-1 document still loads. That last one
+  matters because loading *deliberately* ignores unknown names so a newer
+  writer's document stays readable — which is precisely why no other test could
+  catch an accidental field. Adding a field now fails with both sets printed.
+
+  `internal/sharedcatalog` pins the migration ledger's identity and order, the
+  schema version, and the allowlist's table set with a non-vacuity check. The
+  schema changes by adding a migration, never by editing one that has run: an
+  applied migration is history, and rewriting it leaves every deployment that
+  ran it holding a shape nothing describes.
+
+  Frozen does not mean unchangeable. It means a change is a deliberate act
+  with a compatibility story, and the way to have that conversation is for
+  these tests to fail.
+
 - A `flake.nix` dev shell pinning the full toolchain (Go, restic, Bun,
   PostgreSQL client, `CGO_ENABLED=0` matching the release builds), so
   `nix develop` replaces ad-hoc `PATH` exports to nix store paths ([#24]).
