@@ -31,13 +31,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   workspace-derived project slug - never leaves the machine (SPEC.md §9).
 
   **An outage defers rather than fails.** The snapshot is already durable in the
-  repository, so a push that cannot reach PostgreSQL reports `catalog-pending`
-  and exits 0, and the next push adopts it from the repository's snapshot
-  listing. What does *not* defer is a refusal: a rejected credential, a missing
+  repository, so a push that cannot reach PostgreSQL reports `uncatalogued` and
+  exits 0, and the next push adopts it from the repository's snapshot listing.
+  A lease another instance already holds defers the same way, for the same
+  reason. What does *not* defer is a refusal: a rejected credential, a missing
   privilege, a pending migration, or a schema this binary cannot write all fail
-  loudly, because reconciliation would hit the same wall and reporting
-  `catalog-pending` would hide a misconfiguration behind a state that appears to
-  resolve itself. The rule is whether PostgreSQL answered.
+  loudly, because reconciliation would hit the same wall and reporting a state
+  that appears to resolve itself would hide a misconfiguration. The rule is
+  whether PostgreSQL answered.
+
+  The word is `uncatalogued`, matching `archive status`, and deliberately not
+  `catalog-pending`: that phrase names a different state in this system — a row
+  that exists, carries restic's real counts, and lacks any record of which
+  sessions the snapshot held. A push that used the narrower word for the wider
+  state would send an operator hunting for session detail that was never
+  written rather than for a row that was never created.
 
   **Reconciliation runs before publishing, not after**, which is load-bearing
   rather than stylistic. `Reconcile` assigns each adopted snapshot the next
@@ -234,6 +242,63 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   mechanisms are kept, since either alone is a single point of failure for a
   credential, and the route now says so where an editor would remove it
   ([#36]).
+- **Two-instance acceptance now runs as a test** (SPEC.md §10's pre-deployment
+  gate: a second independently configured instance must browse the shared
+  catalog, fetch a session the first host archived, lose and rebuild its local
+  SQLite cache, and recover cleanly). Two instances with their own HOME, XDG
+  configuration/data/cache, host identity, and instance id share exactly what a
+  real deployment shares — one restic repository and one PostgreSQL catalog —
+  and the scenario proves, in order: both configure independently while only
+  one migrates; host A publishes; host B browses the catalog it never wrote to;
+  B publishes its own session and the catalog holds two hosts, ordered, with
+  distinct session identities; B lists and then byte-exactly fetches A's
+  session into B's own store, and A does the same for B's, since neither
+  instance is privileged; B loses its local catalog and rebuilds it field for
+  field, while the shared view and the already-materialized session — retained
+  data, not cache — are untouched; a publication lease with a live owner defers
+  the other claimant's push, leaving the snapshot durable and reported
+  `uncatalogued`; and the next uncontended push adopts it with monotonic
+  publication order.
+
+  The catalog is reached through Babel's own configuration document, so the
+  connection is TLS — shared mode cannot express `sslmode=disable`. A new
+  `internal/pgtest` provisions throwaway clusters with a self-signed
+  certificate for that reason, and its own tests assert the server's view of
+  the connection (`pg_stat_ssl`) rather than the client's request, because a
+  cluster started *without* `ssl=on` can still accept an `sslmode=require`
+  client and would let a CLI-level test pass while proving nothing about
+  encryption. `internal/sharedcatalog`'s harness now provisions through the
+  same package.
+- **`archive status` reports what the shared catalog holds, per host**, so a
+  second instance can browse it rather than only compare totals against the
+  repository. A second table lists each publishing host's catalog snapshot
+  rows, distinct session identities, catalog-pending rows, newest publication
+  order, and that row's snapshot time. It stays a separate table from the
+  repository listing on purpose: the whole point of the column is that the
+  repository and the catalog can disagree, and merging them would hide it.
+  Absent in local mode, and absent rather than empty when the catalog could not
+  be read.
+- **`babel sessions list --host HOST [--snapshot ID]`** lists the sessions
+  another host archived, which selective cross-host fetch needed to be usable:
+  `fetch --host` already worked, but nothing could discover a selector to hand
+  it. The listing reads only the snapshot's file tree — no transcript bytes are
+  downloaded — so it reports harness, source id, selector, and primary size,
+  and leaves title, workspace, modification time, and continuation grade
+  absent, rendering `-`. Selectors are identical to the ones a local listing
+  gives the same sessions, so an operator has one selector vocabulary whether
+  the files are here or only in the archive. `--host` is rejected with
+  `--roots` and `--no-cache`, and `--snapshot` without `--host`, each naming
+  the conflict rather than silently preferring one source.
+- **Direct recovery is now tested with `restic` alone** — no Babel in the
+  restore path, no PostgreSQL, no configuration: just the repository locator
+  and the password file, then a byte-for-byte comparison of every regular file
+  under every backup root the push reported. This is the guarantee that makes
+  the archive trustworthy independently of Babel (SPEC.md §14), and it was the
+  one §14 leg with no coverage at all. Restoring through a Babel helper could
+  have passed while the property failed, so the test shells out to the real
+  binary. It walks the sources rather than the restore, since the reverse
+  comparison would pass for a restore that dropped files, and it fails if the
+  walk compared implausibly few files.
 
 ### Changed
 
@@ -326,6 +391,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A session's catalog identity was derived from `storage.json` rather than
+  from the host actually publishing it.** The snapshot goes to restic under the
+  resolved host — `--host`, else `$BABEL_HOST_ID`, else the configured value —
+  and that resolved host takes the publication lease and owns the snapshot row,
+  but the session-identity digest was computed from the configured `host_id`
+  alone. Any override silently attributed a host's sessions to an identity that
+  never published them, and two hosts archiving the same source tree collided
+  on one digest instead of producing two, which is the uniqueness the digest
+  exists to provide (decision 9). Session identity now follows the publishing
+  host, and a test pushes one source session under two host identities and
+  asserts the catalog holds two distinct identities — it holds one without the
+  fix. The two-instance acceptance cannot catch this on its own, since its two
+  hosts archive disjoint sessions.
 - **The end-to-end suite flaked about one run in six, and the assertion was
   wrong rather than the code.** It appends to a session log and requires the
   next push to add fewer bytes than the file, which states deduplication. That

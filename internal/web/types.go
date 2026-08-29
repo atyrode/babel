@@ -50,7 +50,10 @@ type StateProviderFunc func(context.Context) (State, error)
 
 func (f StateProviderFunc) WebState(ctx context.Context) (State, error) { return f(ctx) }
 
-// SessionRow mirrors internal/cli sessionRow field-for-field.
+// SessionRow mirrors internal/cli sessionRow field-for-field. Every nullable
+// field stays nullable across the mirror, including the continuation grade:
+// the CLI leaves it absent when no transcript was read, and this shape must be
+// able to say so rather than reporting a grade nothing observed.
 type SessionRow struct {
 	Harness           string  `json:"harness"`
 	SourceID          string  `json:"source_id"`
@@ -59,7 +62,7 @@ type SessionRow struct {
 	Modified          *string `json:"modified"`
 	Title             *string `json:"title"`
 	Workspace         *string `json:"workspace"`
-	ContinuationGrade bool    `json:"continuation_grade"`
+	ContinuationGrade *bool   `json:"continuation_grade"`
 }
 
 // ScanState mirrors internal/cli scanState field-for-field. It reports the

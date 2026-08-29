@@ -21,10 +21,20 @@ const (
 	// catalogCommitted means the snapshot and its session rows are visible to
 	// every instance.
 	catalogCommitted = "committed"
-	// catalogPending means the snapshot is durable but not yet catalogued.
-	// Reconciliation restores visibility from the repository's snapshot list
-	// without republishing bytes (SPEC.md 9).
-	catalogPending = "catalog-pending"
+	// catalogUncatalogued means the snapshot is durable and the shared catalog
+	// holds no row for it at all, which is what an outage or a lease already
+	// held by another instance leaves behind. The next push records it, or
+	// reconciliation adopts it from the repository's snapshot list without
+	// republishing bytes (SPEC.md 9).
+	//
+	// It deliberately does NOT say "catalog-pending". That phrase names a
+	// different state in this system: a catalog row that exists, carries
+	// restic's real counts, and lacks any record of which sessions the snapshot
+	// held. `archive status` reports the two separately because they call for
+	// different responses, and a push that used the narrower word for the wider
+	// state would send an operator looking for session detail that was never
+	// written rather than for a row that was never created.
+	catalogUncatalogued = "uncatalogued"
 )
 
 // publicationLeaseTTL bounds how long this instance may hold a host's lease.
@@ -39,7 +49,7 @@ const publicationLeaseTTL = 2 * time.Minute
 //
 // It returns the catalog state to report and the number of session rows
 // published. A returned error is a genuine failure; an outage is not one, and
-// reports catalogPending instead.
+// reports catalogUncatalogued instead.
 func (a *app) publishToCatalog(
 	ctx context.Context,
 	d dirs,
@@ -59,7 +69,7 @@ func (a *app) publishToCatalog(
 	// list` uses, so an hourly push describes what changed rather than the
 	// whole corpus. The counts it carries were computed by that describe.
 	sessions, covered := a.scan(ctx, adapters(), nil)
-	rows, err := a.publishableSessions(ctx, sessions, covered, d.data, cfg)
+	rows, err := a.publishableSessions(ctx, sessions, covered, d.data, cfg.DeploymentID, host)
 	if err != nil {
 		return "", 0, err
 	}
@@ -219,18 +229,18 @@ func hostSnapshots(listing []restic.Snapshot, host string, skip ...string) []sha
 //
 // Everything else - a rejected credential, a missing privilege, a pending
 // migration, a schema this binary cannot write - would defeat reconciliation in
-// exactly the same way, so reporting catalog-pending would hide a
-// misconfiguration behind a state that appears to resolve itself. Those fail.
+// exactly the same way, so reporting a state that appears to resolve itself
+// would hide a misconfiguration. Those fail.
 func (a *app) catalogDeferred(err error, what string) (string, int, error) {
 	switch {
 	case sharedcatalog.Unreachable(err):
 		a.diagf("warning: could not %s: %s\n", what, Sanitize(err.Error()))
 		a.diagf("note: the snapshot is durable; run `babel archive push` again or reconcile to catalogue it\n")
-		return catalogPending, 0, nil
+		return catalogUncatalogued, 0, nil
 	case errors.Is(err, sharedcatalog.ErrLeaseHeld), errors.Is(err, sharedcatalog.ErrLeaseLost):
 		a.diagf("warning: another instance is publishing for this host: %s\n", Sanitize(err.Error()))
 		a.diagf("note: the snapshot is durable and will be catalogued by the next push or reconciliation\n")
-		return catalogPending, 0, nil
+		return catalogUncatalogued, 0, nil
 	}
 	return "", 0, fmt.Errorf("%s: %w", what, err)
 }
@@ -240,12 +250,20 @@ func (a *app) catalogDeferred(err error, what string) (string, int, error) {
 // Only opaque identity and counts cross this boundary: SessionUID is a digest
 // over the deployment, host, harness, and source id, and the source id - which
 // embeds a workspace-derived project slug - never leaves the machine (SPEC.md 9).
+//
+// The host is the one this push is publishing under - the resolved identity that
+// took the lease and that restic recorded on the snapshot - not the configured
+// default. They differ whenever `--host` or $BABEL_HOST_ID overrides
+// storage.json, and deriving session identity from the configured value would
+// attribute a host's sessions to an identity that never published them, which
+// breaks the uniqueness the digest exists to provide (decision 9).
 func (a *app) publishableSessions(
 	ctx context.Context,
 	sessions []localSession,
 	covered []string,
 	dataDir string,
-	cfg config.Config,
+	deploymentID string,
+	host string,
 ) ([]sharedcatalog.SessionRow, error) {
 	cache, err := catalog.Open(dataDir)
 	if err != nil {
@@ -269,7 +287,7 @@ func (a *app) publishableSessions(
 		}
 		rows = append(rows, sharedcatalog.SessionRow{
 			SessionUID: sharedcatalog.SessionUID(
-				cfg.DeploymentID, cfg.HostID, row.Harness, row.SourceID),
+				deploymentID, host, row.Harness, row.SourceID),
 			Harness:             row.Harness,
 			PrimarySize:         row.PrimarySize,
 			ArtifactCount:       row.ArtifactCount,
