@@ -264,6 +264,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The end-to-end suite flaked about one run in six, and the assertion was
+  wrong rather than the code.** It appends to a session log and requires the
+  next push to add fewer bytes than the file, which states deduplication. That
+  only holds if the file spans more than one chunk, and the fixture was 4.34 MB
+  against restic's 8 MiB maximum chunk size — so under some repositories the
+  whole file was a single chunk and appending genuinely re-stored all of it.
+
+  The randomness was not in the content, which is fixed-seed: **restic picks a
+  chunker polynomial per repository**, and every run builds a fresh one.
+  Measured across eight runs of byte-identical input, the second push added
+  between 166 KB and 4.57 MB — and that upper figure exceeds the old fixture,
+  which is exactly the observed failure. The padded log is now 11.12 MiB, above
+  the 8 MiB bound, so at least two chunks exist under every polynomial and the
+  assertion is an invariant instead of a coin flip. The test asserts that
+  precondition itself, so shrinking the fixture fails loudly rather than
+  quietly restoring the flake, and it logs the accounting so any future tighter
+  bound can be argued from observation.
 - A web-harness test waited exactly as long for graceful shutdown as the server
   gives itself (5s), so a correct-but-slow shutdown and the test's deadline
   raced; under full-suite load the test reported a hang that had not happened.
