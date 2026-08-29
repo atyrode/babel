@@ -43,6 +43,22 @@ const SchemaVersion = 1
 // silently would risk writing rows an older writer cannot represent.
 var ErrSchemaTooNew = errors.New("shared catalog schema is newer than this babel")
 
+// ErrUnreachable marks a failure to reach PostgreSQL at all, as opposed to one
+// it answered. Open attaches it while the original error is still intact,
+// because redaction destroys the chain that classification would otherwise
+// use; see Unreachable.
+var ErrUnreachable = errors.New("shared catalog unreachable")
+
+// reachErr redacts a connection failure and carries forward the one fact the
+// destroyed chain can no longer supply: whether PostgreSQL answered.
+func reachErr(err error, dsn string) error {
+	redacted := redactDSN(err, dsn)
+	if transportFailure(err) {
+		return fmt.Errorf("reach shared catalog: %w: %w", redacted, ErrUnreachable)
+	}
+	return fmt.Errorf("reach shared catalog: %w", redacted)
+}
+
 // Schema is the schema Babel owns. Every catalog object lives in it, and
 // nothing else may.
 //
@@ -84,7 +100,7 @@ func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("reach shared catalog: %w", redactDSN(err, dsn))
+		return nil, reachErr(err, dsn)
 	}
 	return db, nil
 }
@@ -146,6 +162,18 @@ func Migrate(ctx context.Context, db *sql.DB) (applied []string, err error) {
 // An entirely unmigrated database is a normal state for a new deployment, not a
 // malfunction, so it must not surface as a raw "relation does not exist" from
 // whichever query happened to run first.
+//
+// Neither is a migrated database that nothing has registered into. The
+// deployment row carries the recorded version and Register writes it on first
+// push, so between `storage migrate` and that push the maximum is 0. Reading
+// that as "older than this binary" would tell an operator to run the migration
+// they just ran.
+//
+// So readiness comes from the migration ledger, which is the honest source for
+// "is anything pending" - the same distinction that made `storage verify`
+// report a freshly migrated catalog as still needing migration. The recorded
+// version answers a different question: which version the fleet was
+// bootstrapped as, with 0 meaning not yet recorded.
 func EnsureCompatible(ctx context.Context, db *sql.DB) error {
 	var ready bool
 	if err := db.QueryRowContext(ctx,
@@ -156,19 +184,22 @@ func EnsureCompatible(ctx context.Context, db *sql.DB) error {
 		return errors.New("shared catalog has no schema yet: run `babel storage migrate`")
 	}
 
-	var version int
-	err := db.QueryRowContext(ctx,
-		`SELECT coalesce(max(schema_version), 0) FROM deployments`).Scan(&version)
+	pending, err := PendingMigrations(ctx, db)
 	if err != nil {
+		return err
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("shared catalog has %d pending migration(s): run `babel storage migrate`", len(pending))
+	}
+
+	var version int
+	if err := db.QueryRowContext(ctx,
+		`SELECT coalesce(max(schema_version), 0) FROM deployments`).Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	switch {
-	case version > SchemaVersion:
+	if version > SchemaVersion {
 		return fmt.Errorf("%w: database is version %d, this babel implements %d",
 			ErrSchemaTooNew, version, SchemaVersion)
-	case version < SchemaVersion:
-		return fmt.Errorf("shared catalog is version %d and this babel implements %d: run `babel storage migrate`",
-			version, SchemaVersion)
 	}
 	return nil
 }

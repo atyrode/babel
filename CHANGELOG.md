@@ -17,6 +17,41 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - The Phase A shared catalog schema and migrations: deployments, instances,
   hosts, snapshots, opaque session identity, server-time fenced host leases,
   and idempotency keys, applied transactionally from embedded SQL ([#25]).
+- **`archive push` now publishes to the shared catalog.** Until now shared mode
+  was configurable but inert: nothing registered a deployment, host, or
+  instance, and no code path called publication or leases at all, so an
+  operator's machines could never appear in the shared catalog. A push now
+  registers its identity, takes a server-time fenced host lease, publishes the
+  snapshot with its session identity rows, and releases the lease. The restic
+  snapshot id keys the publication, so a retried push of the same snapshot is a
+  no-op rather than a duplicate.
+
+  Only opaque identity crosses the boundary: a session's uid is a digest over
+  deployment, host, harness, and source id, and the source id - which embeds a
+  workspace-derived project slug - never leaves the machine (SPEC.md §9).
+
+  **An outage defers rather than fails.** The snapshot is already durable in the
+  repository, so a push that cannot reach PostgreSQL reports `catalog-pending`
+  and exits 0, and the next push adopts it from the repository's snapshot
+  listing. What does *not* defer is a refusal: a rejected credential, a missing
+  privilege, a pending migration, or a schema this binary cannot write all fail
+  loudly, because reconciliation would hit the same wall and reporting
+  `catalog-pending` would hide a misconfiguration behind a state that appears to
+  resolve itself. The rule is whether PostgreSQL answered.
+
+  **Reconciliation runs before publishing, not after**, which is load-bearing
+  rather than stylistic. `Reconcile` assigns each adopted snapshot the next
+  order above the current maximum, so adopting a stranded *older* snapshot after
+  publishing a newer one would give the older one the *higher*
+  `publication_order` - and that column exists so readers can select the newest
+  snapshot without trusting clock skew. Two tests pin it, one asserting the
+  invariant and one demonstrating the inversion the sequence avoids.
+- Session closure counts (artifacts, blobs, unresolved blob references) are
+  cached in the local session catalog, at schema 2. Publication needs them on
+  every push, and re-describing an unchanged session to recover a number the
+  describe already computed would make an hourly push scale with the whole
+  corpus rather than with what changed. A cache at the old schema is discarded
+  and rebuilt, which is safe: every row derives from live sources.
 - **Babel owns its own PostgreSQL schema** (`babel`), created by `storage
   migrate` and pinned as `search_path` on every connection (decision 47).
   Driving the real Clever Cloud add-on showed why: it pre-installs 40

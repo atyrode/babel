@@ -253,6 +253,10 @@ type pushResult struct {
 	FilesProcessed  int      `json:"total_files_processed"`
 	BytesProcessed  int64    `json:"total_bytes_processed"`
 	Incomplete      bool     `json:"incomplete"`
+	// Catalog is "local" throughout this suite: it configures no shared
+	// catalog, so a push must say so rather than claiming it published.
+	Catalog           string `json:"catalog"`
+	SessionsPublished int    `json:"sessions_published"`
 }
 
 type statusHostRow struct {
@@ -371,6 +375,16 @@ func TestPhaseALoopEndToEnd(t *testing.T) {
 	}
 	if first.Incomplete {
 		t.Fatalf("push reported an incomplete backup: %+v", first)
+	}
+	// No shared catalog is configured here, so the push must report that
+	// plainly rather than implying it published anything fleet-wide.
+	if first.Catalog != "local" {
+		t.Fatalf("push catalog state = %q, want %q with no shared catalog configured: %+v",
+			first.Catalog, "local", first)
+	}
+	if first.SessionsPublished != 0 {
+		t.Fatalf("push claimed to publish %d session rows with no shared catalog: %+v",
+			first.SessionsPublished, first)
 	}
 	if first.FilesNew == 0 {
 		t.Fatalf("push stored no new files: %+v", first)

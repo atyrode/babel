@@ -109,6 +109,12 @@ type pushResult struct {
 	// Incomplete records that restic reported a partial backup: the
 	// snapshot exists and is usable, but some source files were not read.
 	Incomplete bool `json:"incomplete"`
+	// Catalog is what happened to the shared catalog: "local" when there is
+	// none, "committed" when this snapshot is visible fleet-wide, or
+	// "catalog-pending" when the snapshot is durable but not yet recorded.
+	Catalog string `json:"catalog"`
+	// SessionsPublished counts the session identity rows this push recorded.
+	SessionsPublished int `json:"sessions_published"`
 }
 
 // archivePush implements `babel archive push`.
@@ -167,6 +173,20 @@ func (a *app) archivePush(ctx context.Context, args []string) error {
 	res.BytesProcessed = summary.TotalBytesProcessed
 	res.Incomplete = backupErr != nil
 
+	// The archive is already durable. Cataloguing is a separate step whose
+	// failure must not make a successful backup look failed, so an outage
+	// reports catalog-pending and a real misconfiguration is what fails.
+	if backupErr == nil {
+		state, published, pubErr := a.publishToCatalog(ctx, d, host, repo, summary)
+		res.Catalog, res.SessionsPublished = state, published
+		if pubErr != nil {
+			if reportErr := a.reportPush(res, *asJSON); reportErr != nil {
+				return reportErr
+			}
+			return pubErr
+		}
+	}
+
 	if err := a.reportPush(res, *asJSON); err != nil {
 		return err
 	}
@@ -197,6 +217,12 @@ func (a *app) reportPush(res pushResult, asJSON bool) error {
 		{"bytes processed", fmt.Sprint(res.BytesProcessed)},
 		{"data added", fmt.Sprint(res.DataAdded)},
 		{"complete", yesNo(!res.Incomplete, "yes", "no")},
+	}
+	if res.Catalog != "" && res.Catalog != catalogLocal {
+		rows = append(rows,
+			[2]string{"catalog", res.Catalog},
+			[2]string{"sessions published", fmt.Sprint(res.SessionsPublished)},
+		)
 	}
 	for _, root := range res.Roots {
 		rows = append(rows, [2]string{"root", root})
