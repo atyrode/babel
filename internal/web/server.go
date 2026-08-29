@@ -539,17 +539,24 @@ type lockResult struct {
 // reported rather than swallowed: it would mean the wrapper stopped exposing
 // the underlying writer, and the operator's only report of the outcome would
 // then depend entirely on the drain.
+//
+// The diagnostic is emitted before the shutdown signal, not after. Flushing
+// releases the client while this handler is still running, so anything left
+// after the signal races every observer that the response just unblocked -
+// including a caller that reads the diagnostics stream expecting the decision
+// to be recorded in it. Closing `locked` last makes that channel a barrier for
+// the whole handler rather than for part of it.
 func (s *Server) handleLock(w http.ResponseWriter) {
 	s.revoked.Store(true)
 	s.writeJSON(w, http.StatusOK, lockResult{Revoked: true, Stopping: true})
 	if err := http.NewResponseController(w).Flush(); err != nil {
 		s.logf("lock confirmation was not flushed: %v", err)
 	}
+	s.logf("locked by operator: launch token revoked, stopping listener")
 	// Serve owns the shutdown; signalling it keeps this handler off the path
 	// that closes the connection it is still writing to. Once, because a
 	// second lock must not close a closed channel.
 	s.lockOnce.Do(func() { close(s.locked) })
-	s.logf("locked by operator: launch token revoked, stopping listener")
 }
 
 func (s *Server) operationError(w http.ResponseWriter, err error) {
