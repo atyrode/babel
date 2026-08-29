@@ -33,12 +33,19 @@ var validRoleName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 // EnsureAppRole creates or updates a least-privilege application role and
 // returns nothing sensitive.
 //
-// SPEC.md 9 requires that a separate migration credential be supplied
-// ephemerally to `storage migrate` and that normal instances cannot change
-// schema. This is the enforcement: the application role receives DML on data
-// tables, SELECT on the migration ledger, and no DDL, no ownership, no CREATE
-// on the schema. Each instance uses a distinct revocable credential, so
-// revoking one instance never disturbs another.
+// This is usable only where the provider permits creating database users, and
+// the operator's provider does not: Clever Cloud's managed PostgreSQL cannot
+// create them (provider confirmation, 2026-08-28), so shared mode's supported
+// default is one credential for the whole deployment and nothing outside these
+// tests calls this. SPEC.md decision 46 records that, and SPEC.md 9 records
+// what the single-credential default gives up: schema change restrained by
+// operator procedure instead of privilege, and no database-level way to revoke
+// one instance.
+//
+// Where a provider does permit it, this is the enforcement: the application
+// role receives DML on data tables, SELECT on the migration ledger, and no DDL,
+// no ownership, no CREATE on the schema. Each instance then uses a distinct
+// revocable credential, so revoking one never disturbs another.
 //
 // It must be called with the migration credential. Statements are built by
 // PostgreSQL's own format() with %I/%L so an identifier or password never
@@ -109,9 +116,13 @@ func EnsureAppRole(ctx context.Context, db *sql.DB, role, password string) error
 	return nil
 }
 
-// RevokeAppRole removes an instance's credential. Per-instance revocation is a
-// SPEC.md 14 gate requirement, and it must not disturb other instances: only
-// this role's grants and login are removed, never any data.
+// RevokeAppRole removes an instance's credential without disturbing other
+// instances: only this role's grants and login are removed, never any data.
+//
+// Like EnsureAppRole this requires a provider that permits creating database
+// users. Under the single-credential default there is no database-level
+// equivalent, and per-instance eviction is instead the application-level
+// instance revocation required by SPEC.md 11.
 func RevokeAppRole(ctx context.Context, db *sql.DB, role string) error {
 	if !validRoleName.MatchString(role) {
 		return fmt.Errorf("invalid application role name: must match %s", validRoleName)
