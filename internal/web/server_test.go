@@ -558,7 +558,9 @@ func TestLockRefusesForgeableRequests(t *testing.T) {
 // lock is accepted, so a tab the operator left open cannot act on it during
 // the shutdown.
 func TestLockRevokesTheLaunchSession(t *testing.T) {
-	var diagnostics bytes.Buffer
+	// A mutex-protected sink, because the access log is written by whichever
+	// goroutine served a request and this test reads the same stream.
+	var diagnostics syncBuffer
 	s, httpServer := testServer(t, Options{Diagnostics: &diagnostics})
 	client := httpServer.Client()
 
@@ -590,6 +592,14 @@ func TestLockRevokesTheLaunchSession(t *testing.T) {
 			t.Fatalf("%s %s after lock = %d, want 401", target.method, target.path, after.StatusCode)
 		}
 	}
+
+	// The flush releases the client while the handler is still running, so the
+	// response is not a barrier for the handler's own work. `locked` is: it is
+	// closed last, after the diagnostic is written. Without this wait the
+	// assertions below race the handler and fail only under load, which is how
+	// this surfaced - green locally, red on a busy CI runner, with the buffer
+	// holding just the two post-lock 401s.
+	<-s.locked
 
 	// The confirmation is written and flushed before the listener is asked to
 	// go away, so it does not depend on the drain. The handler reports a flush
@@ -657,3 +667,25 @@ func TestLockStopsTheListener(t *testing.T) {
 type errorsWithControl string
 
 func (e errorsWithControl) Error() string { return string(e) }
+
+// syncBuffer is a diagnostics sink safe for the concurrent writes a running
+// server makes. The access log is emitted by whichever goroutine served the
+// request, so a test that both serves requests and reads the stream cannot use
+// a bare bytes.Buffer: that is a data race whether or not it is detected on a
+// given run.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
