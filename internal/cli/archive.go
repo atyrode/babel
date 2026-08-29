@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/restic"
+	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
 const archiveUsage = `Usage: babel archive <command> [flags]
@@ -260,11 +262,32 @@ type statusHostRow struct {
 	Tags          []string `json:"tags,omitempty"`
 }
 
+// catalogStatus answers "is anything archived but not catalogued", derived from
+// the repository listing and the catalog rather than from a local journal.
+//
+// The counts are pointers because an unreachable catalog does not make them
+// zero, it makes them unknown, and reporting 0 uncatalogued snapshots is a
+// factual claim this command cannot make without reading the catalog. Absent
+// means unknown, exactly as elsewhere in Babel.
+type catalogStatus struct {
+	// Reachable is false during an outage. Status stays useful offline, so an
+	// unreachable catalog is reported rather than fatal.
+	Reachable bool `json:"reachable"`
+	// Uncatalogued counts snapshots the repository holds that the catalog has
+	// never seen. A push catalogues them.
+	Uncatalogued *int `json:"uncatalogued,omitempty"`
+	// Pending counts snapshots the catalog holds without session rows, which
+	// is the state reconciliation leaves them in.
+	Pending *int `json:"pending,omitempty"`
+}
+
 // statusResult is the machine-readable archive status.
 type statusResult struct {
 	Repository string          `json:"repository"`
 	Snapshots  int             `json:"snapshots"`
 	Hosts      []statusHostRow `json:"hosts"`
+	// Catalog is absent in local mode: there is nothing to be behind.
+	Catalog *catalogStatus `json:"catalog,omitempty"`
 }
 
 // archiveStatus implements `babel archive status`.
@@ -297,6 +320,7 @@ func (a *app) archiveStatus(ctx context.Context, args []string) error {
 		Snapshots:  len(snapshots),
 		Hosts:      groupByHost(snapshots),
 	}
+	res.Catalog = a.catalogLag(ctx, snapshots)
 	if len(snapshots) == 0 {
 		a.diagf("warning: repository holds no snapshots yet\n")
 	}
@@ -317,7 +341,74 @@ func (a *app) archiveStatus(ctx context.Context, args []string) error {
 			orMissing(joinCell(h.Tags)),
 		})
 	}
-	return writeTable(a.stdout, []string{"HOST", "SNAPSHOTS", "LATEST", "LATEST ID", "TAGS"}, rows)
+	if err := writeTable(a.stdout, []string{"HOST", "SNAPSHOTS", "LATEST", "LATEST ID", "TAGS"}, rows); err != nil {
+		return err
+	}
+	if c := res.Catalog; c != nil {
+		return writeDetail(a.stdout, [][2]string{
+			{"catalog reachable", yesNo(c.Reachable, "yes", "no")},
+			{"uncatalogued snapshots", countOrUnknown(c.Uncatalogued)},
+			{"catalog-pending snapshots", countOrUnknown(c.Pending)},
+		})
+	}
+	return nil
+}
+
+// catalogLag reports how far the shared catalog is behind the repository.
+//
+// This is the answer to "did an outage leave something uncatalogued", and it is
+// computed rather than remembered: the repository is authoritative for what
+// exists and the catalog for what it has recorded, so no local journal can be
+// more correct than comparing them. It returns nil in local mode, where there
+// is nothing to be behind.
+func (a *app) catalogLag(ctx context.Context, snapshots []restic.Snapshot) *catalogStatus {
+	cfg, found, err := config.Load()
+	if err != nil || !found || storageMode(cfg) != config.ModeShared || cfg.Catalog == nil {
+		return nil
+	}
+
+	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
+	if err != nil {
+		// Status must stay useful during an outage, so this is reported rather
+		// than fatal. An error that is not an outage is still only a report:
+		// nothing here writes, and the repository half of the answer is real.
+		a.diagf("warning: could not reach the shared catalog: %s\n", Sanitize(err.Error()))
+		return &catalogStatus{}
+	}
+	defer db.Close()
+
+	states, err := sharedcatalog.SnapshotStates(ctx, db)
+	if err != nil {
+		a.diagf("warning: could not read catalog snapshot states: %s\n", Sanitize(err.Error()))
+		return &catalogStatus{}
+	}
+
+	var uncatalogued, pending int
+	for _, s := range snapshots {
+		if _, known := states[s.ID]; !known {
+			uncatalogued++
+		}
+	}
+	for _, state := range states {
+		if state == sharedcatalog.CommitPending {
+			pending++
+		}
+	}
+	if uncatalogued > 0 {
+		a.diagf("note: %d %s archived but not catalogued; `babel archive push` records them\n",
+			uncatalogued, plural(uncatalogued, "snapshot is", "snapshots are"))
+	}
+	return &catalogStatus{Reachable: true, Uncatalogued: &uncatalogued, Pending: &pending}
+}
+
+// countOrUnknown renders a derived count, or says it is unknown. An unreachable
+// catalog leaves the counts absent rather than zero, and printing 0 would state
+// something this command did not observe.
+func countOrUnknown(n *int) string {
+	if n == nil {
+		return "unknown"
+	}
+	return fmt.Sprint(*n)
 }
 
 // groupByHost folds the repository's snapshots into one row per host. Host

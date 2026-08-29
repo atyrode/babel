@@ -8,6 +8,67 @@ import (
 	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
+// SnapshotStates is what lets `archive status` answer "is anything archived but
+// not catalogued" without a local journal, so it must distinguish a snapshot the
+// catalog committed from one reconciliation only adopted.
+func TestSnapshotStatesDistinguishesCommittedFromPending(t *testing.T) {
+	db := newDB(t)
+	mustMigrate(t, db)
+	ctx := context.Background()
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	empty, err := sharedcatalog.SnapshotStates(ctx, db)
+	if err != nil {
+		t.Fatalf("SnapshotStates on an empty catalog: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("an empty catalog reported %d snapshots", len(empty))
+	}
+
+	when := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	lease, err := sharedcatalog.AcquireHostLease(ctx, db, "h1", "inst-a", time.Minute)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if _, err := sharedcatalog.PublishSnapshot(ctx, db, lease, "snapshot:s-committed",
+		sharedcatalog.SnapshotRow{
+			SnapshotID:       "s-committed",
+			PublicationOrder: 1,
+			SnapshotTime:     when,
+			CommitState:      sharedcatalog.CommitCommitted,
+			PublishedBy:      "inst-a",
+		}, nil); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	// A snapshot an outage stranded, recovered by reconciliation rather than by
+	// its owner's push, carries no session rows and stays pending.
+	if _, err := sharedcatalog.Reconcile(ctx, db, "h1", []sharedcatalog.RepoSnapshot{
+		{SnapshotID: "s-committed", Host: "h1", Time: when},
+		{SnapshotID: "s-adopted", Host: "h1", Time: when.Add(time.Minute)},
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	states, err := sharedcatalog.SnapshotStates(ctx, db)
+	if err != nil {
+		t.Fatalf("SnapshotStates: %v", err)
+	}
+	if got := states["s-committed"]; got != sharedcatalog.CommitCommitted {
+		t.Errorf("committed snapshot state = %q, want %q", got, sharedcatalog.CommitCommitted)
+	}
+	if got := states["s-adopted"]; got != sharedcatalog.CommitPending {
+		t.Errorf("adopted snapshot state = %q, want %q", got, sharedcatalog.CommitPending)
+	}
+	// A snapshot the repository holds but the catalog never saw is absent, which
+	// is what status counts as uncatalogued.
+	if _, present := states["s-never-published"]; present {
+		t.Error("SnapshotStates invented a snapshot the catalog does not hold")
+	}
+}
+
 // publication_order totally orders a host's snapshots so readers can select the
 // newest without trusting clock skew (migrations/0001_init.sql). Reconcile
 // assigns each adopted snapshot the next order above the current maximum, which

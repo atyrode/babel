@@ -84,6 +84,35 @@ func NextPublicationOrder(ctx context.Context, db *sql.DB, hostID string) (int64
 	return next, nil
 }
 
+// SnapshotStates maps every snapshot id the catalog holds to its commit state.
+//
+// It exists so an operator can ask what is uncatalogued without pushing.
+// Phase A keeps no local journal of that, deliberately: the repository lists
+// what exists and the catalog lists what it has recorded, so the difference is
+// derivable from the two authorities. A third local copy could be lost - the
+// local database is explicitly rebuildable - or go stale when another instance
+// reconciles, and would then disagree with both.
+func SnapshotStates(ctx context.Context, db *sql.DB) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT snapshot_id, commit_state FROM snapshots`)
+	if err != nil {
+		return nil, fmt.Errorf("read snapshot states: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]string)
+	for rows.Next() {
+		var id, state string
+		if err := rows.Scan(&id, &state); err != nil {
+			return nil, fmt.Errorf("scan snapshot state: %w", err)
+		}
+		out[id] = state
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read snapshot states: %w", err)
+	}
+	return out, nil
+}
+
 // Unreachable reports whether an error means the catalog could not be reached,
 // rather than that it refused what it was asked to do.
 //
