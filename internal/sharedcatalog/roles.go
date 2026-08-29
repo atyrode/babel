@@ -92,9 +92,9 @@ func EnsureAppRole(ctx context.Context, db *sql.DB, role, password string) error
 	}{
 		// No CREATE: the role cannot add tables of its own to the schema.
 		{`SELECT format('GRANT CONNECT ON DATABASE %I TO %I', $1::text, $2::text)`, []any{database, role}, "connect"},
-		{`SELECT format('GRANT USAGE ON SCHEMA public TO %I', $1::text)`, []any{role}, "schema usage"},
-		{`SELECT format('REVOKE CREATE ON SCHEMA public FROM %I', $1::text)`, []any{role}, "revoke create"},
-		{`SELECT format('GRANT SELECT ON schema_migrations TO %I', $1::text)`, []any{role}, "ledger read"},
+		{`SELECT format('GRANT USAGE ON SCHEMA %I TO %I', $1::text, $2::text)`, []any{Schema, role}, "schema usage"},
+		{`SELECT format('REVOKE CREATE ON SCHEMA %I FROM %I', $1::text, $2::text)`, []any{Schema, role}, "revoke create"},
+		{`SELECT format('GRANT SELECT ON %I.%I TO %I', $1::text, $2::text, $3::text)`, []any{Schema, "schema_migrations", role}, "ledger read"},
 	}
 	for _, t := range dataTables {
 		grants = append(grants, struct {
@@ -102,8 +102,8 @@ func EnsureAppRole(ctx context.Context, db *sql.DB, role, password string) error
 			args  []any
 			what  string
 		}{
-			`SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON %I TO %I', $1::text, $2::text)`,
-			[]any{t, role},
+			`SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON %I.%I TO %I', $1::text, $2::text, $3::text)`,
+			[]any{Schema, t, role},
 			"dml on " + t,
 		})
 	}
@@ -133,8 +133,8 @@ func RevokeAppRole(ctx context.Context, db *sql.DB, role string) error {
 	}
 
 	steps := [][]any{
-		{`SELECT format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', $1::text)`, role},
-		{`SELECT format('REVOKE ALL ON SCHEMA public FROM %I', $1::text)`, role},
+		{`SELECT format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM %I', $1::text, $2::text)`, Schema, role},
+		{`SELECT format('REVOKE ALL ON SCHEMA %I FROM %I', $1::text, $2::text)`, Schema, role},
 		{`SELECT format('REVOKE ALL ON DATABASE %I FROM %I', $1::text, $2::text)`, database, role},
 		{`SELECT format('ALTER ROLE %I NOLOGIN', $1::text)`, role},
 	}

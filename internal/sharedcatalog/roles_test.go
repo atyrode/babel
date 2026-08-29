@@ -188,7 +188,12 @@ func TestFailedMigrationLeavesNoPartialSchema(t *testing.T) {
 	ctx := context.Background()
 
 	// A table the first migration will collide with, forcing 0001 to fail after
-	// its earlier statements have already run inside the transaction.
+	// its earlier statements have already run inside the transaction. The schema
+	// is created here because Migrate has not run yet; Migrate creating it is
+	// idempotent, and this proves the collision path rather than the schema one.
+	if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS ` + sharedcatalog.Schema); err != nil {
+		t.Fatalf("seed schema: %v", err)
+	}
 	if _, err := db.Exec(`CREATE TABLE sessions (placeholder text)`); err != nil {
 		t.Fatalf("seed conflicting table: %v", err)
 	}

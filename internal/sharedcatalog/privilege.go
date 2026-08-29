@@ -52,13 +52,20 @@ type Privileges struct {
 // blind spot is the mirror image of the above - a NOINHERIT member of a role
 // holding CREATE reads as false - and DetectPrivileges closes the case that
 // matters by treating effective superuser as implying DDL.
+//
+// Babel's schema may not exist yet: `configure` runs before `migrate`, and on a
+// fresh database current_schema() resolves to nothing. Reporting `user` there
+// would be wrong in the one place the answer matters most - deciding whether
+// this credential can set the database up at all - so the fallback asks for
+// CREATE on the database, which is exactly the right to create that schema.
 const privilegeQuery = `
 SELECT
   current_user::text,
   EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolsuper      AND pg_has_role(r.oid, 'MEMBER')),
   EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolcreaterole AND pg_has_role(r.oid, 'MEMBER')),
   EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolcreatedb   AND pg_has_role(r.oid, 'MEMBER')),
-  CASE WHEN current_schema() IS NULL THEN false
+  CASE WHEN current_schema() IS NULL
+       THEN has_database_privilege(current_user, current_database(), 'CREATE')
        ELSE has_schema_privilege(current_user, current_schema(), 'CREATE') END`
 
 // DetectPrivileges reports the privilege level the connected catalog credential

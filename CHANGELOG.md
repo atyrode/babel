@@ -17,6 +17,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - The Phase A shared catalog schema and migrations: deployments, instances,
   hosts, snapshots, opaque session identity, server-time fenced host leases,
   and idempotency keys, applied transactionally from embedded SQL ([#25]).
+- **Babel owns its own PostgreSQL schema** (`babel`), created by `storage
+  migrate` and pinned as `search_path` on every connection (decision 47).
+  Driving the real Clever Cloud add-on showed why: it pre-installs 40
+  extensions, and PostGIS and `pg_stat_statements` put 7 relations in `public`.
+  The allowlist gate — which makes the SPEC.md §9 plaintext boundary
+  enforceable — saw those as unauthorized tables and failed the migration
+  *after* it had applied. Sharing a schema leaves no way out: rejecting a
+  provider's extensions is wrong, and ignoring unknown tables blinds the gate
+  to a Babel migration adding an unlisted one. An owned schema keeps it exact.
+  An unknown table is now also named once rather than once per column.
 - **Shared mode in `storage.json`, at schema 2.** The document now carries
   `mode`, deployment/instance identity, and a `catalog` section: PostgreSQL
   endpoint, TLS mode with an optional root CA, one credential by default, and
@@ -165,6 +175,29 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The first deployment's catalog connection is encrypted but not
+  authenticated, and SPEC.md now says so** (decision 48). Clever Cloud's
+  managed PostgreSQL presents a self-signed certificate with **no
+  subject-alternative name**, whose common name identifies a different
+  instance than the one it serves — so `verify-full` cannot succeed there, and
+  pinning the certificate would not supply the missing name. `require`
+  negotiates TLS 1.3 and is the honest setting; the residual exposure is an
+  attacker on the network path impersonating the database and capturing the
+  catalog credential, bounded by Phase A sending only opaque identifiers,
+  ordering, counts, commit state, and timestamps.
+
+  Babel's own behaviour needed no change, which was worth confirming rather
+  than assuming: its error names the real defect (`certificate is not valid
+  for any names`), and `verify-full` was separately proven to **accept** a
+  trusted chain with a matching hostname and to refuse on both CA and hostname
+  grounds, so its rejections discriminate instead of being unconditional.
+- `DetectPrivileges` no longer under-reports on a database Babel has never
+  migrated. `current_schema()` resolves to nothing before the schema exists, so
+  the schema-CREATE check reported `application` for a credential that can in
+  fact set the deployment up; it now falls back to CREATE on the database,
+  which is exactly the right required to create Babel's schema. This is the
+  state `storage configure` runs in on a first deployment, and a real add-on
+  reaches it.
 - `AcquireHostLease` now refuses write authority against an incompatible
   schema rather than leaving the check unwired, so a binary cannot publish into
   a database migrated by a newer one. This is deliberately *not* downgrade
