@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -35,6 +36,14 @@ type Server struct {
 	token    string
 	url      string
 	logMu    sync.Mutex
+	// revoked is the launch session's kill switch. It is separate from the
+	// shutdown signal below because the two must not happen at the same
+	// instant: the token has to be dead before the listener starts winding
+	// down, so a request that raced the lock cannot be served by a process
+	// that is already stopping.
+	revoked  atomic.Bool
+	lockOnce sync.Once
+	locked   chan struct{}
 }
 
 // New generates an access token and binds a loopback listener. Port zero asks
@@ -63,6 +72,7 @@ func New(opts Options) (*Server, error) {
 		listener: listener,
 		token:    token,
 		url:      fmt.Sprintf("http://127.0.0.1:%d/#token=%s", port, token),
+		locked:   make(chan struct{}),
 	}, nil
 }
 
@@ -71,8 +81,13 @@ func New(opts Options) (*Server, error) {
 // it as a bearer header instead.
 func (s *Server) URL() string { return s.url }
 
-// Serve handles requests until ctx is canceled or the server fails. A Server
-// is single-use because New reserves exactly one listener.
+// Serve handles requests until ctx is canceled, the operator locks the server,
+// or the server fails. A Server is single-use because New reserves exactly one
+// listener.
+//
+// A lock returns nil: stopping is what the operator asked for, so `babel web`
+// exits successfully rather than reporting the shutdown it was told to perform
+// as a failure.
 func (s *Server) Serve(ctx context.Context) error {
 	httpServer := &http.Server{
 		Handler:           s.middleware(http.HandlerFunc(s.route)),
@@ -93,22 +108,31 @@ func (s *Server) Serve(ctx context.Context) error {
 			return nil
 		}
 		return err
+	case <-s.locked:
+		return s.shutdown(httpServer, serveResult)
 	case <-ctx.Done():
-		// Closing the listener first also covers cancellation racing with
-		// http.Server's listener registration.
-		_ = s.listener.Close()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		shutdownErr := httpServer.Shutdown(shutdownCtx)
-		serveErr := <-serveResult
-		if shutdownErr != nil {
-			return shutdownErr
-		}
-		if errors.Is(serveErr, http.ErrServerClosed) || errors.Is(serveErr, net.ErrClosed) {
-			return nil
-		}
-		return serveErr
+		return s.shutdown(httpServer, serveResult)
 	}
+}
+
+// shutdown stops accepting connections and drains the ones already accepted.
+// The lock handler is still in flight when it arrives here, so the graceful
+// wait is what puts its confirmation on the wire.
+func (s *Server) shutdown(httpServer *http.Server, serveResult <-chan error) error {
+	// Closing the listener first also covers cancellation racing with
+	// http.Server's listener registration.
+	_ = s.listener.Close()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	shutdownErr := httpServer.Shutdown(shutdownCtx)
+	serveErr := <-serveResult
+	if shutdownErr != nil {
+		return shutdownErr
+	}
+	if errors.Is(serveErr, http.ErrServerClosed) || errors.Is(serveErr, net.ErrClosed) {
+		return nil
+	}
+	return serveErr
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
@@ -129,6 +153,10 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		rw.Header().Set("Referrer-Policy", "no-referrer")
 		if strings.HasPrefix(r.URL.Path, "/api") {
 			rw.Header().Set("Cache-Control", "no-store")
+			if !s.sameOrigin(r) {
+				s.writeError(rw, http.StatusForbidden, "forbidden origin")
+				return
+			}
 			if !s.authorized(r) {
 				s.writeError(rw, http.StatusUnauthorized, "unauthorized")
 				return
@@ -160,11 +188,47 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 	return w.ResponseWriter.Write(p)
 }
 
+// Unwrap exposes the real writer so http.ResponseController can still reach
+// its Flush through this wrapper.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 func (w *statusWriter) statusCode() int {
 	if w.status == 0 {
 		return http.StatusOK
 	}
 	return w.status
+}
+
+// sameOrigin is the shared guard every /api request passes before its
+// credential is even examined. The launch token is the real CSRF defence -- a
+// page the operator merely visited cannot attach an Authorization header
+// without a preflight this server never grants -- but /api/lock turns a forged
+// request into a denial of service, so the two weaker signals a browser does
+// send are checked rather than trusted to stay unreachable:
+//
+// Host must name the loopback literal this server binds. A request arriving
+// here under any other name was aimed at a hostname that resolves to
+// 127.0.0.1, which is DNS rebinding.
+//
+// Origin, when present, must be this server's own. A browser sends it on every
+// state-changing fetch, so a cross-site POST is refused even if the token ever
+// leaked. A missing Origin is allowed: non-browser clients send none, and a
+// browser omits it only for same-origin navigations and GETs, which forge
+// nothing that a token-bearing request had not already authorized.
+func (s *Server) sameOrigin(r *http.Request) bool {
+	if !loopbackHost(r.Host) {
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	return origin == "" || origin == "http://"+r.Host
+}
+
+func loopbackHost(host string) bool {
+	hostname := host
+	if split, _, err := net.SplitHostPort(host); err == nil {
+		hostname = split
+	}
+	return hostname == "127.0.0.1" || hostname == "localhost"
 }
 
 // authorized accepts the launch token from the Authorization header only.
@@ -174,6 +238,13 @@ func (w *statusWriter) statusCode() int {
 // through a channel that gets logged, cached, and put in a Referer. It is
 // refused rather than honoured.
 func (s *Server) authorized(r *http.Request) bool {
+	// A locked server has no valid credential at all. This is checked before
+	// the header is read so a request that raced the lock, or a retry from a
+	// tab the operator left open, is refused by a process that is still
+	// answering only because it has not finished stopping.
+	if s.revoked.Load() {
+		return false
+	}
 	authorization := r.Header.Get("Authorization")
 	if authorization == "" {
 		return false
@@ -245,6 +316,11 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFetch(w, r)
+	case "/api/lock":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleLock(w)
 	default:
 		s.writeError(w, http.StatusNotFound, "not found")
 	}
@@ -441,6 +517,39 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 		result.Included = []string{}
 	}
 	s.writeJSON(w, http.StatusOK, result)
+}
+
+// lockResult reports what the operator's stop request actually did. Both
+// fields are stated because they are two distinct guarantees, and a page that
+// is about to lose its server should not have to infer either one: revoked
+// says the launch session is dead, stopping says the listener is going away.
+type lockResult struct {
+	Revoked  bool `json:"revoked"`
+	Stopping bool `json:"stopping"`
+}
+
+// handleLock is the operator's explicit lock and stop control (SPEC.md §2,
+// §8.2, decisions 34 and 45).
+//
+// The order is the contract. Revoking first means there is no window in which
+// the process still honours the launch token while it winds down; only then is
+// the listener asked to go away. Because the token is dead by the time this
+// responds, the confirmation cannot be re-fetched, so it is flushed here
+// rather than left to the graceful drain. A flush that could not happen is
+// reported rather than swallowed: it would mean the wrapper stopped exposing
+// the underlying writer, and the operator's only report of the outcome would
+// then depend entirely on the drain.
+func (s *Server) handleLock(w http.ResponseWriter) {
+	s.revoked.Store(true)
+	s.writeJSON(w, http.StatusOK, lockResult{Revoked: true, Stopping: true})
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		s.logf("lock confirmation was not flushed: %v", err)
+	}
+	// Serve owns the shutdown; signalling it keeps this handler off the path
+	// that closes the connection it is still writing to. Once, because a
+	// second lock must not close a closed channel.
+	s.lockOnce.Do(func() { close(s.locked) })
+	s.logf("locked by operator: launch token revoked, stopping listener")
 }
 
 func (s *Server) operationError(w http.ResponseWriter, err error) {

@@ -85,6 +85,18 @@ type Config struct {
 	// It is created on first use with mode 0700.
 	CacheDir string
 
+	// AccessKeyID and SecretAccessKey authenticate an object-store repository.
+	// Both empty means the repository needs no credential, which is the case
+	// for a local path.
+	//
+	// These are the one secret this package puts in the child's environment,
+	// and only because restic offers no file reference for them the way it does
+	// for the repository password. The exposure is bounded to the same user:
+	// argv still carries nothing, and the password file's contents are equally
+	// readable by whoever can read this process's environment.
+	AccessKeyID     string
+	SecretAccessKey string
+
 	// Diagnostics receives non-fatal, per-item restic warnings emitted
 	// during Backup — one line per unreadable file, naming the path and
 	// restic's message. Never session content. Nil discards them.
@@ -174,6 +186,14 @@ func (r *Repo) env() []string {
 		"RESTIC_REPOSITORY=" + r.cfg.Repository,
 		"RESTIC_PASSWORD_FILE=" + r.cfg.PasswordFile,
 		"RESTIC_CACHE_DIR=" + r.cacheDir,
+	}
+	// The object-store credential, when the repository has one. restic reads
+	// these names and offers no file-based alternative for them.
+	if r.cfg.AccessKeyID != "" {
+		env = append(env,
+			"AWS_ACCESS_KEY_ID="+r.cfg.AccessKeyID,
+			"AWS_SECRET_ACCESS_KEY="+r.cfg.SecretAccessKey,
+		)
 	}
 	for _, key := range [...]string{"HOME", "PATH", "TMPDIR"} {
 		if v, ok := os.LookupEnv(key); ok {

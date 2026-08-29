@@ -170,6 +170,21 @@ code,
   font-size: 0.7rem;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+}
+
+/* Separated from the navigation and sized down: it sits in the topbar because
+   it ends the whole session, but it must not read as a third destination. */
+.lock-button {
+  min-height: 2.2rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
 .topbar nav {
   display: flex;
   align-items: center;
@@ -585,6 +600,22 @@ tbody tr:last-child td {
   color: var(--accent);
   background: var(--surface-inset);
   font-size: 1.4rem;
+}
+
+/* The terminal state after an operator lock: the same card vocabulary as an
+   empty or failed state, in the red the interface already uses for "this did
+   not survive". */
+.stopped-page {
+  max-width: 44rem;
+}
+
+.stopped-card {
+  border-color: rgba(241, 120, 129, 0.28);
+  background: var(--red-soft);
+}
+
+.stopped-card .empty-icon {
+  color: var(--red);
 }
 
 .spinner {

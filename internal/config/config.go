@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -61,8 +62,31 @@ type Config struct {
 	DeploymentID string `json:"deployment_id,omitempty"`
 	InstanceID   string `json:"instance_id,omitempty"`
 
+	// RepositoryStore carries the object-store credentials an S3-compatible
+	// repository locator needs. It is absent for a local-path repository, which
+	// needs none.
+	RepositoryStore *RepositoryStore `json:"repository_store,omitempty"`
+
 	// Catalog is present exactly in shared mode.
 	Catalog *Catalog `json:"catalog,omitempty"`
+}
+
+// RepositoryStore is the credential an object-store repository needs.
+//
+// It lives inline in the document for the same reason Catalog's password does:
+// dotfiles pipes one document over stdin and Babel writes it to one mode-0600
+// file, so a second secret file would be a second thing to place, back up, and
+// rotate (decision 38, operator decision 2026-08-29).
+//
+// The field names are the S3 vocabulary rather than any provider's, because
+// compatibility is S3-plus-PostgreSQL and not Clever Cloud's APIs (decision 36).
+// These reach the restic child process as AWS_ACCESS_KEY_ID and
+// AWS_SECRET_ACCESS_KEY, which is the only mechanism restic offers for object
+// store credentials - it accepts no file reference for them, unlike the
+// repository password.
+type RepositoryStore struct {
+	AccessKeyID     string `json:"access_key_id"`
+	SecretAccessKey string `json:"secret_access_key"`
 }
 
 // Catalog is the shared PostgreSQL connection this instance uses.
@@ -222,6 +246,9 @@ func Validate(cfg Config) error {
 	if cfg.HostID != "" && !ValidHostID(cfg.HostID) {
 		return fmt.Errorf("storage configuration host_id %q is invalid: %s", cfg.HostID, idPolicy)
 	}
+	if err := validateRepositoryStore(cfg); err != nil {
+		return err
+	}
 	switch cfg.Mode {
 	case "", ModeLocal:
 		if cfg.Catalog != nil {
@@ -261,6 +288,42 @@ func validateSharedIdentity(cfg Config) error {
 		return fmt.Errorf("storage configuration instance_id %q is invalid: %s", cfg.InstanceID, idPolicy)
 	}
 	return nil
+}
+
+// validateRepositoryStore checks the object-store credential.
+//
+// Both halves or neither: one key alone cannot authenticate, and accepting it
+// would defer a configuration error to the first backup, which is the worst
+// moment to discover it. An S3-style locator with no credential is refused for
+// the same reason - restic would fail at push time with the provider's own
+// error, and the document is where that is fixable.
+func validateRepositoryStore(cfg Config) error {
+	s := cfg.RepositoryStore
+	if s != nil {
+		if (s.AccessKeyID == "") != (s.SecretAccessKey == "") {
+			return errors.New("storage configuration repository_store.access_key_id and repository_store.secret_access_key must be supplied together")
+		}
+		if s.AccessKeyID == "" {
+			return errors.New("storage configuration repository_store is present but empty: omit it for a repository that needs no credential")
+		}
+		return nil
+	}
+	if needsObjectStoreCredential(cfg.Repository) {
+		return errors.New("storage configuration repository_store is required for an object-store repository")
+	}
+	return nil
+}
+
+// needsObjectStoreCredential reports whether a locator addresses a store that
+// authenticates with an access key. restic's own scheme prefixes are the
+// authority; a bare path is a local repository and needs nothing.
+func needsObjectStoreCredential(repository string) bool {
+	for _, prefix := range [...]string{"s3:", "gs:", "azure:", "b2:", "swift:"} {
+		if strings.HasPrefix(repository, prefix) {
+			return prefix == "s3:"
+		}
+	}
+	return false
 }
 
 // validateCatalog checks the shared PostgreSQL connection. No error quotes a

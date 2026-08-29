@@ -2,6 +2,7 @@ import { extname, join, resolve, sep } from "node:path";
 import type {
   ArchiveStatus,
   FetchResult,
+  LockResult,
   ScanState,
   SessionDetail,
   SessionSummary,
@@ -397,6 +398,15 @@ function apiResponse(request: Request, url: URL): Response | null {
       missing: ["synthetic/missing-attachment.bin"],
       already_present: false,
     };
+    return json(result);
+  }
+  if (request.method === "POST" && url.pathname === "/api/lock") {
+    // The preview stops too. A mock that kept serving after the stop control
+    // would preview a state the real server cannot produce, which is the one
+    // thing this endpoint's interface has to get right. Deferred and graceful
+    // so this response is written before the listener goes away.
+    queueMicrotask(() => void server.stop());
+    const result: LockResult = { revoked: true, stopping: true };
     return json(result);
   }
   return json({ error: "unknown synthetic API endpoint" }, 404);
