@@ -62,11 +62,15 @@ journal. The two counts mean different things:
   catalog-pending   snapshots the catalog has a row for, with real counts
                     from restic, but no record of which sessions they held.
                     That record can only be written by the owning host at
-                    push time, so it cannot be recovered from the snapshot
-                    listing: this count does not fall, and nothing is wrong
-                    with the archive. The snapshots remain durable and
-                    restorable; only the catalog's session detail for them
-                    is permanently absent.
+                    push time, and it is not derivable from the snapshot
+                    listing, so no command here resolves it: pushing again
+                    publishes the next snapshot rather than completing this
+                    one, and the count does not fall. Nothing is wrong with
+                    the archive - the snapshots remain durable and
+                    restorable, and only the catalog's session detail for
+                    them is missing. Recovering it would mean restoring the
+                    snapshot and rescanning it, which Babel does not
+                    implement yet.
 
 An unreachable catalog reports both counts as unknown rather than zero.
 
@@ -417,15 +421,18 @@ func (a *app) catalogLag(ctx context.Context, snapshots []restic.Snapshot) *cata
 	// summed. An uncatalogued snapshot has no catalog row and a push records it.
 	// A catalog-pending row exists with real counts from restic but no record of
 	// which sessions the snapshot held, and only its owning host could have
-	// written that, at push time. So the pending count does not fall, and saying
-	// so is kinder than leaving an operator looking for the command that clears
-	// it.
+	// written that, at push time. No shipped command resolves it - pushing again
+	// publishes the next snapshot rather than completing this one - so the count
+	// does not fall, and saying so is kinder than leaving an operator looking
+	// for the command that clears it. A restore-and-rescan could complete it
+	// (SPEC.md 12, Phase C), which is why the note says "yet" rather than
+	// claiming the detail is unrecoverable in principle.
 	if uncatalogued > 0 {
 		a.diagf("note: %d %s archived but not catalogued; `babel archive push` records them\n",
 			uncatalogued, plural(uncatalogued, "snapshot is", "snapshots are"))
 	}
 	if pending > 0 {
-		a.diagf("note: %d %s recorded without session detail, which only its owning host could write at push time; the %s durable and restorable, and this count does not fall\n",
+		a.diagf("note: %d %s recorded without session detail, which only its owning host could write at push time; the %s durable and restorable, and no command resolves this yet, so the count does not fall\n",
 			pending, plural(pending, "snapshot is", "snapshots are"),
 			plural(pending, "snapshot stays", "snapshots stay"))
 	}

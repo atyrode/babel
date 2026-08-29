@@ -69,12 +69,15 @@ func TestSnapshotStatesDistinguishesCommittedFromPending(t *testing.T) {
 	}
 }
 
-// The two conditions status reports are different, and one of them is
-// permanent. An adopted snapshot keeps real counts from restic but no record of
-// which sessions it held, and only its owning host could have written that at
-// push time - so a later push does NOT promote it. This is intended, and pinning
-// it stops a future change from quietly "fixing" it by backfilling session
-// detail nobody observed.
+// The two conditions status reports are different, and one of them no shipped
+// command resolves. An adopted snapshot keeps real counts from restic but no
+// record of which sessions it held, and only its owning host could have written
+// that at push time - so a later push does NOT promote it. That is intended, and
+// pinning it stops a future change from quietly "fixing" it by backfilling
+// session detail nobody observed. The legitimate completion is a
+// restore-and-rescan (SPEC.md 12, Phase C), which would publish the rows the
+// snapshot actually held; if that lands, this test should be replaced rather
+// than deleted, because the claim it defends moves rather than disappears.
 func TestAdoptedSnapshotStaysPendingAcrossLaterPushes(t *testing.T) {
 	db := newDB(t)
 	mustMigrate(t, db)
