@@ -11,6 +11,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The four Phase B foundations**, each buildable and testable with no real
+  data, no credentials, and no network. `internal/event` is the SPEC §4.1/§6.3
+  analysis event model: a streaming per-harness classifier into user reports,
+  agent claims, tool observations, repository changes, and verification
+  evidence, where an unrecognized or damaged record degrades to an opaque
+  partial event and is never dropped. Its 16 MiB record budget is a measured
+  constant, not a guess: real harness logs carry single records into the tens
+  of megabytes, where a `bufio.Scanner` default would degrade about one record
+  in a hundred. `internal/synth` generates a deterministic synthetic corpus
+  whose extremes exceed production — a primary log past 320 MiB and a record at
+  the budget ceiling — because a fixture smaller than production is a fixture
+  that lets production break the reader. `internal/envelope` is the client-side
+  AES-256-GCM payload envelope whose additional data binds a ciphertext to its
+  row, type, and field, so an envelope moved between rows fails to open, with a
+  keyring that seals under one key and opens under every known one.
+  `internal/worker` defines the Code analysis-worker protocol, implements
+  Babel's whole side of it — version negotiation, per-request authorization
+  against the run's grant, process-tree lifetime, output validation, receipts —
+  and ships the `Conformance` suite that a real worker must pass, since Code
+  does not implement the counterpart yet.
 - **A `packages.default` flake output**, so a scheduler in another flake can run
   a pinned Babel from an absolute store path rather than whatever `PATH` holds.
   `version.go` accepts a link-time revision because a Nix build compiles from a

@@ -1,0 +1,18 @@
+{"timestamp":"2026-04-02T00:00:00.000Z","type":"session_meta","payload":{"id":"aaaaaaaa-0000-4000-8000-00000000f001","cwd":"/synthetic/workspace/two"}}
+{"timestamp":"2026-04-02T00:01:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic operator request two"}]}}
+{"timestamp":"2026-04-02T00:02:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic agent claim two"}]}}
+{"timestamp":"2026-04-02T00:03:00.000Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"synthetic reasoning summary"}],"encrypted_content":"c3ludGhldGljCg=="}}
+{"timestamp":"2026-04-02T00:04:00.000Z","type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":"c3ludGhldGljCg=="}}
+{"timestamp":"2026-04-02T00:05:00.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-f001","arguments":"{\"cmd\":\"go test ./internal/synthetic/...\",\"workdir\":\"/synthetic/workspace/two\",\"max_output_tokens\":10000}"}}
+{"timestamp":"2026-04-02T00:06:00.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-f001","output":"synthetic test output\nWall time: 0.1 seconds"}}
+{"timestamp":"2026-04-02T00:07:00.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"call-f002","name":"apply_patch","input":"*** Begin Patch\n*** Update File: synthetic/c.go\n@@\n-old\n+new\n*** End Patch"}}
+{"timestamp":"2026-04-02T00:08:00.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"call-f002","turn_id":"turn-0001","stdout":"synthetic patch applied","stderr":"","success":true,"status":"completed","changes":{"/synthetic/workspace/two/z.go":{"type":"update","unified_diff":"@@\n-old\n+new","move_path":null},"/synthetic/workspace/two/a.go":{"type":"add","content":"package synthetic\n"}}}}
+{"timestamp":"2026-04-02T00:09:00.000Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"call-f003","turn_id":"turn-0002","stdout":"","stderr":"synthetic patch rejected","success":false,"status":"failed","changes":{"/synthetic/workspace/two/b.go":{"type":"update","unified_diff":"@@\n-old\n+new","move_path":null}}}}
+{"timestamp":"2026-04-02T00:10:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"synthetic operator request two","kind":"plain"}}
+{"timestamp":"2026-04-02T00:11:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"synthetic agent claim two"}}
+{"timestamp":"2026-04-02T00:12:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":11,"output_tokens":22}}}}
+{"timestamp":"2026-04-02T00:13:00.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"synthetic harness instruction"}]}}
+{"timestamp":"2026-04-02T00:14:00.000Z","type":"event_msg","payload":{"type":"mcp_tool_call_end","call_id":"call-f004","duration":{"secs":1,"nanos":0},"invocation":{"server":"synthetic-server","tool":"synthetic_lookup","arguments":{"q":"synthetic"}},"result":{"Ok":{"content":[]}}}}
+{"timestamp":"2026-04-02T00:15:00.000Z","type":"response_item","payload":{"type":"web_search_call","status":"completed","action":{"type":"search","query":"synthetic query"}}}
+{"timestamp":"2026-04-02T00:16:00.000Z","type":"turn_context","payload":{"cwd":"/synthetic/workspace/two","model":"synthetic-model"}}
+{"timestamp":"2026-04-02T00:17:00.000Z","type":"event_msg" "payload":{"type":"task_complete"}}
