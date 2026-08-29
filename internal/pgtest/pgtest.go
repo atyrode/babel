@@ -78,6 +78,36 @@ func Available() bool {
 	return err == nil
 }
 
+// RequireEnv names the variable that turns a missing cluster from a skip into a
+// failure.
+const RequireEnv = "BABEL_REQUIRE_POSTGRES"
+
+// Required reports whether this environment has declared that PostgreSQL must
+// be present.
+//
+// A test that skips when the server is absent is right on a developer's machine
+// and wrong in CI: the gates these clusters defend would retire silently the
+// day the install moved, and every dependent test would report success while
+// asserting nothing. CI sets RequireEnv so that case fails loudly instead.
+func Required() bool { return os.Getenv(RequireEnv) != "" }
+
+// SkipOrFail is the one place that policy lives. Callers that need a cluster
+// call it and proceed.
+func SkipOrFail(t interface {
+	Skip(...any)
+	Fatalf(string, ...any)
+}) {
+	if Available() {
+		return
+	}
+	if Required() {
+		t.Fatalf("%s is set but initdb and pg_ctl are not on PATH: "+
+			"this environment promised a PostgreSQL and has none", RequireEnv)
+		return
+	}
+	t.Skip("initdb/pg_ctl not on PATH: tests needing a real PostgreSQL are skipped")
+}
+
 // Start provisions and starts a cluster. The returned Cluster must be stopped
 // by the caller; Stop is safe to call more than once.
 func Start(opts Options) (*Cluster, error) {

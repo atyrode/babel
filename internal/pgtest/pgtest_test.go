@@ -17,9 +17,7 @@ import (
 // a CLI-level test pass while proving nothing about encryption. So this asserts
 // the server's own view of the connection rather than the client's request.
 func TestClusterServesTLSWhenAsked(t *testing.T) {
-	if !pgtest.Available() {
-		t.Skip("initdb/pg_ctl not on PATH")
-	}
+	pgtest.SkipOrFail(t)
 	c, err := pgtest.Start(pgtest.Options{TLS: true})
 	if err != nil {
 		t.Fatalf("start TLS cluster: %v", err)
@@ -50,9 +48,7 @@ func TestClusterServesTLSWhenAsked(t *testing.T) {
 // stay plaintext: if it silently required TLS, the sharedcatalog suite would
 // pass for the wrong reason on a machine whose defaults differ.
 func TestClusterIsPlaintextByDefault(t *testing.T) {
-	if !pgtest.Available() {
-		t.Skip("initdb/pg_ctl not on PATH")
-	}
+	pgtest.SkipOrFail(t)
 	c, err := pgtest.Start(pgtest.Options{})
 	if err != nil {
 		t.Fatalf("start cluster: %v", err)
@@ -76,9 +72,7 @@ func TestClusterIsPlaintextByDefault(t *testing.T) {
 // Two clusters must be able to run at once: `go test ./...` provisions one per
 // package, and a port derived from anything but the kernel collides.
 func TestTwoClustersCoexist(t *testing.T) {
-	if !pgtest.Available() {
-		t.Skip("initdb/pg_ctl not on PATH")
-	}
+	pgtest.SkipOrFail(t)
 	first, err := pgtest.Start(pgtest.Options{})
 	if err != nil {
 		t.Fatalf("start first: %v", err)

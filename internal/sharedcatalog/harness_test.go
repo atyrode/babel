@@ -29,6 +29,15 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	if !pgtest.Available() {
+		// A skip is right on a developer's machine and wrong where the
+		// environment promised a server: this suite is the allowlist gate, and
+		// silently retiring it is the failure mode worth failing over.
+		if pgtest.Required() {
+			fmt.Fprintf(os.Stderr,
+				"%s is set but neither BABEL_TEST_POSTGRES nor initdb is available\n",
+				pgtest.RequireEnv)
+			os.Exit(1)
+		}
 		fmt.Fprintln(os.Stderr, "skipping: no BABEL_TEST_POSTGRES and initdb is not on PATH")
 		os.Exit(0)
 	}

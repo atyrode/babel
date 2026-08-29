@@ -16,6 +16,14 @@ jobs:
     # it must run here rather than only where a developer happens to have
     # PostgreSQL. Without BABEL_TEST_POSTGRES the suite skips itself, which
     # would silently retire the allowlist gate.
+    #
+    # The service container serves that suite, which opens connections itself.
+    # It cannot serve the two-instance acceptance: that drives the shipped
+    # commands, so it reaches PostgreSQL through Babel's configuration document,
+    # which cannot express an unencrypted connection. Those tests provision
+    # their own TLS cluster with initdb, which is why the server binaries are
+    # put on PATH below and why BABEL_REQUIRE_POSTGRES turns a missing install
+    # into a failure rather than a skip.
     services:
       postgres:
         image: postgres:18
@@ -33,6 +41,7 @@ jobs:
 
     env:
       BABEL_TEST_POSTGRES: postgres://babel:babel@127.0.0.1:5432/postgres?sslmode=disable
+      BABEL_REQUIRE_POSTGRES: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +59,18 @@ jobs:
           chmod +x restic
           sudo mv restic /usr/local/bin/restic
           restic version
+
+      - name: Expose PostgreSQL server binaries
+        run: |
+          dir=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$dir" ]; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql
+            dir=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)
+          fi
+          echo "$dir" >> "$GITHUB_PATH"
+          "$dir/initdb" --version
+          "$dir/pg_ctl" --version
 
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }

@@ -78,9 +78,7 @@ type deployment struct {
 
 func newDeployment(t *testing.T) *deployment {
 	t.Helper()
-	if !pgtest.Available() {
-		t.Skip("initdb/pg_ctl not on PATH: the shared catalog needs a real PostgreSQL")
-	}
+	pgtest.SkipOrFail(t)
 	// TLS because the CLI builds its DSN from storage.json, and that document
 	// cannot express an unencrypted connection.
 	cluster, err := pgtest.Start(pgtest.Options{TLS: true})
