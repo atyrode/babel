@@ -17,6 +17,36 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - The Phase A shared catalog schema and migrations: deployments, instances,
   hosts, snapshots, opaque session identity, server-time fenced host leases,
   and idempotency keys, applied transactionally from embedded SQL ([#25]).
+- **Shared mode in `storage.json`, at schema 2.** The document now carries
+  `mode`, deployment/instance identity, and a `catalog` section: PostgreSQL
+  endpoint, TLS mode with an optional root CA, one credential by default, and
+  an optional separate migration credential where a provider can issue one. A
+  schema-1 document loads as local mode, so existing configurations keep
+  working; a newer schema is refused by name. Golden fixtures cover local,
+  single-credential shared, and separate-migration-credential documents.
+- **Credential privileges are detected rather than assumed** (SPEC.md §9,
+  decision 46). `storage verify` reports what the credential is observed to
+  hold — superuser, role-creating, DDL, or application — read from PostgreSQL's
+  own catalogs with no destructive probe. Role attributes are not inherited
+  through membership in PostgreSQL, so the check tests reachability by
+  `SET ROLE` rather than inherited usage; the inherited-usage form silently
+  reports a `NOINHERIT` member of a superuser role as an application
+  credential, which was confirmed on a throwaway cluster before choosing.
+- **Application-level instance revocation** (`storage revoke-instance`), the
+  replacement for per-instance credential revocation the deployment provider
+  cannot offer. Revoking force-expires the instance's host leases so another
+  machine can take over at once, and acquire, renew, and both of a
+  publication's lease checks refuse it — including the pre-commit check, so an
+  instance revoked mid-push lands nothing. It is honest about its limit in code
+  and in `--help`: it stops a cooperating instance and bounds a compromised one
+  until noticed, but whoever holds the shared credential can clear their own
+  revocation, and an older binary does not consult it at all. Fleet-wide
+  rotation and repository-password custody remain the controls for that case.
+- `storage migrate`, which applies pending migrations with the configured
+  credential by default, or with an ephemeral document's migration credential
+  that is used and never persisted. `storage verify` checks a configured
+  catalog live: TLS as the server reports it, observed privileges, and schema
+  compatibility.
 - **The SPEC.md §9 plaintext allowlist is now enforced, not documented.**
   Every shared-catalog column is enumerated with its permitted data class, and
   `Verify` reflects the live schema and fails on any column or table outside
@@ -145,6 +175,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **Shared catalog schema version 2**, recorded by migration 0003 as well as
+  bumped in code, so a binary that predates `instances.revoked_at` is not
+  written into a database whose allowlist it disagrees with, and
+  `AcquireHostLease` now refuses write authority against an incompatible
+  schema rather than leaving the check unwired. This is deliberately *not*
+  downgrade protection: an older binary performs no version check, so nothing
+  in Go constrains it — only what PostgreSQL evaluates, such as a
+  force-expired lease failing its own SQL expiry predicate mid-push.
+- Errors that carry a connection string now redact the password on its own as
+  well as the whole DSN. A driver may reconstruct a connection string from
+  parsed fields rather than echo the one it was given, and the whole-string
+  replacement could not match that; pgx happens to omit the password when it
+  does so, which made the guarantee depend on a dependency's discretion.
+  Mutation-tested: both new arrangements survive redaction under the previous
+  implementation.
 - **The web launch token moved from the query string to the URL fragment**, as
   SPEC.md §146 always specified. The token now appears in exactly one place —
   the launch URL's fragment — and the bootstrap erases it from the address bar

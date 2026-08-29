@@ -47,14 +47,27 @@ type Lease struct {
 // instances racing for a free or expired lease produce one winner and one
 // ErrLeaseHeld, never two holders. A holder re-acquiring its own lease gets a
 // fresh fence, which deliberately invalidates its earlier epoch.
+// A revoked instance takes nothing: the row it would write is selected from
+// instances, so revocation suppresses the insert and the steal alike within
+// that same statement (revoke.go).
+//
+// Write authority is also refused against an incompatible schema. This is the
+// once-per-push gate: a binary must not publish into a database migrated by a
+// newer one, and against an unmigrated database the error names the command to
+// run. It constrains this binary only - an older one performs no such check.
 func AcquireHostLease(ctx context.Context, db *sql.DB, hostID, instanceID string, ttl time.Duration) (Lease, error) {
 	if ttl <= 0 {
 		return Lease{}, errors.New("lease ttl must be positive")
 	}
+	if err := EnsureCompatible(ctx, db); err != nil {
+		return Lease{}, err
+	}
 	l := Lease{HostID: hostID}
 	err := db.QueryRowContext(ctx, `
 		INSERT INTO host_leases (host_id, holder_id, fence, acquired_at, expires_at)
-		VALUES ($1, $2, 1, `+serverNow+`, `+serverNow+` + make_interval(secs => $3))
+		SELECT $1::text, $2::text, 1, `+serverNow+`, `+serverNow+` + make_interval(secs => $3)
+		  FROM instances
+		 WHERE instance_id = $2 AND revoked_at IS NULL
 		ON CONFLICT (host_id) DO UPDATE
 		   SET holder_id   = excluded.holder_id,
 		       fence       = host_leases.fence + 1,
@@ -66,9 +79,10 @@ func AcquireHostLease(ctx context.Context, db *sql.DB, hostID, instanceID string
 		hostID, instanceID, ttl.Seconds()).Scan(&l.HolderID, &l.Fence, &l.ExpiresAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		// The WHERE clause on DO UPDATE suppressed the write: a live lease
-		// belongs to someone else.
-		return Lease{}, ErrLeaseHeld
+		// The statement declined to write: either this instance is revoked, so
+		// the gating select produced no candidate row, or the DO UPDATE WHERE
+		// clause found a live lease belonging to someone else.
+		return Lease{}, classifyRefusal(ctx, db, instanceID, ErrLeaseHeld)
 	case err != nil:
 		return Lease{}, fmt.Errorf("acquire host lease: %w", err)
 	}
@@ -76,7 +90,9 @@ func AcquireHostLease(ctx context.Context, db *sql.DB, hostID, instanceID string
 }
 
 // RenewHostLease extends a lease that this exact fence still owns. A long push
-// renews rather than taking a TTL longer than any plausible upload.
+// renews rather than taking a TTL longer than any plausible upload. A revoked
+// instance cannot extend a lease, so its hold on a host is bounded by the TTL
+// it last obtained even if it never asks the database about itself.
 func RenewHostLease(ctx context.Context, db *sql.DB, l Lease, ttl time.Duration) (Lease, error) {
 	if ttl <= 0 {
 		return Lease{}, errors.New("lease ttl must be positive")
@@ -87,11 +103,13 @@ func RenewHostLease(ctx context.Context, db *sql.DB, l Lease, ttl time.Duration)
 		   SET expires_at = `+serverNow+` + make_interval(secs => $4)
 		 WHERE host_id = $1 AND holder_id = $2 AND fence = $3
 		   AND expires_at > `+serverNow+`
+		   AND EXISTS (SELECT 1 FROM instances
+		                WHERE instance_id = $2 AND revoked_at IS NULL)
 		RETURNING expires_at`,
 		l.HostID, l.HolderID, l.Fence, ttl.Seconds()).Scan(&out.ExpiresAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return Lease{}, ErrLeaseLost
+		return Lease{}, classifyRefusal(ctx, db, l.HolderID, ErrLeaseLost)
 	case err != nil:
 		return Lease{}, fmt.Errorf("renew host lease: %w", err)
 	}
@@ -111,27 +129,37 @@ func ReleaseHostLease(ctx context.Context, db *sql.DB, l Lease) error {
 	return nil
 }
 
-// checkLease asserts inside a transaction that a lease is still current, taking
-// a row lock so a concurrent steal cannot slip between the check and the writes
-// it guards: a stealing instance must update this row, and it stays locked until
-// the transaction ends.
+// checkLease asserts inside a transaction that a lease is still current and its
+// holder is still authorized, taking a row lock so a concurrent steal cannot
+// slip between the check and the writes it guards: a stealing instance must
+// update this row, and it stays locked until the transaction ends.
 //
 // Called twice by a publication - once before writing and once immediately
 // before commit - because the lock stops other writers but not the passage of
-// time.
+// time, and not an operator revoking this instance mid-push.
+//
+// Revocation is read as a value rather than filtered in the WHERE clause for
+// two reasons: the caller learns which of the two refusals happened, and the
+// lease row is still locked when it does. The instances row is deliberately not
+// locked - FOR UPDATE names only the lease - because holding it would block the
+// very revocation this check exists to observe.
 func checkLease(ctx context.Context, tx *sql.Tx, l Lease) error {
-	var ok bool
+	var authorized bool
 	err := tx.QueryRowContext(ctx, `
-		SELECT true FROM host_leases
-		 WHERE host_id = $1 AND holder_id = $2 AND fence = $3
-		   AND expires_at > `+serverNow+`
-		   FOR UPDATE`,
-		l.HostID, l.HolderID, l.Fence).Scan(&ok)
+		SELECT i.revoked_at IS NULL
+		  FROM host_leases l
+		  JOIN instances i ON i.instance_id = l.holder_id
+		 WHERE l.host_id = $1 AND l.holder_id = $2 AND l.fence = $3
+		   AND l.expires_at > `+serverNow+`
+		   FOR UPDATE OF l`,
+		l.HostID, l.HolderID, l.Fence).Scan(&authorized)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return ErrLeaseLost
 	case err != nil:
 		return fmt.Errorf("check host lease: %w", err)
+	case !authorized:
+		return ErrInstanceRevoked
 	}
 	return nil
 }

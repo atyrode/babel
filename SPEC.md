@@ -433,7 +433,9 @@ babel [--repo LOCATOR] [--password-file FILE]
 babel web [--port N] [--open]
 babel storage configure --from-json FILE|-
 babel storage status [--json]
-babel storage migrate --from-json FILE|-
+babel storage migrate [--from-json FILE|-]
+babel storage verify [--json]
+babel storage revoke-instance INSTANCE_ID [--json]
 babel archive push [--json]
 babel archive status [--json]
 babel archive verify [--deep] [--json]

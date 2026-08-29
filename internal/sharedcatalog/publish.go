@@ -72,6 +72,10 @@ func SessionUID(deploymentID, hostID, harness, sourceID string) string {
 // writes, so a takeover cannot commit between validation and publication: a
 // stealing instance must update the lease row, and that row is locked until this
 // transaction ends. A writer whose fence is stale is refused and lands nothing.
+//
+// Both validations also assert that this instance is not revoked, so an
+// instance evicted while a long push is in flight lands nothing either
+// (revoke.go).
 func PublishSnapshot(
 	ctx context.Context,
 	db *sql.DB,
@@ -182,11 +186,12 @@ func PublishSnapshot(
 	// Revalidate before committing, still holding the row lock.
 	//
 	// The lock guarantees no other instance wrote this host's rows meanwhile,
-	// but it does not stop this instance's own lease from expiring mid-flight:
-	// without this check a slow publisher could hold the lock past its TTL and
-	// commit anyway, so the TTL would bound nothing. Re-evaluating expires_at
-	// against server time makes the documented invariant true - a lease that
-	// expired during publication lands nothing.
+	// but it does not stop this instance's own lease from expiring mid-flight,
+	// nor an operator revoking this instance while the push runs: without this
+	// check a slow publisher could hold the lock past its TTL and commit anyway,
+	// so the TTL would bound nothing. Re-evaluating expires_at and revoked_at
+	// against server time makes the documented invariants true - a lease that
+	// expired, or an instance revoked, during publication lands nothing.
 	if err := checkLease(ctx, tx, l); err != nil {
 		return false, err
 	}
@@ -198,7 +203,8 @@ func PublishSnapshot(
 }
 
 // publishDelayForTests runs after the row upserts and before the final lease
-// revalidation. It exists so the expired-mid-publication path can be exercised
+// revalidation. It exists so the refused-mid-publication paths can be exercised
 // deterministically: with the lease row locked, no other connection can move
-// expires_at, so only real elapsed time can make a lease expire in flight.
+// expires_at, so only real elapsed time can make a lease expire in flight, and
+// a revocation landing inside this window must be observed before commit.
 var publishDelayForTests func()

@@ -1,10 +1,9 @@
 package cli
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/atyrode/babel/internal/config"
@@ -15,6 +14,9 @@ const storageUsage = `Usage: babel storage <command> [flags]
 Commands:
   configure --from-json FILE|-   replace persistent storage configuration
   status                         report persistent storage configuration
+  migrate [--from-json FILE|-]   apply pending shared catalog migrations
+  verify                         check the configured shared catalog live
+  revoke-instance INSTANCE_ID    refuse an instance's leases and publications
 
 Run "babel storage <command> -h" for a command's flags.
 `
@@ -39,7 +41,11 @@ Flags:
 `
 
 // storage routes `babel storage <verb>`.
-func (a *app) storage(args []string) error {
+//
+// Shared-mode verbs reach PostgreSQL, so the router threads a context: an
+// operator interrupting a hung connection attempt must not have to wait out a
+// dial timeout.
+func (a *app) storage(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return &usageError{msg: "storage requires a subcommand", usage: storageUsage}
 	}
@@ -48,21 +54,29 @@ func (a *app) storage(args []string) error {
 		fmt.Fprint(a.stdout, storageUsage)
 		return nil
 	case "configure":
-		return a.storageConfigure(args[1:])
+		return a.storageConfigure(ctx, args[1:])
 	case "status":
 		return a.storageStatus(args[1:])
+	case "migrate":
+		return a.storageMigrate(ctx, args[1:])
+	case "verify":
+		return a.storageVerify(ctx, args[1:])
+	case "revoke-instance":
+		return a.storageRevokeInstance(ctx, args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown storage subcommand %q", args[0]), usage: storageUsage}
 	}
 }
 
 type storageConfigureResult struct {
-	Path       string `json:"path"`
-	Repository string `json:"repository"`
-	HostID     string `json:"host_id"`
+	Path       string          `json:"path"`
+	Repository string          `json:"repository"`
+	HostID     string          `json:"host_id"`
+	Mode       string          `json:"mode"`
+	Catalog    *catalogChecked `json:"catalog,omitempty"`
 }
 
-func (a *app) storageConfigure(args []string) error {
+func (a *app) storageConfigure(ctx context.Context, args []string) error {
 	c := newCmd("storage configure", storageConfigureUsage)
 	fromJSON := c.fs.String("from-json", "", "complete JSON configuration to install")
 	asJSON := c.fs.Bool("json", false, "emit the result as JSON")
@@ -76,42 +90,23 @@ func (a *app) storageConfigure(args []string) error {
 		return c.usagef("storage configure requires --from-json FILE|-")
 	}
 
-	in := a.stdin
-	var closeInput func() error
-	if *fromJSON != "-" {
-		f, err := os.Open(*fromJSON)
-		if err != nil {
-			return fmt.Errorf("open configuration input %s: %w", *fromJSON, err)
-		}
-		in = f
-		closeInput = f.Close
-	}
-
-	var cfg config.Config
-	dec := json.NewDecoder(in)
-	if err := dec.Decode(&cfg); err != nil {
-		if closeInput != nil {
-			_ = closeInput()
-		}
-		return fmt.Errorf("decode configuration input: %w", err)
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if closeInput != nil {
-			_ = closeInput()
-		}
-		if err == nil {
-			err = errors.New("multiple JSON values")
-		}
-		return fmt.Errorf("decode configuration input: %w", err)
-	}
-	if closeInput != nil {
-		if err := closeInput(); err != nil {
-			return fmt.Errorf("close configuration input: %w", err)
-		}
+	cfg, err := a.decodeConfigDocument(*fromJSON)
+	if err != nil {
+		return err
 	}
 	if err := config.Validate(cfg); err != nil {
 		return err
+	}
+	// SPEC.md 9: identity, TLS, credential privileges, and schema compatibility
+	// are checked *before* the mode-0600 file is replaced, so a document that
+	// cannot work never displaces a configuration that does.
+	var checked *catalogChecked
+	if cfg.Mode == config.ModeShared {
+		got, err := a.checkCatalog(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		checked = &got
 	}
 	if err := config.Save(cfg); err != nil {
 		return err
@@ -121,6 +116,8 @@ func (a *app) storageConfigure(args []string) error {
 		Path:       Sanitize(config.Path()),
 		Repository: Sanitize(cfg.Repository),
 		HostID:     Sanitize(cfg.HostID),
+		Mode:       storageMode(cfg),
+		Catalog:    checked,
 	}
 	if *asJSON {
 		return a.emitJSON(res)
@@ -129,15 +126,25 @@ func (a *app) storageConfigure(args []string) error {
 	return nil
 }
 
+// storageStatusResult stays an offline report: it describes the configuration
+// on disk and never dials PostgreSQL, so it keeps working during an outage and
+// when storage is unconfigured. `storage verify` is the live counterpart.
 type storageStatusResult struct {
 	Path               string `json:"path"`
 	Exists             bool   `json:"exists"`
+	Mode               string `json:"mode"`
 	Repository         string `json:"repository"`
 	PasswordFile       string `json:"password_file"`
 	PasswordFileExists bool   `json:"password_file_exists"`
 	PasswordFileSecure bool   `json:"password_file_secure"`
 	HostID             string `json:"host_id"`
 	ResticBinary       string `json:"restic_binary"`
+	DeploymentID       string `json:"deployment_id,omitempty"`
+	InstanceID         string `json:"instance_id,omitempty"`
+	CatalogEndpoint    string `json:"catalog_endpoint,omitempty"`
+	CatalogUser        string `json:"catalog_user,omitempty"`
+	CatalogTLSMode     string `json:"catalog_tls_mode,omitempty"`
+	MigrationUser      string `json:"migration_user,omitempty"`
 }
 
 func (a *app) storageStatus(args []string) error {
@@ -157,10 +164,21 @@ func (a *app) storageStatus(args []string) error {
 	res := storageStatusResult{
 		Path:         Sanitize(config.Path()),
 		Exists:       found,
+		Mode:         storageMode(cfg),
 		Repository:   Sanitize(cfg.Repository),
 		PasswordFile: Sanitize(cfg.PasswordFile),
 		HostID:       Sanitize(cfg.HostID),
 		ResticBinary: Sanitize(cfg.ResticBinary),
+		DeploymentID: Sanitize(cfg.DeploymentID),
+		InstanceID:   Sanitize(cfg.InstanceID),
+	}
+	// The endpoint and role names are reported; the passwords are not read here
+	// at all, so no redaction can be forgotten downstream.
+	if cfg.Catalog != nil {
+		res.CatalogEndpoint = Sanitize(fmt.Sprintf("%s:%d/%s", cfg.Catalog.Host, cfg.Catalog.Port, cfg.Catalog.Database))
+		res.CatalogUser = Sanitize(cfg.Catalog.User)
+		res.CatalogTLSMode = Sanitize(cfg.Catalog.TLSMode)
+		res.MigrationUser = Sanitize(cfg.Catalog.MigrationUser)
 	}
 	if cfg.PasswordFile != "" {
 		info, statErr := os.Stat(cfg.PasswordFile)
@@ -184,12 +202,25 @@ func (a *app) storageStatus(args []string) error {
 	rows := [][2]string{
 		{"path", res.Path},
 		{"configured", yesNo(res.Exists, "yes", "no")},
+		{"mode", res.Mode},
 		{"repository", res.Repository},
 		{"password file", res.PasswordFile},
 		{"password file exists", yesNo(res.PasswordFileExists, "yes", "no")},
 		{"password file secure", yesNo(res.PasswordFileSecure, "yes", "no")},
 		{"host id", res.HostID},
 		{"restic binary", res.ResticBinary},
+	}
+	if res.Mode == config.ModeShared {
+		rows = append(rows,
+			[2]string{"deployment id", res.DeploymentID},
+			[2]string{"instance id", res.InstanceID},
+			[2]string{"catalog endpoint", res.CatalogEndpoint},
+			[2]string{"catalog user", res.CatalogUser},
+			[2]string{"catalog tls mode", res.CatalogTLSMode},
+		)
+		if res.MigrationUser != "" {
+			rows = append(rows, [2]string{"migration user", res.MigrationUser})
+		}
 	}
 	return writeDetail(a.stdout, rows)
 }

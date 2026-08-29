@@ -52,7 +52,8 @@ func TestLoadMissingAndSaveRoundTrip(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Load saved = (%+v, %v, %v)", got, found, err)
 	}
-	want.ConfigSchema = 1
+	want.ConfigSchema = currentSchema
+	want.Mode = ModeLocal
 	if got != want {
 		t.Fatalf("Load saved = %+v, want %+v", got, want)
 	}
@@ -76,8 +77,8 @@ func TestLoadCompatibilityAndMalformedInput(t *testing.T) {
 		t.Fatalf("Load with unknown field = (%+v, %v, %v)", cfg, found, err)
 	}
 
-	write(`{"config_schema":2,"repository":"repo","password_file":"/password"}`)
-	if _, _, err := Load(); err == nil || !strings.Contains(err.Error(), "newer than supported") {
+	write(`{"config_schema":3,"repository":"repo","password_file":"/password"}`)
+	if _, _, err := Load(); err == nil || !strings.Contains(err.Error(), "schema 3 is newer than supported schema 2") {
 		t.Fatalf("Load future schema error = %v", err)
 	}
 
@@ -105,7 +106,7 @@ func TestSaveValidationDoesNotReplaceExistingFile(t *testing.T) {
 		{Repository: good.Repository},
 		{Repository: good.Repository, PasswordFile: "relative"},
 		{Repository: good.Repository, PasswordFile: good.PasswordFile, HostID: "Bad Host"},
-		{ConfigSchema: 2, Repository: good.Repository, PasswordFile: good.PasswordFile},
+		{ConfigSchema: 3, Repository: good.Repository, PasswordFile: good.PasswordFile},
 	}
 	for _, cfg := range cases {
 		if err := Save(cfg); err == nil {

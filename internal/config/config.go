@@ -6,22 +6,93 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 const (
-	currentSchema = 1
+	currentSchema = 2
 	maxHostIDLen  = 64
 )
 
-// Config is the complete persistent repository selection stored in storage.json.
+// Babel's supported deployment modes. Local mode keeps every byte on this
+// machine; shared mode adds one PostgreSQL catalog shared by every authorized
+// instance of a deployment.
+const (
+	ModeLocal  = "local"
+	ModeShared = "shared"
+)
+
+// The accepted catalog TLS modes, in PostgreSQL's sslmode vocabulary. Only
+// these two are accepted: the weaker modes let a connection fall back to
+// plaintext.
+const (
+	TLSRequire    = "require"
+	TLSVerifyFull = "verify-full"
+)
+
+// redactedPlaceholder replaces a password in a Config safe to show. It is a
+// fixed string so status output never reveals a password's length.
+const redactedPlaceholder = "[redacted]"
+
+// Config is the complete persistent repository selection stored in
+// storage.json.
+//
+// Schema 2 added mode, deployment/instance identity, and the shared catalog.
+// Compatibility is deliberately narrow: a schema-1 document has no mode and
+// loads as local, unknown fields are ignored so a compatible newer writer's
+// document stays readable, and a schema newer than this build is refused
+// outright rather than guessed at. Save always writes schema 2 with an
+// explicit mode.
 type Config struct {
 	ConfigSchema int    `json:"config_schema"`
+	Mode         string `json:"mode,omitempty"`
 	Repository   string `json:"repository"`
 	PasswordFile string `json:"password_file"`
 	HostID       string `json:"host_id,omitempty"`
 	ResticBinary string `json:"restic_binary,omitempty"`
+
+	// DeploymentID and InstanceID name the shared deployment and this
+	// instance within it. They are required in shared mode: coordination
+	// rows, leases, and application-level instance revocation are all keyed
+	// by them.
+	DeploymentID string `json:"deployment_id,omitempty"`
+	InstanceID   string `json:"instance_id,omitempty"`
+
+	// Catalog is present exactly in shared mode.
+	Catalog *Catalog `json:"catalog,omitempty"`
+}
+
+// Catalog is the shared PostgreSQL connection this instance uses.
+//
+// User/Password are the one credential the whole deployment shares by default:
+// Clever Cloud's managed PostgreSQL cannot create database users (provider
+// confirmation, 2026-08-28). MigrationUser/MigrationPassword are the optional
+// separate schema-change credential a provider that does issue users can
+// supply; where they are absent, schema change is restrained by operator
+// procedure rather than by privilege, and no database-level control can revoke
+// a single instance.
+type Catalog struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Database string `json:"database"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+
+	// TLSMode is a PostgreSQL sslmode: "require" encrypts without
+	// authenticating the server, "verify-full" also checks the certificate
+	// chain and hostname against TLSRootCAFile or the system roots.
+	// "require" is the conservative default because whether a given managed
+	// provider works under "verify-full" is a per-provider fact Babel does
+	// not assume.
+	TLSMode       string `json:"tls_mode"`
+	TLSRootCAFile string `json:"tls_root_ca_file,omitempty"`
+
+	MigrationUser     string `json:"migration_user,omitempty"`
+	MigrationPassword string `json:"migration_password,omitempty"`
 }
 
 // Path returns the location of Babel's persistent storage configuration.
@@ -32,7 +103,10 @@ func Path() string {
 
 // Load reads storage.json. A missing file is not an error. Unknown fields are
 // ignored so an older Babel can read configuration written by a compatible
-// newer version.
+// newer version, and an absent mode - every schema-1 document - is local.
+//
+// Decode errors name the path and the offending field, never a value: a
+// storage document holds credentials.
 func Load() (Config, bool, error) {
 	path, err := pathName()
 	if err != nil {
@@ -62,16 +136,26 @@ func Load() (Config, bool, error) {
 	if cfg.ConfigSchema > currentSchema {
 		return Config{}, false, fmt.Errorf("storage configuration schema %d is newer than supported schema %d", cfg.ConfigSchema, currentSchema)
 	}
+	if cfg.Mode == "" {
+		cfg.Mode = ModeLocal
+	}
 	return cfg, true, nil
 }
 
-// Save validates and atomically replaces storage.json. The containing
-// directory and file are private to the current user.
+// Save validates and atomically replaces storage.json with the canonical
+// schema-2 document: the current schema and an explicit mode, so a written
+// document never depends on an absent-field default. The containing directory
+// and file are private to the current user.
+//
+// Errors name the path but never the document: it holds credentials.
 func Save(cfg Config) error {
 	if err := Validate(cfg); err != nil {
 		return err
 	}
 	cfg.ConfigSchema = currentSchema
+	if cfg.Mode == "" {
+		cfg.Mode = ModeLocal
+	}
 
 	path, err := pathName()
 	if err != nil {
@@ -120,6 +204,10 @@ func Save(cfg Config) error {
 
 // Validate checks the complete configuration accepted by Save and by
 // `babel storage configure`.
+//
+// An absent mode is local, so a schema-1 document that was valid stays valid.
+// Errors name the offending field and never carry a password: a caller may
+// report them to a terminal or a log.
 func Validate(cfg Config) error {
 	if cfg.ConfigSchema > currentSchema {
 		return fmt.Errorf("storage configuration schema %d is newer than supported schema %d", cfg.ConfigSchema, currentSchema)
@@ -134,14 +222,158 @@ func Validate(cfg Config) error {
 		return errors.New("storage configuration password_file must be an absolute path")
 	}
 	if cfg.HostID != "" && !ValidHostID(cfg.HostID) {
-		return fmt.Errorf("storage configuration host_id %q is invalid: host ids are 1-%d characters of [a-z0-9._-] starting alphanumeric", cfg.HostID, maxHostIDLen)
+		return fmt.Errorf("storage configuration host_id %q is invalid: %s", cfg.HostID, idPolicy)
+	}
+	switch cfg.Mode {
+	case "", ModeLocal:
+		if cfg.Catalog != nil {
+			return fmt.Errorf("storage configuration catalog is only valid in %q mode", ModeShared)
+		}
+	case ModeShared:
+		if err := validateSharedIdentity(cfg); err != nil {
+			return err
+		}
+		if cfg.Catalog == nil {
+			return fmt.Errorf("storage configuration catalog is required in %q mode", ModeShared)
+		}
+		if err := validateCatalog(*cfg.Catalog); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("storage configuration mode %q is invalid: mode is %q or %q", cfg.Mode, ModeLocal, ModeShared)
 	}
 	return nil
+}
+
+// validateSharedIdentity checks the identity a shared deployment keys its rows,
+// leases, and instance revocation by. Both ids use the host-id policy: they
+// reach SQL as bind values and appear in operator-facing output, so a small
+// boring character set applies to all three.
+func validateSharedIdentity(cfg Config) error {
+	if cfg.DeploymentID == "" {
+		return fmt.Errorf("storage configuration deployment_id is required in %q mode", ModeShared)
+	}
+	if !validID(cfg.DeploymentID) {
+		return fmt.Errorf("storage configuration deployment_id %q is invalid: %s", cfg.DeploymentID, idPolicy)
+	}
+	if cfg.InstanceID == "" {
+		return fmt.Errorf("storage configuration instance_id is required in %q mode", ModeShared)
+	}
+	if !validID(cfg.InstanceID) {
+		return fmt.Errorf("storage configuration instance_id %q is invalid: %s", cfg.InstanceID, idPolicy)
+	}
+	return nil
+}
+
+// validateCatalog checks the shared PostgreSQL connection. No error quotes a
+// password, and none quotes the connection's host, database, or user either:
+// naming the field is enough to fix the document, and the assembled values are
+// a DSN.
+func validateCatalog(cat Catalog) error {
+	if cat.Host == "" {
+		return errors.New("storage configuration catalog.host is required")
+	}
+	if cat.Port < 1 || cat.Port > 65535 {
+		return fmt.Errorf("storage configuration catalog.port %d is invalid: port is 1-65535", cat.Port)
+	}
+	if cat.Database == "" {
+		return errors.New("storage configuration catalog.database is required")
+	}
+	if cat.User == "" {
+		return errors.New("storage configuration catalog.user is required")
+	}
+	if cat.Password == "" {
+		return errors.New("storage configuration catalog.password is required")
+	}
+	switch cat.TLSMode {
+	case TLSRequire, TLSVerifyFull:
+	default:
+		return fmt.Errorf("storage configuration catalog.tls_mode %q is invalid: tls_mode is %q or %q", cat.TLSMode, TLSRequire, TLSVerifyFull)
+	}
+	if cat.TLSRootCAFile != "" && !filepath.IsAbs(cat.TLSRootCAFile) {
+		return errors.New("storage configuration catalog.tls_root_ca_file must be an absolute path")
+	}
+	if (cat.MigrationUser == "") != (cat.MigrationPassword == "") {
+		return errors.New("storage configuration catalog.migration_user and catalog.migration_password must be supplied together")
+	}
+	// A migration credential that is the same role as the application
+	// credential is not separation, and would report as separation if it were
+	// accepted here.
+	if cat.MigrationUser != "" && cat.MigrationUser == cat.User {
+		return errors.New("storage configuration catalog.migration_user must differ from catalog.user")
+	}
+	return nil
+}
+
+// Redacted returns a copy safe for status output, diagnostics, and anything a
+// caller might print: both passwords become a fixed placeholder. Everything
+// else is kept, so a redacted copy is not a valid document to save and DSN on
+// its catalog does not connect.
+func (c Config) Redacted() Config {
+	if c.Catalog != nil {
+		cat := *c.Catalog
+		if cat.Password != "" {
+			cat.Password = redactedPlaceholder
+		}
+		if cat.MigrationPassword != "" {
+			cat.MigrationPassword = redactedPlaceholder
+		}
+		c.Catalog = &cat
+	}
+	return c
+}
+
+// DSN returns the pgx connection string for the application credential.
+//
+// The result is itself a credential: it embeds the password. It may be passed
+// to the driver and nowhere else - never to a log, an error, a diagnostic, or a
+// tool argument (SPEC.md 9). Callers that need something printable use
+// Redacted.
+func (c Catalog) DSN() string {
+	return c.dsn(c.User, c.Password)
+}
+
+// MigrationDSN returns the connection string for the optional separate
+// migration credential, and false when the deployment runs the
+// single-credential default. Like DSN, the result is a credential.
+//
+// A configured migration credential is a claim, not an observation: whether it
+// actually holds privileges the application credential lacks is only knowable
+// by connecting with both and comparing.
+func (c Catalog) MigrationDSN() (string, bool) {
+	if c.MigrationUser == "" || c.MigrationPassword == "" {
+		return "", false
+	}
+	return c.dsn(c.MigrationUser, c.MigrationPassword), true
+}
+
+func (c Catalog) dsn(user, password string) string {
+	u := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(user, password),
+		Host:   net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
+		Path:   "/" + c.Database,
+	}
+	q := url.Values{"sslmode": []string{c.TLSMode}}
+	if c.TLSRootCAFile != "" {
+		q.Set("sslrootcert", c.TLSRootCAFile)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // ValidHostID reports whether s is 1-64 characters of [a-z0-9._-] and
 // starts with an alphanumeric character.
 func ValidHostID(s string) bool {
+	return validID(s)
+}
+
+// idPolicy states the accepted shape once, for every error that rejects one.
+var idPolicy = fmt.Sprintf("ids are 1-%d characters of [a-z0-9._-] starting alphanumeric", maxHostIDLen)
+
+// validID is the single character policy behind host, deployment, and instance
+// ids.
+func validID(s string) bool {
 	if s == "" || len(s) > maxHostIDLen {
 		return false
 	}
