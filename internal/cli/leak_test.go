@@ -65,6 +65,7 @@ func TestNoSentinelReachesLeakChannels(t *testing.T) {
 	// from.
 	t.Setenv("BABEL_RESTIC_REPO", f.repoDir)
 	t.Setenv("BABEL_RESTIC_PASSWORD_FILE", f.passwordFile)
+	f.bootstrapRepo()
 	f.ok("archive", "push", "--json")
 
 	h := newWebHarness(t, f)

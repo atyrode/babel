@@ -20,28 +20,56 @@ const maxJSONLine = 1 << 20
 // newline terminates each line mirrored into an error tail.
 var newline = []byte{'\n'}
 
-// EnsureInit makes sure the repository exists, creating it if it does not.
-// It is idempotent and safe under concurrent callers: an init that loses
-// the race and fails because the repository already exists is success, as
-// confirmed by re-probing the repository config.
-func (r *Repo) EnsureInit(ctx context.Context) error {
-	probeErr := r.probe(ctx)
-	if probeErr == nil {
+// ErrRepoMissing reports that the repository does not exist yet. It is a
+// distinct error because creating one is an explicit operator act, never a
+// side effect of backing up: see Init.
+var ErrRepoMissing = errors.New("repository does not exist")
+
+// Require reports whether the repository exists and the password opens it,
+// returning ErrRepoMissing when it does not.
+//
+// Every command that reads or writes an existing repository calls this rather
+// than creating one, so a mistyped locator fails loudly instead of quietly
+// growing a second, empty archive somewhere the operator is not looking.
+func (r *Repo) Require(ctx context.Context) error {
+	err := r.probe(ctx)
+	switch {
+	case err == nil:
 		return nil
+	case isMissingRepo(err):
+		return ErrRepoMissing
 	}
-	if !isMissingRepo(probeErr) {
-		return probeErr
+	return err
+}
+
+// Init creates the repository, and reports whether this call created it.
+//
+// It is NOT safe to run concurrently with another Init against the same absent
+// repository, and nothing in Babel calls it on an unattended path for that
+// reason. restic generates a master key per init and writes the key before the
+// config; two inits racing on an empty repository both succeed, leaving two
+// valid keys and one config. restic then picks a key by iteration, and when it
+// picks the wrong one it fails with "config or key <id> is damaged: ciphertext
+// verification failed" - a repository that has to be repaired by hand.
+// Measured against restic 0.19.1: 10 of 10 races left two keys, and 7 of 10
+// subsequent backups failed (2026-08-29).
+//
+// So initialization is an explicit one-time bootstrap step, and an existing
+// repository is reported rather than re-created.
+func (r *Repo) Init(ctx context.Context) (created bool, err error) {
+	if err := r.Require(ctx); err == nil {
+		return false, nil
+	} else if !errors.Is(err, ErrRepoMissing) {
+		return false, err
 	}
 
 	if _, err := r.run(ctx, "init", "init"); err != nil {
-		// Either a concurrent caller initialized the repository first, or
-		// init genuinely failed. The repository config is the arbiter.
-		if probe := r.probe(ctx); probe == nil {
-			return nil
-		}
-		return err
+		// A concurrent init may have won. The config is the arbiter, but a
+		// repository that came into existence this way is not trustworthy, so
+		// this reports the failure rather than calling it success.
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
 // probe reads the repository config, the cheapest proof that the repository

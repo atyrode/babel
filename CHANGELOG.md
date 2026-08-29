@@ -299,9 +299,61 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   binary. It walks the sources rather than the restore, since the reverse
   comparison would pass for a restore that dropped files, and it fails if the
   walk compared implausibly few files.
+- **Two more §14 pre-deployment gates now have tests**, both reachable without
+  the provider.
+
+  *Idempotent concurrent writers*, proven with two operating-system processes
+  overlapping in time rather than two sequential calls — it has to be out of
+  process, since Babel resolves HOME and the XDG roots from the environment and
+  that is process-global. Same host: a lease serializes writers rather than
+  refusing them, so both committing is legal if the first released before the
+  second asked; what must hold is that no push fails, every outcome is a state
+  the catalog can be in, both snapshots reach the repository regardless of who
+  won, and one later push settles whatever the race left. Different hosts: both
+  commit, with separate leases and separate publication-order sequences. This
+  test is what surfaced the repository-initialization hazard below.
+
+  *Complete catalog rebuild from the repository snapshot list plus source
+  rescans*, proven by destroying the catalog outright — `DROP SCHEMA babel
+  CASCADE`, not a truncation — and recovering with only the documented path:
+  migrate, then push. No catalog backup is assumed, because none is promised.
+  What returns is snapshot visibility, ordering, restic's counts, and current
+  session identity from the rescan; what does not is which sessions each
+  *historical* snapshot held, so those rows come back `catalog-pending` and
+  stay there. The test asserts that asymmetry rather than a total, which is the
+  difference between checking a rebuild and checking a number.
 
 ### Changed
 
+- **`archive push` no longer creates the repository; `babel archive init` does,
+  once per deployment.** Auto-init on push was a data-loss hazard on the
+  unattended path, found by writing the concurrent-writer test.
+
+  restic generates a master key per `init` and writes the key before the
+  config, so two inits racing on an empty repository **both succeed** and leave
+  two valid keys with one config. restic then selects a key by iteration and
+  fails outright when it picks the wrong one. Measured against restic 0.19.1:
+  10 of 10 races left two keys, and 7 of 10 subsequent backups failed with
+  `config or key <id> is damaged: ciphertext verification failed` — a
+  repository needing manual repair. Two machines' hourly timers firing together
+  at a new Cellar repository is exactly that race.
+
+  The second hazard is worse: silent creation turned a **mistyped locator** into
+  a brand-new empty archive. Hourly pushes would keep reporting success into it
+  while the real archive appeared to stop growing — a failure that reports
+  success, which is worse than one that stops.
+
+  So `push` now calls `Require` and fails with `no repository at <locator>: run
+  `babel archive init` once for this deployment`, leaving nothing behind. A
+  repository that exists but does not open is reported as *that*, not as
+  needing initialization, because initializing over a real repository whose
+  password is wrong would answer a credential problem destructively.
+
+  The existing `TestEnsureInitUnderConcurrentCallers` asserted this was safe
+  and passed while the hazard was real: it checked that no error came back, not
+  that the resulting repository was usable. It is replaced by a test of the
+  property `push` now depends on — that a missing repository is distinguishable
+  from every other failure.
 - **The first deployment's catalog connection is encrypted but not
   authenticated, and SPEC.md now says so** (decision 48). Clever Cloud's
   managed PostgreSQL presents a self-signed certificate with **no

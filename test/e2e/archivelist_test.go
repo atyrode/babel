@@ -85,6 +85,7 @@ func TestArchiveListNamesTheSessionsAnotherHostArchived(t *testing.T) {
 		t.Fatal("the local listing found no sessions; the comparison below would be vacuous")
 	}
 
+	e.bootstrapRepo(t)
 	push := okJSON[pushResult](t, e, e.with("archive", "push", "--json")...)
 	if push.Incomplete {
 		t.Fatalf("push reported an incomplete backup: %+v", push)
@@ -142,6 +143,7 @@ func TestArchiveListNamesTheSessionsAnotherHostArchived(t *testing.T) {
 func TestArchiveListRendersAndNarrowsTheArchiveView(t *testing.T) {
 	e := newEnv(t)
 	e.writeSources(t)
+	e.bootstrapRepo(t)
 	okJSON[pushResult](t, e, e.with("archive", "push", "--json")...)
 
 	stdout, _ := e.ok(t, e.with("sessions", "list", "--host", hostID)...)

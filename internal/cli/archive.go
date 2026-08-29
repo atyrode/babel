@@ -17,6 +17,7 @@ import (
 const archiveUsage = `Usage: babel archive <command> [flags]
 
 Commands:
+  init     create the deployment's restic repository, once
   push     back up this host's source roots into the restic repository
   status   report snapshots per host
   verify   check repository integrity
@@ -26,6 +27,30 @@ Repository selection:
   --password-file FILE        else $BABEL_RESTIC_PASSWORD_FILE
 
 Run "babel archive <command> -h" for a command's flags.
+`
+
+const archiveInitUsage = `Usage: babel archive init --repo REPOSITORY --password-file FILE [flags]
+
+Creates the repository if it does not exist, and reports it either way. This
+is a one-time bootstrap step for the whole deployment, not a per-machine one:
+every other machine's first push finds the repository already there.
+
+No other command creates a repository. Two reasons. Concurrent creation
+corrupts: restic generates a master key per init and writes it before the
+config, so two inits racing on an empty repository both succeed and leave two
+valid keys with one config, after which restic can pick the wrong key and
+refuse the repository as damaged. And silent creation would turn a mistyped
+locator into a second, empty archive that grows happily while the real one
+appears to stop, which is worse than an error.
+
+So do not run this concurrently on two machines against a new repository.
+Bootstrap once, verify, then enable the other hosts.
+
+Flags:
+  --repo REPOSITORY           restic repository (default $BABEL_RESTIC_REPO)
+  --password-file FILE        password file (default $BABEL_RESTIC_PASSWORD_FILE)
+  --restic-binary PATH        restic executable (default "restic" from $PATH)
+  --json                      emit the result as JSON on stdout
 `
 
 const archivePushUsage = `Usage: babel archive push --repo REPOSITORY --password-file FILE [flags]
@@ -145,6 +170,8 @@ func (a *app) archive(ctx context.Context, args []string) error {
 	case "-h", "--help", "help":
 		fmt.Fprint(a.stdout, archiveUsage)
 		return nil
+	case "init":
+		return a.archiveInit(ctx, args[1:])
 	case "push":
 		return a.archivePush(ctx, args[1:])
 	case "status":
@@ -154,6 +181,54 @@ func (a *app) archive(ctx context.Context, args []string) error {
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown archive subcommand %q", args[0]), usage: archiveUsage}
 	}
+}
+
+// initResult is the machine-readable outcome of bootstrapping the repository.
+// Created distinguishes "this call made the deployment's archive" from "it was
+// already there", which is the only thing an operator running it twice wants to
+// know.
+type initResult struct {
+	Repository string `json:"repository"`
+	Created    bool   `json:"created"`
+}
+
+// archiveInit implements `babel archive init`.
+func (a *app) archiveInit(ctx context.Context, args []string) error {
+	c := newCmd("archive init", archiveInitUsage)
+	var rf repoFlags
+	rf.bind(c.fs)
+	asJSON := c.fs.Bool("json", false, "emit the result as JSON")
+	if err := c.parse(a, args); err != nil {
+		return err
+	}
+	if err := c.noArgs(); err != nil {
+		return err
+	}
+	d, err := babelDirs()
+	if err != nil {
+		return err
+	}
+	repo, err := rf.open(c, d, &sanitizingWriter{w: a.stderr, prefix: "restic: "})
+	if err != nil {
+		return err
+	}
+
+	created, err := repo.Init(ctx)
+	if err != nil {
+		return fmt.Errorf("initialize repository: %w", err)
+	}
+	res := initResult{Repository: Sanitize(rf.repository), Created: created}
+	if *asJSON {
+		return a.emitJSON(res)
+	}
+	if created {
+		fmt.Fprintf(a.stdout, "created repository %s\n", res.Repository)
+		// The password is the only way back in, and restic never recovers it.
+		a.diagf("note: back up the repository password; without it the archive cannot be read\n")
+		return nil
+	}
+	fmt.Fprintf(a.stdout, "repository %s already initialized\n", res.Repository)
+	return nil
 }
 
 // pushResult is the machine-readable outcome of one backup. Byte and file
@@ -219,8 +294,16 @@ func (a *app) archivePush(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := repo.EnsureInit(ctx); err != nil {
-		return fmt.Errorf("initialize repository: %w", err)
+	// A push never creates the repository. Two reasons, and the second is worse
+	// than the first: concurrent creation corrupts (see restic.Init), and silent
+	// creation turns a mistyped locator into a second, empty archive that grows
+	// happily while the real one appears to stop. Creating is `archive init`.
+	if err := repo.Require(ctx); err != nil {
+		if errors.Is(err, restic.ErrRepoMissing) {
+			return fmt.Errorf("no repository at %s: run `babel archive init` once for this deployment",
+				Sanitize(rf.repository))
+		}
+		return fmt.Errorf("open repository: %w", err)
 	}
 	a.diagf("backing up %d %s as host %s\n", len(roots), plural(len(roots), "root", "roots"), Sanitize(host))
 

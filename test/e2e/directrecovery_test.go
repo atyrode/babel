@@ -24,6 +24,7 @@ func TestArchiveRestoresWithResticAlone(t *testing.T) {
 	e := newEnv(t)
 	e.writeSources(t)
 
+	e.bootstrapRepo(t)
 	push := okJSON[pushResult](t, e, e.with("archive", "push", "--json")...)
 	if push.Incomplete {
 		t.Fatalf("push reported an incomplete backup: %+v", push)

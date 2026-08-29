@@ -23,6 +23,7 @@ func TestFetchResolvesASessionThatIsNoLongerLocal(t *testing.T) {
 		artifactBytes[rel] = readFile(t, filepath.Join(src.richArtifactDir, rel))
 	}
 
+	e.bootstrapRepo(t)
 	push := okJSON[pushResult](t, e, e.with("archive", "push", "--json")...)
 	if push.Incomplete {
 		t.Fatalf("push reported an incomplete backup: %+v", push)
@@ -91,6 +92,7 @@ func TestFetchResolvesASessionThatIsNoLongerLocal(t *testing.T) {
 func TestFetchRejectsAnUnknownHost(t *testing.T) {
 	e := newEnv(t)
 	src := e.writeSources(t)
+	e.bootstrapRepo(t)
 	okJSON[pushResult](t, e, e.with("archive", "push", "--json")...)
 
 	_, stderr, code := e.run(t,
@@ -111,6 +113,7 @@ func TestFetchRejectsAnUnknownHost(t *testing.T) {
 func TestCrossHostFetchRejectsAnUnknownSelector(t *testing.T) {
 	e := newEnv(t)
 	e.writeSources(t)
+	e.bootstrapRepo(t)
 	okJSON[pushResult](t, e, e.with("archive", "push", "--json")...)
 
 	_, stderr, code := e.run(t,

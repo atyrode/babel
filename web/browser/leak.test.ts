@@ -122,7 +122,13 @@ beforeAll(async () => {
 
   // The archive endpoints must be live, so the credential is genuinely in use
   // rather than reported as an unconfigured 409.
+  //
+  // The repository is created explicitly: `archive push` deliberately refuses
+  // to create one, because concurrent creation corrupts a restic repository and
+  // silent creation would hide a mistyped locator (SPEC.md §6.1).
   const selection = ["--repo", repo, "--password-file", passwordFile];
+  const init = Bun.spawnSync([binaryPath, "archive", "init", ...selection], { env });
+  if (!init.success) throw new Error(`archive init failed: ${init.stderr.toString()}`);
   const push = Bun.spawnSync([binaryPath, "archive", "push", "--json", ...selection], { env });
   if (!push.success) throw new Error(`archive push failed: ${push.stderr.toString()}`);
 

@@ -13,7 +13,7 @@ import (
 func TestLsListsSnapshotTree(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	if err := f.EnsureInit(ctx); err != nil {
+	if _, err := f.Init(ctx); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestLsRejectsEmptySnapshotID(t *testing.T) {
 func TestSnapshotsCarryStoredSummary(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	if err := f.EnsureInit(ctx); err != nil {
+	if _, err := f.Init(ctx); err != nil {
 		t.Fatalf("init: %v", err)
 	}
 	f.writeFile(t, "src/a.txt", []byte("hello"))
