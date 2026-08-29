@@ -2,6 +2,7 @@ package sharedcatalog_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/atyrode/babel/internal/sharedcatalog"
@@ -53,5 +54,37 @@ func TestPendingMigrationsReadTheLedgerNotTheDeploymentRow(t *testing.T) {
 			t.Errorf("pending migrations must be in apply order, got %v", before)
 			break
 		}
+	}
+}
+
+// An unmigrated database is where a new deployment starts, so the refusal has
+// to name the command that fixes it rather than surfacing whichever query
+// happened to run first. AcquireHostLease calls this before granting write
+// authority, which is where an operator would otherwise meet a raw
+// "relation does not exist".
+func TestEnsureCompatibleGuidesAnUnmigratedDatabase(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+
+	// The harness hands out a fresh database rather than a migrated one, and
+	// this test means nothing if that ever changes silently.
+	var present bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT to_regclass('public.deployments') IS NOT NULL`).Scan(&present); err != nil {
+		t.Fatalf("probe for the deployments table: %v", err)
+	}
+	if present {
+		t.Fatal("this test requires an unmigrated database")
+	}
+
+	err := sharedcatalog.EnsureCompatible(ctx, db)
+	if err == nil {
+		t.Fatal("an unmigrated database must be refused")
+	}
+	if !strings.Contains(err.Error(), "storage migrate") {
+		t.Errorf("the refusal must name the command that fixes it, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("the refusal must not surface a raw missing-relation error, got: %v", err)
 	}
 }

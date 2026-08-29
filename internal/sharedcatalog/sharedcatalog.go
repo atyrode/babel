@@ -114,9 +114,22 @@ func Migrate(ctx context.Context, db *sql.DB) (applied []string, err error) {
 }
 
 // EnsureCompatible reports whether this binary may operate against the
-// database. A newer schema is refused; an older one means migrations are
-// pending and the caller should run `babel storage migrate`.
+// database. A newer schema is refused; anything else that is not ready reports
+// what to run.
+//
+// An entirely unmigrated database is a normal state for a new deployment, not a
+// malfunction, so it must not surface as a raw "relation does not exist" from
+// whichever query happened to run first.
 func EnsureCompatible(ctx context.Context, db *sql.DB) error {
+	var ready bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT to_regclass('public.deployments') IS NOT NULL`).Scan(&ready); err != nil {
+		return fmt.Errorf("look for the shared catalog schema: %w", err)
+	}
+	if !ready {
+		return errors.New("shared catalog has no schema yet: run `babel storage migrate`")
+	}
+
 	var version int
 	err := db.QueryRowContext(ctx,
 		`SELECT coalesce(max(schema_version), 0) FROM deployments`).Scan(&version)
