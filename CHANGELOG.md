@@ -11,6 +11,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The hourly archive timer, replacing the pre-Babel backup job rather than
+  running beside it** (atyrode/dotfiles#442). `babel` is a pinned flake input, so
+  `babel-archive.service` executes an absolute store path; the first real push
+  could not claim that, having run from a locally built binary in `/tmp`.
+  `atyrode-session-backup`, its `atyrode backup` CLI, and `rclone`'s place on the
+  profile are gone. The wrapper earns its success stamp from
+  `archive push --json`: a push legitimately succeeds having archived nothing and
+  fails having archived part of a tree, and an unconditional stamp reported a
+  fresh archive on a host with no source roots until a test caught it.
+- **A `packages.default` flake output**, so other flakes can run a pinned Babel.
+  `version.go` accepts a link-time revision because a Nix build compiles from a
+  source copy with no `.git`, where `-buildvcs` stamps nothing; with nothing
+  injected the reported identity is byte-identical to before.
+- **`docs/bootstrap-evidence.md`**, recording the first real publication's
+  revision, `babel version --json`, schema versions, and what it did *not*
+  satisfy.
+
 - **The two §14 pre-deployment schemas are frozen, and the freeze is
   enforced by tests rather than asserted in prose.** `storage.json` at
   `config_schema` 2 and the catalog at `SchemaVersion` 1 with migrations
@@ -417,6 +434,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   (operator decision 2026-08-29).
 
 ### Changed
+
+- **The legacy archive is retired, and the order that happened in is recorded**
+  (decision 52). §2.3 required keeping the old job enabled until a real Cellar
+  round trip covered all three harnesses *and* the replacement timer was
+  verified. The bucket was deleted after the round trip but before the timer
+  existed, and the still-enabled job re-created it and re-uploaded 8.8 GiB within
+  the hour, because `rclone copy` auto-creates its destination. Nothing was lost;
+  the sequence was still the one that paragraph existed to prevent. Six places in
+  SPEC.md assumed a legacy fallback, including decision 4's "never deleted"
+  clause and §12's rollback contract, and all of them now say what is true: a
+  rollback target from before the cutover would reinstall the retired job and
+  repeat the re-upload, and no second automated copy exists any more.
 
 - **`archive push` no longer creates the repository; `babel archive init` does,
   once per deployment.** Auto-init on push was a data-loss hazard on the
