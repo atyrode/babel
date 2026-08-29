@@ -16,7 +16,6 @@ Commands:
   status                         report persistent storage configuration
   migrate [--from-json FILE|-]   apply pending shared catalog migrations
   verify                         check the configured shared catalog live
-  revoke-instance INSTANCE_ID    refuse an instance's leases and publications
 
 Run "babel storage <command> -h" for a command's flags.
 `
@@ -61,8 +60,6 @@ func (a *app) storage(ctx context.Context, args []string) error {
 		return a.storageMigrate(ctx, args[1:])
 	case "verify":
 		return a.storageVerify(ctx, args[1:])
-	case "revoke-instance":
-		return a.storageRevokeInstance(ctx, args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown storage subcommand %q", args[0]), usage: storageUsage}
 	}

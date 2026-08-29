@@ -37,26 +37,6 @@ Flags:
   --json                      emit the report as JSON
 `
 
-const storageRevokeInstanceUsage = `Usage: babel storage revoke-instance INSTANCE_ID [--json]
-
-Refuses an instance's lease acquisition, renewal, and publication, and
-force-expires any lease it holds so another instance can take over immediately.
-
-This is an application-level control, not a database one, and its authority is
-weaker than the name suggests. Revocation is an ordinary write to a table every
-instance must already write, so any credential that can publish can also revoke
-any instance and clear its own revocation. That is true whether the provider
-issues one shared credential or one per instance.
-
-So this evicts a machine that is out of service - a decommissioned server, a
-retired laptop - and bounds a compromised one until someone notices. It is not
-a control against an attacker holding a credential: for that, rotate the
-credential and review repository-password custody.
-
-Flags:
-  --json                      emit the result as JSON
-`
-
 // tlsObserved is what the server says about the connection, rather than what the
 // configuration asked for. A document may request verify-full and still end up
 // on a plaintext socket if the server does not offer TLS, so the report reads
@@ -359,48 +339,8 @@ func (a *app) storageVerify(ctx context.Context, args []string) error {
 		return err
 	}
 	if !got.RoleSeparation {
-		a.diagf("note: one credential serves this deployment, so no database-level control revokes a single instance; use `babel storage revoke-instance` and fleet-wide rotation\n")
+		a.diagf("note: one credential serves this deployment, so no database-level control evicts a single instance; fleet-wide credential rotation and repository-password custody are the controls\n")
 	}
-	return nil
-}
-
-type storageRevokeResult struct {
-	InstanceID string `json:"instance_id"`
-	Revoked    bool   `json:"revoked"`
-}
-
-func (a *app) storageRevokeInstance(ctx context.Context, args []string) error {
-	c := newCmd("storage revoke-instance", storageRevokeInstanceUsage)
-	asJSON := c.fs.Bool("json", false, "emit the result as JSON")
-	if err := c.parse(a, args); err != nil {
-		return err
-	}
-	rest := c.args()
-	if len(rest) != 1 {
-		return c.usagef("storage revoke-instance takes exactly one INSTANCE_ID")
-	}
-	instanceID := rest[0]
-
-	cfg, err := loadShared()
-	if err != nil {
-		return err
-	}
-	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	if err := sharedcatalog.RevokeInstance(ctx, db, instanceID); err != nil {
-		return err
-	}
-
-	res := storageRevokeResult{InstanceID: Sanitize(instanceID), Revoked: true}
-	if *asJSON {
-		return a.emitJSON(res)
-	}
-	fmt.Fprintf(a.stdout, "instance %s is revoked: its leases are expired and its publications are refused\n", res.InstanceID)
-	a.diagf("note: any credential that can publish can also revoke and un-revoke, so this evicts a retired machine rather than containing a compromised one; rotate the credential for that\n")
 	return nil
 }
 

@@ -32,29 +32,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `SET ROLE` rather than inherited usage; the inherited-usage form silently
   reports a `NOINHERIT` member of a superuser role as an application
   credential, which was confirmed on a throwaway cluster before choosing.
-- **Application-level instance revocation** (`storage revoke-instance`), the
-  replacement for per-instance credential revocation the deployment provider
-  cannot offer. Revoking force-expires the instance's host leases so another
-  machine can take over at once, and acquire, renew, and both of a
-  publication's lease checks refuse it — including the pre-commit check, so an
-  instance revoked mid-push lands nothing.
-
-  Three limits are recorded in code, in `--help`, in SPEC.md §9, and here,
-  because the name promises more than the mechanism delivers. **Its authority
-  is not authenticated:** revocation is ordinary DML on `instances`, a table
-  every instance must already write to register itself, so the least-privileged
-  application role Babel issues can revoke any instance and clear its own
-  revocation — proven by a test that pins that behaviour, so tightening it
-  later has to update this text. That holds under per-instance credentials too,
-  making it a property of the mechanism rather than of Clever Cloud.
-  **An older binary consults none of it:** a force-expired lease still stops
-  its in-flight push, because PostgreSQL evaluates the expiry predicate, but
-  nothing prevents it re-acquiring afterwards. So revocation evicts a machine
-  that is out of service and bounds a compromised one until someone notices; it
-  is not containment. Fleet-wide rotation and repository-password custody are
-  today's controls for that, and whether revocation should be restricted by
-  privilege — column-level grants reserving `revoked_at` to an operator role —
-  is now an explicit pre-deployment decision rather than an unexamined gap.
 - `storage migrate`, which applies pending migrations with the configured
   credential by default, or with an ephemeral document's migration credential
   that is used and never persisted. `storage verify` checks a configured
@@ -188,14 +165,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
-- **Shared catalog schema version 2**, recorded by migration 0003 as well as
-  bumped in code, so a binary that predates `instances.revoked_at` is not
-  written into a database whose allowlist it disagrees with, and
-  `AcquireHostLease` now refuses write authority against an incompatible
-  schema rather than leaving the check unwired. This is deliberately *not*
-  downgrade protection: an older binary performs no version check, so nothing
-  in Go constrains it — only what PostgreSQL evaluates, such as a
-  force-expired lease failing its own SQL expiry predicate mid-push.
+- `AcquireHostLease` now refuses write authority against an incompatible
+  schema rather than leaving the check unwired, so a binary cannot publish into
+  a database migrated by a newer one. This is deliberately *not* downgrade
+  protection: an older binary performs no version check, so nothing in Go
+  constrains it — only what PostgreSQL evaluates for it, such as a lease's own
+  SQL expiry predicate. The schema stays at version 1; an unmigrated database
+  is named as such, with the command that fixes it, rather than surfacing
+  whichever missing relation a query happened to hit first.
 - Errors that carry a connection string now redact the password on its own as
   well as the whole DSN. A driver may reconstruct a connection string from
   parsed fields rather than echo the one it was given, and the whole-string
@@ -236,9 +213,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   restrained by operator procedure instead of by privilege, and no
   database-level control can revoke a single instance, leaving fleet-wide
   rotation and repository-password custody as the honest remaining controls.
-  Closing that gap with application-level instance revocation is now a Phase A
-  requirement and a pre-deployment gate rather than something the code claims
-  today. Role separation stays specified and implemented for providers that
+  Per-instance eviction is therefore absent rather than replaced. An
+  application-level `revoke-instance` was built, measured, and **removed
+  before shipping** (operator decision, 2026-08-29): revocation is ordinary DML
+  on `instances` — a table every instance must already write to register
+  itself — so any credential that can publish could revoke any instance and
+  clear its own revocation, which a test demonstrated directly. A control whose
+  authority cannot be authenticated reads as containment without being it, and
+  the honest alternative is not to offer it. A retired machine's slot now frees
+  when its lease expires. Whether per-instance eviction should exist at all,
+  enforced by column-level grants and per-instance roles, is a §14
+  pre-deployment decision and §12 Phase C work.
+  Role separation stays specified and implemented for providers that
   permit it; granting least privilege to a provider-created user is explicitly
   untested on Clever Cloud and may not be relied on until proven against the
   real add-on (decision 46).

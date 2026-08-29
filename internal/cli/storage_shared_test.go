@@ -128,7 +128,6 @@ func TestSharedVerbsRefuseLocalMode(t *testing.T) {
 	for _, args := range [][]string{
 		{"storage", "verify"},
 		{"storage", "migrate"},
-		{"storage", "revoke-instance", "some-instance"},
 	} {
 		_, stderr, code := f.run(args...)
 		if code == 0 {
@@ -150,23 +149,6 @@ func TestSharedVerbsRefuseUnconfiguredStorage(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "storage configure") {
 		t.Errorf("the error must name the command that fixes it, got: %s", stderr)
-	}
-}
-
-func TestRevokeInstanceRequiresExactlyOneID(t *testing.T) {
-	f := newFixture(t)
-	for _, args := range [][]string{
-		{"storage", "revoke-instance"},
-		{"storage", "revoke-instance", "a", "b"},
-	} {
-		_, stderr, code := f.run(args...)
-		if code == 0 {
-			t.Errorf("%v must be rejected", args)
-			continue
-		}
-		if !strings.Contains(stderr, "exactly one INSTANCE_ID") {
-			t.Errorf("%v must explain the argument count, got: %s", args, stderr)
-		}
 	}
 }
 

@@ -51,9 +51,6 @@ var allowlist = map[string]map[string]Class{
 		"deployment_id": ClassOpaqueID,
 		"created_at":    ClassTimestamp,
 		"last_seen_at":  ClassTimestamp,
-		// revoked_at is a timestamp, not a new class: NULL means the instance
-		// may write, and a value means it was evicted (migrations/0003).
-		"revoked_at": ClassTimestamp,
 	},
 	"hosts": {
 		"host_id":       ClassOpaqueID,

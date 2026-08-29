@@ -67,13 +67,13 @@ SELECT
 // requirement is a pre-deployment gate in SPEC.md 14).
 //
 // This exists because the two shared-mode deployments differ in what they can
-// enforce, and only one of them can revoke an instance at the database. Clever
-// Cloud's managed PostgreSQL cannot create database users, so one credential
-// serves the whole deployment and no database-level control evicts a single
-// instance. Detection keeps operator-facing output honest about which case is
-// in force: a deployment whose only credential reports `application` must not
-// be described as having per-instance revocable credentials, and eviction there
-// is the application-level instance revocation of SPEC.md 11.
+// enforce. Clever Cloud's managed PostgreSQL cannot create database users, so
+// one credential serves the whole deployment, schema change is restrained by
+// operator procedure rather than by privilege, and no database-level control
+// distinguishes one instance from another. Detection keeps operator-facing
+// output honest about which case is in force: a deployment whose only
+// credential reports `application` must not be described as having separated
+// roles.
 //
 // It describes the credential this connection authenticated with and nothing
 // else. It cannot see whether the deployment also holds a separate migration

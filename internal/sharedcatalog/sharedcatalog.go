@@ -32,17 +32,11 @@ var migrationFS embed.FS
 // SchemaVersion is the Phase A schema version. A deployment records it, and an
 // instance refuses to operate against a newer one rather than guessing.
 //
-// Version 2 adds instances.revoked_at. The bump keeps this binary from
-// operating against a database migrated by a newer one, and keeps the recorded
-// version honest about which allowlist the schema matches.
-//
 // It buys no protection against an OLDER binary, and no comment here should
-// imply otherwise: a binary that predates this check does not perform it. What
-// constrains an old binary is only what PostgreSQL evaluates - a force-expired
-// lease fails its own SQL expiry predicate mid-push - but nothing stops it from
-// re-acquiring afterwards, because its acquire never learned about revoked_at.
-// A stale binary is therefore not bound by revocation; see revoke.go.
-const SchemaVersion = 2
+// imply otherwise: a binary that predates a check does not perform it. What
+// constrains an old binary is only what PostgreSQL evaluates for it - a lease's
+// SQL expiry predicate, a fence comparison, a constraint.
+const SchemaVersion = 1
 
 // ErrSchemaTooNew reports a database migrated by a newer Babel. Downgrading
 // silently would risk writing rows an older writer cannot represent.

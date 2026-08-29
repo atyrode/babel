@@ -57,8 +57,7 @@ type Config struct {
 
 	// DeploymentID and InstanceID name the shared deployment and this
 	// instance within it. They are required in shared mode: coordination
-	// rows, leases, and application-level instance revocation are all keyed
-	// by them.
+	// rows and host leases are keyed by them.
 	DeploymentID string `json:"deployment_id,omitempty"`
 	InstanceID   string `json:"instance_id,omitempty"`
 
@@ -73,8 +72,7 @@ type Config struct {
 // confirmation, 2026-08-28). MigrationUser/MigrationPassword are the optional
 // separate schema-change credential a provider that does issue users can
 // supply; where they are absent, schema change is restrained by operator
-// procedure rather than by privilege, and no database-level control can revoke
-// a single instance.
+// procedure rather than by privilege.
 type Catalog struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
@@ -245,10 +243,10 @@ func Validate(cfg Config) error {
 	return nil
 }
 
-// validateSharedIdentity checks the identity a shared deployment keys its rows,
-// leases, and instance revocation by. Both ids use the host-id policy: they
-// reach SQL as bind values and appear in operator-facing output, so a small
-// boring character set applies to all three.
+// validateSharedIdentity checks the identity a shared deployment keys its rows
+// and leases by. Both ids use the host-id policy: they reach SQL as bind values
+// and appear in operator-facing output, so a small boring character set applies
+// to all three.
 func validateSharedIdentity(cfg Config) error {
 	if cfg.DeploymentID == "" {
 		return fmt.Errorf("storage configuration deployment_id is required in %q mode", ModeShared)
