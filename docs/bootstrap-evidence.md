@@ -89,11 +89,27 @@ The push reported `complete yes`, meaning restic read every source file. That
 flag and the exit status share a cause, so the enumeration above is the
 independent check: it establishes coverage without relying on either.
 
-## Not yet satisfied
+## Hourly timer rollout
 
-- The hourly `babel-archive.timer`/`.service` units, their pinned store path,
-  and the §12 proofs that a missed run executes after login and that a first
-  timer run cannot precede bootstrap health.
+Landed 2026-08-29 in atyrode/dotfiles (#442), replacing the pre-Babel
+`atyrode-session-backup` job rather than running beside it. `babel` is a pinned
+flake input, so `ExecStart` is an absolute store path — the provenance the first
+publication above could not claim.
+
+| proof | result |
+|---|---|
+| unconfigured machine | exit 0, no stamp, points at the ceremony script |
+| configured, repository never created | exit 1, no stamp, `run \`babel archive init\`` visible |
+| valid repository, nothing to archive | exit 0, **no stamp** |
+| `Persistent=true` after a missed window | fired immediately; snapshot `aa009834`, 837 sessions, stamp written |
+
+The third row is a regression this file exists to remember. The wrapper first
+stamped success unconditionally, so a host whose source roots were absent
+reported a fresh archive having archived nothing. It now reads `snapshot_id`
+and `incomplete` from `babel archive push --json` and stamps only a complete
+snapshot; `checks/babel-archive.nix` asserts that and names why.
+
+## Not yet satisfied
 - Coordinated backup and restore drills, and repository-password custody
   documentation beyond the vault item itself.
 - Database-enforced application/migration role separation, which Clever Cloud
