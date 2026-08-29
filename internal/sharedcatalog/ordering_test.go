@@ -69,6 +69,68 @@ func TestSnapshotStatesDistinguishesCommittedFromPending(t *testing.T) {
 	}
 }
 
+// The two conditions status reports are different, and one of them is
+// permanent. An adopted snapshot keeps real counts from restic but no record of
+// which sessions it held, and only its owning host could have written that at
+// push time - so a later push does NOT promote it. This is intended, and pinning
+// it stops a future change from quietly "fixing" it by backfilling session
+// detail nobody observed.
+func TestAdoptedSnapshotStaysPendingAcrossLaterPushes(t *testing.T) {
+	db := newDB(t)
+	mustMigrate(t, db)
+	ctx := context.Background()
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	stranded := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	if _, err := sharedcatalog.Reconcile(ctx, db, "h1", []sharedcatalog.RepoSnapshot{
+		{SnapshotID: "s-stranded", Host: "h1", Time: stranded},
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// A later push publishes its own snapshot, with its own session rows.
+	order, err := sharedcatalog.NextPublicationOrder(ctx, db, "h1")
+	if err != nil {
+		t.Fatalf("order: %v", err)
+	}
+	lease, err := sharedcatalog.AcquireHostLease(ctx, db, "h1", "inst-a", time.Minute)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if _, err := sharedcatalog.PublishSnapshot(ctx, db, lease, "snapshot:s-later",
+		sharedcatalog.SnapshotRow{
+			SnapshotID:       "s-later",
+			PublicationOrder: order,
+			SnapshotTime:     stranded.Add(time.Hour),
+			CommitState:      sharedcatalog.CommitCommitted,
+			SessionCount:     1,
+			PublishedBy:      "inst-a",
+		}, []sharedcatalog.SessionRow{
+			{
+				SessionUID:  sharedcatalog.SessionUID("d1", "h1", "omp", "smoke/alpha"),
+				Harness:     "omp",
+				PrimarySize: 1,
+			},
+		}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	states, err := sharedcatalog.SnapshotStates(ctx, db)
+	if err != nil {
+		t.Fatalf("SnapshotStates: %v", err)
+	}
+	if got := states["s-stranded"]; got != sharedcatalog.CommitPending {
+		t.Errorf("adopted snapshot state = %q after a later push, want %q: "+
+			"if a push now promotes it, status must stop telling operators the count does not fall",
+			got, sharedcatalog.CommitPending)
+	}
+	if got := states["s-later"]; got != sharedcatalog.CommitCommitted {
+		t.Errorf("the pushed snapshot state = %q, want %q", got, sharedcatalog.CommitCommitted)
+	}
+}
+
 // publication_order totally orders a host's snapshots so readers can select the
 // newest without trusting clock skew (migrations/0001_init.sql). Reconcile
 // assigns each adopted snapshot the next order above the current maximum, which
