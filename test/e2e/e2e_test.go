@@ -121,6 +121,7 @@ type env struct {
 	passwordFile string
 	dataHome     string
 	cacheHome    string
+	configHome   string
 
 	ompSessions string
 	ompBlobs    string
@@ -138,6 +139,7 @@ func newEnv(t *testing.T) *env {
 		passwordFile: filepath.Join(root, "password"),
 		dataHome:     filepath.Join(root, "data"),
 		cacheHome:    filepath.Join(root, "cache"),
+		configHome:   filepath.Join(root, "config"),
 	}
 	e.ompSessions = filepath.Join(e.home, ".omp", "agent", "sessions")
 	e.ompBlobs = filepath.Join(e.home, ".omp", "agent", "blobs")
@@ -155,6 +157,14 @@ func newEnv(t *testing.T) *env {
 	t.Setenv("HOME", e.home)
 	t.Setenv("XDG_DATA_HOME", e.dataHome)
 	t.Setenv("XDG_CACHE_HOME", e.cacheHome)
+	// storage.json must be private to this environment. Without this the suite
+	// reads the developer's real configuration whenever XDG_CONFIG_HOME is set,
+	// because os.UserConfigDir prefers it over this fixture's HOME - and a real
+	// shared-mode document would point commands at the operator's actual
+	// repository and catalog. internal/cli's fixture already carries this guard
+	// after two unrelated tests once observed a configuration they never wrote;
+	// this suite drives the same commands and needs it for the same reason.
+	t.Setenv("XDG_CONFIG_HOME", e.configHome)
 	t.Setenv("BABEL_RESTIC_REPO", "")
 	t.Setenv("BABEL_RESTIC_PASSWORD_FILE", "")
 	t.Setenv("BABEL_HOST_ID", hostID)

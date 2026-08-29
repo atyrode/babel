@@ -513,6 +513,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **The end-to-end suite could have read the operator's real `storage.json`.**
+  `newEnv` isolated HOME, `XDG_DATA_HOME` and `XDG_CACHE_HOME` but not
+  `XDG_CONFIG_HOME`, and `os.UserConfigDir` prefers that variable over HOME. It
+  was harmless only because no production configuration existed anywhere — and
+  the very next step is creating one. A shared-mode document carries a real
+  repository locator and a real catalog DSN, so any command resolving through
+  configuration rather than explicit flags would have addressed the operator's
+  actual Cellar bucket and PostgreSQL from a test run.
+
+  `internal/cli`'s fixture already carried this guard, its comment recording
+  that two unrelated tests once observed a configuration they never wrote; the
+  e2e suite drives the same commands and lacked it. Reverting the one line makes
+  the new regression test fail with `Fatal: /nonexistent/outside-password does
+  not exist` while reaching for an `s3://outside.invalid/operator-bucket`
+  locator, which is the hazard stated exactly.
+
 - **A session's catalog identity was derived from `storage.json` rather than
   from the host actually publishing it.** The snapshot goes to restic under the
   resolved host — `--host`, else `$BABEL_HOST_ID`, else the configured value —
