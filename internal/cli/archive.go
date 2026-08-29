@@ -51,6 +51,25 @@ const archiveStatusUsage = `Usage: babel archive status --repo REPOSITORY --pass
 Reports the repository's snapshots grouped by host: how many, when the
 latest was taken, its id, and the tags observed. Read-only.
 
+In shared mode it also reports how far the shared catalog is behind the
+repository, derived by comparing the two rather than read from a local
+journal. The two counts mean different things:
+
+  uncatalogued      snapshots the repository holds that the catalog has no
+                    row for at all, which is what an outage leaves behind.
+                    The next "babel archive push" records them.
+
+  catalog-pending   snapshots the catalog has a row for, with real counts
+                    from restic, but no record of which sessions they held.
+                    That record can only be written by the owning host at
+                    push time, so it cannot be recovered from the snapshot
+                    listing: this count does not fall, and nothing is wrong
+                    with the archive. The snapshots remain durable and
+                    restorable; only the catalog's session detail for them
+                    is permanently absent.
+
+An unreachable catalog reports both counts as unknown rather than zero.
+
 Flags:
   --repo REPOSITORY           restic repository (default $BABEL_RESTIC_REPO)
   --password-file FILE        password file (default $BABEL_RESTIC_PASSWORD_FILE)
@@ -394,9 +413,21 @@ func (a *app) catalogLag(ctx context.Context, snapshots []restic.Snapshot) *cata
 			pending++
 		}
 	}
+	// Two different conditions with two different meanings, deliberately not
+	// summed. An uncatalogued snapshot has no catalog row and a push records it.
+	// A catalog-pending row exists with real counts from restic but no record of
+	// which sessions the snapshot held, and only its owning host could have
+	// written that, at push time. So the pending count does not fall, and saying
+	// so is kinder than leaving an operator looking for the command that clears
+	// it.
 	if uncatalogued > 0 {
 		a.diagf("note: %d %s archived but not catalogued; `babel archive push` records them\n",
 			uncatalogued, plural(uncatalogued, "snapshot is", "snapshots are"))
+	}
+	if pending > 0 {
+		a.diagf("note: %d %s recorded without session detail, which only its owning host could write at push time; the %s durable and restorable, and this count does not fall\n",
+			pending, plural(pending, "snapshot is", "snapshots are"),
+			plural(pending, "snapshot stays", "snapshots stay"))
 	}
 	return &catalogStatus{Reachable: true, Uncatalogued: &uncatalogued, Pending: &pending}
 }
