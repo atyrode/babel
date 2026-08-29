@@ -52,6 +52,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   describe already computed would make an hourly push scale with the whole
   corpus rather than with what changed. A cache at the old schema is discarded
   and rebuilt, which is safe: every row derives from live sources.
+- **`archive status` reports how far the shared catalog is behind**, so
+  `catalog-pending` is observable between pushes rather than only in the output
+  of the push that deferred. It reports whether the catalog is reachable, how
+  many snapshots are archived but uncatalogued, and how many are recorded
+  without session rows.
+
+  SPEC.md §9 promised an idempotent local `catalog-pending` journal; that is now
+  scoped to Phase B's `pending-sync`, and Phase A derives the answer instead.
+  The repository is authoritative for which snapshots exist and the catalog for
+  which it recorded, so their difference *is* the state. A third local copy
+  could be lost with the rebuildable local database, or go stale the moment
+  another instance reconciles, and would then disagree with both.
+
+  An unreachable catalog leaves the counts **absent rather than zero**:
+  reporting 0 uncatalogued snapshots is a claim the command cannot make without
+  reading the catalog, and the terminal output says `unknown`.
 - **Babel owns its own PostgreSQL schema** (`babel`), created by `storage
   migrate` and pinned as `search_path` on every connection (decision 47).
   Driving the real Clever Cloud add-on showed why: it pre-installs 40
