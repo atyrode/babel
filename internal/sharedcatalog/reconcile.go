@@ -173,10 +173,14 @@ func knownSnapshots(ctx context.Context, tx *sql.Tx, hostID string) (map[string]
 // Rebuild reconstructs a host's derived rows from the repository snapshot list
 // alone, discarding what the catalog held for that host.
 //
-// This is the recovery path that makes losing the Phase A database survivable
-// (SPEC.md 9). It is deliberately explicit and destructive to *derived* state
-// only: it never touches the repository, and it never removes a snapshot the
-// repository still reports.
+// It is the repair path, not the ordinary recovery path. An empty catalog needs
+// nothing but `storage migrate` and each host's next push: Register plus
+// Reconcile adopt every snapshot the repository reports, which is what the
+// acceptance suite exercises. Rebuild exists for the case that cannot fix
+// itself - rows for a host that are present but wrong - and `babel storage
+// rebuild` is what invokes it, explicitly and per host, because it is
+// destructive to *derived* state: it never touches the repository, and it never
+// removes a snapshot the repository still reports.
 //
 // Session rows cannot be reconstructed from the snapshot list, because their
 // sizes and counts come from the sessions themselves. So a rebuilt host arrives

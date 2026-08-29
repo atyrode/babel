@@ -519,7 +519,8 @@ func TestTwoInstanceAcceptance(t *testing.T) {
 	}
 	// Adopted from the repository listing, so restic's counts are restored but
 	// the record of which sessions it held was never written and is not
-	// derivable: that row stays catalog-pending, permanently (SPEC.md §9).
+	// derivable: that row stays catalog-pending, and no shipped command resolves
+	// it - §12 Phase C's restore-and-rescan is what would (SPEC.md §9).
 	if final.Catalog.Pending == nil || *final.Catalog.Pending != 1 {
 		t.Fatalf("the adopted snapshot is not reported catalog-pending: %+v", final.Catalog)
 	}

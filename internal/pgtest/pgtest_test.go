@@ -11,11 +11,16 @@ import (
 	"github.com/atyrode/babel/internal/pgtest"
 )
 
-// The harness is infrastructure two suites depend on, and its TLS mode is the
-// part that can silently degrade: a cluster started without ssl=on still
-// accepts `sslmode=require` connections in some configurations, which would let
-// a CLI-level test pass while proving nothing about encryption. So this asserts
-// the server's own view of the connection rather than the client's request.
+// The harness is infrastructure two suites depend on, so its TLS mode is worth
+// asserting from the server's side rather than the client's.
+//
+// A server without ssl=on refuses a `require` client outright - "server does not
+// support SSL, but SSL was required" (measured against PostgreSQL 18) - so the
+// BaseDSN connecting at all already proves encryption. What pg_stat_ssl adds is
+// the server's own account of the connection and the protocol it negotiated,
+// which is exactly what `storage verify` reports to an operator instead of
+// echoing back the mode that was requested. Modelling that here keeps the
+// harness honest about the same distinction the product makes.
 func TestClusterServesTLSWhenAsked(t *testing.T) {
 	pgtest.SkipOrFail(t)
 	c, err := pgtest.Start(pgtest.Options{TLS: true})
