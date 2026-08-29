@@ -13,7 +13,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = "1"
+// schemaVersion is bumped when the cached columns change. A mismatch makes Open
+// discard and rebuild the cache, which is safe because every row is derivable
+// from live sources.
+const schemaVersion = "2"
 
 // Ref is the inexpensive identity returned by adapter discovery. Refresh stats
 // PrimaryPath to decide whether the cached description is still current.
@@ -39,7 +42,15 @@ type Row struct {
 	CreatedAt            *string
 	ModifiedAt           *string
 	ContinuationGrade    bool
-	RowJSON              []byte
+	// ArtifactCount, BlobCount, and UnresolvedBlobCount are the session's
+	// closure as the adapter observed it. They are cached because shared-catalog
+	// publication needs them on every push, and re-describing an unchanged
+	// session to recover a number the describe already computed would make an
+	// hourly push scale with the whole corpus instead of with what changed.
+	ArtifactCount       int
+	BlobCount           int
+	UnresolvedBlobCount int
+	RowJSON             []byte
 }
 
 // Progress reports describe throughput while Refresh runs. Total counts the
@@ -149,6 +160,9 @@ CREATE TABLE IF NOT EXISTS sessions(
 	created_at TEXT,
 	modified_at TEXT,
 	continuation_grade INTEGER,
+	artifact_count INTEGER,
+	blob_count INTEGER,
+	unresolved_blob_count INTEGER,
 	row_json TEXT
 );
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`
@@ -173,7 +187,8 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`
 	// table into a schema error, which Open handles with the same clean rebuild.
 	rows, err := c.db.Query(`SELECT selector, harness, source_id, primary_path,
 		primary_size, primary_mtime_unixnano, title, workspace, created_at,
-		modified_at, continuation_grade, row_json FROM sessions LIMIT 0`)
+		modified_at, continuation_grade, artifact_count, blob_count,
+		unresolved_blob_count, row_json FROM sessions LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf("validate catalog schema: %w", err)
 	}
@@ -398,15 +413,19 @@ func upsert(ctx context.Context, tx *sql.Tx, row Row) error {
 	const query = `INSERT INTO sessions(
 		selector, harness, source_id, primary_path, primary_size,
 		primary_mtime_unixnano, title, workspace, created_at, modified_at,
-		continuation_grade, row_json
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		continuation_grade, artifact_count, blob_count, unresolved_blob_count,
+		row_json
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(selector) DO UPDATE SET
 		harness=excluded.harness, source_id=excluded.source_id,
 		primary_path=excluded.primary_path, primary_size=excluded.primary_size,
 		primary_mtime_unixnano=excluded.primary_mtime_unixnano,
 		title=excluded.title, workspace=excluded.workspace,
 		created_at=excluded.created_at, modified_at=excluded.modified_at,
-		continuation_grade=excluded.continuation_grade, row_json=excluded.row_json`
+		continuation_grade=excluded.continuation_grade,
+		artifact_count=excluded.artifact_count, blob_count=excluded.blob_count,
+		unresolved_blob_count=excluded.unresolved_blob_count,
+		row_json=excluded.row_json`
 	grade := 0
 	if row.ContinuationGrade {
 		grade = 1
@@ -414,6 +433,7 @@ func upsert(ctx context.Context, tx *sql.Tx, row Row) error {
 	_, err := tx.ExecContext(ctx, query, row.Selector, row.Harness, row.SourceID,
 		row.PrimaryPath, row.PrimarySize, row.PrimaryMtimeUnixNano, nullable(row.Title),
 		nullable(row.Workspace), nullable(row.CreatedAt), nullable(row.ModifiedAt), grade,
+		row.ArtifactCount, row.BlobCount, row.UnresolvedBlobCount,
 		string(row.RowJSON))
 	if err != nil {
 		return fmt.Errorf("write catalog row %q: %w", row.Selector, err)
@@ -431,7 +451,8 @@ func nullable(value *string) any {
 func (c *Cache) readRows(ctx context.Context) ([]Row, error) {
 	const query = `SELECT selector, harness, source_id, primary_path, primary_size,
 		primary_mtime_unixnano, title, workspace, created_at, modified_at,
-		continuation_grade, row_json FROM sessions ORDER BY selector`
+		continuation_grade, artifact_count, blob_count, unresolved_blob_count,
+		row_json FROM sessions ORDER BY selector`
 	rows, err := c.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -446,7 +467,8 @@ func (c *Cache) readRows(ctx context.Context) ([]Row, error) {
 		var rowJSON string
 		if err := rows.Scan(&row.Selector, &row.Harness, &row.SourceID, &row.PrimaryPath,
 			&row.PrimarySize, &row.PrimaryMtimeUnixNano, &title, &workspace, &createdAt,
-			&modifiedAt, &grade, &rowJSON); err != nil {
+			&modifiedAt, &grade, &row.ArtifactCount, &row.BlobCount,
+			&row.UnresolvedBlobCount, &rowJSON); err != nil {
 			return nil, err
 		}
 		row.Title = stringPtr(title)

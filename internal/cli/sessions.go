@@ -454,12 +454,15 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 			return catalog.Row{}, false
 		}
 		return catalog.Row{
-			Title:             row.Title,
-			Workspace:         row.Workspace,
-			CreatedAt:         timePtr(desc.Meta.CreatedAt),
-			ModifiedAt:        row.Modified,
-			ContinuationGrade: row.Continuous,
-			RowJSON:           rowJSON,
+			Title:               row.Title,
+			Workspace:           row.Workspace,
+			CreatedAt:           timePtr(desc.Meta.CreatedAt),
+			ModifiedAt:          row.Modified,
+			ContinuationGrade:   row.Continuous,
+			ArtifactCount:       len(desc.Artifacts),
+			BlobCount:           len(desc.Blobs),
+			UnresolvedBlobCount: len(desc.UnresolvedBlobRefs),
+			RowJSON:             rowJSON,
 		}, true
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/atyrode/babel/internal/sharedcatalog"
 )
@@ -131,14 +132,11 @@ func TestEnsureCompatible(t *testing.T) {
 	mustMigrate(t, db)
 	ctx := context.Background()
 
-	// No deployment row yet: version 0 means migrations are pending from the
-	// caller's point of view, and the message must say what to run.
-	err := sharedcatalog.EnsureCompatible(ctx, db)
-	if err == nil {
-		t.Fatal("EnsureCompatible accepted an unrecorded schema version")
-	}
-	if !strings.Contains(err.Error(), "storage migrate") {
-		t.Fatalf("error must tell the operator what to run, got: %v", err)
+	// Migrated but nothing registered yet: version 0 means unrecorded, not
+	// older. Refusing here would tell an operator to run the migration they
+	// just ran, which is what the ledger check exists to avoid.
+	if err := sharedcatalog.EnsureCompatible(ctx, db); err != nil {
+		t.Fatalf("EnsureCompatible refused a migrated but unregistered catalog: %v", err)
 	}
 
 	if _, err := db.Exec(`INSERT INTO deployments (deployment_id, schema_version) VALUES ('d1', $1)`,
@@ -153,9 +151,45 @@ func TestEnsureCompatible(t *testing.T) {
 		sharedcatalog.SchemaVersion+1); err != nil {
 		t.Fatalf("insert newer deployment: %v", err)
 	}
-	err = sharedcatalog.EnsureCompatible(ctx, db)
+	err := sharedcatalog.EnsureCompatible(ctx, db)
 	if !errors.Is(err, sharedcatalog.ErrSchemaTooNew) {
 		t.Fatalf("EnsureCompatible must refuse a newer schema, got: %v", err)
+	}
+}
+
+// Accepting an unrecorded version costs an accidental guard: version 0 used to
+// refuse a half-migrated database too. The ledger is what genuinely answers
+// "is anything pending", so the guard must come from there instead.
+func TestEnsureCompatibleRefusesAPendingMigration(t *testing.T) {
+	db := newDB(t)
+	applied := mustMigrate(t, db)
+	ctx := context.Background()
+	if len(applied) < 2 {
+		t.Skipf("this test needs at least two migrations, got %d", len(applied))
+	}
+
+	// Forget the last migration: from the ledger's point of view it is pending,
+	// which is the state an interrupted `storage migrate` leaves behind.
+	if _, err := db.ExecContext(ctx,
+		`DELETE FROM schema_migrations WHERE version = $1`, applied[len(applied)-1]); err != nil {
+		t.Fatalf("forget a migration: %v", err)
+	}
+
+	err := sharedcatalog.EnsureCompatible(ctx, db)
+	if err == nil {
+		t.Fatal("EnsureCompatible accepted a catalog with a pending migration")
+	}
+	if !strings.Contains(err.Error(), "storage migrate") {
+		t.Errorf("the refusal must name the command that fixes it, got: %v", err)
+	}
+
+	// And write authority is refused with it, which is the property that
+	// matters: a half-migrated catalog must not be published into.
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, err := sharedcatalog.AcquireHostLease(ctx, db, "h1", "inst-a", time.Minute); err == nil {
+		t.Error("a lease was granted against a catalog with a pending migration")
 	}
 }
 
