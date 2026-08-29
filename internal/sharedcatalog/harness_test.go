@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
+
+	"github.com/atyrode/babel/internal/pgtest"
 )
 
 // The suite needs a real PostgreSQL: the contract it defends is transactional
@@ -28,46 +28,22 @@ func TestMain(m *testing.M) {
 		baseDSN = dsn
 		os.Exit(m.Run())
 	}
-	if _, err := exec.LookPath("initdb"); err != nil {
+	if !pgtest.Available() {
 		fmt.Fprintln(os.Stderr, "skipping: no BABEL_TEST_POSTGRES and initdb is not on PATH")
 		os.Exit(0)
 	}
-	stop, dsn, err := startCluster()
+	// Plaintext loopback is enough here: this suite opens connections itself, so
+	// it never passes through the configuration document that requires TLS. The
+	// end-to-end suite drives the shipped commands and therefore does.
+	cluster, err := pgtest.Start(pgtest.Options{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "provision postgres: %v\n", err)
 		os.Exit(1)
 	}
-	baseDSN = dsn
+	baseDSN = cluster.BaseDSN
 	code := m.Run()
-	stop()
+	cluster.Stop()
 	os.Exit(code)
-}
-
-func startCluster() (func(), string, error) {
-	dir, err := os.MkdirTemp("", "babel-pg-*")
-	if err != nil {
-		return nil, "", err
-	}
-	cleanup := func() { os.RemoveAll(dir) }
-	data := filepath.Join(dir, "data")
-
-	// Trust auth on a loopback port with a private data directory: this cluster
-	// exists for the length of one test binary and holds only synthetic rows.
-	if out, err := exec.Command("initdb", "-A", "trust", "-U", "babel", "--no-sync", "-D", data).CombinedOutput(); err != nil {
-		cleanup()
-		return nil, "", fmt.Errorf("initdb: %v: %s", err, out)
-	}
-	port := "5" + fmt.Sprint(1000+os.Getpid()%8000)
-	opts := fmt.Sprintf("-k %s -h 127.0.0.1 -p %s", dir, port)
-	if out, err := exec.Command("pg_ctl", "-D", data, "-o", opts, "-l", filepath.Join(dir, "log"), "-w", "start").CombinedOutput(); err != nil {
-		cleanup()
-		return nil, "", fmt.Errorf("pg_ctl start: %v: %s", err, out)
-	}
-	stop := func() {
-		exec.Command("pg_ctl", "-D", data, "-m", "immediate", "-w", "stop").Run()
-		cleanup()
-	}
-	return stop, fmt.Sprintf("postgres://babel@127.0.0.1:%s/postgres?sslmode=disable", port), nil
 }
 
 var dbSeq atomic.Int64

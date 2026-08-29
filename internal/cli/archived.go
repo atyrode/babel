@@ -66,6 +66,63 @@ func identifyArchived(ctx context.Context, repo *restic.Repo, snapshotID string)
 	return out, nil
 }
 
+// archivedListing resolves which snapshot a cross-host read consults and
+// enumerates the sessions it holds.
+//
+// Snapshot selection precedes identification, the opposite order from a local
+// read: the archive rather than this machine is the authority on what the named
+// host has, so nothing here scans a source tree or opens the local catalog.
+func (a *app) archivedListing(ctx context.Context, c *cmd, rf *repoFlags, snapshot string) (restic.Snapshot, []archivedSession, error) {
+	d, err := babelDirs()
+	if err != nil {
+		return restic.Snapshot{}, nil, err
+	}
+	repo, err := rf.open(c, d, nil)
+	if err != nil {
+		return restic.Snapshot{}, nil, err
+	}
+	snapshots, err := repo.Snapshots(ctx)
+	if err != nil {
+		return restic.Snapshot{}, nil, fmt.Errorf("list snapshots: %w", err)
+	}
+	hostSnapshots, err := snapshotsForHost(c, snapshots, rf.host)
+	if err != nil {
+		return restic.Snapshot{}, nil, err
+	}
+	chosen, err := pickSnapshot(c, hostSnapshots, snapshot)
+	if err != nil {
+		return restic.Snapshot{}, nil, err
+	}
+	sessions, err := identifyArchived(ctx, repo, chosen.ID)
+	if err != nil {
+		return restic.Snapshot{}, nil, err
+	}
+	return chosen, sessions, nil
+}
+
+// archivedRows narrows an archived listing to the selected harnesses and states
+// each surviving session as a listing row.
+//
+// The harness filter is applied here rather than inside identification because
+// one pass over the snapshot's file listing serves every adapter at once:
+// restricting the adapters would not read less of the snapshot, only less of
+// what has already been read. Order is identification's, which is by selector,
+// so a cross-host listing sorts exactly as a local one does.
+func archivedRows(sessions []archivedSession, ads []adapter.Adapter) []sessionRow {
+	keep := make(map[string]struct{}, len(ads))
+	for _, ad := range ads {
+		keep[ad.Harness()] = struct{}{}
+	}
+	rows := make([]sessionRow, 0, len(sessions))
+	for _, s := range sessions {
+		if _, ok := keep[s.harness]; !ok {
+			continue
+		}
+		rows = append(rows, rowFromArchived(s))
+	}
+	return rows
+}
+
 // resolveArchivedSelector picks one archived session, using the same three-tier
 // matching as a local selector: exact key, then a segment-aligned suffix, then
 // any suffix. Ambiguity within a tier is an error naming the candidates, so a

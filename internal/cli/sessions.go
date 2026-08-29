@@ -40,7 +40,7 @@ const minSnapshotPrefix = 4
 const sessionsUsage = `Usage: babel sessions <command> [flags]
 
 Commands:
-  list                 list this host's local sessions
+  list                 list this host's sessions, or another host's archive
   inspect SELECTOR     show one local session in full
   fetch SELECTOR       restore one session's files from a snapshot
   prune --local        remove locally fetched session directories
@@ -55,11 +55,30 @@ const sessionsListUsage = `Usage: babel sessions list [flags]
 Lists the sessions the source adapters can see on this host. Sessions are
 read in place; nothing is copied and the repository is never opened.
 
+With --host, the listing comes from that host's newest snapshot instead, or
+from the one --snapshot names. That is how a machine which never held those
+sessions discovers a selector before fetching it. Only the snapshot's file
+listing is read, so no transcript bytes are downloaded — and archive rows
+therefore carry less metadata than local ones: the selector and the primary
+log's recorded size are all a listing can know, so title, workspace,
+timestamps, and continuation grade are absent rather than guessed.
+
 Flags:
   --harness NAME       restrict to one harness: omp, codex, or claude
   --roots DIR[,DIR]    scan these roots instead of the adapters' defaults
   --no-cache           bypass the catalog and describe every session
+  --host ID            list that host's archived sessions instead of this
+                       machine's; requires --repo and --password-file
+  --snapshot ID        with --host: snapshot id, short id, or prefix
+                       (default that host's newest snapshot)
+  --repo REPOSITORY    restic repository (default $BABEL_RESTIC_REPO)
+  --password-file FILE password file (default $BABEL_RESTIC_PASSWORD_FILE)
+  --restic-binary PATH restic executable (default "restic" from $PATH)
   --json               emit the listing as JSON on stdout
+
+--roots and --no-cache describe a local scan, and --snapshot a point in the
+archive, so mixing either side with the other is rejected by name rather
+than resolved by precedence.
 
 Absent nullable fields are displayed as "-": Babel never synthesizes a
 value to satisfy a shape (SPEC.md §3).
@@ -307,6 +326,11 @@ func describe(ctx context.Context, s localSession) (*adapter.Description, error)
 // sessionRow is one session in machine-readable output. Nullable fields
 // stay null rather than being filled in (SPEC.md §3); every string has
 // already passed through the terminal-safe renderer.
+//
+// Continuous is nullable for the same reason the strings are: a listing
+// built from a snapshot's file listing has read no transcript, and "false"
+// there would assert that the session falls short of continuation grade
+// rather than that nothing looked.
 type sessionRow struct {
 	Harness    string  `json:"harness"`
 	SourceID   string  `json:"source_id"`
@@ -315,7 +339,7 @@ type sessionRow struct {
 	Modified   *string `json:"modified"`
 	Title      *string `json:"title"`
 	Workspace  *string `json:"workspace"`
-	Continuous bool    `json:"continuation_grade"`
+	Continuous *bool   `json:"continuation_grade"`
 }
 
 // sessionsResult is the machine-readable session listing.
@@ -323,15 +347,23 @@ type sessionsResult struct {
 	Sessions []sessionRow `json:"sessions"`
 }
 
-// sessionsList implements `babel sessions list`. Discovery is always live,
-// while descriptions are reused until the primary file's path, size, or
-// modification time changes. --no-cache retains the full live-description
-// path for diagnostics and troubleshooting.
+// sessionsList implements `babel sessions list`. Locally, discovery is
+// always live while descriptions are reused until the primary file's path,
+// size, or modification time changes; --no-cache retains the full
+// live-description path for diagnostics and troubleshooting.
+//
+// With --host the listing source is one snapshot rather than this machine,
+// which is what lets a second Babel instance discover a selector it can
+// then fetch: no local scan happens, and the catalog is not consulted,
+// because nothing being listed is expected to exist here.
 func (a *app) sessionsList(ctx context.Context, args []string) error {
 	c := newCmd("sessions list", sessionsListUsage)
+	var rf repoFlags
 	var sf scanFlags
+	rf.bind(c.fs)
 	sf.bindHarness(c)
 	sf.bindRoots(c)
+	snapshot := c.fs.String("snapshot", "", "with --host: snapshot id, short id, or prefix; default that host's newest")
 	noCache := c.fs.Bool("no-cache", false, "bypass the catalog and describe every session")
 	asJSON := c.fs.Bool("json", false, "emit the listing as JSON")
 	if err := c.parse(a, args); err != nil {
@@ -344,30 +376,48 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkListSource(c, rf.host, sf.roots, *snapshot, *noCache); err != nil {
+		return err
+	}
 
-	roots := sf.rootList()
-	sessions, covered := a.scan(ctx, ads, roots)
-	dataDir := ""
-	if !*noCache {
-		d, err := babelDirs()
+	var rows []sessionRow
+	// The empty case names the source that was actually consulted, so an
+	// empty cross-host listing is never mistaken for an empty machine.
+	empty := "no local sessions\n"
+	if rf.host != "" {
+		chosen, archived, err := a.archivedListing(ctx, c, &rf, *snapshot)
 		if err != nil {
 			return err
 		}
-		dataDir = d.data
+		rows = archivedRows(archived, ads)
+		empty = fmt.Sprintf("no sessions for host %s in snapshot %s\n",
+			Sanitize(rf.host), Sanitize(shortID(chosen)))
+	} else {
+		roots := sf.rootList()
+		sessions, covered := a.scan(ctx, ads, roots)
+		dataDir := ""
+		if !*noCache {
+			d, err := babelDirs()
+			if err != nil {
+				return err
+			}
+			dataDir = d.data
+		}
+		// A cold listing describes every session on the machine, which takes
+		// minutes on a large corpus: it reports its progress on stderr so the
+		// wait is never silent, while stdout keeps carrying exactly one document.
+		rows, err = a.listSessionRows(ctx, sessions, refreshScope(covered, roots), dataDir, *noCache, describe, a.scanProgress().report)
+		if err != nil {
+			return err
+		}
 	}
-	// A cold listing describes every session on the machine, which takes
-	// minutes on a large corpus: it reports its progress on stderr so the
-	// wait is never silent, while stdout keeps carrying exactly one document.
-	rows, err := a.listSessionRows(ctx, sessions, refreshScope(covered, roots), dataDir, *noCache, describe, a.scanProgress().report)
-	if err != nil {
-		return err
-	}
+
 	res := sessionsResult{Sessions: rows}
 	if *asJSON {
 		return a.emitJSON(res)
 	}
 	if len(res.Sessions) == 0 {
-		fmt.Fprint(a.stdout, "no local sessions\n")
+		fmt.Fprint(a.stdout, empty)
 		return nil
 	}
 	tableRows := make([][]string, 0, len(res.Sessions))
@@ -458,7 +508,7 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 			Workspace:           row.Workspace,
 			CreatedAt:           timePtr(desc.Meta.CreatedAt),
 			ModifiedAt:          row.Modified,
-			ContinuationGrade:   row.Continuous,
+			ContinuationGrade:   desc.ContinuationGrade,
 			ArtifactCount:       len(desc.Artifacts),
 			BlobCount:           len(desc.Blobs),
 			UnresolvedBlobCount: len(desc.UnresolvedBlobRefs),
@@ -489,6 +539,9 @@ func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession) ([]se
 	return rows, nil
 }
 
+// rowFromDescription states one described local session as a listing row.
+// A description has read the transcript, so the continuation grade is an
+// observation and is reported as one.
 func rowFromDescription(session localSession, desc *adapter.Description) sessionRow {
 	return sessionRow{
 		Harness:    Sanitize(session.src.Harness),
@@ -498,8 +551,48 @@ func rowFromDescription(session localSession, desc *adapter.Description) session
 		Modified:   timePtr(desc.Meta.ModifiedAt),
 		Title:      sanitizePtr(desc.Meta.Title),
 		Workspace:  sanitizePtr(desc.Meta.Workspace),
-		Continuous: desc.ContinuationGrade,
+		Continuous: &desc.ContinuationGrade,
 	}
+}
+
+// rowFromArchived states one archived session in the same row vocabulary a
+// local listing uses, so one selector addresses a session whether its files
+// are here or only in the archive.
+//
+// Only what the snapshot's file listing carries is filled in: the identity,
+// the selector, and the primary log's recorded size. Title, workspace,
+// timestamps, and continuation grade all require reading and parsing the
+// transcript, which enumerating another host's archive deliberately does not
+// do — so they stay absent and render as "-". Reporting them as empty or
+// false would claim an observation this command never made.
+func rowFromArchived(s archivedSession) sessionRow {
+	return sessionRow{
+		Harness:  Sanitize(s.harness),
+		SourceID: Sanitize(s.sess.SourceID),
+		Selector: Sanitize(s.key()),
+		Size:     s.sess.PrimarySize,
+	}
+}
+
+// checkListSource refuses invocations that mix the two listing sources.
+// --roots and --no-cache are local-scan concepts and --snapshot names a
+// point in the archive, so each combination is rejected by name: resolving
+// one against the other by precedence would silently report a listing the
+// operator did not ask for.
+func checkListSource(c *cmd, host, roots, snapshot string, noCache bool) error {
+	if host == "" {
+		if snapshot != "" {
+			return c.usagef("--snapshot names a snapshot in the archive, which only --host reads; drop it or add --host ID")
+		}
+		return nil
+	}
+	if roots != "" {
+		return c.usagef("--roots scans local source trees, which --host does not read; use one or the other")
+	}
+	if noCache {
+		return c.usagef("--no-cache controls the local description cache, which --host does not use; use one or the other")
+	}
+	return nil
 }
 
 // completenessRow explains one absent nullable field.

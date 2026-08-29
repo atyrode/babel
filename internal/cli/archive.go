@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -44,6 +45,14 @@ Flags:
 
 Exits 1 when restic could back up only part of the source tree; the
 summary of what was committed is still reported.
+
+The reported catalog state is "local" with no shared catalog, "committed"
+once this snapshot and its session rows are visible fleet-wide, or
+"uncatalogued" when the snapshot is durable but the catalog holds no row
+for it - an outage, or another instance already publishing for this host.
+Both of those exit 0: the archive is intact, and the next push or a
+reconciliation records the snapshot. "babel archive status" reports what
+is still uncatalogued between pushes.
 `
 
 const archiveStatusUsage = `Usage: babel archive status --repo REPOSITORY --password-file FILE [flags]
@@ -73,6 +82,36 @@ journal. The two counts mean different things:
                     implement yet.
 
 An unreachable catalog reports both counts as unknown rather than zero.
+
+In shared mode it then prints a second table, "catalog by host", holding
+what the catalog itself recorded for every host that has published - so an
+instance that archived none of it can still see the fleet without
+downloading a transcript. It is deliberately separate from the first table:
+the first is what the repository holds, this is what the catalog was told,
+and the difference between them is the subject of the counts above.
+
+  SNAPSHOTS         catalog rows for that host, catalog-pending ones
+                    included: those snapshots exist in the repository.
+
+  SESSIONS          distinct sessions the host has ever published. A host
+                    whose catalog rows were rebuilt from the repository
+                    listing reports 0 until it pushes again, because session
+                    detail is not in that listing.
+
+  PENDING           that host's share of the catalog-pending count above.
+
+  NEWEST ORDER      the host's publication sequence high-water mark, which
+                    it assigns itself so ordering does not depend on clocks
+                    agreeing between machines.
+
+  NEWEST SNAPSHOT   when restic took that newest-ordered snapshot, not when
+                    the catalog learned of it. After an outage a reconciled
+                    snapshot takes the highest order while carrying an older
+                    time, so this can predate another row's timestamp.
+
+Sessions are counted, never listed: the catalog identifies them by an opaque
+digest, and resolving one back to a selector needs the repository or a local
+index.
 
 Flags:
   --repo REPOSITORY           restic repository (default $BABEL_RESTIC_REPO)
@@ -135,8 +174,11 @@ type pushResult struct {
 	// snapshot exists and is usable, but some source files were not read.
 	Incomplete bool `json:"incomplete"`
 	// Catalog is what happened to the shared catalog: "local" when there is
-	// none, "committed" when this snapshot is visible fleet-wide, or
-	// "catalog-pending" when the snapshot is durable but not yet recorded.
+	// none, "committed" when this snapshot and its session rows are visible
+	// fleet-wide, or "uncatalogued" when the snapshot is durable and the
+	// catalog holds no row for it. "uncatalogued" is `archive status`'s word
+	// for the same condition, and is deliberately not "catalog-pending",
+	// which names a row that exists without session detail.
 	Catalog string `json:"catalog"`
 	// SessionsPublished counts the session identity rows this push recorded.
 	SessionsPublished int `json:"sessions_published"`
@@ -285,6 +327,32 @@ type statusHostRow struct {
 	Tags          []string `json:"tags,omitempty"`
 }
 
+// catalogHostRow is what the shared catalog recorded for one host: its own
+// count of snapshots and sessions, and where its publication sequence stands.
+//
+// It is reported alongside statusHostRow rather than merged into it because the
+// two are different authorities. The repository is archive truth; the catalog is
+// derived state that an outage can leave behind and that a rebuild can reset.
+// Merging them into one row would let a reader take a catalog number for a
+// repository fact, and the difference between the two is the entire subject of
+// this command.
+type catalogHostRow struct {
+	Host      string `json:"host"`
+	Snapshots int    `json:"snapshots"`
+	Sessions  int    `json:"sessions"`
+	Pending   int    `json:"pending"`
+	// NewestOrder is the host's publication sequence high-water mark, assigned
+	// by the host itself so it does not depend on clock agreement between
+	// machines.
+	NewestOrder int64 `json:"newest_order"`
+	// NewestSnapshot is restic's recorded time for that newest-ordered
+	// snapshot, not when the catalog learned of it: after an outage a
+	// reconciled snapshot takes the highest order while carrying an older
+	// time, and reporting the adoption time would claim the archive is fresher
+	// than it is.
+	NewestSnapshot string `json:"newest_snapshot"`
+}
+
 // catalogStatus answers "is anything archived but not catalogued", derived from
 // the repository listing and the catalog rather than from a local journal.
 //
@@ -302,6 +370,11 @@ type catalogStatus struct {
 	// Pending counts snapshots the catalog holds without session rows, which
 	// is the state reconciliation leaves them in.
 	Pending *int `json:"pending,omitempty"`
+	// Hosts is what the catalog holds per host, which is how a second instance
+	// browses a fleet it did not archive. It stays absent when the catalog
+	// could not be read: an empty array would claim the catalog holds nothing,
+	// and this command would not have looked.
+	Hosts []catalogHostRow `json:"hosts,omitempty"`
 }
 
 // statusResult is the machine-readable archive status.
@@ -367,23 +440,62 @@ func (a *app) archiveStatus(ctx context.Context, args []string) error {
 	if err := writeTable(a.stdout, []string{"HOST", "SNAPSHOTS", "LATEST", "LATEST ID", "TAGS"}, rows); err != nil {
 		return err
 	}
-	if c := res.Catalog; c != nil {
-		return writeDetail(a.stdout, [][2]string{
-			{"catalog reachable", yesNo(c.Reachable, "yes", "no")},
-			{"uncatalogued snapshots", countOrUnknown(c.Uncatalogued)},
-			{"catalog-pending snapshots", countOrUnknown(c.Pending)},
-		})
+	if res.Catalog != nil {
+		return a.printCatalogStatus(res.Catalog)
 	}
 	return nil
 }
 
-// catalogLag reports how far the shared catalog is behind the repository.
+// printCatalogStatus renders the catalog half of `archive status` below the
+// repository table.
 //
-// This is the answer to "did an outage leave something uncatalogued", and it is
-// computed rather than remembered: the repository is authoritative for what
+// The per-host rows go in a second table rather than extra columns on the
+// first, because the two tables are two different authorities: the repository
+// holds the archive, the catalog holds derived state an outage can strand and a
+// rebuild can reset. Keeping them visibly separate is what lets an operator
+// tell "the snapshot exists" from "the catalog knows about it" - the very
+// distinction the counts above measure - and merged columns would invite
+// reading one as the other.
+func (a *app) printCatalogStatus(c *catalogStatus) error {
+	if err := writeDetail(a.stdout, [][2]string{
+		{"catalog reachable", yesNo(c.Reachable, "yes", "no")},
+		{"uncatalogued snapshots", countOrUnknown(c.Uncatalogued)},
+		{"catalog-pending snapshots", countOrUnknown(c.Pending)},
+	}); err != nil {
+		return err
+	}
+	// No rows means either an unreachable catalog or one nothing has published
+	// into. Neither warrants an empty table claiming to show the fleet.
+	if len(c.Hosts) == 0 {
+		return nil
+	}
+	fmt.Fprint(a.stdout, "\ncatalog by host:\n")
+	rows := make([][]string, 0, len(c.Hosts))
+	for _, h := range c.Hosts {
+		rows = append(rows, []string{
+			h.Host,
+			fmt.Sprint(h.Snapshots),
+			fmt.Sprint(h.Sessions),
+			fmt.Sprint(h.Pending),
+			fmt.Sprint(h.NewestOrder),
+			orMissing(h.NewestSnapshot),
+		})
+	}
+	return writeTable(a.stdout,
+		[]string{"HOST", "SNAPSHOTS", "SESSIONS", "PENDING", "NEWEST ORDER", "NEWEST SNAPSHOT"},
+		rows)
+}
+
+// catalogLag reports what the shared catalog holds and how far behind the
+// repository it is.
+//
+// The lag is the answer to "did an outage leave something uncatalogued", and it
+// is computed rather than remembered: the repository is authoritative for what
 // exists and the catalog for what it has recorded, so no local journal can be
-// more correct than comparing them. It returns nil in local mode, where there
-// is nothing to be behind.
+// more correct than comparing them. The per-host rows are the other half - what
+// the catalog itself says the fleet archived, which is how an instance that
+// archived none of it can still see the fleet. It returns nil in local mode,
+// where there is no catalog and nothing to be behind.
 func (a *app) catalogLag(ctx context.Context, snapshots []restic.Snapshot) *catalogStatus {
 	cfg, found, err := config.Load()
 	if err != nil || !found || storageMode(cfg) != config.ModeShared || cfg.Catalog == nil {
@@ -436,7 +548,39 @@ func (a *app) catalogLag(ctx context.Context, snapshots []restic.Snapshot) *cata
 			pending, plural(pending, "snapshot is", "snapshots are"),
 			plural(pending, "snapshot stays", "snapshots stay"))
 	}
-	return &catalogStatus{Reachable: true, Uncatalogued: &uncatalogued, Pending: &pending}
+	return &catalogStatus{
+		Reachable:    true,
+		Uncatalogued: &uncatalogued,
+		Pending:      &pending,
+		Hosts:        a.catalogHosts(ctx, db),
+	}
+}
+
+// catalogHosts reads the catalog's own per-host view, or nil when it cannot.
+//
+// A failed browse leaves the rows absent while the catalog stays reachable:
+// PostgreSQL answered the state query, so the lag counts above are real, and
+// claiming the fleet is empty because one query failed would be a different
+// lie. Host ids come from the database, which any authorized instance writes,
+// so they are sanitized like any other foreign value.
+func (a *app) catalogHosts(ctx context.Context, db *sql.DB) []catalogHostRow {
+	hosts, err := sharedcatalog.HostCatalog(ctx, db)
+	if err != nil {
+		a.diagf("warning: could not read the catalog's host rows: %s\n", Sanitize(err.Error()))
+		return nil
+	}
+	rows := make([]catalogHostRow, 0, len(hosts))
+	for _, h := range hosts {
+		rows = append(rows, catalogHostRow{
+			Host:           Sanitize(h.HostID),
+			Snapshots:      h.Snapshots,
+			Sessions:       h.Sessions,
+			Pending:        h.Pending,
+			NewestOrder:    h.NewestOrder,
+			NewestSnapshot: formatTime(h.NewestSnapshotTime),
+		})
+	}
+	return rows
 }
 
 // countOrUnknown renders a derived count, or says it is unknown. An unreachable
