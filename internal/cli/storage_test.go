@@ -19,6 +19,7 @@ func TestStorageConfigureFromStdinDrivesArchiveStatus(t *testing.T) {
 
 	// Create a real repository first, then remove every flag/environment
 	// selection so status has only storage.json to resolve from.
+	f.bootstrapRepo()
 	f.ok(f.with("archive", "push")...)
 	t.Setenv("BABEL_HOST_ID", "")
 	body, err := json.Marshal(config.Config{

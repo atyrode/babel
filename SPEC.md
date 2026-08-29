@@ -361,7 +361,7 @@ The `cookbook-quality` meta recipe may propose versioned changes or entirely new
 
 ### 6.1 Archive publication
 
-`babel archive push` discovers OMP, Codex, and Claude Code source roots through versioned adapters and backs them up with restic into one shared repository under the machine's stable host identity, tagged `babel`. Babel initializes the repository idempotently, backs up whole source roots—raw session logs, sibling artifacts, and OMP's content-addressed blob store—and reports restic's summary (snapshot ID, files new/changed, bytes added) as the push result. Hourly publication and permanent storage cost scale with the change rate: restic deduplicates content-defined chunks, so a grown session uploads only its new chunks and an unchanged corpus uploads almost nothing.
+`babel archive push` discovers OMP, Codex, and Claude Code source roots through versioned adapters and backs them up with restic into one shared repository under the machine's stable host identity, tagged `babel`. It requires the repository to exist and never creates it: `babel archive init` is a one-time bootstrap for the whole deployment, and every other machine's first push finds the repository already there. Two reasons, and the second is the worse one. restic generates a master key per `init` and writes it before the config, so two inits racing on an empty repository both succeed and leave two valid keys with one config, after which restic can select the wrong key and refuse the repository as damaged (measured against restic 0.19.1: 10 of 10 races left two keys, 7 of 10 subsequent backups failed). And silent creation would turn a mistyped locator into a second, empty archive that keeps accepting hourly pushes while the real one appears to stop growing, which is a failure that reports success. A push therefore backs up whole source roots—raw session logs, sibling artifacts, and OMP's content-addressed blob store—and reports restic's summary (snapshot ID, files new/changed, bytes added) as the push result. Hourly publication and permanent storage cost scale with the change rate: restic deduplicates content-defined chunks, so a grown session uploads only its new chunks and an unchanged corpus uploads almost nothing.
 
 Captures are crash-consistent per file, not transactional across files (recorded decision). Session logs are append-mostly, so a capture taken mid-write yields a prefix plus at most a torn final line; adapters and normalization tolerate torn or malformed lines by counting and skipping them, and the next hourly snapshot supersedes the capture. OMP's blob store is content-addressed and never rewritten, so closure races cannot corrupt stored blobs. A snapshot's existence never implies a stable continuation-grade capture; continuation-grade claims (§2.5) require adapter-verified closure at read time.
 
@@ -435,6 +435,7 @@ babel storage configure --from-json FILE|-
 babel storage status [--json]
 babel storage migrate [--from-json FILE|-]
 babel storage verify [--json]
+babel archive init [--json]
 babel archive push [--json]
 babel archive status [--json]
 babel archive verify [--deep] [--json]
@@ -466,7 +467,7 @@ Behavioral rules:
 
 - bare `babel` is a fast offline status overview; `babel web` serves the primary browser surface on 127.0.0.1 only, guarded by a per-launch random token, with archive actions limited to the same read/verify/fetch surface the CLI exposes;
 - `--repo LOCATOR --password-file FILE` provides an ad-hoc single-instance development/recovery workflow; persistent local/shared deployment configuration is otherwise read from `storage.json`;
-- `archive push` is the only normal archive command that writes the restic repository; in shared mode it also publishes catalog rows to PostgreSQL after the backup. Phase B exploration/review/Reality commands use the separate object-first/PostgreSQL-last state protocol. Neither path deletes remote objects, and Babel never invokes `restic forget` or `prune`;
+- `archive init` creates the repository once for the deployment and no other command ever creates it, so a mistyped locator fails instead of growing a second empty archive, and two machines' timers cannot race two `restic init` runs into one repository; `archive push` is then the only normal archive command that writes it; in shared mode it also publishes catalog rows to PostgreSQL after the backup. Phase B exploration/review/Reality commands use the separate object-first/PostgreSQL-last state protocol. Neither path deletes remote objects, and Babel never invokes `restic forget` or `prune`;
 - status/verify/inspect/fetch are read-only with respect to the repository;
 - `archive verify` is tiered: the default runs restic's structural repository check; `--deep` additionally reads and verifies every repository byte;
 - `prepare` emits an immutable preparation/selection ID; `explore --preparation ID` makes corpus scope explicit;
@@ -574,6 +575,7 @@ Phase B Reality acceptance proves stable entity identity across repository renam
 
 - A source changing during capture yields a crash-consistent file, never a claimed stable one; parsers tolerate torn lines and the next snapshot supersedes it.
 - An interrupted backup publishes no partial snapshot; a re-run uploads only chunks the repository does not already hold, and the repository remains valid throughout.
+- A push against a missing repository fails and names `babel archive init` rather than creating one, and leaves nothing behind; a repository that exists but does not open reports that instead, because initializing over it would answer a credential problem destructively.
 - An unavailable archive leaves the last complete local catalog browsable and marked stale.
 - A failed or cancelled fetch leaves no claimed session materialization and preserves prior data.
 - Repository damage is detected by `verify` (structural) or `verify --deep` (every byte); never-pruned history plus restic's repair tooling bound the loss, and Babel never masks a failed check.

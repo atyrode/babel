@@ -94,7 +94,8 @@ func newFixture(t *testing.T) *fixture {
 // withRepo prepares the restic side of the fixture: it puts the restic
 // binary on PATH, so the commands exercise the wrapper's default binary
 // resolution, and writes the password file. The repository itself is
-// created by `archive push`, whose initialization must be idempotent.
+// created only by `bootstrapRepo` calling `archive init`, which a push
+// deliberately does not perform (SPEC.md §6.1).
 func (f *fixture) withRepo() *fixture {
 	f.t.Helper()
 	return f.withRepoPassword(testRepoPassword)
@@ -102,9 +103,9 @@ func (f *fixture) withRepo() *fixture {
 
 // withRepoPassword is withRepo with a caller-chosen password, so a test can
 // make the credential a unique sentinel and then search the surfaces that
-// must never carry it. The password must be selected before the first
-// `archive push`, because that push is what initializes the repository with
-// it; overwriting the file afterwards would not re-key the repository.
+// must never carry it. The password must be selected before `bootstrapRepo`,
+// because `archive init` is what creates the repository with it; overwriting
+// the file afterwards would not re-key the repository.
 func (f *fixture) withRepoPassword(password string) *fixture {
 	f.t.Helper()
 	f.t.Setenv("PATH", filepath.Dir(resticBinary(f.t))+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -165,6 +166,14 @@ func (f *fixture) mustExit(want int, args ...string) (stdout, stderr string) {
 			strings.Join(args, " "), code, want, stdout, stderr)
 	}
 	return stdout, stderr
+}
+
+// bootstrapRepo performs the one-time repository creation that `archive
+// init` owns. Every test that pushes calls it first, because a push
+// deliberately refuses to create the repository (SPEC.md §6.1).
+func (f *fixture) bootstrapRepo() {
+	f.t.Helper()
+	f.ok(f.with("archive", "init")...)
 }
 
 // blob writes one synthetic blob into the OMP blob store and returns the
@@ -438,6 +447,7 @@ func TestBareBabelPrintsStatusOverview(t *testing.T) {
 func TestPushThenStatusAndVerify(t *testing.T) {
 	f := newFixture(t).withRepo()
 	f.threeSessions()
+	f.bootstrapRepo()
 
 	stdout, stderr := f.ok(f.with("archive", "push", "--json")...)
 	push := decode[pushResult](t, stdout)
@@ -549,6 +559,7 @@ func TestPushReportsAnIncompleteBackup(t *testing.T) {
 		t.Skip("root reads unreadable files, so no partial backup can be provoked")
 	}
 	f := newFixture(t).withRepo()
+	f.bootstrapRepo()
 	f.threeSessions()
 	unreadable := filepath.Join(f.sessionsDir, "synthetic-project", "unreadable.jsonl")
 	if err := os.WriteFile(unreadable, []byte("{\"type\":\"title\",\"title\":\"synthetic\"}\n"), 0o000); err != nil {
@@ -580,6 +591,7 @@ func TestPushReportsAnIncompleteBackup(t *testing.T) {
 func TestEnvironmentSelectsRepository(t *testing.T) {
 	f := newFixture(t).withRepo()
 	f.threeSessions()
+	f.bootstrapRepo()
 	t.Setenv("BABEL_RESTIC_REPO", f.repoDir)
 	t.Setenv("BABEL_RESTIC_PASSWORD_FILE", f.passwordFile)
 
@@ -722,6 +734,7 @@ func TestSessionsInspectShowsTheWholeClosure(t *testing.T) {
 func TestFetchMaterializesTheSessionAndIsIdempotent(t *testing.T) {
 	f := newFixture(t).withRepo()
 	primary := f.threeSessions()
+	f.bootstrapRepo()
 	f.ok(f.with("archive", "push")...)
 
 	stdout, stderr := f.ok(f.with("sessions", "fetch", richSessionStem, "--json")...)
@@ -812,6 +825,7 @@ func TestFetchMaterializesTheSessionAndIsIdempotent(t *testing.T) {
 func TestPruneLocalRemovesOnlyFetchedCopies(t *testing.T) {
 	f := newFixture(t).withRepo()
 	f.threeSessions()
+	f.bootstrapRepo()
 	f.ok(f.with("archive", "push")...)
 
 	stdout, _ := f.ok(f.with("sessions", "fetch", richSessionStem, "--json")...)
@@ -871,6 +885,7 @@ func TestPruneLocalRemovesOnlyFetchedCopies(t *testing.T) {
 func TestVerifyDeepDetectsATamperedPack(t *testing.T) {
 	f := newFixture(t).withRepo()
 	f.threeSessions()
+	f.bootstrapRepo()
 	f.ok(f.with("archive", "push")...)
 	f.ok(f.with("archive", "verify")...)
 

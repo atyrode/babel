@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -68,8 +67,8 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := repo.EnsureInit(context.Background()); err != nil {
-		t.Fatalf("EnsureInit: %v", err)
+	if _, err := repo.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
 	}
 	return &fixture{Repo: repo, root: root, repoDir: repoDir, diag: diag}
 }
@@ -248,16 +247,19 @@ func TestTailBufferKeepsBoundedSingleLineTail(t *testing.T) {
 	}
 }
 
-func TestEnsureInitIsIdempotent(t *testing.T) {
-	// newFixture already ran EnsureInit once against a fresh directory.
+func TestInitIsIdempotentAndReportsWhetherItCreated(t *testing.T) {
+	// newFixture already ran Init once against a fresh directory.
 	f := newFixture(t)
 	ctx := context.Background()
 
-	if err := f.EnsureInit(ctx); err != nil {
-		t.Fatalf("second EnsureInit: %v", err)
+	created, err := f.Init(ctx)
+	if err != nil {
+		t.Fatalf("second Init: %v", err)
 	}
-	if err := f.EnsureInit(ctx); err != nil {
-		t.Fatalf("third EnsureInit: %v", err)
+	if created {
+		// The distinction is what lets `archive init` tell an operator whether
+		// they just created the deployment's archive or found it already there.
+		t.Fatal("Init claimed to create a repository that already existed")
 	}
 	if _, err := os.Stat(filepath.Join(f.repoDir, "config")); err != nil {
 		t.Fatalf("repository config missing: %v", err)
@@ -272,39 +274,45 @@ func TestEnsureInitIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestEnsureInitUnderConcurrentCallers(t *testing.T) {
+// Require is the check every repository-touching command makes instead of
+// creating one, so its "missing" answer has to be distinguishable from every
+// other failure. A locator typo that read as some other error would be reported
+// as a broken repository; one that read as success would grow a second archive.
+func TestRequireReportsAMissingRepositoryDistinctly(t *testing.T) {
 	bin := resticBinary(t)
 	root := t.TempDir()
 	pwFile := filepath.Join(root, "password")
 	if err := os.WriteFile(pwFile, []byte(testPassword), 0o600); err != nil {
 		t.Fatalf("writing password file: %v", err)
 	}
-
-	const callers = 4
-	errs := make([]error, callers)
-	var wg sync.WaitGroup
-	for i := range callers {
-		repo, err := Open(Config{
-			Repository:   filepath.Join(root, "repo"),
-			PasswordFile: pwFile,
-			Binary:       bin,
-			CacheDir:     filepath.Join(root, "cache"),
-		})
-		if err != nil {
-			t.Fatalf("Open: %v", err)
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errs[i] = repo.EnsureInit(context.Background())
-		}()
+	repo, err := Open(Config{
+		Repository:   filepath.Join(root, "absent"),
+		PasswordFile: pwFile,
+		Binary:       bin,
+		CacheDir:     filepath.Join(root, "cache"),
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
-	wg.Wait()
+	ctx := context.Background()
 
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("concurrent EnsureInit %d: %v", i, err)
-		}
+	if err := repo.Require(ctx); !errors.Is(err, ErrRepoMissing) {
+		t.Fatalf("Require on an absent repository = %v, want ErrRepoMissing", err)
+	}
+	// Nothing was created by asking.
+	if _, err := os.Stat(filepath.Join(root, "absent", "config")); err == nil {
+		t.Fatal("Require created a repository")
+	}
+
+	created, err := repo.Init(ctx)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if !created {
+		t.Fatal("Init did not report creating an absent repository")
+	}
+	if err := repo.Require(ctx); err != nil {
+		t.Fatalf("Require after Init: %v", err)
 	}
 }
 
@@ -774,9 +782,9 @@ func TestMissingBinaryIsReportedOnFirstUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	err = repo.EnsureInit(context.Background())
+	_, err = repo.Init(context.Background())
 	if err == nil {
-		t.Fatal("EnsureInit succeeded without a restic binary")
+		t.Fatal("Init succeeded without a restic binary")
 	}
 	if !strings.Contains(err.Error(), "locating binary") {
 		t.Errorf("error %q does not explain the missing binary", err)

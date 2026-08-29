@@ -201,6 +201,14 @@ func (e *env) ok(t *testing.T, args ...string) (stdout, stderr string) {
 	return stdout, stderr
 }
 
+// bootstrapRepo performs the one-time repository creation that `archive init`
+// owns. Every scenario that pushes calls it first, because a push deliberately
+// refuses to create the repository (SPEC.md §6.1).
+func (e *env) bootstrapRepo(t *testing.T) {
+	t.Helper()
+	e.ok(t, e.with("archive", "init")...)
+}
+
 // okJSON drives one successful --json invocation and decodes the single
 // document it must have written to stdout. It also holds the streams to
 // their contract: the result document goes to stdout alone.
@@ -362,6 +370,7 @@ type fetchResult struct {
 func TestPhaseALoopEndToEnd(t *testing.T) {
 	e := newEnv(t)
 	src := e.writeSources(t)
+	e.bootstrapRepo(t)
 
 	// 1. Back the machine up. Every harness root that exists must be in
 	// the snapshot, including OMP's blob store: a session whose referenced

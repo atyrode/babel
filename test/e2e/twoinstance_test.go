@@ -38,6 +38,10 @@ import (
 // activation left behind.
 var basePATH = os.Getenv("PATH")
 
+// baseEnv is the whole environment this test binary started with, for the one
+// case that must not inherit an activated instance: building the executable.
+var baseEnv = os.Environ()
+
 const (
 	// One deployment, two instances: the deployment id is what makes their
 	// session identities comparable, and the instance ids are what let the
@@ -318,6 +322,7 @@ func TestTwoInstanceAcceptance(t *testing.T) {
 	// instance must find a schema it can use without being told to migrate.
 	a.configure(t)
 	a.ok(t, "storage", "migrate")
+	a.ok(t, a.with("archive", "init")...)
 	b.configure(t)
 	if _, stderr := b.ok(t, "storage", "verify"); strings.Contains(stderr, "migrate") {
 		t.Fatalf("the second instance was told to migrate an already-migrated catalog: %s", stderr)
@@ -554,6 +559,7 @@ func TestSessionIdentityFollowsThePublishingHost(t *testing.T) {
 
 	i.configure(t)
 	i.ok(t, "storage", "migrate")
+	i.ok(t, i.with("archive", "init")...)
 
 	// Once as the configured host, once with --host overriding it. One session
 	// on disk, two publishing identities.
