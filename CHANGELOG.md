@@ -445,7 +445,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   SPEC.md assumed a legacy fallback, including decision 4's "never deleted"
   clause and §12's rollback contract, and all of them now say what is true: a
   rollback target from before the cutover would reinstall the retired job and
-  repeat the re-upload, and no second automated copy exists any more.
+  repeat the re-upload, and no second automated copy exists any more. The
+  retirement is per-host: a second live host was still running the job and
+  re-created the bucket a second time, so the bucket stays until every host has
+  applied, and the "nothing was lost" claim holds only for this workstation.
 
 - **`archive push` no longer creates the repository; `babel archive init` does,
   once per deployment.** Auto-init on push was a data-loss hazard on the
