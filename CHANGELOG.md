@@ -68,6 +68,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   An unreachable catalog leaves the counts **absent rather than zero**:
   reporting 0 uncatalogued snapshots is a claim the command cannot make without
   reading the catalog, and the terminal output says `unknown`.
+
+  The two counts are **not interchangeable**, and the difference decides what
+  an operator should do. An uncatalogued snapshot has no catalog row, which is
+  what an outage leaves behind, and the next push records it. A
+  `catalog-pending` row already exists with real counts from restic but no
+  record of which sessions the snapshot held — and no shipped command resolves
+  that, because pushing again publishes the next snapshot rather than
+  completing this one, so the count does not fall. The archive is unaffected:
+  those snapshots stay durable and restorable, and only catalog detail about
+  them is missing. Completing it needs a restore-and-rescan, now an explicit
+  Phase C item rather than something SPEC.md implied a push would do.
 - **Babel owns its own PostgreSQL schema** (`babel`), created by `storage
   migrate` and pinned as `search_path` on every connection (decision 47).
   Driving the real Clever Cloud add-on showed why: it pre-installs 40
