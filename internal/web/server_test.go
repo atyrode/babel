@@ -480,7 +480,7 @@ func TestSPAFallback(t *testing.T) {
 }
 
 func TestSanitizesErrorsAndDiagnostics(t *testing.T) {
-	var diagnostics bytes.Buffer
+	var diagnostics syncBuffer
 	s, httpServer := testServer(t, Options{
 		Diagnostics: &diagnostics,
 		Lister: SessionListerFunc(func(context.Context) (SessionsResult, error) {
