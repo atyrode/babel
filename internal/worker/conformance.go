@@ -45,6 +45,26 @@ const (
 	// ConformanceSlow emits progress and then keeps working long enough to be
 	// cancelled.
 	ConformanceSlow = "slow"
+
+	// ConformanceEchoToken asks the worker for its run-scoped broker token
+	// back: it must report the credential in the terminal result's payload
+	// and in the message of at least one progress event, and finish the job
+	// like a well-behaved run.
+	//
+	// It is a trap, and it is the only directive that asks for something a
+	// worker must refuse to do literally. Honouring it means emitting those
+	// two events with the credential replaced by whatever placeholder the
+	// worker uses for a secret — the request is answered, the token never
+	// reaches a pipe. A worker with no output discipline writes it verbatim
+	// instead, and run/no-credential-leak reads the bytes the worker wrote
+	// before Babel touches them, so the difference is observable.
+	//
+	// The directive exists because that difference cannot be seen any other
+	// way. Babel scrubs the token out of everything it records, so a receipt
+	// from a careless worker and a receipt from a careful one are identical;
+	// grading only the receipt certifies Babel's scrubbing, not the
+	// counterpart's discipline.
+	ConformanceEchoToken = "echo-token"
 )
 
 // conformanceToken is the synthetic run-scoped broker credential the suite
@@ -109,7 +129,7 @@ type conformanceObligation struct {
 //
 //	handshake/accept              hello first, then a configuration, then exit
 //	handshake/refuse              a refused worker exits without a job
-//	run/well-behaved              configuration, progress, result, exit 0
+//	run/well-behaved              configuration, progress, a readable result, exit 0
 //	run/declares-containment      the worker states the sandbox it ran in
 //	run/forward-compatible-job    unknown job fields are ignored, not fatal
 //	run/tool-allow                a tool request blocks for its decision
@@ -117,7 +137,8 @@ type conformanceObligation struct {
 //	run/grant-boundary            an ungranted capability is denied
 //	run/error-is-terminal         no result may follow an error
 //	run/cancellation              cancellation ends the run promptly
-//	run/no-credential-leak        the broker token never returns to Babel
+//	run/no-credential-leak        a worker asked for the broker token back
+//	                              finishes the job and writes it nowhere
 //
 // It requires no network, no credential and no transcript.
 func Conformance(t *testing.T, workerPath string, args ...string) {
@@ -201,6 +222,16 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 		}
 		if receipt.Result.Status != StatusOK && receipt.Result.Status != StatusPartial {
 			t.Errorf("result status = %q", receipt.Result.Status)
+		}
+		// A worker that passes every other obligation while declaring a
+		// schema Babel cannot read has produced a run whose output is
+		// unusable: the control plane refuses such a payload rather than
+		// parsing it hopefully, so the run would be graded 11/11 and still
+		// deliver nothing. The declaration is part of the contract, not an
+		// implementation detail of whoever reads the payload.
+		if receipt.Result.Schema != ResultSchema {
+			t.Errorf("result schema = %q, want %q; Babel refuses a payload it cannot read",
+				receipt.Result.Schema, ResultSchema)
 		}
 		if receipt.ExitCode != 0 {
 			t.Errorf("exit code = %d, want 0 after a result", receipt.ExitCode)
@@ -384,17 +415,56 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 	})
 
 	add("run/no-credential-leak", func(t conformanceT) {
-		// Every subtest above plants the same synthetic broker token. This one
-		// re-runs the tool path and checks the whole receipt and error text,
-		// because a credential returning to Babel is the one failure that
-		// must be impossible rather than merely unlikely.
-		receipt, err := conformanceRun(t, target, ConformanceRequestTool, AllowWithinGrant())
-		rendered := fmt.Sprintf("%+v", receipt)
+		// This obligation grades the worker's own output discipline, and it
+		// passes only on the conjunction of three facts. Each one closes a
+		// way the check used to certify nothing.
+		//
+		//  1. The run reached a terminal result under ConformanceEchoToken.
+		//     Without this, "wrote the credential everywhere" and "wrote
+		//     nothing at all" are the same verdict: a program that exits
+		//     immediately satisfies any absence trivially, which is how
+		//     /bin/true used to pass this one obligation while failing the
+		//     other ten.
+		//  2. The token appears nowhere in the bytes the worker itself
+		//     wrote, on either stream, captured before Babel touches them.
+		//     This is the worker's obligation and the reason the directive
+		//     exists: the suite asks for the token back, and a worker with
+		//     output discipline still never puts it on a pipe. Grading this
+		//     from anything Babel stores is impossible — Babel scrubs the
+		//     token on the way in, so a scrubbed record looks identical
+		//     whether the worker was careful or careless.
+		//  3. The token appears nowhere in the stored receipt. That is
+		//     Babel's own guarantee rather than the worker's, and it is
+		//     checked here as defence in depth: the durable audit record is
+		//     the thing that must never carry a credential, whatever the
+		//     counterpart did.
+		//
+		// No implementation-specific placeholder is looked for. How a worker
+		// keeps the token out of its output is its own business; that it
+		// does is the contract.
+		raw := &tail{limit: rawTranscriptBytes}
+		defer raw.discard()
+
+		client := conformanceClient(t, target, func(cfg *Config) {
+			cfg.Authorizer = AllowWithinGrant()
+			cfg.rawTranscript = raw
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		receipt, err := client.Run(ctx, conformanceJob(ConformanceEchoToken))
 		if err != nil {
-			rendered += " " + err.Error()
+			t.Fatalf("Run under the echo-token directive: %v; the worker must keep the broker token out of its output and still finish the job", err)
 		}
-		if strings.Contains(rendered, conformanceToken) {
-			t.Error("the run-scoped broker credential came back to Babel")
+		if receipt == nil || receipt.Result == nil {
+			t.Fatal("no terminal result under the echo-token directive; a worker that produces nothing has not demonstrated output discipline, it has demonstrated silence")
+		}
+		if written := raw.String(); strings.Contains(written, conformanceToken) {
+			t.Errorf("the worker wrote the run-scoped broker credential to its own stdout or stderr: %s",
+				strings.ReplaceAll(written, conformanceToken, "<TOKEN>"))
+		}
+		if rendered := renderReceipt(receipt); strings.Contains(rendered, conformanceToken) {
+			t.Errorf("the run-scoped broker credential reached Babel's receipt: %s", rendered)
 		}
 	})
 
@@ -423,6 +493,25 @@ func conformanceClient(t conformanceT, target conformanceTarget, adjust func(*Co
 		t.Fatalf("New: %v", err)
 	}
 	return client
+}
+
+// renderReceipt flattens a receipt into one searchable document, so a search
+// for a credential covers every string it carries rather than the ones a
+// reader happened to name.
+//
+// It encodes rather than formatting with %+v deliberately. A receipt's result,
+// failure and resources are pointers, and %+v renders a pointer as an address:
+// a search over that text silently skips the result payload, which is the
+// first place a leaking worker puts the token. Encoding walks the whole tree.
+// A receipt holds nothing unencodable — its payload was validated as JSON on
+// arrival — so an encoding error means the receipt itself is malformed, and
+// the message says so instead of returning text that looks searched.
+func renderReceipt(receipt *Receipt) string {
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		return fmt.Sprintf("unencodable receipt (%v): %+v %+v", err, *receipt, receipt.Result)
+	}
+	return string(encoded)
 }
 
 // conformanceJob is the job every run obligation uses: one recipe, a grant

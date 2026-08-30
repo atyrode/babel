@@ -283,6 +283,69 @@ func (s *Set) Defaults() []*Recipe {
 	return out
 }
 
+// IDs returns every recipe id, ordered by id. It exists so a caller
+// rejecting an unknown selection can name the ids that do exist without
+// copying every recipe to read one field.
+func (s *Set) IDs() []string {
+	ids := make([]string, 0, len(s.recipes))
+	for _, r := range s.recipes {
+		ids = append(ids, r.ID)
+	}
+	return ids
+}
+
+// UnknownRecipeError reports a selection naming a recipe this cookbook does
+// not hold. It carries the available ids because the caller that reports it
+// is a command line: an operator who mistyped an id, or who is holding a
+// recipe name from a different build, needs the list and not just the
+// rejection.
+type UnknownRecipeError struct {
+	ID        string
+	Available []string
+}
+
+func (e *UnknownRecipeError) Error() string {
+	return fmt.Sprintf("cookbook: no recipe %q; the cookbook holds %s",
+		e.ID, strings.Join(e.Available, " "))
+}
+
+// Select returns the subset of the cookbook holding exactly the named
+// recipes, ordered by id like any other Set. Duplicate ids collapse: naming
+// a recipe twice is a repeated flag, not a request to run it twice.
+//
+// Narrowing belongs here, once, rather than at each reader of a Set. A run
+// derives several things from the Set it was given — the cookbook assets its
+// receipt attests to, the recipes each stage runs — and every one of them
+// reads the whole Set. A Set that still held recipes the operator did not
+// ask for would therefore make the receipt overstate what was analyzed,
+// which is the one claim a provenance record may never make.
+//
+// The subset is filtered rather than re-parsed because every check this
+// package makes is either per-recipe — already passed, on the very same
+// *Recipe values — or an invariant a subset inherits: ids stay unique and
+// the order stays sorted. The single property a subset can lose is being
+// non-empty, so an empty selection is an error here rather than a run that
+// analyzes nothing and writes a receipt for it.
+func (s *Set) Select(ids []string) (*Set, error) {
+	out := &Set{byID: make(map[string]*Recipe, len(ids))}
+	for _, id := range ids {
+		r, ok := s.byID[id]
+		if !ok {
+			return nil, &UnknownRecipeError{ID: id, Available: s.IDs()}
+		}
+		if _, dup := out.byID[id]; dup {
+			continue
+		}
+		out.byID[id] = r
+		out.recipes = append(out.recipes, r)
+	}
+	if len(out.recipes) == 0 {
+		return nil, errors.New("cookbook: no recipes selected")
+	}
+	sort.Slice(out.recipes, func(i, j int) bool { return out.recipes[i].ID < out.recipes[j].ID })
+	return out, nil
+}
+
 // Refs returns the id/version pairs of every recipe, for a run receipt.
 func (s *Set) Refs() []worker.RecipeRef {
 	refs := make([]worker.RecipeRef, 0, len(s.recipes))

@@ -2,12 +2,17 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/reality"
 )
 
@@ -24,11 +29,17 @@ Commands:
   entity ID            show one entity, its aliases, edges, and facts
   answer QUESTION_ID   record an attributed answer, retained verbatim
   accept PLAN_ID       accept one Answer Interpreter plan
+  import --source ID   apply one trusted source's versioned fact batch
 
 The Reality Ledger holds what is true about the operator's world (SPEC.md
 §4.8). A raw answer is a durable input; an authoritative fact requires an
 explicit plan acceptance, and no model may authorize one. Answers and
 acceptances are attributed acts, so both require an operator identity.
+
+An import is the one write that is not the operator's own act: its facts are
+authored on the trusted source's authority, which the ledger assigns itself.
+The operator's authorization lives in the source's registration, where the
+predicates and entities it may author were declared.
 
 Run "babel reality <command> -h" for a command's flags.
 `
@@ -91,6 +102,52 @@ Flags:
   --note TEXT      the operator's own words about the acceptance
   --operator ID    operator identity (default $BABEL_OPERATOR)
   --json           emit the application as JSON on stdout
+`
+
+const realityImportUsage = `Usage: babel reality import --source SOURCE_ID --from-json FILE|- [--json]
+
+Applies one versioned fact batch from a registered trusted source, reading the
+document from FILE or from stdin when FILE is "-". This is §4.8's trusted
+inventory import: the source declared the predicates and entities it may author
+when it was registered, and a batch reaching outside that scope is refused
+whole rather than in part.
+
+Atomicity and idempotency are the ledger's guarantees, not this command's:
+every fact in the batch lands or none does, and replaying a batch key is
+refused as a duplicate instead of importing the same facts twice.
+
+There is deliberately no --operator flag. Every imported fact is attributed to
+the source, and the ledger assigns that authority rather than reading one from
+the document: an operator identity on a batch would record that the operator
+personally authorized facts §4.8 attributes to the source. The source must
+already be registered with the scope it may author within, and that
+registration is where the operator's authorization lives.
+
+The document is one JSON object. "batch_key" is the source's own idempotency
+key for the batch; each fact names its subject entity, its predicate, a typed
+value, its valid time, when the source observed the claim, and the provenance
+locator §4.8 requires of every non-operator authority:
+
+  {"batch_key": "inventory-2026-08-30",
+   "facts": [{"subject_id": "ENTITY_ID",
+              "predicate": "service-placement",
+              "value": {"kind": "entity", "object_id": "ENTITY_ID"},
+              "valid_from": "2026-08-30T00:00:00Z",
+              "observed_at": "2026-08-30T00:00:00Z",
+              "confidence": "high",
+              "sensitivity": "routine",
+              "provenance": {"path": "PATH", "digest": "SHA256_HEX"},
+              "note": "why the source asserts this"}]}
+
+An unrecognized field is an error rather than an ignored key, because a
+misspelled "valid_until" would otherwise import an open-ended fact the source
+never asserted. The document is never echoed back: an inventory names hosts and
+paths, and a diagnostic quoting it would move them into a log.
+
+Flags:
+  --source SOURCE_ID   the registered trusted source this batch comes from
+  --from-json FILE|-   the batch document, or "-" for stdin
+  --json               emit the imported facts as JSON on stdout
 `
 
 // questionRow is one Question in machine-readable output.
@@ -210,6 +267,53 @@ type acceptResult struct {
 	QuestionState string   `json:"question_state"`
 }
 
+// importDocument is one trusted source's fact batch as an operator supplies
+// it, and it is deliberately not reality.ImportInput.
+//
+// The source identity comes from --source rather than from the document, so a
+// document cannot claim to come from a source the invocation never named, and
+// there is no authority field at all: the ledger assigns the source's own
+// authority to every imported fact (SPEC.md §4.8).
+type importDocument struct {
+	// BatchKey is the source's own idempotency key. It belongs in the
+	// document rather than in a flag because it identifies the batch and not
+	// the invocation: re-submitting the same document has to be the same
+	// batch, which is what makes a retried import safe.
+	BatchKey string               `json:"batch_key"`
+	Facts    []importFactDocument `json:"facts"`
+}
+
+// importFactDocument is one fact in a batch. Every field reality.FactInput
+// requires of a non-operator authority is here and nothing else is: identity,
+// status, and authority are the ledger's to assign, so a document that named
+// them would be describing a fact it does not get to author.
+type importFactDocument struct {
+	SubjectID string            `json:"subject_id"`
+	Predicate reality.Predicate `json:"predicate"`
+	Value     reality.FactValue `json:"value"`
+	ValidFrom time.Time         `json:"valid_from"`
+	// ValidUntil is optional; an absent one is the open-ended valid time
+	// §4.8 expects of a fact that is still true.
+	ValidUntil  time.Time           `json:"valid_until"`
+	ObservedAt  time.Time           `json:"observed_at"`
+	Confidence  reality.Confidence  `json:"confidence"`
+	Sensitivity reality.Sensitivity `json:"sensitivity"`
+	// Provenance is required rather than optional: reality.FactInput refuses
+	// a non-operator authority that will not say where it observed the
+	// claim, because that is an unattributable claim wearing a name.
+	Provenance *event.Locator `json:"provenance"`
+	Note       string         `json:"note"`
+}
+
+// importResult is `babel reality import --json`. It reports the facts that
+// landed rather than a success flag: an import authorizes facts, and "ok" does
+// not tell an operator which ones were authorized on its behalf.
+type importResult struct {
+	SourceID string    `json:"source_id"`
+	BatchKey string    `json:"batch_key"`
+	Facts    []factRow `json:"facts"`
+}
+
 // reality routes `babel reality <verb>`.
 func (a *app) reality(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -227,6 +331,8 @@ func (a *app) reality(ctx context.Context, args []string) error {
 		return a.realityAnswer(ctx, args[1:])
 	case "accept":
 		return a.realityAccept(ctx, args[1:])
+	case "import":
+		return a.realityImport(ctx, args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown reality subcommand %q", args[0]), usage: realityUsage}
 	}
@@ -569,6 +675,135 @@ func (a *app) realityAccept(ctx context.Context, args []string) error {
 		{"disputes", strconv.Itoa(len(res.DisputeIDs))},
 		{"question", res.QuestionState},
 	})
+}
+
+func (a *app) realityImport(ctx context.Context, args []string) error {
+	c := newCmd("reality import", realityImportUsage)
+	source := c.fs.String("source", "", "the registered trusted source this batch comes from")
+	fromJSON := c.fs.String("from-json", "", "the batch document, or \"-\" for stdin")
+	asJSON := c.fs.Bool("json", false, "emit the imported facts as JSON")
+	if err := c.parse(a, args); err != nil {
+		return err
+	}
+	if err := c.noArgs(); err != nil {
+		return err
+	}
+	if *source == "" {
+		return c.usagef("reality import requires --source SOURCE_ID")
+	}
+	if *fromJSON == "" {
+		return c.usagef("reality import requires --from-json FILE|-")
+	}
+
+	// The whole document is decoded before the ledger is opened, so a
+	// malformed batch is refused without a transaction ever starting.
+	doc, err := a.decodeImportDocument(*fromJSON)
+	if err != nil {
+		return err
+	}
+	facts := make([]reality.FactInput, 0, len(doc.Facts))
+	for _, fact := range doc.Facts {
+		facts = append(facts, reality.FactInput{
+			SubjectID:   fact.SubjectID,
+			Predicate:   fact.Predicate,
+			Value:       fact.Value,
+			ValidFrom:   fact.ValidFrom,
+			ValidUntil:  fact.ValidUntil,
+			ObservedAt:  fact.ObservedAt,
+			Confidence:  fact.Confidence,
+			Sensitivity: fact.Sensitivity,
+			Provenance:  fact.Provenance,
+			Note:        fact.Note,
+			// Authority is left zero on purpose: reality.ImportFacts
+			// overwrites it with the source's own authority, so anything
+			// set here would be a value the caller does not get to choose.
+		})
+	}
+
+	store, err := openReality()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	// All-or-nothing is reality.ImportFacts's guarantee rather than this
+	// command's: the batch runs in one transaction, and a fact refused for
+	// scope, vocabulary, or credential material rolls back the facts that
+	// preceded it along with the import row itself. So there is nothing to
+	// undo here, and nothing partial to report.
+	imported, err := store.ImportFacts(ctx, reality.ImportInput{
+		SourceID: *source,
+		BatchKey: doc.BatchKey,
+		Facts:    facts,
+	})
+	if err != nil {
+		return fmt.Errorf("import batch %s from source %s: %w", doc.BatchKey, *source, err)
+	}
+
+	res := importResult{
+		SourceID: Sanitize(*source),
+		BatchKey: Sanitize(doc.BatchKey),
+		Facts:    make([]factRow, 0, len(imported)),
+	}
+	for _, fact := range imported {
+		res.Facts = append(res.Facts, renderFact(fact))
+	}
+	if *asJSON {
+		return a.emitJSON(res)
+	}
+	if err := writeDetail(a.stdout, [][2]string{
+		{"source", res.SourceID},
+		{"batch", res.BatchKey},
+		{"imported", strconv.Itoa(len(res.Facts)) + " " + plural(len(res.Facts), "fact", "facts")},
+	}); err != nil {
+		return err
+	}
+	// The facts are listed rather than counted: an operator who imported a
+	// batch needs the identifiers to inspect or dispute what it authorized.
+	fmt.Fprint(a.stdout, "\nfacts\n")
+	table := make([][]string, 0, len(res.Facts))
+	for _, fact := range res.Facts {
+		table = append(table, []string{
+			fact.ID, fact.SubjectID, fact.Predicate, fact.Value, fact.Status, fact.Authority,
+		})
+	}
+	return writeTable(a.stdout,
+		[]string{"FACT", "SUBJECT", "PREDICATE", "VALUE", "STATUS", "AUTHORITY"}, table)
+}
+
+// decodeImportDocument reads exactly one batch document from a file or stdin.
+//
+// Trailing data is rejected, and so is an unrecognized field: a misspelled
+// "valid_until" that was silently dropped would import an open-ended fact the
+// source never asserted, and a silently dropped "provenance" would turn a
+// scoped assertion into one the ledger refuses for a reason the operator
+// cannot see in their own document. The document is never echoed, because an
+// inventory names hosts and paths.
+func (a *app) decodeImportDocument(from string) (importDocument, error) {
+	in := a.stdin
+	if from != "-" {
+		f, err := os.Open(from)
+		if err != nil {
+			return importDocument{}, fmt.Errorf("open import document %s: %w", from, err)
+		}
+		defer f.Close()
+		in = f
+	}
+
+	var doc importDocument
+	dec := json.NewDecoder(in)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		return importDocument{}, fmt.Errorf("decode import document: %w", err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return importDocument{}, fmt.Errorf("decode import document: %w", err)
+	}
+	return doc, nil
 }
 
 func renderQuestion(q reality.Question) questionRow {

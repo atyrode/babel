@@ -538,6 +538,140 @@ func TestCredentialNeverReachesReceiptOrError(t *testing.T) {
 	}
 }
 
+// gradeObligation runs exactly one contract obligation through the recorder
+// `babel conformance WORKER` grades with, so a test can assert a verdict
+// without paying for the whole suite. A name no obligation answers to is a
+// failure rather than a skip: the contract list must not lose an item without
+// a test noticing.
+func gradeObligation(t *testing.T, name string, args ...string) ObligationResult {
+	t.Helper()
+	for _, obligation := range conformanceObligations(conformanceTarget{binary: fakeWorkerPath, args: args}) {
+		if obligation.name == name {
+			return runObligation(obligation)
+		}
+	}
+	t.Fatalf("no obligation named %q in the contract list", name)
+	return ObligationResult{}
+}
+
+// TestCredentialLeakObligationPassesAWorkerWithOutputDiscipline grades the
+// obligation an operator sees in `babel conformance WORKER` against a worker
+// that answers the echo-token directive the conforming way: it reports the
+// credential where the directive asks for it, reports its own placeholder
+// rather than the token, and finishes the job.
+//
+// The placeholder is the fixture's own string, not Babel's redaction marker.
+// A grader that recognized Babel's marker would be grading Babel; this one
+// must pass a worker whose discipline is entirely its own.
+func TestCredentialLeakObligationPassesAWorkerWithOutputDiscipline(t *testing.T) {
+	result := gradeObligation(t, "run/no-credential-leak")
+	if !result.Passed {
+		t.Errorf("run/no-credential-leak failed a worker that answered the directive without ever writing the token: %s",
+			strings.Join(result.Failures, "; "))
+	}
+}
+
+// TestCredentialLeakObligationFailsAWorkerThatWritesTheToken is the negative
+// control that makes the obligation non-vacuous. The same worker, the same
+// directive, one difference: -echo-token puts the credential verbatim on its
+// stdout and stderr.
+//
+// Babel scrubs it out of everything it stores, so the receipt is identical to
+// the disciplined worker's — which is exactly why the obligation reads the
+// bytes the worker wrote instead. If that capture is ever lost, this test
+// fails, and it fails for the right reason: the failure message must name the
+// worker's own output, not the receipt.
+func TestCredentialLeakObligationFailsAWorkerThatWritesTheToken(t *testing.T) {
+	result := gradeObligation(t, "run/no-credential-leak", "-echo-token")
+	if result.Passed {
+		t.Fatal("run/no-credential-leak passed a worker that wrote the broker credential to its own stdout and stderr")
+	}
+	messages := strings.Join(result.Failures, "; ")
+	if !strings.Contains(messages, "stdout or stderr") {
+		t.Errorf("the failure does not attribute the leak to the worker's own output, so it names the wrong remedy: %s", messages)
+	}
+	if strings.Contains(messages, conformanceToken) {
+		t.Errorf("the failure message quotes the credential it is complaining about: %s", messages)
+	}
+}
+
+// TestWellBehavedObligationFailsAnUnreadableResultSchema covers the drift a
+// conformance report would otherwise miss entirely: a worker that satisfies
+// every other obligation while declaring a result schema Babel cannot read.
+// Such a run is graded 11 of 11 and still delivers nothing, because
+// internal/explore refuses a payload under an unknown schema rather than
+// parsing it hopefully.
+//
+// The schema string is wire surface shared with a separately-developed worker,
+// so the failure has to name both values — a report saying only "wrong schema"
+// leaves the reader to guess which side moved.
+func TestWellBehavedObligationFailsAnUnreadableResultSchema(t *testing.T) {
+	const declared = "babel.analysis-result/99"
+	result := gradeObligation(t, "run/well-behaved", "-result-schema", declared)
+	if result.Passed {
+		t.Fatalf("run/well-behaved passed a worker declaring %q; Babel cannot read that payload", declared)
+	}
+	messages := strings.Join(result.Failures, "; ")
+	if !strings.Contains(messages, declared) || !strings.Contains(messages, ResultSchema) {
+		t.Errorf("the failure names neither what the worker declared nor what this build requires: %s", messages)
+	}
+}
+
+// TestRenderedReceiptCoversTheNestedRecords is what keeps the credential search
+// from being vacuous in the other direction. A receipt's result, failure and
+// resources are pointers, and fmt's %+v renders a pointer as an address — a
+// search over that text would skip the result payload entirely, which is the
+// first place a leaking worker puts a credential. renderReceipt encodes the
+// whole tree instead, and this test fails if anyone simplifies it back.
+func TestRenderedReceiptCoversTheNestedRecords(t *testing.T) {
+	receipt, err := newFixture(ConformanceRequestTool).run(t)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if receipt.Result == nil || len(receipt.Result.Payload) == 0 {
+		t.Fatal("the fixture produced no result payload, so this test would prove nothing")
+	}
+	rendered := renderReceipt(receipt)
+	if !strings.Contains(rendered, decisionAllow) {
+		t.Errorf("the rendered receipt does not contain the result payload %s:\n%s",
+			receipt.Result.Payload, rendered)
+	}
+	for _, want := range []string{receipt.RunID, string(receipt.Result.Status)} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("the rendered receipt does not contain %q:\n%s", want, rendered)
+		}
+	}
+}
+
+// TestRawTranscriptIsOffLimitsToProduction pins the two properties that make an
+// unscrubbed capture safe to have at all: a run that does not ask for one keeps
+// nothing, and the obligation that does ask releases it when it is done.
+//
+// The field is unexported, so no caller outside this package can request the
+// worker's credential-bearing bytes. What a test can still check is that the
+// zero value means no capture — otherwise the safe default would depend on
+// every caller remembering to leave a field alone.
+func TestRawTranscriptIsOffLimitsToProduction(t *testing.T) {
+	// newFixture builds its Config the way a production caller does, so the
+	// safe default must not depend on anyone remembering to leave a field
+	// alone.
+	if client := newFixture(ConformanceWellBehaved).client(t); client.cfg.rawTranscript != nil {
+		t.Error("a Config built without the conformance suite carries a raw transcript; the zero value must mean no capture")
+	}
+
+	// The obligation's own capture is bounded and released. discard is what
+	// the obligation defers, so a credential does not outlive the grading.
+	captured := &tail{limit: rawTranscriptBytes}
+	captured.writeLine("worker wrote " + testToken)
+	if !strings.Contains(captured.String(), testToken) {
+		t.Fatal("the transcript captured nothing, so the obligation would search an empty string")
+	}
+	captured.discard()
+	if captured.String() != "" {
+		t.Errorf("the transcript still holds the credential after discard: %s", captured.String())
+	}
+}
+
 // TestJobSecretNeverReachesArgvOrEnvironment checks the claim against the real
 // process rather than against Babel's own scrubbed diagnostics: the worker
 // dumps its argv and environment to a file, and the test reads it unfiltered.

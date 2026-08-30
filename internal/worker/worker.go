@@ -62,6 +62,12 @@ const (
 	// would match innocuous substrings everywhere and turn every diagnostic
 	// into noise; Babel-issued run tokens are long by construction.
 	minSecretLength = 8
+
+	// rawTranscriptBytes bounds the conformance suite's raw transcript. It is
+	// larger than the stderr tail because an event line may legitimately be
+	// long, and small enough that a worker writing without end cannot make
+	// the grader itself the failure.
+	rawTranscriptBytes = 64 << 10
 )
 
 // Decision is one authorization outcome from the injected policy. Reason is
@@ -257,6 +263,22 @@ type Config struct {
 	// §2.6). It runs on the supervision goroutine and must not block: a slow
 	// callback delays the next tool authorization.
 	OnProgress func(ProgressRecord)
+
+	// rawTranscript captures the worker's stdout and stderr exactly as the
+	// worker wrote them — unscrubbed, credential included — and exists for
+	// one caller: the run/no-credential-leak obligation, which grades whether
+	// the worker itself keeps the broker token out of its own output. That
+	// cannot be graded from anything Babel stores, because Babel scrubs the
+	// token on the way in and a scrubbed record looks identical whether the
+	// worker was disciplined or not.
+	//
+	// It is unexported for exactly that reason. No caller outside this
+	// package can ask for unscrubbed worker output, the zero value is no
+	// tee, and nothing in production sets it. The capture is bounded
+	// (rawTranscriptBytes), lives only in memory for the length of one
+	// obligation, and is never written to a file, a log or a diagnostic
+	// sink. It observes; it does not change what Babel parses or stores.
+	rawTranscript *tail
 }
 
 // Client supervises worker processes. One Client may run many jobs; each Run
@@ -976,6 +998,11 @@ type session struct {
 	tail    *tail
 	wg      sync.WaitGroup
 
+	// raw is Config.rawTranscript: nil in every production run, and the
+	// conformance suite's unscrubbed view of what the worker wrote when the
+	// credential obligation is grading one.
+	raw *tail
+
 	killOnce sync.Once
 	downOnce sync.Once
 }
@@ -1029,6 +1056,7 @@ func (c *Client) start(ctx context.Context, limits Limits, scrub scrubber) (*ses
 		stop:    make(chan struct{}),
 		reaped:  make(chan struct{}),
 		tail:    &tail{limit: limits.StderrTailBytes},
+		raw:     c.cfg.rawTranscript,
 	}
 
 	s.wg.Add(3)
@@ -1048,12 +1076,20 @@ func (c *Client) start(ctx context.Context, limits Limits, scrub scrubber) (*ses
 // readEvents parses the worker's stdout into inbound values. Every stop is
 // reported exactly once: EOF, an oversized line, a malformed line, or a read
 // failure.
+//
+// The raw line is offered to the conformance transcript before it is decoded,
+// which is the only place the worker's own bytes exist unaltered. Parsing is
+// unaffected: the tee is nil in every production run, and reading a line the
+// grader also observed is the same work either way.
 func (s *session) readEvents() {
 	defer s.wg.Done()
 	reader := bufio.NewReaderSize(s.stdoutR, readBufferSize)
 	for {
 		line, err := readLine(reader, s.limits.MaxLineBytes)
 		if len(bytes.TrimSpace(line)) > 0 {
+			if s.raw != nil {
+				s.raw.writeLine(string(line))
+			}
 			var ev event
 			fields, unknown, decodeErr := decode(line, &ev)
 			if decodeErr != nil {
@@ -1105,6 +1141,11 @@ func (s *session) readDiagnostics(sink io.Writer) {
 	for {
 		line, truncated, err := readDiagnosticLine(reader, stderrLineLimit)
 		if trimmed := strings.TrimRight(string(line), "\r\n"); trimmed != "" {
+			// Before scrubbing: the conformance transcript is what the worker
+			// wrote, and stderr is a channel a careless worker leaks through.
+			if s.raw != nil {
+				s.raw.writeLine(trimmed)
+			}
 			cleaned := s.scrub.clean(trimmed)
 			if truncated {
 				cleaned += " [truncated]"
@@ -1464,8 +1505,10 @@ func (s scrubber) cleanJSON(payload json.RawMessage) json.RawMessage {
 	return cleaned
 }
 
-// tail keeps at most the last limit bytes of the worker's diagnostics, so a
-// runaway child cannot balloon a receipt or an error message.
+// tail keeps at most the last limit bytes of a worker-written stream, so a
+// runaway child cannot balloon a receipt, an error message or the conformance
+// suite's raw transcript. The bound is the whole point: it is the one idiom
+// this package uses for retaining anything a worker controls.
 type tail struct {
 	mu      sync.Mutex
 	limit   int
@@ -1473,7 +1516,9 @@ type tail struct {
 	dropped bool
 }
 
-// writeLine appends one already-scrubbed line.
+// writeLine appends one line. The caller decides whether it has been scrubbed:
+// the receipt's tail is given cleaned lines, the conformance transcript is
+// given the worker's own bytes.
 func (t *tail) writeLine(line string) {
 	if t.limit <= 0 {
 		return
@@ -1509,6 +1554,16 @@ func (t *tail) String() string {
 		return "..." + joined
 	}
 	return joined
+}
+
+// discard drops what was retained. The conformance transcript holds a
+// credential in the clear, so the obligation that captured it ends by
+// releasing it rather than leaving it reachable for the rest of the process.
+func (t *tail) discard() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = nil
+	t.dropped = false
 }
 
 // requirement resolves the containment the run demands. A nil Config field

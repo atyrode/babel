@@ -80,6 +80,7 @@ func main() {
 		resultPayload     payloadFlag
 		resultSelector    = flag.String("result-payload-selector", "", "job param whose value selects among SELECTOR=PATH result payloads")
 		resultStatus      = flag.String("result-status", worker.StatusOK, "status for the terminal result event")
+		resultSchema      = flag.String("result-schema", worker.ResultSchema, "schema the terminal result declares")
 		requestCapability = flag.String("request-capability", "", "comma-separated capabilities to request once each, continuing after every decision")
 		searchQuery       = flag.String("search-query", "synthetic", "the query value placed in tool-request arguments")
 	)
@@ -105,6 +106,7 @@ func main() {
 		badSeq:         *badSeq,
 		argumentMarker: *argumentMarker,
 		searchQuery:    *searchQuery,
+		schema:         *resultSchema,
 	}
 	if *record != "" {
 		file, err := os.OpenFile(*record, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -161,6 +163,21 @@ func main() {
 		profile.Revision++
 	}
 	token := brokerToken(job)
+	requested := directive(job)
+
+	// echoing is how this fixture answers worker.ConformanceEchoToken: it
+	// reports the credential where the directive asks for it — the terminal
+	// result's payload and one progress message — and reports it as
+	// fixtureRedaction instead of as the token. That is the conforming answer,
+	// and it is what makes run/no-credential-leak discriminating: the events
+	// the suite asked for exist, the job finishes, and the credential never
+	// reaches a pipe.
+	//
+	// -echo-token is the opposite fixture and the one that obligation must
+	// fail: the same channels carry the token verbatim, plus stderr, the
+	// result schema and the tool arguments. Which of the two a run is, is the
+	// caller's choice; the directive on its own is the well-behaved one.
+	echoing := requested == worker.ConformanceEchoToken
 	if *echoToken {
 		fmt.Fprintf(os.Stderr, "fakeworker: broker token is %s\n", token)
 	}
@@ -231,7 +248,7 @@ func main() {
 
 	// Well-behaved paths, selected by the conformance directive the job
 	// carries.
-	switch directive(job) {
+	switch requested {
 	case worker.ConformanceErrorOnly:
 		w.emit(map[string]any{
 			"type": worker.MessageError, "seq": w.nextSeq(),
@@ -246,6 +263,12 @@ func main() {
 		w.runTool(worker.CapabilityCorpusSearch, token, *echoToken)
 	case worker.ConformanceRequestUngranted:
 		w.runTool(worker.CapabilitySandboxExec, token, *echoToken)
+	case worker.ConformanceEchoToken:
+		// The credential is reported where the directive asks for it, and the
+		// value reported is the placeholder unless -echo-token demands the
+		// real thing.
+		w.emit(w.progress("investigate",
+			"broker credential for the investigator: "+echoed(token, *echoToken), nil))
 	case "request-unknown":
 		w.runTool("teleport", token, *echoToken)
 	default:
@@ -258,8 +281,8 @@ func main() {
 	if path := resultPayload.pick(paramOf(job, *resultSelector)); path != "" {
 		payload = loadPayload(path, job)
 	}
-	if *echoToken {
-		payload["leaked"] = token
+	if *echoToken || echoing {
+		payload["broker_credential"] = echoed(token, *echoToken)
 	}
 	w.emit(w.result(*resultStatus, payload, tokenIf(*echoToken, token)))
 
@@ -286,6 +309,13 @@ type fake struct {
 	badSeq         bool
 	argumentMarker string
 	searchQuery    string
+
+	// schema is the schema the terminal result declares. It is a dial so a
+	// test can present a result Babel cannot read: the schema is shared wire
+	// surface between two repositories, and a worker that gets it wrong while
+	// getting everything else right is the drift the conformance suite has to
+	// catch.
+	schema string
 
 	// decisions records what Babel answered for each tool request, so the
 	// result payload can prove the worker actually observed the decision
@@ -422,13 +452,13 @@ func (f *fake) result(status string, payload map[string]any, leak string) map[st
 		"seq":    f.nextSeq(),
 		"time":   time.Now().UTC().Format(time.RFC3339Nano),
 		"status": status,
-		"schema": "babel.analysis-result/1",
+		"schema": f.schema,
 	}
 	if payload != nil {
 		msg["payload"] = payload
 	}
 	if leak != "" {
-		msg["schema"] = "babel.analysis-result/1 " + leak
+		msg["schema"] = f.schema + " " + leak
 	}
 	return msg
 }
@@ -601,6 +631,23 @@ func tokenIf(echo bool, token string) string {
 		return token
 	}
 	return ""
+}
+
+// fixtureRedaction is this fixture's own placeholder for a credential it was
+// asked to report. It is deliberately not Babel's redaction marker: the
+// conformance obligation must grade a worker's output discipline without
+// knowing which placeholder that worker happens to use, so a fixture that
+// borrowed Babel's marker would let the grader pass for the wrong reason.
+const fixtureRedaction = "<credential withheld by fakeworker>"
+
+// echoed is the value this fixture reports where a credential was asked for:
+// the credential itself when the caller wants a worker with no output
+// discipline, and the placeholder otherwise.
+func echoed(token string, verbatim bool) string {
+	if verbatim {
+		return token
+	}
+	return fixtureRedaction
 }
 
 // parseVersions turns the flag's comma-separated list into wire integers.

@@ -44,7 +44,8 @@ and no proposal is applied (SPEC.md §4.6, decision 13).
 
 Flags:
   --preparation ID     required: the corpus scope to explore
-  --recipe ID          cookbook recipe to run; repeatable
+  --recipe ID          cookbook recipe to run; repeatable. Naming one runs
+                       exactly it, default-enabled or not
                        (default: the default-enabled lenses)
   --challenge          run §5.4's independent challenger pass
   --synthesize         run §5.4's synthesis pass
@@ -314,28 +315,48 @@ func resolveProfile(c *cmd, flagValue string, s analysisSettings) (worker.Profil
 // selectRecipes narrows the embedded cookbook to the named recipes, or to
 // the default-enabled lenses when none were named.
 //
-// The narrowed set is built by re-parsing the chosen documents rather than
-// by filtering in place, because internal/cookbook validates a set as a set
-// and a subset that skipped that validation would be a different cookbook
-// than the one a receipt claims the run applied.
+// Narrowing is the whole point of the function and not a convenience: the
+// returned Set is what the run's receipt attests to and what each stage
+// runs, so a Set wider than the operator's request would make the receipt
+// claim recipes that never looked at the corpus.
+//
+// An explicitly named recipe always runs, default-enabled or not. §5.5 ships
+// three lenses as reviewable drafts, and default-enablement answers "what
+// should a run do when the operator said nothing", not "what may a run do".
+// Intersecting an explicit --recipe with the defaults would be this same bug
+// wearing a quieter costume: the operator naming a draft by id is the
+// authorization to run it.
 func selectRecipes(c *cmd, chosen []string) (*cookbook.Set, error) {
 	full, err := cookbook.Embedded()
 	if err != nil {
 		return nil, err
 	}
-	if len(chosen) == 0 {
-		return full, nil
-	}
-	for _, id := range chosen {
-		if _, ok := full.ByID(id); !ok {
-			available := make([]string, 0, len(full.All()))
-			for _, r := range full.All() {
-				available = append(available, r.ID)
-			}
-			return nil, c.usagef("unknown --recipe %q; the cookbook holds %s", id, strings.Join(available, " "))
+	ids := chosen
+	if len(ids) == 0 {
+		defaults := full.Defaults()
+		// A build whose cookbook default-enables nothing has no implicit
+		// selection, and running every recipe instead would be a scope the
+		// operator never asked for. Refuse, and name the flag that makes
+		// the choice explicit.
+		if len(defaults) == 0 {
+			return nil, errors.New(
+				"this build's cookbook default-enables no recipe; name one with --recipe ID (\"babel cookbook list\" shows every id)")
+		}
+		ids = make([]string, 0, len(defaults))
+		for _, r := range defaults {
+			ids = append(ids, r.ID)
 		}
 	}
-	return full, nil
+	set, err := full.Select(ids)
+	if err != nil {
+		var unknown *cookbook.UnknownRecipeError
+		if errors.As(err, &unknown) {
+			return nil, c.usagef("unknown --recipe %q; the cookbook holds %s",
+				unknown.ID, strings.Join(unknown.Available, " "))
+		}
+		return nil, err
+	}
+	return set, nil
 }
 
 // preflightInputs reconstructs §6.4's inputs for a recorded scope.

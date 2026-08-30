@@ -9,21 +9,21 @@ import (
 	"github.com/atyrode/babel/internal/worker"
 )
 
-// ResultSchema is the structured result schema this control plane requires of
-// an analysis worker. A worker's terminal result must declare exactly this
-// string; anything else is refused rather than parsed hopefully, because a
-// payload interpreted under the wrong schema would produce durable records
-// nobody wrote.
+// Result is one analysis job's structured output, decoded from the payload of
+// a terminal result declaring worker.ResultSchema. Anything declaring another
+// schema is refused rather than parsed hopefully, because a payload
+// interpreted under the wrong schema would produce durable records nobody
+// wrote.
 //
-// The drafts below are internal/frontier's payload types verbatim rather than
-// a parallel set of wire structs. That is a deliberate coupling: the fields a
+// The types below are internal/frontier's payload types verbatim rather than a
+// parallel set of wire structs. That is a deliberate coupling: the fields a
 // worker proposes and the fields Babel stores are the same information, and
 // two declarations of it would drift into a translation layer that silently
 // dropped one of them. The cost is that a change to a frontier payload is a
-// change to this schema, and therefore requires this constant to change too.
-const ResultSchema = "babel.analysis-result/1"
-
-// Result is one analysis job's structured output.
+// change to the schema, and therefore requires worker.ResultSchema to change
+// too — the string itself lives in internal/worker because it is wire surface
+// shared with a separately-developed worker implementation, and naming it from
+// here is what keeps exactly one definition of it.
 //
 // Every field is optional and an absent field is a statement: a job that
 // emitted no candidate emitted none, which §5.2 permits. What a stage is
@@ -201,9 +201,9 @@ func parseResult(rec *worker.ResultRecord) (*Result, error) {
 	if rec == nil {
 		return nil, ErrNoResult
 	}
-	if rec.Schema != ResultSchema {
+	if rec.Schema != worker.ResultSchema {
 		return nil, fmt.Errorf("%w: worker declared %q, this build requires %q",
-			ErrResultSchema, rec.Schema, ResultSchema)
+			ErrResultSchema, rec.Schema, worker.ResultSchema)
 	}
 	var res Result
 	if len(rec.Payload) > 0 {

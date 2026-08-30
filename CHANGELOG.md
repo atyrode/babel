@@ -9,6 +9,110 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **An alignment audit of the whole system against `SPEC.md`, and the defects
+  it found.** Seventeen read-only audits covered every package, both
+  counterpart repositories, and the deployment, then drove the shipped binary
+  through the full Phase A lifecycle against the real 838-session corpus. The
+  lifecycle held end to end. What it found was concentrated in the places
+  nobody had exercised, and two findings were the same shape: a proof that
+  could not fail.
+  - **The conformance suite graded a stub whose behaviour had diverged from
+    the code path it stood in for.** Babel requires every analysis result to
+    declare `babel.analysis-result/1` and fails closed otherwise; Code's real
+    investigator declared `code.investigation.v1`, so every real analysis run
+    would have been rejected after the work was done. Conformance never saw it
+    because it grades a conformance stub, which emitted the right string, and
+    no obligation read the result schema. The schema string now has exactly one
+    definition on each side of the wire, `run/well-behaved` asserts it, and the
+    divergent constant is deleted rather than corrected so it cannot drift
+    again.
+  - **`run/no-credential-leak` certified workers that never ran.** It searched
+    a rendered receipt for a token that nothing had ever placed, so it could
+    not fail: `babel conformance /bin/true` passed it while failing the other
+    ten, and the suite's own all-fail test explicitly exempted it. Two further
+    layers of the same defect surfaced on the way down — the receipt was
+    rendered with `%+v`, which prints the nested result as a pointer address
+    and never reached the payload, and the first redesign (grade the worker's
+    raw bytes) would have relocated the vacuity rather than closing it, since a
+    worker emitting nothing passes a test for an absence trivially. The
+    obligation now drives the worker with a directive that asks for the
+    credential back, and holds only on three conjoined facts: the run reached a
+    terminal result, the token appears in no byte the worker wrote, and it
+    appears nowhere in the receipt. Four negative controls pin it, and the
+    all-fail test now exempts nothing.
+  - **`babel explore --recipe` validated the operator's scoping and discarded
+    it.** Both branches returned the unnarrowed set, so every run analysed all
+    eight recipes and the receipt attested all eight — a receipt overstating
+    what was analysed, which is the one thing this product exists not to do.
+    `Set.Defaults()` had been written and never wired up; its only caller was
+    its own test. Selection now narrows in one place and reaches both the
+    worker's brief and the receipt, and a recipe named explicitly runs whether
+    or not it is default-enabled.
+  - **The vault session token travelled on argv.** `atyrode/dotfiles`'
+    storage ceremony exported `BW_SESSION` and then passed `--session` on every
+    `bw` call anyway, putting a token that grants full vault access into a
+    world-readable process listing — contradicting the script's own header and
+    `SPEC.md`'s rule that secrets never enter argv. Removed at all five call
+    sites, with a check that fails if it returns.
+  - **The archive timer armed before there was anything to archive.** Home
+    Manager enabled `babel-archive.timer` at activation, inverting the §12
+    rollout order in which storage is configured and verified first. The unit
+    now carries a start condition on the storage document, and the ceremony
+    arms it on success — because a start condition alone would leave a
+    configured machine inert until its next login.
+  - **`Config.Redacted()` omitted the object-store credentials** while
+    documenting itself as safe to print. No shipped path called it, which is
+    why nothing leaked; it was a trap set for the next caller. It now covers
+    every secret-bearing field, and a reflective test fails when a new one is
+    added without a decision.
+  - **Four deployment-critical commands were missing from `babel --help`** —
+    `archive init`, `storage migrate`, `storage verify`, `storage rebuild` —
+    including the one named by the error an operator hits first. A test now
+    derives the command list from the dispatch source and fails if any
+    reachable command is undocumented.
+  - **Trusted inventory import had no operator command.** `ImportFacts` was
+    implemented and tested, and `babel reality import` now reaches it. It
+    deliberately takes no `--operator`: the ledger attributes imported facts to
+    the trusted source, and collecting an operator identity would imply they
+    personally authorized what §4.8 attributes elsewhere.
+  - **Smaller gaps closed:** `internal/digest` was the only package with no
+    test at all; the frozen migration tests pinned names and order but not
+    bodies, so editing an applied migration in place passed; `go test -race`
+    was in no gate (it is now a parallel CI job, and the tree was already
+    clean); the browser leak suite skipped silently without Chrome; `storage
+    configure` documented no schema and accepted an insecure password file in
+    silence; and `sessions fetch` failed without naming `--host`, the flag that
+    recovers a session this machine no longer holds.
+  - **An operator-requested `babel web` lock could exit non-zero having
+    worked perfectly.** Found by the new race gate on its first CI run, which
+    is the whole argument for the gate. `shutdown` closes the listener, then
+    `http.Server.Shutdown` closes the listeners it still tracks — the same one
+    — and reports closing an already-closed listener as its error, unless
+    `Serve` returned first and untracked it. Which one wins is scheduling: on
+    an idle machine `Serve` wins and the bug is invisible, and forty
+    consecutive local runs passed. On a runner with four concurrent jobs
+    `Shutdown` won. An already-closed listener is the state the lock asked
+    for, so it is no longer read as a failure, and the regression test runs
+    the lock cycle enough times for the loser to change.
+
+### Changed
+
+- **`SPEC.md` no longer claims more than the code does.** Four dated claims
+  overstated what was built, and each is now corrected with the measured
+  property and, where a gap remains, a recorded gate. Containment is refused at
+  the worker's first event — before any analysis executes, but after the job
+  document with its broker token has already reached the process, so the staged
+  form that would close it is now a named gate. The restic port is eight verbs,
+  not the six enumerated in three places; `cat config` is how a missing
+  repository is told from an unopenable one, `ls` serves selective retrieval,
+  and the property that matters is that no verb in the set can delete or
+  rewrite repository data. §8's command table was undercounting the shipped
+  surface. And decision 34's "one-time session bootstrap" describes a bearer
+  token reused for the server's lifetime and readable from JavaScript, not the
+  rotated `HttpOnly` cookie §2.7 requires; the exchange is recorded as a gate.
+
 ### Added
 
 - **`babel conformance WORKER` sits any binary down in front of the

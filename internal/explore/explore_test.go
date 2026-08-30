@@ -422,8 +422,8 @@ func TestFullRunProducesDurableRecordsAndAReceipt(t *testing.T) {
 	if stored.Body.Worker == nil {
 		t.Fatal("receipt embeds no worker receipt")
 	}
-	if stored.Body.Job.Schema != explore.ResultSchema {
-		t.Errorf("receipt records result schema %q, want %q", stored.Body.Job.Schema, explore.ResultSchema)
+	if stored.Body.Job.Schema != worker.ResultSchema {
+		t.Errorf("receipt records result schema %q, want %q", stored.Body.Job.Schema, worker.ResultSchema)
 	}
 	if len(stored.Body.Failures) != 0 {
 		t.Errorf("a clean run recorded failures: %+v", stored.Body.Failures)

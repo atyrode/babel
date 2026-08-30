@@ -297,7 +297,18 @@ func resolveSelector(c *cmd, sessions []localSession, selector string) (localSes
 				selector, len(tier), strings.Join(keysOf(tier), " "))
 		}
 	}
-	return localSession{}, fmt.Errorf("no local session matches selector %q", selector)
+	return localSession{}, &noLocalMatchError{selector: selector}
+}
+
+// noLocalMatchError reports that local discovery saw no session for a
+// selector. It is a distinct type rather than a plain error because the
+// remedy is command-specific: `sessions fetch` can still recover a session
+// this machine no longer holds, and only fetch is in a position to say so.
+// Its text is unchanged, so callers matching on it keep working.
+type noLocalMatchError struct{ selector string }
+
+func (e *noLocalMatchError) Error() string {
+	return fmt.Sprintf("no local session matches selector %q", e.selector)
 }
 
 // keysOf lists the canonical keys of a candidate set.
@@ -872,7 +883,7 @@ func (a *app) sessionsFetch(ctx context.Context, args []string) error {
 		sessions, _ := a.scan(ctx, adapters(), sf.rootList())
 		target, err := resolveSelector(c, sessions, selector)
 		if err != nil {
-			return err
+			return hintHostFetch(err, selector)
 		}
 		desc, err := describe(ctx, target)
 		if err != nil {
@@ -936,6 +947,32 @@ func (a *app) sessionsFetch(ctx context.Context, args []string) error {
 	}
 	res.Files, res.Bytes = files, bytes
 	return a.finishFetch(res, dir, includes, *asJSON)
+}
+
+// hintHostFetch restates a local-discovery miss with the recovery the failure
+// itself does not name. A session gone from this machine's disk is still in
+// the archive — that is the whole point of keeping one — and --host resolves
+// the selector inside a host's snapshot listing instead of against local
+// files, which is exactly the case a plain fetch cannot address.
+//
+// The two failures behind one missing selector are deliberately left
+// undistinguished: "no such session anywhere" and "archived, but not here"
+// differ only by what some host's snapshot listing holds, and without --host
+// there is no host whose listing to read. Deciding would mean enumerating
+// every host's latest snapshot, turning one mistyped selector into a
+// repository-wide scan. So the message states what was actually observed,
+// what it cannot know, and what to run next.
+//
+// Only the miss is rewritten. An empty or ambiguous selector is a different
+// failure with its own remedy, and --host would not help either one.
+func hintHostFetch(err error, selector string) error {
+	var miss *noLocalMatchError
+	if !errors.As(err, &miss) {
+		return err
+	}
+	return fmt.Errorf("%w: this resolves selectors against local files only, so it cannot tell whether the archive still holds the session; "+
+		"run `babel sessions fetch --host ID %q` to resolve it inside that host's snapshot instead (`babel archive status` names the hosts)",
+		err, selector)
 }
 
 // maxMissingReported bounds how many absent closure paths are named on

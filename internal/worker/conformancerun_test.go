@@ -6,36 +6,76 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
-// TestRunConformanceFailsANonWorker points the suite at a program that exits
-// without saying anything. The command's whole purpose is grading an
-// implementation that does not work yet, so a candidate that is not a worker
+// TestRunConformanceFailsANonWorker points the suite at two programs that are
+// not workers: one that exits at once without writing a byte, and one that
+// holds the pipes open and never speaks. The command's whole purpose is grading
+// an implementation that does not work yet, so a candidate that is not a worker
 // at all has to produce a full report with reasons rather than a crash, a
 // truncated run, or a silent pass.
+//
+// Every obligation must fail, with no exemptions. That is the point of this
+// test and it is worth more than any single obligation: an obligation that
+// grades only an absence is satisfied by a program that produces nothing, so
+// "nothing happened" reads as a pass. run/no-credential-leak was exactly that
+// for a while — a silent binary scored 1 of 11 on a credential guarantee it had
+// never been exposed to. Any obligation reintroducing that shape fails here.
 func TestRunConformanceFailsANonWorker(t *testing.T) {
-	results := RunConformance(context.Background(), buildSilentBinary(t))
+	candidates := map[string]conformanceTarget{
+		// Exits 0 immediately, no bytes on either stream.
+		"silent": {binary: buildSilentBinary(t)},
+		// Speaks never but stays alive, so every obligation spends its whole
+		// handshake budget waiting. The obligations are independent processes,
+		// so they are graded concurrently here: run serially this candidate
+		// costs the handshake timeout eleven times over for no extra evidence.
+		"never handshakes": {binary: fakeWorkerPath, args: []string{"-no-hello"}},
+	}
 
-	if len(results) != len(conformanceObligations(conformanceTarget{})) {
-		t.Fatalf("reported %d obligations, want the whole suite", len(results))
-	}
-	for _, result := range results {
-		// run/no-credential-leak asserts an absence, and a program that
-		// says nothing leaks nothing, so it is the one obligation a
-		// silent binary satisfies honestly.
-		if result.Passed && result.Name != "run/no-credential-leak" {
-			t.Errorf("obligation %s passed against a program that never speaks the protocol", result.Name)
-		}
-		if !result.Passed && len(result.Failures) == 0 {
-			t.Errorf("obligation %s failed without saying why", result.Name)
-		}
-		for _, failure := range result.Failures {
-			if strings.Contains(failure, conformanceToken) {
-				t.Errorf("obligation %s leaked the broker credential into its report", result.Name)
+	for name, target := range candidates {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			results := gradeConcurrently(target)
+			if len(results) != len(conformanceObligations(conformanceTarget{})) {
+				t.Fatalf("reported %d obligations, want the whole suite", len(results))
 			}
-		}
+			for _, result := range results {
+				if result.Passed {
+					t.Errorf("obligation %s passed against a program that never speaks the protocol; an obligation that grades an absence must first establish that the run happened", result.Name)
+				}
+				if len(result.Failures) == 0 {
+					t.Errorf("obligation %s failed without saying why", result.Name)
+				}
+				for _, failure := range result.Failures {
+					if strings.Contains(failure, conformanceToken) {
+						t.Errorf("obligation %s leaked the broker credential into its report", result.Name)
+					}
+				}
+			}
+		})
 	}
+}
+
+// gradeConcurrently grades every obligation against one target at the same
+// time. RunConformance is deliberately serial — an operator reads a report in
+// order, and eleven worker processes at once would distort the timing
+// obligations — but each obligation launches its own process and shares nothing,
+// so a test that only needs the verdicts can afford the parallelism.
+func gradeConcurrently(target conformanceTarget) []ObligationResult {
+	obligations := conformanceObligations(target)
+	results := make([]ObligationResult, len(obligations))
+	var wg sync.WaitGroup
+	wg.Add(len(obligations))
+	for i, obligation := range obligations {
+		go func() {
+			defer wg.Done()
+			results[i] = runObligation(obligation)
+		}()
+	}
+	wg.Wait()
+	return results
 }
 
 // TestRunConformanceLaunchesTheWorkerWithItsArguments checks that the suite can

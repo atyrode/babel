@@ -130,6 +130,12 @@ func TestStorageStatusMissingAndPasswordPermissions(t *testing.T) {
 	if err := os.WriteFile(password, []byte("synthetic\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The mode is asserted, so it must be set rather than requested: a
+	// developer or CI runner with umask 0077 would otherwise get 0600 here and
+	// see this case pass for the wrong reason.
+	if err := os.Chmod(password, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := config.Save(config.Config{Repository: "repo", PasswordFile: password}); err != nil {
 		t.Fatal(err)
 	}
@@ -174,5 +180,118 @@ func TestStorageDispatchUsage(t *testing.T) {
 	stdout, stderr := f.ok("--help")
 	if !strings.Contains(stdout, "storage configure") || stderr != "" {
 		t.Fatalf("root help omitted storage commands: stdout %q stderr %q", stdout, stderr)
+	}
+}
+
+// `storage configure` is the first command anyone runs, and its input is a
+// whole JSON document with no flags to discover it from. The property
+// defended here is that its usage is an interface rather than an invitation
+// to guess a field name per error: it names what is required and what is
+// optional, and the document it prints is one this build actually accepts.
+// The example is extracted and run through the real validator rather than
+// eyeballed, so a schema change that invalidates the documentation fails
+// here instead of in an operator's terminal.
+func TestStorageConfigureUsageDocumentsAWorkingSchema(t *testing.T) {
+	f := newFixture(t)
+	stdout, stderr := f.ok("storage", "configure", "-h")
+	if stderr != "" {
+		t.Fatalf("configure help wrote diagnostics: %q", stderr)
+	}
+	// Required first, then the optional names an operator would otherwise
+	// have to discover from internal/config's struct tags.
+	for _, field := range []string{
+		"repository", "password_file", "config_schema", "mode", "host_id",
+		"restic_binary", "repository_store", "access_key_id", "secret_access_key",
+		"deployment_id", "instance_id", "catalog",
+	} {
+		if !strings.Contains(stdout, field) {
+			t.Errorf("configure usage never names %q", field)
+		}
+	}
+	// Loading ignores unknown names, so a misspelling is dropped rather than
+	// refused. That is a documented property because it is a trap.
+	if !strings.Contains(stdout, "Unknown names are ignored") {
+		t.Errorf("configure usage does not state that unknown names are ignored:\n%s", stdout)
+	}
+
+	var doc string
+	for _, line := range strings.Split(stdout, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+			doc = trimmed
+			break
+		}
+	}
+	if doc == "" {
+		t.Fatalf("configure usage shows no example document:\n%s", stdout)
+	}
+	var documented config.Config
+	if err := json.Unmarshal([]byte(doc), &documented); err != nil {
+		t.Fatalf("documented example %q is not JSON: %v", doc, err)
+	}
+	if err := config.Validate(documented); err != nil {
+		t.Fatalf("documented example %q does not validate: %v", doc, err)
+	}
+	if documented.Repository == "" || documented.PasswordFile == "" {
+		t.Fatalf("documented example %q fills in neither required field", doc)
+	}
+}
+
+// Setup is the cheapest moment to fix a repository password other local
+// accounts can read, and it was the one moment Babel said nothing: `storage
+// status` reported the finding but `storage configure` accepted 0644 with
+// exit 0 and a silent stderr. The property defended here is that configure
+// now says it — naming the file, the observed mode, the expected mode, and
+// the remedy, on stderr — while still installing the configuration, because
+// refusing would strand an operator mid-setup with nothing written at all.
+func TestStorageConfigureWarnsOnInsecurePasswordFileAndStillWrites(t *testing.T) {
+	f := newFixture(t)
+	password := filepath.Join(f.root, "password-loose")
+	if err := os.WriteFile(password, []byte("synthetic\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Set rather than request: under umask 0077 the file above would land at
+	// 0600 and this case would pass without ever exercising the warning.
+	if err := os.Chmod(password, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(config.Config{
+		Repository:   filepath.Join(f.root, "configured-repo"),
+		PasswordFile: password,
+		HostID:       "configured-host",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"storage", "configure", "--from-json", "-", "--json"}, bytes.NewReader(body), &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("configure with a loose password file exited %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+	}
+	warning := stderr.String()
+	for _, want := range []string{password, "0644", "expected 0600 or stricter", "chmod 600"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("configure warning %q does not mention %q", warning, want)
+		}
+	}
+
+	// Warned, not refused: the document is on disk and reads back.
+	saved, found, err := config.Load()
+	if err != nil || !found {
+		t.Fatalf("configure did not install the document: found=%v err=%v", found, err)
+	}
+	if saved.PasswordFile != password || saved.HostID != "configured-host" {
+		t.Fatalf("installed configuration = %+v", saved)
+	}
+
+	// The same rule, one implementation: status reaches the identical verdict
+	// and the identical sentence about the same file.
+	statusOut, statusErr := f.ok("storage", "status", "--json")
+	if got := decode[storageStatusResult](t, statusOut); got.PasswordFileSecure {
+		t.Fatalf("status called a 0644 password file secure: %+v", got)
+	}
+	if !strings.Contains(statusErr, "expected 0600 or stricter") {
+		t.Fatalf("status warning = %q", statusErr)
 	}
 }

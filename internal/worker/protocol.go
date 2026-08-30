@@ -223,6 +223,20 @@ const (
 	StatusPartial = "partial"
 )
 
+// ResultSchema is the schema every analysis result must declare, and it lives
+// here because it is wire surface: it is written by a worker developed in a
+// separate repository and read by Babel, so the string belongs with the rest
+// of the protocol's vocabulary rather than with either side's interpretation
+// of it. Defining it in a consumer package is what previously let a second,
+// divergent copy appear in a worker implementation, which is a drift no test
+// on either side could see.
+//
+// The version suffix is semantic: any change to the payload shape Babel
+// stores under it — internal/explore's Result and the internal/frontier
+// payloads it embeds — is a new schema, because a payload interpreted under
+// the wrong one would produce durable records nobody wrote.
+const ResultSchema = "babel.analysis-result/1"
+
 // Disclosure classes a grant can carry. The class is fixed before material is
 // sent (SPEC.md §3), so it travels in the job rather than being negotiated.
 const (

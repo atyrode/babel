@@ -5,11 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -445,6 +449,207 @@ func TestBareBabelPrintsStatusOverview(t *testing.T) {
 			t.Fatalf("babel %s wrote help to stderr: %q", strings.Join(args, " "), stderr)
 		}
 	}
+}
+
+// TestRootUsageListsEveryDispatchableCommand defends the one property that
+// makes `babel --help` usable as documentation: what the top-level dispatch
+// accepts and what the top-level help advertises are the same set.
+//
+// This is not cosmetic. `archive push` against a missing repository fails with
+// a message naming `babel archive init`, and an operator who then runs `babel
+// --help` to find that command has to be able to see it. `storage migrate` and
+// `storage verify` are SPEC.md §14 pre-deployment gates and `storage rebuild`
+// is the §11 recovery path; all four were fully dispatchable while absent from
+// the top-level list, because the list is prose and prose does not compile.
+//
+// The expected set is read out of the dispatch functions themselves rather
+// than written down here, because a second hand-written list is exactly what
+// let the first one drift.
+func TestRootUsageListsEveryDispatchableCommand(t *testing.T) {
+	for _, name := range dispatchableCommands(t) {
+		// Every entry is "  NAME" padded to the description column, so a
+		// trailing space both anchors the match and keeps "finding" from
+		// being satisfied by "findings".
+		if !strings.Contains(rootUsage, "\n  "+name+" ") {
+			t.Errorf("%q is dispatchable but absent from the top-level help", "babel "+name)
+		}
+	}
+}
+
+// dispatchableCommands enumerates every command reachable through the
+// top-level dispatch, by reading this package's own source.
+//
+// Each router is the same shape: a switch on args[0] whose non-help cases
+// return a call to another method on *app. A case whose target is itself a
+// router contributes its verbs under the noun's prefix, which is what makes
+// "analysis profile show" appear at its real depth rather than as "analysis".
+func dispatchableCommands(t *testing.T) []string {
+	t.Helper()
+	e := &commandEnumerator{t: t, methods: appMethods(t)}
+	dispatch, ok := e.methods["dispatch"]
+	if !ok {
+		t.Fatal("this package has no (*app).dispatch; the enumerator cannot find the command surface")
+	}
+	e.walk(dispatch, "")
+	return e.commands
+}
+
+// appMethods parses every non-test source file in this package and returns the
+// methods declared on *app, which is the set a router can dispatch to.
+func appMethods(t *testing.T) map[string]*ast.FuncDecl {
+	t.Helper()
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	methods := make(map[string]*ast.FuncDecl)
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 {
+				continue
+			}
+			star, ok := fn.Recv.List[0].Type.(*ast.StarExpr)
+			if !ok {
+				continue
+			}
+			if ident, ok := star.X.(*ast.Ident); !ok || ident.Name != "app" {
+				continue
+			}
+			methods[fn.Name.Name] = fn
+		}
+	}
+	if len(methods) == 0 {
+		t.Fatal("no methods on *app were found; the enumerator would vacuously pass")
+	}
+	return methods
+}
+
+// commandEnumerator accumulates command names while descending the routers.
+type commandEnumerator struct {
+	t        *testing.T
+	methods  map[string]*ast.FuncDecl
+	commands []string
+}
+
+// walk records every command the router fn dispatches, prefixed by the nouns
+// already consumed to reach it.
+func (e *commandEnumerator) walk(fn *ast.FuncDecl, prefix string) {
+	e.t.Helper()
+	sw := verbSwitch(fn)
+	if sw == nil {
+		e.t.Fatalf("%s was treated as a router but has no switch on args[0]", fn.Name.Name)
+	}
+	found := 0
+	for _, stmt := range sw.Body.List {
+		clause, ok := stmt.(*ast.CaseClause)
+		if !ok || len(clause.List) == 0 {
+			// The default clause, which rejects an unknown verb.
+			continue
+		}
+		verbs, ok := caseVerbs(clause)
+		if !ok {
+			e.t.Fatalf("%s has a case this enumerator cannot read; it is no longer a plain "+
+				"switch on string literals, so the enumeration would silently miss commands",
+				fn.Name.Name)
+		}
+		target := e.methods[dispatchTarget(clause.Body)]
+		for _, verb := range verbs {
+			name := strings.TrimSpace(prefix + " " + verb)
+			if target != nil && verbSwitch(target) != nil {
+				e.walk(target, name)
+			} else {
+				e.commands = append(e.commands, name)
+			}
+			found++
+		}
+	}
+	if found == 0 {
+		e.t.Fatalf("%s dispatched no command; the enumeration would vacuously pass", fn.Name.Name)
+	}
+}
+
+// caseVerbs returns the verbs one case clause matches, dropping the help case
+// every router shares. It reports false when a case value is not a string
+// literal, because a router the enumerator cannot read would hide commands.
+func caseVerbs(clause *ast.CaseClause) ([]string, bool) {
+	verbs := make([]string, 0, len(clause.List))
+	for _, expr := range clause.List {
+		lit, ok := expr.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return nil, false
+		}
+		value, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return nil, false
+		}
+		switch value {
+		case "-h", "--help", "help":
+			continue
+		}
+		verbs = append(verbs, value)
+	}
+	return verbs, true
+}
+
+// dispatchTarget names the *app method one case clause returns a call to, and
+// the empty string when the clause handles the verb itself.
+func dispatchTarget(body []ast.Stmt) string {
+	for _, stmt := range body {
+		ret, ok := stmt.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) != 1 {
+			continue
+		}
+		call, ok := ret.Results[0].(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			continue
+		}
+		if recv, ok := sel.X.(*ast.Ident); !ok || recv.Name != "a" {
+			continue
+		}
+		return sel.Sel.Name
+	}
+	return ""
+}
+
+// verbSwitch returns fn's switch on args[0], and nil when fn is a leaf command
+// rather than a router.
+func verbSwitch(fn *ast.FuncDecl) *ast.SwitchStmt {
+	var found *ast.SwitchStmt
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		if found != nil {
+			return false
+		}
+		sw, ok := node.(*ast.SwitchStmt)
+		if !ok {
+			return true
+		}
+		index, ok := sw.Tag.(*ast.IndexExpr)
+		if !ok {
+			return true
+		}
+		if ident, ok := index.X.(*ast.Ident); !ok || ident.Name != "args" {
+			return true
+		}
+		if lit, ok := index.Index.(*ast.BasicLit); !ok || lit.Value != "0" {
+			return true
+		}
+		found = sw
+		return false
+	})
+	return found
 }
 
 // TestPushThenStatusAndVerify is the milestone's end-to-end contract: a
