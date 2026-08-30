@@ -1,0 +1,685 @@
+// Package explore is Babel's exploration control plane: the path SPEC.md §6.5
+// describes from an operator's fixed scope selection to durable hypotheses,
+// observations, findings, proposals, and a receipt that says what happened.
+//
+// Babel validates structure, never correctness. Everything in a run's output
+// arrives from a worker Babel does not implement and cannot audit from
+// outside, so what this package checks is shape and provenance: that a schema
+// is one it implements, that an evidence locator recovers its bytes, that a
+// recipe reference names an asset the run actually selected, that a finding
+// stands on observations that exist, and that a stage did not exceed its
+// authority. It never judges whether a claim is true, and no code path here
+// reads a worker's confidence as evidence: confidence and impact are stored as
+// the model's own gradings (§10 warns they never substitute for evidence) and
+// no decision this package makes consults them.
+//
+// Five rules shape the orchestration, and each is a property a reviewer can
+// check rather than a convention this code follows by habit.
+//
+// Preflight is deterministic and prior to inference (§6.4). It runs before a
+// worker is launched, over the same selection the run will read, and its
+// verdict is enforced rather than reported: a hosted disclosure class with a
+// secret finding refuses to launch unless the run applies §3's redaction,
+// because "we told the operator" is not a boundary.
+//
+// Discovery persists every candidate before anything sorts it (§5.2). The
+// persistence loop is deliberately the one loop that does not check for
+// cancellation: once an idea has crossed the worker boundary, recording it is
+// not work a budget may cut short, so every durable write in this package runs
+// on a context detached from the run's cancellation. A finite run then defers
+// its remainder to the frontier, which is why cancelling mid-run leaves the
+// unexplored candidates queryable instead of erased. Sorting happens
+// afterwards, over already-durable records, and belongs to
+// frontier.Unexplored rather than here.
+//
+// The development path is mandatory (§4.2). A worker proposes; Babel writes.
+// A result that skips a step — a consolidation whose supporting observations
+// do not exist, or one naming a record that is not a locator-backed
+// observation — is refused and recorded in the receipt as a failure. It is
+// never repaired, because the repair would be Babel inventing the evidence
+// step the worker skipped.
+//
+// The challenger is a logically separate job (§5.4). It gets its own worker
+// invocation, its own run identity and its own receipt, and no authority to
+// create or promote a finding: a locator-backed objection becomes a
+// counter-observation against the hypothesis it attacks, and an objection
+// resting on a consequence, a missing check, or an alternative becomes a new
+// candidate linked as contradicting its target, since §4.3 forbids an
+// observation with no locator. A failed challenger leaves the exploration's
+// records exactly as they were — §6.5 requires a failed independent
+// exploration not to erase successful work — and only this control plane ever
+// applies a promotion transition, after the structured result validates.
+//
+// Retrieval rank is never evidence strength (§5.4). This package is the
+// consumer that could break that rule: it serves the corpus search, records
+// the ranked trace, and writes observations in the order the worker emitted
+// them. Hit position reaches the receipt as reproduction detail and reaches
+// nothing else.
+//
+// Nothing here publishes. §4.6 and decision 13 put publishing, applying a
+// proposal, and writing to a source repository outside Babel entirely, and
+// this package has no path to any of them.
+package explore
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/atyrode/babel/internal/cookbook"
+	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/index"
+	"github.com/atyrode/babel/internal/preflight"
+	"github.com/atyrode/babel/internal/run"
+	"github.com/atyrode/babel/internal/worker"
+)
+
+// Stage is one job in a run. §5.4 makes the challenger and the synthesizer
+// logically separate jobs rather than phases of one, so a stage is a unit of
+// authority as much as of sequencing: what a result may contain depends on
+// which stage produced it.
+type Stage string
+
+// The stages of a run. StagePreflight runs no worker: it is named so a
+// deterministic failure before inference is attributable in the receipt.
+const (
+	StagePreflight  Stage = "preflight"
+	StageExplore    Stage = "explore"
+	StageChallenge  Stage = "challenge"
+	StageSynthesize Stage = "synthesize"
+)
+
+// Job parameters Babel sets on every analysis job. A worker reads them to know
+// which stage it is running and which durable records its brief covers; §4.7's
+// durable records are identifiers, which §9's plaintext allowlist admits, so
+// naming them in the job discloses nothing the job does not already carry.
+const (
+	// ParamStage names the stage the job is running.
+	ParamStage = "babel.stage"
+	// ParamBriefHypotheses, ParamBriefObservations and ParamBriefObjections
+	// list, comma-separated, the durable records a challenger or synthesizer
+	// is asked to examine. §5.4's challenger pass examines the developed
+	// observations, and the synthesizer judges the exploration and the
+	// critique together, so both need to be able to name them.
+	ParamBriefHypotheses   = "babel.brief.hypotheses"
+	ParamBriefObservations = "babel.brief.observations"
+	ParamBriefObjections   = "babel.brief.objections"
+)
+
+// Versions of the control plane's own inputs, recorded in every receipt
+// because §7 makes a run's job, prompt, result-schema, redaction and
+// disclosure policy versions part of what a later re-run is compared against.
+// They live here rather than in a caller's configuration because this package
+// is what implements them: a caller could only misreport them.
+const (
+	JobVersion              = 1
+	PromptVersion           = "babel.analysis-prompt/1"
+	RedactionPolicyVersion  = "babel.redaction/1"
+	DisclosurePolicyVersion = "babel.disclosure/1"
+)
+
+// Failure codes this control plane records in a receipt. §6.5 requires the
+// receipt to record failures, and a code is what makes one actionable: an
+// operator fixes a redaction-required run by applying redaction and a
+// development-path run by reviewing the recipe that produced it.
+const (
+	FailurePreflight       = "preflight"
+	FailureRedaction       = "redaction-required"
+	FailureNoRecipe        = "no-recipe"
+	FailureWorker          = "worker"
+	FailureResultSchema    = "result-schema"
+	FailureDevelopmentPath = "development-path"
+	FailureAuthority       = "stage-authority"
+	FailureUnknownRecipe   = "unknown-recipe"
+	FailureUnknownRecord   = "unknown-record"
+	FailureStorage         = "storage"
+	FailureCancelled       = "cancelled"
+)
+
+// ErrRedactionRequired reports a run refused before launch because §6.4's
+// preflight found material a hosted disclosure class may not see raw. It is
+// enforcement rather than advice: the run does not start, and the operator
+// either applies redaction or chooses a local profile.
+var ErrRedactionRequired = errors.New("explore: hosted run requires redaction before it may proceed")
+
+// ErrSelectionMismatch reports preflight inputs that are not the preparation's
+// selection. Preflight must run over exactly what the run will read; a set
+// that merely overlaps it would report a corpus nobody explored.
+var ErrSelectionMismatch = errors.New("explore: preflight inputs do not match the preparation's selection")
+
+// Config is everything a controller needs that does not change between
+// attempts at one scope.
+//
+// The worker is a launch template rather than a built *worker.Client, and that
+// is deliberate. §6.5 makes tool authorization Babel's own, the policy has to
+// see the run it is deciding for — its preparation scope, its retrieval budget,
+// its trace — and internal/worker fixes the Authorizer when the client is
+// constructed. A client handed in ready-made could only have been configured
+// with a policy that knew nothing about the run, so the controller fills in
+// Authorizer and OnProgress and constructs one client per job. Each stage is a
+// separate process either way (§5.4).
+type Config struct {
+	// Preparation is the immutable corpus scope (§6.5). Every stage runs
+	// over it and every receipt references it.
+	Preparation run.Preparation
+
+	// Recipes are the cookbook assets the operator selected. A stage runs
+	// the subset declaring that stage, and every recipe is recorded in the
+	// receipt whether or not it ran, because §7 asks which policy and lens
+	// versions the run applied.
+	Recipes *cookbook.Set
+
+	// Grant is the run's capability boundary, fixed before work starts
+	// (§2.6). internal/worker enforces it ahead of any policy, so nothing in
+	// this package can widen it.
+	Grant worker.Grant
+
+	// Profile is the one Code profile the run uses. §2.6 applies one profile
+	// to every recipe in a run.
+	Profile worker.ProfileRef
+
+	// Worker is the launch template for each stage's process.
+	Worker worker.Config
+
+	// Policy narrows the grant further, per operator negotiation. It is
+	// consulted before Babel serves anything and can only deny; nil means no
+	// narrowing beyond the grant.
+	Policy worker.Authorizer
+
+	// Broker locates the evidence API for the job document. §14 defers the
+	// evidence-tool and public-research broker protocols, so this is
+	// normally empty in this build and the retrieval a run performs is
+	// recorded in its receipt's trace rather than streamed to the worker.
+	Broker worker.Broker
+
+	// Frontier, Runs and Ledger are the durable stores. All three live in
+	// one file (§9's durable, pending-sync state) and are injected open so a
+	// caller that already holds them does not open a second handle.
+	Frontier *frontier.Store
+	Runs     *run.Store
+	Ledger   *Ledger
+
+	// Index is the retrieval index corpus search is served from. It is
+	// optional: a run with no index has retrieval denied with that reason
+	// rather than answered with nothing.
+	Index *index.Index
+
+	// Inputs are the sessions preflight checks, one per preparation entry.
+	Inputs []preflight.Input
+
+	// Prior is the preparation this run's inputs are compared against, for
+	// §6.4's changed and duplicate input checks. Nil for a first
+	// preparation.
+	Prior *preflight.Preparation
+
+	// Thresholds overrides preflight's calibrated limits.
+	Thresholds *preflight.Thresholds
+
+	// Redact applies §3's step 4 to everything Babel serves the worker. It
+	// is what a hosted run needs in order to be allowed to start at all when
+	// preflight found secrets, and it is also what makes the served excerpts
+	// safe to hold in an outcome a caller may render.
+	Redact bool
+
+	// Capabilities names the build of each facility that enforced the grant
+	// (§7). A granted capability whose facility carries no version is
+	// refused here rather than at receipt time, because the run would have
+	// been launched by then.
+	Capabilities run.CapabilityVersions
+
+	// Now is the clock, injectable so a test's receipts and status history
+	// are deterministic. Nil means time.Now.
+	Now func() time.Time
+}
+
+// Controller runs explorations over one preparation.
+//
+// It is reusable across attempts on purpose: resuming an interrupted run is
+// calling Explore again with the same run identity, and the controller's
+// durable state — the frontier, the receipts, the resume ledger — is what makes
+// the second attempt recognize the first one's work.
+type Controller struct {
+	cfg    Config
+	assets []run.CookbookAsset
+	now    func() time.Time
+}
+
+// New validates cfg and returns a controller. It performs no I/O and launches
+// nothing: every reason a run cannot start that is knowable from
+// configuration alone is reported here, before an operator has waited for a
+// worker to fail.
+func New(cfg Config) (*Controller, error) {
+	if err := cfg.Preparation.Verify(); err != nil {
+		return nil, err
+	}
+	if cfg.Recipes == nil || len(cfg.Recipes.All()) == 0 {
+		return nil, fmt.Errorf("explore: no cookbook recipes selected")
+	}
+	if cfg.Frontier == nil || cfg.Runs == nil || cfg.Ledger == nil {
+		return nil, fmt.Errorf("explore: the frontier, receipt and ledger stores are all required")
+	}
+	if cfg.Worker.Binary == "" {
+		return nil, fmt.Errorf("explore: no analysis worker binary configured")
+	}
+	switch cfg.Grant.Disclosure {
+	case worker.DisclosureLocal, worker.DisclosureHosted:
+	default:
+		return nil, fmt.Errorf("explore: unknown disclosure class %q", cfg.Grant.Disclosure)
+	}
+	if err := validateFacilities(cfg.Grant, cfg.Capabilities); err != nil {
+		return nil, err
+	}
+	if err := validateSelection(cfg.Preparation, cfg.Inputs); err != nil {
+		return nil, err
+	}
+	assets, err := cookbookAssets(cfg.Recipes)
+	if err != nil {
+		return nil, err
+	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Controller{cfg: cfg, assets: assets, now: func() time.Time { return now().UTC() }}, nil
+}
+
+// validateFacilities refuses a grant whose facilities carry no version. The
+// receipt would refuse it later; refusing it now means a containment question
+// cannot become unanswerable after the fact.
+func validateFacilities(grant worker.Grant, versions run.CapabilityVersions) error {
+	if len(grant.Capabilities) > 0 && versions.Tool == "" {
+		return fmt.Errorf("explore: granted capabilities without a tool capability version")
+	}
+	for _, c := range grant.Capabilities {
+		var version string
+		switch c {
+		case worker.CapabilityCorpusSearch:
+			continue
+		case worker.CapabilitySandboxExec:
+			version = versions.Sandbox
+		case worker.CapabilityRepoRead:
+			version = versions.Repository
+		case worker.CapabilityPublicResearch:
+			version = versions.PublicResearch
+		default:
+			return fmt.Errorf("explore: unknown capability %q in the grant", c)
+		}
+		if version == "" {
+			return fmt.Errorf("explore: capability %q granted without its facility version", c)
+		}
+	}
+	return nil
+}
+
+// validateSelection requires preflight to cover exactly the preparation.
+func validateSelection(prep run.Preparation, inputs []preflight.Input) error {
+	want := make(map[string]struct{}, len(prep.Selection))
+	for _, sel := range prep.Selection {
+		want[sel.Harness+"/"+sel.SourceID] = struct{}{}
+	}
+	got := make(map[string]struct{}, len(inputs))
+	for _, in := range inputs {
+		key := in.Stream.Harness + "/" + in.Stream.SourceID
+		if _, ok := want[key]; !ok {
+			return fmt.Errorf("%w: %s is not in the preparation", ErrSelectionMismatch, key)
+		}
+		got[key] = struct{}{}
+	}
+	for key := range want {
+		if _, ok := got[key]; !ok {
+			return fmt.Errorf("%w: %s has no preflight input", ErrSelectionMismatch, key)
+		}
+	}
+	return nil
+}
+
+// cookbookAssets renders the selected cookbook for the receipt.
+func cookbookAssets(set *cookbook.Set) ([]run.CookbookAsset, error) {
+	assets := make([]run.CookbookAsset, 0, len(set.All()))
+	for _, recipe := range set.All() {
+		var kind string
+		switch recipe.Kind {
+		case cookbook.KindPolicy:
+			kind = run.AssetPolicy
+		case cookbook.KindLens:
+			kind = run.AssetLens
+		case cookbook.KindMeta:
+			kind = run.AssetMeta
+		default:
+			return nil, fmt.Errorf("explore: recipe %q has unknown kind %q", recipe.ID, recipe.Kind)
+		}
+		assets = append(assets, run.CookbookAsset{
+			Kind: kind,
+			Ref:  worker.RecipeRef{ID: recipe.ID, Version: recipe.Version},
+		})
+	}
+	return assets, nil
+}
+
+// Budget bounds what one pass does, never what may exist. §5.2 is explicit
+// that resource limits choose what is explored now, not which ideas are
+// permitted: a candidate past the budget is persisted and deferred, and the
+// resumed run finds it on the frontier.
+type Budget struct {
+	// Develop caps the candidates whose observations this pass writes. Zero
+	// develops everything the worker emitted.
+	Develop int
+	// Retrievals caps the corpus searches the run serves. Zero is unbounded
+	// within the worker's own tool-request limit.
+	Retrievals int
+}
+
+// RecordEvent reports one durable record as it is written, so an operator's
+// interface can show the frontier growing while a run is in flight (§2.6 keeps
+// Babel's own interface responsive). It runs on the run's goroutine and must
+// not block.
+type RecordEvent struct {
+	Stage Stage
+	Type  frontier.EntityType
+	// Ref is the reference the worker emitted the item under, empty for
+	// records Babel derived rather than received.
+	Ref string
+	ID  string
+	// Reused reports a record recognized from a prior attempt at this run
+	// rather than written now, which is what resumption looks like from the
+	// outside.
+	Reused bool
+}
+
+// Options is one attempt at an exploration.
+type Options struct {
+	// RunID identifies the exploration. Calling Explore again with the same
+	// RunID resumes it: committed records are recognized through the resume
+	// ledger rather than written a second time, and the receipt is amended
+	// rather than replaced (§6.5, §7).
+	RunID string
+
+	// Roots and Prior are the run's starting position on the durable
+	// frontier (§5.2). Both may be empty: broad discovery starts from no
+	// root, and recording that is a different statement from recording roots
+	// nobody selected.
+	Roots []string
+	Prior []string
+
+	// Challenge and Synthesize request §5.4's separate passes. Each is its
+	// own job, its own worker process and its own receipt.
+	Challenge  bool
+	Synthesize bool
+
+	Budget Budget
+
+	// Params are extra job parameters merged into every stage's job, after
+	// the parameters this package owns.
+	Params map[string]string
+
+	OnRecord   func(RecordEvent)
+	OnProgress func(Stage, worker.ProgressRecord)
+}
+
+// Outcome is what one attempt did. It is returned even when the attempt
+// failed, on the same reasoning as internal/worker's receipt: the record of a
+// failed run is exactly when the record is needed.
+type Outcome struct {
+	RunID string
+
+	// Preflight is §6.4's deterministic report. It is not written to the
+	// frontier: a preflight finding develops no hypothesis, and inventing
+	// one to satisfy §4.2's path would fabricate a candidate no investigator
+	// proposed.
+	Preflight *preflight.Report
+
+	// Receipt is the exploration's receipt; Challenge and Synthesis are the
+	// separate passes' own. Each embeds exactly one worker boundary, which
+	// is why a logically separate job gets a separate receipt rather than
+	// being blended into one that could not say which boundary failed.
+	Receipt   *run.Receipt
+	Challenge *run.Receipt
+	Synthesis *run.Receipt
+
+	// The durable records this attempt committed, in write order.
+	Hypotheses   []string
+	Observations []string
+	Findings     []string
+	Proposals    []string
+	Promoted     []string
+	Deferred     []string
+	Rejected     []string
+	// Objections are the challenger's criticisms as they were recorded:
+	// counter-observations where they carried locators, contradicting
+	// candidates where they did not.
+	Objections []string
+
+	// Reused counts records recognized from a prior attempt rather than
+	// written again — the number that would be duplicates if resumption did
+	// not work.
+	Reused int
+
+	// Retrieval is what the run's corpus search served, in service order.
+	Retrieval []Retrieval
+
+	// Failures mirrors what the receipts record, so a caller does not have
+	// to open a receipt body to learn the run degraded.
+	Failures []run.Failure
+
+	// Cancelled reports that the run stopped because its context was
+	// cancelled. Everything emitted before that point is durable.
+	Cancelled bool
+}
+
+// state is one attempt's working set.
+type state struct {
+	ctx    context.Context
+	commit context.Context
+	opt    Options
+	out    *Outcome
+
+	// hypotheses and observations resolve a reference — a ref this run's
+	// results emitted, or a durable identifier a brief listed — to a durable
+	// record.
+	hypotheses   map[string]string
+	observations map[string]string
+
+	// touched lists every hypothesis this attempt created or reused, in
+	// order, which is the set a finite run defers its remainder from.
+	touched []string
+	seen    map[string]bool
+
+	// promoted and rejected are the lifecycle transitions this attempt has
+	// already applied, so a second consolidation over the same candidate
+	// does not append a duplicate transition.
+	promoted map[string]bool
+	rejected map[string]bool
+
+	// deferReasons is the reason a candidate was left undeveloped, keyed by
+	// durable identifier: the worker's own reason where it gave one, and the
+	// budget's where the budget decided.
+	deferReasons map[string]string
+
+	// undeveloped names the observation references this pass's budget left
+	// unwritten, so a consolidation over them waits for the resumed run
+	// instead of being reported as an unresolvable result.
+	undeveloped map[string]bool
+	// deferredRecords and rejectedRecords are the receipt's account of the
+	// candidates this finite run did not develop (§6.5).
+	deferredRecords []run.Candidate
+	rejectedRecords []run.Candidate
+
+	// written names the stages whose own receipt was stored, so a stage that
+	// never got one does not lose its failures: the exploration's receipt
+	// records them instead.
+	written map[Stage]bool
+
+	// failures are partitioned by stage, because each stage writes its own
+	// receipt and a challenger's failure recorded in the exploration's
+	// receipt would misattribute which boundary degraded.
+	failures map[Stage][]run.Failure
+	err      error
+}
+
+func (s *state) note(h string) {
+	if !s.seen[h] {
+		s.seen[h] = true
+		s.touched = append(s.touched, h)
+	}
+}
+
+// fail records one control-plane failure and remembers the first error, so
+// Explore can report that the run degraded without losing the receipt.
+func (s *state) fail(stage Stage, code string, at time.Time, err error) {
+	s.failures[stage] = append(s.failures[stage], run.Failure{
+		Stage:   string(stage),
+		Code:    code,
+		Message: err.Error(),
+		At:      at,
+	})
+	if s.err == nil {
+		s.err = err
+	}
+}
+
+// failuresFor collects the failures the named stages recorded, in stage order.
+func (s *state) failuresFor(stages ...Stage) []run.Failure {
+	var out []run.Failure
+	for _, stage := range stages {
+		out = append(out, s.failures[stage]...)
+	}
+	return out
+}
+
+// allFailures flattens every stage's failures for the outcome.
+func (s *state) allFailures() []run.Failure {
+	return s.failuresFor(StagePreflight, StageExplore, StageChallenge, StageSynthesize)
+}
+
+func (s *state) record(e RecordEvent) {
+	if e.Reused {
+		s.out.Reused++
+	}
+	if s.opt.OnRecord != nil {
+		s.opt.OnRecord(e)
+	}
+}
+
+// Explore runs one attempt: preflight, discovery and development, then §5.4's
+// challenger and synthesizer when they are asked for, then the receipts.
+//
+// The returned Outcome is never nil once the attempt started. An error means
+// the attempt degraded — it was cancelled, a worker failed, or a structured
+// result was refused — and the receipts say which.
+func (c *Controller) Explore(ctx context.Context, opt Options) (*Outcome, error) {
+	if opt.RunID == "" {
+		return nil, fmt.Errorf("explore: a run id is required, because resuming one is naming it again")
+	}
+	started := c.now()
+	st := &state{
+		// Cancellation stops exploration; it never stops recording what
+		// exploration already produced. §5.2 requires every emitted
+		// candidate to be persisted, so every durable write below runs on a
+		// context detached from the run's.
+		ctx:          ctx,
+		commit:       context.WithoutCancel(ctx),
+		opt:          opt,
+		out:          &Outcome{RunID: opt.RunID},
+		hypotheses:   map[string]string{},
+		observations: map[string]string{},
+		seen:         map[string]bool{},
+		promoted:     map[string]bool{},
+		rejected:     map[string]bool{},
+		deferReasons: map[string]string{},
+		undeveloped:  map[string]bool{},
+		written:      map[Stage]bool{},
+		failures:     map[Stage][]run.Failure{},
+	}
+
+	// The report is part of the outcome whether or not it let the run
+	// proceed: an operator who has just been refused needs to read the
+	// findings that refused them.
+	report, err := c.runPreflight(st, started)
+	st.out.Preflight = report
+	if err != nil {
+		st.out.Receipt = c.writeReceipt(st, opt.RunID, nil, nil,
+			st.failuresFor(StagePreflight, StageExplore), started)
+		st.out.Failures = st.allFailures()
+		return st.out, err
+	}
+
+	exploration := c.runStage(st, StageExplore, opt.RunID, nil)
+	if exploration != nil && exploration.result != nil {
+		c.persist(st, StageExplore, opt.RunID, exploration.result)
+	}
+
+	if st.ctx.Err() != nil {
+		st.out.Cancelled = true
+		st.fail(StageExplore, FailureCancelled, c.now(),
+			fmt.Errorf("explore: run cancelled: %w", context.Cause(st.ctx)))
+	}
+
+	// §5.4's passes are skipped after cancellation rather than attempted and
+	// killed: the exploration's records are already durable and a half-run
+	// challenger would add nothing but a failure.
+	if !st.out.Cancelled && opt.Challenge {
+		st.out.Challenge = c.runSeparateJob(st, StageChallenge)
+	}
+	if !st.out.Cancelled && opt.Synthesize {
+		st.out.Synthesis = c.runSeparateJob(st, StageSynthesize)
+	}
+
+	c.deferRemainder(st)
+
+	var (
+		workerReceipt *worker.Receipt
+		steps         []run.RetrievalStep
+	)
+	if exploration != nil {
+		workerReceipt, steps = exploration.receipt, exploration.steps
+	}
+	st.out.Receipt = c.writeReceipt(st, opt.RunID, workerReceipt, steps, c.runFailures(st), started)
+	st.out.Failures = st.allFailures()
+	return st.out, st.err
+}
+
+// runPreflight runs §6.4 and enforces its disclosure verdict.
+func (c *Controller) runPreflight(st *state, at time.Time) (*preflight.Report, error) {
+	report, err := preflight.Check(preflight.Request{
+		Profile:    c.cfg.Profile,
+		Disclosure: c.cfg.Grant.Disclosure,
+		Inputs:     c.cfg.Inputs,
+		Prior:      c.cfg.Prior,
+		Thresholds: c.cfg.Thresholds,
+	})
+	if err != nil {
+		wrapped := fmt.Errorf("explore: preflight: %w", err)
+		st.fail(StagePreflight, FailurePreflight, at, wrapped)
+		return nil, wrapped
+	}
+	if report.Disclosure.RedactionRequired && !c.cfg.Redact {
+		wrapped := fmt.Errorf("%w: %d finding(s) force redaction under disclosure class %q",
+			ErrRedactionRequired, len(report.Disclosure.Forcing), c.cfg.Grant.Disclosure)
+		st.fail(StagePreflight, FailureRedaction, at, wrapped)
+		return report, wrapped
+	}
+	return report, nil
+}
+
+// thresholds are the preflight limits the run applies, so redaction and the
+// report it accompanies are produced by the same rules.
+func (c *Controller) thresholds() preflight.Thresholds {
+	if c.cfg.Thresholds != nil {
+		return *c.cfg.Thresholds
+	}
+	return preflight.DefaultThresholds()
+}
+
+// runFailures are the failures the exploration's receipt records: its own,
+// preflight's, and any separate pass that never got a receipt of its own —
+// because a failure recorded nowhere is a failure the run does not have.
+func (c *Controller) runFailures(st *state) []run.Failure {
+	stages := []Stage{StagePreflight, StageExplore}
+	for _, stage := range []Stage{StageChallenge, StageSynthesize} {
+		if !st.written[stage] {
+			stages = append(stages, stage)
+		}
+	}
+	return st.failuresFor(stages...)
+}

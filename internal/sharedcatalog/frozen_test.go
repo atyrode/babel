@@ -65,6 +65,14 @@ func TestFrozenSchemaVersion(t *testing.T) {
 // transcript, title, or path reaches PostgreSQL" checkable rather than
 // aspirational. Freezing the schema freezes this too, because a column that
 // appears without being listed is precisely what Verify exists to catch.
+//
+// Frozen does not mean fixed: a frozen base is what makes an addition
+// reviewable. Phase B added analysis_runs and analysis_records
+// (migrations/0003), and this list was updated deliberately with them. Neither
+// table holds a payload - a record's content is sealed into an object and
+// PostgreSQL keeps only the reference, key id, size and digest - so the
+// boundary the eight Phase A tables established is unchanged in kind. The
+// eight are still all here, and nothing was widened to make room.
 func TestFrozenAllowlistShape(t *testing.T) {
 	db := newInternalDB(t)
 	if err := Verify(context.Background(), db); err != nil {
@@ -78,8 +86,11 @@ func TestFrozenAllowlistShape(t *testing.T) {
 		tables[table] = true
 	}
 	want := []string{
+		// Phase A, frozen 2026-08-29.
 		"deployments", "hosts", "host_leases", "idempotency_keys",
 		"instances", "schema_migrations", "sessions", "snapshots",
+		// Phase B analysis output.
+		"analysis_records", "analysis_runs",
 	}
 	var got []string
 	for table := range tables {
@@ -94,6 +105,43 @@ func TestFrozenAllowlistShape(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("allowlist tables changed.\n  frozen: %v\n  now:    %v", want, got)
+		}
+	}
+}
+
+// The ledger gate above tolerates additions by design, because Phase A froze a
+// prefix rather than a length. That leaves the additions themselves ungoverned,
+// so this asserts the whole ledger exactly: renaming, reordering, or editing
+// any applied migration - Phase A's or Phase B's - fails here.
+//
+// An applied migration is history. A deployment that ran 0003 holds triggers
+// and constraints described by that file's text; rewriting it would leave that
+// deployment holding a shape nothing in the repository describes.
+func TestMigrationLedgerIsExactlyThese(t *testing.T) {
+	want := []string{
+		"0001_init",
+		"0002_unknown_counts",
+		"0003_phase_b_records",
+	}
+
+	entries, err := migrations()
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+	var got []string
+	for _, m := range entries {
+		got = append(got, m.version)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("the ledger holds %d migrations, want exactly %d.\n  want: %v\n  got:  %v\n"+
+			"Adding one is a deliberate change: update this list in the same commit.",
+			len(got), len(want), want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("migration %d is %q, want %q.\n  want: %v\n  got:  %v\n"+
+				"Add a migration; never rename, reorder, or edit one that has run.",
+				i+1, got[i], want[i], want, got)
 		}
 	}
 }

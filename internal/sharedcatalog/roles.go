@@ -22,6 +22,20 @@ var dataTables = []string{
 	"idempotency_keys",
 }
 
+// appendOnlyTables hold Phase B analysis output and receive no DELETE.
+//
+// SPEC.md 4.7 states rejection never deletes a record, and unlike the Phase A
+// catalog these rows are not rebuildable from the repository: a deleted
+// analysis record is gone. Triggers in migrations/0003 already refuse the
+// statement, and withholding the privilege as well means the two defences fail
+// independently rather than together. UPDATE is granted because a run's sync
+// state must move from pending to committed; the same triggers bound it to
+// exactly that.
+var appendOnlyTables = []string{
+	"analysis_runs",
+	"analysis_records",
+}
+
 // minPasswordLen bounds an application credential. Deployment supplies a
 // generated password; this only rules out values too short to redact safely.
 const minPasswordLen = 12
@@ -85,11 +99,12 @@ func EnsureAppRole(ctx context.Context, db *sql.DB, role, password string) error
 		return fmt.Errorf("provision application role: %w", err)
 	}
 
-	grants := []struct {
+	type grant struct {
 		query string
 		args  []any
 		what  string
-	}{
+	}
+	grants := []grant{
 		// No CREATE: the role cannot add tables of its own to the schema.
 		{`SELECT format('GRANT CONNECT ON DATABASE %I TO %I', $1::text, $2::text)`, []any{database, role}, "connect"},
 		{`SELECT format('GRANT USAGE ON SCHEMA %I TO %I', $1::text, $2::text)`, []any{Schema, role}, "schema usage"},
@@ -97,14 +112,17 @@ func EnsureAppRole(ctx context.Context, db *sql.DB, role, password string) error
 		{`SELECT format('GRANT SELECT ON %I.%I TO %I', $1::text, $2::text, $3::text)`, []any{Schema, "schema_migrations", role}, "ledger read"},
 	}
 	for _, t := range dataTables {
-		grants = append(grants, struct {
-			query string
-			args  []any
-			what  string
-		}{
+		grants = append(grants, grant{
 			`SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON %I.%I TO %I', $1::text, $2::text, $3::text)`,
 			[]any{Schema, t, role},
 			"dml on " + t,
+		})
+	}
+	for _, t := range appendOnlyTables {
+		grants = append(grants, grant{
+			`SELECT format('GRANT SELECT, INSERT, UPDATE ON %I.%I TO %I', $1::text, $2::text, $3::text)`,
+			[]any{Schema, t, role},
+			"append-only dml on " + t,
 		})
 	}
 

@@ -62,7 +62,29 @@ func main() {
 		dump           = flag.String("dump", "", "write this process's argv and environment to this file")
 		toolRequests   = flag.Int("tool-requests", 0, "make this many tool requests, ignoring every denial")
 		closeStdout    = flag.Bool("close-stdout", false, "close stdout but keep running")
+
+		// The analysis-result shapes. Babel's exploration control plane
+		// requires results shaped like hypotheses, observations, findings
+		// and challenger objections, and the identifiers a synthesizer
+		// consolidates only exist once the run has minted them — so the
+		// payload is a template the caller writes and this fixture expands,
+		// rather than a shape this fixture knows. It stays honest about the
+		// wire: it emits the bytes the template produced and interprets
+		// none of them.
+		//
+		// One process is launched per job, and a caller that needs different
+		// results for different jobs cannot vary argv per job — so the
+		// selector names a job parameter whose value picks among the
+		// prefixed entries. The fixture still knows nothing about what the
+		// parameter means.
+		resultPayload     payloadFlag
+		resultSelector    = flag.String("result-payload-selector", "", "job param whose value selects among SELECTOR=PATH result payloads")
+		resultStatus      = flag.String("result-status", worker.StatusOK, "status for the terminal result event")
+		requestCapability = flag.String("request-capability", "", "comma-separated capabilities to request once each, continuing after every decision")
+		searchQuery       = flag.String("search-query", "synthetic", "the query value placed in tool-request arguments")
 	)
+	flag.Var(&resultPayload, "result-payload",
+		"PATH or SELECTOR=PATH; emit that file as the result payload, expanding ${param:KEY}, ${paramitem:KEY:N} and ${paramlist:KEY} from the job's params")
 	flag.Parse()
 
 	if *beGrandchild != "" {
@@ -82,6 +104,7 @@ func main() {
 		unknownFields:  *unknownFields,
 		badSeq:         *badSeq,
 		argumentMarker: *argumentMarker,
+		searchQuery:    *searchQuery,
 	}
 	if *record != "" {
 		file, err := os.OpenFile(*record, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -198,6 +221,13 @@ func main() {
 			w.runTool(worker.CapabilityCorpusSearch, token, *echoToken)
 		}
 	}
+	for _, capability := range splitList(*requestCapability) {
+		// One request per named capability, in the order named. A denial is
+		// not a termination: the fixture records the decision and carries on,
+		// which is the obligation a control plane's authorization tests need
+		// to be able to observe.
+		w.runTool(worker.Capability(capability), token, *echoToken)
+	}
 
 	// Well-behaved paths, selected by the conformance directive the job
 	// carries.
@@ -225,16 +255,19 @@ func main() {
 	}
 
 	payload := map[string]any{"hypotheses": w.decisions}
+	if path := resultPayload.pick(paramOf(job, *resultSelector)); path != "" {
+		payload = loadPayload(path, job)
+	}
 	if *echoToken {
 		payload["leaked"] = token
 	}
-	w.emit(w.result(worker.StatusOK, payload, tokenIf(*echoToken, token)))
+	w.emit(w.result(*resultStatus, payload, tokenIf(*echoToken, token)))
 
 	if *afterResult {
 		w.emit(w.progress("cleanup", "after the result", nil))
 	}
 	if *dupResult {
-		w.emit(w.result(worker.StatusOK, payload, ""))
+		w.emit(w.result(*resultStatus, payload, ""))
 	}
 	if *linger > 0 {
 		time.Sleep(*linger)
@@ -252,6 +285,7 @@ type fake struct {
 	unknownFields  bool
 	badSeq         bool
 	argumentMarker string
+	searchQuery    string
 
 	// decisions records what Babel answered for each tool request, so the
 	// result payload can prove the worker actually observed the decision
@@ -403,7 +437,7 @@ func (f *fake) result(status string, payload map[string]any, leak string) map[st
 // working either way — a denial is not a termination.
 func (f *fake) runTool(capability worker.Capability, token string, echo bool) {
 	requestID := fmt.Sprintf("t-%d", len(f.decisions)+1)
-	arguments := map[string]any{"query": "synthetic"}
+	arguments := map[string]any{"query": f.searchQuery}
 	if f.argumentMarker != "" {
 		arguments["marker"] = f.argumentMarker
 	}
@@ -438,12 +472,105 @@ func (f *fake) runTool(capability worker.Capability, token string, echo bool) {
 
 // directive reads the conformance directive out of the job's params.
 func directive(job map[string]any) string {
+	return paramOf(job, worker.ParamConformance)
+}
+
+// paramOf reads one job parameter, or "" when the key is absent.
+func paramOf(job map[string]any, key string) string {
+	if key == "" {
+		return ""
+	}
 	params, ok := job["params"].(map[string]any)
 	if !ok {
 		return ""
 	}
-	value, _ := params[worker.ParamConformance].(string)
+	value, _ := params[key].(string)
 	return value
+}
+
+// payloadFlag collects the repeated -result-payload values. An entry is
+// SELECTOR=PATH, or a bare PATH that applies to every job.
+type payloadFlag struct {
+	bySelector map[string]string
+	fallback   string
+}
+
+func (p *payloadFlag) String() string { return p.fallback }
+
+func (p *payloadFlag) Set(value string) error {
+	selector, path, prefixed := strings.Cut(value, "=")
+	if !prefixed {
+		p.fallback = value
+		return nil
+	}
+	if p.bySelector == nil {
+		p.bySelector = map[string]string{}
+	}
+	p.bySelector[selector] = path
+	return nil
+}
+
+// pick returns the payload for one selector value, falling back to the
+// unprefixed entry and then to nothing.
+func (p *payloadFlag) pick(selector string) string {
+	if path, ok := p.bySelector[selector]; ok {
+		return path
+	}
+	return p.fallback
+}
+
+// splitList turns a comma-separated flag into its non-empty entries.
+func splitList(list string) []string {
+	var out []string
+	for _, entry := range strings.Split(list, ",") {
+		if entry = strings.TrimSpace(entry); entry != "" {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// loadPayload reads a result-payload template and expands the job's params
+// into it.
+//
+// Three expansions, all of them needed by a control plane whose durable
+// identifiers are minted mid-run. ${param:KEY} substitutes a param's value
+// inside a JSON string. ${paramitem:KEY:N} substitutes the Nth entry of a
+// comma-separated value, which is how a template names one record out of a
+// brief. ${paramlist:KEY} replaces the token — quotes and all — with a JSON
+// array of every entry, so a caller writes
+// `"observations": ${paramlist:babel.brief.observations}` and gets the
+// identifiers Babel actually assigned, without this fixture knowing anything
+// about what a consolidation is.
+func loadPayload(path string, job map[string]any) map[string]any {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fail("reading result payload %s: %v", path, err)
+	}
+	params, _ := job["params"].(map[string]any)
+	text := string(raw)
+	for key, value := range params {
+		text = strings.ReplaceAll(text, "${param:"+key+"}", fmt.Sprint(value))
+		entries := splitList(fmt.Sprint(value))
+		for i, entry := range entries {
+			text = strings.ReplaceAll(text, fmt.Sprintf("${paramitem:%s:%d}", key, i), entry)
+		}
+		encoded, err := json.Marshal(entries)
+		if err != nil {
+			fail("encoding param list %s: %v", key, err)
+		}
+		text = strings.ReplaceAll(text, "${paramlist:"+key+"}", string(encoded))
+	}
+	// Any token left over names a param the job did not carry, which is a
+	// broken test rather than a shape worth emitting.
+	if i := strings.Index(text, "${param"); i >= 0 {
+		fail("result payload %s has an unexpanded token at byte %d", path, i)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		fail("result payload %s is not a JSON object after expansion: %v", path, err)
+	}
+	return payload
 }
 
 // profileOf reads the profile the job named. A worker must resolve exactly
