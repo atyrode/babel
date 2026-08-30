@@ -286,6 +286,9 @@ func buildMeta(scan *transcriptScan, project string, mtime time.Time, artifacts,
 	if scan.title != "" {
 		title := scan.title
 		meta.Title = &title
+		// The ai-title record is in the transcript Claude Code wrote, so
+		// Babel is repeating a recorded value rather than deriving one.
+		meta.TitleProvenance = adapter.TitleRecorded
 	} else {
 		reason("title", "The transcript contains no ai-title record and the Claude Code format exposes no other session title.")
 	}

@@ -124,6 +124,8 @@ func TestMigrationLedgerIsExactlyThese(t *testing.T) {
 		"0001_init",
 		"0002_unknown_counts",
 		"0003_phase_b_records",
+		"0004_fleet_metadata",
+		"0005_title_provenance",
 	}
 
 	entries, err := migrations()
@@ -163,9 +165,11 @@ func TestAppliedMigrationBodiesAreFrozen(t *testing.T) {
 	// Frozen 2026-08-30. Every migration in the ledger is pinned; an entry is
 	// added here only when its migration is added, never when its text moves.
 	frozen := map[string]string{
-		"0001_init":            "fa5cca80104ea0d2216293492593f55e45371229927391cade1d17199b35ae57",
-		"0002_unknown_counts":  "655ce49ea51d1eb371bcd54835455d6b0f6ae8d6de9a2eb9d126a39b4a138f85",
-		"0003_phase_b_records": "6d25e2945cacd27369ee8085b12fb69264b8feecff9476367c9b3d49acc1c0e3",
+		"0001_init":             "fa5cca80104ea0d2216293492593f55e45371229927391cade1d17199b35ae57",
+		"0002_unknown_counts":   "655ce49ea51d1eb371bcd54835455d6b0f6ae8d6de9a2eb9d126a39b4a138f85",
+		"0003_phase_b_records":  "6d25e2945cacd27369ee8085b12fb69264b8feecff9476367c9b3d49acc1c0e3",
+		"0004_fleet_metadata":   "d32ea349fba87e00af31237e0f9d523e4167d9d99ba894e3ba53b03bfdcf0fe8",
+		"0005_title_provenance": "16252f11ec1e69ce0eda55f247b7199320f1b36ecd7c790e4e929b99587b36cf",
 	}
 
 	const remedy = "Two changes are legitimate here, and they are not the same " +

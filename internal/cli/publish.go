@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/atyrode/babel/internal/catalog"
@@ -11,6 +14,45 @@ import (
 	"github.com/atyrode/babel/internal/restic"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 )
+
+// maxHostDisplayNameLen bounds what this machine will assert as its display
+// name. The column is unconstrained text, so the bound belongs at the writer:
+// a display name is a short label a fleet listing puts beside a host id, and
+// something longer is a mistake rather than a name.
+const maxHostDisplayNameLen = 64
+
+// hostIdentity is what this machine asserts about itself on every push
+// (decision 8, migrations/0004).
+//
+// The display name is operator-assigned, from $BABEL_HOST_DISPLAY_NAME, and
+// defaults to the host id this push is publishing under. Two things it is
+// deliberately not:
+//
+//   - It is never the system hostname. Falling back to os.Hostname() would put
+//     infrastructure identity into the shared catalog, which is the value
+//     reconcile.go refuses to adopt snapshots recorded under, and which the
+//     operator's plaintext decision did not cover.
+//   - It is never empty. An empty assertion is silence in Register, which is
+//     right for a machine with nothing to say, but this machine always has
+//     something honest to say: the host id, already the primary key of the row
+//     it is writing. So the column carries a readable name from the first push
+//     rather than staying NULL until someone configures one.
+//
+// The operating system and architecture are this binary's build platform, the
+// same pair `babel version` prints, so they cost no lookup and cannot fail.
+func hostIdentity(host string) sharedcatalog.HostIdentity {
+	// Truncation is by rune, not by byte: cutting mid-sequence would store an
+	// invalid UTF-8 fragment, which PostgreSQL's text type rejects outright.
+	name := strings.TrimSpace(os.Getenv("BABEL_HOST_DISPLAY_NAME"))
+	if runes := []rune(name); len(runes) > maxHostDisplayNameLen {
+		name = string(runes[:maxHostDisplayNameLen])
+	}
+	return sharedcatalog.HostIdentity{
+		DisplayName: firstNonEmpty(name, host),
+		OS:          runtime.GOOS,
+		Arch:        runtime.GOARCH,
+	}
+}
 
 // Catalog states a push reports. They describe what happened to the shared
 // catalog, never to the archive: the snapshot is already durable in the
@@ -80,7 +122,8 @@ func (a *app) publishToCatalog(
 	}
 	defer db.Close()
 
-	if err := sharedcatalog.Register(ctx, db, cfg.DeploymentID, host, cfg.InstanceID); err != nil {
+	if err := sharedcatalog.Register(ctx, db, cfg.DeploymentID, host, cfg.InstanceID,
+		hostIdentity(host)); err != nil {
 		return a.catalogDeferred(err, "register with the shared catalog")
 	}
 
@@ -247,9 +290,16 @@ func (a *app) catalogDeferred(err error, what string) (string, int, error) {
 
 // publishableSessions turns this host's live sessions into catalog rows.
 //
-// Only opaque identity and counts cross this boundary: SessionUID is a digest
-// over the deployment, host, harness, and source id, and the source id - which
-// embeds a workspace-derived project slug - never leaves the machine (SPEC.md 9).
+// What crosses this boundary is opaque identity, counts, and the browsable
+// metadata the operator admitted on 2026-08-30: title, workspace, and
+// continuation grade (migrations/0004). The adapter source id still does not:
+// SessionUID is a digest over the deployment, host, harness and source id, and
+// the source id is also the fetch selector, so keeping it out is what makes
+// resolving a uid to something fetchable need the repository or a local index.
+//
+// Nothing here re-reads a session to obtain these values. They were computed by
+// the describe that filled the local cache, which is what keeps an hourly push
+// scaling with what changed rather than with the whole corpus.
 //
 // The host is the one this push is publishing under - the resolved identity that
 // took the lease and that restic recorded on the snapshot - not the configured
@@ -278,6 +328,12 @@ func (a *app) publishableSessions(
 		return nil, fmt.Errorf("refresh session catalog: %w", err)
 	}
 
+	// A title the operator paid a model for is published like any other: it is
+	// the best name this host has for the session, and the shared row is what
+	// another machine reads instead of the transcript. What travels with it is
+	// the "inferred" provenance, so no reader can mistake a guess for a record.
+	overlay := a.loadInferredOverlay(ctx, dataDir)
+
 	rows := make([]sharedcatalog.SessionRow, 0, len(cached))
 	for _, row := range cached {
 		// The cache holds the whole machine; a push publishes what this scan
@@ -285,6 +341,14 @@ func (a *app) publishableSessions(
 		if _, ok := bySelector[row.Selector]; !ok {
 			continue
 		}
+		// The grade is a plain bool locally because this machine always
+		// resolves it: it comes from artifact closure and unresolved blobs in
+		// files this host holds. It is published as a pointer because the
+		// catalog's column is nullable, and NULL there means "no host has
+		// supplied this" - a state every reader but this one can meet. A push
+		// from here therefore never writes NULL: it knows the answer.
+		grade := row.ContinuationGrade
+		publishTitle, publishProvenance := overlay.apply(row.Selector, row.Title, row.TitleProvenance)
 		rows = append(rows, sharedcatalog.SessionRow{
 			SessionUID: sharedcatalog.SessionUID(
 				deploymentID, host, row.Harness, row.SourceID),
@@ -294,6 +358,19 @@ func (a *app) publishableSessions(
 			BlobCount:           row.BlobCount,
 			UnresolvedBlobCount: row.UnresolvedBlobCount,
 			SourceModifiedAt:    parseCatalogTime(row.ModifiedAt),
+			// Title, TitleProvenance and Workspace stay nil when the adapter
+			// reported none. The cache already distinguishes that from an
+			// empty string, and flattening it here would put "" in a column
+			// whose NULL means unknown.
+			//
+			// The provenance travels with the title because the reader who
+			// most needs it is the one furthest from the session: an instance
+			// on another machine sees this row and nothing else, and a title
+			// there with no provenance is a claim it cannot check.
+			Title:             publishTitle,
+			TitleProvenance:   publishProvenance,
+			Workspace:         row.Workspace,
+			ContinuationGrade: &grade,
 		})
 	}
 	return rows, nil

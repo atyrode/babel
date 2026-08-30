@@ -1,0 +1,83 @@
+-- Where a session's title came from (SPEC.md 3, 6.2, 9).
+--
+-- WHY A TITLE ALONE IS NOT ENOUGH
+--
+-- 0004_fleet_metadata admitted `title` so that an instance browsing the shared
+-- catalog would see something readable instead of 838 opaque digests. It
+-- succeeded for the two harnesses that record a title, and it exposed the
+-- problem for the one that does not: 641 of the operator's 838 sessions are
+-- Codex, and Codex genuinely records no title - its session_meta carries an
+-- id, a parent thread id, a timestamp and a cwd, and nothing that names what
+-- the session was for.
+--
+-- Babel now fills that gap two ways. It derives a title offline from the
+-- records themselves, and it can - only when the operator explicitly asks and
+-- pays - have a model write one. Both produce a short line of text that looks
+-- exactly like the line OMP and Claude Code recorded in their own logs, and
+-- that resemblance is the danger: a reader handed all three cannot tell an
+-- observation from Babel's arithmetic from a model's guess.
+--
+-- SPEC.md 3 requires an absent value to carry a reason rather than be
+-- synthesized. The rule behind it is that Babel never presents inference as
+-- fact, and a present value needs that discipline just as much as an absent
+-- one. This column is what keeps it: three vocabulary values, one per kind of
+-- claim.
+--
+--   'recorded' - the harness wrote this title into the session's own files and
+--                Babel repeats it unchanged. It says nothing about how the
+--                harness got it: OMP's titles are written by OMP's own tiny
+--                model, and that is still recorded, because the value arrived
+--                with the session.
+--   'derived'  - Babel computed it from values the session records, by a
+--                deterministic offline rule. Free, reproducible from the same
+--                bytes, no model and no network.
+--   'inferred' - a model Babel invoked wrote it, and session material left the
+--                machine for that to happen. Never produced by a scan, a
+--                describe, or a push.
+--
+-- NULL MEANS UNKNOWN, AND EMPHATICALLY NOT 'recorded'
+--
+-- The 838 live session rows will hold NULL here until each is republished from
+-- a binary that carries this column, and a consumer that read NULL as
+-- 'recorded' would attribute Babel's own derivation to the harness - precisely
+-- the confusion this migration exists to prevent. Absence is absence.
+--
+-- WHY A CHECK CONSTRAINT
+--
+-- 0003_phase_b_records set the precedent for a closed enum in the database
+-- (harness, commit_state, record kind), and it applies here for the same
+-- reason: the vocabulary is a contract between hosts that may run different
+-- Babel versions, and a fourth value should cost a migration and a review
+-- rather than appearing because one writer had a typo.
+--
+-- The constraint is safe for older writers even though a constraint is
+-- normally the thing that breaks them. A CHECK on a nullable column is only
+-- evaluated against values actually supplied, and a binary that predates this
+-- column never names it, so its INSERT writes NULL and passes. That is not
+-- hypothetical: the operator's hourly systemd timer runs a Nix-profile binary
+-- older than 0004, and it has kept publishing across it because Babel's
+-- writers name their columns explicitly.
+--
+-- SchemaVersion stays 1. This is an additive nullable column; raising the
+-- version would make EnsureCompatible refuse every writer that has not been
+-- updated, which is the opposite of what an additive change needs (SPEC.md 14).
+--
+-- WHAT THIS DOES NOT ADMIT
+--
+-- The permission 0004 recorded was for a short human-readable summary, and
+-- 0001_init's exclusion of transcript bodies and any deterministic function of
+-- them survives it. This column is a three-value label from a compile-time
+-- vocabulary; it carries no session content and answers no question about what
+-- a transcript contains, so it is an identifier in allowlist.go's sense rather
+-- than a session label.
+--
+-- BACKFILL
+--
+-- The owning host's next push, and nothing else. `babel storage rebuild`
+-- reconstructs snapshot rows from the repository listing and deletes the host's
+-- session rows; session detail is not derivable from a snapshot list
+-- (SPEC.md 9).
+
+ALTER TABLE sessions
+    ADD COLUMN title_provenance text
+        CHECK (title_provenance IN ('recorded', 'derived', 'inferred'));

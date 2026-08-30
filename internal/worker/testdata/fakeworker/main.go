@@ -68,6 +68,8 @@ func main() {
 		// well behaved, which is what makes the matching obligation
 		// discriminating rather than merely present.
 		wrongJob        = flag.Bool("wrong-job", false, "answer the echo-job directive from the published fixture instead of the job that arrived")
+		wrongEvidence   = flag.Bool("wrong-evidence", false, "answer the echo-evidence directive from a constant instead of the evidence the decision carried")
+		ignoreEvidence  = flag.Bool("ignore-evidence", false, "answer the echo-evidence directive from the request it made instead of the answer it got")
 		renameMetadata  = flag.Bool("rename-metadata", false, "report the resolved model under a key Babel does not read")
 		driftCapability = flag.Bool("drift-capability", false, "declare an unexercised capability under a name Babel does not define")
 		hideCapability  = flag.Bool("hide-capability", false, "omit from the resolved profile the capability this run then exercises")
@@ -95,6 +97,14 @@ func main() {
 		resultSchema      = flag.String("result-schema", worker.ResultSchema, "schema the terminal result declares")
 		requestCapability = flag.String("request-capability", "", "comma-separated capabilities to request once each, continuing after every decision")
 		searchQuery       = flag.String("search-query", "synthetic", "the query value placed in tool-request arguments")
+
+		// The tool name this fixture puts on the wire. Empty means the
+		// conforming behaviour: read grant.tools out of the job and use the
+		// name Babel published for the capability. A value overrides it,
+		// which is how the negative case for run/published-tool-names is
+		// built — "-tool-name babel_corpus_search" is, verbatim, the name a
+		// real worker chose for itself while passing every other obligation.
+		toolName = flag.String("tool-name", "", "request this tool name instead of the one the job published for the capability")
 	)
 	flag.Var(&resultPayload, "result-payload",
 		"PATH or SELECTOR=PATH; emit that file as the result payload, expanding ${param:KEY}, ${paramitem:KEY:N} and ${paramlist:KEY} from the job's params")
@@ -118,6 +128,7 @@ func main() {
 		badSeq:             *badSeq,
 		argumentMarker:     *argumentMarker,
 		searchQuery:        *searchQuery,
+		toolName:           *toolName,
 		schema:             *resultSchema,
 		renameMetadata:     *renameMetadata,
 		driftCapability:    *driftCapability,
@@ -253,7 +264,7 @@ func main() {
 		// A worker that keeps asking after being denied. Babel must stop it
 		// rather than let it spin.
 		for range *toolRequests {
-			w.runTool(worker.CapabilityCorpusSearch, token, *echoToken)
+			w.runTool(job, worker.CapabilityCorpusSearch, token, *echoToken)
 		}
 	}
 	for _, capability := range splitList(*requestCapability) {
@@ -261,7 +272,7 @@ func main() {
 		// not a termination: the fixture records the decision and carries on,
 		// which is the obligation a control plane's authorization tests need
 		// to be able to observe.
-		w.runTool(worker.Capability(capability), token, *echoToken)
+		w.runTool(job, worker.Capability(capability), token, *echoToken)
 	}
 
 	// Well-behaved paths, selected by the conformance directive the job
@@ -278,9 +289,9 @@ func main() {
 		time.Sleep(10 * time.Minute)
 		return
 	case worker.ConformanceRequestTool:
-		w.runTool(worker.CapabilityCorpusSearch, token, *echoToken)
+		w.runTool(job, worker.CapabilityCorpusSearch, token, *echoToken)
 	case worker.ConformanceRequestUngranted:
-		w.runTool(worker.CapabilitySandboxExec, token, *echoToken)
+		w.runTool(job, worker.CapabilitySandboxExec, token, *echoToken)
 	case worker.ConformanceEchoToken:
 		// The credential is reported where the directive asks for it, and the
 		// value reported is the placeholder unless -echo-token demands the
@@ -291,8 +302,14 @@ func main() {
 		// The answer travels in the terminal result's payload below; the run
 		// itself is otherwise an ordinary well-behaved one.
 		w.emit(w.progress("discover", "reading the job", w.resources()))
+	case worker.ConformanceEchoEvidence:
+		// One corpus-search request under the name the job published, then
+		// the answer travels in the terminal result's payload below. The
+		// request is the only way the evidence arrives, so the directive
+		// cannot be answered without making it.
+		w.runTool(job, worker.CapabilityCorpusSearch, token, *echoToken)
 	case "request-unknown":
-		w.runTool("teleport", token, *echoToken)
+		w.runTool(job, "teleport", token, *echoToken)
 	default:
 		w.emit(w.progress("discover", "synthetic progress", w.resources()))
 	}
@@ -300,6 +317,9 @@ func main() {
 	payload := map[string]any{"hypotheses": w.decisions}
 	if requested == worker.ConformanceEchoJob {
 		payload["job"] = echoJob(job, *wrongJob)
+	}
+	if requested == worker.ConformanceEchoEvidence {
+		payload["served_evidence"] = echoServedEvidence(w.served, w.searchQuery, *wrongEvidence, *ignoreEvidence)
 	}
 	// A caller-supplied payload replaces everything above it, echo-job answer
 	// included. That ordering is what lets a test model the commonest
@@ -337,6 +357,13 @@ type fake struct {
 	argumentMarker string
 	searchQuery    string
 
+	// toolName overrides the tool name this fixture requests. Empty is the
+	// conforming behaviour — the name the job published for the capability —
+	// and a value is how the fixture models the worker that named the tool
+	// itself, which is the drift run/published-tool-names exists to catch and
+	// which no other obligation can see.
+	toolName string
+
 	// schema is the schema the terminal result declares. It is a dial so a
 	// test can present a result Babel cannot read: the schema is shared wire
 	// surface between two repositories, and a worker that gets it wrong while
@@ -362,6 +389,17 @@ type fake struct {
 	// result payload can prove the worker actually observed the decision
 	// rather than assuming it was allowed.
 	decisions []string
+
+	// served is the "results" object off the most recent tool decision that
+	// carried one: the evidence Babel attached to an allowed request. It is
+	// kept as the generic map the wire produced rather than decoded into a
+	// struct, for the reason echoJob is built the same way — the answer has to
+	// be evidence that the bytes were parsed.
+	//
+	// A decision with no "results" leaves it untouched, so an answer built
+	// from it reports what was actually received rather than an empty object
+	// invented afterwards.
+	served map[string]any
 }
 
 // nextSeq returns the next event sequence number, or repeats one when the
@@ -563,7 +601,13 @@ func (f *fake) result(status string, payload map[string]any, leak string) map[st
 
 // runTool makes one tool request, waits for Babel's decision, and keeps
 // working either way — a denial is not a termination.
-func (f *fake) runTool(capability worker.Capability, token string, echo bool) {
+//
+// The tool name comes out of the job, not out of this file. That is the
+// conforming behaviour and the reason it is written this way here: a fixture
+// that hardcoded the name would pass the obligation for the wrong reason,
+// which is exactly how a real worker's invented name survived fourteen of
+// them.
+func (f *fake) runTool(job map[string]any, capability worker.Capability, token string, echo bool) {
 	requestID := fmt.Sprintf("t-%d", len(f.decisions)+1)
 	arguments := map[string]any{"query": f.searchQuery}
 	if f.argumentMarker != "" {
@@ -578,7 +622,7 @@ func (f *fake) runTool(capability worker.Capability, token string, echo bool) {
 		"time":       time.Now().UTC().Format(time.RFC3339Nano),
 		"request_id": requestID,
 		"capability": string(capability),
-		"tool":       "search",
+		"tool":       f.toolFor(job, capability),
 		"arguments":  arguments,
 		"reason":     "synthetic evidence request",
 	})
@@ -595,7 +639,57 @@ func (f *fake) runTool(capability worker.Capability, token string, echo bool) {
 	verdict, _ := decision["decision"].(string)
 	code, _ := decision["code"].(string)
 	f.decisions = append(f.decisions, strings.TrimSuffix(verdict+":"+code, ":"))
+	// The evidence the decision carried, if it carried any. A conforming
+	// worker reads it here: the payload is the only thing that tells it what
+	// the corpus holds, and a worker that discards it has been served
+	// evidence and learned nothing.
+	if results, ok := decision["results"].(map[string]any); ok {
+		f.served = results
+	}
 	f.emit(f.progress("investigate", "continuing after decision "+verdict, nil))
+}
+
+// toolFor picks the tool name to request for capability: the override when the
+// fixture was given one, otherwise the first name the job published for it.
+//
+// The fallback matters and is not a guess. Nothing published means Babel said
+// no facility in this build serves that capability, and a conforming worker
+// requests nothing at all under it — but the obligations that reach here with
+// such a capability (an ungranted one, an undefined one) are grading the
+// capability boundary, which is decided before the name is ever inspected. So
+// the fixture names the one operation this protocol defines and lets the
+// earlier check win, rather than inventing a name and muddying which check
+// produced the denial.
+func (f *fake) toolFor(job map[string]any, capability worker.Capability) string {
+	if f.toolName != "" {
+		return f.toolName
+	}
+	if published := publishedToolNames(job, capability); len(published) > 0 {
+		return published[0]
+	}
+	return worker.ToolSearch
+}
+
+// publishedToolNames reads grant.tools out of the job: the tool names Babel
+// says it serves for one capability.
+//
+// It reads the generic map the wire produced rather than any struct Babel
+// defines, for the same reason echoJob does — the answer has to be evidence
+// that the bytes were parsed. A missing key means nothing serves that
+// capability; a missing "tools" object entirely would mean a Babel that never
+// published one, and those are different facts even though this fixture treats
+// both as "no name available".
+func publishedToolNames(job map[string]any, capability worker.Capability) []string {
+	grant, _ := job["grant"].(map[string]any)
+	tools, _ := grant["tools"].(map[string]any)
+	published, _ := tools[string(capability)].([]any)
+	names := make([]string, 0, len(published))
+	for _, entry := range published {
+		if name, ok := entry.(string); ok && name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // directive reads the conformance directive out of the job's params.
@@ -656,6 +750,76 @@ func echoJob(job map[string]any, wrong bool) map[string]any {
 		"recipes": recipes,
 		"sources": sources,
 	}
+}
+
+// echoServedEvidence answers worker.ConformanceEchoEvidence: the served
+// evidence this fixture decoded off the tool decision, in the flat form the
+// directive specifies.
+//
+// It reads the generic map the wire produced for echoJob's reason. Here the
+// reason is sharper still: the whole obligation is whether the payload on the
+// decision reached the worker's reading of it, and an answer assembled from
+// anything else — a struct, a cache, the request the worker sent — would be the
+// exact failure being graded.
+//
+// The array is returned even when nothing was served, so "the directive is
+// implemented and the payload was empty" stays a different answer from "the
+// directive was never implemented".
+//
+// Two fixtures must fail the obligation, and they fail it in the two ways a
+// real worker does. -wrong-evidence answers from a constant, which is the
+// worker that hardcoded a shape it read in a document. -ignore-evidence answers
+// from the query it sent, which is the worker that reports what it asked for
+// and never looked at what came back — and that is the failure that has
+// actually happened, since before this field existed a request was all a worker
+// ever had.
+func echoServedEvidence(served map[string]any, query string, wrong, ignore bool) map[string]any {
+	switch {
+	case wrong:
+		return map[string]any{"hits": []string{
+			"omp|omp-published-fixture|42|/synthetic/published/omp.jsonl|12|3456|" +
+				strings.Repeat("0", 64) + "|a constant this fixture was written with",
+		}}
+	case ignore:
+		return map[string]any{"hits": []string{query}}
+	}
+	hits := []string{}
+	values, _ := served["hits"].([]any)
+	for _, entry := range values {
+		hit, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		locator, _ := hit["locator"].(map[string]any)
+		hits = append(hits, strings.Join([]string{
+			stringOf(hit["harness"]),
+			stringOf(hit["source_id"]),
+			integerOf(hit["index"]),
+			stringOf(locator["path"]),
+			integerOf(locator["line"]),
+			integerOf(locator["byte_offset"]),
+			stringOf(locator["digest"]),
+			stringOf(hit["excerpt"]),
+		}, "|"))
+	}
+	return map[string]any{"hits": hits}
+}
+
+// stringOf and integerOf read one decoded JSON value. A JSON number arrives as
+// a float64, and the fields it is read for — an event's position in its
+// session, a locator's line and byte offset — are integers, so the rendering
+// has to be integral rather than whatever %v makes of a float.
+func stringOf(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func integerOf(value any) string {
+	number, ok := value.(float64)
+	if !ok {
+		return ""
+	}
+	return strconv.FormatInt(int64(number), 10)
 }
 
 // arrayOf reads one top-level job array, or nothing when the field is absent.

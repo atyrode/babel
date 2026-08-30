@@ -673,6 +673,121 @@ func TestJobDecodeObligationSeesWhetherTheWorkerReadTheJob(t *testing.T) {
 	})
 }
 
+// TestServedEvidenceObligationSeesWhetherTheWorkerReadIt is the obligation for
+// the defect that made retrieval useless. Babel's evidence broker computed
+// hits, redacted them, recorded their locators, and discarded them: every tool
+// decision was an adjudication with no evidence attached, so the whole of what
+// a worker learned from an allowed corpus search was the sentence "served N
+// hits from the corpus index". The first real exploration retrieved four times,
+// was allowed four times, and wrote no hypothesis, no observation and no
+// finding.
+//
+// Once the payload exists, a worker that ignores it is indistinguishable from
+// one that received none — from Babel's side there is nothing to see, because
+// the receipt records the decision and deliberately never the payload. So the
+// worker is asked, and the four cases here are what make the asking worth
+// anything.
+func TestServedEvidenceObligationSeesWhetherTheWorkerReadIt(t *testing.T) {
+	t.Run("a worker that read the served evidence", func(t *testing.T) {
+		result := gradeObligation(t, "run/consumes-served-evidence")
+		if !result.Passed {
+			t.Errorf("run/consumes-served-evidence failed a worker that reported the hits its decision carried: %s",
+				strings.Join(result.Failures, "; "))
+		}
+	})
+
+	t.Run("a worker answering from a constant", func(t *testing.T) {
+		// The same shape -wrong-job models one concept over: a plausible,
+		// well-formed answer a candidate could write from the documentation
+		// without ever decoding a decision. It fails only because the
+		// obligation weaves a per-run nonce through the material, so this is
+		// what proves the nonce is load-bearing here too.
+		result := gradeObligation(t, "run/consumes-served-evidence", "-wrong-evidence")
+		if result.Passed {
+			t.Fatal("run/consumes-served-evidence passed a worker answering with a hardcoded hit; the per-run nonce is not reaching the material the obligation grades")
+		}
+	})
+
+	t.Run("a worker that reports its request instead of the answer", func(t *testing.T) {
+		// The failure that actually happened. Before the payload existed a
+		// request was all a worker ever had, so a worker built against that
+		// Babel reports the query it sent and calls it evidence.
+		result := gradeObligation(t, "run/consumes-served-evidence", "-ignore-evidence")
+		if result.Passed {
+			t.Fatal("run/consumes-served-evidence passed a worker that echoed its own query back; a worker that never read the answer has not consumed any evidence")
+		}
+	})
+
+	t.Run("a worker that never answers the directive", func(t *testing.T) {
+		// The likeliest candidate: correct in every other respect and simply
+		// does not implement echo-evidence. "No served_evidence object" and
+		// "the wrong hits" send an implementer to different code, so the
+		// failure has to distinguish them.
+		payload := filepath.Join(t.TempDir(), "payload.json")
+		if err := os.WriteFile(payload, []byte(`{"hypotheses":[]}`), 0o600); err != nil {
+			t.Fatalf("writing the payload fixture: %v", err)
+		}
+		result := gradeObligation(t, "run/consumes-served-evidence", "-result-payload", payload)
+		if result.Passed {
+			t.Fatal("run/consumes-served-evidence passed a worker that answered nothing; an obligation satisfied by silence certifies nothing")
+		}
+		if messages := strings.Join(result.Failures, "; "); !strings.Contains(messages, `no "served_evidence" object`) {
+			t.Errorf("the failure does not say the answer is missing rather than wrong: %s", messages)
+		}
+	})
+}
+
+// TestPublishedToolNameObligationCatchesAnInventedName is the regression test
+// for the failure that closed this class.
+//
+// A worker requested "babel_corpus_search" — a name it had chosen for itself,
+// which existed nowhere in Babel. It scored 14 of 14 and was then denied on
+// every request of the first real exploration Babel ever drove, producing no
+// evidence at all. The suite could not see it because the policy it graded with
+// never inspected a tool name while the policy production installs always had.
+//
+// The three cases are the three things that must be true for the obligation to
+// be worth having: it passes a worker that used the published name, it passes a
+// worker that arrived at that name without reading the mapping, and it fails
+// the exact name that failed in reality — naming both what was asked for and
+// what was published, because an implementer told only "denied" learns nothing.
+func TestPublishedToolNameObligationCatchesAnInventedName(t *testing.T) {
+	t.Run("a worker that read the published mapping", func(t *testing.T) {
+		result := gradeObligation(t, "run/published-tool-names")
+		if !result.Passed {
+			t.Errorf("run/published-tool-names failed a worker using the name the job published: %s",
+				strings.Join(result.Failures, "; "))
+		}
+	})
+
+	t.Run("a worker that guessed the published name", func(t *testing.T) {
+		// How a worker arrived at the name is not the contract. A hardcoded
+		// name that happens to be the served one is a worker that works, and
+		// an obligation failing it would be grading source code rather than
+		// behaviour.
+		result := gradeObligation(t, "run/published-tool-names", "-tool-name", ToolSearch)
+		if !result.Passed {
+			t.Errorf("run/published-tool-names failed a worker whose hardcoded name is the served one: %s",
+				strings.Join(result.Failures, "; "))
+		}
+	})
+
+	t.Run("a worker that invented its own name", func(t *testing.T) {
+		const invented = "babel_corpus_search"
+		result := gradeObligation(t, "run/published-tool-names", "-tool-name", invented)
+		if result.Passed {
+			t.Fatalf("run/published-tool-names passed a worker requesting %q, which Babel serves for nothing; this is the run that produced zero retrievals at 14/14",
+				invented)
+		}
+		messages := strings.Join(result.Failures, "; ")
+		for _, want := range []string{invented, ToolSearch, string(CapabilityCorpusSearch)} {
+			if !strings.Contains(messages, want) {
+				t.Errorf("the failure does not mention %q, so it does not say what to change: %s", want, messages)
+			}
+		}
+	})
+}
+
 // TestProfileObligationRequiresWhatBabelReadsByName covers the drift class the
 // conformance suite was blind to: a worker whose resolved configuration is
 // structurally perfect and semantically unusable. Every case below produces a
@@ -1189,6 +1304,53 @@ func TestJobEncodingIsTheDocumentedShape(t *testing.T) {
 	if grant["expires"] != "2026-08-29T12:00:00Z" {
 		t.Errorf("grant expires = %v, want RFC 3339 UTC", grant["expires"])
 	}
+	tools, _ := grant["tools"].(map[string]any)
+	if len(tools) != 1 {
+		t.Fatalf("grant tools = %v, want exactly the one granted capability this build serves", tools)
+	}
+	served, _ := tools[string(CapabilityCorpusSearch)].([]any)
+	if len(served) != 1 || served[0] != ToolSearch {
+		t.Errorf("grant tools for %s = %v, want [%q]", CapabilityCorpusSearch, served, ToolSearch)
+	}
+
+	// Absence is the representation for a capability nothing brokers. An empty
+	// array would encode the same claim in a shape that also reads as "not
+	// published yet", and only one of those is ever true.
+	t.Run("an unserved capability gets no key", func(t *testing.T) {
+		unserved := job
+		unserved.Grant.Capabilities = []Capability{CapabilityCorpusSearch, CapabilityRepoRead}
+		encoded, err := json.Marshal(unserved)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		var decoded struct {
+			Grant struct {
+				Tools map[string][]string `json:"tools"`
+			} `json:"grant"`
+		}
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if _, present := decoded.Grant.Tools[string(CapabilityRepoRead)]; present {
+			t.Errorf("granted-but-unserved %s appears in the published mapping: %v; absence is how this build says nothing brokers it",
+				CapabilityRepoRead, decoded.Grant.Tools)
+		}
+		if got := decoded.Grant.Tools[string(CapabilityCorpusSearch)]; len(got) != 1 || got[0] != ToolSearch {
+			t.Errorf("served %s = %v, want [%q]", CapabilityCorpusSearch, got, ToolSearch)
+		}
+	})
+
+	t.Run("a grant reaching nothing served publishes no object", func(t *testing.T) {
+		none := job
+		none.Grant.Capabilities = []Capability{CapabilitySandboxExec}
+		encoded, err := json.Marshal(none)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if strings.Contains(string(encoded), `"tools"`) {
+			t.Errorf("a grant whose capabilities are all unserved still published a tools object: %s", encoded)
+		}
+	})
 
 	t.Run("extra fields merge", func(t *testing.T) {
 		job.Extra = map[string]json.RawMessage{"x-future": json.RawMessage(`1`)}

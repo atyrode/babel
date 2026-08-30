@@ -73,9 +73,24 @@ const (
 // Decision is one authorization outcome from the injected policy. Reason is
 // recorded in the receipt and sent to the worker, so it must explain the
 // decision without disclosing anything the worker is not cleared to see.
+//
+// Results is the evidence a facility served, and it is the one field of a
+// Decision that never reaches the receipt. The asymmetry is the §9 boundary:
+// the wire carries content to the worker because a model that cannot read a
+// record cannot form an observation about it, and the receipt carries locators
+// and digests only because a plaintext store of archive content readable by
+// anyone with catalog access is exactly what §9 forbids. handleToolRequest
+// writes it to the pipe and to nothing else.
+//
+// It is raw JSON rather than a Go type because the shape belongs to the
+// facility behind the capability: internal/explore decides what a corpus-search
+// hit is, and a type here would be Babel's control plane asserting a schema
+// over evidence it does not own. An empty value is no payload at all, which is
+// what a denial, a non-serving capability, and an older Babel all send.
 type Decision struct {
-	Allow  bool
-	Reason string
+	Allow   bool
+	Reason  string
+	Results json.RawMessage
 }
 
 // ToolRequest is one worker request for an evidence or execution capability,
@@ -109,12 +124,33 @@ func (f AuthorizerFunc) Authorize(ctx context.Context, req ToolRequest) Decision
 }
 
 // AllowWithinGrant is the permissive policy: it allows anything the run's
-// capability grant already covers. It is not "allow everything" — the grant
-// check runs first and is not bypassable — but it delegates the whole
-// decision to the grant, so it belongs in development and tests rather than
-// in a run whose scope was negotiated with an operator.
+// capability grant already covers, held to the tool names the job published
+// for that capability. It is not "allow everything" — the grant check runs
+// first and is not bypassable — but it delegates the rest of the decision to
+// the grant, so it belongs in development and tests rather than in a run whose
+// scope was negotiated with an operator.
+//
+// The name check is the part that is not a convenience. Without it this policy
+// was strictly more permissive than the one a real run installs:
+// internal/explore's authorizer consults the published mapping before it
+// serves anything, and this one consulted nothing at all. The conformance
+// suite grades with this policy, so the gap did not make the suite lenient
+// about tool names — it made the suite blind to them, and a worker that
+// invented "babel_corpus_search" passed every obligation and was denied on
+// every request of the only real exploration there has been.
+//
+// The suite cannot close that by authorizing through the production authorizer
+// instead: that one needs a corpus index and a run preparation, and the suite
+// must grade any candidate binary on a machine that has neither. So the two
+// policies share the predicate rather than the implementation — ServesTool and
+// DenyUnservedTool, over the one mapping the job published — which is what
+// makes a divergence between exam and reality unwritable rather than merely
+// tested for.
 func AllowWithinGrant() Authorizer {
-	return AuthorizerFunc(func(context.Context, ToolRequest) Decision {
+	return AuthorizerFunc(func(_ context.Context, req ToolRequest) Decision {
+		if !ServesTool(req.Capability, req.Tool) {
+			return DenyUnservedTool(req.Capability, req.Tool)
+		}
 		return Decision{Allow: true, Reason: "within grant"}
 	})
 }
@@ -743,57 +779,89 @@ func (r *runner) handleToolRequest(ctx context.Context, ev event, at time.Time) 
 	}
 
 	started := time.Now()
-	allow, code, reason := r.decide(ctx, ev)
-	record := ToolRecord{
+	code, decision := r.decide(ctx, ev)
+
+	msg := decisionMessage{
+		Type:      MessageToolDecision,
+		RequestID: ev.RequestID,
+		Decision:  decisionAllow,
+		Reason:    r.scrub.clean(decision.Reason),
+		Results:   decision.Results,
+	}
+	if !decision.Allow {
+		msg.Decision = decisionDeny
+		msg.Code = code
+	}
+	line, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("worker: encoding tool decision: %w", err)
+	}
+	if len(line)+1 > r.limits.MaxLineBytes && len(msg.Results) > 0 {
+		// Babel published max_line_bytes in accept, and a line past it is a
+		// protocol violation on Babel's side that the worker is entitled to
+		// end the run for. The payload is the only field of a decision whose
+		// size a facility chooses, so it is the field that goes when the two
+		// cannot both fit — the decision itself must still be answered,
+		// because the worker blocks until it is. Saying so in the reason is
+		// what keeps this from looking like a facility that found nothing.
+		withheld := len(msg.Results)
+		msg.Results = nil
+		msg.Reason = fmt.Sprintf(
+			"%s (the served evidence was withheld: %d bytes exceeds this run's %d byte line budget)",
+			msg.Reason, withheld, r.limits.MaxLineBytes)
+		if line, err = json.Marshal(msg); err != nil {
+			return fmt.Errorf("worker: encoding tool decision: %w", err)
+		}
+	}
+
+	// The receipt records the decision and the reason the worker was given,
+	// and never msg.Results. That split is §9: the wire carries content to
+	// the worker because a model that cannot read a record cannot form an
+	// observation about it, while the durable record an operator exports
+	// keeps locators and digests only.
+	r.receipt.ToolRequests = append(r.receipt.ToolRequests, ToolRecord{
 		Index:           r.toolCount,
 		RequestID:       ev.RequestID,
 		Capability:      ev.Capability,
 		Tool:            r.scrub.clean(ev.Tool),
 		ArgumentsDigest: argumentsDigest(ev.Arguments),
 		ArgumentsBytes:  len(ev.Arguments),
-		Allowed:         allow,
+		Allowed:         decision.Allow,
 		DenyCode:        code,
-		Reason:          r.scrub.clean(reason),
+		Reason:          msg.Reason,
 		At:              at,
 		Decided:         time.Since(started),
-	}
-	r.receipt.ToolRequests = append(r.receipt.ToolRequests, record)
-
-	msg := decisionMessage{
-		Type:      MessageToolDecision,
-		RequestID: ev.RequestID,
-		Decision:  decisionAllow,
-		Reason:    record.Reason,
-	}
-	if !allow {
-		msg.Decision = decisionDeny
-		msg.Code = code
-	}
-	return r.session.writeMessage(msg)
+	})
+	return r.session.writeLine(line)
 }
 
 // decide applies the fixed authorization order. The grant is checked before
 // the policy, so a permissive policy can never widen a run's boundary.
-func (r *runner) decide(ctx context.Context, ev event) (bool, DenyCode, string) {
+//
+// A denial returns no payload even when the policy attached one. Served
+// evidence is what an allowed request produced; a facility that both refused a
+// request and answered it would be sending two contradictory things down one
+// wire.
+func (r *runner) decide(ctx context.Context, ev event) (DenyCode, Decision) {
 	if _, repeated := r.seen[ev.RequestID]; repeated {
-		return false, DenyDuplicate, "request_id already used in this run"
+		return DenyDuplicate, Decision{Reason: "request_id already used in this run"}
 	}
 	r.seen[ev.RequestID] = struct{}{}
 
 	if ev.Capability == "" {
-		return false, DenyMalformed, "request names no capability"
+		return DenyMalformed, Decision{Reason: "request names no capability"}
 	}
 	if !ev.Capability.Known() {
-		return false, DenyUnknownCapability, "capability is not one Babel defines"
+		return DenyUnknownCapability, Decision{Reason: "capability is not one Babel defines"}
 	}
 	if !r.job.Grant.Allows(ev.Capability) {
-		return false, DenyNotGranted, "capability is outside this run's grant"
+		return DenyNotGranted, Decision{Reason: "capability is outside this run's grant"}
 	}
 	if !r.job.Grant.ExpiresAt.IsZero() && time.Now().After(r.job.Grant.ExpiresAt) {
-		return false, DenyNotGranted, "the run's capability grant has expired"
+		return DenyNotGranted, Decision{Reason: "the run's capability grant has expired"}
 	}
 	if r.toolCount > r.limits.MaxToolRequests {
-		return false, DenyLimit, "tool request budget exhausted"
+		return DenyLimit, Decision{Reason: "tool request budget exhausted"}
 	}
 
 	decision := r.client.authorizer().Authorize(ctx, ToolRequest{
@@ -808,9 +876,9 @@ func (r *runner) decide(ctx context.Context, ev event) (bool, DenyCode, string) 
 		Grant:      r.job.Grant,
 	})
 	if !decision.Allow {
-		return false, DenyPolicy, decision.Reason
+		return DenyPolicy, Decision{Reason: decision.Reason}
 	}
-	return true, "", decision.Reason
+	return "", decision
 }
 
 // handleResult records the run's output.
@@ -1188,6 +1256,14 @@ func (s *session) writeMessage(msg any) error {
 	if err != nil {
 		return fmt.Errorf("worker: encoding message: %w", err)
 	}
+	return s.writeLine(encoded)
+}
+
+// writeLine writes one already-encoded message as a single line. It exists so
+// a caller that must inspect the encoded bytes before they travel — the tool
+// decision, whose payload is sized by a facility rather than by this package —
+// can do so without encoding the message twice on the ordinary path.
+func (s *session) writeLine(encoded []byte) error {
 	encoded = append(encoded, '\n')
 	if _, err := s.stdinW.Write(encoded); err != nil {
 		return fmt.Errorf("worker: writing to worker stdin: %w", err)

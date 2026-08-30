@@ -85,11 +85,31 @@
 //	 "profile":{"id":"p-1","revision":4},
 //	 "recipes":[{"id":"outcome-integrity","version":1}],
 //	 "grant":{"capabilities":["corpus-search"],"disclosure":"local",
+//	          "tools":{"corpus-search":["search"]},
 //	          "expires":"2026-08-29T12:00:00Z"},
 //	 "sources":[{"kind":"session","selector":"omp/…","digest":"sha256:…",
 //	             "snapshot":"…"}],
 //	 "broker":{"endpoint":"http://127.0.0.1:0","token":"…"},
 //	 "params":{"…":"…"}}
+//
+// The grant's "tools" object is the operation vocabulary Babel will answer:
+// for each granted capability, the tool names some facility in this build
+// actually serves. It is published rather than assumed because the worker is
+// a separate program in a separate repository, and a name it invents for
+// itself is denied on every request while looking, from the worker's side,
+// exactly like a run with nothing to find. That is not a hypothesis: the
+// first real exploration Babel ever drove asked for "babel_corpus_search",
+// was denied three times out of three, and produced no evidence at all.
+//
+// A granted capability that no facility in this build brokers has no key —
+// never a key with an empty array. The two would say the same thing in two
+// shapes, and an empty array is the ambiguous one: it reads equally as "this
+// facility exposes no operations" and as "someone forgot to publish them".
+// Absence states the only true thing, that nothing behind the capability
+// answers, and a worker must request nothing under it rather than fall back
+// to a name of its own. The whole object is omitted when no granted
+// capability is served, which is a different fact from a Babel that predates
+// the field and never published one.
 //
 // The worker then streams events on stdout. Every event carries "seq",
 // strictly increasing from 1 across all event types, so a dropped or reordered
@@ -136,15 +156,33 @@
 // does:
 //
 //	{"type":"tool-decision","request_id":"t-1","decision":"allow"}
+//	{"type":"tool-decision","request_id":"t-1","decision":"allow",
+//	 "reason":"served 3 hits from the corpus index",
+//	 "results":{"schema":"babel.corpus-search/1","query":"…","limit":10,
+//	            "hits":[{"harness":"omp","source_id":"…","index":42,
+//	                     "kind":"tool-observation","excerpt":"…",
+//	                     "locator":{"path":"…","line":12,"byte_offset":3456,
+//	                                "digest":"…"}}]}}
 //	{"type":"tool-decision","request_id":"t-1","decision":"deny",
 //	 "code":"not-granted","reason":"…"}
 //
+// "results" is the evidence the facility served, in that facility's own shape,
+// and it is optional. Absent means no payload travelled at all: that is what a
+// denial sends, what a capability with no serving facility sends, and what a
+// Babel predating the field sends. A facility that searched and found nothing
+// sends its own empty answer — for corpus search, "hits":[] — because a worker
+// that was served nothing and a corpus that holds nothing are different facts
+// and are reported as different gaps.
+//
+// Every hit a corpus search serves carries the harness, the source identity,
+// the locator that recovers the record's bytes from the archive, and a bounded
+// redacted excerpt. The excerpt is what lets a model form an observation; the
+// locator is what lets a human reopen that observation against the archive,
+// which §9 requires of every claim. The payload travels on the pipe and never
+// into a receipt.
+//
 // A denial is not a termination. The worker adapts and keeps working, and it
 // must still deliver a terminal event.
-//
-// "result" and "error" are both terminal: exactly one of them per run,
-// nothing after it, and the worker exits promptly — 0 after a result, any
-// status after an error, since Babel owns the run's final status either way.
 //
 // # Authorization
 //
@@ -159,6 +197,19 @@
 //     never widen a grant;
 //  3. a request past Limits.MaxToolRequests is denied ("limit"); and
 //  4. only then does the injected Authorizer decide ("policy" on denial).
+//
+// The tool name inside a granted capability is held to the same published
+// mapping the job carried, and that check sits in the Authorizer rather than
+// in the list above because which operations exist is a fact about the
+// facility behind the capability, not about the grant. It is not, however, a
+// check an Authorizer is free to skip: ServesTool and DenyUnservedTool are
+// the one predicate and the one denial every authorizer in this module uses,
+// so the permissive policy the conformance suite grades with and the
+// production policy internal/explore installs refuse an unpublished name
+// identically. They have to. A suite whose policy is more permissive than
+// production's certifies a worker that cannot work, which is precisely how a
+// worker asking for "babel_corpus_search" reached 14/14 and then retrieved
+// nothing.
 //
 // Tool arguments are given to the Authorizer and never recorded. The receipt
 // keeps their digest and size instead, so a worker that echoes a credential or
@@ -177,6 +228,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -237,6 +289,76 @@ const (
 // payloads it embeds — is a new schema, because a payload interpreted under
 // the wrong one would produce durable records nobody wrote.
 const ResultSchema = "babel.analysis-result/1"
+
+// ToolSearch is the tool name Babel serves for CapabilityCorpusSearch, and it
+// lives beside ResultSchema for the identical reason: it is a string one
+// repository writes and the other reads, so a copy held by either consumer is
+// a drift neither side's tests can see. ResultSchema's comment above calls
+// that "a drift no test on either side could see" — it happened again, one
+// concept over, and this is where the concept now lives so it cannot happen a
+// third time.
+//
+// The capability says which facility; the tool says which operation inside it,
+// and an unrecognized operation is denied rather than guessed at.
+const ToolSearch = "search"
+
+// capabilityTools is the single authority on which tool names Babel serves for
+// each capability, and every consumer reads it rather than restating it: the
+// job document publishes it to the worker (Job.MarshalJSON), the facility
+// behind corpus-search enforces it (internal/explore's authorizer), and the
+// conformance suite grades a candidate against it (AllowWithinGrant and the
+// run/published-tool-names obligation). Adding a name here is what makes it
+// exist for all three at once, and there is nowhere else it can be added.
+//
+// A capability no facility in this build brokers is absent from the map rather
+// than mapped to an empty list. See the "tools" paragraph in this package's
+// documentation for why absence is the representation; the short form is that
+// an empty list cannot distinguish "serves no operations" from "was never
+// published", and only one of those is ever true. repo-read, sandbox-exec and
+// public-research are all in that position today, which internal/explore
+// denies in those words.
+var capabilityTools = map[Capability][]string{
+	CapabilityCorpusSearch: {ToolSearch},
+}
+
+// ServesTool reports whether tool is a name Babel published for c. It is
+// exported because it is the whole of the name discipline: an Authorizer that
+// wants to be as strict as production is strict by calling this, and the
+// conformance suite's permissive policy calls the same function the production
+// authorizer does.
+func ServesTool(c Capability, tool string) bool {
+	return slices.Contains(capabilityTools[c], tool)
+}
+
+// DenyUnservedTool refuses a tool name c does not serve, and it lives here so
+// that the denial a worker reads is one sentence written once. The two cases
+// are different facts and read differently: a facility that serves operations
+// but not this one, and a capability nothing in this build serves at all.
+func DenyUnservedTool(c Capability, tool string) Decision {
+	if len(capabilityTools[c]) == 0 {
+		return Decision{Reason: fmt.Sprintf("%s is granted but no facility in this build serves it", c)}
+	}
+	return Decision{Reason: fmt.Sprintf("%s has no tool %q", c, tool)}
+}
+
+// publishedTools is the mapping one job publishes: every granted capability
+// some facility in this build serves, and no key at all for one that none
+// does. A grant that reaches nothing served publishes nothing, which is not
+// the same wire fact as an older Babel that never had the field.
+func publishedTools(g Grant) map[Capability][]string {
+	var published map[Capability][]string
+	for _, c := range g.Capabilities {
+		served := capabilityTools[c]
+		if len(served) == 0 {
+			continue
+		}
+		if published == nil {
+			published = make(map[Capability][]string, len(g.Capabilities))
+		}
+		published[c] = served
+	}
+	return published
+}
 
 // Disclosure classes a grant can carry. The class is fixed before material is
 // sent (SPEC.md §3), so it travels in the job rather than being negotiated.
@@ -369,10 +491,15 @@ type jobWire struct {
 	Protocol string            `json:"protocol"`
 }
 
+// grantWire carries the boundary and the operation vocabulary inside it. Tools
+// is derived at encode time from capabilityTools rather than being a field of
+// the exported Grant: nothing may hand Babel a mapping, because a caller-set
+// mapping is a second list of names, and a second list is the defect.
 type grantWire struct {
-	Capabilities []Capability `json:"capabilities"`
-	Disclosure   string       `json:"disclosure"`
-	Expires      *time.Time   `json:"expires,omitempty"`
+	Capabilities []Capability            `json:"capabilities"`
+	Disclosure   string                  `json:"disclosure"`
+	Tools        map[Capability][]string `json:"tools,omitempty"`
+	Expires      *time.Time              `json:"expires,omitempty"`
 }
 
 type brokerWire struct {
@@ -395,6 +522,7 @@ func (j Job) MarshalJSON() ([]byte, error) {
 		Grant: grantWire{
 			Capabilities: j.Grant.Capabilities,
 			Disclosure:   j.Grant.Disclosure,
+			Tools:        publishedTools(j.Grant),
 		},
 		Sources: j.Sources,
 		Params:  j.Params,
@@ -473,12 +601,33 @@ type refuseMessage struct {
 }
 
 // decisionMessage is Babel's answer to one tool-request.
+//
+// Results is the evidence the facility behind the capability served, as the
+// facility's own JSON. It is optional and absent means one thing only: no
+// payload travelled. That is what every denial sends, what every capability
+// with no serving facility sends, and what a Babel predating the field sends.
+// A facility that searched and matched nothing sends its own empty answer
+// instead, because "Babel served me nothing" and "the corpus holds nothing"
+// are different facts and a worker reports them as different gaps.
+//
+// It exists because a decision without it is unusable as evidence. Before this
+// field the whole of what a worker learned from an allowed corpus search was
+// the sentence "served N hits from the corpus index": Babel computed the hits,
+// redacted them, recorded their locators, and discarded them. The first real
+// exploration retrieved four times, was allowed four times, and wrote nothing,
+// because it had never been shown a byte of the corpus.
+//
+// The field is written to the pipe and nowhere else. Babel's receipt records
+// the decision, the argument digest and the retrieval trace's locators, and
+// never this payload: §9 forbids the durable record becoming a plaintext store
+// of archive content readable by anyone with catalog access.
 type decisionMessage struct {
-	Type      string   `json:"type"`
-	RequestID string   `json:"request_id"`
-	Decision  string   `json:"decision"`
-	Code      DenyCode `json:"code,omitempty"`
-	Reason    string   `json:"reason,omitempty"`
+	Type      string          `json:"type"`
+	RequestID string          `json:"request_id"`
+	Decision  string          `json:"decision"`
+	Code      DenyCode        `json:"code,omitempty"`
+	Reason    string          `json:"reason,omitempty"`
+	Results   json.RawMessage `json:"results,omitempty"`
 }
 
 // Decision values on the wire.

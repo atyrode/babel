@@ -323,16 +323,29 @@ func TestDescribeSessionResolvesPrimaryAndAttachments(t *testing.T) {
 	}
 }
 
+// TestDescribeRecordsReasonsForUnavailableFields defends SPEC.md §3's rule
+// that an absent field carries a reason rather than a synthesized value.
+//
+// Title is not in the absent set here, and that is the change rather than an
+// exemption: the sparse fixture's one user record is a genuine request, so a
+// title is now derivable from it and the adapter reports one — labelled
+// derived, never recorded. What must still hold is the pairing: a title
+// without a provenance would let Babel's arithmetic pass for Codex's own
+// record, which title_test.go asserts in both directions.
 func TestDescribeRecordsReasonsForUnavailableFields(t *testing.T) {
 	root := fixtureRoot(t)
 	desc := describeOf(t, root, sparseID)
 
 	requireCompleteness(t, desc.Meta)
-	if desc.Meta.Title != nil || desc.Meta.Workspace != nil || desc.Meta.CreatedAt != nil ||
+	if desc.Meta.Workspace != nil || desc.Meta.CreatedAt != nil ||
 		desc.Meta.ModifiedAt != nil || desc.Meta.Lifecycle != nil || desc.Meta.Repo != nil {
 		t.Fatalf("sparse log yielded synthesized catalog fields: %+v", desc.Meta)
 	}
-	want := map[string]bool{"title": true, "workspace": true, "created_at": true, "modified_at": true, "lifecycle": true, "repo": true}
+	if desc.Meta.Title == nil || desc.Meta.TitleProvenance != adapter.TitleDerived {
+		t.Fatalf("Title/TitleProvenance = %v/%q, want a derived title from the sparse log's request",
+			desc.Meta.Title, desc.Meta.TitleProvenance)
+	}
+	want := map[string]bool{"workspace": true, "created_at": true, "modified_at": true, "lifecycle": true, "repo": true}
 	for _, r := range desc.Meta.Completeness {
 		delete(want, r.Field)
 	}

@@ -205,6 +205,11 @@ func Rebuild(ctx context.Context, db *sql.DB, deploymentID, hostID string, repo 
 		ON CONFLICT (deployment_id) DO NOTHING`, deploymentID, SchemaVersion); err != nil {
 		return rep, fmt.Errorf("rebuild: ensure deployment: %w", err)
 	}
+	// DO NOTHING, so a rebuild preserves the host's identity and first-seen
+	// time rather than asserting them. Rebuild may be run from any instance
+	// against any host, and this one does not know another machine's display
+	// name, operating system or architecture; overwriting them with what this
+	// process happens to be would be a lie about a machine (migrations/0004).
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO hosts (host_id, deployment_id) VALUES ($1, $2)
 		ON CONFLICT (host_id) DO NOTHING`, hostID, deploymentID); err != nil {

@@ -25,7 +25,7 @@ func TestRegisterMakesAnInstanceAbleToTakeALease(t *testing.T) {
 		t.Fatalf("before registration: err = %v, want ErrUnknownInstance", err)
 	}
 
-	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if _, err := sharedcatalog.AcquireHostLease(ctx, db, "h1", "inst-a", time.Minute); err != nil {
@@ -41,7 +41,7 @@ func TestRegisterIsIdempotentAndRefreshesLastSeen(t *testing.T) {
 	mustMigrate(t, db)
 	ctx := context.Background()
 
-	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
 	var first time.Time
@@ -49,7 +49,7 @@ func TestRegisterIsIdempotentAndRefreshesLastSeen(t *testing.T) {
 		t.Fatalf("read last_seen_at: %v", err)
 	}
 
-	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("second Register: %v", err)
 	}
 	var second time.Time
@@ -85,7 +85,7 @@ func TestRegisterDoesNotRewriteARecordedSchemaVersion(t *testing.T) {
 		sharedcatalog.SchemaVersion+5); err != nil {
 		t.Fatalf("seed a newer deployment: %v", err)
 	}
-	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -107,7 +107,7 @@ func TestRegisterRequiresEveryIdentity(t *testing.T) {
 		{"d1", "", "inst-a"},
 		{"d1", "h1", ""},
 	} {
-		if err := sharedcatalog.Register(context.Background(), db, tc.deployment, tc.host, tc.instance); err == nil {
+		if err := sharedcatalog.Register(context.Background(), db, tc.deployment, tc.host, tc.instance, sharedcatalog.HostIdentity{}); err == nil {
 			t.Errorf("Register(%q, %q, %q) succeeded; every id is required",
 				tc.deployment, tc.host, tc.instance)
 		}
@@ -121,7 +121,7 @@ func TestNextPublicationOrderContinuesTheCatalogsHistory(t *testing.T) {
 	db := newDB(t)
 	mustMigrate(t, db)
 	ctx := context.Background()
-	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestNextPublicationOrderContinuesTheCatalogsHistory(t *testing.T) {
 	}
 
 	// Another host's history is its own.
-	if err := sharedcatalog.Register(ctx, db, "d1", "h2", "inst-b"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h2", "inst-b", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("Register h2: %v", err)
 	}
 	other, err := sharedcatalog.NextPublicationOrder(ctx, db, "h2")

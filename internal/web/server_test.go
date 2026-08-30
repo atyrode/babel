@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -33,6 +34,13 @@ type fakeArchive struct {
 	verifiedDeep  bool
 	fetchSelector string
 	fetchSnapshot string
+	fetchHost     string
+	listHost      string
+	listSnapshot  string
+	// listErr, when set, is what a cross-host listing reports instead of
+	// rows: an unreachable repository is a failure of the read, not an
+	// empty archive.
+	listErr error
 }
 
 func (*fakeArchive) ArchiveStatus(context.Context) (StatusResult, error) {
@@ -44,9 +52,25 @@ func (f *fakeArchive) ArchiveVerify(_ context.Context, deep bool) (VerifyResult,
 	return VerifyResult{Repository: "repo", Deep: deep, OK: true}, nil
 }
 
-func (f *fakeArchive) FetchSession(_ context.Context, selector, snapshot string) (FetchResult, error) {
-	f.fetchSelector, f.fetchSnapshot = selector, snapshot
-	return FetchResult{Selector: selector, SnapshotID: "snapshot", Included: []string{"primary.jsonl"}}, nil
+func (f *fakeArchive) ArchiveSessions(_ context.Context, host, snapshot string) (ArchiveSessionsResult, error) {
+	f.listHost, f.listSnapshot = host, snapshot
+	if f.listErr != nil {
+		return ArchiveSessionsResult{}, f.listErr
+	}
+	return ArchiveSessionsResult{
+		Host:     host,
+		Snapshot: snapshot,
+		Sessions: []ArchiveSessionRow{
+			{Harness: "claude", SourceID: "elsewhere", Selector: "claude/elsewhere", Size: 4096},
+			{Harness: "omp", SourceID: "recovered", Selector: "omp/recovered", Size: 128,
+				Fetched: true, FetchedPath: "/data/babel/sessions/omp-recovered"},
+		},
+	}, nil
+}
+
+func (f *fakeArchive) FetchSession(_ context.Context, req FetchRequest) (FetchResult, error) {
+	f.fetchSelector, f.fetchSnapshot, f.fetchHost = req.Selector, req.Snapshot, req.Host
+	return FetchResult{Selector: req.Selector, SnapshotID: "snapshot", Included: []string{"primary.jsonl"}}, nil
 }
 
 // fakeScanner mirrors the coordinator's contract: State never blocks and
@@ -295,12 +319,35 @@ func TestEveryAPIEndpoint(t *testing.T) {
 				t.Errorf("status = %#v", got)
 			}
 		}},
+		{name: "archive sessions", method: http.MethodGet, path: "/api/archive/sessions?host=elsewhere-host&snapshot=cdea", check: func(got map[string]any) {
+			rows, ok := got["sessions"].([]any)
+			if !ok || len(rows) != 2 || got["host"] != "elsewhere-host" || got["snapshot"] != "cdea" {
+				t.Errorf("archive sessions = %#v", got)
+				return
+			}
+			first := rows[0].(map[string]any)
+			if first["selector"] != "claude/elsewhere" || first["size"] != float64(4096) || first["fetched"] != false {
+				t.Errorf("archive row = %#v", first)
+			}
+			// The four fields a snapshot listing cannot know are absent
+			// from the shape, not present and null: a client cannot read
+			// them at all, so it cannot render them as blank cells.
+			for _, key := range []string{"modified", "title", "workspace", "continuation_grade"} {
+				if _, present := first[key]; present {
+					t.Errorf("archive row carries %q, which a snapshot listing never observed: %#v", key, first)
+				}
+			}
+			second := rows[1].(map[string]any)
+			if second["fetched"] != true || second["fetched_path"] != "/data/babel/sessions/omp-recovered" {
+				t.Errorf("fetched archive row = %#v", second)
+			}
+		}},
 		{name: "archive verify", method: http.MethodPost, path: "/api/archive/verify?deep=1", check: func(got map[string]any) {
 			if got["deep"] != true || got["ok"] != true {
 				t.Errorf("verify = %#v", got)
 			}
 		}},
-		{name: "fetch", method: http.MethodPost, path: "/api/fetch?selector=omp%2Fone&snapshot=abc1", check: func(got map[string]any) {
+		{name: "fetch", method: http.MethodPost, path: "/api/fetch?selector=omp%2Fone&snapshot=abc1&host=elsewhere-host", check: func(got map[string]any) {
 			if got["selector"] != "omp/one" || got["snapshot_id"] != "snapshot" {
 				t.Errorf("fetch = %#v", got)
 			}
@@ -320,6 +367,14 @@ func TestEveryAPIEndpoint(t *testing.T) {
 	}
 	if !archive.verifiedDeep || archive.fetchSelector != "omp/one" || archive.fetchSnapshot != "abc1" {
 		t.Fatalf("archive calls = %#v", archive)
+	}
+	// A selector discovered in another host's archive is only fetchable if
+	// the host reaches the command that resolves it there.
+	if archive.fetchHost != "elsewhere-host" {
+		t.Fatalf("fetch host = %q, want the requested host", archive.fetchHost)
+	}
+	if archive.listHost != "elsewhere-host" || archive.listSnapshot != "cdea" {
+		t.Fatalf("archive listing called with host %q snapshot %q", archive.listHost, archive.listSnapshot)
 	}
 	if scanning.starts != 1 {
 		t.Fatalf("refresh started %d scans, want 1", scanning.starts)
@@ -402,6 +457,7 @@ func TestUnconfiguredArchiveReturnsConflict(t *testing.T) {
 	s, httpServer := testServer(t, Options{})
 	for _, endpoint := range []struct{ method, path string }{
 		{http.MethodGet, "/api/archive/status"},
+		{http.MethodGet, "/api/archive/sessions?host=elsewhere-host"},
 		{http.MethodPost, "/api/archive/verify"},
 		{http.MethodPost, "/api/fetch?selector=omp%2Fone"},
 	} {
@@ -410,6 +466,174 @@ func TestUnconfiguredArchiveReturnsConflict(t *testing.T) {
 		if response.StatusCode != http.StatusConflict {
 			t.Errorf("%s status = %d", endpoint.path, response.StatusCode)
 		}
+	}
+}
+
+// TestSessionScopeStatesAreDistinguishable pins the four answers the Sessions
+// surface must be able to give about scope, because collapsing any two of them
+// is what left the operator unable to tell "this is everything" from "there is
+// more you cannot see".
+//
+// It asserts them as the server states them, and it asserts them against each
+// other: the no-repository case is only meaningful as "makes no claim about an
+// archive" if a configured server on the same assertions does make one. Every
+// case therefore checks both what is said and what the others say instead.
+func TestSessionScopeStatesAreDistinguishable(t *testing.T) {
+	local := SessionListerFunc(func(context.Context) (SessionsResult, error) {
+		return SessionsResult{Sessions: []SessionRow{{Harness: "omp", SourceID: "here", Selector: "omp/here"}}}, nil
+	})
+	state := func(configured bool) StateProviderFunc {
+		return func(context.Context) (State, error) {
+			return State{Configured: configured, Repository: "repo", HostID: "this-host"}, nil
+		}
+	}
+
+	t.Run("no repository configured", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{State: state(false), Lister: local})
+		client := httpServer.Client()
+
+		// The page derives "local is the whole truth" from these two
+		// answers, so both have to be unambiguous. State reports no
+		// repository and names none, so there is no locator on the wire for
+		// a page to render as if an archive existed — while still naming the
+		// host, because whose sessions these are does not depend on whether
+		// a repository was ever configured.
+		var reported State
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", s.token), &reported)
+		if reported.Configured || reported.Repository != "" {
+			t.Fatalf("unconfigured state = %+v, want no repository claimed", reported)
+		}
+		if reported.HostID != "this-host" {
+			t.Fatalf("unconfigured host id = %q, want the machine still named", reported.HostID)
+		}
+
+		// And no archive route answers with data that could be mistaken for
+		// an empty archive. 409 is the distinction: it says the question
+		// does not apply here, where 200 with zero hosts would say the
+		// archive is empty.
+		for _, path := range []string{"/api/archive/status", "/api/archive/sessions?host=elsewhere-host"} {
+			response := request(t, client, http.MethodGet, httpServer.URL+path, s.token)
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusConflict {
+				t.Errorf("%s = %d, want 409 so no client can read it as an empty archive", path, response.StatusCode)
+			}
+		}
+
+		// Local sessions are still served in full: an absent archive
+		// narrows nothing about this host.
+		var sessions SessionsResult
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/sessions", s.token), &sessions)
+		if len(sessions.Sessions) != 1 {
+			t.Fatalf("local sessions without a repository = %d rows, want 1", len(sessions.Sessions))
+		}
+	})
+
+	t.Run("configured but unreachable", func(t *testing.T) {
+		unreachable := errors.New("Fatal: unable to open repository at s3:example: connection refused")
+		archive := &fakeArchive{listErr: unreachable}
+		s, httpServer := testServer(t, Options{State: state(true), Lister: local, Archive: archive})
+		client := httpServer.Client()
+
+		// The repository is named even though it cannot be read, which is
+		// what separates this state from the one above: something exists
+		// and this machine could not reach it.
+		var reported State
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", s.token), &reported)
+		if !reported.Configured || reported.Repository != "repo" {
+			t.Fatalf("configured state = %+v", reported)
+		}
+
+		// A failed read is a failed read. Not 409 — that would say the
+		// question does not apply — and never 200 with no rows, which would
+		// say the host published nothing.
+		response := request(t, client, http.MethodGet, httpServer.URL+"/api/archive/sessions?host=elsewhere-host", s.token)
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("unreachable archive listing = %d, want 500", response.StatusCode)
+		}
+		var failure struct {
+			Error    string `json:"error"`
+			Sessions []any  `json:"sessions"`
+		}
+		decodeResponse(t, response, &failure)
+		if !strings.Contains(failure.Error, "connection refused") {
+			t.Errorf("unreachable archive error = %q, want the repository's own reason", failure.Error)
+		}
+		if failure.Sessions != nil {
+			t.Errorf("a failed listing carried a session array: %#v", failure.Sessions)
+		}
+	})
+
+	t.Run("configured and this host is the only publisher", func(t *testing.T) {
+		// fakeArchive reports exactly one host. The page compares it with
+		// the state's host id, so "only publisher" has to be derivable from
+		// the two documents rather than asserted by a third.
+		onlyPublisher := StateProviderFunc(func(context.Context) (State, error) {
+			return State{Configured: true, Repository: "repo", HostID: "host"}, nil
+		})
+		s, httpServer := testServer(t, Options{State: onlyPublisher, Lister: local, Archive: &fakeArchive{}})
+		client := httpServer.Client()
+
+		var status StatusResult
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/archive/status", s.token), &status)
+		if len(status.Hosts) != 1 || status.Hosts[0].Host != "host" {
+			t.Fatalf("status hosts = %#v", status.Hosts)
+		}
+		var reported State
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", s.token), &reported)
+		if reported.HostID != status.Hosts[0].Host {
+			t.Fatalf("host id %q is not the only publisher %q", reported.HostID, status.Hosts[0].Host)
+		}
+	})
+
+	t.Run("configured with another host publishing", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{State: state(true), Lister: local, Archive: &fakeArchive{}})
+		client := httpServer.Client()
+
+		// state(true) reports "this-host"; the archive reports "host". The
+		// two differ, which is the whole signal that there is more to see.
+		var status StatusResult
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/archive/status", s.token), &status)
+		var reported State
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", s.token), &reported)
+		if len(status.Hosts) != 1 || status.Hosts[0].Host == reported.HostID {
+			t.Fatalf("expected a publisher other than %q, got %#v", reported.HostID, status.Hosts)
+		}
+
+		// And that other host's sessions are reachable, with rows this
+		// machine's own listing does not hold.
+		var listing ArchiveSessionsResult
+		decodeResponse(t, request(t, client, http.MethodGet,
+			httpServer.URL+"/api/archive/sessions?host="+status.Hosts[0].Host, s.token), &listing)
+		if len(listing.Sessions) != 2 || listing.Sessions[0].Selector != "claude/elsewhere" {
+			t.Fatalf("cross-host listing = %#v", listing)
+		}
+		if listing.Snapshot != "" {
+			t.Errorf("snapshot = %q, want empty for a request that named none", listing.Snapshot)
+		}
+	})
+}
+
+// TestArchiveSessionsRequiresAHost pins that the expensive repository read is
+// never performed on a guess. Defaulting the host to this machine would answer
+// a question /api/sessions already answers, from the archive, over the network.
+func TestArchiveSessionsRequiresAHost(t *testing.T) {
+	archive := &fakeArchive{}
+	s, httpServer := testServer(t, Options{Archive: archive})
+	for _, path := range []string{"/api/archive/sessions", "/api/archive/sessions?host="} {
+		response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+path, s.token)
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", path, response.StatusCode)
+		}
+	}
+	if archive.listHost != "" {
+		t.Fatalf("a hostless request still read the repository as %q", archive.listHost)
+	}
+	response := request(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/api/archive/sessions?host=h", s.token)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Errorf("POST to the listing = %d, want 400", response.StatusCode)
 	}
 }
 

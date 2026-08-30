@@ -11,6 +11,119 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **`babel archive fleet`, which answers "did all my machines back up" in one
+  command.** `archive status` already reported each host's newest snapshot
+  time, and that turned out to be the raw material rather than the answer: a
+  host six days stale rendered identically to one that published minutes ago,
+  apart from a timestamp the operator had to compare by eye. Worse, a machine
+  that had stopped publishing entirely was invisible, because the listing is
+  derived from what is in the repository and you cannot miss what was never
+  there. The new command states the verdict — `current`, `LATE`, `MISSING` or
+  `unknown` — with a one-line summary above the table, so the question is
+  answered by glancing rather than by arithmetic.
+  - **"Late" is derived, never assumed.** Babel does not own the archive timer
+    and its configuration does not record that timer's schedule, so no
+    threshold here pretends to know one. Each host is judged against the median
+    gap between its own most recent snapshots — the median rather than the mean
+    precisely because a mean is dragged upward by the outages the command
+    exists to notice, so a host down for a week would derive a cadence that
+    excuses being down for a week. A host with too little history of its own
+    borrows the fleet's median, and the `EXPECTED EVERY` column always names
+    which of the three sources was used, so a number Babel inferred can never
+    be mistaken for one it was told.
+  - **Three missed publications, not one.** The Phase A timer is
+    `Persistent=true` precisely so a machine that was asleep or offline catches
+    up on the next run, so one missed run is the mechanism working. Two
+    consecutive misses is a pattern rather than an event, and that is the
+    smallest distinction between "this machine is broken" and "this machine had
+    a bad hour". A cadence observed faster than hourly is treated as hourly:
+    SPEC.md §12 fixes hourly as the Phase A schedule, so a faster rate is
+    bootstrap pushes rather than a schedule, and without that floor a machine
+    the operator pushed twenty times by hand would have read as late an hour
+    later — a false alarm produced entirely by Babel's own inference.
+  - **A host with no derivable cadence gets no verdict**, reported as `unknown`
+    with its age still shown. Calling it `current` would be a guess wearing the
+    word that means "your backups are fine", which is the one failure that
+    would make the command worse than the timestamps it replaces.
+  - **No stored roster, deliberately.** A machine that has never published is
+    invisible to both authorities by construction — the catalog learns of a
+    host by way of its first publication, so `hosts` rows only ever appear
+    alongside a snapshot restic already committed, and a table derived from what
+    was archived can never name a machine that archived nothing. Absence
+    therefore has to come from outside the archive, and it comes from the
+    operator at the moment he asks: `--expect ws-linux,wsl-nixos` reports an
+    absent machine as `MISSING`. A roster Babel persisted would be state that
+    goes stale silently and then answers confidently, and a fleet list that has
+    quietly stopped matching the fleet is worse than no list, because it turns
+    "I do not know" into a wrong answer. An expectation passed in the invocation
+    cannot rot between invocations. It only ever adds machines, never hides one:
+    a host publishing normally is reported whether or not it was named.
+  - **It exits 0 whatever it finds, including a late or missing host.** "Late"
+    is a judgement derived from a cadence Babel inferred rather than a fault it
+    observed, and an exit code is a contract scripts and timers come to depend
+    on — which is the alerting system this deliberately is not. It answers when
+    asked and does nothing between; `--json` carries a per-host `state` for
+    anyone who wants to script it anyway.
+  - Verified against the live shared archive read-only (25 snapshots, one host):
+    `current` and `MISSING` were both observed there — the operator's second
+    machine has genuinely published nothing, so its absence is a real finding
+    rather than a fixture — while `LATE` and `unknown` were constructed, the
+    latter also live against a throwaway local repository. Each distinction the
+    tests assert was checked by removing it from the source and confirming the
+    test fails.
+- **Session and host metadata in the shared catalog, so browsing the fleet
+  returns something a person can read.** The operator hit the gap directly: his
+  WSL machine's `babel web` showed 5 sessions while the archive holds 838 from
+  `workstation-linux`, and even once cross-host browsing landed those 838 rows
+  had no title and no workspace, because the catalog never stored them — they
+  existed only in each machine's local SQLite description cache. Migration
+  `0004_fleet_metadata` adds `title`, `workspace` and `continuation_grade` to
+  `babel.sessions`, and `display_name`, `os`, `arch` and `identity_updated_at`
+  to `babel.hosts`, and both push paths now populate them.
+  - **This widens the plaintext boundary, by explicit operator decision
+    (2026-08-30).** He was shown the tradeoff — transcripts stay encrypted in
+    restic while the catalog is plaintext in a managed provider's PostgreSQL,
+    over a TLS connection that is encrypted but not authenticated — and asked
+    specifically about titles versus workspaces, chose both: "the richer, the
+    better." The permission is that column set and does not generalize.
+    Transcript bodies, plaintext full-text indexes, deterministic ciphertext,
+    session selectors and adapter source ids, and a machine's system hostname
+    all remain outside the allowlist, and the drift test that used to prove
+    `sessions.workspace` was rejected now proves `sessions.primary_path` and
+    `hosts.hostname` still are — a widening by column rather than by class.
+  - **Decision 8 was a recorded drift, and is now implemented rather than
+    deleted.** SPEC.md said "host display names are catalog rows where the
+    newest value wins" while no such column existed; the only occurrence of
+    `display_name` in the repository was a test asserting it would be refused.
+    Newest-wins is an in-place update and no history is retained, and the spec
+    text was corrected to say so: an audit trail of former names is a different
+    feature, and a rebuildable catalog could not honestly keep one, since a
+    rebuild reconstructs rows from the repository and would erase the trail it
+    claimed to hold. `hosts.created_at` already is the first-seen time —
+    server-assigned, never rewritten, preserved across a rebuild — so no
+    `first_seen_at` column was added to disagree with it.
+  - **NULL means unknown, never false and never empty.**
+    `continuation_grade` is a nullable boolean because only the publishing host
+    can resolve it from its own files: `NOT NULL` would force absence to render
+    as "this session cannot be continued", a verdict nobody reached, and a
+    cross-host reader meets that absence routinely.
+  - **The 838 existing rows are backfilled by a push, never by a rebuild.**
+    `storage rebuild` deletes a host's session rows and cannot reconstruct them
+    from a snapshot listing, so it is the wrong tool and its help now says so;
+    it does preserve host identity, because it has no way to know another
+    machine's facts. The operator's own action is to update his Nix profile so
+    the hourly timer runs a binary carrying `0004`.
+  - **`SchemaVersion` stays 1, deliberately.** Every added column is nullable
+    with no default and no constraint, so a writer that predates the migration
+    keeps publishing; raising the version would instead order every un-updated
+    instance to stop. That was demonstrated rather than asserted: the
+    operator's timer binary predates even `0003`, and its scheduled unattended
+    run published 838 sessions successfully against the migrated schema and left
+    the metadata a newer push had written untouched.
+  - **Fixed alongside it:** `storage verify` probed `public.deployments` for the
+    recorded schema version, and every catalog object lives in `babel`, so the
+    probe always failed and a registered deployment always reported "not
+    recorded yet". It now reads 1 against the live add-on.
 - **A real execution sandbox for the analysis worker, which is what stood
   between Phase A working and Phase B being able to run at all.** Babel
   refuses any worker that cannot declare filesystem isolation, egress denial,
@@ -65,7 +178,70 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
     dimension is omitted rather than zero-filled, because a zero reads as a
     measurement.
 
+- **The web interface now says whose sessions it is showing, and can browse
+  and fetch another host's.** An operator ran `babel web` on a second machine,
+  saw 5 sessions with `/tmp` in every workspace cell, and concluded the list
+  was scoped to the folder he had launched from — while the archive one click
+  away held 838 sessions from another host and the page never connected the
+  two. Both halves of that are the same defect: the surface stated no scope and
+  offered no way out of it.
+  - **The Sessions page states its scope in the heading and in a notice that
+    reads differently for each of the four ways an archive can stand.** No
+    repository configured says local is everything and explicitly claims
+    nothing about an archive; configured but unreadable says the question is
+    unanswered rather than the archive empty; sole publisher says there is
+    genuinely nothing else and the operator is not missing anything; another
+    host publishing names it and its snapshot count. The `Workspace` column —
+    the thing that produced the wrong reading — is now `Recorded workspace`,
+    because naming the host fixes "what is this list" and leaves "why does
+    every row say /tmp" live.
+  - **`GET /api/archive/sessions?host=ID[&snapshot=ID]` exposes the CLI's
+    `sessions list --host`,** which reads a snapshot's file listing and
+    downloads no transcript bytes. It is a separate route from `/api/sessions`
+    because that one answers from an in-memory catalog, cannot fail for
+    repository reasons, and is polled during a scan. Its rows are a separate
+    type that cannot carry title, workspace, modified time, or continuation
+    grade, so a client has no way to render an unobserved field as a blank
+    cell; the interface prints "not in listing" with the reason.
+  - **`POST /api/fetch` takes a host,** so a selector discovered in another
+    machine's archive is actually recoverable — without it the selector
+    resolves against local files that by definition do not hold it. Each
+    archive row reports whether this machine already holds a materialization,
+    and a fetch flips that from the server's own answer rather than the page's
+    assumption.
+  - **`GET /api/state` no longer blanks the host id when no repository is
+    configured.** The repository is still withheld, because there is none, but
+    whose machine this is has an answer either way and the page needs it.
+
 ### Fixed
+
+- **Corpus search answered a worker's keyword query with nothing, because the
+  terms were ANDed.** An analysis worker sends a bag of words, not an
+  expression. `internal/index` translated one into an FTS5 conjunction, which
+  asks for a single transcript record holding every word — a question a corpus
+  of individual records essentially never answers yes to. The operator's first
+  exploration retrieved four times against a healthy index of 26,948 events
+  and was served 0, 0, 1 and 0 hits, while every individual word in those
+  queries matched between 32 and 4,683 records. Terms are now optional and the
+  result is a union.
+  - **Relevance carries the weight the conjunction used to.** A union that
+    served everything would have replaced one failure with another, so
+    membership is broad and order is discriminating: FTS5's bm25 already
+    scores a record by how many of the query's phrases it matched and weighs
+    each by how rare it is, `Query.Limit` bounds the page at fifty by default,
+    and a query with no bearing on the corpus still matches nothing at all.
+    The whole query is also tried as one adjacent phrase alongside its words,
+    so a record holding the caller's phrasing outranks one that merely holds
+    the same vocabulary scattered.
+  - **A query is bounded as well as sanitized.** Every optional term widens
+    the candidate set where an intersection narrowed it, so at most 32 terms
+    of an expression reach FTS5. A longer query is answered on its first 32
+    rather than refused: a query never fails on its content.
+  - **An unsearchable query is an answer, not a failure.** A query holding
+    nothing a tokenizer could match, or one past the index's length bound, is
+    now served as zero hits with a reason and recorded in the retrieval trace,
+    so a worker can tell "the corpus does not hold this" from "Babel would not
+    look", and the receipt still shows the retrieval it spent.
 
 - **An alignment audit of the whole system against `SPEC.md`, and the defects
   it found.** Seventeen read-only audits covered every package, both

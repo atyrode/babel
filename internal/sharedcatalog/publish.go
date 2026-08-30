@@ -34,8 +34,17 @@ type SnapshotRow struct {
 	PublishedBy      string
 }
 
-// SessionRow is one session's opaque identity. It deliberately carries no
-// selector, title, path, or workspace: see migrations/0001_init.sql.
+// SessionRow is one session as the shared catalog records it: its opaque
+// identity, its measures, and the browsable metadata migrations/0004 admits.
+//
+// It still carries no selector and no adapter source id. Those are the fetch
+// locator, and keeping them out is what makes resolving a uid to something
+// fetchable require the repository or a local index (migrations/0001_init.sql).
+//
+// Title, Workspace, and ContinuationGrade are pointers because absent is a
+// distinct answer from empty and, for the grade, from false. Only the
+// publishing host can resolve them - they come from its own local sources - so
+// a nil here is what every other instance reads until this host pushes.
 type SessionRow struct {
 	SessionUID          string
 	Harness             string
@@ -44,6 +53,16 @@ type SessionRow struct {
 	BlobCount           int
 	UnresolvedBlobCount int
 	SourceModifiedAt    *time.Time
+	Title               *string
+	// TitleProvenance says whether Title was recorded by the harness, derived
+	// by Babel, or inferred by a model. It travels with the title because this
+	// row is what an instance on another machine reads instead of the session:
+	// it cannot re-derive the value, so a title here without its origin is a
+	// claim it has no way to check. NULL means unknown - notably for every row
+	// written before this column existed - and never "recorded".
+	TitleProvenance   *string
+	Workspace         *string
+	ContinuationGrade *bool
 }
 
 // SessionUID derives a session's opaque catalog identity.
@@ -150,11 +169,21 @@ func PublishSnapshot(
 	for _, s := range sessions {
 		// first_snapshot_id records where a session was first seen and is never
 		// rewritten; latest_snapshot_id moves forward with each publication.
+		//
+		// title, workspace and continuation_grade are overwritten from this
+		// push rather than coalesced with what the row held. The publishing
+		// host is the authority on its own sessions: a renamed workspace or a
+		// session that stopped being continuable must be able to say so, and
+		// coalescing would make the first value ever published permanent. A
+		// push cannot silently blank them by failing to describe - a session
+		// whose describe fails is pruned from the local cache and is not
+		// published at all (internal/catalog.Refresh).
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO sessions (session_uid, host_id, harness, first_snapshot_id,
 			                      latest_snapshot_id, primary_size, artifact_count,
-			                      blob_count, unresolved_blob_count, source_modified_at)
-			VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9)
+			                      blob_count, unresolved_blob_count, source_modified_at,
+			                      title, title_provenance, workspace, continuation_grade)
+			VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 			ON CONFLICT (session_uid) DO UPDATE
 			   SET latest_snapshot_id    = excluded.latest_snapshot_id,
 			       primary_size          = excluded.primary_size,
@@ -162,10 +191,14 @@ func PublishSnapshot(
 			       blob_count            = excluded.blob_count,
 			       unresolved_blob_count = excluded.unresolved_blob_count,
 			       source_modified_at    = excluded.source_modified_at,
+			       title                 = excluded.title,
+			       title_provenance      = excluded.title_provenance,
+			       workspace             = excluded.workspace,
+			       continuation_grade    = excluded.continuation_grade,
 			       updated_at            = now()`,
 			s.SessionUID, l.HostID, s.Harness, snap.SnapshotID,
 			s.PrimarySize, s.ArtifactCount, s.BlobCount, s.UnresolvedBlobCount,
-			s.SourceModifiedAt); err != nil {
+			s.SourceModifiedAt, s.Title, s.TitleProvenance, s.Workspace, s.ContinuationGrade); err != nil {
 			return false, fmt.Errorf("publish snapshot: upsert session: %w", err)
 		}
 	}

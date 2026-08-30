@@ -3,10 +3,13 @@ package worker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +69,40 @@ const (
 	// CapabilitySandboxExec, which the conformance job does not grant. The
 	// worker must survive the denial and still deliver a result.
 	ConformanceRequestUngranted = "request-ungranted"
+
+	// ConformanceEchoEvidence makes one corpus-search request, waits for the
+	// decision, and reports in the terminal result's payload the served
+	// evidence it decoded off that decision, under the key
+	// "served_evidence":
+	//
+	//	"served_evidence":{"hits":
+	//	  ["HARNESS|SOURCE_ID|INDEX|PATH|LINE|BYTE_OFFSET|DIGEST|EXCERPT",…]}
+	//
+	// One entry per served hit, in served order, pipe-joined, with the three
+	// numbers in plain base 10 and the excerpt verbatim and last. The
+	// encoding is flat for the same reason ConformanceEchoJob's is: a worker
+	// that produces it has read every subfield of every hit, and Babel
+	// compares strings rather than negotiating over a shape the counterpart
+	// chose. The array is emitted even when it is empty, so a worker that
+	// implemented the directive and decoded nothing stays distinguishable
+	// from one that never implemented it.
+	//
+	// The key is "served_evidence" rather than "evidence" because a real
+	// worker already keeps an evidence log of its requests under that name,
+	// and the two are different things: one is what the worker asked for,
+	// this is what Babel answered with.
+	//
+	// It exists because a worker that received evidence and ignored it was
+	// indistinguishable from one that received none. Babel's receipt cannot
+	// show the difference — it records the decision and deliberately never
+	// the payload — so the worker is asked, and the material it is asked
+	// about carries a per-run nonce, which is what separates a worker that
+	// read this decision from one that answered out of a fixture. That gap
+	// is not hypothetical: for the whole of Babel's history before this,
+	// every tool decision was an adjudication with no evidence attached, and
+	// the first real exploration was allowed four corpus searches, was shown
+	// no byte of any of them, and wrote nothing.
+	ConformanceEchoEvidence = "echo-evidence"
 
 	// ConformanceErrorOnly emits one error event and then exits, emitting no
 	// result.
@@ -166,6 +203,10 @@ type conformanceObligation struct {
 //	                              sources it was actually given
 //	run/forward-compatible-job    unknown job fields are ignored, not fatal
 //	run/tool-allow                a tool request blocks for its decision
+//	run/published-tool-names      every tool name requested is one the job
+//	                              published for that capability
+//	run/consumes-served-evidence  the evidence a decision carried reaches the
+//	                              worker's own reading of it
 //	run/tool-denial-continues     a denial does not end the run
 //	run/grant-boundary            an ungranted capability is denied
 //	run/reports-resources         self-reported resource use is honest about
@@ -493,6 +534,134 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 		}
 	})
 
+	add("run/published-tool-names", func(t conformanceT) {
+		// The job publishes, per granted capability, the tool names some
+		// facility in this build actually serves. This grades the worker
+		// against that publication rather than against a name written down in
+		// either repository.
+		//
+		// It is the obligation that was missing. A worker that requested
+		// "babel_corpus_search" — a name it chose for itself, which existed
+		// nowhere in Babel — passed all fourteen other obligations and was
+		// then denied on every request of the first real exploration there has
+		// been, producing no evidence at all. Nothing in the exam could see
+		// it, because the suite's authorizer never inspected a tool name while
+		// production's always had.
+		//
+		// A worker that read grant.tools and one that guessed a published name
+		// both pass, deliberately: the contract is about the name that
+		// travels, not about how the worker arrived at it. What fails is a
+		// name Babel never published — and the request is separately denied
+		// for it, so a candidate sees the same verdict here that a real run
+		// would give it.
+		var sent Job
+		receipt, err := conformanceRun(t, target, ConformanceRequestTool, AllowWithinGrant(),
+			func(job *Job) { sent = *job })
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		published := publishedTools(sent.Grant)
+		if len(published) == 0 {
+			t.Fatal("the conformance job published no tool names for any granted capability, so this obligation could not fail whatever the worker asked for; the fixture, not the candidate, is broken")
+		}
+		if len(receipt.ToolRequests) == 0 {
+			t.Fatal("the worker made no tool request under the request-tool directive, so it never named a tool at all and nothing here is graded")
+		}
+		for _, request := range receipt.ToolRequests {
+			if !sent.Grant.Allows(request.Capability) {
+				// An out-of-grant capability is denied before its tool name is
+				// ever looked at, so the name carries no meaning there. The
+				// deliberate out-of-grant probe run/grant-boundary demands must
+				// not be failed by this obligation.
+				continue
+			}
+			if ServesTool(request.Capability, request.Tool) {
+				continue
+			}
+			if names := published[request.Capability]; len(names) > 0 {
+				t.Errorf("the worker requested tool %q under capability %q, and the job published %q for it. The name is not the worker's to choose: Babel denies an unpublished one on every request, which looks from the worker's side exactly like a corpus with nothing in it",
+					request.Tool, request.Capability, names)
+				continue
+			}
+			t.Errorf("the worker requested tool %q under capability %q, which the job published no tool names for. A granted capability absent from grant.tools is one no facility in this build serves, and a worker must request nothing under it rather than fall back to a name of its own",
+				request.Tool, request.Capability)
+		}
+	})
+
+	add("run/consumes-served-evidence", func(t conformanceT) {
+		// Every other obligation about a tool request grades the
+		// adjudication: that the worker blocked for a decision, that it
+		// survived a denial, that the name it asked under was one Babel
+		// published. None of them can see whether the evidence attached to an
+		// allowed decision was read, and Babel's receipt cannot either — it
+		// records the decision and deliberately never the payload, because
+		// §9 forbids the durable record becoming a plaintext store of archive
+		// content.
+		//
+		// So the worker is asked, the same way run/decodes-the-job asks about
+		// the job document, and the answer is graded against material
+		// carrying a per-run nonce. A worker that echoes it has demonstrably
+		// read bytes only this decision could have given it; a worker that
+		// answers out of a fixture, or that reports the request it made
+		// instead of the answer it got, fails.
+		//
+		// Two hits are served, under two different harnesses, so a worker
+		// that reads the first and stops — or that hardcodes a harness — is
+		// caught rather than credited.
+		nonce := rand.Text()
+		evidence := conformanceEvidence(nonce)
+		encoded, err := json.Marshal(evidence)
+		if err != nil {
+			t.Fatalf("the suite could not encode its own synthetic evidence: %v; the fixture, not the candidate, is broken", err)
+		}
+
+		receipt, err := conformanceRun(t, target, ConformanceEchoEvidence, serveEvidence(encoded))
+		if err != nil {
+			t.Fatalf("Run under the echo-evidence directive: %v", err)
+		}
+		if len(receipt.ToolRequests) == 0 {
+			t.Fatal("the worker made no tool request under the echo-evidence directive, so nothing was served to it and nothing here is graded")
+		}
+		if receipt.Result == nil {
+			t.Fatal("no terminal result under the echo-evidence directive; a worker that produces nothing has reported no reading of the evidence")
+		}
+
+		var payload struct {
+			Evidence *evidenceEcho `json:"served_evidence"`
+		}
+		if err := json.Unmarshal(receipt.Result.Payload, &payload); err != nil {
+			t.Fatalf("the result payload is not a JSON object: %v", err)
+		}
+		if payload.Evidence == nil {
+			t.Fatal(`the result payload carries no "served_evidence" object; the echo-evidence directive asks the worker to report the evidence a decision served it, and a worker that cannot has not shown it read any`)
+		}
+		compareEcho(t, "served hit", payload.Evidence.Hits, echoOfEvidence(evidence))
+
+		// Babel's own half of the same boundary, checked here for the reason
+		// run/no-credential-leak checks the receipt for the token: the durable
+		// record is what must not become a plaintext store of archive content
+		// readable by anyone with catalog access (§9).
+		//
+		// The scope is Babel's own writing about the request — the tool
+		// records — and deliberately not the whole receipt. A worker's result
+		// payload is where observations live, and an observation quotes the
+		// claim it is about, so corpus text there is the product working
+		// rather than a leak. What must never carry it is the record Babel
+		// authors, whose one route to a payload is the reason string a
+		// facility returns beside it.
+		var records strings.Builder
+		for _, request := range receipt.ToolRequests {
+			fmt.Fprintf(&records, "%+v\n", request)
+		}
+		rendered := records.String()
+		for _, hit := range evidence.Hits {
+			if strings.Contains(rendered, hit.Excerpt) {
+				t.Errorf("the excerpt served for %s %s reached Babel's own tool record: %s. The wire carries content to the worker; the record Babel writes carries the decision, the argument digest and locators only",
+					hit.Harness, hit.SourceID, rendered)
+			}
+		}
+	})
+
 	add("run/tool-denial-continues", func(t conformanceT) {
 		receipt, err := conformanceRun(t, target, ConformanceRequestTool,
 			DenyAll("conformance: policy denies this request"))
@@ -753,20 +922,159 @@ func echoOfJob(job Job) jobEcho {
 	return echo
 }
 
-// compareEcho grades one echoed array against what the job carried, naming
-// every entry that differs rather than the first. A worker that misread the
-// job usually misread all of it the same way, and one report of the whole gap
-// is one round of work instead of several.
+// evidenceEcho is the answer ConformanceEchoEvidence demands: the served
+// evidence the worker says it decoded, one flat string per hit.
+//
+// Flat for jobEcho's reason, and flatter than it looks: a worker that produces
+// "HARNESS|SOURCE_ID|INDEX|PATH|LINE|BYTE_OFFSET|DIGEST|EXCERPT" has read the
+// hit's identity, its position in its session, all four parts of the locator
+// that reopens it, and the text a model would quote. Those are exactly the
+// fields a hit must carry to be citable, so the echo and the contract are the
+// same list.
+type evidenceEcho struct {
+	Hits []string `json:"hits"`
+}
+
+// conformanceLocator, conformanceHit and conformanceResults are the suite's
+// own rendering of a served corpus search.
+//
+// They are defined here rather than imported from the facility that produces
+// them in a real run. Go forbids internal/explore from being reachable by an
+// external candidate anyway, but the reason is not the import graph: the suite
+// grades the protocol, and a suite built out of the producer's structs would
+// certify that Babel can marshal its own types rather than that the shape on
+// the wire is the shape the contract documents. It is the discipline the fake
+// worker follows in the other direction, and for the same reason.
+type conformanceLocator struct {
+	Path       string `json:"path"`
+	Line       int    `json:"line"`
+	ByteOffset int64  `json:"byte_offset"`
+	Digest     string `json:"digest"`
+}
+
+type conformanceHit struct {
+	Harness  string             `json:"harness"`
+	SourceID string             `json:"source_id"`
+	Index    int                `json:"index"`
+	Kind     string             `json:"kind"`
+	Excerpt  string             `json:"excerpt"`
+	Locator  conformanceLocator `json:"locator"`
+}
+
+type conformanceResults struct {
+	Schema string           `json:"schema"`
+	Query  string           `json:"query"`
+	Limit  int              `json:"limit"`
+	Hits   []conformanceHit `json:"hits"`
+}
+
+// conformanceEvidence builds the synthetic payload one echo-evidence run
+// serves, with nonce woven through every field the obligation grades.
+//
+// The nonce reaches the source identity, the locator's path, the record digest
+// and the excerpt, so no part of the answer can be a constant. It does not
+// reach the harness, because a harness name is a closed vocabulary a worker may
+// reasonably recognize and a nonsense value would be grading the worker's
+// tolerance rather than its reading; two real and different harness names do
+// that job instead, and catch a worker that hardcodes one.
+//
+// The digests are real sha256 hex because the locator's digest is what verifies
+// a reopened record, and a candidate is entitled to reject a locator that could
+// not identify anything.
+func conformanceEvidence(nonce string) conformanceResults {
+	first := sha256.Sum256([]byte("babel/conformance/evidence/1\x00" + nonce))
+	second := sha256.Sum256([]byte("babel/conformance/evidence/2\x00" + nonce))
+	return conformanceResults{
+		Schema: "babel.corpus-search/1",
+		Query:  "synthetic " + nonce,
+		Limit:  10,
+		Hits: []conformanceHit{{
+			Harness:  "omp",
+			SourceID: "omp-" + nonce,
+			Index:    42,
+			Kind:     "agent-claim",
+			Excerpt:  "the synthetic record " + nonce + " claims the cache warms on startup",
+			Locator: conformanceLocator{
+				Path:       "/synthetic/" + nonce + "/omp.jsonl",
+				Line:       12,
+				ByteOffset: 3456,
+				Digest:     hex.EncodeToString(first[:]),
+			},
+		}, {
+			Harness:  "codex",
+			SourceID: "codex-" + nonce,
+			Index:    7,
+			Kind:     "tool-observation",
+			Excerpt:  "a second synthetic record for " + nonce + " reporting exit status 1",
+			Locator: conformanceLocator{
+				Path:       "/synthetic/" + nonce + "/codex.jsonl",
+				Line:       77,
+				ByteOffset: 98765,
+				Digest:     hex.EncodeToString(second[:]),
+			},
+		}},
+	}
+}
+
+// echoOfEvidence renders the answer a worker that read results must produce.
+// Like echoOfJob it is computed from what the obligation actually served, so
+// the expectation cannot drift from the fixture.
+func echoOfEvidence(results conformanceResults) []string {
+	echo := make([]string, 0, len(results.Hits))
+	for _, hit := range results.Hits {
+		echo = append(echo, strings.Join([]string{
+			hit.Harness,
+			hit.SourceID,
+			strconv.Itoa(hit.Index),
+			hit.Locator.Path,
+			strconv.Itoa(hit.Locator.Line),
+			strconv.FormatInt(hit.Locator.ByteOffset, 10),
+			hit.Locator.Digest,
+			hit.Excerpt,
+		}, "|"))
+	}
+	return echo
+}
+
+// serveEvidence is AllowWithinGrant with a payload attached to every allowed
+// corpus-search decision: the suite standing in for the facility a real run
+// installs behind that capability.
+//
+// It is a separate policy rather than a change to AllowWithinGrant because
+// AllowWithinGrant is a grant-shaped policy and nothing more. A permissive
+// policy that also fabricated corpus evidence would be serving material no
+// facility produced, into every obligation that uses it, and the obligations
+// that grade a denial would be grading a lie.
+func serveEvidence(results json.RawMessage) Authorizer {
+	within := AllowWithinGrant()
+	return AuthorizerFunc(func(ctx context.Context, req ToolRequest) Decision {
+		decision := within.Authorize(ctx, req)
+		if !decision.Allow || req.Capability != CapabilityCorpusSearch {
+			return decision
+		}
+		decision.Results = results
+		return decision
+	})
+}
+
+// compareEcho grades one echoed array against what Babel sent, naming every
+// entry that differs rather than the first. A worker that misread material
+// usually misread all of it the same way, and one report of the whole gap is
+// one round of work instead of several.
+//
+// It is shared by the obligations that ask the worker to report back something
+// unobservable — the job it decoded, the evidence a decision served it — so
+// the wording says "Babel sent" rather than naming either.
 func compareEcho(t conformanceT, subject string, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {
-		t.Errorf("worker reports %d %s entries, the job carried %d: %q, want %q",
+		t.Errorf("worker reports %d %s entries, Babel sent %d: %q, want %q",
 			len(got), subject, len(want), got, want)
 		return
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("worker reports %s %d as %q, the job carried %q",
+			t.Errorf("worker reports %s %d as %q, Babel sent %q",
 				subject, i, got[i], want[i])
 		}
 	}

@@ -42,19 +42,23 @@ func TestMigrateIsIdempotent(t *testing.T) {
 
 // The allowlist exists to stop a future migration from widening the plaintext
 // boundary. These are the shapes that widening actually takes.
+//
+// The column is `transcript_body`, not `title`: migrations/0004 admitted a
+// title by explicit operator decision, and transcript content is what the
+// boundary is now for. A column named after the thing SPEC.md 9 says must never
+// leave the encrypted repository is the sharpest case the gate has to catch.
 func TestVerifyRejectsDisallowedColumn(t *testing.T) {
 	db := newDB(t)
 	mustMigrate(t, db)
 
-	// A title is exactly what SPEC.md 9 keeps out of PostgreSQL.
-	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN title text`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN transcript_body text`); err != nil {
 		t.Fatalf("add column: %v", err)
 	}
 	err := sharedcatalog.Verify(context.Background(), db)
 	if err == nil {
-		t.Fatal("Verify accepted sessions.title")
+		t.Fatal("Verify accepted sessions.transcript_body")
 	}
-	if !strings.Contains(err.Error(), "sessions.title") {
+	if !strings.Contains(err.Error(), "sessions.transcript_body") {
 		t.Fatalf("error must name the offending column, got: %v", err)
 	}
 }
@@ -93,21 +97,28 @@ func TestVerifyReportsMissingColumn(t *testing.T) {
 
 // Verify reports every problem at once: a migration review wants the whole
 // picture, not the first failure.
+//
+// The two columns are chosen to be ones the contract still refuses after
+// migrations/0004 widened it. sessions.primary_path is a filesystem path to the
+// transcript itself, and hosts.hostname is infrastructure identity; admitting a
+// title and a workspace did not admit either, and this is where that stays
+// true. It is also the non-vacuity check for the widening: if the allowlist had
+// been loosened by class rather than by column, these would sail through.
 func TestVerifyReportsEveryProblem(t *testing.T) {
 	db := newDB(t)
 	mustMigrate(t, db)
 
-	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN workspace text`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN primary_path text`); err != nil {
 		t.Fatalf("add column: %v", err)
 	}
-	if _, err := db.Exec(`ALTER TABLE hosts ADD COLUMN display_name text`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE hosts ADD COLUMN hostname text`); err != nil {
 		t.Fatalf("add column: %v", err)
 	}
 	err := sharedcatalog.Verify(context.Background(), db)
 	if err == nil {
 		t.Fatal("Verify accepted two disallowed columns")
 	}
-	for _, want := range []string{"sessions.workspace", "hosts.display_name"} {
+	for _, want := range []string{"sessions.primary_path", "hosts.hostname"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error omits %s: %v", want, err)
 		}
@@ -185,7 +196,7 @@ func TestEnsureCompatibleRefusesAPendingMigration(t *testing.T) {
 
 	// And write authority is refused with it, which is the property that
 	// matters: a half-migrated catalog must not be published into.
-	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if _, err := sharedcatalog.AcquireHostLease(ctx, db, "h1", "inst-a", time.Minute); err == nil {
@@ -206,18 +217,41 @@ func TestOpenErrorsRedactTheDSN(t *testing.T) {
 	}
 }
 
-// Session identity must stay opaque: no allowlisted column may be one of the
-// selector-shaped or path-shaped names the contract excludes.
+// A fetch locator must stay out of the catalog, and so must transcript content
+// and infrastructure identity.
+//
+// migrations/0004 admitted a session's title, its workspace and its
+// continuation grade, and a host's display name, by explicit operator decision.
+// This list is what did NOT come with them, and the distinction is the point:
+// `workspace` is a directory a human reads, while `selector`, `source_id` and
+// `primary_path` are how a session is addressed and fetched, and admitting them
+// would make the catalog alone sufficient to pull transcript bytes. `hostname`
+// is a machine's infrastructure identity, which is not what a display name is
+// (reconcile.go refuses to adopt snapshots recorded under one). `transcript` is
+// the content itself.
 func TestAllowlistExcludesSensitiveNames(t *testing.T) {
 	forbidden := []string{
-		"title", "workspace", "path", "primary_path", "selector",
-		"source_id", "display_name", "hostname", "repo", "branch",
-		"continuation_grade", "transcript",
+		"path", "primary_path", "selector", "source_id",
+		"hostname", "repo", "branch", "transcript",
 	}
 	listing := strings.Join(sharedcatalog.Allowlist(), "\n")
 	for _, name := range forbidden {
 		if strings.Contains(listing, "."+name+":") {
 			t.Errorf("allowlist admits %q, which SPEC.md 9 keeps out of PostgreSQL", name)
+		}
+	}
+
+	// The other half of the contract: the four columns the operator did admit
+	// must actually be listed, or Verify would reject the schema this
+	// repository's own migration creates and the widening would be a
+	// half-change nobody could apply.
+	for _, want := range []string{
+		"sessions.title:", "sessions.title_provenance:",
+		"sessions.workspace:", "sessions.continuation_grade:",
+		"hosts.display_name:",
+	} {
+		if !strings.Contains(listing, want) {
+			t.Errorf("allowlist omits %q, admitted by operator decision 2026-08-30", want)
 		}
 	}
 }

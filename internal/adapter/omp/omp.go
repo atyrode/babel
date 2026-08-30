@@ -696,6 +696,11 @@ func (h header) commonMeta(sourceModTime time.Time) adapter.CommonMeta {
 	if h.title != "" {
 		title := h.title
 		meta.Title = &title
+		// OMP writes this title into the log itself. That its own tiny
+		// model composed the text does not make it Babel's inference:
+		// the value arrived with the session and Babel repeats it
+		// unchanged, which is what recorded provenance means.
+		meta.TitleProvenance = adapter.TitleRecorded
 	} else {
 		missing("title", "session log carries no non-empty title record")
 	}

@@ -46,6 +46,8 @@ babel storage status [--json]              # report persistent configuration
 babel archive init [--json]                # create the repository, once per deployment
 babel archive push [--json]                # snapshot every adapter root on this host
 babel archive status [--json]              # snapshots grouped by host (read-only)
+babel archive fleet [--expect HOST,...] [--every DURATION] [--json]
+                                           # is every machine still publishing? (read-only)
 babel archive verify [--deep] [--json]     # structural check; --deep re-reads all pack data
 babel sessions list [--harness omp|codex|claude] [--json]   # discover local sessions in place
 babel sessions list --host HOST [--snapshot ID] [--json]     # list another host's archived sessions
@@ -55,6 +57,19 @@ babel sessions prune --local --yes (--all | SELECTOR...)    # delete locally fet
 ```
 
 - `sessions list`/`inspect` are read-only and never open the repository.
+- `archive fleet` answers "did every machine back up", which `archive status`
+  only supplies timestamps for. Each host is judged against a cadence derived
+  from its own recent snapshot gaps (or the fleet's, when it has too little
+  history), and the `EXPECTED EVERY` column always names that source, so an
+  inferred cadence is never mistaken for a configured one. A host with no
+  derivable cadence reports `unknown`, never `current`.
+- A machine that has never published is invisible to the archive by
+  construction, so name the ones you expect: `--expect ws-linux,wsl-nixos`
+  reports an absent one as `MISSING`. Babel stores no roster - a stored fleet
+  list goes stale silently and then answers confidently.
+- `archive fleet` always exits `0`, including for a late or missing host: it
+  reports a judgement, and is deliberately not an alerting hook. Script off
+  the `state` field of `--json`.
 - Selectors come from `sessions list` output (`harness/source_id`); a unique
   suffix (e.g. the session stem) is accepted, and ambiguity is reported with
   candidates rather than guessed.

@@ -8,19 +8,30 @@ import (
 	"strings"
 )
 
-// Class names one of the data classes SPEC.md 9 permits in Babel's PostgreSQL
-// catalog. Every column in the shared schema must map to exactly one of them,
-// and nothing outside this set may be stored: titles, filesystem paths,
-// workspace names, transcript metadata, claims, operator context, and derived
-// judgements about session content stay in the encrypted repository, the
-// encrypted object store, and local indexes.
+// Class names one of the data classes Babel's PostgreSQL catalog admits. Every
+// column in the shared schema must map to exactly one of them, and nothing
+// outside this set may be stored.
+//
+// Six of the classes are SPEC.md 9's original Phase A vocabulary. Four more
+// exist because the operator widened the boundary on 2026-08-30
+// (migrations/0004): a session's title, its workspace path, its continuation
+// grade, and a host's display name and machine facts are now plaintext here, so
+// that an instance holding only the DSN can browse the fleet and read something
+// rather than a list of digests. Transcripts stay encrypted in restic.
+//
+// What remains outside every class is the part that decides whether this list
+// is still a boundary: transcript bodies, plaintext full-text indexes,
+// deterministic ciphertext, and anything else that answers "does this session
+// contain X" without a key; claims, operator context, findings, review notes
+// and other Phase B payloads, which are sealed into objects; session selectors
+// and adapter source ids; and infrastructure identity such as a machine's
+// system hostname.
 //
 // Phase B needed no new class. SPEC.md 9's Phase B vocabulary - structured
 // identifiers, entity kind and schema version, encrypted-object references,
 // key ID, ciphertext size, commit/sync state, relationship IDs - lands on the
 // classes Phase A already defined: an object key, a key ID, and a relationship
-// ID are all opaque IDs or locators, and a sync state is a commit state. That
-// the vocabulary did not have to widen is the point.
+// ID are all opaque IDs or locators, and a sync state is a commit state.
 type Class string
 
 const (
@@ -38,6 +49,26 @@ const (
 	ClassCommitState Class = "commit state"
 	// ClassTimestamp covers timestamps.
 	ClassTimestamp Class = "timestamp"
+	// ClassSessionLabel covers a session's model-written title: a short
+	// human-readable summary, admitted by explicit operator decision
+	// (2026-08-30, migrations/0004). It is not a search oracle over transcript
+	// content, and SPEC.md 9 still forbids one - a keyword set, a plaintext
+	// full-text index, or a digest over transcript bytes is not this class.
+	ClassSessionLabel Class = "session label"
+	// ClassWorkspacePath covers a session's workspace path, admitted by the
+	// same decision. It names a directory on the publishing machine, never the
+	// session's selector or its adapter source id.
+	ClassWorkspacePath Class = "workspace path"
+	// ClassSessionGrade covers a session's continuation grade: a verdict the
+	// publishing host resolves from its own local files. It is stored because
+	// no other instance can recompute it, and it is nullable because absence
+	// must not read as a negative verdict.
+	ClassSessionGrade Class = "session grade"
+	// ClassHostIdentity covers a host's operator-assigned display name and the
+	// machine facts it reports about itself - operating system and
+	// architecture. It does not cover a system hostname or any other
+	// infrastructure identity.
+	ClassHostIdentity Class = "host identity or machine fact"
 )
 
 // allowlist enumerates every column the shared schema may contain, keyed by
@@ -60,10 +91,16 @@ var allowlist = map[string]map[string]Class{
 		"created_at":    ClassTimestamp,
 		"last_seen_at":  ClassTimestamp,
 	},
+	// created_at is also this host's first-seen time: it is set when the row is
+	// first inserted and never rewritten (migrations/0004).
 	"hosts": {
-		"host_id":       ClassOpaqueID,
-		"deployment_id": ClassOpaqueID,
-		"created_at":    ClassTimestamp,
+		"host_id":             ClassOpaqueID,
+		"deployment_id":       ClassOpaqueID,
+		"created_at":          ClassTimestamp,
+		"display_name":        ClassHostIdentity,
+		"os":                  ClassHostIdentity,
+		"arch":                ClassHostIdentity,
+		"identity_updated_at": ClassTimestamp,
 	},
 	"snapshots": {
 		"snapshot_id":       ClassOpaqueID,
@@ -92,8 +129,16 @@ var allowlist = map[string]map[string]Class{
 		"blob_count":            ClassMeasure,
 		"unresolved_blob_count": ClassMeasure,
 		"source_modified_at":    ClassTimestamp,
-		"created_at":            ClassTimestamp,
-		"updated_at":            ClassTimestamp,
+		"title":                 ClassSessionLabel,
+		// title_provenance is an identifier, not a label: it names which
+		// derivation the title followed and ranges over three compile-time
+		// constants, exactly the justification 0001_init gives for admitting
+		// `harness`. It carries no session content (migrations/0005).
+		"title_provenance":   ClassIdentifier,
+		"workspace":          ClassWorkspacePath,
+		"continuation_grade": ClassSessionGrade,
+		"created_at":         ClassTimestamp,
+		"updated_at":         ClassTimestamp,
 	},
 	"host_leases": {
 		"host_id":     ClassOpaqueID,

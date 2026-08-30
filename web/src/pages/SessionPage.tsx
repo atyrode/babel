@@ -12,6 +12,28 @@ import { errorMessage, formatBytes, formatTime } from "../format";
 
 const TRANSCRIPT_PAGE_SIZE = 200;
 
+// titleOriginLabel states a title's provenance in words rather than as a
+// vocabulary token. The three values are not interchangeable claims — one is
+// the harness's own record, one is babel's arithmetic over the session's
+// records, one is a model's guess that cost money — and a detail page that
+// printed the bare token would leave the reader to know that already.
+//
+// Null when there is no title: a provenance without a title names the origin
+// of nothing, and Metadata renders a null as absent, which is the truth here.
+function titleOriginLabel(title: string | null, provenance: string | null): string | null {
+  if (!title) return null;
+  switch (provenance) {
+    case "recorded":
+      return "recorded — the harness wrote this title in the session's own files";
+    case "derived":
+      return "derived — babel computed it offline from the session's records, with no model";
+    case "inferred":
+      return "inferred — a model wrote it, and session material left this machine";
+    default:
+      return "unknown — nothing recorded where this title came from";
+  }
+}
+
 function SessionPage() {
   const { selector: routeSelector } = useParams();
   const selector = routeSelector ?? "";
@@ -145,6 +167,12 @@ function SessionPage() {
             <Metadata label="Described" value={described ? `${described.relative} · ${described.absolute}` : session.described_at} />
             <Metadata label="Hint" value={session.hint} />
             <Metadata label="Title" value={session.title} />
+            {/* Spelled out here rather than abbreviated to a mark: the list is
+                where an operator comes to find out exactly what babel knows
+                about one session, and "derived by babel" is the answer to
+                "who named this?" that the sessions table only has room to
+                hint at. */}
+            <Metadata label="Title from" value={titleOriginLabel(session.title, session.title_provenance)} />
             <Metadata label="Workspace" value={session.workspace} mono />
             <Metadata label="Created" value={created ? `${created.relative} · ${created.absolute}` : null} />
             <Metadata label="Modified" value={modified ? `${modified.relative} · ${modified.absolute}` : null} />
