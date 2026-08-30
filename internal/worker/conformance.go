@@ -67,14 +67,24 @@ type conformanceT interface {
 	Logf(format string, args ...any)
 }
 
-// conformanceTarget is the implementation under examination: the executable
-// and the arguments that put it into worker mode. The arguments matter because
-// a worker need not speak the protocol at argv[0] — Code, for one, is an
-// interactive program that speaks it under a subcommand — and needing an
-// argument is not the same as being a different protocol.
+// conformanceTarget is the implementation under examination: the executable,
+// the arguments that put it into worker mode, and the containment the run
+// demands of it. The arguments matter because a worker need not speak the
+// protocol at argv[0] — Code, for one, is an interactive program that speaks it
+// under a subcommand — and needing an argument is not the same as being a
+// different protocol.
+//
+// The requirement matters for a different reason. A worker that declares
+// honestly weak containment fails every obligation that reaches worker mode
+// with the same containment error, which hides whether it implements the rest
+// of the protocol at all. Grading it against a relaxed requirement separates
+// "has no sandbox yet" from "does not speak the protocol" — two findings that
+// need different work. A nil requirement means the strict default, so the
+// relaxation is only ever an explicit choice.
 type conformanceTarget struct {
-	binary string
-	args   []string
+	binary      string
+	args        []string
+	requirement *Requirement
 }
 
 // conformanceObligation is one contract item: the name it is known by and the
@@ -396,8 +406,9 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 func conformanceClient(t conformanceT, target conformanceTarget, adjust func(*Config)) *Client {
 	t.Helper()
 	cfg := Config{
-		Binary: target.binary,
-		Args:   target.args,
+		Binary:      target.binary,
+		Args:        target.args,
+		Requirement: target.requirement,
 		Limits: Limits{
 			HandshakeTimeout: 15 * time.Second,
 			IdleTimeout:      20 * time.Second,

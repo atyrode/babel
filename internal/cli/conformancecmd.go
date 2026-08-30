@@ -31,8 +31,17 @@ executable is put into worker mode, exactly as for "babel explore".
 Nothing is analysed, no session is read, and no credential is needed: the
 suite drives the worker with a synthetic job over its own pipes.
 
+A worker that declares honestly weak containment fails every obligation
+that reaches worker mode with the same containment error, which says
+nothing about whether it implements the rest of the protocol.
+--unsandboxed grades it against a relaxed requirement so "needs a sandbox"
+is legible as a separate finding from "does not speak the protocol". It
+never relaxes anything about a real run: which containment an exploration
+demands is decided at launch, not here.
+
 Flags:
   --worker-arg ARG   extra argument for the worker executable; repeatable
+  --unsandboxed      grade against relaxed containment, not the strict default
   --json             emit the report as JSON on stdout
 `
 
@@ -44,8 +53,13 @@ type obligationRow struct {
 }
 
 type conformanceResult struct {
-	Worker      string          `json:"worker"`
-	WorkerArgs  []string        `json:"worker_args,omitempty"`
+	Worker     string   `json:"worker"`
+	WorkerArgs []string `json:"worker_args,omitempty"`
+	// Unsandboxed records that the grading was relaxed. It is always present
+	// rather than omitted when false, because a relaxed pass reported
+	// identically to a strict one would be the most misleading output this
+	// command could produce.
+	Unsandboxed bool            `json:"unsandboxed"`
 	OK          bool            `json:"ok"`
 	Total       int             `json:"total"`
 	Passed      int             `json:"passed"`
@@ -58,6 +72,7 @@ func (a *app) conformanceCmd(ctx context.Context, args []string) error {
 	c := newCmd("conformance", conformanceUsage)
 	var workerArgs repeatedFlag
 	c.fs.Var(&workerArgs, "worker-arg", "extra argument for the worker executable; repeatable")
+	unsandboxed := c.fs.Bool("unsandboxed", false, "grade against relaxed containment")
 	asJSON := c.fs.Bool("json", false, "emit the report as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -74,10 +89,15 @@ func (a *app) conformanceCmd(ctx context.Context, args []string) error {
 		return err
 	}
 
-	results := worker.RunConformance(ctx, binary, workerArgs...)
+	results := worker.RunConformanceWith(ctx, worker.ConformanceOptions{
+		Worker:      binary,
+		Args:        workerArgs,
+		Unsandboxed: *unsandboxed,
+	})
 	res := conformanceResult{
 		Worker:      Sanitize(binary),
 		WorkerArgs:  sanitizeAll(workerArgs),
+		Unsandboxed: *unsandboxed,
 		Total:       len(results),
 		Obligations: make([]obligationRow, 0, len(results)),
 	}
@@ -108,6 +128,9 @@ func (a *app) conformanceCmd(ctx context.Context, args []string) error {
 		}
 		fmt.Fprintf(a.stdout, "\n%d %s, %d passed, %d failed\n",
 			res.Total, plural(res.Total, "obligation", "obligations"), res.Passed, res.Failed)
+		if res.Unsandboxed {
+			fmt.Fprintf(a.stdout, "graded against relaxed containment; a real run demands the strict requirement\n")
+		}
 	}
 	if res.OK {
 		return nil
