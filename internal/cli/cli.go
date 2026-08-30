@@ -108,7 +108,9 @@ Commands:
   analysis profile show       show the stored Code profile reference
   conformance WORKER          run the analysis-worker contract suite
 
-A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one.
+A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one. It may
+begin with "-" — every Claude Code and OMP source id does, because they encode
+a workspace path — and is then still read as a selector, never as a flag.
 
 Repository selection for the archive commands and for sessions fetch:
   --repo REPOSITORY           else $BABEL_RESTIC_REPO, else storage.json
@@ -290,23 +292,123 @@ func newCmd(name, usage string) *cmd {
 // the standard flag package stops at, because "babel sessions inspect
 // SELECTOR --json" is the natural invocation order. An explicit -h prints
 // usage on stdout and reports errHelp; a malformed flag is a usage error.
+//
+// Operands are separated from the flags before the flag package sees them,
+// so a positional argument beginning with "-" is still an operand. That is
+// not an edge case: every Claude Code and OMP project directory encodes its
+// workspace path by replacing the separators with dashes, so a pasted bare
+// source id normally starts with one, and requiring the operator to discover
+// the "--" terminator before a copy-paste works is a trap. Flag validation
+// is not weakened in exchange: classify states exactly which tokens the flag
+// package still rules on, and the arity checks below reject an operand no
+// command had room for, naming the flag reading it may have been.
 func (c *cmd) parse(a *app, args []string) error {
-	for {
-		if err := c.fs.Parse(args); err != nil {
-			if errors.Is(err, flag.ErrHelp) {
-				fmt.Fprint(a.stdout, c.usage)
-				return errHelp
+	flags, operands := c.partition(args)
+	if err := c.fs.Parse(flags); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(a.stdout, c.usage)
+			return errHelp
+		}
+		return &usageError{msg: err.Error(), usage: c.usage}
+	}
+	c.rest = operands
+	return nil
+}
+
+// tokenKind classifies one argv token standing at flag position.
+type tokenKind int
+
+const (
+	// tokenOperand is a positional argument: either the flag package would
+	// stop at it, or it is a dash-leading operand it must not be shown.
+	tokenOperand tokenKind = iota
+	// tokenFlag is a token the flag package parses, or rejects, on its own.
+	tokenFlag
+	// tokenValueFlag is a defined flag that consumes the following token.
+	tokenValueFlag
+	// tokenTerminator is the bare "--".
+	tokenTerminator
+)
+
+// partition splits argv into the flag arguments handed to the flag package
+// and the positional operands it never sees. Order is preserved within each
+// half, which is what lets flags follow operands without the flag package
+// stopping at the first operand.
+func (c *cmd) partition(args []string) (flags, operands []string) {
+	for i := 0; i < len(args); i++ {
+		switch c.classify(args[i]) {
+		case tokenTerminator:
+			// The explicit terminator keeps working and keeps meaning exactly
+			// what it says: every remaining token is an operand.
+			return flags, append(operands, args[i+1:]...)
+		case tokenValueFlag:
+			// A non-boolean flag spelled without "=" takes the next token as
+			// its value, dash or no dash, so that token is never an operand.
+			flags = append(flags, args[i])
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
 			}
-			return &usageError{msg: err.Error(), usage: c.usage}
+		case tokenFlag:
+			flags = append(flags, args[i])
+		case tokenOperand:
+			operands = append(operands, args[i])
 		}
-		remaining := c.fs.Args()
-		if len(remaining) == 0 {
-			return nil
-		}
-		c.rest = append(c.rest, remaining[0])
-		args = remaining[1:]
+	}
+	return flags, operands
+}
+
+// classify decides what one token at flag position is, mirroring the flag
+// package's own syntax rules so that every token handed back to it parses
+// exactly as it would have.
+//
+// The single judgement call is an undefined name, because a mistyped "-jsn"
+// and a source id like "-home-operator-project" have the same shape. It is
+// read as a flag whenever only a flag could have been meant: the long
+// "--jsn" spelling, which no source id has because no workspace path begins
+// with two separators; the malformed spellings ("---x", "-=x") only the flag
+// package words correctly; and the help names the flag package serves
+// itself. Everything else is an operand, and an operand no command had room
+// for is restated as an undefined flag by the arity check, so a short
+// misspelling is still rejected rather than swallowed.
+func (c *cmd) classify(s string) tokenKind {
+	if s == "--" {
+		return tokenTerminator
+	}
+	if !dashLeading(s) {
+		return tokenOperand
+	}
+	name, _, hasValue := strings.Cut(strings.TrimPrefix(s[1:], "-"), "=")
+	f := c.fs.Lookup(name)
+	switch {
+	case f != nil && (hasValue || isBoolFlag(f)):
+		return tokenFlag
+	case f != nil:
+		return tokenValueFlag
+	case name == "" || name[0] == '-':
+		return tokenFlag
+	case strings.HasPrefix(s, "--"), name == "h", name == "help":
+		return tokenFlag
+	default:
+		return tokenOperand
 	}
 }
+
+// boolFlag is how the flag package itself asks whether a flag stands alone.
+// The interface is unexported there, so it is matched structurally, exactly
+// as the flag package matches it.
+type boolFlag interface{ IsBoolFlag() bool }
+
+// isBoolFlag reports whether a defined flag stands alone, which is what
+// decides whether the following token is its value or an operand.
+func isBoolFlag(f *flag.Flag) bool {
+	bf, ok := f.Value.(boolFlag)
+	return ok && bf.IsBoolFlag()
+}
+
+// dashLeading reports whether a token has the shape parse has to judge. A
+// lone "-" is a conventional operand and the flag package stops at it too.
+func dashLeading(s string) bool { return len(s) > 1 && s[0] == '-' }
 
 // args returns the accepted positional arguments.
 func (c *cmd) args() []string { return c.rest }
@@ -319,6 +421,12 @@ func (c *cmd) usagef(format string, args ...any) error {
 // noArgs rejects positional arguments for commands that take none.
 func (c *cmd) noArgs() error {
 	if len(c.rest) > 0 {
+		// A command with no operand at all leaves nothing to weigh: a
+		// dash-leading argument here can only have been a flag, so it earns
+		// the flag package's own wording rather than an arity complaint.
+		if arg, ok := firstDashLeading(c.rest); ok {
+			return c.usagef("flag provided but not defined: %s", arg)
+		}
 		return c.usagef("%s takes no positional arguments, got %q", c.fs.Name(), c.rest[0])
 	}
 	return nil
@@ -332,8 +440,43 @@ func (c *cmd) oneSelector() (string, error) {
 	case 0:
 		return "", c.usagef("%s requires a SELECTOR", c.fs.Name())
 	default:
+		// Both readings of a surplus dash-leading operand stay live: a
+		// mistyped short flag and a Claude or OMP source id are both a dash
+		// followed by a word, and this command's one selector is spent under
+		// either reading. Picking one would hand the operator the wrong
+		// remedy every other time, so the rejection names the operands it
+		// saw and states the rule that routed them there — which is the hint
+		// the bare failure never gave.
+		if _, ok := firstDashLeading(c.rest); ok {
+			return "", c.usagef("%s takes exactly one SELECTOR, got %d (%s); a token beginning with \"-\" is read as a selector and never as a flag, so a mistyped flag arrives here too — run with -h for the flags",
+				c.fs.Name(), len(c.rest), quoteArgs(c.rest))
+		}
 		return "", c.usagef("%s takes exactly one SELECTOR, got %d", c.fs.Name(), len(c.rest))
 	}
+}
+
+// firstDashLeading returns the first operand that could have been meant as a
+// flag. parse defers an undefined short name to the operands so that a
+// dash-leading selector resolves, so this is where an operand that no
+// command had room for is read back the other way.
+func firstDashLeading(args []string) (string, bool) {
+	for _, arg := range args {
+		if dashLeading(arg) {
+			return arg, true
+		}
+	}
+	return "", false
+}
+
+// quoteArgs renders an operand list for one diagnostic. Each value is quoted
+// so that an empty or space-carrying operand is still visible as one token;
+// the whole message reaches the terminal through Sanitize like any other.
+func quoteArgs(args []string) string {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = fmt.Sprintf("%q", arg)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // repoHint is the one-line remedy attached to every rejected repository

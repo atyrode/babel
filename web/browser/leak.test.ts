@@ -8,74 +8,33 @@
 // The corpus is synthetic and disposable. Nothing here reads a real session.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
+import { resolveChrome } from "./chrome";
 
 const TRANSCRIPT_SENTINEL = "TRANSCRIPTSENTINELa1b2c3d4e5f60718";
 const CREDENTIAL_SENTINEL = "CREDENTIALSENTINEL90817263544f3e2";
 const SESSION_TITLE = "Synthetic verification session";
 const STEM = "2026-01-02T03-04-05-678Z_00000000-0000-4000-8000-000000000001";
 
-// resolveChrome finds a browser to drive. A developer without one skips, which
-// mirrors how the Go suite treats a missing restic. In CI that would silently
-// retire the gate, so there it is a hard failure instead.
-function resolveChrome(): string | null {
-  const explicit = process.env.BABEL_TEST_CHROME;
-  if (explicit) return explicit;
-
-  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
-    const found = Bun.which(name);
-    if (found) return found;
-  }
-
-  const cache = join(process.env.HOME ?? "", ".cache", "puppeteer", "chrome");
-  if (existsSync(cache)) {
-    for (const dir of readdirSync(cache)) {
-      const candidate = join(cache, dir, "chrome-linux64", "chrome");
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return null;
-}
-
-const chrome = resolveChrome();
-if (!chrome && process.env.CI) {
-  throw new Error("no Chrome found in CI; set BABEL_TEST_CHROME. Skipping here would retire the §548 gate.");
-}
-
-// Locally the suite still skips rather than fails: a developer without Chrome
-// has a legitimate reason to run everything else, and failing here would break
-// that. But this file is the only cover for the browser-observable §548
-// channels, so a skip whose only trace is bun's "skip" tally reads exactly like
-// a pass -- the run goes green and the operator learns nothing about what was
-// never checked. That is the failure mode this notice exists to remove. It is
-// printed once, at load, ahead of every result the run will report, and it
-// names each guarantee the skip withdrew rather than saying only "skipped".
-if (!chrome) {
-  console.error(
-    [
-      "",
-      "================================================================================",
-      "  LEAK GATE DID NOT RUN -- no Chrome or Chromium found.",
-      "",
-      "  Nothing in this file tested the SPEC.md §548 browser channels. Every one of",
-      "  these is UNVERIFIED by this run:",
-      "    - that the session token leaves the address bar and is absent from every",
-      "      reachable history entry,",
-      "    - that no transcript or credential sentinel reaches a URL,",
-      "    - that no /api response is served from the browser cache,",
-      "    - that a browser context without the token is refused.",
-      "",
-      "  A green result for this file means the gate was skipped, not that it passed.",
-      "  Install Chrome or Chromium, or point BABEL_TEST_CHROME at one, and re-run:",
-      "      BABEL_TEST_CHROME=/path/to/chrome bun run test:browser",
-      "================================================================================",
-      "",
-    ].join("\n"),
-  );
-}
+// This suite is the only cover for the browser-observable SPEC.md §548
+// channels, so a skip whose only trace is bun's "skip" tally reads exactly
+// like a pass. resolveChrome resolves the browser and reports its absence in
+// one call, so the executable cannot be obtained without the absence being
+// named: locally it prints the guarantees this run did not check, and in CI it
+// fails hard rather than retiring the gate for everyone.
+const chrome = resolveChrome({
+  gate: "§548 leak gate",
+  covers: "the SPEC.md §548 browser channels",
+  unverified: [
+    "that the session token leaves the address bar and is absent from every reachable history entry",
+    "that no transcript or credential sentinel reaches a URL",
+    "that no /api response is served from the browser cache",
+    "that a browser context without the token is refused",
+  ],
+});
 
 let root = "";
 let server: Bun.Subprocess | null = null;

@@ -155,13 +155,17 @@ func TestArchiveListRendersAndNarrowsTheArchiveView(t *testing.T) {
 		if !strings.HasPrefix(line, "omp") && !strings.HasPrefix(line, "codex") && !strings.HasPrefix(line, "claude") {
 			continue
 		}
-		// HARNESS, SOURCE ID, SIZE, MODIFIED, TITLE, WORKSPACE. No fixture
-		// identity holds a space, so the columns split on whitespace.
+		// HARNESS, SOURCE ID, SIZE, MODIFIED, TITLE, WORKSPACE, GRADE. No
+		// fixture identity holds a space, so the columns split on whitespace.
 		fields := strings.Fields(line)
-		if len(fields) != 6 {
-			t.Fatalf("table row %q split into %d columns, want 6", line, len(fields))
+		if len(fields) != 7 {
+			t.Fatalf("table row %q split into %d columns, want 7", line, len(fields))
 		}
-		for i, column := range []string{"MODIFIED", "TITLE", "WORKSPACE"} {
+		// Every best-effort column is absent for another host's sessions, and
+		// absence must render as absence rather than as a guess. GRADE is one
+		// of them: continuation grade is resolved from local files, which this
+		// machine does not have for a session it never held.
+		for i, column := range []string{"MODIFIED", "TITLE", "WORKSPACE", "GRADE"} {
 			if fields[3+i] != "-" {
 				t.Fatalf("row %q renders %s as %q, want %q", fields[1], column, fields[3+i], "-")
 			}

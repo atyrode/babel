@@ -86,6 +86,21 @@ func (f *fixture) writeFile(t *testing.T, rel string, content []byte) string {
 	return path
 }
 
+// fakeBinary writes an executable stub under root and returns its path.
+//
+// It exists because the restic binary is resolved and checked once, up front
+// (see prepare): a test that only builds a command still needs a path that
+// could have been executed, which is the same requirement a real deployment
+// has. The stub is never run by these tests.
+func fakeBinary(t *testing.T, root string) string {
+	t.Helper()
+	path := filepath.Join(root, "fake-restic")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("writing a fake restic: %v", err)
+	}
+	return path
+}
+
 func TestOpenValidatesConfigWithoutTouchingRepository(t *testing.T) {
 	root := t.TempDir()
 	repoDir := filepath.Join(root, "repo")
@@ -134,7 +149,7 @@ func TestCommandKeepsPasswordOffArgvAndEnvMinimal(t *testing.T) {
 	repo, err := Open(Config{
 		Repository:   filepath.Join(root, "repo"),
 		PasswordFile: pwFile,
-		Binary:       filepath.Join(root, "fake-restic"),
+		Binary:       fakeBinary(t, root),
 		CacheDir:     filepath.Join(root, "cache"),
 	})
 	if err != nil {
@@ -207,7 +222,7 @@ func TestDefaultCacheDirIsUsedWhenUnset(t *testing.T) {
 	repo, err := Open(Config{
 		Repository:   filepath.Join(root, "repo"),
 		PasswordFile: pwFile,
-		Binary:       filepath.Join(root, "fake-restic"),
+		Binary:       fakeBinary(t, root),
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -571,6 +586,15 @@ func TestCheckPassesThenDetectsPackCorruption(t *testing.T) {
 	if exitErr.Stderr == "" {
 		t.Error("ExitError carries no stderr tail")
 	}
+	// The tail is not merely non-empty: a deep check's value is restic's own
+	// diagnostic, and the part an operator acts on is the last part of it -
+	// `restic repair packs <id>` is what removes the damaged file. Rendering
+	// the tail may reframe restic's words but must never shorten them.
+	for _, want := range []string{"restic repair packs", filepath.Base(pack), "repository contains errors"} {
+		if !strings.Contains(exitErr.Stderr, want) {
+			t.Errorf("stderr tail lost %q, so the operator loses the remedy: %s", want, exitErr.Stderr)
+		}
+	}
 	if strings.Contains(err.Error(), testPassword) {
 		t.Error("error message leaked the repository password")
 	}
@@ -770,27 +794,76 @@ func TestOperationsHonourContext(t *testing.T) {
 	}
 }
 
-func TestMissingBinaryIsReportedOnFirstUse(t *testing.T) {
+// The restic binary is resolved on first use rather than at Open, which
+// performs no I/O. What that resolution reports has to be recognisable,
+// because an executable that cannot be run is the one restic failure whose
+// remedy is a setting rather than anything about the repository - and the
+// setting's name belongs to the caller, not here.
+//
+// Before this was typed, each operation reported the failure itself as
+// "fork/exec /some/restic: no such file or directory": accurate, arriving once
+// per verb, naming neither what Babel was attempting nor what would fix it.
+func TestUnusableBinaryIsReportedAsATypedErrorOnFirstUse(t *testing.T) {
 	root := t.TempDir()
 	pwFile := filepath.Join(root, "password")
 	if err := os.WriteFile(pwFile, []byte(testPassword), 0o600); err != nil {
 		t.Fatalf("writing password file: %v", err)
 	}
+	// Present, and still not runnable: a path that exists is not the same
+	// claim as a path that can be executed.
+	notExecutable := filepath.Join(root, "not-executable")
+	if err := os.WriteFile(notExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatalf("writing a non-executable file: %v", err)
+	}
 	// An empty PATH makes the deferred lookup fail; Open still succeeds.
 	t.Setenv("PATH", filepath.Join(root, "empty-bin"))
-	repo, err := Open(Config{Repository: filepath.Join(root, "repo"), PasswordFile: pwFile})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
+
+	cases := []struct {
+		name     string
+		binary   string
+		wantPath string
+		// notFound records that this case must keep wrapping
+		// exec.ErrNotFound, which is what tells "restic is not installed"
+		// from "the file named is not an executable".
+		notFound bool
+	}{
+		{"absent from PATH", "", "restic", true},
+		{"named path does not exist", filepath.Join(root, "absent", "restic"), filepath.Join(root, "absent", "restic"), false},
+		{"named path is not executable", notExecutable, notExecutable, false},
 	}
-	_, err = repo.Init(context.Background())
-	if err == nil {
-		t.Fatal("Init succeeded without a restic binary")
-	}
-	if !strings.Contains(err.Error(), "locating binary") {
-		t.Errorf("error %q does not explain the missing binary", err)
-	}
-	if !errors.Is(err, exec.ErrNotFound) {
-		t.Errorf("error %v does not wrap exec.ErrNotFound", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, err := Open(Config{
+				Repository:   filepath.Join(root, "repo"),
+				PasswordFile: pwFile,
+				Binary:       tc.binary,
+				CacheDir:     filepath.Join(root, "cache"),
+			})
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			_, err = repo.Init(context.Background())
+			if err == nil {
+				t.Fatal("Init succeeded without a usable restic binary")
+			}
+			var binErr *BinaryError
+			if !errors.As(err, &binErr) {
+				t.Fatalf("error %v is not a *BinaryError, so no caller can name the remedy", err)
+			}
+			if binErr.Path != tc.wantPath {
+				t.Errorf("BinaryError.Path = %q, want %q: a caller cannot say which executable was tried", binErr.Path, tc.wantPath)
+			}
+			if !strings.Contains(err.Error(), "locating binary") {
+				t.Errorf("error %q does not explain the missing binary", err)
+			}
+			// Nothing was launched, so nothing may read as a launch failure.
+			if strings.Contains(err.Error(), "fork/exec") {
+				t.Errorf("error %q still reports the exec failure it replaced", err)
+			}
+			if tc.notFound && !errors.Is(err, exec.ErrNotFound) {
+				t.Errorf("error %v does not wrap exec.ErrNotFound", err)
+			}
+		})
 	}
 }
 
@@ -812,5 +885,132 @@ func TestIsMissingRepoRecognisesResticSignals(t *testing.T) {
 				t.Fatalf("isMissingRepo(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// restic writes a fatal error as prose, except under --json, where it writes
+// one envelope object to stderr instead. Babel passes --json to snapshots, ls
+// and backup, so an unrendered tail put
+// `{"message_type":"exit_error","code":12,"message":"Fatal: wrong password or
+// no key found"}` in the middle of a sentence Babel wrote, and the operator had
+// to read past message_type to reach the cause.
+//
+// The framing goes. Nothing inside it does, and nothing that is not the
+// envelope is touched: a parser that assumed JSON would turn every prose
+// diagnostic into an empty error, which is a worse failure than an ugly one.
+func TestExitEnvelopeIsUnwrappedAndEverythingElsePassesThrough(t *testing.T) {
+	cases := []struct {
+		name    string
+		written string
+		want    string
+	}{
+		{
+			"envelope becomes its message",
+			`{"message_type":"exit_error","code":12,"message":"Fatal: wrong password or no key found"}` + "\n",
+			"Fatal: wrong password or no key found",
+		},
+		{
+			// restic's fatal errors run to several lines, and the remedy is in
+			// the later ones. They fold into the tail's own separator rather
+			// than being cut down to the first line.
+			"a multi-line message keeps every line",
+			`{"message_type":"exit_error","code":1,"message":"Fatal: repository contains errors\nrestic repair packs 0f1e2d\nrestic repair snapshots --forget"}` + "\n",
+			"Fatal: repository contains errors; restic repair packs 0f1e2d; restic repair snapshots --forget",
+		},
+		{
+			// A restic invoked without --json, or one older than the envelope.
+			"prose passes through",
+			"Fatal: wrong password or no key found\nIs there a repository at the following location?\n",
+			"Fatal: wrong password or no key found; Is there a repository at the following location?",
+		},
+		{
+			// A backup mirrors every line of its stream into the tail, and
+			// almost none of them are the envelope.
+			"other json messages pass through",
+			`{"message_type":"status","percent_done":0.5}` + "\n",
+			`{"message_type":"status","percent_done":0.5}`,
+		},
+		{
+			// What the byte limit produces when it lands mid-object. Half a
+			// diagnostic still beats none.
+			"a truncated envelope passes through",
+			`{"message_type":"exit_error","code":12,"message":"Fatal: wrong pas`,
+			`{"message_type":"exit_error","code":12,"message":"Fatal: wrong pas`,
+		},
+		{
+			// Unwrapping this would render as an error with nothing in it.
+			"an empty message passes through",
+			`{"message_type":"exit_error","code":12,"message":""}`,
+			`{"message_type":"exit_error","code":12,"message":""}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tail := &tailBuffer{limit: stderrTailLimit}
+			if _, err := tail.Write([]byte(tc.written)); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if got := tail.String(); got != tc.want {
+				t.Fatalf("tail = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The envelope carried restic's exit code as well as its message, and two
+// callers depend on that code surviving: probe/isMissingRepo tells a repository
+// that does not exist from one the password will not open, and the two have
+// opposite remedies - one is `babel archive init`, the other is a corrected
+// credential. Unwrapping the envelope must cost neither distinction.
+func TestJSONCommandFailuresKeepTheirCodeAndMissingRepoSignal(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	wrong := f.writeFile(t, "wrong-password", []byte("not the repository password\n"))
+	locked, err := Open(Config{
+		Repository:   f.repoDir,
+		PasswordFile: wrong,
+		Binary:       f.cfg.Binary,
+		CacheDir:     filepath.Join(f.root, "cache"),
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// Snapshots runs `snapshots --json`, which is where the envelope comes from.
+	if _, err := locked.Snapshots(ctx); err == nil {
+		t.Fatal("Snapshots succeeded with the wrong password")
+	} else {
+		if strings.Contains(err.Error(), "message_type") {
+			t.Errorf("error %q still carries restic's json envelope", err)
+		}
+		if !strings.Contains(err.Error(), "wrong password or no key found") {
+			t.Errorf("error %q does not name the cause", err)
+		}
+		if isMissingRepo(err) {
+			t.Errorf("a wrong password read as a missing repository: %v", err)
+		}
+		if got := exitCode(err); got <= 0 {
+			t.Errorf("exitCode = %d, want restic's status: the code is gone", got)
+		}
+	}
+
+	absent, err := Open(Config{
+		Repository:   filepath.Join(f.root, "absent-repo"),
+		PasswordFile: f.cfg.PasswordFile,
+		Binary:       f.cfg.Binary,
+		CacheDir:     filepath.Join(f.root, "cache"),
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := absent.Snapshots(ctx); err == nil {
+		t.Fatal("Snapshots succeeded against a repository that does not exist")
+	} else {
+		if !isMissingRepo(err) {
+			t.Errorf("a missing repository stopped being recognisable: %v", err)
+		}
+		if got := exitCode(err); got != exitNoSuchRepo {
+			t.Errorf("exitCode = %d, want %d", got, exitNoSuchRepo)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -970,6 +971,223 @@ func TestPlaintextColumnsMatchAllowlist(t *testing.T) {
 	}
 }
 
+// TestEveryFrontierTableRefusesUpdateAndDelete checks the append-only rule at
+// the only level that survives a future caller: the database refuses, so the
+// property does not depend on this package never writing an UPDATE. §14's
+// frontier gate rests on it, and so does §4.7's append-only review semantics,
+// because internal/review records dispositions and refinements in these same
+// tables. A test that searched this file for the word DELETE would say nothing
+// about the next statement someone adds.
+//
+// The cases are checked against the tables the file actually carries, so a
+// table added later without triggers fails here instead of quietly joining the
+// schema unprotected. Every case asserts its row exists first: a DELETE
+// against an empty table succeeds and would prove nothing.
+func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	hypothesis, observation, finding, proposal := developPath(t, store)
+
+	// developPath leaves the four record tables and their two join tables
+	// populated. A link, a later lifecycle event, and a rejection with the
+	// refinement it authorized fill the rest.
+	other, err := store.CreateHypothesis(ctx, HypothesisInput{
+		RunID: "run-1", Payload: hypothesisPayload("a second idea", 0.3),
+	})
+	if err != nil {
+		t.Fatalf("create second hypothesis: %v", err)
+	}
+	if _, err := store.Link(ctx, LinkInput{
+		FromID: hypothesis.ID, ToID: other.ID, Type: LinkCorroborates,
+	}); err != nil {
+		t.Fatalf("link hypotheses: %v", err)
+	}
+	if _, err := store.SetStatus(ctx, StatusInput{
+		HypothesisID: hypothesis.ID, Status: StatusInvestigating, RunID: "run-1",
+	}); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	if _, _, err := store.RejectAndRefine(ctx,
+		DispositionInput{
+			Subject:    Ref{Type: EntityProposal, ID: proposal.ID},
+			ReviewerID: "operator", Note: "too broad",
+		},
+		RefinementPayload{Guidance: "narrow it to one repository"},
+	); err != nil {
+		t.Fatalf("reject and refine: %v", err)
+	}
+
+	// set is the mutation a future caller might plausibly write, and where
+	// selects the row it would aim at. The delete and the row count reuse
+	// where, so all three statements address the same rows.
+	type immutableCase struct {
+		set   string
+		where string
+		args  []any
+	}
+	cases := map[string]immutableCase{
+		"frontier_hypothesis":          {`run_id = 'run-forged'`, `id = ?`, []any{hypothesis.ID}},
+		"frontier_status_event":        {`status = 'promoted'`, `hypothesis_id = ?`, []any{hypothesis.ID}},
+		"frontier_hypothesis_link":     {`link_type = 'contradicts'`, `from_id = ?`, []any{hypothesis.ID}},
+		"frontier_observation":         {`payload_json = '{}'`, `id = ?`, []any{observation.ID}},
+		"frontier_finding":             {`payload_json = '{}'`, `id = ?`, []any{finding.ID}},
+		"frontier_finding_observation": {`position = 7`, `finding_id = ?`, []any{finding.ID}},
+		"frontier_proposal":            {`payload_json = '{}'`, `id = ?`, []any{proposal.ID}},
+		"frontier_proposal_finding":    {`position = 7`, `proposal_id = ?`, []any{proposal.ID}},
+		"frontier_disposition":         {`disposition = 'accept'`, `subject_id = ?`, []any{proposal.ID}},
+		"frontier_refinement_request":  {`payload_json = '{}'`, `subject_id = ?`, []any{proposal.ID}},
+	}
+
+	tables := frontierTables(t, store)
+	if len(tables) != len(cases) {
+		t.Fatalf("frontier has tables %v, and %d of them are checked for immutability", tables, len(cases))
+	}
+	count := func(t *testing.T, table string, tc immutableCase) int {
+		t.Helper()
+		var rows int
+		if err := store.db.QueryRowContext(ctx,
+			`SELECT count(*) FROM `+table+` WHERE `+tc.where, tc.args...).Scan(&rows); err != nil {
+			t.Fatalf("count %s rows: %v", table, err)
+		}
+		return rows
+	}
+	for _, table := range tables {
+		tc, ok := cases[table]
+		if !ok {
+			t.Fatalf("table %s is not checked for immutability", table)
+		}
+		t.Run(table, func(t *testing.T) {
+			before := count(t, table, tc)
+			if before == 0 {
+				t.Fatalf("no %s row matches, so the statements below would abort nothing", table)
+			}
+			if _, err := store.db.ExecContext(ctx,
+				`UPDATE `+table+` SET `+tc.set+` WHERE `+tc.where, tc.args...); err == nil {
+				t.Errorf("%s accepted an update", table)
+			}
+			if _, err := store.db.ExecContext(ctx,
+				`DELETE FROM `+table+` WHERE `+tc.where, tc.args...); err == nil {
+				t.Errorf("%s accepted a delete", table)
+			}
+			// An abort that left half its work behind would be no
+			// better than the statement it refused.
+			if after := count(t, table, tc); after != before {
+				t.Errorf("%s has %d matching rows after the refused statements, want %d", table, after, before)
+			}
+		})
+	}
+}
+
+// TestFrontierPredatingTheTriggersGainsThem is the half of the immutability
+// change that a fresh temporary directory can never exercise. SQLite attaches
+// a trigger when it is created, so putting these triggers in the first
+// migration would have protected only databases this build creates, and a
+// durable file an operator already has would have kept accepting updates while
+// every other test passed. They are a second migration for exactly that
+// reason, and this proves the forward step runs and leaves the rows alone.
+func TestFrontierPredatingTheTriggersGainsThem(t *testing.T) {
+	dir := t.TempDir()
+
+	// Exactly what a build older than the triggers left behind: migration
+	// 1's tables, the shared ledger at version 1, and no trigger anywhere.
+	old, err := sql.Open("sqlite", filepath.Join(dir, databaseFile))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	for _, statement := range []string{
+		migrations[0],
+		`CREATE TABLE schema_migration(component TEXT PRIMARY KEY, version INTEGER)`,
+	} {
+		if _, err := old.Exec(statement); err != nil {
+			t.Fatalf("build a pre-trigger frontier: %v", err)
+		}
+	}
+	if _, err := old.Exec(`INSERT INTO schema_migration(component, version) VALUES(?, 1)`, component); err != nil {
+		t.Fatalf("record the pre-trigger version: %v", err)
+	}
+	// Guard the premise. If a later change moved these triggers into
+	// migration 1, this file would no longer represent a frontier that
+	// predates them and the upgrade below would prove nothing — while the
+	// databases this test exists for would be left unprotected.
+	var existing int
+	if err := old.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'trigger'`).Scan(&existing); err != nil {
+		t.Fatalf("count triggers in the pre-trigger frontier: %v", err)
+	}
+	if existing != 0 {
+		t.Fatalf("migration 1 created %d triggers, so no existing database can gain them by upgrading", existing)
+	}
+	// A hypothesis and the initial status event the older build always
+	// wrote beside it, since status is read from that history rather than
+	// from a column.
+	const kept = "hyp_predates_triggers"
+	written := formatTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	if _, err := old.Exec(`INSERT INTO frontier_hypothesis(
+		id, ancestor_id, run_id, schema_version, created_at, payload_json)
+		VALUES(?, NULL, 'run-old', ?, ?, ?)`,
+		kept, RecordSchema, written,
+		`{"statement":"an idea written before the triggers existed","priority":0.4}`,
+	); err != nil {
+		t.Fatalf("write a pre-trigger hypothesis: %v", err)
+	}
+	if _, err := old.Exec(`INSERT INTO frontier_status_event(
+		id, hypothesis_id, seq, status, run_id, recorded_at, payload_json)
+		VALUES('sev_predates_triggers', ?, 1, ?, 'run-old', ?, '{}')`,
+		kept, string(StatusUntriaged), written,
+	); err != nil {
+		t.Fatalf("write a pre-trigger status event: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close the pre-trigger frontier: %v", err)
+	}
+
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatalf("open a pre-trigger frontier: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close frontier: %v", err)
+		}
+	})
+
+	var version int
+	if err := store.db.QueryRow(`SELECT version FROM schema_migration WHERE component = ?`,
+		component).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("schema version = %d, want %d", version, len(migrations))
+	}
+
+	// Both directions for every table, so a migration that named only some
+	// of them fails here rather than at the one table it forgot.
+	var triggers int
+	if err := store.db.QueryRow(`SELECT count(*) FROM sqlite_master
+		WHERE type = 'trigger' AND tbl_name LIKE 'frontier_%'`).Scan(&triggers); err != nil {
+		t.Fatalf("count triggers: %v", err)
+	}
+	if want := 2 * len(frontierTables(t, store)); triggers != want {
+		t.Fatalf("upgraded frontier has %d triggers, want %d", triggers, want)
+	}
+
+	if _, err := store.db.Exec(`UPDATE frontier_hypothesis SET run_id = 'run-forged' WHERE id = ?`, kept); err == nil {
+		t.Error("a frontier that predates the triggers still accepts an update")
+	}
+	if _, err := store.db.Exec(`DELETE FROM frontier_hypothesis WHERE id = ?`, kept); err == nil {
+		t.Error("a frontier that predates the triggers still accepts a delete")
+	}
+
+	// The upgrade adds a rule, not a rewrite: the row an operator already
+	// had is still readable and unchanged.
+	preserved, err := store.Hypothesis(context.Background(), kept)
+	if err != nil {
+		t.Fatalf("read a pre-trigger hypothesis after the upgrade: %v", err)
+	}
+	if preserved.RunID != "run-old" {
+		t.Errorf("run id = %q, want the value the older build wrote", preserved.RunID)
+	}
+}
+
 // TestPayloadRoundTripKeepsEvidenceWithItsLocator proves evidence survives the
 // payload encode/decode boundary intact, and that a payload whose evidence
 // lost its locator fails to decode instead of yielding an unverifiable claim.
@@ -1005,13 +1223,21 @@ func TestPayloadRoundTripKeepsEvidenceWithItsLocator(t *testing.T) {
 	}
 
 	t.Run("a payload whose evidence lost its locator fails to decode", func(t *testing.T) {
-		if _, err := store.db.ExecContext(ctx,
-			`UPDATE frontier_observation SET payload_json = ? WHERE id = ?`,
+		// The row is forged by an insert rather than by updating the one
+		// written above, because the immutability triggers refuse an
+		// update — which is the point of them. An insert reaches the same
+		// state a corrupted or a foreign-written row would leave behind.
+		const forged = "obs_orphan_locator"
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO frontier_observation(
+			id, ancestor_id, hypothesis_id, run_id, recipe_id, recipe_version,
+			schema_version, evidence_count, created_at, payload_json)
+			VALUES(?, NULL, ?, 'r', 'lens', 3, ?, 1, ?, ?)`,
+			forged, hypothesis.ID, RecordSchema, formatTime(store.now()),
 			`{"claim":"a claim","confidence":"low","impact":"low","evidence":[{"note":"orphan"}]}`,
-			written.ID); err != nil {
-			t.Fatalf("corrupt payload: %v", err)
+		); err != nil {
+			t.Fatalf("forge payload: %v", err)
 		}
-		if _, err := store.Observation(ctx, written.ID); !errors.Is(err, ErrInvalidLocator) {
+		if _, err := store.Observation(ctx, forged); !errors.Is(err, ErrInvalidLocator) {
 			t.Fatalf("got %v, want ErrInvalidLocator", err)
 		}
 	})

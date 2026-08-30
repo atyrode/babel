@@ -11,41 +11,30 @@
 // The corpus is synthetic and disposable. Nothing here reads a real session.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer, { type Browser, type Dialog, type Page } from "puppeteer-core";
+import { resolveChrome } from "./chrome";
 
 const SESSION_TITLE = "Synthetic lock session";
 const STEM = "2026-01-02T03-04-05-678Z_00000000-0000-4000-8000-000000000002";
 const LOCK_BUTTON = "text/Lock & stop";
 
-// resolveChrome finds a browser to drive. A developer without one skips, which
-// mirrors how the Go suite treats a missing restic. In CI that would silently
-// retire the gate, so there it is a hard failure instead.
-function resolveChrome(): string | null {
-  const explicit = process.env.BABEL_TEST_CHROME;
-  if (explicit) return explicit;
-
-  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
-    const found = Bun.which(name);
-    if (found) return found;
-  }
-
-  const cache = join(process.env.HOME ?? "", ".cache", "puppeteer", "chrome");
-  if (existsSync(cache)) {
-    for (const dir of readdirSync(cache)) {
-      const candidate = join(cache, dir, "chrome-linux64", "chrome");
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return null;
-}
-
-const chrome = resolveChrome();
-if (!chrome && process.env.CI) {
-  throw new Error("no Chrome found in CI; set BABEL_TEST_CHROME. Skipping here would retire the lock/stop gate.");
-}
+// A developer without Chrome skips this suite. The notice resolveChrome prints
+// in that case is what keeps the skip from reading as a pass: this file is the
+// only cover for the control the operator actually clicks, so a green run that
+// never opened a browser would say the revocation path works when nothing
+// checked it. In CI the same absence is a hard failure.
+const chrome = resolveChrome({
+  gate: "lock/stop gate",
+  covers: "the SPEC.md §2 lock and stop control through the browser",
+  unverified: [
+    "that the control the operator actually sees asks for confirmation before it can end the session, and that declining leaves the server still serving",
+    "that confirming revokes the launch token and the server process really exits, rather than the page merely claiming it did",
+    "that the stopped page is terminal -- no navigation left, no stale shell still polling -- and tells the operator how to start Babel again",
+  ],
+});
 
 let root = "";
 let server: Bun.Subprocess | null = null;

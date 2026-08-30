@@ -13,37 +13,26 @@
 // The corpus is synthetic and disposable. Nothing here reads a real session.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
 import { HOSTILE_HTML, UNBROKEN_TOKEN } from "../mock/phaseb";
+import { resolveChrome } from "./chrome";
 
-// resolveChrome finds a browser to drive. A developer without one skips, which
-// mirrors how the Go suite treats a missing restic. In CI that would silently
-// retire the gate, so there it is a hard failure instead.
-function resolveChrome(): string | null {
-  const explicit = process.env.BABEL_TEST_CHROME;
-  if (explicit) return explicit;
-
-  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
-    const found = Bun.which(name);
-    if (found) return found;
-  }
-
-  const cache = join(process.env.HOME ?? "", ".cache", "puppeteer", "chrome");
-  if (existsSync(cache)) {
-    for (const dir of readdirSync(cache)) {
-      const candidate = join(cache, dir, "chrome-linux64", "chrome");
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return null;
-}
-
-const chrome = resolveChrome();
-if (!chrome && process.env.CI) {
-  throw new Error("no Chrome found in CI; set BABEL_TEST_CHROME. Skipping here would retire the Phase B web gate.");
-}
+// A developer without Chrome skips this suite. The notice resolveChrome prints
+// in that case is what keeps the skip from reading as a pass: nothing else
+// drives the Phase B areas in a browser, so a green run that never launched one
+// would report the whole surface as acceptable while no page was ever rendered.
+// In CI the same absence is a hard failure.
+const chrome = resolveChrome({
+  gate: "Phase B web gate",
+  covers: "the Phase B areas -- Explore, Hypotheses, Findings, Reality and Review -- in a browser",
+  unverified: [
+    "that every Phase B area renders against the mock at all, and that an empty frontier reads as a state rather than as a bug",
+    "that the hostile HTML, Markdown, URL and control fixtures render inert: no script runs, no markup is injected, and the literal markup stays visible as escaped text",
+    "that every control is reachable by keyboard, and that no route overflows at either 390px or 1440px",
+    "that recording a disposition, accepting a plan and answering a question are explicit acts that persist and read back",
+    "that no record content reaches a request URL or the location hash",
+  ],
+});
 
 interface MockServer {
   process: Bun.Subprocess<"ignore", "pipe", "pipe">;

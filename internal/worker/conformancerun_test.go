@@ -22,7 +22,10 @@ import (
 // grades only an absence is satisfied by a program that produces nothing, so
 // "nothing happened" reads as a pass. run/no-credential-leak was exactly that
 // for a while — a silent binary scored 1 of 11 on a credential guarantee it had
-// never been exposed to. Any obligation reintroducing that shape fails here.
+// never been exposed to, and run/reports-resources would be the same shape if
+// it graded the absence of a resource report without first establishing that
+// the run reached a result. Any obligation reintroducing that shape fails
+// here.
 func TestRunConformanceFailsANonWorker(t *testing.T) {
 	candidates := map[string]conformanceTarget{
 		// Exits 0 immediately, no bytes on either stream.
@@ -30,7 +33,7 @@ func TestRunConformanceFailsANonWorker(t *testing.T) {
 		// Speaks never but stays alive, so every obligation spends its whole
 		// handshake budget waiting. The obligations are independent processes,
 		// so they are graded concurrently here: run serially this candidate
-		// costs the handshake timeout eleven times over for no extra evidence.
+		// costs the handshake timeout fourteen times over for no extra evidence.
 		"never handshakes": {binary: fakeWorkerPath, args: []string{"-no-hello"}},
 	}
 
@@ -60,7 +63,7 @@ func TestRunConformanceFailsANonWorker(t *testing.T) {
 
 // gradeConcurrently grades every obligation against one target at the same
 // time. RunConformance is deliberately serial — an operator reads a report in
-// order, and eleven worker processes at once would distort the timing
+// order, and fourteen worker processes at once would distort the timing
 // obligations — but each obligation launches its own process and shares nothing,
 // so a test that only needs the verdicts can afford the parallelism.
 func gradeConcurrently(target conformanceTarget) []ObligationResult {

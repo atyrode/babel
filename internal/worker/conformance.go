@@ -2,9 +2,11 @@ package worker
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,33 @@ const (
 	// ConformanceWellBehaved runs a minimal successful analysis: the resolved
 	// configuration, at least one progress event, then a result.
 	ConformanceWellBehaved = "well-behaved"
+
+	// ConformanceEchoJob runs a well-behaved analysis and, in the terminal
+	// result's payload, reports the job it decoded under the key "job":
+	//
+	//	"job":{"recipes":["ID@VERSION",…],
+	//	       "sources":["KIND|SELECTOR|DIGEST|SNAPSHOT",…]}
+	//
+	// Both arrays are in the job's own order, one entry per element, and an
+	// absent digest or snapshot is the empty string between its separators.
+	// The encoding is deliberately flat: a worker that produces it has read
+	// every subfield of every element, and Babel compares strings rather
+	// than guessing at a shape the counterpart chose.
+	//
+	// Nothing else is asked for. The job's identifiers, profile and grant
+	// are each already held to something — Babel correlates the run itself,
+	// refuses a resolved profile that does not match, and denies a request
+	// outside the grant — so adding them here would be a second contract
+	// over material that already has one.
+	//
+	// It exists because nothing else in a run makes the worker's reading of
+	// the job observable. Receipt.Recipes and Receipt.Sources are copied
+	// from Babel's own outgoing job, so they record what Babel sent and
+	// never what the counterpart understood: a worker that ignored both
+	// arrays produces a receipt indistinguishable from one that honoured
+	// them. The suite plants a per-run nonce in the material it asks about,
+	// so a candidate cannot answer with a constant read out of this file.
+	ConformanceEchoJob = "echo-job"
 
 	// ConformanceRequestTool makes exactly one tool request for
 	// CapabilityCorpusSearch, waits for the decision, records it in the
@@ -131,10 +160,16 @@ type conformanceObligation struct {
 //	handshake/refuse              a refused worker exits without a job
 //	run/well-behaved              configuration, progress, a readable result, exit 0
 //	run/declares-containment      the worker states the sandbox it ran in
+//	run/declares-profile          the resolved configuration carries the
+//	                              metadata, capabilities and cost Babel reads
+//	run/decodes-the-job           the worker reports back the recipes and
+//	                              sources it was actually given
 //	run/forward-compatible-job    unknown job fields are ignored, not fatal
 //	run/tool-allow                a tool request blocks for its decision
 //	run/tool-denial-continues     a denial does not end the run
 //	run/grant-boundary            an ungranted capability is denied
+//	run/reports-resources         self-reported resource use is honest about
+//	                              what the run demonstrably did
 //	run/error-is-terminal         no result may follow an error
 //	run/cancellation              cancellation ends the run promptly
 //	run/no-credential-leak        a worker asked for the broker token back
@@ -226,7 +261,7 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 		// A worker that passes every other obligation while declaring a
 		// schema Babel cannot read has produced a run whose output is
 		// unusable: the control plane refuses such a payload rather than
-		// parsing it hopefully, so the run would be graded 11/11 and still
+		// parsing it hopefully, so the run would be graded 14/14 and still
 		// deliver nothing. The declaration is part of the contract, not an
 		// implementation detail of whoever reads the payload.
 		if receipt.Result.Schema != ResultSchema {
@@ -248,6 +283,10 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 		if len(receipt.Progress) == 0 {
 			t.Error("no progress event was recorded; Babel cannot keep an interface responsive without them")
 		}
+		// Babel's own bookkeeping, not the worker's: these two fields are
+		// copied from the outgoing job, so they say what Babel authorized
+		// and nothing about what the counterpart read. run/decodes-the-job
+		// is what grades the worker's side of the same material.
 		if len(receipt.Recipes) == 0 || len(receipt.Sources) == 0 {
 			t.Error("the receipt does not record which recipes ran over which sources")
 		}
@@ -276,6 +315,138 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 		if err := got.Satisfies(SandboxedRun()); err != nil {
 			t.Errorf("declared containment does not satisfy a sandboxed run: %v", err)
 		}
+	})
+
+	add("run/declares-profile", func(t conformanceT) {
+		// The resolved configuration is not free-form. Babel's own consumers
+		// read named keys out of it, so a worker that renames one satisfies
+		// every other obligation and then produces receipts nobody can read
+		// — the same shape of drift that let a divergent result schema live
+		// on both sides of this boundary unnoticed.
+		//
+		// Only what Babel actually reads is required. Legislating a profile
+		// schema here would be Babel dictating across a boundary Code owns
+		// (SPEC.md §2.6), and a requirement no consumer has is a fabricated
+		// contract that a candidate would have to satisfy for nobody.
+		//
+		// The run makes one allowed tool request, because one of the three
+		// declarations below can only be graded against something the worker
+		// demonstrably did rather than against Babel's opinion of it.
+		receipt, err := conformanceRun(t, target, ConformanceRequestTool, AllowWithinGrant())
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if receipt.Result == nil {
+			t.Fatal("the run produced no result, so nothing was ever resolved to grade")
+		}
+
+		// SPEC.md §6.5 makes "resolved provider/model/thinking metadata
+		// returned by Code" part of every receipt, and internal/run reads
+		// those three keys by name (see the receipt-body assertions in
+		// internal/run's store tests). A worker renaming "model" to
+		// "model_name" writes a receipt whose model is empty, which is a
+		// durable record of the wrong thing rather than a missing nicety.
+		// Nothing beyond these three is required: a key Babel does not read
+		// is the profile's own business.
+		for _, key := range requiredMetadata {
+			if strings.TrimSpace(receipt.Metadata[key]) == "" {
+				t.Errorf("resolved metadata names no %q; SPEC.md §6.5 makes provider, model and thinking part of the receipt and Babel reads them under exactly those keys, so a renamed one is recorded as absent",
+					key)
+			}
+		}
+
+		// Capabilities are the worker's claim about what the profile can do.
+		// Babel stores and displays that claim, so the names in it have to be
+		// names Babel defines: a capability this build cannot name is one it
+		// can never grant (DenyUnknownCapability), so declaring it tells an
+		// operator the profile can do something no run will authorize.
+		for _, capability := range receipt.ResolvedCapabilities {
+			if !capability.Known() {
+				t.Errorf("resolved profile declares capability %q, which Babel does not define; a name Babel has no boundary for can never be granted, so the claim is unusable",
+					capability)
+			}
+		}
+		// The claim must at least cover what the worker actually did. Babel
+		// allowed this request and answered it, so the run itself is the
+		// evidence that the resolved profile can do it.
+		for _, request := range receipt.ToolRequests {
+			if request.Allowed && !slices.Contains(receipt.ResolvedCapabilities, request.Capability) {
+				t.Errorf("the worker exercised %q but its resolved profile declares only %v; a profile that omits what the run did is not the profile that ran",
+					request.Capability, receipt.ResolvedCapabilities)
+			}
+		}
+
+		// Cost is the profile's own estimate and never a measurement (see
+		// Cost), so Babel has nothing to compare a figure against and grades
+		// only the two things that are wrong on their face: a price that is
+		// negative, and a price with no unit. A profile that costs nothing
+		// reports zeros in a named currency and passes — requiring a
+		// positive rate would be graded by whoever writes the constant.
+		cost := receipt.Cost
+		if cost.InputPer1K < 0 || cost.OutputPer1K < 0 || cost.EstimatedRun < 0 {
+			t.Errorf("resolved cost carries a negative figure: %+v; a cost guard would read it as a discount", cost)
+		}
+		if cost.Currency == "" && (cost.InputPer1K != 0 || cost.OutputPer1K != 0 || cost.EstimatedRun != 0) {
+			t.Errorf("resolved cost quotes %+v in no currency; Babel shows an estimate only when it has a unit for it, so an unnamed currency drops the whole figure rather than displaying it wrongly",
+				cost)
+		}
+	})
+
+	add("run/decodes-the-job", func(t conformanceT) {
+		// Everything else about a run is consistent with a worker that read
+		// the profile, ignored the rest of the job, and analysed whatever it
+		// felt like. The receipt cannot show the difference: its Recipes and
+		// Sources are copied from Babel's outgoing job, so they are Babel
+		// quoting itself.
+		//
+		// So the worker is asked, and the answer is graded — the same
+		// mechanism every other unobservable state uses. The material it is
+		// asked about carries a per-run nonce, which is what separates a
+		// worker that decoded this job from one that hardcoded the published
+		// conformance fixture.
+		nonce := rand.Text()
+		var sent Job
+		receipt, err := conformanceRun(t, target, ConformanceEchoJob, AllowWithinGrant(),
+			func(job *Job) {
+				job.Recipes = []RecipeRef{
+					{ID: "outcome-integrity", Version: 1},
+					{ID: "evidence-" + nonce, Version: 7},
+				}
+				// Two sources, one archived and one not, so a worker that
+				// drops "snapshot" is caught by the first and a worker that
+				// invents one is caught by the second.
+				job.Sources = []Source{{
+					Kind:     "session",
+					Selector: "omp/synthetic-" + nonce,
+					Digest:   "sha256:" + strings.Repeat("0", 64),
+					Snapshot: "snapshot-" + nonce,
+				}, {
+					Kind:     "repository",
+					Selector: "synthetic/repository-" + nonce,
+					Digest:   "sha256:" + strings.Repeat("1", 64),
+				}}
+				sent = *job
+			})
+		if err != nil {
+			t.Fatalf("Run under the echo-job directive: %v", err)
+		}
+		if receipt.Result == nil {
+			t.Fatal("no terminal result under the echo-job directive; a worker that produces nothing has reported no reading of the job")
+		}
+
+		var payload struct {
+			Job *jobEcho `json:"job"`
+		}
+		if err := json.Unmarshal(receipt.Result.Payload, &payload); err != nil {
+			t.Fatalf("the result payload is not a JSON object: %v", err)
+		}
+		if payload.Job == nil {
+			t.Fatal(`the result payload carries no "job" object; the echo-job directive asks the worker to report the job it decoded, and a worker that cannot has not shown it read one`)
+		}
+		want := echoOfJob(sent)
+		got := *payload.Job
+		compareEcho(t, "recipe", got.Recipes, want.Recipes)
+		compareEcho(t, "source", got.Sources, want.Sources)
 	})
 
 	add("run/forward-compatible-job", func(t conformanceT) {
@@ -366,6 +537,75 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 		}
 		if receipt.Result == nil {
 			t.Fatal("no result after an out-of-grant denial")
+		}
+	})
+
+	add("run/reports-resources", func(t conformanceT) {
+		// Resource use is the one part of a receipt Babel copies from the
+		// counterpart's word (SPEC.md §6.5 asks for it "where observable"),
+		// so grading it has to stay inside what Babel can actually check.
+		// Two things are checkable and the rest is not:
+		//
+		//   - Babel answered the tool requests itself, so it knows a floor
+		//     for tool_calls that does not depend on trusting the worker.
+		//   - A negative counter is not a small measurement, it is a wrong
+		//     one. "Unknown" is reported by omitting the object, so a
+		//     sentinel like -1 lands in a receipt as a fact nobody measured.
+		//
+		// cpu_seconds, max_rss_bytes and sandbox_bytes_written are graded for
+		// sign and nothing else, deliberately. Babel measures none of them
+		// and cannot from outside the process; demanding a positive number
+		// would be satisfied by whoever writes the constant, which is worse
+		// than an honest zero because it looks like data.
+		//
+		// Monotonicity would be the other checkable property — these are
+		// cumulative counters and a running maximum, so none of them may
+		// fall over a run — and it is not graded because it is not visible
+		// from here. ProgressRecord carries no resources, and a receipt keeps
+		// only the latest self-report, so the suite sees one figure rather
+		// than a series. Grading the series would mean recording it, which is
+		// a change to what Babel stores rather than to what it demands of a
+		// worker.
+		receipt, err := conformanceRun(t, target, ConformanceRequestTool, AllowWithinGrant())
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if receipt.Result == nil {
+			t.Fatal("the run produced no result, so there is no completed run to account for")
+		}
+		allowed := 0
+		for _, request := range receipt.ToolRequests {
+			if request.Allowed {
+				allowed++
+			}
+		}
+		if allowed == 0 {
+			t.Fatal("the run brokered no allowed tool request, so nothing independently known is left to grade the worker's self-report against")
+		}
+
+		resources := receipt.Resources
+		if resources == nil {
+			// Reporting nothing is honest for a worker that measures
+			// nothing, and Babel records nil as unknown rather than zero. It
+			// stops being honest once the worker has declared that it bounds
+			// its own resources: a ceiling is enforced by comparing usage
+			// against it, so a worker that can hold the line can say where
+			// the line was.
+			if receipt.Containment.ResourceCeilings {
+				t.Error("the worker declared resource ceilings and then reported no resource use at all; a bound is enforced by measuring what it bounds, so this is one of the two claims that is untrue")
+			} else {
+				t.Logf("the worker reported no resource use and claims no resource ceilings; nil is unknown rather than zero, so there is nothing here to grade")
+			}
+			return
+		}
+		if resources.CPUSeconds < 0 || resources.MaxRSSBytes < 0 ||
+			resources.SandboxBytesWritten < 0 || resources.ToolCalls < 0 {
+			t.Errorf("self-reported resource use carries a negative figure: %+v; unknown is reported by omitting the object, never by a sentinel a receipt would store as a measurement",
+				*resources)
+		}
+		if resources.ToolCalls < allowed {
+			t.Errorf("self-reported tool_calls = %d, but Babel authorized and answered %d tool request(s) in this run; the run made at least that many",
+				resources.ToolCalls, allowed)
 		}
 	})
 
@@ -469,6 +709,67 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 	})
 
 	return obligations
+}
+
+// requiredMetadata is the resolved-configuration metadata Babel reads by name.
+//
+// It is exactly the set SPEC.md §6.5 names — "resolved provider/model/thinking
+// metadata returned by Code" — and no more. The three keys are load-bearing
+// literals in Babel's own receipt consumers, so a worker that spells one
+// differently writes a durable record with an empty provider or an empty
+// model. Every other key is the profile's to name: Code owns the profile
+// (SPEC.md §2.6), and a requirement no consumer has would be Babel inventing
+// a schema for someone else's data.
+var requiredMetadata = []string{"provider", "model", "thinking"}
+
+// jobEcho is the answer ConformanceEchoJob demands: the job the worker says it
+// decoded, in the flat form the directive specifies.
+//
+// The recipes and sources are strings rather than objects on purpose. A worker
+// that produces "ID@VERSION" has read both halves of a recipe reference, one
+// that produces "KIND|SELECTOR|DIGEST|SNAPSHOT" has read all four parts of a
+// source, and Babel compares text instead of negotiating over a nested shape
+// the counterpart would have to guess at.
+type jobEcho struct {
+	Recipes []string `json:"recipes"`
+	Sources []string `json:"sources"`
+}
+
+// echoOfJob renders the answer a worker that decoded job must produce. It is
+// computed from the job the obligation actually sent rather than written out
+// beside it, so the expectation cannot drift from the fixture.
+func echoOfJob(job Job) jobEcho {
+	echo := jobEcho{
+		Recipes: make([]string, 0, len(job.Recipes)),
+		Sources: make([]string, 0, len(job.Sources)),
+	}
+	for _, recipe := range job.Recipes {
+		echo.Recipes = append(echo.Recipes, fmt.Sprintf("%s@%d", recipe.ID, recipe.Version))
+	}
+	for _, source := range job.Sources {
+		echo.Sources = append(echo.Sources,
+			strings.Join([]string{source.Kind, source.Selector, source.Digest, source.Snapshot}, "|"))
+	}
+	return echo
+}
+
+// compareEcho grades one echoed array against what the job carried, naming
+// every entry that differs rather than the first. A worker that misread the
+// job usually misread all of it the same way, and one report of the whole gap
+// is one round of work instead of several.
+func compareEcho(t conformanceT, subject string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Errorf("worker reports %d %s entries, the job carried %d: %q, want %q",
+			len(got), subject, len(want), got, want)
+		return
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("worker reports %s %d as %q, the job carried %q",
+				subject, i, got[i], want[i])
+		}
+	}
 }
 
 // conformanceClient builds a Client for one obligation, with budgets tight

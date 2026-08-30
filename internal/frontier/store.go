@@ -36,6 +36,13 @@ const databaseFile = "durable.db"
 // carrying everything a later sync slice seals in an AEAD envelope, and
 // otherwise only allowlisted identifiers, kinds, schema versions, counts,
 // lifecycle state, and timestamps.
+//
+// Immutability is enforced by triggers rather than by this package's SQL. A
+// frontier whose append-only history depends on nobody ever writing an UPDATE
+// is append-only by convention, and §14's frontier gate — plus §4.7's review
+// semantics, which internal/review builds on these same tables — leans on the
+// property itself. The triggers live in migration 2 rather than in the table
+// definitions on purpose; see that migration's comment.
 var migrations = []string{`
 CREATE TABLE frontier_hypothesis(
 	id             TEXT PRIMARY KEY,
@@ -139,6 +146,73 @@ CREATE TABLE frontier_refinement_request(
 	created_at     TEXT NOT NULL,
 	payload_json   TEXT NOT NULL
 );
+`,
+	// Migration 2 moves the append-only rule from this package's discipline
+	// into the engine, so no future caller can overwrite a claim or drop a
+	// disposition regardless of what SQL it writes.
+	//
+	// It is a separate migration rather than an edit to the first because a
+	// durable file that already reached version 1 must gain the triggers
+	// too: SQLite attaches triggers at CREATE time, so editing migration 1
+	// would protect only databases created after this build, and an
+	// existing frontier would keep accepting updates while every test
+	// passed. Every frontier_* table is covered, because none of them
+	// mutates by design — a hypothesis revision links its ancestor, status
+	// and disposition are appended events, and the join tables belong to
+	// the immutable record that owns them. The one row this component does
+	// update, its schema_migration version, is deliberately outside the
+	// prefix: it is shared with the durable file's other writers and has to
+	// advance.
+	`
+CREATE TRIGGER frontier_hypothesis_immutable BEFORE UPDATE ON frontier_hypothesis
+BEGIN SELECT RAISE(ABORT, 'a hypothesis is immutable; record a revision that links this one as its ancestor'); END;
+CREATE TRIGGER frontier_hypothesis_kept BEFORE DELETE ON frontier_hypothesis
+BEGIN SELECT RAISE(ABORT, 'hypotheses are never deleted; sorting the frontier defers a candidate rather than removing it'); END;
+
+CREATE TRIGGER frontier_status_event_immutable BEFORE UPDATE ON frontier_status_event
+BEGIN SELECT RAISE(ABORT, 'hypothesis status history is append-only; append the next status instead'); END;
+CREATE TRIGGER frontier_status_event_kept BEFORE DELETE ON frontier_status_event
+BEGIN SELECT RAISE(ABORT, 'hypothesis status history is append-only'); END;
+
+CREATE TRIGGER frontier_hypothesis_link_immutable BEFORE UPDATE ON frontier_hypothesis_link
+BEGIN SELECT RAISE(ABORT, 'a hypothesis link is immutable; add the link that states the new relation'); END;
+CREATE TRIGGER frontier_hypothesis_link_kept BEFORE DELETE ON frontier_hypothesis_link
+BEGIN SELECT RAISE(ABORT, 'hypothesis links are never deleted; lineage has to stay readable'); END;
+
+CREATE TRIGGER frontier_observation_immutable BEFORE UPDATE ON frontier_observation
+BEGIN SELECT RAISE(ABORT, 'an observation is immutable; record a revision that links this one as its ancestor'); END;
+CREATE TRIGGER frontier_observation_kept BEFORE DELETE ON frontier_observation
+BEGIN SELECT RAISE(ABORT, 'observations are never deleted; the findings that cite them would lose their evidence'); END;
+
+CREATE TRIGGER frontier_finding_immutable BEFORE UPDATE ON frontier_finding
+BEGIN SELECT RAISE(ABORT, 'a finding is immutable; record a revision that links this one as its ancestor'); END;
+CREATE TRIGGER frontier_finding_kept BEFORE DELETE ON frontier_finding
+BEGIN SELECT RAISE(ABORT, 'findings are never deleted; the proposals that cite them would lose their support'); END;
+
+CREATE TRIGGER frontier_finding_observation_immutable BEFORE UPDATE ON frontier_finding_observation
+BEGIN SELECT RAISE(ABORT, 'the observation set of a finding is immutable; revise the finding instead'); END;
+CREATE TRIGGER frontier_finding_observation_kept BEFORE DELETE ON frontier_finding_observation
+BEGIN SELECT RAISE(ABORT, 'the observation set of a finding is never deleted; revise the finding instead'); END;
+
+CREATE TRIGGER frontier_proposal_immutable BEFORE UPDATE ON frontier_proposal
+BEGIN SELECT RAISE(ABORT, 'a proposal is immutable; record a revision that links this one as its ancestor'); END;
+CREATE TRIGGER frontier_proposal_kept BEFORE DELETE ON frontier_proposal
+BEGIN SELECT RAISE(ABORT, 'proposals are never deleted; rejection is an appended disposition'); END;
+
+CREATE TRIGGER frontier_proposal_finding_immutable BEFORE UPDATE ON frontier_proposal_finding
+BEGIN SELECT RAISE(ABORT, 'the finding set of a proposal is immutable; revise the proposal instead'); END;
+CREATE TRIGGER frontier_proposal_finding_kept BEFORE DELETE ON frontier_proposal_finding
+BEGIN SELECT RAISE(ABORT, 'the finding set of a proposal is never deleted; revise the proposal instead'); END;
+
+CREATE TRIGGER frontier_disposition_immutable BEFORE UPDATE ON frontier_disposition
+BEGIN SELECT RAISE(ABORT, 'review disposition history is append-only; record a later decision as a new event'); END;
+CREATE TRIGGER frontier_disposition_kept BEFORE DELETE ON frontier_disposition
+BEGIN SELECT RAISE(ABORT, 'review disposition history is append-only; rejection never deletes'); END;
+
+CREATE TRIGGER frontier_refinement_request_immutable BEFORE UPDATE ON frontier_refinement_request
+BEGIN SELECT RAISE(ABORT, 'a refinement request is immutable; reject and refine again for a new one'); END;
+CREATE TRIGGER frontier_refinement_request_kept BEFORE DELETE ON frontier_refinement_request
+BEGIN SELECT RAISE(ABORT, 'refinement requests are never deleted; each carries the authority for a descendant run'); END;
 `}
 
 // Store is the durable hypothesis frontier. It exposes no operation that

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 
@@ -183,6 +184,52 @@ func (a *app) archive(ctx context.Context, args []string) error {
 	}
 }
 
+// resticFailure renders one restic failure, naming the remedy for the single
+// restic failure that has a distinct one.
+//
+// An executable that cannot be run is not an archive problem: no locator, no
+// password and no snapshot is implicated, and what fixes it is --restic-binary
+// rather than anything about the repository. internal/restic reports that as a
+// typed *restic.BinaryError and deliberately stops there — the flag belongs to
+// this command line, not to a storage wrapper — so naming it is this
+// function's job, and it is written out here in full rather than folded into
+// one sentence for the same reason reportNoWorker is: a remedy is several
+// lines, and Sanitize renders values, never layout.
+//
+// Every other failure is wrapped with the operation that failed and left to
+// run's one-line reporting. Those already read as prose: the restic package
+// unwraps restic's --json error envelope, so a wrong password arrives as
+// "restic snapshots: exit status 12: Fatal: wrong password or no key found"
+// rather than as a JSON object the operator has to parse by eye.
+func (a *app) resticFailure(op string, err error) error {
+	var binErr *restic.BinaryError
+	if !errors.As(err, &binErr) {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	// exec.LookPath's error names the binary itself, which "tried:" already
+	// does; the inner error is the part that says what was wrong with it.
+	reason := binErr.Unwrap()
+	var lookErr *exec.Error
+	if errors.As(reason, &lookErr) {
+		reason = lookErr.Err
+	}
+	fmt.Fprintf(a.stderr, `babel: the restic executable could not be run.
+
+  tried:   %s
+  reason:  %s
+  failed:  %s
+
+restic is the archival engine Babel drives, and Babel does not bundle it
+(SPEC.md §6.1). Name a working one with --restic-binary PATH, put restic on
+$PATH, or record "restic_binary" in the storage configuration so every
+command finds it without a flag.
+
+This failed before any restic process started, so nothing was written and
+neither the repository nor the password file was opened.
+`, Sanitize(binErr.Path), Sanitize(reason.Error()), Sanitize(op))
+	return errReported
+}
+
 // initResult is the machine-readable outcome of bootstrapping the repository.
 // Created distinguishes "this call made the deployment's archive" from "it was
 // already there", which is the only thing an operator running it twice wants to
@@ -215,7 +262,7 @@ func (a *app) archiveInit(ctx context.Context, args []string) error {
 
 	created, err := repo.Init(ctx)
 	if err != nil {
-		return fmt.Errorf("initialize repository: %w", err)
+		return a.resticFailure("initialize repository", err)
 	}
 	res := initResult{Repository: Sanitize(rf.repository), Created: created}
 	if *asJSON {
@@ -303,7 +350,7 @@ func (a *app) archivePush(ctx context.Context, args []string) error {
 			return fmt.Errorf("no repository at %s: run `babel archive init` once for this deployment",
 				Sanitize(rf.repository))
 		}
-		return fmt.Errorf("open repository: %w", err)
+		return a.resticFailure("open repository", err)
 	}
 	a.diagf("backing up %d %s as host %s\n", len(roots), plural(len(roots), "root", "roots"), Sanitize(host))
 
@@ -312,7 +359,7 @@ func (a *app) archivePush(ctx context.Context, args []string) error {
 		if backupErr == nil {
 			return errors.New("back up: restic reported no summary")
 		}
-		return fmt.Errorf("back up: %w", backupErr)
+		return a.resticFailure("back up", backupErr)
 	}
 	res.SnapshotID = Sanitize(summary.SnapshotID)
 	res.FilesNew = summary.FilesNew
@@ -491,7 +538,7 @@ func (a *app) archiveStatus(ctx context.Context, args []string) error {
 	}
 	snapshots, err := repo.Snapshots(ctx)
 	if err != nil {
-		return fmt.Errorf("list snapshots: %w", err)
+		return a.resticFailure("list snapshots", err)
 	}
 
 	res := statusResult{
@@ -768,7 +815,7 @@ func (a *app) archiveVerify(ctx context.Context, args []string) error {
 		fmt.Fprintf(a.stdout, "%s (%s)\n", yesNo(res.OK, "ok", "FAILED"), yesNo(*deep, "deep", "structure"))
 	}
 	if checkErr != nil {
-		return fmt.Errorf("verify repository: %w", checkErr)
+		return a.resticFailure("verify repository", checkErr)
 	}
 	return nil
 }

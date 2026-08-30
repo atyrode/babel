@@ -23,6 +23,7 @@ package restic
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -35,7 +36,8 @@ import (
 
 // Sentinel errors reported by this package. Callers match them with
 // errors.Is; nonzero-exit failures additionally carry an *ExitError with
-// restic's exit code, matched with errors.As.
+// restic's exit code, and an executable that cannot be run carries a
+// *BinaryError, both matched with errors.As.
 var (
 	// ErrRepositoryRequired reports a Config without a repository location.
 	ErrRepositoryRequired = errors.New("restic: repository is required")
@@ -135,16 +137,22 @@ func Open(cfg Config) (*Repo, error) {
 
 // prepare resolves the restic binary and materializes the cache directory,
 // exactly once per Repo.
+//
+// An explicit Config.Binary goes through exec.LookPath too, not only a bare
+// name. LookPath on a path checks that the file exists and is executable, so
+// an unusable executable is caught here, once, as a *BinaryError — rather than
+// once per operation as "fork/exec /some/restic: no such file or directory",
+// which names neither what Babel was doing nor what would fix it.
 func (r *Repo) prepare() error {
 	r.prepOnce.Do(func() {
-		bin := r.cfg.Binary
-		if bin == "" {
-			resolved, err := exec.LookPath("restic")
-			if err != nil {
-				r.prepErr = fmt.Errorf("restic: locating binary: %w", err)
-				return
-			}
-			bin = resolved
+		name := r.cfg.Binary
+		if name == "" {
+			name = "restic"
+		}
+		bin, err := exec.LookPath(name)
+		if err != nil {
+			r.prepErr = &BinaryError{Path: name, err: err}
+			return
 		}
 
 		dir := r.cfg.CacheDir
@@ -221,10 +229,36 @@ func (r *Repo) run(ctx context.Context, op string, args ...string) ([]byte, erro
 	return stdout.Bytes(), nil
 }
 
+// BinaryError reports that the restic executable itself could not be run:
+// absent, not executable, or not where it was said to be. It is a distinct
+// type because it is a distinct problem — the repository was never contacted,
+// no locator and no password is implicated, and nothing was written — and
+// because a caller has to be able to tell it apart to say what fixes it.
+//
+// Saying that is deliberately not this package's job. The setting that selects
+// the executable belongs to whoever configured this Repo; a storage wrapper
+// that printed a flag name would be describing a command line it does not own.
+// So this names the path that was tried and stops there, and callers match it
+// with errors.As to add their own remedy.
+type BinaryError struct {
+	// Path is the executable that was looked up: Config.Binary, or "restic"
+	// when the lookup went through PATH.
+	Path string
+	err  error
+}
+
+func (e *BinaryError) Error() string { return fmt.Sprintf("restic: locating binary: %v", e.err) }
+
+// Unwrap exposes exec.LookPath's failure, so exec.ErrNotFound and
+// fs.ErrPermission stay matchable.
+func (e *BinaryError) Unwrap() error { return e.err }
+
 // ExitError reports a restic invocation that failed. Code is restic's exit
 // status, or -1 when the process could not be run or was killed by a
-// signal. Stderr is a bounded tail of restic's diagnostics; restic never
-// prints the repository password, so it is safe to surface.
+// signal. Stderr is a bounded tail of restic's diagnostics, rendered as one
+// line and with restic's --json error envelope unwrapped to the prose inside
+// it (see unwrapExitEnvelope); restic never prints the repository password, so
+// it is safe to surface.
 type ExitError struct {
 	Op     string
 	Code   int
@@ -294,12 +328,19 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 }
 
 // String renders the retained tail as a single line, so it composes with
-// wrapped errors. Truncation is marked with a leading ellipsis.
+// wrapped errors. restic's --json error envelope is unwrapped to the prose
+// inside it, whose own newlines then fold into the same separator as every
+// other line. Truncation is marked with a leading ellipsis.
 func (t *tailBuffer) String() string {
 	var parts []string
 	for _, line := range strings.Split(string(t.buf), "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			parts = append(parts, line)
+		// Split again: an unwrapped envelope message is multi-line whenever
+		// restic's fatal error was, and a raw line simply has no newline
+		// left to split on.
+		for _, part := range strings.Split(unwrapExitEnvelope(line), "\n") {
+			if part = strings.TrimSpace(part); part != "" {
+				parts = append(parts, part)
+			}
 		}
 	}
 	joined := strings.Join(parts, "; ")
@@ -310,4 +351,53 @@ func (t *tailBuffer) String() string {
 		return "..." + joined
 	}
 	return joined
+}
+
+// exitEnvelope is restic's fatal-error message. restic reports a fatal error
+// as prose on stderr normally, but as this one JSON object when --json is in
+// effect, which is every invocation Babel needs machine-readable output from:
+// snapshots, ls, and backup. backupMessage in ops.go parses the same
+// message_type out of the backup stream, where it is one of several; here it is
+// the only one that matters.
+type exitEnvelope struct {
+	MessageType string `json:"message_type"`
+	Message     string `json:"message"`
+}
+
+// unwrapExitEnvelope returns the prose inside restic's --json fatal-error
+// envelope, or line unchanged when line is not one.
+//
+// A failing `restic snapshots --json` writes its fatal error as
+//
+//	{"message_type":"exit_error","code":12,"message":"Fatal: wrong password or no key found"}
+//
+// which is accurate and unlike every other error Babel writes: the operator has
+// to read past message_type to reach the cause. Only the framing is removed.
+// The message is surfaced whole, never summarized or trimmed, because restic's
+// diagnostics carry the remedy — `restic repair packs <id>` after a failed
+// `check --read-data` is the one that matters most — and a shortened one would
+// cost the operator the fix. The exit code is not read from here either:
+// ExitError.Code already has it from the process, which is what isMissingRepo
+// tests and what survives a tail truncated mid-object.
+//
+// Anything that is not the envelope is returned unchanged rather than dropped:
+// restic invoked without --json, an older restic, a wrapper's own noise, or a
+// tail cut mid-object must all still reach the caller. A parser that assumed
+// JSON would turn a real diagnostic into an empty error, which is a worse
+// failure than an ugly one.
+func unwrapExitEnvelope(line string) string {
+	trimmed := strings.TrimSpace(line)
+	// Cheap rejection first: the tail of a backup mirrors every ndjson line
+	// restic emitted, and none of the status ones are worth unmarshalling.
+	if !strings.HasPrefix(trimmed, "{") || !strings.Contains(trimmed, `"exit_error"`) {
+		return line
+	}
+	var env exitEnvelope
+	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
+		return line
+	}
+	if env.MessageType != "exit_error" || strings.TrimSpace(env.Message) == "" {
+		return line
+	}
+	return env.Message
 }

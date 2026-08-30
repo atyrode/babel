@@ -598,7 +598,7 @@ func TestCredentialLeakObligationFailsAWorkerThatWritesTheToken(t *testing.T) {
 // TestWellBehavedObligationFailsAnUnreadableResultSchema covers the drift a
 // conformance report would otherwise miss entirely: a worker that satisfies
 // every other obligation while declaring a result schema Babel cannot read.
-// Such a run is graded 11 of 11 and still delivers nothing, because
+// Such a run is graded 14 of 14 and still delivers nothing, because
 // internal/explore refuses a payload under an unknown schema rather than
 // parsing it hopefully.
 //
@@ -614,6 +614,196 @@ func TestWellBehavedObligationFailsAnUnreadableResultSchema(t *testing.T) {
 	messages := strings.Join(result.Failures, "; ")
 	if !strings.Contains(messages, declared) || !strings.Contains(messages, ResultSchema) {
 		t.Errorf("the failure names neither what the worker declared nor what this build requires: %s", messages)
+	}
+}
+
+// TestJobDecodeObligationSeesWhetherTheWorkerReadTheJob is the obligation the
+// receipt cannot supply. Receipt.Recipes and Receipt.Sources are copied from
+// Babel's own outgoing job, so a worker that never looked at either array
+// leaves a receipt identical to one that honoured both; the only evidence of
+// the counterpart's reading is what the counterpart says.
+//
+// The negative fixture is the interesting half. -wrong-job answers with the
+// conformance job published in conformance.go — a plausible, well-formed,
+// entirely correct-looking reply that a candidate could write without ever
+// parsing a byte. It fails only because the obligation plants a per-run nonce
+// in the material it asks about, so this test is what proves the nonce is
+// load-bearing rather than decorative.
+func TestJobDecodeObligationSeesWhetherTheWorkerReadTheJob(t *testing.T) {
+	t.Run("a worker that decoded the job", func(t *testing.T) {
+		result := gradeObligation(t, "run/decodes-the-job")
+		if !result.Passed {
+			t.Errorf("run/decodes-the-job failed a worker that reported the recipes and sources it was given: %s",
+				strings.Join(result.Failures, "; "))
+		}
+	})
+
+	t.Run("a worker answering from the published fixture", func(t *testing.T) {
+		result := gradeObligation(t, "run/decodes-the-job", "-wrong-job")
+		if result.Passed {
+			t.Fatal("run/decodes-the-job passed a worker that answered with a hardcoded job description; the per-run nonce is not reaching the material the obligation grades")
+		}
+		messages := strings.Join(result.Failures, "; ")
+		// Both arrays are wrong, and the report has to name both: a worker
+		// told only about its recipes would fix those and fail again on the
+		// sources.
+		for _, want := range []string{"recipe", "source"} {
+			if !strings.Contains(messages, want) {
+				t.Errorf("the failure does not mention the %s the worker misreported: %s", want, messages)
+			}
+		}
+	})
+
+	t.Run("a worker that never answers the directive", func(t *testing.T) {
+		// The likeliest candidate of all: a run that is correct in every
+		// other respect and simply does not implement echo-job. The failure
+		// has to say so, because "no job object" and "the wrong job object"
+		// send an implementer to different code.
+		payload := filepath.Join(t.TempDir(), "payload.json")
+		if err := os.WriteFile(payload, []byte(`{"hypotheses":[]}`), 0o600); err != nil {
+			t.Fatalf("writing the payload fixture: %v", err)
+		}
+		result := gradeObligation(t, "run/decodes-the-job", "-result-payload", payload)
+		if result.Passed {
+			t.Fatal("run/decodes-the-job passed a worker that answered nothing; an obligation satisfied by silence certifies nothing")
+		}
+		if messages := strings.Join(result.Failures, "; "); !strings.Contains(messages, `no "job" object`) {
+			t.Errorf("the failure does not say the answer is missing rather than wrong: %s", messages)
+		}
+	})
+}
+
+// TestProfileObligationRequiresWhatBabelReadsByName covers the drift class the
+// conformance suite was blind to: a worker whose resolved configuration is
+// structurally perfect and semantically unusable. Every case below produces a
+// run that satisfies every other obligation.
+//
+// Each case names the remedy in its own failure, because these are four
+// different mistakes — a key Babel reads under another name, a capability
+// vocabulary that drifted out of Babel's, a profile that omits what the run
+// actually did, and a price with no unit — and a report that only said "bad
+// configuration" would send the reader looking.
+func TestProfileObligationRequiresWhatBabelReadsByName(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "well behaved",
+			args: nil,
+		},
+		{
+			// internal/run reads "model" by name; "model_name" is a receipt
+			// with no model in it.
+			name: "the model under a key Babel does not read",
+			args: []string{"-rename-metadata"},
+			want: []string{`"model"`},
+		},
+		{
+			// Babel denies a capability it cannot name, so a profile
+			// declaring one has told an operator it can do something no run
+			// will ever authorize. The exercised capability is spelled
+			// correctly here, so this case grades the vocabulary alone.
+			name: "a capability under a drifted vocabulary",
+			args: []string{"-drift-capability"},
+			want: []string{"repo_read"},
+		},
+		{
+			// Every name is one Babel defines; the claim is simply not the
+			// profile that ran, and Babel watched it run.
+			name: "a profile that omits what the run did",
+			args: []string{"-hide-capability"},
+			want: []string{"corpus-search"},
+		},
+		{
+			// One unusable cost report, two symptoms. Babel shows an estimate
+			// only when it has a unit for it, so an unnamed currency drops
+			// the figure entirely; a negative rate reads as a discount. The
+			// report has to name both, or fixing one leaves the other.
+			name: "a cost report Babel cannot act on",
+			args: []string{"-unusable-cost"},
+			want: []string{"currency", "negative figure"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := gradeObligation(t, "run/declares-profile", test.args...)
+			messages := strings.Join(result.Failures, "; ")
+			if len(test.want) == 0 {
+				if !result.Passed {
+					t.Errorf("run/declares-profile failed a worker whose configuration carries everything Babel reads: %s", messages)
+				}
+				return
+			}
+			if result.Passed {
+				t.Fatalf("run/declares-profile passed a worker run with %v; Babel's own consumers cannot read that configuration", test.args)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(messages, want) {
+					t.Errorf("the failure does not name %q, so it does not name the remedy: %s", want, messages)
+				}
+			}
+		})
+	}
+}
+
+// TestResourceObligationGradesOnlyWhatBabelCanCheck pins both halves of the
+// resource contract, which is the one part of a receipt Babel copies from the
+// counterpart's word.
+//
+// -no-resources is a worker that declares resource ceilings and then reports
+// nothing: reporting nothing is honest for an implementation that measures
+// nothing, but not for one that has just claimed it bounds itself, because a
+// bound is enforced by measuring what it bounds.
+//
+// -untracked-resources is the other failure and the more tempting one: an
+// implementation with no accounting that reports anyway, with -1 standing in
+// for "unknown" and a tool-call count it never kept. Babel answered the tool
+// request itself, so that last figure is the one number in the object it can
+// contradict without trusting anybody.
+func TestResourceObligationGradesOnlyWhatBabelCanCheck(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "well behaved",
+			args: nil,
+		},
+		{
+			name: "ceilings declared, nothing measured",
+			args: []string{"-no-resources"},
+			want: []string{"resource ceilings"},
+		},
+		{
+			name: "invented figures",
+			args: []string{"-untracked-resources"},
+			want: []string{"negative figure", "tool_calls"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := gradeObligation(t, "run/reports-resources", test.args...)
+			messages := strings.Join(result.Failures, "; ")
+			if len(test.want) == 0 {
+				if !result.Passed {
+					t.Errorf("run/reports-resources failed a worker whose self-report matches what Babel observed: %s", messages)
+				}
+				return
+			}
+			if result.Passed {
+				t.Fatalf("run/reports-resources passed a worker run with %v; its self-report contradicts the run Babel supervised", test.args)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(messages, want) {
+					t.Errorf("the failure does not name %q: %s", want, messages)
+				}
+			}
+		})
 	}
 }
 
