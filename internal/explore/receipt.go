@@ -28,7 +28,7 @@ func (c *Controller) writeReceipt(st *state, runID string, workerReceipt *worker
 		Cookbook:     slices.Clone(c.assets),
 		Frontier:     run.FrontierScope{Roots: slices.Clone(st.opt.Roots), Prior: slices.Clone(st.opt.Prior)},
 		Capabilities: c.cfg.Capabilities,
-		Job:          run.JobVersions{Job: JobVersion, Prompt: PromptVersion, Schema: ResultSchema},
+		Job:          run.JobVersions{Job: JobVersion, Prompt: PromptVersion, Schema: worker.ResultSchema},
 		Policy:       run.PolicyVersions{Redaction: RedactionPolicyVersion, Disclosure: DisclosurePolicyVersion},
 		Worker:       workerReceipt,
 		Retrieval:    steps,

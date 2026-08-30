@@ -2,6 +2,8 @@ package sharedcatalog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
 	"testing"
 )
@@ -142,6 +144,68 @@ func TestMigrationLedgerIsExactlyThese(t *testing.T) {
 			t.Fatalf("migration %d is %q, want %q.\n  want: %v\n  got:  %v\n"+
 				"Add a migration; never rename, reorder, or edit one that has run.",
 				i+1, got[i], want[i], want, got)
+		}
+	}
+}
+
+// Both ledger gates above pin migrations by NAME. A name is not a migration.
+// Editing migrations/0001_init.sql in place, under its existing filename,
+// leaves the ledger identical and satisfies every assertion in this file -
+// while changing the text that already ran against the managed PostgreSQL.
+// That is the precise failure the freeze exists to prevent (SPEC.md §14): an
+// applied migration is history, and rewriting it would leave every deployment
+// that ran the old text holding a shape nothing describes.
+//
+// So this hashes the bodies. The digests are SHA-256 over each migration's
+// exact embedded bytes, which are the file's exact bytes, so any of them can
+// be recomputed with `sha256sum internal/sharedcatalog/migrations/<file>.sql`.
+func TestAppliedMigrationBodiesAreFrozen(t *testing.T) {
+	// Frozen 2026-08-30. Every migration in the ledger is pinned; an entry is
+	// added here only when its migration is added, never when its text moves.
+	frozen := map[string]string{
+		"0001_init":            "fa5cca80104ea0d2216293492593f55e45371229927391cade1d17199b35ae57",
+		"0002_unknown_counts":  "655ce49ea51d1eb371bcd54835455d6b0f6ae8d6de9a2eb9d126a39b4a138f85",
+		"0003_phase_b_records": "6d25e2945cacd27369ee8085b12fb69264b8feecff9476367c9b3d49acc1c0e3",
+	}
+
+	const remedy = "Two changes are legitimate here, and they are not the same " +
+		"one. If the schema needs to differ, add a NEW migration: deployments " +
+		"that ran the old text stay described. If the edit was intentional and " +
+		"no deployment has run this migration, update the pinned digest in the " +
+		"same commit and say so in the message. Silently refreshing the constant " +
+		"to make the test green is the third option, and it is the one this " +
+		"guard exists to refuse."
+
+	entries, err := migrations()
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, m := range entries {
+		sum := sha256.Sum256([]byte(m.body))
+		got := hex.EncodeToString(sum[:])
+		want, pinned := frozen[m.version]
+		if !pinned {
+			t.Errorf("migration %q has no pinned body digest.\n"+
+				"Add it to the frozen map in the same commit that adds the "+
+				"migration, or the freeze quietly stops covering it:\n"+
+				"  %q: %q,", m.version, m.version, got)
+			continue
+		}
+		seen[m.version] = true
+		if got != want {
+			t.Errorf("migration %q was edited in place.\n  frozen: %s\n  now:    %s\n%s",
+				m.version, want, got, remedy)
+		}
+	}
+
+	// A pinned migration that stopped existing is the same loss of history as
+	// an edited one, and it must not read as "nothing to check".
+	for version := range frozen {
+		if !seen[version] {
+			t.Errorf("migration %q is pinned here but is no longer embedded.\n%s",
+				version, remedy)
 		}
 	}
 }

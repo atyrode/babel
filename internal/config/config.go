@@ -35,8 +35,8 @@ const (
 	TLSVerifyFull = "verify-full"
 )
 
-// redactedPlaceholder replaces a password in a Config safe to show. It is a
-// fixed string so status output never reveals a password's length.
+// redactedPlaceholder replaces a secret in a Config safe to show. It is a
+// fixed string so status output never reveals a secret's length.
 const redactedPlaceholder = "[redacted]"
 
 // Config is the complete persistent repository selection stored in
@@ -366,11 +366,43 @@ func validateCatalog(cat Catalog) error {
 	return nil
 }
 
-// Redacted returns a copy safe for status output, diagnostics, and anything a
-// caller might print: both passwords become a fixed placeholder. Everything
-// else is kept, so a redacted copy is not a valid document to save and DSN on
-// its catalog does not connect.
+// Redacted returns a copy of c safe for status output, diagnostics, and
+// anything a caller might print.
+//
+// The guarantee is total, not a list of the fields someone remembered: every
+// secret-bearing field the document carries becomes a fixed placeholder. Those
+// fields are the catalog's Password and MigrationPassword and the object
+// store's AccessKeyID and SecretAccessKey. The access key id is covered
+// alongside its secret half because validateRepositoryStore already treats the
+// pair as one credential that cannot authenticate in halves, and because a
+// status report that prints an account-identifying key hands an attacker the
+// target for free.
+//
+// An empty field stays empty. That is what the placeholder is for: status
+// output must distinguish "configured, not shown" from "absent", or a missing
+// credential cannot be diagnosed from it.
+//
+// Every other field is kept in the clear, deliberately, because none of them
+// authenticates anything and they are precisely what an operator reads a status
+// report to check: the repository locator, the password file path, the restic
+// binary, the host/deployment/instance ids, and the catalog's host, port,
+// database, TLS mode, root CA path, User and MigrationUser. Role names and
+// locators are not secrets.
+//
+// The copy is deep through both nested structs, so the source is untouched. A
+// redacted copy is not a valid document to save, and DSN on its catalog does
+// not connect.
 func (c Config) Redacted() Config {
+	if c.RepositoryStore != nil {
+		store := *c.RepositoryStore
+		if store.AccessKeyID != "" {
+			store.AccessKeyID = redactedPlaceholder
+		}
+		if store.SecretAccessKey != "" {
+			store.SecretAccessKey = redactedPlaceholder
+		}
+		c.RepositoryStore = &store
+	}
 	if c.Catalog != nil {
 		cat := *c.Catalog
 		if cat.Password != "" {

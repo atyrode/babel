@@ -14,9 +14,15 @@ const conformanceUsage = `Usage: babel conformance WORKER [--worker-arg ARG]... 
 
 Runs the babel.analysis-worker contract suite against the executable at
 WORKER: the handshake, the resolved configuration, the grant boundary, tool
-decisions, terminal events, cancellation, and the rule that a run-scoped
-broker credential never comes back. One obligation per line; the exit code
-is 0 only when every obligation held.
+decisions, terminal events, cancellation, and the worker's own discipline
+with the run-scoped broker credential. One obligation per line; the exit
+code is 0 only when every obligation held.
+
+The credential obligation deliberately instructs the worker to leak: it is
+told to echo its broker token, and it holds only if the run still reached a
+terminal result, the token appears in nothing the worker wrote, and the
+token appears nowhere in the receipt. All three, because a worker that
+emits no bytes at all would otherwise pass a test for an absence.
 
 The same suite is what Babel's own tests run against their fake worker, so
 an implementation that passes here is one Babel can supervise. It is a

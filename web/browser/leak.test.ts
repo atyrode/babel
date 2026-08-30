@@ -45,6 +45,38 @@ if (!chrome && process.env.CI) {
   throw new Error("no Chrome found in CI; set BABEL_TEST_CHROME. Skipping here would retire the §548 gate.");
 }
 
+// Locally the suite still skips rather than fails: a developer without Chrome
+// has a legitimate reason to run everything else, and failing here would break
+// that. But this file is the only cover for the browser-observable §548
+// channels, so a skip whose only trace is bun's "skip" tally reads exactly like
+// a pass -- the run goes green and the operator learns nothing about what was
+// never checked. That is the failure mode this notice exists to remove. It is
+// printed once, at load, ahead of every result the run will report, and it
+// names each guarantee the skip withdrew rather than saying only "skipped".
+if (!chrome) {
+  console.error(
+    [
+      "",
+      "================================================================================",
+      "  LEAK GATE DID NOT RUN -- no Chrome or Chromium found.",
+      "",
+      "  Nothing in this file tested the SPEC.md §548 browser channels. Every one of",
+      "  these is UNVERIFIED by this run:",
+      "    - that the session token leaves the address bar and is absent from every",
+      "      reachable history entry,",
+      "    - that no transcript or credential sentinel reaches a URL,",
+      "    - that no /api response is served from the browser cache,",
+      "    - that a browser context without the token is refused.",
+      "",
+      "  A green result for this file means the gate was skipped, not that it passed.",
+      "  Install Chrome or Chromium, or point BABEL_TEST_CHROME at one, and re-run:",
+      "      BABEL_TEST_CHROME=/path/to/chrome bun run test:browser",
+      "================================================================================",
+      "",
+    ].join("\n"),
+  );
+}
+
 let root = "";
 let server: Bun.Subprocess | null = null;
 let browser: Browser | null = null;

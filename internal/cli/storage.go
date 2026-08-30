@@ -26,6 +26,24 @@ const storageConfigureUsage = `Usage: babel storage configure --from-json FILE|-
 Reads a complete storage configuration from FILE, or from stdin when FILE is
 "-", validates it, and atomically replaces the whole storage.json file.
 
+A minimal local-mode document — the smallest thing that validates:
+
+  {"repository": "/srv/babel/repo", "password_file": "/etc/babel/repo-password"}
+
+repository and password_file are the only required names, and password_file
+must be absolute. Everything else is optional: config_schema (the current
+schema is written back regardless), mode ("local" by default, or "shared"),
+host_id, restic_binary, and repository_store {access_key_id,
+secret_access_key} — which an "s3:" repository does require. Shared mode
+additionally requires deployment_id, instance_id, and a catalog object;
+config.Config and config.Validate in internal/config define those fields and
+every rule this command enforces.
+
+Unknown names are ignored by design, so a document written by a compatible
+newer Babel stays readable — which also means a misspelled name is dropped
+silently rather than refused. Read back what was actually installed with
+"babel storage status".
+
 Flags:
   --from-json FILE|-          complete JSON configuration to install (required)
   --json                      emit {path, repository, host_id} as JSON
@@ -96,6 +114,24 @@ func (a *app) storageConfigure(ctx context.Context, args []string) error {
 	}
 	if err := config.Validate(cfg); err != nil {
 		return err
+	}
+	// Setup is when an unsafe password file is cheapest to fix, so configure
+	// says what `storage status` would say later — through the same check, so
+	// the two commands can never disagree about whether a file is safe.
+	//
+	// This warns rather than refuses. A repository password other local
+	// accounts can read defeats the archive's confidentiality, but refusing to
+	// install an otherwise valid document would strand an operator mid-setup
+	// with no configuration at all, which is harder to recover from than a
+	// chmod. The finding is named with its remedy, and `storage status` keeps
+	// reporting it until it is fixed.
+	if cfg.PasswordFile != "" {
+		if _, err := a.checkPasswordFile(cfg.PasswordFile); err != nil {
+			// An uninspectable password file is reported for the same reason
+			// and on the same terms: it is a fact about the machine, not a
+			// defect in the document being installed.
+			a.diagf("warning: %s\n", Sanitize(err.Error()))
+		}
 	}
 	// SPEC.md 9: identity, TLS, credential privileges, and schema compatibility
 	// are checked *before* the mode-0600 file is replaced, so a document that
@@ -181,19 +217,11 @@ func (a *app) storageStatus(args []string) error {
 		res.MigrationUser = Sanitize(cfg.Catalog.MigrationUser)
 	}
 	if cfg.PasswordFile != "" {
-		info, statErr := os.Stat(cfg.PasswordFile)
-		switch {
-		case statErr == nil:
-			res.PasswordFileExists = true
-			res.PasswordFileSecure = info.Mode().Perm()&^os.FileMode(0o600) == 0
-			if !res.PasswordFileSecure {
-				a.diagf("warning: password file %s has permissions %04o; expected 0600 or stricter\n", Sanitize(cfg.PasswordFile), info.Mode().Perm())
-			}
-		case errors.Is(statErr, os.ErrNotExist):
-			a.diagf("warning: password file %s does not exist\n", Sanitize(cfg.PasswordFile))
-		default:
-			return fmt.Errorf("inspect password file %s: %w", cfg.PasswordFile, statErr)
+		state, err := a.checkPasswordFile(cfg.PasswordFile)
+		if err != nil {
+			return err
 		}
+		res.PasswordFileExists, res.PasswordFileSecure = state.exists, state.secure
 	}
 
 	if *asJSON {
@@ -223,4 +251,43 @@ func (a *app) storageStatus(args []string) error {
 		}
 	}
 	return writeDetail(a.stdout, rows)
+}
+
+// passwordFileState is everything an offline inspection can say about the
+// repository password file.
+type passwordFileState struct {
+	exists bool
+	secure bool
+}
+
+// checkPasswordFile inspects the repository password file, reporting what is
+// wrong with it on stderr and naming the remedy.
+//
+// `storage status` and `storage configure` share this one implementation
+// deliberately: a permission rule written twice drifts, and two commands
+// disagreeing about whether a password file is safe is worse than either
+// answer alone. Secure means no permission bit outside 0600 is set — restic
+// derives the repository key from this file and nothing else, so any other
+// local account that can read it can read the whole archive.
+//
+// A stat failure that is not "absent" is returned rather than warned about,
+// because whether an uninspectable password file is fatal is the caller's
+// call: status reports on the machine and fails, configure installs a
+// document and does not.
+func (a *app) checkPasswordFile(path string) (passwordFileState, error) {
+	info, err := os.Stat(path)
+	switch {
+	case err == nil:
+		state := passwordFileState{exists: true, secure: info.Mode().Perm()&^os.FileMode(0o600) == 0}
+		if !state.secure {
+			a.diagf("warning: password file %s has permissions %04o; expected 0600 or stricter: run `chmod 600 %s`\n",
+				Sanitize(path), info.Mode().Perm(), Sanitize(path))
+		}
+		return state, nil
+	case errors.Is(err, os.ErrNotExist):
+		a.diagf("warning: password file %s does not exist\n", Sanitize(path))
+		return passwordFileState{}, nil
+	default:
+		return passwordFileState{}, fmt.Errorf("inspect password file %s: %w", path, err)
+	}
 }

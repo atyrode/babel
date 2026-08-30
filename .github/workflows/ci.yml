@@ -84,6 +84,80 @@ jobs:
       - name: go test
         run: go test -count=1 ./...
 
+  # The race detector is its own job rather than another step in `test`.
+  # -race roughly triples a suite's runtime (~200s of ./internal/... becomes
+  # ~3.5 minutes), and `test` already carries the slowest thing in CI, the
+  # two-instance e2e acceptance. Appending -race there would add those minutes
+  # to the critical path directly; as a separate job it runs concurrently with
+  # `test` and finishes well inside that job's wall time, so the gate costs the
+  # pipeline nothing it was not already spending.
+  #
+  # Scope is ./internal/..., which is where the concurrency lives:
+  # sharedcatalog's server-time fenced leases and their takeover tests,
+  # worker's goroutine-owning pipe readers and process trees, web's response
+  # buffer (whose own test comment concedes the buffer exists because of a data
+  # race whether or not a given run detects it), run, and frontier.
+  # ./test/e2e/... is excluded deliberately: it drives the shipped binaries as
+  # child processes, and the race detector instruments only the process it
+  # builds, so running that suite under -race would triple the cost of CI's
+  # slowest job to watch a test harness rather than the code under test.
+  race:
+    runs-on: ubuntu-latest
+
+    # The same service, for the same reason as `test`: without
+    # BABEL_TEST_POSTGRES the shared-catalog suite skips itself wholesale, and
+    # a race job that skips the fenced-lease takeover tests is precisely the
+    # vacuous gate this job exists to avoid. The server binaries are not put on
+    # PATH here, because only the e2e acceptance provisions its own cluster
+    # with initdb and that suite is out of scope for this job.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: babel
+          POSTGRES_PASSWORD: babel
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      BABEL_TEST_POSTGRES: postgres://babel:babel@127.0.0.1:5432/postgres?sslmode=disable
+      BABEL_REQUIRE_POSTGRES: "1"
+      # -race is built through cgo and needs a C toolchain. ubuntu-latest ships
+      # gcc and Go defaults to CGO_ENABLED=1 there, so this pins what is
+      # already true rather than changing it; no other job sets CGO_ENABLED, so
+      # nothing here depends on a cgo-free build.
+      CGO_ENABLED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # internal/cli's repository-dependent tests skip when restic is not on
+      # PATH, and those are the tests that drive a child process and pump its
+      # output. Installing it keeps this job's coverage equal to the local run
+      # it stands in for instead of quietly narrower.
+      - name: Install restic (pinned)
+        run: |
+          curl -sSL -o restic.bz2 \
+            https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2
+          echo "f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c  restic.bz2" | sha256sum -c -
+          bunzip2 restic.bz2
+          chmod +x restic
+          sudo mv restic /usr/local/bin/restic
+          restic version
+
+      - name: go test -race
+        run: go test -race -count=1 ./internal/...
+
   web:
     runs-on: ubuntu-latest
     steps:

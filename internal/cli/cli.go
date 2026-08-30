@@ -75,7 +75,11 @@ Commands:
   version                     print Babel's build identity
   web                         serve the local web interface (primary surface)
   storage configure           replace persistent repository configuration
+  storage migrate             apply pending shared catalog migrations
   storage status              report persistent repository configuration
+  storage verify              check the configured shared catalog live
+  storage rebuild --host ID   rebuild one host's catalog rows from restic
+  archive init                create the deployment's restic repository, once
   archive push                back up this host's source roots into restic
   archive status              report snapshots per host
   archive verify              check repository integrity
@@ -97,6 +101,7 @@ Commands:
   reality entity ID           show one entity, its aliases and its facts
   reality answer QUESTION_ID  record an attributed answer
   reality accept PLAN_ID      accept one interpreter plan
+  reality import --source ID  apply one trusted source's versioned fact batch
   cookbook list               list the analysis recipes
   cookbook check              check recipe versions against their bodies
   analysis profile configure  launch Code's profile configuration

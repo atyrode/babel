@@ -1,6 +1,7 @@
 package cookbook
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -287,5 +288,91 @@ func TestEmptyCookbookIsAnError(t *testing.T) {
 		t.Fatal("LoadDir succeeded on an empty recipe directory")
 	} else if !strings.Contains(err.Error(), "no recipes found") {
 		t.Errorf("error = %v, want it to report an empty cookbook", err)
+	}
+}
+
+// TestSelectNarrowsEveryAccessor is the property a narrowed run depends on:
+// a consumer of the selection sees the selection through whichever accessor
+// it happens to use. internal/explore reads the run's recipes through All()
+// — for the receipt's cookbook assets and for each stage's participants —
+// and resolves one recipe through ByID, so a Set that narrowed one accessor
+// and not the others would still brief the worker with, or attest to,
+// recipes the operator never asked for.
+func TestSelectNarrowsEveryAccessor(t *testing.T) {
+	full := loadEmbedded(t)
+
+	// Named out of order and with a repeat: --recipe is a repeatable flag,
+	// and a receipt listing one recipe twice would misdescribe the run.
+	set, err := full.Select([]string{"outcome-integrity", "effective-patterns", "outcome-integrity"})
+	if err != nil {
+		t.Fatalf("Select() = %v", err)
+	}
+
+	want := []string{"effective-patterns", "outcome-integrity"}
+	if got := strings.Join(set.IDs(), ","); got != strings.Join(want, ",") {
+		t.Errorf("IDs() = %q, want %q sorted and deduplicated", got, strings.Join(want, ","))
+	}
+	if got := len(set.All()); got != len(want) {
+		t.Errorf("All() holds %d recipes, want %d", got, len(want))
+	}
+	if got := len(set.Refs()); got != len(want) {
+		t.Errorf("Refs() holds %d refs, want %d", got, len(want))
+	}
+	for _, id := range want {
+		if _, ok := set.ByID(id); !ok {
+			t.Errorf("ByID(%q) missed a selected recipe", id)
+		}
+	}
+	for _, id := range drafts {
+		if _, ok := set.ByID(id); ok {
+			t.Errorf("ByID(%q) resolved a recipe the selection excluded", id)
+		}
+	}
+	// The source set is untouched: `babel cookbook list` and the web
+	// catalog read the full cookbook from the same value a run narrows.
+	if got := len(full.All()); got != len(shipped) {
+		t.Errorf("selecting mutated the source cookbook: %d recipes remain, want %d", got, len(shipped))
+	}
+}
+
+// TestSelectRejectsAnUnknownIDNamingWhatExists keeps a mistyped selection a
+// refusal that can be acted on. The error carries the available ids because
+// its reporter is a command line, and an id from a different build is
+// indistinguishable from a typo without the list.
+func TestSelectRejectsAnUnknownIDNamingWhatExists(t *testing.T) {
+	full := loadEmbedded(t)
+
+	_, err := full.Select([]string{"outcome-integrity", "no-such-lens"})
+	if err == nil {
+		t.Fatal("Select succeeded on an unknown id")
+	}
+	var unknown *UnknownRecipeError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("err is %T, want *UnknownRecipeError so a caller can phrase it as a flag error", err)
+	}
+	if unknown.ID != "no-such-lens" {
+		t.Errorf("ID = %q, want the id that does not exist", unknown.ID)
+	}
+	if strings.Join(unknown.Available, ",") != strings.Join(full.IDs(), ",") {
+		t.Errorf("Available = %v, want every id the cookbook holds", unknown.Available)
+	}
+	if !strings.Contains(err.Error(), "no-such-lens") {
+		t.Errorf("error = %v, want it to name the unknown id", err)
+	}
+}
+
+// TestSelectRefusesAnEmptySelection covers the one invariant a subset can
+// lose. An empty Set would otherwise flow into a run that analyzed nothing
+// and still wrote a receipt for it, which is a provenance record of an
+// analysis that never happened.
+func TestSelectRefusesAnEmptySelection(t *testing.T) {
+	full := loadEmbedded(t)
+
+	for _, ids := range [][]string{nil, {}} {
+		if _, err := full.Select(ids); err == nil {
+			t.Errorf("Select(%v) succeeded, want a refusal", ids)
+		} else if !strings.Contains(err.Error(), "no recipes selected") {
+			t.Errorf("error = %v, want it to report an empty selection", err)
+		}
 	}
 }
