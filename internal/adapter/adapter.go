@@ -59,17 +59,63 @@ type CompletenessReason struct {
 	Reason string `json:"reason"`
 }
 
+// TitleProvenance names where a Title came from. It exists because three
+// different things all render as a short line of text next to a session,
+// and a reader — a human at a terminal, or another Babel instance reading
+// the shared catalog — must be able to tell which one it is holding. A
+// harness that wrote the title into its own log is reporting a fact; a
+// deterministic rule over the transcript is Babel's arithmetic; a model
+// summary is a guess that cost money. Collapsing them would make Babel's
+// own inference indistinguishable from recorded provenance, which SPEC.md
+// §3's discipline forbids.
+type TitleProvenance string
+
+// The provenance vocabulary. The empty value is not "unknown-but-titled":
+// it is what a nil Title carries, and a Title MUST NOT be set without one
+// of the three named values.
+const (
+	// TitleRecorded means the harness itself recorded this title in the
+	// session's own files and Babel reports it unchanged. It says nothing
+	// about how the harness obtained it: OMP's titles are written by its
+	// own tiny model, and that is still recorded provenance, because the
+	// value came with the session rather than being produced by Babel.
+	TitleRecorded TitleProvenance = "recorded"
+	// TitleDerived means Babel computed this title from values the session
+	// records, by a deterministic offline rule, with no model and no
+	// network. It is reproducible from the same bytes and free.
+	TitleDerived TitleProvenance = "derived"
+	// TitleInferred means a model Babel invoked produced this title from
+	// session material that consequently left the machine. It is not
+	// reproducible and it cost money, so it is never produced by a scan,
+	// a describe, or a push (SPEC.md §3, §9).
+	TitleInferred TitleProvenance = "inferred"
+)
+
+// Valid reports whether p is one of the three named provenances.
+func (p TitleProvenance) Valid() bool {
+	switch p {
+	case TitleRecorded, TitleDerived, TitleInferred:
+		return true
+	}
+	return false
+}
+
 // CommonMeta carries the nullable portable catalog fields. A nil field
 // MUST be explained by a CompletenessReason; adapters never synthesize
 // values merely to satisfy the shape.
 type CommonMeta struct {
-	Title        *string
-	Workspace    *string
-	CreatedAt    *time.Time
-	ModifiedAt   *time.Time
-	Lifecycle    *string
-	Repo         *RepoFingerprint
-	Completeness []CompletenessReason
+	Title *string
+	// TitleProvenance MUST be set whenever Title is non-nil and MUST be
+	// empty when Title is nil. An adapter that sets a title without saying
+	// where it came from is exactly the ambiguity this field exists to
+	// remove, so callers may treat the pair as invalid rather than guessing.
+	TitleProvenance TitleProvenance
+	Workspace       *string
+	CreatedAt       *time.Time
+	ModifiedAt      *time.Time
+	Lifecycle       *string
+	Repo            *RepoFingerprint
+	Completeness    []CompletenessReason
 }
 
 // Description is one best-effort view of a session's metadata and file

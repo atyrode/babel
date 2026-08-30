@@ -82,9 +82,12 @@ Commands:
   archive init                create the deployment's restic repository, once
   archive push                back up this host's source roots into restic
   archive status              report snapshots per host
+  archive fleet               report whether every host has published recently
   archive verify              check repository integrity
   sessions list               list this host's local sessions
   sessions inspect SELECTOR   show one local session in full
+  sessions title infer        have a model write titles for untitled sessions
+  sessions title clear        withdraw model-written titles
   sessions fetch SELECTOR     restore one session's files from a snapshot
   sessions prune --local      remove locally fetched session directories
   prepare [SELECTOR...]       fix an exploration's corpus scope
@@ -492,10 +495,19 @@ type repoFlags struct {
 	host         string
 }
 
-func (rf *repoFlags) bind(fs *flag.FlagSet) {
+// bindRepo binds repository selection alone, without the host identity. It
+// exists for a command that reads an archive several machines share and has no
+// use for which one this is: defining --host there would accept a flag the
+// command ignores, and on a report about other hosts that flag would read as a
+// filter.
+func (rf *repoFlags) bindRepo(fs *flag.FlagSet) {
 	fs.StringVar(&rf.repository, "repo", "", "restic repository (default $BABEL_RESTIC_REPO, else storage.json)")
 	fs.StringVar(&rf.passwordFile, "password-file", "", "file holding the repository password (default $BABEL_RESTIC_PASSWORD_FILE, else storage.json)")
 	fs.StringVar(&rf.binary, "restic-binary", "", `restic executable to run (default storage.json, else "restic" from $PATH)`)
+}
+
+func (rf *repoFlags) bind(fs *flag.FlagSet) {
+	rf.bindRepo(fs)
 	fs.StringVar(&rf.host, "host", "", "archive host identity (default $BABEL_HOST_ID, else storage.json, else the system hostname)")
 }
 

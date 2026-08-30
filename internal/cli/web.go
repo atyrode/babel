@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -90,7 +91,7 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 	passwordFile := firstNonEmpty(rf.passwordFile, os.Getenv("BABEL_RESTIC_PASSWORD_FILE"), cfg.PasswordFile)
 	configured := repository != "" && passwordFile != ""
 
-	// Explicitly forward the resolved selection so every archive
+	// Explicitly forward the resolved repository selection so every archive
 	// sub-invocation sees exactly the state the server advertised, even if
 	// the environment changes while the server runs.
 	var forward []string
@@ -99,9 +100,6 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 	}
 	if b := firstNonEmpty(rf.binary, cfg.ResticBinary); b != "" {
 		forward = append(forward, "--restic-binary", b)
-	}
-	if rf.host != "" {
-		forward = append(forward, "--host", rf.host)
 	}
 
 	hostID := firstNonEmpty(rf.host, os.Getenv("BABEL_HOST_ID"), cfg.HostID)
@@ -150,7 +148,12 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 		Transcripts: web.TranscriptReaderFunc(transcript.Events),
 	}
 	if configured {
-		opts.Archive = &webArchive{app: a, forward: forward}
+		opts.Archive = &webArchive{
+			app:          a,
+			forward:      forward,
+			host:         rf.host,
+			sessionsRoot: d.sessionsRoot(),
+		}
 	}
 	return web.New(opts)
 }
@@ -193,6 +196,7 @@ func webSessionRows(rows []sessionRow) []web.SessionRow {
 			Size:              row.Size,
 			Modified:          row.Modified,
 			Title:             row.Title,
+			TitleProvenance:   row.TitleProvenance,
 			Workspace:         row.Workspace,
 			ContinuationGrade: row.Continuous,
 		})
@@ -201,10 +205,24 @@ func webSessionRows(rows []sessionRow) []web.SessionRow {
 }
 
 // webArchive drives the archive commands in process. Only status, verify,
-// and fetch exist here; the CLI exposes no deletion, so neither can the web.
+// listing, and fetch exist here; the CLI exposes no deletion, so neither can
+// the web.
 type webArchive struct {
-	app     *app
+	app *app
+	// forward is the resolved repository selection every sub-invocation
+	// receives: --repo, --password-file, and --restic-binary.
 	forward []string
+	// host is `babel web --host`, the launch-time archive host identity. It
+	// is not folded into forward because it is not part of the repository
+	// selection: `archive status` and `archive verify` bind the flag and
+	// never read it, while `sessions list` and `sessions fetch` give it a
+	// meaning — read that host's snapshot instead of this machine — that a
+	// per-request value must be able to override.
+	host string
+	// sessionsRoot is where fetched session trees live. Resolved once at
+	// launch rather than per request, because the data directory does not
+	// move while a server runs.
+	sessionsRoot string
 }
 
 func (w *webArchive) ArchiveStatus(ctx context.Context) (web.StatusResult, error) {
@@ -228,10 +246,89 @@ func (w *webArchive) ArchiveVerify(ctx context.Context, deep bool) (web.VerifyRe
 	return res, err
 }
 
-func (w *webArchive) FetchSession(ctx context.Context, selector, snapshot string) (web.FetchResult, error) {
-	args := []string{"sessions", "fetch", selector, "--json"}
+// ArchiveSessions runs `babel sessions list --host`, the command that reads a
+// snapshot's file listing instead of this machine's source trees.
+//
+// Nothing here reimplements that listing: the flag combinations the command
+// refuses — --roots and --no-cache against --host, --snapshot without one —
+// stay refused because this builds an invocation rather than calling past it,
+// and a refusal arrives as the web bad-request sentinel through runJSON.
+func (w *webArchive) ArchiveSessions(ctx context.Context, host, snapshot string) (web.ArchiveSessionsResult, error) {
+	args := []string{"sessions", "list", "--host", host, "--json"}
 	if snapshot != "" {
 		args = append(args, "--snapshot", snapshot)
+	}
+	var listing sessionsResult
+	if err := w.app.runJSON(ctx, &listing, append(args, w.forward...)...); err != nil {
+		return web.ArchiveSessionsResult{}, err
+	}
+	return web.ArchiveSessionsResult{
+		Host:     Sanitize(host),
+		Snapshot: Sanitize(snapshot),
+		Sessions: w.archiveRows(listing.Sessions),
+	}, nil
+}
+
+// archiveRows narrows the command's listing rows to what a snapshot listing
+// actually observed, and adds the one local fact this view needs.
+//
+// The four nullable fields are dropped rather than forwarded as nulls. They
+// are null by construction here — rowFromArchived fills in only the identity,
+// the selector, and the primary log's recorded size — so carrying them would
+// hand a client a title field that is always absent and invite it to render
+// the absence as an empty cell.
+func (w *webArchive) archiveRows(rows []sessionRow) []web.ArchiveSessionRow {
+	out := make([]web.ArchiveSessionRow, 0, len(rows))
+	for _, row := range rows {
+		archived := web.ArchiveSessionRow{
+			Harness:  row.Harness,
+			SourceID: row.SourceID,
+			Selector: row.Selector,
+			Size:     row.Size,
+		}
+		if dir, ok := w.materialization(row.Selector); ok {
+			archived.Fetched, archived.FetchedPath = true, Sanitize(dir)
+		}
+		out = append(out, archived)
+	}
+	return out
+}
+
+// materialization reports whether this machine already holds a fetched copy of
+// one archived session, and where.
+//
+// The answer is a directory test rather than a repository read, because the
+// fetch naming rule is deterministic from the selector alone — that is what
+// lets local prune find a fetched tree without opening the archive. The test
+// is per selector and not per snapshot: the operator's question is whether
+// this session was recovered here at all, and a session fetched from an older
+// snapshot is still a session this machine holds.
+//
+// The selector arrives sanitized, which is exact here rather than approximate:
+// adapter source ids are [A-Za-z0-9._-] segments and harness names are
+// lowercase words, so the terminal-safe renderer is the identity on both.
+func (w *webArchive) materialization(selector string) (string, bool) {
+	if w.sessionsRoot == "" || selector == "" {
+		return "", false
+	}
+	dir := filepath.Join(w.sessionsRoot, safeSessionDir(selector))
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	return dir, true
+}
+
+// FetchSession runs `babel sessions fetch`. A request that names no host
+// inherits the launch selection, which is the same precedence the CLI applies
+// to a flag against its configured default.
+func (w *webArchive) FetchSession(ctx context.Context, req web.FetchRequest) (web.FetchResult, error) {
+	args := []string{"sessions", "fetch", req.Selector, "--json"}
+	if req.Snapshot != "" {
+		args = append(args, "--snapshot", req.Snapshot)
+	}
+	if host := firstNonEmpty(req.Host, w.host); host != "" {
+		args = append(args, "--host", host)
 	}
 	var res web.FetchResult
 	err := w.app.runJSON(ctx, &res, append(args, w.forward...)...)

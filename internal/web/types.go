@@ -204,12 +204,20 @@ func (f StateProviderFunc) WebState(ctx context.Context) (State, error) { return
 // the CLI leaves it absent when no transcript was read, and this shape must be
 // able to say so rather than reporting a grade nothing observed.
 type SessionRow struct {
-	Harness           string  `json:"harness"`
-	SourceID          string  `json:"source_id"`
-	Selector          string  `json:"selector"`
-	Size              int64   `json:"size"`
-	Modified          *string `json:"modified"`
-	Title             *string `json:"title"`
+	Harness  string  `json:"harness"`
+	SourceID string  `json:"source_id"`
+	Selector string  `json:"selector"`
+	Size     int64   `json:"size"`
+	Modified *string `json:"modified"`
+	Title    *string `json:"title"`
+	// TitleProvenance is null exactly when Title is, and otherwise names where
+	// the title came from: "recorded" by the harness, "derived" by Babel from
+	// the session's own records, or "inferred" by a model. The web app is the
+	// primary surface (decision 1), so this is the one place the distinction
+	// has to reach a human: three different kinds of claim render as the same
+	// short line of text, and a reader who cannot tell them apart is being
+	// shown Babel's arithmetic as if the harness had recorded it.
+	TitleProvenance   *string `json:"title_provenance"`
 	Workspace         *string `json:"workspace"`
 	ContinuationGrade *bool   `json:"continuation_grade"`
 }
@@ -296,13 +304,14 @@ type InspectResult struct {
 	DescribedAt string `json:"described_at"`
 	Hint        string `json:"hint,omitempty"`
 
-	Title        *string           `json:"title"`
-	Workspace    *string           `json:"workspace"`
-	CreatedAt    *string           `json:"created_at"`
-	ModifiedAt   *string           `json:"modified_at"`
-	Lifecycle    *string           `json:"lifecycle"`
-	Repo         *RepoRow          `json:"repo"`
-	Completeness []CompletenessRow `json:"completeness,omitempty"`
+	Title           *string           `json:"title"`
+	TitleProvenance *string           `json:"title_provenance"`
+	Workspace       *string           `json:"workspace"`
+	CreatedAt       *string           `json:"created_at"`
+	ModifiedAt      *string           `json:"modified_at"`
+	Lifecycle       *string           `json:"lifecycle"`
+	Repo            *RepoRow          `json:"repo"`
+	Completeness    []CompletenessRow `json:"completeness,omitempty"`
 
 	AdapterMetadataSchema int             `json:"adapter_metadata_schema"`
 	AdapterMetadata       json.RawMessage `json:"adapter_metadata,omitempty"`
@@ -368,12 +377,62 @@ type FetchResult struct {
 	AlreadyPresent  bool     `json:"already_present"`
 }
 
+// ArchiveSessionRow is one session as another host's snapshot listing can
+// describe it. It is deliberately not a SessionRow.
+//
+// A cross-host listing reads only the snapshot's file listing — no transcript
+// bytes are downloaded, which is what makes browsing another machine's archive
+// cheap — so title, workspace, modification time, and continuation grade are
+// unknowable here. SessionRow can represent them as null, and a shape that
+// *can* carry a title invites a client to render an absent one as a blank cell
+// that reads like empty data. This shape cannot carry them at all, so a client
+// consuming it has no choice but to say what it actually knows.
+//
+// Fetched is the one thing this listing knows about the local machine, and it
+// is why fetching leads somewhere visible: a materialization of this selector
+// under Babel's own data directory means the operator already recovered this
+// session here.
+type ArchiveSessionRow struct {
+	Harness     string `json:"harness"`
+	SourceID    string `json:"source_id"`
+	Selector    string `json:"selector"`
+	Size        int64  `json:"size"`
+	Fetched     bool   `json:"fetched"`
+	FetchedPath string `json:"fetched_path,omitempty"`
+}
+
+// ArchiveSessionsResult is one host's archived session listing.
+//
+// Snapshot echoes the snapshot selector the request asked for and is empty
+// when the request named none, which means that host's newest snapshot. It is
+// not filled in with a resolved id: `sessions list --host` reports the rows it
+// read and not the snapshot it read them from, and inventing an id here would
+// state a fact this surface did not observe (SPEC.md §3).
+type ArchiveSessionsResult struct {
+	Host     string              `json:"host"`
+	Snapshot string              `json:"snapshot"`
+	Sessions []ArchiveSessionRow `json:"sessions"`
+}
+
+// FetchRequest is one materialization request. Host is the cross-host
+// resolution `sessions fetch --host` performs: with it the selector is
+// resolved inside that host's snapshot listing rather than against local
+// files, which is the only way to fetch a session this machine never had.
+// Empty means the launch-time host selection, exactly as the CLI's flag
+// precedence gives it.
+type FetchRequest struct {
+	Selector string
+	Snapshot string
+	Host     string
+}
+
 // ArchiveOperations is the read/restore-only repository surface. Deliberately
 // no forget or prune operation is representable here.
 type ArchiveOperations interface {
 	ArchiveStatus(context.Context) (StatusResult, error)
 	ArchiveVerify(context.Context, bool) (VerifyResult, error)
-	FetchSession(context.Context, string, string) (FetchResult, error)
+	ArchiveSessions(ctx context.Context, host, snapshot string) (ArchiveSessionsResult, error)
+	FetchSession(context.Context, FetchRequest) (FetchResult, error)
 }
 
 // TranscriptReader turns an inspected primary log into display events.

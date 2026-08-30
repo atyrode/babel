@@ -33,7 +33,7 @@ func TestRunConformanceFailsANonWorker(t *testing.T) {
 		// Speaks never but stays alive, so every obligation spends its whole
 		// handshake budget waiting. The obligations are independent processes,
 		// so they are graded concurrently here: run serially this candidate
-		// costs the handshake timeout fourteen times over for no extra evidence.
+		// costs the handshake timeout once per obligation for no extra evidence.
 		"never handshakes": {binary: fakeWorkerPath, args: []string{"-no-hello"}},
 	}
 
@@ -63,7 +63,7 @@ func TestRunConformanceFailsANonWorker(t *testing.T) {
 
 // gradeConcurrently grades every obligation against one target at the same
 // time. RunConformance is deliberately serial — an operator reads a report in
-// order, and fourteen worker processes at once would distort the timing
+// order, and one worker process per obligation at once would distort the timing
 // obligations — but each obligation launches its own process and shares nothing,
 // so a test that only needs the verdicts can afford the parallelism.
 func gradeConcurrently(target conformanceTarget) []ObligationResult {

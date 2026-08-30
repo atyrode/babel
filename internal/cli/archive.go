@@ -21,6 +21,7 @@ Commands:
   init     create the deployment's restic repository, once
   push     back up this host's source roots into the restic repository
   status   report snapshots per host
+  fleet    report whether every host has published recently
   verify   check repository integrity
 
 Repository selection:
@@ -146,6 +147,78 @@ Flags:
   --json                      emit the report as JSON on stdout
 `
 
+const archiveFleetUsage = `Usage: babel archive fleet [flags]
+
+Answers one question: has every machine you expect published recently.
+
+"babel archive status" reports each host's newest snapshot time, which is the
+raw material and not the answer - a host six days stale renders identically to
+one that published minutes ago apart from a timestamp you have to compare by
+eye. This command makes that comparison and states the verdict. Read-only, and
+it neither polls nor notifies: it answers when asked and does nothing between.
+
+States:
+
+  current    the host published within the cadence it is judged against.
+
+  LATE       the host has missed more than three expected publications, so
+             it has skipped at least two consecutive ones. One missed run is
+             not enough: the Phase A timer is Persistent=true precisely so a
+             machine that was asleep or offline catches up on the next run.
+
+  MISSING    a host named with --expect that has published nothing into this
+             repository at all. This is the only state the archive cannot
+             derive on its own - nothing in an archive can attest to a
+             machine that never wrote to it - which is what --expect is for.
+
+  unknown    the host has published, but no cadence could be established for
+             it, so no verdict is offered. It is never reported as current:
+             that would be a guess wearing the word "fine".
+
+The cadence a host is judged against is derived, never assumed, and the
+EXPECTED EVERY column always names its source so an inferred number is not
+mistaken for a configured one:
+
+  --every     what you passed, which overrides everything below.
+
+  observed    the median gap between that host's own most recent snapshots.
+              The median, not the mean, because a mean is dragged upward by
+              exactly the outages this command exists to notice.
+
+  fleet       the median of the other hosts' observed cadences, used for a
+              host with too little history of its own. One deployment's
+              machines run one rendered timer, so it is defensible - and it
+              is named rather than hidden, because it is an assumption about
+              that host rather than an observation of it.
+
+Babel does not own the archive timer and its configuration does not record
+that timer's schedule, so no cadence here comes from one. A cadence observed
+faster than hourly is treated as hourly: SPEC.md 12 fixes hourly as the Phase
+A schedule, so a faster rate is manual bootstrap pushes rather than a
+schedule, and the floor can only ever delay a late verdict, never bring one
+forward.
+
+Ages are this machine's clock minus each host's own recorded snapshot time,
+because no server-assigned time for a snapshot exists. A host whose clock runs
+ahead therefore reads fresher than it is.
+
+This command always exits 0, including with a late or missing host. "late" is
+a judgement derived from a cadence Babel inferred, not a fault it observed,
+and an exit code is a contract scripts and timers come to depend on - which is
+the alerting system this deliberately is not. Read the report, or the "state"
+field of --json.
+
+Flags:
+  --expect HOST[,HOST...]     host ids you expect to be publishing; one that
+                              has published nothing is reported MISSING
+  --every DURATION            cadence to expect (for example 1h), overriding
+                              the observed one
+  --repo REPOSITORY           restic repository (default $BABEL_RESTIC_REPO)
+  --password-file FILE        password file (default $BABEL_RESTIC_PASSWORD_FILE)
+  --restic-binary PATH        restic executable (default "restic" from $PATH)
+  --json                      emit the report as JSON on stdout
+`
+
 const archiveVerifyUsage = `Usage: babel archive verify --repo REPOSITORY --password-file FILE [flags]
 
 Checks repository structure with "restic check". With --deep, pack data is
@@ -177,6 +250,8 @@ func (a *app) archive(ctx context.Context, args []string) error {
 		return a.archivePush(ctx, args[1:])
 	case "status":
 		return a.archiveStatus(ctx, args[1:])
+	case "fleet":
+		return a.archiveFleet(ctx, args[1:])
 	case "verify":
 		return a.archiveVerify(ctx, args[1:])
 	default:

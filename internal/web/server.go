@@ -313,6 +313,11 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleArchiveStatus(w, r)
+	case "/api/archive/sessions":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleArchiveSessions(w, r)
 	case "/api/archive/verify":
 		if !s.requireMethod(w, r, http.MethodPost) {
 			return
@@ -423,6 +428,14 @@ func (s *Server) requireMethod(w http.ResponseWriter, r *http.Request, method st
 	return false
 }
 
+// handleState reports the non-secret storage configuration.
+//
+// An unconfigured server blanks the repository, because there is none to name.
+// It does not blank the host id: that is this machine's own identity, resolved
+// from the launch flag, the environment, storage.json, or the system hostname,
+// and it has an answer whether or not a repository exists. The Sessions page
+// needs it to say whose sessions it is listing, which is a question a missing
+// repository does not make unanswerable.
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	if s.opts.State == nil {
 		s.writeJSON(w, http.StatusOK, State{})
@@ -435,7 +448,6 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	if !state.Configured {
 		state.Repository = ""
-		state.HostID = ""
 	}
 	s.writeJSON(w, http.StatusOK, state)
 }
@@ -567,6 +579,45 @@ func (s *Server) handleArchiveStatus(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, result)
 }
 
+// handleArchiveSessions lists one host's archived sessions, which is how an
+// instance browses a machine other than its own (SPEC.md §6.2).
+//
+// It is a route of its own rather than a `host` parameter on /api/sessions
+// because the two answer different questions from different sources with
+// different costs. /api/sessions serves whatever the local catalog already
+// holds — immediately, from memory, with a background scan's progress
+// attached — and cannot fail for repository reasons. This reads a snapshot's
+// file listing out of the repository: it needs a configured repository, takes
+// seconds against a remote one, has no catalog refresh time and no scan, and
+// carries a snapshot's worth of rows that describe files this machine does not
+// have. Folding the two into one path would put a repository round trip behind
+// the endpoint a page polls, and would make the response shape a union whose
+// meaningful half depends on a query parameter.
+//
+// The host is required and not defaulted to this machine's own identity: the
+// operator's own sessions are what /api/sessions already shows, so a defaulted
+// host would answer a question nobody asked with an expensive repository read.
+func (s *Server) handleArchiveSessions(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Archive == nil {
+		s.writeError(w, http.StatusConflict, "repository is not configured")
+		return
+	}
+	host := r.URL.Query().Get("host")
+	if host == "" {
+		s.writeError(w, http.StatusBadRequest, "host is required")
+		return
+	}
+	result, err := s.opts.Archive.ArchiveSessions(r.Context(), host, r.URL.Query().Get("snapshot"))
+	if err != nil {
+		s.operationError(w, err)
+		return
+	}
+	if result.Sessions == nil {
+		result.Sessions = []ArchiveSessionRow{}
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleArchiveVerify(w http.ResponseWriter, r *http.Request) {
 	if s.opts.Archive == nil {
 		s.writeError(w, http.StatusConflict, "repository is not configured")
@@ -588,6 +639,14 @@ func (s *Server) handleArchiveVerify(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, result)
 }
 
+// handleFetch materializes one archived session's file closure locally.
+//
+// The optional host parameter is what makes a selector discovered through
+// /api/archive/sessions actionable: without it the selector is resolved
+// against this machine's live source files, which by definition do not hold a
+// session that only another host archived. It is the same `--host` the CLI
+// takes and reaches the same command, so the browser gains no resolution the
+// terminal does not already have.
 func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if s.opts.Archive == nil {
 		s.writeError(w, http.StatusConflict, "repository is not configured")
@@ -597,7 +656,11 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	result, err := s.opts.Archive.FetchSession(r.Context(), selector, r.URL.Query().Get("snapshot"))
+	result, err := s.opts.Archive.FetchSession(r.Context(), FetchRequest{
+		Selector: selector,
+		Snapshot: r.URL.Query().Get("snapshot"),
+		Host:     r.URL.Query().Get("host"),
+	})
 	if err != nil {
 		s.operationError(w, err)
 		return

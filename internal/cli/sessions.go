@@ -42,6 +42,7 @@ const sessionsUsage = `Usage: babel sessions <command> [flags]
 Commands:
   list                 list this host's sessions, or another host's archive
   inspect SELECTOR     show one local session in full
+  title <command>      infer or withdraw model-written titles
   fetch SELECTOR       restore one session's files from a snapshot
   prune --local        remove locally fetched session directories
 
@@ -162,6 +163,8 @@ func (a *app) sessions(ctx context.Context, args []string) error {
 		return a.sessionsList(ctx, args[1:])
 	case "inspect":
 		return a.sessionsInspect(ctx, args[1:])
+	case "title":
+		return a.sessionsTitle(ctx, args[1:])
 	case "fetch":
 		return a.sessionsFetch(ctx, args[1:])
 	case "prune":
@@ -353,14 +356,19 @@ func describe(ctx context.Context, s localSession) (*adapter.Description, error)
 // there would assert that the session falls short of continuation grade
 // rather than that nothing looked.
 type sessionRow struct {
-	Harness    string  `json:"harness"`
-	SourceID   string  `json:"source_id"`
-	Selector   string  `json:"selector"`
-	Size       int64   `json:"size"`
-	Modified   *string `json:"modified"`
-	Title      *string `json:"title"`
-	Workspace  *string `json:"workspace"`
-	Continuous *bool   `json:"continuation_grade"`
+	Harness  string  `json:"harness"`
+	SourceID string  `json:"source_id"`
+	Selector string  `json:"selector"`
+	Size     int64   `json:"size"`
+	Modified *string `json:"modified"`
+	Title    *string `json:"title"`
+	// TitleProvenance is null exactly when Title is. It exists because a
+	// derived title and a harness-recorded one are not the same claim, and a
+	// listing that showed only the text would make Babel's own derivation
+	// indistinguishable from provenance the harness supplied.
+	TitleProvenance *string `json:"title_provenance"`
+	Workspace       *string `json:"workspace"`
+	Continuous      *bool   `json:"continuation_grade"`
 }
 
 // sessionsResult is the machine-readable session listing.
@@ -449,6 +457,7 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 			fmt.Sprint(s.Size),
 			derefOrMissing(s.Modified),
 			derefOrMissing(s.Title),
+			derefOrMissing(s.TitleProvenance),
 			derefOrMissing(s.Workspace),
 			gradeCell(s.Continuous),
 		})
@@ -457,7 +466,7 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 	// the only surface that could not tell a resumable session from a
 	// degraded one, and a listing that hides it makes the operator inspect
 	// each session to find out.
-	return writeTable(a.stdout, []string{"HARNESS", "SOURCE ID", "SIZE", "MODIFIED", "TITLE", "WORKSPACE", "GRADE"}, tableRows)
+	return writeTable(a.stdout, []string{"HARNESS", "SOURCE ID", "SIZE", "MODIFIED", "TITLE", "TITLE FROM", "WORKSPACE", "GRADE"}, tableRows)
 }
 
 type sessionDescribeFunc func(context.Context, localSession) (*adapter.Description, error)
@@ -467,6 +476,11 @@ type sessionDescribeFunc func(context.Context, localSession) (*adapter.Descripti
 // names the harnesses discovery covered, which is the only set the catalog may
 // prune; onProgress, when non-nil, receives one report per describe attempt.
 func (a *app) listSessionRows(ctx context.Context, sessions []localSession, scope []string, dataDir string, noCache bool, describeSession sessionDescribeFunc, onProgress func(catalog.Progress)) ([]sessionRow, error) {
+	// The overlay is read once per invocation rather than per row: it holds
+	// only the sessions the operator paid to title, so it is small, and a
+	// listing must not open the durable database once per session.
+	overlay := a.loadInferredOverlay(ctx, dataDir)
+
 	if noCache {
 		rows := make([]sessionRow, 0, len(sessions))
 		for _, session := range sessions {
@@ -475,7 +489,9 @@ func (a *app) listSessionRows(ctx context.Context, sessions []localSession, scop
 				a.diagf("warning: %s\n", Sanitize(err.Error()))
 				continue
 			}
-			rows = append(rows, rowFromDescription(session, desc))
+			row := rowFromDescription(session, desc)
+			row.Title, row.TitleProvenance = overlay.apply(row.Selector, row.Title, row.TitleProvenance)
+			rows = append(rows, row)
 		}
 		return rows, nil
 	}
@@ -491,7 +507,7 @@ func (a *app) listSessionRows(ctx context.Context, sessions []localSession, scop
 	if err != nil {
 		return nil, fmt.Errorf("refresh session catalog: %w", err)
 	}
-	return decodeCatalogRows(cached, bySelector)
+	return decodeCatalogRows(cached, bySelector, overlay)
 }
 
 // catalogRefs restates one discovery result in the catalog's terms, together
@@ -531,6 +547,7 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 		}
 		return catalog.Row{
 			Title:               row.Title,
+			TitleProvenance:     row.TitleProvenance,
 			Workspace:           row.Workspace,
 			CreatedAt:           timePtr(desc.Meta.CreatedAt),
 			ModifiedAt:          row.Modified,
@@ -547,7 +564,15 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 // non-nil the listing is narrowed to the sessions discovery actually saw, so a
 // harness-restricted or root-restricted invocation reports exactly what it
 // scanned even though the catalog holds the whole machine.
-func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession) ([]sessionRow, error) {
+//
+// The title and its provenance are taken from the cached columns rather than
+// from RowJSON, and then the inferred overlay is applied. Both matter. The
+// columns are what the publish path reads, so a listing that showed a
+// different value than a push would send is a listing that lies about what
+// other machines will see; and the overlay is applied here rather than at
+// describe time so a title inferred a minute ago appears immediately, without
+// waiting for the session's files to change and force a re-describe.
+func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession, overlay inferredOverlay) ([]sessionRow, error) {
 	rows := make([]sessionRow, 0, len(cached))
 	for _, cachedRow := range cached {
 		if keep != nil {
@@ -559,6 +584,9 @@ func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession) ([]se
 		if err := json.Unmarshal(cachedRow.RowJSON, &row); err != nil {
 			return nil, fmt.Errorf("decode cached session %q: %w", cachedRow.Selector, err)
 		}
+		row.Title = sanitizePtr(cachedRow.Title)
+		row.TitleProvenance = sanitizePtr(cachedRow.TitleProvenance)
+		row.Title, row.TitleProvenance = overlay.apply(cachedRow.Selector, row.Title, row.TitleProvenance)
 		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Selector < rows[j].Selector })
@@ -570,14 +598,15 @@ func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession) ([]se
 // observation and is reported as one.
 func rowFromDescription(session localSession, desc *adapter.Description) sessionRow {
 	return sessionRow{
-		Harness:    Sanitize(session.src.Harness),
-		SourceID:   Sanitize(session.src.SourceID),
-		Selector:   Sanitize(session.key()),
-		Size:       desc.PrimarySize,
-		Modified:   timePtr(desc.Meta.ModifiedAt),
-		Title:      sanitizePtr(desc.Meta.Title),
-		Workspace:  sanitizePtr(desc.Meta.Workspace),
-		Continuous: &desc.ContinuationGrade,
+		Harness:         Sanitize(session.src.Harness),
+		SourceID:        Sanitize(session.src.SourceID),
+		Selector:        Sanitize(session.key()),
+		Size:            desc.PrimarySize,
+		Modified:        timePtr(desc.Meta.ModifiedAt),
+		Title:           sanitizePtr(desc.Meta.Title),
+		TitleProvenance: provenancePtr(desc.Meta),
+		Workspace:       sanitizePtr(desc.Meta.Workspace),
+		Continuous:      &desc.ContinuationGrade,
 	}
 }
 
@@ -658,13 +687,14 @@ type inspectResult struct {
 	DescribedAt string `json:"described_at"`
 	Hint        string `json:"hint,omitempty"`
 
-	Title        *string           `json:"title"`
-	Workspace    *string           `json:"workspace"`
-	CreatedAt    *string           `json:"created_at"`
-	ModifiedAt   *string           `json:"modified_at"`
-	Lifecycle    *string           `json:"lifecycle"`
-	Repo         *repoRow          `json:"repo"`
-	Completeness []completenessRow `json:"completeness,omitempty"`
+	Title           *string           `json:"title"`
+	TitleProvenance *string           `json:"title_provenance"`
+	Workspace       *string           `json:"workspace"`
+	CreatedAt       *string           `json:"created_at"`
+	ModifiedAt      *string           `json:"modified_at"`
+	Lifecycle       *string           `json:"lifecycle"`
+	Repo            *repoRow          `json:"repo"`
+	Completeness    []completenessRow `json:"completeness,omitempty"`
 
 	AdapterMetadataSchema int             `json:"adapter_metadata_schema"`
 	AdapterMetadata       json.RawMessage `json:"adapter_metadata,omitempty"`
@@ -708,6 +738,7 @@ func (a *app) sessionsInspect(ctx context.Context, args []string) error {
 		DescribedAt:           formatTime(desc.DescribedAt),
 		Hint:                  Sanitize(desc.Source.Hint),
 		Title:                 sanitizePtr(desc.Meta.Title),
+		TitleProvenance:       provenancePtr(desc.Meta),
 		Workspace:             sanitizePtr(desc.Meta.Workspace),
 		CreatedAt:             timePtr(desc.Meta.CreatedAt),
 		ModifiedAt:            timePtr(desc.Meta.ModifiedAt),
@@ -756,6 +787,7 @@ func (a *app) printInspect(res inspectResult) error {
 		{"primary size", fmt.Sprint(res.PrimarySize)},
 		{"described at", res.DescribedAt},
 		{"title", derefOrMissing(res.Title)},
+		{"title from", derefOrMissing(res.TitleProvenance)},
 		{"workspace", derefOrMissing(res.Workspace)},
 		{"created at", derefOrMissing(res.CreatedAt)},
 		{"modified at", derefOrMissing(res.ModifiedAt)},
@@ -1389,6 +1421,25 @@ func sanitizePtr(p *string) *string {
 		return nil
 	}
 	s := Sanitize(*p)
+	return &s
+}
+
+// provenancePtr renders a title's provenance, and only when there is a title
+// to attribute. A provenance without a title would name the origin of nothing;
+// a title without one would let Babel's own derivation pass for the harness's
+// record. An adapter that reports the pair inconsistently is reported as
+// having no provenance rather than being second-guessed here, because this is
+// a rendering site and the adapter is the authority.
+//
+// The value comes from a compile-time vocabulary, not from the session, so it
+// needs no sanitizing — but it goes through Sanitize anyway, because a
+// rendering path where some strings are exempt is one refactor away from
+// exempting the wrong one.
+func provenancePtr(meta adapter.CommonMeta) *string {
+	if meta.Title == nil || !meta.TitleProvenance.Valid() {
+		return nil
+	}
+	s := Sanitize(string(meta.TitleProvenance))
 	return &s
 }
 

@@ -1,0 +1,114 @@
+-- Browsable session and host metadata (SPEC.md 6.2, 9, decision 8).
+--
+-- WHY THIS WIDENS THE PLAINTEXT BOUNDARY
+--
+-- 0001_init excluded three things by name: a session's title, its workspace,
+-- and a host's display name. Two consequences followed, and the operator hit
+-- both at once. An instance browsing the shared catalog saw 838 sessions from
+-- host workstation-linux as a list of opaque digests with nothing to read, and
+-- decision 8's promise - "host display names are catalog rows where the newest
+-- value wins" - described a column that did not exist.
+--
+-- The operator was shown the tradeoff explicitly: transcripts stay encrypted in
+-- the restic repository, while anything in this table is plaintext in a managed
+-- provider's PostgreSQL, reachable by that provider and by anyone holding the
+-- catalog credential, over a TLS connection that is encrypted but not
+-- authenticated (SPEC.md 9). Asked specifically whether to admit titles,
+-- workspace paths, or both, he chose both: "I'm okay with collecting as much
+-- metadata as we can with the backups. the richer, the better."
+-- (Operator decision, 2026-08-30.)
+--
+-- So this is a deliberate contract change with a named author, not a drift.
+-- allowlist.go carries the matching entries and their classes; a column that
+-- reaches the database without one still fails Verify at migration time.
+--
+-- WHAT REMAINS EXCLUDED
+--
+-- The permission granted here is exactly this column set. It does not
+-- generalize, and three exclusions from 0001_init survive it unchanged:
+--
+--   * Transcript bodies, and any deterministic function of them. SPEC.md 9
+--     forbids a plaintext full-text index or deterministic ciphertext for
+--     search, and that is the rule a title does not break - it is a short
+--     model-written summary a human reads, not an oracle that answers "does
+--     this session contain X" without a key. A digest over transcript content,
+--     a normalized keyword set, or an embedding would be that oracle, and none
+--     of them is admitted by this migration.
+--   * A session's real selector and the adapter source id it derives from.
+--     Sessions are still keyed by session_uid, an opaque digest. Workspace is
+--     admitted; the selector is not, because the selector is also the fetch
+--     locator and its project slug is derivable from workspace anyway.
+--   * The machine's system hostname. hosts.display_name is operator-assigned
+--     identity, resolved from $BABEL_HOST_DISPLAY_NAME and defaulting to the
+--     host id (which is already the primary key here). reconcile.go refuses to
+--     adopt snapshots recorded under a system hostname for this reason, and
+--     nothing in this migration gives that value a way in.
+--
+-- NULL MEANS UNKNOWN, NEVER EMPTY AND NEVER FALSE
+--
+-- Every column here is nullable with no default, and that is load-bearing
+-- rather than convenience. These values are resolved from a host's own local
+-- sources: only the publishing host can supply them, and no other instance can
+-- recompute them from the catalog or the repository. A reader on another
+-- machine therefore meets absence routinely and must be able to tell it from
+-- content.
+--
+-- continuation_grade is the sharpest case. It is a boolean, so NOT NULL would
+-- force absence to render as `false` - "this session cannot be continued" -
+-- which is a claim about a session no one has graded. A nullable boolean says
+-- unknown, gradeable, and not gradeable as three distinct answers, and a
+-- cross-host reader gets the first one until the owning host publishes.
+--
+-- HOST IDENTITY, AND WHAT "NEWEST VALUE WINS" MEANS HERE
+--
+-- display_name is a single mutable column, updated in place on every push. No
+-- history is retained. Decision 8 says the newest value wins, and that is
+-- precisely what an update implements: the row holds the newest assertion and
+-- nothing else, so a reader cannot be handed a stale name. Retaining superseded
+-- names would be a different feature - an audit trail of what a machine used to
+-- be called - which nothing asks for and which Phase A's rebuildable catalog
+-- could not honestly keep anyway, since a rebuild reconstructs rows from the
+-- repository snapshot list and would erase the trail it claimed to hold.
+--
+-- identity_updated_at records when those three facts were last asserted, so an
+-- operator asking why a host still shows an old name gets an answer: its last
+-- push predates the rename. NULL means no push has ever asserted them.
+--
+-- There is deliberately no first_seen_at column. hosts.created_at already is
+-- it: PostgreSQL assigns it when the row is first inserted, both insert sites
+-- use ON CONFLICT (host_id) DO NOTHING so it is never rewritten, and Rebuild
+-- does not delete host rows. A second column for the same fact would only give
+-- the two ways to disagree.
+--
+-- COMPATIBILITY WITH WRITERS THAT PREDATE THIS MIGRATION
+--
+-- Every statement below adds a nullable column with no default and no
+-- constraint. It rewrites no row, and it makes no INSERT that was valid before
+-- invalid: Babel's writers name their columns explicitly, so a binary that has
+-- never heard of `title` writes a row where title is NULL. That matters
+-- concretely - the operator's hourly systemd timer runs a binary older than
+-- this migration, and it must keep publishing across it.
+--
+-- SchemaVersion is unchanged at 1 and must stay there. Raising it would make
+-- EnsureCompatible refuse every writer that has not been updated, which is the
+-- opposite of what an additive nullable change needs (SPEC.md 14).
+--
+-- BACKFILL
+--
+-- New columns start NULL for rows that already exist, and nothing in this file
+-- changes that. Rows are filled by the owning host's next push from a binary
+-- that carries these columns, which upserts them for every session that push
+-- describes. `babel storage rebuild` cannot do it: it reconstructs snapshot
+-- rows from the repository listing and deletes the host's session rows, and
+-- session detail is not derivable from a snapshot list (SPEC.md 9).
+
+ALTER TABLE sessions
+    ADD COLUMN title              text,
+    ADD COLUMN workspace          text,
+    ADD COLUMN continuation_grade boolean;
+
+ALTER TABLE hosts
+    ADD COLUMN display_name        text,
+    ADD COLUMN os                  text,
+    ADD COLUMN arch                text,
+    ADD COLUMN identity_updated_at timestamptz;

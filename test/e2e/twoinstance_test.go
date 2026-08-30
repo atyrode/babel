@@ -468,7 +468,7 @@ func TestTwoInstanceAcceptance(t *testing.T) {
 	db := dep.open(t)
 	ctx := context.Background()
 	const phantom = "e2einstance-phantom"
-	if err := sharedcatalog.Register(ctx, db, twoInstanceDeployment, hostA, phantom); err != nil {
+	if err := sharedcatalog.Register(ctx, db, twoInstanceDeployment, hostA, phantom, sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("register the lease holder: %v", err)
 	}
 	lease, err := sharedcatalog.AcquireHostLease(ctx, db, hostA, phantom, time.Minute)

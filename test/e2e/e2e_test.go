@@ -74,6 +74,12 @@ const (
 	titleDangling = "Synthetic e2e dangling session"
 	titleClaude   = "Synthetic e2e claude session"
 
+	// Codex persists no title, so this is what Babel derives from the
+	// fixture's own first delivered request rather than a value the harness
+	// recorded. It is asserted verbatim so a change to the derivation shows
+	// up here as a diff instead of passing silently.
+	titleCodexDerived = "synthetic fixture message one"
+
 	workspaceRich     = "/synthetic/workspace/rich"
 	workspaceDangling = "/synthetic/workspace/dangling"
 	workspaceCodex    = "/synthetic/workspace/codex"
@@ -306,6 +312,7 @@ type sessionRow struct {
 	Size       int64   `json:"size"`
 	Modified   *string `json:"modified"`
 	Title      *string `json:"title"`
+	TitleProv  *string `json:"title_provenance"`
 	Workspace  *string `json:"workspace"`
 	Continuous bool    `json:"continuation_grade"`
 }
@@ -347,6 +354,7 @@ type inspectResult struct {
 	Hint        string `json:"hint,omitempty"`
 
 	Title        *string           `json:"title"`
+	TitleProv    *string           `json:"title_provenance"`
 	Workspace    *string           `json:"workspace"`
 	CreatedAt    *string           `json:"created_at"`
 	ModifiedAt   *string           `json:"modified_at"`
@@ -446,16 +454,20 @@ func TestPhaseALoopEndToEnd(t *testing.T) {
 	for _, want := range []struct {
 		selector   string
 		title      *string
+		provenance string
 		workspace  *string
 		continuous bool
 	}{
-		{src.richSelector, new(titleRich), new(workspaceRich), true},
-		{src.danglingSelector, new(titleDangling), new(workspaceDangling), false},
-		// Codex rollouts expose a working directory but no title, and its
-		// host state is not workspace-scoped at all.
-		{src.codexSelector, nil, new(workspaceCodex), false},
-		{"codex/state", nil, nil, false},
-		{src.claudeSelector, new(titleClaude), new(workspaceClaude), false},
+		{src.richSelector, new(titleRich), "recorded", new(workspaceRich), true},
+		{src.danglingSelector, new(titleDangling), "recorded", new(workspaceDangling), false},
+		// Codex records no title of its own, so anything shown for one is
+		// Babel's own derivation and must say so. That is the assertion worth
+		// making: the old one required the title to be absent, which stopped
+		// being the interesting property once the gap was filled — a derived
+		// title presented as a recorded one would be the actual defect.
+		{src.codexSelector, new(titleCodexDerived), "derived", new(workspaceCodex), false},
+		{"codex/state", nil, "", nil, false},
+		{src.claudeSelector, new(titleClaude), "recorded", new(workspaceClaude), false},
 	} {
 		row, ok := rows[want.selector]
 		if !ok {
@@ -463,6 +475,13 @@ func TestPhaseALoopEndToEnd(t *testing.T) {
 		}
 		if !equalStrPtr(row.Title, want.title) {
 			t.Fatalf("%s title = %s, want %s", want.selector, showPtr(row.Title), showPtr(want.title))
+		}
+		gotProv := ""
+		if row.TitleProv != nil {
+			gotProv = *row.TitleProv
+		}
+		if gotProv != want.provenance {
+			t.Fatalf("%s title_provenance = %q, want %q", want.selector, gotProv, want.provenance)
 		}
 		if !equalStrPtr(row.Workspace, want.workspace) {
 			t.Fatalf("%s workspace = %s, want %s", want.selector, showPtr(row.Workspace), showPtr(want.workspace))

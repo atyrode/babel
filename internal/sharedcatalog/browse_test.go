@@ -60,7 +60,7 @@ func TestHostCatalogOnAnEmptyCatalog(t *testing.T) {
 	}
 
 	// A host that registered but never pushed still has nothing to describe.
-	if err := sharedcatalog.Register(context.Background(), db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(context.Background(), db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if rows := hostCatalog(t, db); len(rows) != 0 {
@@ -78,7 +78,7 @@ func TestHostCatalogSeparatesAndOrdersHosts(t *testing.T) {
 	// Register the later-sorting host first, so insertion order and the
 	// expected order disagree.
 	for _, host := range []string{"h-zulu", "h-alpha"} {
-		if err := sharedcatalog.Register(ctx, db, "d1", host, "inst-"+host); err != nil {
+		if err := sharedcatalog.Register(ctx, db, "d1", host, "inst-"+host, sharedcatalog.HostIdentity{}); err != nil {
 			t.Fatalf("Register %s: %v", host, err)
 		}
 	}
@@ -121,7 +121,7 @@ func TestHostCatalogCountsARepublishedSessionOnce(t *testing.T) {
 	db := newDB(t)
 	mustMigrate(t, db)
 	ctx := context.Background()
-	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -154,7 +154,7 @@ func TestHostCatalogCountsPendingRowsAmongSnapshots(t *testing.T) {
 	db := newDB(t)
 	mustMigrate(t, db)
 	ctx := context.Background()
-	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -200,7 +200,7 @@ func TestHostCatalogNewestFollowsPublicationOrderNotTime(t *testing.T) {
 	db := newDB(t)
 	mustMigrate(t, db)
 	ctx := context.Background()
-	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a"); err != nil {
+	if err := sharedcatalog.Register(ctx, db, "d1", "h1", "inst-a", sharedcatalog.HostIdentity{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 

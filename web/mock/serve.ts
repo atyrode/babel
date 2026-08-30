@@ -1,5 +1,6 @@
 import { extname, join, resolve, sep } from "node:path";
 import type {
+  ArchiveSessionRow,
   ArchiveStatus,
   FetchResult,
   LockResult,
@@ -23,7 +24,11 @@ const sessions: SessionSummary[] = [
     selector: "codex/synthetic-alpha",
     size: 482_311,
     modified: "2026-08-28T10:42:00Z",
+    // Codex records no title, so babel derived this one from the session's own
+    // records. The mock covers all three provenances on purpose: the mark on a
+    // title is only reviewable if the preview shows every kind of claim.
     title: "Design a resilient import pipeline",
+    title_provenance: "derived",
     workspace: "/home/demo/projects/atlas",
     continuation_grade: true,
   },
@@ -34,6 +39,7 @@ const sessions: SessionSummary[] = [
     size: 91_220,
     modified: "2026-08-27T18:05:00Z",
     title: "Trace a cache invalidation regression",
+    title_provenance: "recorded",
     workspace: "/home/demo/projects/kepler",
     continuation_grade: false,
   },
@@ -44,6 +50,7 @@ const sessions: SessionSummary[] = [
     size: 1_904_802,
     modified: "2026-08-22T08:30:00Z",
     title: null,
+    title_provenance: null,
     workspace: "/home/demo/scratch",
     continuation_grade: true,
   },
@@ -59,6 +66,7 @@ const details: Record<string, SessionDetail> = {
     described_at: "2026-08-28T10:43:10Z",
     hint: "Synthetic fixture for the Babel web mock",
     title: "Design a resilient import pipeline",
+    title_provenance: "derived",
     workspace: "/home/demo/projects/atlas",
     created_at: "2026-08-28T09:10:00Z",
     modified_at: "2026-08-28T10:42:00Z",
@@ -94,6 +102,7 @@ const details: Record<string, SessionDetail> = {
     primary_size: 91_220,
     described_at: "2026-08-28T09:30:00Z",
     title: "Trace a cache invalidation regression",
+    title_provenance: "recorded",
     workspace: "/home/demo/projects/kepler",
     created_at: "2026-08-27T17:15:00Z",
     modified_at: "2026-08-27T18:05:00Z",
@@ -121,6 +130,7 @@ const details: Record<string, SessionDetail> = {
     described_at: "2026-08-28T09:30:00Z",
     hint: "Generated mock-only session",
     title: null,
+    title_provenance: null,
     workspace: "/home/demo/scratch",
     created_at: "2026-08-21T21:05:00Z",
     modified_at: "2026-08-22T08:30:00Z",
@@ -192,6 +202,24 @@ const archiveStatus: ArchiveStatus = {
   ],
 };
 
+// One host's archived sessions, as a snapshot's file listing reports them: a
+// selector, a harness, and the primary log's recorded size. Nothing else is
+// here because nothing else is knowable without downloading the transcript,
+// and a mock that invented a title would preview an interface the real server
+// cannot produce.
+const archivedByHost: Record<string, ArchiveSessionRow[]> = {
+  "demo-workstation": [
+    { harness: "codex", source_id: "synthetic-delta", selector: "codex/synthetic-delta", size: 2_201_744, fetched: false },
+    { harness: "omp", source_id: "synthetic-echo", selector: "omp/synthetic-echo", size: 18_402, fetched: false },
+    { harness: "claude-code", source_id: "synthetic-foxtrot", selector: "claude-code/synthetic-foxtrot", size: 640_218, fetched: false },
+  ],
+};
+
+// Which archived selectors this synthetic machine has already recovered. It is
+// mutated by a fetch so the preview shows the same "On this machine" flip the
+// real server reports from a directory that now exists.
+const fetchedArchived = new Set<string>();
+
 const version: VersionInfo = {
   version: "0.2.0-mock",
   commit: "synthetic",
@@ -215,6 +243,9 @@ function fillerSession(index: number): SessionSummary {
     size: 12_000 + index * 37_119,
     modified: new Date(Date.UTC(2026, 7, 27, 6, index * 17)).toISOString(),
     title: index % 4 === 0 ? null : `Synthetic preview session ${index + 1}`,
+    // Cycled so the filler previews every mark: recorded (no mark), derived,
+    // inferred, and the untitled row that carries none.
+    title_provenance: index % 4 === 0 ? null : ["recorded", "derived", "inferred"][index % 3],
     workspace: `/home/demo/projects/synthetic-${index % 5}`,
     continuation_grade: index % 3 !== 0,
   };
@@ -230,6 +261,7 @@ function fillerDetail(summary: SessionSummary): SessionDetail {
     described_at: "2026-08-28T10:45:00Z",
     hint: "Generated filler session for the Babel web mock",
     title: summary.title,
+    title_provenance: summary.title_provenance,
     workspace: summary.workspace,
     created_at: summary.modified,
     modified_at: summary.modified,
@@ -380,6 +412,24 @@ function apiResponse(request: Request, url: URL): Response | null {
     return json({ total: events.length, events: events.slice(offset, offset + limit) });
   }
   if (request.method === "GET" && url.pathname === "/api/archive/status") return json(archiveStatus);
+  if (request.method === "GET" && url.pathname === "/api/archive/sessions") {
+    const host = url.searchParams.get("host") ?? "";
+    if (!host) return json({ error: "host is required" }, 400);
+    const rows = archivedByHost[host];
+    // A host the repository does not know is not an empty archive.
+    if (!rows) return json({ error: `synthetic host not found: ${host}` }, 404);
+    return json({
+      host,
+      snapshot: url.searchParams.get("snapshot") ?? "",
+      sessions: rows.map((row) => ({
+        ...row,
+        fetched: fetchedArchived.has(row.selector),
+        fetched_path: fetchedArchived.has(row.selector)
+          ? `/home/demo/.local/share/babel/sessions/${row.selector.replaceAll("/", "-")}`
+          : undefined,
+      })),
+    });
+  }
   if (request.method === "POST" && url.pathname === "/api/archive/verify") {
     const deep = url.searchParams.get("deep") === "1";
     const result: VerifyResult = { repository: archiveStatus.repository, deep, ok: true };
@@ -387,13 +437,20 @@ function apiResponse(request: Request, url: URL): Response | null {
   }
   if (request.method === "POST" && url.pathname === "/api/fetch") {
     const selector = url.searchParams.get("selector") ?? "";
-    if (!details[selector]) return json({ error: `synthetic session not found: ${selector}` }, 404);
+    // With a host the selector is resolved inside that host's archive, which
+    // is the only way a session this machine never had can be addressed.
+    const host = url.searchParams.get("host") ?? "";
+    const archived = host ? archivedByHost[host]?.find((row) => row.selector === selector) : undefined;
+    if (!archived && !details[selector]) {
+      return json({ error: `synthetic session not found: ${selector}` }, 404);
+    }
+    if (archived) fetchedArchived.add(selector);
     const result: FetchResult = {
       selector,
       snapshot_id: "138f14683ef34d28a9b4bc603b87ac55f577cf76801e155f701060ea93c6ac8d",
       snapshot_short_id: url.searchParams.get("snapshot") || "138f1468",
       snapshot_time: "2026-08-28T07:30:00Z",
-      target: `/home/demo/.local/share/babel/fetched/${selector.replaceAll("/", "-")}`,
+      target: `/home/demo/.local/share/babel/sessions/${selector.replaceAll("/", "-")}`,
       files: 2,
       bytes: 490_123,
       included: ["session.jsonl", "workspace/notes.txt"],

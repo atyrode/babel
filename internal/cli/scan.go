@@ -239,7 +239,17 @@ func (c *scanCoordinator) persisted() ([]sessionRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeCatalogRows(cached, nil)
+	// The inferred-title overlay is applied here too, and through the same
+	// reader the terminal uses. The alternative — leaving it to whichever
+	// surface remembered — is how the web app and `sessions list` come to show
+	// two different titles for one session. A store that will not open costs
+	// the overlay and not the listing: the derived titles beneath it are
+	// complete on their own.
+	overlay, err := readInferredOverlay(context.Background(), c.dataDir)
+	if err != nil {
+		c.diagnosef("warning: inferred titles unavailable: %s\n", Sanitize(err.Error()))
+	}
+	return decodeCatalogRows(cached, nil, overlay)
 }
 
 // diagnosef writes one coordinator diagnostic. Callers hold c.mu, which is

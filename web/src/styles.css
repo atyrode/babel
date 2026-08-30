@@ -605,6 +605,75 @@ tbody tr:last-child td {
   font-size: 1.4rem;
 }
 
+/* The scope notice is a statement the operator reads on every visit, above a
+   table that already has content — so it opts out of .state-card's centered,
+   13rem-tall "there is nothing here" shape. */
+.scope-notice {
+  min-height: 0;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0.4rem;
+  padding: 1.05rem 1.25rem;
+  text-align: left;
+}
+
+.scope-notice .secondary {
+  margin-top: 0;
+}
+
+/* Only the branch that says sessions exist elsewhere is given the accent.
+   "You are not missing anything" must not look like a call to action. */
+.scope-notice.more-elsewhere {
+  border-color: rgba(157, 140, 255, 0.4);
+  background: linear-gradient(155deg, rgba(30, 27, 52, 0.97), rgba(18, 20, 31, 0.97));
+}
+
+.scope-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 1rem;
+}
+
+.archive-scope-card {
+  margin-top: 1rem;
+}
+
+/* An archive row's unobservable columns say so in words. This is deliberately
+   not the "—" a local row uses: that marks a described session that genuinely
+   has no value, while this marks a question nothing asked. */
+.not-observed {
+  border-bottom: 1px dotted var(--line);
+  color: var(--subtle);
+  font-size: 0.78rem;
+  font-style: italic;
+  cursor: help;
+}
+
+.fetched-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--green);
+  font-size: 0.78rem;
+}
+
+.fetched-mark::before {
+  content: "●";
+  font-size: 0.6rem;
+}
+
+/* An archive row is not a link: this machine has no session detail to show for
+   a session whose files it does not hold. */
+.archive-table tbody tr {
+  cursor: default;
+}
+
+.archive-table tbody tr:hover,
+.archive-table tbody tr:focus-visible {
+  background: transparent;
+}
+
 /* The terminal state after an operator lock: the same card vocabulary as an
    empty or failed state, in the red the interface already uses for "this did
    not survive". */
@@ -1228,6 +1297,25 @@ select:focus {
   border-color: rgba(157, 140, 255, 0.35);
   color: var(--accent-bright);
   background: var(--accent-soft);
+}
+
+/* The mark that says a title is not the harness's own record. It sits inline
+   with the title text because it qualifies that text, and it is deliberately
+   smaller and shorter than the surrounding badges: it must be legible at a
+   glance without competing with the title it annotates. */
+.session-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.badge.title-origin {
+  min-height: 1.25rem;
+  padding: 0.05rem 0.35rem;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 /* The §1 frame: rendered beside analytical content, styled as a caption

@@ -56,6 +56,13 @@ their sizes and counts are read from the sessions themselves, so the rebuilt
 snapshots arrive "catalog-pending" and session identity returns with the owning
 host's next push (SPEC.md 9).
 
+That makes this the wrong tool for filling in session title, workspace, and
+continuation grade: it deletes the host's session rows, metadata included, and
+cannot reconstruct any of it. Those values arrive only from the owning host's
+next push. The host's own identity - display name, operating system,
+architecture, and first-seen time - does survive a rebuild, because this
+command has no way to know another machine's facts and so asserts none.
+
 --host is required rather than defaulting to this machine, because rebuilding
 discards derived rows and the wrong host would be a silent loss. --yes is
 required for the same reason.
@@ -205,9 +212,15 @@ func observeSchema(ctx context.Context, db *sql.DB) (version int, compatible, pe
 	}
 	pending = len(pendingList) > 0
 
+	// The existence probe must name Babel's own schema. `public.deployments`
+	// never exists - every catalog object lives in `babel` and every connection
+	// pins search_path to it - so this probe always failed and the recorded
+	// version always read as 0, reporting a registered deployment as "not
+	// recorded yet" (observed against the real add-on, 2026-08-30). The
+	// table name is a parameter for the same reason EnsureCompatible passes one.
 	var recorded bool
 	if err := db.QueryRowContext(ctx,
-		`SELECT to_regclass('public.deployments') IS NOT NULL`).Scan(&recorded); err != nil {
+		`SELECT to_regclass($1) IS NOT NULL`, sharedcatalog.Schema+".deployments").Scan(&recorded); err != nil {
 		return 0, false, pending, fmt.Errorf("look for the deployment table: %w", err)
 	}
 	if recorded {

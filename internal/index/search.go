@@ -61,16 +61,25 @@ type Query struct {
 	// which is how a caller browses by structure alone.
 	//
 	// The grammar is small and it is the whole grammar: whitespace
-	// separates terms and terms are ANDed; "a quoted phrase" matches its
-	// words adjacently and "" inside one is a literal quote; a leading -
-	// excludes a term; a trailing * on an unquoted term matches by prefix.
-	// Everything else is data. FTS5's own operators — AND, OR, NOT, NEAR,
-	// column filters, parentheses, carets — carry no meaning here and are
-	// matched as the words they are, because a caller's query is untrusted
-	// text rather than syntax. Control characters cannot be tokens and are
-	// treated as separators; an expression with no searchable term at all
-	// is ErrNoSearchableTerm, and one longer than MaxMatchBytes is
-	// ErrMatchTooLong.
+	// separates terms and terms are optional, so a record matching any of
+	// them is a hit; "a quoted phrase" matches its words adjacently and ""
+	// inside one is a literal quote; a leading - excludes a term and an
+	// exclusion is not optional; a trailing * on an unquoted term matches
+	// by prefix. Everything else is data. FTS5's own operators — AND, OR,
+	// NOT, NEAR, column filters, parentheses, carets — carry no meaning
+	// here and are matched as the words they are, because a caller's query
+	// is untrusted text rather than syntax. Control characters cannot be
+	// tokens and are treated as separators; an expression with no
+	// searchable term at all is ErrNoSearchableTerm, and one longer than
+	// MaxMatchBytes is ErrMatchTooLong.
+	//
+	// Optional terms make membership broad on purpose, and the two things
+	// that keep a result set useful are OrderRelevance — bm25 ranks by how
+	// many of the terms a record matched and how rare they are — and
+	// Limit. A caller that reads a match as a filter rather than as a
+	// ranked question will be disappointed by the tail of a long page;
+	// that is what buildMatch's doc means by membership broad, order
+	// discriminating.
 	Match string
 
 	// Harnesses and SourceIDs are the session links: a harness name as the

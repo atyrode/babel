@@ -14,6 +14,16 @@ import (
 // compile a pathological expression on untrusted input.
 const MaxMatchBytes = 1 << 10
 
+// MaxMatchTerms bounds how many of a caller's terms reach FTS5. Terms are
+// optional and unioned, so cost grows with the number of them in a way an
+// intersection's did not: every extra term widens the candidate set instead of
+// narrowing it. No keyword query a person or an analysis worker writes runs
+// past a couple of dozen words, and a query that does is answered on its first
+// MaxMatchTerms rather than refused, because a truncated answer is still an
+// answer and this function's contract is that a query never fails on its
+// content.
+const MaxMatchTerms = 32
+
 // Errors a match expression can produce. They are sentinels so a caller can
 // distinguish "you typed something unsearchable" from "the index failed",
 // and they deliberately do not quote the expression back: a query can carry
@@ -45,14 +55,35 @@ type matchTerm struct {
 //
 // The grammar this package accepts is small, controlled, and documented:
 //
-//   - whitespace separates terms, and terms are ANDed;
+//   - whitespace separates terms, and terms are optional: a record matching
+//     any of them is a hit, and relevance order decides which hits are worth
+//     a caller's attention;
 //   - "a quoted phrase" matches its words adjacently, and "" inside a phrase
 //     is a literal quote; an unterminated phrase closes at end of input,
 //     because a partly typed query should search rather than fail;
-//   - a leading - excludes a term;
+//   - a leading - excludes a term, and an exclusion is not optional: it
+//     removes a record from the result whichever other terms it matched;
 //   - a trailing * on an unquoted term matches by prefix; and
 //   - everything else is data. AND, OR, NOT, NEAR, parentheses, colons, and
 //     carets have no special meaning: they are matched as the words they are.
+//
+// Optional terms are the correction of a measured failure and not a
+// preference. Terms were ANDed, and an analysis worker's ordinary keyword
+// bag — five words, each of them common in the corpus separately — asks for
+// one record holding all five, which on a corpus of individual transcript
+// records is almost never anything. Four such queries against the operator's
+// index returned 0, 0, 1 and 0 hits while every individual term matched
+// hundreds or thousands of records. A union answers the question the worker
+// was asking.
+//
+// A union alone would answer too much, so relevance carries the weight the
+// conjunction used to: Search orders by FTS5's bm25, which already scores a
+// record by how many of the expression's phrases it matched and weighs each
+// by its inverse document frequency, so a record holding four rare terms
+// outranks one holding a single ubiquitous one, and a term matching most of
+// the corpus contributes almost nothing. Nothing here reimplements that.
+// Membership is broad, order is discriminating, and Query.Limit bounds what a
+// caller is handed — which is the only reason a union is safe to serve.
 //
 // Control characters, including NUL, cannot be FTS5 tokens and are replaced
 // by separators, so an expression carrying them searches its remaining words
@@ -65,33 +96,77 @@ func buildMatch(expression string) (string, error) {
 		return "", fmt.Errorf("%w: %d bytes", ErrMatchTooLong, len(expression))
 	}
 	terms := parseMatch(expression)
+	if len(terms) > MaxMatchTerms {
+		terms = terms[:MaxMatchTerms]
+	}
 
-	var b strings.Builder
-	positives := 0
+	var positives, negatives []matchTerm
 	for _, t := range terms {
 		if t.negated {
+			negatives = append(negatives, t)
 			continue
 		}
-		if positives > 0 {
-			b.WriteString(" AND ")
-		}
-		writeTerm(&b, t)
-		positives++
+		positives = append(positives, t)
 	}
-	if positives == 0 {
+	if len(positives) == 0 {
 		return "", ErrNoSearchableTerm
 	}
-	// FTS5 reads NOT as a binary operator binding tighter than AND, so the
-	// exclusions follow the ANDed positives and apply to the whole
-	// conjunction.
-	for _, t := range terms {
-		if !t.negated {
-			continue
+
+	var b strings.Builder
+	if phrase, ok := wholePhrase(positives); ok {
+		writeTerm(&b, phrase)
+		b.WriteString(" OR ")
+	}
+	for i, t := range positives {
+		if i > 0 {
+			b.WriteString(" OR ")
 		}
+		writeTerm(&b, t)
+	}
+	if len(negatives) == 0 {
+		return b.String(), nil
+	}
+	union := b.String()
+	if len(positives) > 1 {
+		// FTS5 binds NOT tighter than OR, so an unbracketed "a OR b NOT c"
+		// would exclude c from b alone and leave it reachable through a.
+		// A single positive is already one operand and needs no brackets.
+		union = "(" + union + ")"
+	}
+	b.Reset()
+	b.WriteString(union)
+	for _, t := range negatives {
 		b.WriteString(" NOT ")
 		writeTerm(&b, t)
 	}
 	return b.String(), nil
+}
+
+// wholePhrase is the caller's positive terms read as one adjacent phrase, and
+// reports whether there is one to try.
+//
+// It is an extra disjunct rather than a separate query: FTS5's bm25 sums a
+// row's score over every phrase in the expression that matched it, so a record
+// carrying the caller's words adjacently matches the phrase *and* each word
+// and therefore outranks a record that merely holds the same words scattered.
+// A phrase of n words is also rarer than any of its words, and bm25 weighs a
+// phrase by its own inverse document frequency, so the preference costs
+// nothing to state and needs no tuning.
+//
+// A prefix term is excluded because FTS5 accepts a star only after a phrase's
+// last token, so a prefix term in any other position has no phrase to form.
+func wholePhrase(positives []matchTerm) (matchTerm, bool) {
+	if len(positives) < 2 {
+		return matchTerm{}, false
+	}
+	words := make([]string, len(positives))
+	for i, t := range positives {
+		if t.prefix {
+			return matchTerm{}, false
+		}
+		words[i] = t.text
+	}
+	return matchTerm{text: strings.Join(words, " ")}, true
 }
 
 // writeTerm emits one term as an FTS5 string literal. Doubling the quote is

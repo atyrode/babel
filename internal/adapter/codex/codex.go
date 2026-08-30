@@ -512,6 +512,8 @@ func (*Adapter) Describe(ctx context.Context, src adapter.SourceSession) (*adapt
 		attachmentFiles = len(artifacts)
 	}
 
+	meta, basis := commonMeta(kind, scan)
+
 	md := &Metadata{
 		Kind:                 kind,
 		PrimaryPath:          primaryRel,
@@ -534,6 +536,7 @@ func (*Adapter) Describe(ctx context.Context, src adapter.SourceSession) (*adapt
 		AttachmentRefsCapped: scan.attachmentsCapped,
 		AttachmentFiles:      attachmentFiles,
 		SessionIndexFound:    indexFound,
+		TitleDerivation:      string(basis),
 	}
 	rawMeta, err := adapter.MarshalCanonical(md)
 	if err != nil {
@@ -548,7 +551,7 @@ func (*Adapter) Describe(ctx context.Context, src adapter.SourceSession) (*adapt
 		Source:                src,
 		DescribedAt:           time.Now().UTC(),
 		PrimarySize:           primaryInfo.Size(),
-		Meta:                  commonMeta(kind, scan),
+		Meta:                  meta,
 		AdapterMetadataSchema: MetadataSchema,
 		AdapterMetadata:       canonical,
 		Artifacts:             artifacts,
@@ -591,6 +594,13 @@ type Metadata struct {
 	// reports whether `session_index.jsonl` was present alongside
 	// `history.jsonl`.
 	SessionIndexFound *bool `json:"session_index_found,omitempty"`
+
+	// TitleDerivation names which rule in title.go produced the derived
+	// title, and is empty when the session has none. It is a rule name, not
+	// transcript text: a reader can tell a humanized agent path from a
+	// truncated request without re-deriving, while this document keeps its
+	// promise to hold only structural facts.
+	TitleDerivation string `json:"title_derivation,omitempty"`
 }
 
 // locate recovers the Codex root and the root-relative primary path of a
@@ -629,17 +639,34 @@ func codexRoot(dir string) string {
 }
 
 // commonMeta fills the nullable portable catalog fields from what the
-// records exposed, recording a reason for every field left nil.
-func commonMeta(kind string, scan *scanResult) adapter.CommonMeta {
+// records exposed, recording a reason for every field left nil. It also
+// returns which rule produced the title, for the adapter metadata.
+func commonMeta(kind string, scan *scanResult) (adapter.CommonMeta, titleBasis) {
 	var m adapter.CommonMeta
 	reason := func(field, why string) {
 		m.Completeness = append(m.Completeness, adapter.CompletenessReason{Field: field, Reason: why})
 	}
 
-	// Codex records no session title in a rollout log; `session_index.jsonl`
-	// carries thread names, but that is host state rather than per-session
-	// provenance and it covers only threads the index still lists.
-	reason("title", "codex session logs record no title")
+	// Codex records no title of its own: a rollout log has no title field,
+	// and `session_index.jsonl` carries thread names that are host state
+	// rather than per-session provenance. What a session gets instead is a
+	// title Babel derives from the records themselves (title.go), reported
+	// as derived so no reader can mistake it for one Codex wrote. Host
+	// state is not a conversation and has no request to derive from.
+	var basis titleBasis
+	switch {
+	case kind == KindState:
+		reason("title", "codex host state is a per-host log, not a session with a request to name it")
+	default:
+		title, derivedBasis, why := deriveTitle(scan)
+		if title != "" {
+			m.Title = &title
+			m.TitleProvenance = adapter.TitleDerived
+			basis = derivedBasis
+		} else {
+			reason("title", "codex session logs record no title, and none could be derived: "+why)
+		}
+	}
 
 	switch {
 	case kind == KindState:
@@ -666,7 +693,7 @@ func commonMeta(kind string, scan *scanResult) adapter.CommonMeta {
 
 	reason("lifecycle", "codex records no session lifecycle state on disk")
 	reason("repo", "codex records no repository fingerprint on disk")
-	return m
+	return m, basis
 }
 
 // resolveAttachments lists the live files of each referenced attachment
@@ -758,6 +785,23 @@ type scanResult struct {
 	workspaceRoots    []string
 	attachments       []string
 	attachmentsCapped bool
+
+	// source is the decoded `session_meta.source` union, which says who
+	// opened the thread and therefore whether its transcript is its own
+	// request at all (title.go).
+	source threadSource
+
+	// request is the first turn delivered on the `event_msg` channel, and
+	// requestFallback the first `response_item` user record that is not an
+	// injected context block, used only when the log emits no delivered-turn
+	// event. Both are bounded by maxRequestBytes: this is the one place the
+	// adapter reads transcript text, and it reads a title's worth.
+	request         string
+	requestFallback string
+	// fallbackTried counts the `response_item` user records the fallback
+	// channel has already rejected, so a log full of injected blocks costs
+	// a bounded number of payload decodes.
+	fallbackTried int
 }
 
 type recordHead struct {
@@ -781,6 +825,11 @@ type sessionMetaPayload struct {
 	ModelProvider     string `json:"model_provider"`
 	HistoryMode       string `json:"history_mode"`
 	MultiAgentVersion string `json:"multi_agent_version"`
+	// Source is Codex's tagged union naming the front end or subagent
+	// mechanism that opened the thread. It is kept raw because the shapes
+	// disagree — a bare string or an object — and decodeThreadSource is the
+	// one place that has to know that.
+	Source json.RawMessage `json:"source"`
 }
 
 type turnContextPayload struct {
@@ -841,6 +890,9 @@ func scanRollout(ctx context.Context, primary string) (*scanResult, error) {
 			setIfEmpty(&res.historyMode, p.HistoryMode)
 			setIfEmpty(&res.multiAgentVersion, p.MultiAgentVersion)
 			setIfEmpty(&res.cwd, p.CWD)
+			if res.source == (threadSource{}) {
+				res.source = decodeThreadSource(p.Source)
+			}
 			if t, ok := parseRFC3339(p.Timestamp); ok {
 				res.observe(t)
 			}
@@ -857,6 +909,10 @@ func scanRollout(ctx context.Context, primary string) (*scanResult, error) {
 			if p.CWD != "" {
 				lastTurnCWD = p.CWD
 			}
+		case "event_msg":
+			res.collectDeliveredRequest(line)
+		case "response_item":
+			res.collectFallbackRequest(line)
 		}
 	})
 	if err != nil {
@@ -872,6 +928,51 @@ func scanRollout(ctx context.Context, primary string) (*scanResult, error) {
 		res.recordTypes = nil
 	}
 	return res, nil
+}
+
+// collectDeliveredRequest records the first turn delivered on the event
+// channel. `event_msg` is the front end's stream: an injected context block
+// never appears there, which is what makes this the primary title rule
+// rather than a filter over the model-input stream (title.go).
+//
+// The substring prefilter is not an optimization detail. A rollout log is
+// overwhelmingly `token_count` and `agent_reasoning` events, and re-decoding
+// every one of them to look for a request would make describing a session
+// cost several times what it costs today for nothing.
+func (r *scanResult) collectDeliveredRequest(line []byte) {
+	if r.request != "" || !bytes.Contains(line, userMessageMarker) {
+		return
+	}
+	var p messagePayload
+	if !decodePayload(line, &p) || p.Type != "user_message" {
+		return
+	}
+	r.request = p.text()
+}
+
+// collectFallbackRequest records the first `response_item` user message that
+// is not an injected context block. It is consulted only when the log emits
+// no delivered-turn event, so the injected-block guard is what stands
+// between a preamble and a title here; the number of records it examines is
+// bounded because a log whose head is all injected blocks must still cost a
+// bounded number of decodes.
+func (r *scanResult) collectFallbackRequest(line []byte) {
+	if r.requestFallback != "" || r.fallbackTried >= maxRequestCandidates {
+		return
+	}
+	if !bytes.Contains(line, roleUserMarker) {
+		return
+	}
+	var p messagePayload
+	if !decodePayload(line, &p) || p.Type != "message" || p.Role != "user" {
+		return
+	}
+	text := p.text()
+	r.fallbackTried++
+	if strings.TrimSpace(text) == "" || injectedBlock(text) {
+		return
+	}
+	r.requestFallback = text
 }
 
 // collectAttachments records the attachment directories referenced by one

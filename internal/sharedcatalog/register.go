@@ -11,8 +11,24 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// HostIdentity is what a machine asserts about itself when it registers
+// (migrations/0004). It is the newest-wins payload decision 8 promises.
+//
+// DisplayName is operator-assigned - never the system hostname, which
+// reconcile.go refuses to let into this catalog as infrastructure identity. OS
+// and Arch are the machine's own build platform, the same pair `babel version`
+// already prints. An empty field asserts nothing and leaves whatever the row
+// holds, so a binary or an operator with no name to supply cannot blank one
+// another machine set.
+type HostIdentity struct {
+	DisplayName string
+	OS          string
+	Arch        string
+}
+
 // Register records the deployment, host, and instance this process publishes
-// as, and refreshes the instance's last-seen time.
+// as, refreshes the instance's last-seen time, and asserts this host's
+// identity.
 //
 // Publication depends on all three rows existing: host_leases.holder_id
 // references instances, snapshots.host_id references hosts, and both reference
@@ -21,8 +37,13 @@ import (
 // AcquireHostLease refuses an instance it cannot find (ErrUnknownInstance).
 //
 // It is idempotent: every push calls it, and a machine that has published
-// before only updates last_seen_at.
-func Register(ctx context.Context, db *sql.DB, deploymentID, hostID, instanceID string) error {
+// before updates last_seen_at and its own identity.
+//
+// Identity is newest-wins by update, with no history retained (decision 8, and
+// see migrations/0004 for why an audit trail would be the wrong feature here).
+// hosts.created_at is left alone by ON CONFLICT DO NOTHING semantics elsewhere
+// and by omission here, which is what keeps it meaning first-seen.
+func Register(ctx context.Context, db *sql.DB, deploymentID, hostID, instanceID string, identity HostIdentity) error {
 	if deploymentID == "" || hostID == "" || instanceID == "" {
 		return errors.New("register: deployment, host, and instance ids are all required")
 	}
@@ -42,9 +63,33 @@ func Register(ctx context.Context, db *sql.DB, deploymentID, hostID, instanceID 
 		ON CONFLICT (deployment_id) DO NOTHING`, deploymentID, SchemaVersion); err != nil {
 		return fmt.Errorf("register deployment: %w", err)
 	}
+	// Host identity is asserted here, newest value wins (decision 8). Each
+	// field is coalesced so an empty assertion is silence rather than an
+	// erasure: a binary that supplies no display name, or an operator who has
+	// set none, must not blank a name this host published earlier.
+	//
+	// identity_updated_at advances only when something was actually asserted,
+	// which is what lets an operator tell "this host has never reported its
+	// identity" from "it reported this identity at that time". It is server
+	// time for the same reason every other timestamp here is: a machine with a
+	// skewed clock must not be able to claim its name is the newer one.
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO hosts (host_id, deployment_id) VALUES ($1, $2)
-		ON CONFLICT (host_id) DO NOTHING`, hostID, deploymentID); err != nil {
+		INSERT INTO hosts (host_id, deployment_id, display_name, os, arch, identity_updated_at)
+		VALUES ($1, $2, $3, $4, $5,
+		        CASE WHEN $3::text IS NULL AND $4::text IS NULL AND $5::text IS NULL
+		             THEN NULL ELSE `+serverNow+` END)
+		ON CONFLICT (host_id) DO UPDATE
+		   SET display_name        = coalesce(excluded.display_name, hosts.display_name),
+		       os                  = coalesce(excluded.os, hosts.os),
+		       arch                = coalesce(excluded.arch, hosts.arch),
+		       identity_updated_at = CASE
+		           WHEN excluded.display_name IS NULL
+		            AND excluded.os           IS NULL
+		            AND excluded.arch         IS NULL
+		           THEN hosts.identity_updated_at
+		           ELSE `+serverNow+` END`,
+		hostID, deploymentID, nullable(identity.DisplayName),
+		nullable(identity.OS), nullable(identity.Arch)); err != nil {
 		return fmt.Errorf("register host: %w", err)
 	}
 	// last_seen_at is server time, like every other timestamp here: an

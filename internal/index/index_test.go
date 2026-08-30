@@ -123,17 +123,39 @@ func sortedKeys(hits []index.Hit) []string {
 	return out
 }
 
+// TestSearchFindsByText covers the shape of a multi-term query: every term is
+// optional, so membership is the union, and relevance is what makes the union
+// worth serving — the records holding the caller's words adjacently come
+// first, and the ones holding a single word come last.
+//
+// It is written this way because the intersection it replaced was a measured
+// failure. Against the operator's index a five-word keyword bag matched
+// nothing at all while every one of its words matched hundreds of records, so
+// a test that pins "hits contain every term" pins the bug.
 func TestSearchFindsByText(t *testing.T) {
 	idx, streams := indexedCorpus(t)
 	hits, err := idx.Search(context.Background(), index.Query{Match: "zeppelin cache"})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	// The four events whose text holds both words. The tool call
-	// "go test ./internal/zeppelin/..." holds only one of them, and the
-	// other harnesses hold neither.
-	if got, want := sortedKeys(hits), []string{"omp:1", "omp:2", "omp:5", "omp:6"}; !slices.Equal(got, want) {
+	// Every event of the zeppelin session holds at least one of the words:
+	// the tool call "go test ./internal/zeppelin/..." holds only the first,
+	// and it is a hit rather than a miss. The other harnesses hold neither.
+	if got, want := sortedKeys(hits), []string{
+		"omp:1", "omp:2", "omp:3", "omp:4", "omp:5", "omp:6", "omp:7", "omp:8", "omp:9",
+	}; !slices.Equal(got, want) {
 		t.Errorf("hits = %v, want %v", got, want)
+	}
+	// The four events whose text holds the two words adjacently. They are
+	// the whole point of the union: broad membership is only defensible
+	// because relevance puts the best evidence at the top of the page.
+	best := keys(hits)
+	if len(best) > 4 {
+		best = best[:4]
+	}
+	slices.Sort(best)
+	if want := []string{"omp:1", "omp:2", "omp:5", "omp:6"}; !slices.Equal(best, want) {
+		t.Errorf("best-ranked hits = %v, want %v (in some order)", best, want)
 	}
 	for _, h := range hits {
 		if h.Harness != event.HarnessOMP || h.SourceID != "omp-alpha" {
@@ -164,9 +186,12 @@ func TestSearchStructuredFilters(t *testing.T) {
 		query: index.Query{Harnesses: []string{event.HarnessClaude}},
 		want:  []string{"claude:0", "claude:1", "claude:2", "claude:3", "claude:4", "claude:5"},
 	}, {
-		name:  "several harnesses",
+		name: "several harnesses",
+		// "fixture" alone reaches each session's opening record, because
+		// the terms are optional; the harness filter is what excludes
+		// claude, and that is what this case is about.
 		query: index.Query{Match: "fixture request", Harnesses: []string{event.HarnessOMP, event.HarnessCodex}},
-		want:  []string{"codex:1", "omp:1"},
+		want:  []string{"codex:1", "omp:0", "omp:1"},
 	}, {
 		name:  "session",
 		query: index.Query{SourceIDs: []string{"codex-beta"}, Kinds: []event.Kind{event.KindAgentClaim}},
@@ -662,7 +687,9 @@ func TestOversizedRecordIsFindableByMetadataAndLocator(t *testing.T) {
 		t.Fatalf("index oversized log: %v", err)
 	}
 
-	hits, err := idx.Search(ctx, index.Query{Match: "oversized xylophone"})
+	// "xylophone" is in both records and "oversized" only in the big one.
+	// Terms are optional, so the query names the word that separates them.
+	hits, err := idx.Search(ctx, index.Query{Match: "oversized"})
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -782,12 +809,24 @@ func TestUnstorableTimestampsAreNotIndexedAsTimes(t *testing.T) {
 // string is data. Each case must produce either the correct result set or a
 // clean sentinel error; none may panic, error inside SQLite, or match on
 // FTS5 syntax the caller did not intend.
+//
+// Terms are optional, so most result sets here are unions. Two cases still
+// separate data from syntax end to end — "AND is data" would return only the
+// four records holding both words if AND were an operator, and "NOT is data"
+// would return the records holding neither — and the rest are covered
+// exactly by TestBuildMatch, which asserts the emitted expression itself.
 func TestAdversarialMatchExpressions(t *testing.T) {
 	idx, _ := indexedCorpus(t)
 
 	// Every event whose text holds the token "zeppelin".
 	allZeppelin := []string{"omp:1", "omp:2", "omp:3", "omp:4", "omp:5", "omp:6", "omp:7", "omp:8", "omp:9"}
+	// Every event of the codex session, whose vocabulary is basilisk.
+	allBasilisk := []string{"codex:1", "codex:2", "codex:3", "codex:4", "codex:5"}
 	phraseHits := []string{"omp:1", "omp:2", "omp:5", "omp:6"}
+	// "warms" appears only in omp:2, and an exclusion is the one part of a
+	// caller's expression that is not optional: it removes that record from
+	// the union rather than from one term of it.
+	zeppelinNotWarms := []string{"omp:1", "omp:3", "omp:4", "omp:5", "omp:6", "omp:7", "omp:8", "omp:9"}
 
 	cases := []struct {
 		name    string
@@ -801,16 +840,18 @@ func TestAdversarialMatchExpressions(t *testing.T) {
 		{name: "unterminated phrase closes at end of input", match: `"zeppelin cache`, want: phraseHits},
 		{name: "bare quote", match: `"`, wantErr: index.ErrNoSearchableTerm},
 		{name: "prefix", match: "zepp*", want: allZeppelin},
-		{name: "negation", match: "zeppelin cache -warms", want: []string{"omp:1", "omp:5", "omp:6"}},
+		{name: "negation", match: "zeppelin cache -warms", want: zeppelinNotWarms},
 		{name: "negation only", match: "-zeppelin", wantErr: index.ErrNoSearchableTerm},
-		// Operators are data: no event contains the word "or", so a query
-		// that FTS5 would have read as a disjunction finds nothing.
-		{name: "OR is data", match: "zeppelin OR basilisk", want: nil},
-		{name: "AND is data", match: "zeppelin AND cache", want: nil},
-		{name: "NEAR is data", match: "NEAR(zeppelin cache)", want: nil},
+		// Operators are data. Read as syntax, "AND" would intersect to the
+		// four phrase records and "NOT" would subtract them; read as the
+		// words they are, both queries are a union over zeppelin.
+		{name: "AND is data", match: "zeppelin AND cache", want: allZeppelin},
+		{name: "NOT is data", match: "zeppelin NOT cache", want: allZeppelin},
+		{name: "OR is data", match: "zeppelin OR basilisk", want: append(append([]string{}, allBasilisk...), allZeppelin...)},
+		{name: "NEAR is data", match: "NEAR(zeppelin cache)", want: phraseHits},
 		{name: "column filter is data", match: "kind:opaque", want: nil},
 		{name: "initial token operator is data", match: "^zeppelin", want: allZeppelin},
-		{name: "parentheses and stars", match: "(zeppelin) cache", want: phraseHits},
+		{name: "parentheses and stars", match: "(zeppelin) cache", want: allZeppelin},
 		{name: "punctuation only", match: "***", wantErr: index.ErrNoSearchableTerm},
 		{name: "operators only", match: "AND OR NOT NEAR", want: nil},
 		{name: "empty after control characters", match: "\x00\x01\x02", wantErr: index.ErrNoSearchableTerm},

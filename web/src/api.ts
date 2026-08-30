@@ -19,6 +19,12 @@ export interface SessionSummary {
   size: number;
   modified: string | null;
   title: string | null;
+  // Where the title came from: "recorded" by the harness, "derived" by babel
+  // from the session's own records, or "inferred" by a model. Null exactly
+  // when title is. Three different kinds of claim render as the same short
+  // line of text, so a surface that shows the title without this is showing
+  // babel's arithmetic as if the harness had recorded it.
+  title_provenance: string | null;
   workspace: string | null;
   continuation_grade: boolean;
 }
@@ -72,6 +78,7 @@ export interface SessionDetail {
   described_at: string;
   hint?: string;
   title: string | null;
+  title_provenance: string | null;
   workspace: string | null;
   created_at: string | null;
   modified_at: string | null;
@@ -112,6 +119,31 @@ export interface ArchiveStatus {
   repository: string;
   snapshots: number;
   hosts: ArchiveHost[];
+}
+
+// ArchiveSessionRow is deliberately not a SessionSummary and shares no field
+// with it beyond the four a snapshot's file listing actually carries. Browsing
+// another host's archive downloads no transcript bytes, so title, workspace,
+// modified time, and continuation grade are not merely null there — they are
+// unobserved, and this type cannot express them at all. A component holding
+// one of these rows therefore cannot render an absent title as an empty cell;
+// it has to say the snapshot listing does not carry one.
+export interface ArchiveSessionRow {
+  harness: string;
+  source_id: string;
+  selector: string;
+  size: number;
+  // Whether this machine already holds a fetched materialization of the
+  // session, and where it landed.
+  fetched: boolean;
+  fetched_path?: string;
+}
+
+export interface ArchiveSessionsResponse {
+  host: string;
+  // The snapshot the request named; empty means that host's newest.
+  snapshot: string;
+  sessions: ArchiveSessionRow[];
 }
 
 export interface VerifyResult {
@@ -861,15 +893,35 @@ export function getArchiveStatus(): Promise<ArchiveStatus> {
   return request<ArchiveStatus>("/api/archive/status");
 }
 
+// getArchiveSessions reads one host's archived session listing. It goes over
+// the network to the repository, so it is slower than every other read on the
+// Sessions page and is never polled.
+export function getArchiveSessions(
+  host: string,
+  snapshot?: string,
+): Promise<ArchiveSessionsResponse> {
+  const values: Record<string, string> = { host };
+  if (snapshot?.trim()) values.snapshot = snapshot.trim();
+  return request<ArchiveSessionsResponse>(`/api/archive/sessions?${query(values)}`);
+}
+
 export function verifyArchive(deep: boolean): Promise<VerifyResult> {
   return request<VerifyResult>(`/api/archive/verify?${query({ deep: deep ? 1 : 0 })}`, {
     method: "POST",
   });
 }
 
-export function fetchSession(selector: string, snapshot?: string): Promise<FetchResult> {
+// fetchSession materializes one session's file closure locally. host is
+// required for a session this machine never had: without it the selector is
+// resolved against local source files, which by definition do not hold it.
+export function fetchSession(
+  selector: string,
+  snapshot?: string,
+  host?: string,
+): Promise<FetchResult> {
   const values: Record<string, string> = { selector };
   if (snapshot?.trim()) values.snapshot = snapshot.trim();
+  if (host?.trim()) values.host = host.trim();
   return request<FetchResult>(`/api/fetch?${query(values)}`, { method: "POST" });
 }
 

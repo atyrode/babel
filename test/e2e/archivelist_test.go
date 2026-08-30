@@ -14,12 +14,17 @@ import (
 // continuation-ready" from "no transcript was read at all" — and that
 // distinction is exactly what a cross-host listing has to express.
 type archiveListRow struct {
-	Harness    string  `json:"harness"`
-	SourceID   string  `json:"source_id"`
-	Selector   string  `json:"selector"`
-	Size       int64   `json:"size"`
-	Modified   *string `json:"modified"`
-	Title      *string `json:"title"`
+	Harness  string  `json:"harness"`
+	SourceID string  `json:"source_id"`
+	Selector string  `json:"selector"`
+	Size     int64   `json:"size"`
+	Modified *string `json:"modified"`
+	Title    *string `json:"title"`
+	// TitleProvenance distinguishes a harness-recorded title from one Babel
+	// derived, so a reader can tell a fact from an inference. This suite
+	// decodes with DisallowUnknownFields, which is why an unmirrored field
+	// fails here rather than reaching an operator as a dropped value.
+	TitleProv  *string `json:"title_provenance"`
 	Workspace  *string `json:"workspace"`
 	Continuous *bool   `json:"continuation_grade"`
 }
@@ -155,17 +160,19 @@ func TestArchiveListRendersAndNarrowsTheArchiveView(t *testing.T) {
 		if !strings.HasPrefix(line, "omp") && !strings.HasPrefix(line, "codex") && !strings.HasPrefix(line, "claude") {
 			continue
 		}
-		// HARNESS, SOURCE ID, SIZE, MODIFIED, TITLE, WORKSPACE, GRADE. No
-		// fixture identity holds a space, so the columns split on whitespace.
+		// HARNESS, SOURCE ID, SIZE, MODIFIED, TITLE, WORKSPACE, GRADE, ORIGIN.
+		// No fixture identity holds a space, so the columns split on
+		// whitespace.
 		fields := strings.Fields(line)
-		if len(fields) != 7 {
-			t.Fatalf("table row %q split into %d columns, want 7", line, len(fields))
+		if len(fields) != 8 {
+			t.Fatalf("table row %q split into %d columns, want 8", line, len(fields))
 		}
 		// Every best-effort column is absent for another host's sessions, and
 		// absence must render as absence rather than as a guess. GRADE is one
 		// of them: continuation grade is resolved from local files, which this
-		// machine does not have for a session it never held.
-		for i, column := range []string{"MODIFIED", "TITLE", "WORKSPACE", "GRADE"} {
+		// machine does not have for a session it never held. So is ORIGIN: a
+		// title's provenance cannot be known for a title that was never read.
+		for i, column := range []string{"MODIFIED", "TITLE", "WORKSPACE", "GRADE", "ORIGIN"} {
 			if fields[3+i] != "-" {
 				t.Fatalf("row %q renders %s as %q, want %q", fields[1], column, fields[3+i], "-")
 			}
