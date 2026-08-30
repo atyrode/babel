@@ -11,6 +11,8 @@ import type {
   VersionInfo,
 } from "../src/api";
 
+import { phasebResponse } from "./phaseb";
+
 const distRoot = resolve(import.meta.dir, "..", "dist");
 const port = Number(Bun.env.PORT ?? 4174);
 
@@ -18,7 +20,7 @@ const sessions: SessionSummary[] = [
   {
     harness: "codex",
     source_id: "synthetic-alpha",
-    selector: "codex:synthetic-alpha",
+    selector: "codex/synthetic-alpha",
     size: 482_311,
     modified: "2026-08-28T10:42:00Z",
     title: "Design a resilient import pipeline",
@@ -28,7 +30,7 @@ const sessions: SessionSummary[] = [
   {
     harness: "claude-code",
     source_id: "synthetic-bravo",
-    selector: "claude-code:synthetic-bravo",
+    selector: "claude-code/synthetic-bravo",
     size: 91_220,
     modified: "2026-08-27T18:05:00Z",
     title: "Trace a cache invalidation regression",
@@ -38,7 +40,7 @@ const sessions: SessionSummary[] = [
   {
     harness: "omp",
     source_id: "synthetic-charlie",
-    selector: "omp:synthetic-charlie",
+    selector: "omp/synthetic-charlie",
     size: 1_904_802,
     modified: "2026-08-22T08:30:00Z",
     title: null,
@@ -48,10 +50,10 @@ const sessions: SessionSummary[] = [
 ];
 
 const details: Record<string, SessionDetail> = {
-  "codex:synthetic-alpha": {
+  "codex/synthetic-alpha": {
     harness: "codex",
     source_id: "synthetic-alpha",
-    selector: "codex:synthetic-alpha",
+    selector: "codex/synthetic-alpha",
     primary_path: "/home/demo/.codex/sessions/synthetic-alpha.jsonl",
     primary_size: 482_311,
     described_at: "2026-08-28T10:43:10Z",
@@ -84,10 +86,10 @@ const details: Record<string, SessionDetail> = {
     unresolved_blob_refs: ["sha256:0000000000000000000000000000000000000000000000000000000000000000"],
     continuation_grade: true,
   },
-  "claude-code:synthetic-bravo": {
+  "claude-code/synthetic-bravo": {
     harness: "claude-code",
     source_id: "synthetic-bravo",
-    selector: "claude-code:synthetic-bravo",
+    selector: "claude-code/synthetic-bravo",
     primary_path: "/home/demo/.claude/projects/synthetic-bravo.jsonl",
     primary_size: 91_220,
     described_at: "2026-08-28T09:30:00Z",
@@ -110,10 +112,10 @@ const details: Record<string, SessionDetail> = {
     unresolved_blob_refs: [],
     continuation_grade: false,
   },
-  "omp:synthetic-charlie": {
+  "omp/synthetic-charlie": {
     harness: "omp",
     source_id: "synthetic-charlie",
-    selector: "omp:synthetic-charlie",
+    selector: "omp/synthetic-charlie",
     primary_path: "/home/demo/.omp/sessions/synthetic-charlie.jsonl",
     primary_size: 1_904_802,
     described_at: "2026-08-28T09:30:00Z",
@@ -159,9 +161,9 @@ longTranscript.splice(3, 0, {
 });
 
 const transcripts: Record<string, TranscriptEvent[]> = {
-  "codex:synthetic-alpha": longTranscript,
-  "claude-code:synthetic-bravo": compactTranscript,
-  "omp:synthetic-charlie": [
+  "codex/synthetic-alpha": longTranscript,
+  "claude-code/synthetic-bravo": compactTranscript,
+  "omp/synthetic-charlie": [
     { index: 0, role: "user", kind: "message", time: "2026-08-21T21:05:00Z", text: "Synthetic scratch-session prompt." },
     { index: 1, role: "assistant", kind: "message", time: "2026-08-21T21:05:30Z", text: "Synthetic scratch-session response." },
   ],
@@ -209,7 +211,7 @@ function fillerSession(index: number): SessionSummary {
   return {
     harness,
     source_id: sourceId,
-    selector: `${harness}:${sourceId}`,
+    selector: `${harness}/${sourceId}`,
     size: 12_000 + index * 37_119,
     modified: new Date(Date.UTC(2026, 7, 27, 6, index * 17)).toISOString(),
     title: index % 4 === 0 ? null : `Synthetic preview session ${index + 1}`,
@@ -391,7 +393,7 @@ function apiResponse(request: Request, url: URL): Response | null {
       snapshot_id: "138f14683ef34d28a9b4bc603b87ac55f577cf76801e155f701060ea93c6ac8d",
       snapshot_short_id: url.searchParams.get("snapshot") || "138f1468",
       snapshot_time: "2026-08-28T07:30:00Z",
-      target: `/home/demo/.local/share/babel/fetched/${selector.replaceAll(":", "-")}`,
+      target: `/home/demo/.local/share/babel/fetched/${selector.replaceAll("/", "-")}`,
       files: 2,
       bytes: 490_123,
       included: ["session.jsonl", "workspace/notes.txt"],
@@ -442,6 +444,10 @@ const server = Bun.serve({
   port,
   async fetch(request) {
     const url = new URL(request.url);
+    // Phase B routes are separate so their fixture state stays out of this
+    // file; unknown /api paths still fall through to apiResponse's 404.
+    const phaseb = await phasebResponse(request, url);
+    if (phaseb) return phaseb;
     const api = apiResponse(request, url);
     return api ?? staticResponse(url);
   },

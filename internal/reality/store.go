@@ -797,3 +797,43 @@ func queryStrings(ctx context.Context, q querier, query string, args ...any) ([]
 	}
 	return out, rows.Err()
 }
+
+// Plans returns every plan proposed for one question, oldest first. A question
+// can be interpreted more than once — §4.8 sends a rejected plan back to
+// answered-uninterpreted for another attempt — so the set matters, not just the
+// latest.
+//
+// Without this, a caller had to recover plan identifiers from the question's
+// append-only history and verify each through Plan, which works only as long as
+// the note format holds. A query is not merely tidier: it cannot drift.
+func (s *Store) Plans(ctx context.Context, questionID string) ([]Plan, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM reality_plan WHERE question_id = ? ORDER BY created_at, id`, questionID)
+	if err != nil {
+		return nil, fmt.Errorf("list plans for question %s: %w", questionID, err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("list plans for question %s: %w", questionID, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("list plans for question %s: %w", questionID, err)
+	}
+	rows.Close()
+
+	out := make([]Plan, 0, len(ids))
+	for _, id := range ids {
+		plan, err := s.Plan(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, plan)
+	}
+	return out, nil
+}

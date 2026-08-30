@@ -7,6 +7,11 @@ import (
 	"io"
 	"io/fs"
 
+	"github.com/atyrode/babel/internal/cookbook"
+	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/index"
+	"github.com/atyrode/babel/internal/reality"
+	"github.com/atyrode/babel/internal/review"
 	"github.com/atyrode/babel/internal/transcript"
 )
 
@@ -30,7 +35,151 @@ type Options struct {
 	Inspector   SessionInspector
 	Archive     ArchiveOperations
 	Transcripts TranscriptReader
+
+	// Operator is the identity every Phase B mutation is attributed to.
+	// §4.7 makes a disposition attributed guidance and §4.8 refuses an
+	// anonymous answer or acceptance, so this is not a display name: it is
+	// the author a durable decision records. It is empty when the launch
+	// could not name an operator, and every mutating route then refuses
+	// rather than defaulting, because a decision recorded against nobody
+	// is worse than a decision not recorded.
+	Operator string
+
+	// The Phase B services. Each is an interface rather than the concrete
+	// service type, and the method set is the whole authority this surface
+	// has: the browser cannot ask for an operation that is not listed here,
+	// which is what makes §14's "Reality/review mutations share the Go
+	// service authorization path" a property of the type rather than a
+	// promise about the handlers. Every one of them is satisfied by the
+	// same service value internal/cli passes to the CLI commands, so the
+	// two surfaces reach one implementation.
+	Review   ReviewService
+	Frontier FrontierReader
+	Reality  RealityService
+	Runs     RunLister
+	Search   SearchIndex
+	// Cookbook is the loaded analysis cookbook. It is read-only by
+	// construction: a *cookbook.Set exposes lookups and nothing that
+	// changes an asset.
+	Cookbook *cookbook.Set
 }
+
+// ReviewService is the §4.7 review surface the web API may reach, satisfied by
+// *review.Service.
+//
+// The two mutations are here and the frontier's own writers are not, and that
+// separation is the point: a disposition is appended by review.Service.Decide,
+// which validates reviewability, the record's state, and the operator identity
+// before internal/frontier appends anything. A handler that reached a store
+// directly would skip exactly those checks, which is the defect §14's gate
+// exists to prevent, so this surface holds no value that could.
+type ReviewService interface {
+	Queue(context.Context, review.QueueFilter) ([]review.QueueItem, error)
+	History(context.Context, frontier.Ref) (review.History, error)
+	Lineage(context.Context, review.Node) (review.Lineage, error)
+	Export(context.Context, review.Node, review.ExportOptions) (review.Export, error)
+	Decide(context.Context, review.Decision) (frontier.DispositionEvent, error)
+	RecordContext(context.Context, review.Authority, string) (review.Context, error)
+}
+
+// FrontierReader is the read-only subset of *frontier.Store the API renders
+// records from.
+//
+// It lists no writer at all. §5.2 and §4.7 make the frontier append-only, and
+// the records this surface shows are written by exploration and decided
+// through ReviewService; a GET that could create a revision would break both
+// HTTP semantics and the audit story, so it is not representable here.
+type FrontierReader interface {
+	Hypothesis(context.Context, string) (frontier.Hypothesis, error)
+	Observation(context.Context, string) (frontier.Observation, error)
+	ObservationsFor(context.Context, string) ([]frontier.Observation, error)
+	Finding(context.Context, string) (frontier.Finding, error)
+	Proposal(context.Context, string) (frontier.Proposal, error)
+	LinksFrom(context.Context, string) ([]frontier.Link, error)
+	LinksTo(context.Context, string) ([]frontier.Link, error)
+	StatusHistory(context.Context, string) ([]frontier.StatusEvent, error)
+	ReviewStatus(context.Context, frontier.Ref) (frontier.ReviewStatus, error)
+	Unexplored(context.Context, int) ([]frontier.Hypothesis, error)
+}
+
+// RealityService is the §4.8 ledger surface the web API may reach, satisfied by
+// *reality.Store, which is the ledger's service layer.
+//
+// Exactly two mutations are listed, and they are the two §4.8 gives an
+// operator: retaining an answer, and the single explicit acceptance that lets a
+// plan's authoritative actions touch reality. Everything that could make a
+// fact authoritative by another route — AssertFact, SupersedeFact,
+// MergeEntities, ImportFacts, PutFocusRules — is deliberately absent, so no
+// browser request can reach authority the operator did not exercise through
+// the plan the ledger recorded.
+type RealityService interface {
+	Inbox(context.Context, reality.InboxQuery) ([]reality.InboxItem, error)
+	Question(context.Context, string) (reality.Question, error)
+	QuestionHistory(context.Context, string) ([]reality.QuestionEvent, error)
+	Answers(context.Context, string) ([]reality.Answer, error)
+	Plan(context.Context, string) (reality.Plan, error)
+	Entity(context.Context, string) (reality.Entity, error)
+	Aliases(context.Context, string) ([]reality.Alias, error)
+	Relationships(context.Context, string) ([]reality.Relationship, error)
+	Facts(context.Context, reality.FactQuery) ([]reality.Fact, error)
+	RecordAnswer(context.Context, reality.AnswerInput) (reality.Answer, error)
+	AcceptPlan(context.Context, reality.AcceptanceInput) (reality.Acceptance, reality.Application, error)
+}
+
+// SearchIndex is the retrieval surface behind GET /api/search, satisfied by
+// *index.Index. Indexing is not listed: the index is rebuilt by preparation,
+// never by a browser asking to search.
+type SearchIndex interface {
+	Search(context.Context, index.Query) ([]index.Hit, error)
+}
+
+// RunLister supplies the run receipts GET /api/analysis/state lists, newest
+// first, bounded by the caller's page.
+//
+// It is an interface rather than a *run.Store because internal/run exposes no
+// receipt listing — it answers Receipt(id) and Revisions(runID) — so the
+// listing is assembled by whatever wired this server. A nil provider reports
+// no runs rather than an error: a build with no analysis history has nothing
+// to list, which is different from a failure.
+type RunLister interface {
+	Runs(ctx context.Context, limit, offset int) ([]RunSummary, int, error)
+}
+
+// RunSummary is one run receipt as a listing shows it: the plaintext-eligible
+// half of run.Header (§9's allowlist) and nothing from the sealed body.
+type RunSummary struct {
+	ReceiptID     string    `json:"receipt_id"`
+	RunID         string    `json:"run_id"`
+	PreparationID string    `json:"preparation_id"`
+	Revision      int       `json:"revision"`
+	RecordedAt    string    `json:"recorded_at"`
+	Sync          string    `json:"sync"`
+	Counts        RunCounts `json:"counts"`
+}
+
+// RunCounts mirrors run.Counts field-for-field. A non-zero Redactions is the
+// audit signal §9 wants visible from a listing rather than from a payload.
+type RunCounts struct {
+	ToolRequests int `json:"tool_requests"`
+	ToolsDenied  int `json:"tools_denied"`
+	Retrieval    int `json:"retrieval"`
+	Deferred     int `json:"deferred"`
+	Rejected     int `json:"rejected"`
+	Failures     int `json:"failures"`
+	Redactions   int `json:"redactions"`
+}
+
+// The real services satisfy these interfaces, asserted here rather than
+// discovered at the wiring site. It is what makes the §14 property checkable:
+// the surface the browser reaches is the service internal/cli holds, so a
+// service method that changed shape is a compile failure here instead of a
+// second implementation growing beside it.
+var (
+	_ ReviewService  = (*review.Service)(nil)
+	_ FrontierReader = (*frontier.Store)(nil)
+	_ RealityService = (*reality.Store)(nil)
+	_ SearchIndex    = (*index.Index)(nil)
+)
 
 // State is the non-secret subset of persistent storage configuration exposed
 // by GET /api/state.

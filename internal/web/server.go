@@ -316,6 +316,88 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFetch(w, r)
+	// The Phase B analysis, review, and Reality surface. Every one of these
+	// paths reaches the same middleware the Phase A routes do — the
+	// loopback Host check, the Origin check, the launch session, and
+	// `no-store` — because they are under /api and there is one guard, not
+	// one per generation of routes. There is deliberately no route that
+	// starts an exploration; analysis.go's exploreRefusal says why, and
+	// GET /api/analysis/state reports it.
+	case "/api/analysis/state":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleAnalysisState(w, r)
+	case "/api/hypotheses":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleHypotheses(w, r)
+	case "/api/hypothesis":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleHypothesis(w, r)
+	case "/api/findings":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFindings(w, r)
+	case "/api/finding":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFinding(w, r)
+	case "/api/review/queue":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleReviewQueue(w, r)
+	case "/api/review/decide":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleReviewDecide(w, r)
+	case "/api/review/context":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleReviewContext(w, r)
+	case "/api/review/history":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleReviewHistory(w, r)
+	case "/api/export":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleExport(w, r)
+	case "/api/reality/inbox":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRealityInbox(w, r)
+	case "/api/reality/entity":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRealityEntity(w, r)
+	case "/api/reality/answer":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleRealityAnswer(w, r)
+	case "/api/reality/plan/accept":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleRealityPlanAccept(w, r)
+	case "/api/search":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleSearch(w, r)
 	case "/api/lock":
 		if !s.requireMethod(w, r, http.MethodPost) {
 			return
