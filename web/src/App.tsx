@@ -33,6 +33,18 @@ function App() {
   const [stopped, setStopped] = useState(false);
 
   useEffect(() => subscribeAPIErrors(setAPIError), []);
+  // The banner reports the failure of a request, and a request belongs to the
+  // route that made it. `currentError` lives at module scope in ./api and is
+  // replayed to every new subscriber, so without this a 409 from a service
+  // this build did not wire — the frontier on a machine with no analysis
+  // state — would keep accusing every page the operator visited afterwards,
+  // including the ones that loaded perfectly. Clearing on navigation scopes
+  // the banner to the view it describes; a request that fails after the
+  // route settles still publishes normally, because this runs on the
+  // transition rather than on every render.
+  useEffect(() => {
+    dismissAPIError();
+  }, [location.pathname]);
   useEffect(() => {
     let live = true;
     getVersion()

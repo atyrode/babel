@@ -6,14 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/atyrode/babel/internal/config"
+	"github.com/atyrode/babel/internal/cookbook"
+	"github.com/atyrode/babel/internal/index"
+	"github.com/atyrode/babel/internal/reality"
+	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/transcript"
 	"github.com/atyrode/babel/internal/web"
 	webdist "github.com/atyrode/babel/web"
@@ -31,6 +37,17 @@ $BABEL_RESTIC_REPO/$BABEL_RESTIC_PASSWORD_FILE, then storage.json). Without
 a repository the browser still works read-only; archive actions report
 "not configured".
 
+The analysis frontier, the review log, the Reality Ledger, the retrieval
+index and the cookbook are opened for the server's lifetime when this
+machine has them. A store that cannot be opened is reported on stderr and
+its pages report it unavailable; the sessions and archive surfaces are
+unaffected, so a machine with no analysis state still serves them.
+
+Review and Reality decisions taken in the browser are attributed acts
+(SPEC.md §4.7, §4.8) and reach the same services the headless commands do,
+so they need the same operator identity. Without one the browser still
+reads the frontier and the ledger; it cannot decide, answer, or accept.
+
 Flags:
   --port N                    listen port (default: an ephemeral free port)
   --open                      also open the URL with the system browser
@@ -38,6 +55,7 @@ Flags:
   --password-file FILE        password file (default $BABEL_RESTIC_PASSWORD_FILE)
   --restic-binary PATH        restic executable (default "restic" from $PATH)
   --host ID                   archive host identity for fetches
+  --operator ID               operator identity (default $BABEL_OPERATOR)
 `
 
 // webCmd implements `babel web`. Every application dependency the server
@@ -49,6 +67,8 @@ func (a *app) webCmd(ctx context.Context, args []string) error {
 	c := newCmd("web", webUsage)
 	var rf repoFlags
 	rf.bind(c.fs)
+	var of operatorFlags
+	of.bind(c)
 	port := c.fs.Int("port", 0, "listen port (default: ephemeral)")
 	open := c.fs.Bool("open", false, "open the URL with the system browser")
 	if err := c.parse(a, args); err != nil {
@@ -57,11 +77,34 @@ func (a *app) webCmd(ctx context.Context, args []string) error {
 	if err := c.noArgs(); err != nil {
 		return err
 	}
+	// The identity is resolved with the same helper, the same precedence and
+	// the same validation `review decide` and `reality answer` use, and
+	// differs from them in one way: a launch that cannot name an operator
+	// still starts. Those commands do nothing but record an attributed
+	// decision, so refusing is their whole job; this one mostly serves
+	// reading, and taking the frontier, the ledger and the sessions listing
+	// away over an identity only a mutation needs would be a worse answer
+	// than letting each mutation refuse for itself.
+	operator, err := of.resolve(c)
+	if err != nil {
+		operator = ""
+		a.diagf("warning: %s; review and reality decisions will be refused\n",
+			Sanitize(err.Error()))
+	}
 
-	srv, err := a.buildWebServer(rf, *port)
+	srv, services, err := a.buildWebServer(rf, operator, *port)
 	if err != nil {
 		return err
 	}
+	// The durable handles live as long as the server does, so they are
+	// released here rather than per request: Serve returns when the listener
+	// is down and no handler can be running, which is the first moment
+	// closing them cannot pull a database out from under a response.
+	defer func() {
+		if err := services.Close(); err != nil {
+			a.diagf("warning: release analysis state: %s\n", Sanitize(err.Error()))
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -76,16 +119,41 @@ func (a *app) webCmd(ctx context.Context, args []string) error {
 	return srv.Serve(ctx)
 }
 
+// syncWriter serializes writes onto one stream from concurrent producers.
+//
+// `babel web` is the one command with three of them: the scan coordinator's
+// background goroutine, the server's per-request logger, and the command
+// goroutine's own warnings. They share a single stderr, and an io.Writer
+// carries no concurrency guarantee — for os.Stderr the consequence is two
+// diagnostics interleaved into one unreadable line, and for the bytes.Buffer
+// a test supplies it is a data race. A garbled diagnostic is a misleading
+// diagnostic, so the serialization belongs at the point where the stream
+// becomes shared rather than in each producer.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // buildWebServer assembles the server against this process's CLI surface.
 // Kept separate from flag handling so tests can drive a live server.
-func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
+//
+// The returned webServices holds every durable handle the server borrows for
+// its lifetime and the caller must close it once Serve has returned. It is
+// never nil on success, and closing a nil one is harmless.
+func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Server, *webServices, error) {
 	cfg, _, err := config.Load()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	d, err := babelDirs()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	repository := firstNonEmpty(rf.repository, os.Getenv("BABEL_RESTIC_REPO"), cfg.Repository)
 	passwordFile := firstNonEmpty(rf.passwordFile, os.Getenv("BABEL_RESTIC_PASSWORD_FILE"), cfg.PasswordFile)
@@ -108,6 +176,14 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 			hostID = sanitizeHostID(name)
 		}
 	}
+
+	// From here this stream has concurrent producers, so it is guarded once
+	// at the point it becomes shared: the scan coordinator's background
+	// goroutine, the server's per-request logger, and this command's own
+	// later warnings all reach stderr through this one writer. Guarding here
+	// rather than in webCmd is what keeps a caller that builds a server
+	// directly — every test below does — from racing.
+	a.stderr = &syncWriter{w: a.stderr}
 
 	// One coordinator per catalog, shared by every request this process
 	// serves, so concurrent listings can never multiply the scan. Its
@@ -146,6 +222,7 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 			return res, err
 		}),
 		Transcripts: web.TranscriptReaderFunc(transcript.Events),
+		Operator:    operator,
 	}
 	if configured {
 		opts.Archive = &webArchive{
@@ -155,7 +232,194 @@ func (a *app) buildWebServer(rf repoFlags, port int) (*web.Server, error) {
 			sessionsRoot: d.sessionsRoot(),
 		}
 	}
-	return web.New(opts)
+
+	services := a.openWebServices(d)
+	opts.Review = services.review()
+	opts.Frontier = services.frontier()
+	opts.Runs = services.runs()
+	opts.Reality = services.realityService()
+	opts.Search = services.search()
+	opts.Cookbook = services.cookbook
+
+	srv, err := web.New(opts)
+	if err != nil {
+		// Nothing will ever call Serve, so the handles this launch opened
+		// have to be released here or they leak for the process's life.
+		if e := services.Close(); e != nil {
+			a.diagf("warning: release analysis state: %s\n", Sanitize(e.Error()))
+		}
+		return nil, nil, err
+	}
+	return srv, services, nil
+}
+
+// webServices are the durable Phase B handles one served session borrows for
+// its lifetime. They are opened once rather than per request because a
+// browser's concurrent reads would otherwise each pay SQLite's setup cost and
+// hold their own handle on the same durable file, and because every value
+// here is the one the headless commands hold: the two surfaces reach one
+// implementation, so a mutation cannot bypass the service checks §14 relies
+// on (SPEC.md §14).
+//
+// Each is independently optional. None of them is a launch prerequisite: a
+// machine with no analysis state, or one whose durable file a running
+// exploration is committing to, still serves sessions, transcripts and the
+// archive, and the pages above a store that would not open keep reporting it
+// unavailable rather than the whole server failing to start.
+type webServices struct {
+	analysis *analysisState
+	reality  *reality.Store
+	index    *index.Index
+	cookbook *cookbook.Set
+}
+
+// openWebServices opens what this machine has, reporting what it does not.
+//
+// Every store is opened exactly the way its own commands open it —
+// openAnalysisState for the frontier, the receipts and the review log above
+// them, openReality for the ledger, index.Open on the cache directory for
+// retrieval, and the embedded cookbook — so nothing here is a second way to
+// reach durable state.
+func (a *app) openWebServices(d dirs) *webServices {
+	s := &webServices{}
+	if state, err := openAnalysisState(); err != nil {
+		a.diagf("warning: analysis state unavailable, so the frontier, findings and review pages will report it: %s\n",
+			Sanitize(err.Error()))
+	} else {
+		s.analysis = state
+	}
+	if store, err := openReality(); err != nil {
+		a.diagf("warning: reality ledger unavailable, so the reality pages will report it: %s\n",
+			Sanitize(err.Error()))
+	} else {
+		s.reality = store
+	}
+	if idx, err := index.Open(d.indexDir()); err != nil {
+		a.diagf("warning: retrieval index unavailable, so search will report it: %s\n",
+			Sanitize(err.Error()))
+	} else {
+		s.index = idx
+	}
+	// The cookbook is assets rather than state: it holds no handle, so it is
+	// here only because the analysis page lists it beside the runs.
+	if set, err := cookbook.Embedded(); err != nil {
+		a.diagf("warning: cookbook unavailable, so the analysis page will list no recipes: %s\n",
+			Sanitize(err.Error()))
+	} else {
+		s.cookbook = set
+	}
+	return s
+}
+
+// The five accessors below return a typed nil-free interface value or nil,
+// which is the whole point: web.Options tests each service for nil to decide
+// whether its routes can answer, and a non-nil interface wrapping a nil
+// pointer would pass that test and then panic inside a handler.
+func (s *webServices) review() web.ReviewService {
+	if s.analysis == nil {
+		return nil
+	}
+	return s.analysis.review
+}
+
+func (s *webServices) frontier() web.FrontierReader {
+	if s.analysis == nil {
+		return nil
+	}
+	return s.analysis.frontier
+}
+
+func (s *webServices) runs() web.RunLister {
+	if s.analysis == nil {
+		return nil
+	}
+	return webRuns{store: s.analysis.runs}
+}
+
+func (s *webServices) realityService() web.RealityService {
+	if s.reality == nil {
+		return nil
+	}
+	return s.reality
+}
+
+func (s *webServices) search() web.SearchIndex {
+	if s.index == nil {
+		return nil
+	}
+	return s.index
+}
+
+// Close releases every handle this launch opened, in the reverse of the order
+// it opened them; analysisState.Close already encodes that order for the
+// three it owns. The first failure is reported and the rest are still closed,
+// because a handle left open by an early error is a file lock the next
+// command would wait on.
+//
+// A nil receiver closes nothing, so a caller that could not build a server
+// can defer this unconditionally.
+func (s *webServices) Close() error {
+	if s == nil {
+		return nil
+	}
+	var err error
+	if s.index != nil {
+		err = s.index.Close()
+	}
+	if s.reality != nil {
+		if e := s.reality.Close(); err == nil {
+			err = e
+		}
+	}
+	if s.analysis != nil {
+		if e := s.analysis.Close(); err == nil {
+			err = e
+		}
+	}
+	return err
+}
+
+// webRuns lists run receipts for GET /api/analysis/state.
+//
+// This is the one Phase B service no concrete value satisfies outright:
+// internal/run enumerates receipts and internal/web declares the listing
+// shape, so the mapping between them lives at the wiring site. It carries the
+// header and nothing from the sealed body, which is exactly what §9's
+// plaintext allowlist permits a listing to read.
+type webRuns struct{ store *runstore.Store }
+
+func (w webRuns) Runs(ctx context.Context, limit, offset int) ([]web.RunSummary, int, error) {
+	receipts, total, err := w.store.Receipts(ctx, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	// Identifiers, the sync state and the timestamp are all Babel's own
+	// minting, and they reach a React tree that escapes text, so unlike the
+	// CLI's own rows these are not run through the terminal-safe renderer:
+	// escaping for a terminal here would make this listing render
+	// differently from every other Phase B view for no gain.
+	out := make([]web.RunSummary, 0, len(receipts))
+	for _, receipt := range receipts {
+		h := receipt.Header
+		out = append(out, web.RunSummary{
+			ReceiptID:     string(h.ID),
+			RunID:         h.RunID,
+			PreparationID: string(h.PreparationID),
+			Revision:      h.Revision,
+			RecordedAt:    formatTime(h.RecordedAt),
+			Sync:          h.Sync,
+			Counts: web.RunCounts{
+				ToolRequests: h.Counts.ToolRequests,
+				ToolsDenied:  h.Counts.ToolsDenied,
+				Retrieval:    h.Counts.Retrieval,
+				Deferred:     h.Counts.Deferred,
+				Rejected:     h.Counts.Rejected,
+				Failures:     h.Counts.Failures,
+				Redactions:   h.Counts.Redactions,
+			},
+		})
+	}
+	return out, total, nil
 }
 
 // webScanner exposes the process-wide background scanner to the server.
