@@ -63,6 +63,18 @@ func main() {
 		toolRequests   = flag.Int("tool-requests", 0, "make this many tool requests, ignoring every denial")
 		closeStdout    = flag.Bool("close-stdout", false, "close stdout but keep running")
 
+		// The declarations and the job reading Babel grades by name. Each
+		// flag breaks exactly one of them while leaving the rest of the run
+		// well behaved, which is what makes the matching obligation
+		// discriminating rather than merely present.
+		wrongJob        = flag.Bool("wrong-job", false, "answer the echo-job directive from the published fixture instead of the job that arrived")
+		renameMetadata  = flag.Bool("rename-metadata", false, "report the resolved model under a key Babel does not read")
+		driftCapability = flag.Bool("drift-capability", false, "declare an unexercised capability under a name Babel does not define")
+		hideCapability  = flag.Bool("hide-capability", false, "omit from the resolved profile the capability this run then exercises")
+		unusableCost    = flag.Bool("unusable-cost", false, "report a cost Babel cannot use: a negative rate quoted in no currency")
+		noResources     = flag.Bool("no-resources", false, "never report resource use, whatever containment was declared")
+		untrackedRes    = flag.Bool("untracked-resources", false, "report the figures a worker with no accounting invents: -1 for unknown and no tool calls")
+
 		// The analysis-result shapes. Babel's exploration control plane
 		// requires results shaped like hypotheses, observations, findings
 		// and challenger objections, and the identifiers a synthesizer
@@ -100,13 +112,19 @@ func main() {
 	}
 
 	w := &fake{
-		out:            bufio.NewWriter(os.Stdout),
-		in:             bufio.NewReaderSize(os.Stdin, 1<<20),
-		unknownFields:  *unknownFields,
-		badSeq:         *badSeq,
-		argumentMarker: *argumentMarker,
-		searchQuery:    *searchQuery,
-		schema:         *resultSchema,
+		out:                bufio.NewWriter(os.Stdout),
+		in:                 bufio.NewReaderSize(os.Stdin, 1<<20),
+		unknownFields:      *unknownFields,
+		badSeq:             *badSeq,
+		argumentMarker:     *argumentMarker,
+		searchQuery:        *searchQuery,
+		schema:             *resultSchema,
+		renameMetadata:     *renameMetadata,
+		driftCapability:    *driftCapability,
+		hideCapability:     *hideCapability,
+		unusableCost:       *unusableCost,
+		noResources:        *noResources,
+		untrackedResources: *untrackedRes,
 	}
 	if *record != "" {
 		file, err := os.OpenFile(*record, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -269,15 +287,24 @@ func main() {
 		// real thing.
 		w.emit(w.progress("investigate",
 			"broker credential for the investigator: "+echoed(token, *echoToken), nil))
+	case worker.ConformanceEchoJob:
+		// The answer travels in the terminal result's payload below; the run
+		// itself is otherwise an ordinary well-behaved one.
+		w.emit(w.progress("discover", "reading the job", w.resources()))
 	case "request-unknown":
 		w.runTool("teleport", token, *echoToken)
 	default:
-		w.emit(w.progress("discover", "synthetic progress", map[string]any{
-			"cpu_seconds": 0.25, "max_rss_bytes": 4096, "sandbox_bytes_written": 0, "tool_calls": 0,
-		}))
+		w.emit(w.progress("discover", "synthetic progress", w.resources()))
 	}
 
 	payload := map[string]any{"hypotheses": w.decisions}
+	if requested == worker.ConformanceEchoJob {
+		payload["job"] = echoJob(job, *wrongJob)
+	}
+	// A caller-supplied payload replaces everything above it, echo-job answer
+	// included. That ordering is what lets a test model the commonest
+	// candidate of all: a worker that produced a perfectly good result and
+	// never implemented the directive it was asked to answer.
 	if path := resultPayload.pick(paramOf(job, *resultSelector)); path != "" {
 		payload = loadPayload(path, job)
 	}
@@ -316,6 +343,20 @@ type fake struct {
 	// getting everything else right is the drift the conformance suite has to
 	// catch.
 	schema string
+
+	// The declaration dials. Each one breaks a single thing Babel reads by
+	// name out of the resolved configuration, so a test can show that the
+	// obligation guarding it fails for that reason and nothing else.
+	renameMetadata  bool
+	driftCapability bool
+	hideCapability  bool
+	unusableCost    bool
+
+	// The resource-accounting dials: a worker that reports nothing at all,
+	// and one that reports the figures an implementation with no accounting
+	// invents rather than admitting it has none.
+	noResources        bool
+	untrackedResources bool
 
 	// decisions records what Babel answered for each tool request, so the
 	// result payload can prove the worker actually observed the decision
@@ -380,8 +421,34 @@ func (f *fake) configuration(profile worker.ProfileRef, secretMeta bool, contain
 		"model":    "synthetic-model",
 		"thinking": "high",
 	}
+	if f.renameMetadata {
+		// The rename Babel's receipt consumers cannot follow: the value is
+		// still here, under a key nobody reads.
+		delete(metadata, "model")
+		metadata["model_name"] = "synthetic-model"
+	}
 	if secretMeta {
 		metadata["provider_api_key"] = "should-never-be-accepted"
+	}
+	capabilities := []string{string(worker.CapabilityCorpusSearch), string(worker.CapabilityRepoRead)}
+	if f.driftCapability {
+		// One facility under a vocabulary that drifted away from Babel's: a
+		// name Babel has no boundary for and can never grant. The capability
+		// this run exercises is left correct on purpose, so the only thing
+		// wrong here is the name of a capability nothing in the run uses.
+		capabilities = []string{string(worker.CapabilityCorpusSearch), "repo_read"}
+	}
+	if f.hideCapability {
+		// A profile that omits what the run is about to do. Every name here
+		// is one Babel defines; the claim is simply not the profile that ran.
+		capabilities = []string{string(worker.CapabilityRepoRead)}
+	}
+	cost := map[string]any{"currency": "XTS", "input_per_1k": 0, "output_per_1k": 0, "estimated_run": 0}
+	if f.unusableCost {
+		// One misbehaviour, two symptoms: a cost report nobody can act on.
+		// A negative rate reads as a discount and an unnamed currency makes
+		// Babel drop the estimate entirely instead of showing it wrongly.
+		cost = map[string]any{"currency": "", "input_per_1k": -0.5, "output_per_1k": 1.5, "estimated_run": 2}
 	}
 	message := map[string]any{
 		"type":         worker.MessageConfiguration,
@@ -389,8 +456,8 @@ func (f *fake) configuration(profile worker.ProfileRef, secretMeta bool, contain
 		"time":         time.Now().UTC().Format(time.RFC3339Nano),
 		"profile":      map[string]any{"id": profile.ID, "revision": profile.Revision},
 		"privacy":      map[string]any{"disclosure": worker.DisclosureLocal, "redaction_required": false},
-		"cost":         map[string]any{"currency": "XTS", "input_per_1k": 0, "output_per_1k": 0, "estimated_run": 0},
-		"capabilities": []string{string(worker.CapabilityCorpusSearch), string(worker.CapabilityRepoRead)},
+		"cost":         cost,
+		"capabilities": capabilities,
 		"metadata":     metadata,
 	}
 	// A correct worker declares the boundary it provides. The misbehaviours
@@ -445,6 +512,32 @@ func (f *fake) progress(stage, message string, resources map[string]any) map[str
 	return msg
 }
 
+// resources is this fixture's self-reported resource use, or nil when it is
+// asked to report none. Babel reads an absent object as unknown rather than
+// zero, so "reports nothing" and "reports zeros" are different claims and this
+// fixture can make either.
+//
+// The tool-call count is the one figure Babel can check against its own
+// record, so it is the one figure this fixture derives from what actually
+// happened rather than from a constant.
+func (f *fake) resources() map[string]any {
+	if f.noResources {
+		return nil
+	}
+	if f.untrackedResources {
+		// A worker with no accounting that reports anyway: -1 standing in
+		// for "unknown", and a tool-call count it never kept.
+		return map[string]any{
+			"cpu_seconds": -1, "max_rss_bytes": -1,
+			"sandbox_bytes_written": -1, "tool_calls": 0,
+		}
+	}
+	return map[string]any{
+		"cpu_seconds": 0.25, "max_rss_bytes": 4096,
+		"sandbox_bytes_written": 0, "tool_calls": len(f.decisions),
+	}
+}
+
 // result is the terminal success event.
 func (f *fake) result(status string, payload map[string]any, leak string) map[string]any {
 	msg := map[string]any{
@@ -453,6 +546,11 @@ func (f *fake) result(status string, payload map[string]any, leak string) map[st
 		"time":   time.Now().UTC().Format(time.RFC3339Nano),
 		"status": status,
 		"schema": f.schema,
+	}
+	// The terminal report is the run's total, so it is the one Babel keeps:
+	// a progress event's figures are a point in time and the last one wins.
+	if resources := f.resources(); resources != nil {
+		msg["resources"] = resources
 	}
 	if payload != nil {
 		msg["payload"] = payload
@@ -516,6 +614,54 @@ func paramOf(job map[string]any, key string) string {
 	}
 	value, _ := params[key].(string)
 	return value
+}
+
+// echoJob answers worker.ConformanceEchoJob: the job this fixture decoded, in
+// the flat form the directive specifies.
+//
+// It reads the generic map the wire produced rather than any struct Babel
+// defines, which is the whole point of the directive — the answer is evidence
+// that the bytes were parsed, so building it from a shared type would prove
+// only that Go can copy a struct.
+//
+// -wrong-job is the fixture that must fail the obligation: it answers from the
+// published conformance job instead of the one that arrived. The two are
+// indistinguishable until Babel plants a per-run nonce in the material, which
+// is exactly the property the obligation depends on.
+func echoJob(job map[string]any, wrong bool) map[string]any {
+	if wrong {
+		return map[string]any{
+			"recipes": []string{"outcome-integrity@1"},
+			"sources": []string{"session|omp/synthetic-session|sha256:" + strings.Repeat("0", 64) + "|"},
+		}
+	}
+	recipes := []string{}
+	for _, entry := range arrayOf(job, "recipes") {
+		item, _ := entry.(map[string]any)
+		id, _ := item["id"].(string)
+		version, _ := item["version"].(float64)
+		recipes = append(recipes, fmt.Sprintf("%s@%d", id, int(version)))
+	}
+	sources := []string{}
+	for _, entry := range arrayOf(job, "sources") {
+		item, _ := entry.(map[string]any)
+		parts := make([]string, 0, 4)
+		for _, field := range []string{"kind", "selector", "digest", "snapshot"} {
+			value, _ := item[field].(string)
+			parts = append(parts, value)
+		}
+		sources = append(sources, strings.Join(parts, "|"))
+	}
+	return map[string]any{
+		"recipes": recipes,
+		"sources": sources,
+	}
+}
+
+// arrayOf reads one top-level job array, or nothing when the field is absent.
+func arrayOf(job map[string]any, key string) []any {
+	values, _ := job[key].([]any)
+	return values
 }
 
 // payloadFlag collects the repeated -result-payload values. An entry is

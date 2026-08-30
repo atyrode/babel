@@ -45,7 +45,9 @@ Commands:
   fetch SELECTOR       restore one session's files from a snapshot
   prune --local        remove locally fetched session directories
 
-A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one.
+A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one, and may
+begin with "-": every Claude Code and OMP source id does, so a leading dash
+is read as part of the selector rather than as a flag.
 
 Run "babel sessions <command> -h" for a command's flags.
 `
@@ -92,6 +94,10 @@ closure, resolved blobs, unresolved blob references, and whether the
 observed closure is complete enough to continue the session. The
 repository is never opened.
 
+A selector may begin with "-" — every Claude Code and OMP source id does,
+because they encode a workspace path — and a leading dash is then read as
+part of the selector rather than as a flag.
+
 Flags:
   --roots DIR[,DIR]    scan these roots instead of the adapters' defaults
   --json               emit the description as JSON on stdout
@@ -109,6 +115,10 @@ session is instead identified from the snapshot's own file listing, which
 addresses any session that host archived — including one this machine never
 had, or one whose local files are gone. Nothing is downloaded to identify
 it: only the listing is read.
+
+A selector may begin with "-" — every Claude Code and OMP source id does,
+because they encode a workspace path — and a leading dash is then read as
+part of the selector rather than as a flag.
 
 Flags:
   --repo REPOSITORY    restic repository (default $BABEL_RESTIC_REPO)
@@ -440,9 +450,14 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 			derefOrMissing(s.Modified),
 			derefOrMissing(s.Title),
 			derefOrMissing(s.Workspace),
+			gradeCell(s.Continuous),
 		})
 	}
-	return writeTable(a.stdout, []string{"HARNESS", "SOURCE ID", "SIZE", "MODIFIED", "TITLE", "WORKSPACE"}, tableRows)
+	// GRADE is last, where the web interface puts it too: the terminal was
+	// the only surface that could not tell a resumable session from a
+	// degraded one, and a listing that hides it makes the operator inspect
+	// each session to find out.
+	return writeTable(a.stdout, []string{"HARNESS", "SOURCE ID", "SIZE", "MODIFIED", "TITLE", "WORKSPACE", "GRADE"}, tableRows)
 }
 
 type sessionDescribeFunc func(context.Context, localSession) (*adapter.Description, error)
@@ -809,6 +824,14 @@ type fetchResult struct {
 	Files           int      `json:"files"`
 	Bytes           int64    `json:"bytes"`
 	Included        []string `json:"included"`
+	// Restored names where the files landed. restic recreates each recorded
+	// absolute source path beneath the target, so a target path is not the
+	// source path, and finding a fetched file from Included alone means
+	// deriving the mirror rule. Included keeps naming the requested source
+	// closure because Missing is stated in that same vocabulary and the two
+	// are only comparable while both are — so this is a third field rather
+	// than a changed one, and len(Restored)+len(Missing) == len(Included).
+	Restored []string `json:"restored"`
 	// Missing lists the closure paths the chosen snapshot did not hold, so
 	// an incomplete recovery is stated rather than inferred from a file
 	// count. A path is missing because it was created after the snapshot,
@@ -980,12 +1003,20 @@ func hintHostFetch(err error, selector string) error {
 // of blobs.
 const maxMissingReported = 8
 
-// finishFetch completes one fetch: it states which requested closure paths
-// the snapshot did not hold, then writes the outcome to stdout. A partial
-// recovery is not a failure — the snapshot is an honest record of what
-// existed when it was taken — but it must never look complete.
+// maxRestoredReported bounds how many restored paths are named on stdout.
+// Enough to show what the mirror did with the closure and to copy one path
+// out is the whole need; the count and the target say the rest, and a
+// session may reference thousands of blobs.
+const maxRestoredReported = 8
+
+// finishFetch completes one fetch: it records where the closure landed,
+// states which requested closure paths the snapshot did not hold, then
+// writes the outcome to stdout. A partial recovery is not a failure — the
+// snapshot is an honest record of what existed when it was taken — but it
+// must never look complete.
 func (a *app) finishFetch(res fetchResult, dir string, includes []string, asJSON bool) error {
-	missing := missingPaths(dir, includes)
+	restored, missing := splitMaterialized(dir, includes)
+	res.Restored = sanitizeAll(restored)
 	if len(missing) > 0 {
 		res.Missing = sanitizeAll(missing)
 		a.diagf("warning: snapshot %s holds %d of the session's %d closure %s\n",
@@ -1003,34 +1034,60 @@ func (a *app) finishFetch(res fetchResult, dir string, includes []string, asJSON
 	return a.reportFetch(res, asJSON)
 }
 
-// missingPaths reports which of the requested closure paths were not
-// materialized under target. restic recreates each recorded absolute path
-// beneath the target, so a path's presence is a plain lookup.
-func missingPaths(target string, includes []string) []string {
-	var missing []string
+// splitMaterialized reports where each requested closure path landed and
+// which paths the snapshot did not hold. restic recreates each recorded
+// absolute path beneath the target, so one join answers both questions: the
+// joined path is where the file is, and its absence is the miss. The results
+// are complements of the requested closure, which is what makes "everything
+// asked for is either somewhere or accounted absent" a checkable claim.
+func splitMaterialized(target string, includes []string) (restored, missing []string) {
 	for _, path := range includes {
-		if _, err := os.Lstat(filepath.Join(target, path)); err != nil {
+		landed := filepath.Join(target, path)
+		if _, err := os.Lstat(landed); err != nil {
 			missing = append(missing, path)
+			continue
 		}
+		restored = append(restored, landed)
 	}
-	return missing
+	return restored, missing
 }
 
-// reportFetch writes one fetch outcome to stdout.
+// reportFetch writes one fetch outcome to stdout. The human form names where
+// the first few files actually landed, because the target directory plus the
+// mirror rule is not an answer to "where is the file I just restored".
 func (a *app) reportFetch(res fetchResult, asJSON bool) error {
 	if asJSON {
 		return a.emitJSON(res)
 	}
-	return writeDetail(a.stdout, [][2]string{
+	if err := writeDetail(a.stdout, [][2]string{
 		{"selector", res.Selector},
 		{"snapshot", res.SnapshotShortID},
 		{"snapshot time", res.SnapshotTime},
 		{"target", res.Target},
 		{"files", fmt.Sprint(res.Files)},
 		{"bytes", fmt.Sprint(res.Bytes)},
+		{"restored", fmt.Sprint(len(res.Restored))},
 		{"missing", fmt.Sprint(len(res.Missing))},
 		{"already present", yesNo(res.AlreadyPresent, "yes", "no")},
-	})
+	}); err != nil {
+		return err
+	}
+	if len(res.Restored) == 0 {
+		return nil
+	}
+	// One path per line rather than through writeTable, which bounds a cell
+	// to protect the alignment of the columns after it. Here the path is the
+	// answer and is exactly what the operator copies, so it is not truncated,
+	// for the same reason writeDetail does not truncate its value column.
+	fmt.Fprint(a.stdout, "\nrestored under the target:\n")
+	for i, path := range res.Restored {
+		if i == maxRestoredReported {
+			fmt.Fprintf(a.stdout, "  and %d more\n", len(res.Restored)-i)
+			break
+		}
+		fmt.Fprintf(a.stdout, "  %s\n", path)
+	}
+	return nil
 }
 
 // closurePaths is the absolute file closure to restore for one session:
@@ -1375,4 +1432,15 @@ func repoLine(r *repoRow) string {
 		return missingValue
 	}
 	return strings.Join(parts, " ")
+}
+
+// gradeCell renders the nullable continuation grade for one listing row. An
+// absent grade stays absent: a listing built from a snapshot's file listing
+// read no transcript, so reporting "no" there would claim the session falls
+// short of continuation grade rather than that nothing looked (SPEC.md §3).
+func gradeCell(continuous *bool) string {
+	if continuous == nil {
+		return missingValue
+	}
+	return yesNo(*continuous, "yes", "no")
 }

@@ -363,6 +363,11 @@ type inspectResult struct {
 	ContinuationGrade  bool      `json:"continuation_grade"`
 }
 
+// fetchResult mirrors internal/cli's fetchResult. This suite decodes with
+// DisallowUnknownFields on purpose: it is the outermost copy of the shape, so
+// a field added to the command without being mirrored here fails the e2e
+// suite rather than reaching an operator as a silently dropped value. That is
+// how Restored was caught.
 type fetchResult struct {
 	Selector        string   `json:"selector"`
 	SnapshotID      string   `json:"snapshot_id"`
@@ -372,8 +377,11 @@ type fetchResult struct {
 	Files           int      `json:"files"`
 	Bytes           int64    `json:"bytes"`
 	Included        []string `json:"included"`
-	Missing         []string `json:"missing,omitempty"`
-	AlreadyPresent  bool     `json:"already_present"`
+	// Restored holds the target paths that actually landed; Included and
+	// Missing stay in the source-path vocabulary they share.
+	Restored       []string `json:"restored"`
+	Missing        []string `json:"missing,omitempty"`
+	AlreadyPresent bool     `json:"already_present"`
 }
 
 // TestPhaseALoopEndToEnd is the whole Phase A loop over one repository.

@@ -350,7 +350,10 @@ type VerifyResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// FetchResult mirrors internal/cli fetchResult field-for-field.
+// FetchResult mirrors internal/cli fetchResult field-for-field. The mirror is
+// what keeps this decodable from the CLI's own --json document: a field the
+// CLI reports and this shape omits does not fail to build, it silently
+// arrives as a zero value in the web interface.
 type FetchResult struct {
 	Selector        string   `json:"selector"`
 	SnapshotID      string   `json:"snapshot_id"`
@@ -360,6 +363,7 @@ type FetchResult struct {
 	Files           int      `json:"files"`
 	Bytes           int64    `json:"bytes"`
 	Included        []string `json:"included"`
+	Restored        []string `json:"restored"`
 	Missing         []string `json:"missing,omitempty"`
 	AlreadyPresent  bool     `json:"already_present"`
 }
