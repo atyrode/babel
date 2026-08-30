@@ -53,19 +53,54 @@ const (
 // match anything a worker emits by coincidence.
 const conformanceToken = "BROKERTOKEN4f19c8d3a72b6e05f8341ca9"
 
-// Conformance drives the worker executable at workerPath through every
-// obligation the analysis-worker protocol places on the counterpart.
+// conformanceT is the part of *testing.T that the obligations use. It exists
+// so one set of assertions can be driven both by `go test` and by a plain
+// program, which is what lets an implementation outside this module sit the
+// same exam: Go forbids importing internal/, so a foreign test suite can never
+// call Conformance itself.
+type conformanceT interface {
+	Helper()
+	Error(args ...any)
+	Errorf(format string, args ...any)
+	Fatal(args ...any)
+	Fatalf(format string, args ...any)
+	Logf(format string, args ...any)
+}
+
+// conformanceTarget is the implementation under examination: the executable
+// and the arguments that put it into worker mode. The arguments matter because
+// a worker need not speak the protocol at argv[0] — Code, for one, is an
+// interactive program that speaks it under a subcommand — and needing an
+// argument is not the same as being a different protocol.
+type conformanceTarget struct {
+	binary string
+	args   []string
+}
+
+// conformanceObligation is one contract item: the name it is known by and the
+// assertions that decide it.
+type conformanceObligation struct {
+	name string
+	run  func(t conformanceT)
+}
+
+// Conformance drives the worker executable at workerPath, launched with args,
+// through every obligation the analysis-worker protocol places on the
+// counterpart, one subtest per obligation.
 //
-// It is exported because it is the contract, not a private test: Code — or any
-// other implementation of this protocol — should call it from its own test
-// suite against its own binary. Babel's side is exercised by the same code, so
-// the two cannot drift apart silently.
+// It is exported because it is the contract, not a private test: Babel's own
+// tests run it against the fake worker, so the suite cannot rot into asserting
+// nothing. Code — or any other implementation of this protocol — reaches the
+// very same obligations through the "babel conformance WORKER" command, which
+// runs this list against any binary; an external repository cannot import this
+// package, so the command is the seam, not an import.
 //
-// Each subtest is one obligation, and the subtest name is the contract item:
+// Each obligation name is the contract item:
 //
 //	handshake/accept              hello first, then a configuration, then exit
 //	handshake/refuse              a refused worker exits without a job
 //	run/well-behaved              configuration, progress, result, exit 0
+//	run/declares-containment      the worker states the sandbox it ran in
 //	run/forward-compatible-job    unknown job fields are ignored, not fatal
 //	run/tool-allow                a tool request blocks for its decision
 //	run/tool-denial-continues     a denial does not end the run
@@ -75,11 +110,24 @@ const conformanceToken = "BROKERTOKEN4f19c8d3a72b6e05f8341ca9"
 //	run/no-credential-leak        the broker token never returns to Babel
 //
 // It requires no network, no credential and no transcript.
-func Conformance(t *testing.T, workerPath string) {
+func Conformance(t *testing.T, workerPath string, args ...string) {
 	t.Helper()
+	for _, obligation := range conformanceObligations(conformanceTarget{binary: workerPath, args: args}) {
+		t.Run(obligation.name, func(t *testing.T) { obligation.run(t) })
+	}
+}
 
-	t.Run("handshake/accept", func(t *testing.T) {
-		client := conformanceClient(t, workerPath, nil)
+// conformanceObligations builds the suite for one worker executable. The
+// obligations are values rather than inline subtests so that RunConformance
+// can execute the identical assertions without a testing.T in reach.
+func conformanceObligations(target conformanceTarget) []conformanceObligation {
+	var obligations []conformanceObligation
+	add := func(name string, run func(t conformanceT)) {
+		obligations = append(obligations, conformanceObligation{name: name, run: run})
+	}
+
+	add("handshake/accept", func(t conformanceT) {
+		client := conformanceClient(t, target, nil)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -110,11 +158,11 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("handshake/refuse", func(t *testing.T) {
+	add("handshake/refuse", func(t conformanceT) {
 		// Babel offers a version no worker can support, so the worker must be
 		// refused. The refusal is written to it, and it must exit rather than
 		// wait for a job that will never arrive.
-		client := conformanceClient(t, workerPath, func(cfg *Config) {
+		client := conformanceClient(t, target, func(cfg *Config) {
 			cfg.Versions = []int{ProtocolVersion + 1_000_000}
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -133,8 +181,8 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("run/well-behaved", func(t *testing.T) {
-		receipt, err := conformanceRun(t, workerPath, ConformanceWellBehaved, AllowWithinGrant())
+	add("run/well-behaved", func(t conformanceT) {
+		receipt, err := conformanceRun(t, target, ConformanceWellBehaved, AllowWithinGrant())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -167,13 +215,13 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("run/declares-containment", func(t *testing.T) {
+	add("run/declares-containment", func(t conformanceT) {
 		// Babel does not implement the sandbox (decision 53), so a worker's
 		// declaration is the only thing Babel can hold it to before the run
 		// starts. An implementation that declares nothing is refused, which
 		// makes this obligation the difference between a stated boundary and
 		// an assumed one.
-		receipt, err := conformanceRun(t, workerPath, ConformanceWellBehaved, AllowWithinGrant())
+		receipt, err := conformanceRun(t, target, ConformanceWellBehaved, AllowWithinGrant())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -189,10 +237,10 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("run/forward-compatible-job", func(t *testing.T) {
+	add("run/forward-compatible-job", func(t conformanceT) {
 		// A newer Babel adds a field; an older worker must ignore it rather
 		// than fail. Nothing else about the run changes.
-		receipt, err := conformanceRun(t, workerPath, ConformanceWellBehaved, AllowWithinGrant(),
+		receipt, err := conformanceRun(t, target, ConformanceWellBehaved, AllowWithinGrant(),
 			func(job *Job) {
 				job.Extra = map[string]json.RawMessage{
 					"x-babel-future": json.RawMessage(`{"unknown":"to this worker"}`),
@@ -206,8 +254,8 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("run/tool-allow", func(t *testing.T) {
-		receipt, err := conformanceRun(t, workerPath, ConformanceRequestTool, AllowWithinGrant())
+	add("run/tool-allow", func(t conformanceT) {
+		receipt, err := conformanceRun(t, target, ConformanceRequestTool, AllowWithinGrant())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -233,8 +281,8 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("run/tool-denial-continues", func(t *testing.T) {
-		receipt, err := conformanceRun(t, workerPath, ConformanceRequestTool,
+	add("run/tool-denial-continues", func(t conformanceT) {
+		receipt, err := conformanceRun(t, target, ConformanceRequestTool,
 			DenyAll("conformance: policy denies this request"))
 		if err != nil {
 			t.Fatalf("Run after a denial: %v; a denial must not end the run", err)
@@ -257,11 +305,11 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("run/grant-boundary", func(t *testing.T) {
+	add("run/grant-boundary", func(t conformanceT) {
 		// The policy allows everything inside the grant, and the request is
 		// outside it. The grant must win: it is the boundary, the policy is
 		// only allowed to narrow it.
-		receipt, err := conformanceRun(t, workerPath, ConformanceRequestUngranted, AllowWithinGrant())
+		receipt, err := conformanceRun(t, target, ConformanceRequestUngranted, AllowWithinGrant())
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -280,8 +328,8 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("run/error-is-terminal", func(t *testing.T) {
-		receipt, err := conformanceRun(t, workerPath, ConformanceErrorOnly, AllowWithinGrant())
+	add("run/error-is-terminal", func(t conformanceT) {
+		receipt, err := conformanceRun(t, target, ConformanceErrorOnly, AllowWithinGrant())
 		if !errors.Is(err, ErrWorkerReported) {
 			t.Fatalf("Run error = %v, want the worker's own reported error", err)
 		}
@@ -300,8 +348,8 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("run/cancellation", func(t *testing.T) {
-		client := conformanceClient(t, workerPath, nil)
+	add("run/cancellation", func(t conformanceT) {
+		client := conformanceClient(t, target, nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -325,12 +373,12 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
-	t.Run("run/no-credential-leak", func(t *testing.T) {
+	add("run/no-credential-leak", func(t conformanceT) {
 		// Every subtest above plants the same synthetic broker token. This one
 		// re-runs the tool path and checks the whole receipt and error text,
 		// because a credential returning to Babel is the one failure that
 		// must be impossible rather than merely unlikely.
-		receipt, err := conformanceRun(t, workerPath, ConformanceRequestTool, AllowWithinGrant())
+		receipt, err := conformanceRun(t, target, ConformanceRequestTool, AllowWithinGrant())
 		rendered := fmt.Sprintf("%+v", receipt)
 		if err != nil {
 			rendered += " " + err.Error()
@@ -339,14 +387,17 @@ func Conformance(t *testing.T, workerPath string) {
 			t.Error("the run-scoped broker credential came back to Babel")
 		}
 	})
+
+	return obligations
 }
 
 // conformanceClient builds a Client for one obligation, with budgets tight
 // enough to fail fast and loose enough not to be flaky on a busy machine.
-func conformanceClient(t *testing.T, workerPath string, adjust func(*Config)) *Client {
+func conformanceClient(t conformanceT, target conformanceTarget, adjust func(*Config)) *Client {
 	t.Helper()
 	cfg := Config{
-		Binary: workerPath,
+		Binary: target.binary,
+		Args:   target.args,
 		Limits: Limits{
 			HandshakeTimeout: 15 * time.Second,
 			IdleTimeout:      20 * time.Second,
@@ -387,9 +438,9 @@ func conformanceJob(directive string) Job {
 }
 
 // conformanceRun executes one directive and returns its receipt.
-func conformanceRun(t *testing.T, workerPath, directive string, policy Authorizer, adjust ...func(*Job)) (*Receipt, error) {
+func conformanceRun(t conformanceT, target conformanceTarget, directive string, policy Authorizer, adjust ...func(*Job)) (*Receipt, error) {
 	t.Helper()
-	client := conformanceClient(t, workerPath, func(cfg *Config) { cfg.Authorizer = policy })
+	client := conformanceClient(t, target, func(cfg *Config) { cfg.Authorizer = policy })
 	job := conformanceJob(directive)
 	for _, apply := range adjust {
 		apply(&job)

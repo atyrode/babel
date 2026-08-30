@@ -101,6 +101,7 @@ Commands:
   cookbook check              check recipe versions against their bodies
   analysis profile configure  launch Code's profile configuration
   analysis profile show       show the stored Code profile reference
+  conformance WORKER          run the analysis-worker contract suite
 
 A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one.
 
@@ -215,6 +216,8 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.reality(ctx, args[1:])
 	case "cookbook":
 		return a.cookbookCmd(args[1:])
+	case "conformance":
+		return a.conformanceCmd(ctx, args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown command %q", args[0]), usage: rootUsage}
 	}
