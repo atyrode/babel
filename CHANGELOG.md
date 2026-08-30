@@ -11,6 +11,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **`babel conformance WORKER` sits any binary down in front of the
+  analysis-worker contract suite.** The obligations Babel holds a worker to
+  lived in `internal/`, which Go forbids another repository from importing, so
+  the one program that most needed to take the exam could never reach it. They
+  are now values rather than inline subtests, driven either by `go test` or by
+  the command, which prints one line per obligation with its failures beneath,
+  emits the same report under `--json`, and exits non-zero unless every
+  obligation held. The suite also stopped assuming a worker speaks the protocol
+  at `argv[0]` — `--worker-arg` puts an executable into worker mode, so an
+  interactive program that answers under a subcommand is graded as itself
+  rather than through a wrapper script. Babel's own tests run the identical
+  list against the fake worker, so the exam and the implementation still cannot
+  drift apart.
 - **Phase B orchestration and durable surfaces.** `internal/explore` is the
   §6.5 run controller: preflight, then discovery, then development, then a
   logically separate challenger, then a synthesizer, with a resume ledger that
