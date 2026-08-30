@@ -375,6 +375,44 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+// Unwired-service simulation. MOCK_UNWIRED is a comma-separated list of the
+// Phase B services a launch could not open — "frontier", "review", "reality",
+// "search" — and the mock then answers their routes exactly as internal/web's
+// requireService does: 409, with that package's own wording.
+//
+// This exists because the honest 409 is a state the UI must present well, not
+// merely a state the server must produce. `babel web` reaches it on a machine
+// whose durable store cannot be opened, and the browser is the only place the
+// consequence — which pages still work, and which banner the operator is
+// looking at — can actually be observed.
+const unwired = new Set(
+  (Bun.env.MOCK_UNWIRED ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name !== ""),
+);
+
+// The service each Phase B route reads through, and the name internal/web
+// gives it in the refusal. Kept as one table so a route cannot be simulated
+// as unwired under a name the real server never prints.
+const routeServices: Array<{ prefix: string; service: string; label: string }> = [
+  { prefix: "/api/hypothes", service: "frontier", label: "the hypothesis frontier" },
+  { prefix: "/api/finding", service: "frontier", label: "the hypothesis frontier" },
+  { prefix: "/api/review/", service: "review", label: "the review service" },
+  { prefix: "/api/reality/", service: "reality", label: "the reality ledger" },
+  { prefix: "/api/search", service: "search", label: "the retrieval index" },
+];
+
+function unwiredResponse(url: URL): Response | null {
+  if (unwired.size === 0) return null;
+  for (const route of routeServices) {
+    if (!url.pathname.startsWith(route.prefix)) continue;
+    if (!unwired.has(route.service)) continue;
+    return json({ error: `${route.label} is not available in this session` }, 409);
+  }
+  return null;
+}
+
 function apiResponse(request: Request, url: URL): Response | null {
   if (!url.pathname.startsWith("/api/")) return null;
   if (request.method === "GET" && url.pathname === "/api/version") return json(version);
@@ -501,6 +539,12 @@ const server = Bun.serve({
   port,
   async fetch(request) {
     const url = new URL(request.url);
+    // A simulated unwired service is refused before any handler runs, because
+    // a launch that could not open the store has no fixture state to serve
+    // from either — answering from one and refusing from the other would
+    // simulate a server that cannot exist.
+    const refused = unwiredResponse(url);
+    if (refused !== null) return refused;
     // Phase B routes are separate so their fixture state stays out of this
     // file; unknown /api paths still fall through to apiResponse's 404.
     const phaseb = await phasebResponse(request, url);
@@ -512,3 +556,6 @@ const server = Bun.serve({
 
 console.log(`Babel mock: http://${server.hostname}:${server.port}/?token=synthetic-preview-token`);
 console.log(`Scan simulation: MOCK_SCAN=${scanMode} (running | error | idle | empty)`);
+console.log(
+  `Unwired services: MOCK_UNWIRED=${unwired.size === 0 ? "<none>" : [...unwired].join(",")} (frontier | review | reality | search)`,
+);

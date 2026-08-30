@@ -64,6 +64,11 @@ async function startMock(env: Record<string, string>): Promise<MockServer> {
 
 let rich: MockServer | null = null;
 let emptyMock: MockServer | null = null;
+// A launch whose durable store could not be opened. Separate from emptyMock
+// because an empty frontier and an absent one are different facts: the first
+// is an answer, the second is a refusal, and the operator must be able to
+// tell which one is on screen.
+let unwiredMock: MockServer | null = null;
 let browser: Browser | null = null;
 let page: Page;
 
@@ -115,7 +120,11 @@ beforeAll(async () => {
   const build = Bun.spawnSync(["bun", "run", "build"]);
   if (!build.success) throw new Error(`bun run build failed: ${build.stderr.toString()}`);
 
-  [rich, emptyMock] = await Promise.all([startMock({}), startMock({ MOCK_PHASEB: "empty" })]);
+  [rich, emptyMock, unwiredMock] = await Promise.all([
+    startMock({}),
+    startMock({ MOCK_PHASEB: "empty" }),
+    startMock({ MOCK_UNWIRED: "frontier,review,reality,search" }),
+  ]);
 
   browser = await puppeteer.launch({
     executablePath: chrome,
@@ -136,6 +145,7 @@ afterAll(async () => {
   await browser?.close();
   rich?.process.kill();
   emptyMock?.process.kill();
+  unwiredMock?.process.kill();
 });
 
 test.skipIf(!chrome)("every Phase B area renders against the mock", async () => {
@@ -436,4 +446,39 @@ test.skipIf(!chrome)("record content never enters a request URL or the location 
   for (const fragment of forbidden) {
     expect(decodeURIComponent(hash)).not.toContain(fragment);
   }
+});
+
+test.skipIf(!chrome)("a refusal banner is scoped to the route that earned it", async () => {
+  // A launch that could not open its durable store still serves Phase A, so
+  // the operator's Sessions and Archive pages work while the Phase B pages
+  // refuse. What must not happen is the refusal following him: the banner
+  // reports the failure of a request, and once he has navigated to a page
+  // that loaded perfectly, a banner still accusing the frontier is telling
+  // him something false about what he is looking at.
+  //
+  // Navigation here is a click rather than open(), deliberately. open()
+  // reloads, which rebuilds the module holding the error, so a reload would
+  // hide exactly the defect this test exists to catch.
+  const base = unwiredMock?.base;
+  if (!base) throw new Error("the unwired mock is not running");
+
+  await page.goto(`${base}/#/hypotheses`, { waitUntil: "networkidle2" });
+  await page.reload({ waitUntil: "networkidle2" });
+  await visible("the hypothesis frontier is not available in this session");
+
+  await page.click('a[href="#/sessions"]');
+  await page.waitForFunction(
+    () => document.body.innerText.includes("Every session Babel found on this machine"),
+    { timeout: 15_000 },
+  );
+
+  // The Sessions page rendered, so any banner still on screen belongs to a
+  // route the operator has left.
+  const text = await page.evaluate(() => document.body.innerText);
+  expect(text).not.toContain("is not available in this session");
+
+  // And the refusal is still reported where it is true, so clearing on
+  // navigation has not simply silenced it.
+  await page.click('a[href="#/review"]');
+  await visible("the review service is not available in this session");
 });

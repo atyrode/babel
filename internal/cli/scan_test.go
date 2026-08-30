@@ -57,10 +57,11 @@ func newWebHarness(t *testing.T, f *fixture) *webHarness {
 	t.Helper()
 	stderr := &syncBuffer{}
 	a := &app{stdout: &bytes.Buffer{}, stderr: stderr}
-	srv, err := a.buildWebServer(repoFlags{}, 0)
+	srv, services, err := a.buildWebServer(repoFlags{}, "", 0)
 	if err != nil {
 		t.Fatalf("build web server: %v", err)
 	}
+	t.Cleanup(func() { services.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx) }()
