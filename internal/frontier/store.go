@@ -1399,3 +1399,186 @@ func parseTime(value string) (time.Time, error) {
 	}
 	return parsed.UTC(), nil
 }
+
+// ListFilter bounds an enumeration. A zero Limit means DefaultListLimit rather
+// than everything: a corpus of thousands of records must not arrive whole
+// merely because a caller forgot a bound.
+type ListFilter struct {
+	// Statuses restricts hypotheses to these lifecycle states. Empty means
+	// every state, including rejected — §5.2 keeps every candidate, so an
+	// enumeration that hid rejected ones by default would make the guarantee
+	// invisible exactly where an operator looks for it.
+	Statuses []Status
+	// LeavesOnly returns only revisions with no descendant, so a list shows
+	// current wording rather than every superseded draft beside it.
+	LeavesOnly bool
+	Limit      int
+	Offset     int
+}
+
+// DefaultListLimit and MaxListLimit bound every enumeration.
+const (
+	DefaultListLimit = 50
+	MaxListLimit     = 500
+)
+
+func (f ListFilter) bounds() (limit, offset int) {
+	limit = f.Limit
+	if limit <= 0 {
+		limit = DefaultListLimit
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
+	}
+	if offset = f.Offset; offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+// Hypotheses enumerates the frontier. It exists because the durable record is
+// only as useful as it is reachable: before this, a candidate that was neither
+// unexplored nor enrolled for review could be read by id and found by no
+// listing, which makes §5.2's promise that nothing is lost true in storage and
+// false in practice.
+//
+// Ordering is creation then id — a total order, and deliberately not priority.
+// Unexplored triages attention; this enumerates a record set, and per §5.4 a
+// list position must not read as strength.
+func (s *Store) Hypotheses(ctx context.Context, filter ListFilter) ([]Hypothesis, int, error) {
+	var conditions []string
+	var args []any
+	if len(filter.Statuses) > 0 {
+		placeholders := make([]string, len(filter.Statuses))
+		for i, status := range filter.Statuses {
+			if !status.valid() {
+				return nil, 0, fmt.Errorf("%w: status %q", ErrInvalidValue, status)
+			}
+			placeholders[i] = "?"
+			args = append(args, string(status))
+		}
+		conditions = append(conditions, `(SELECT e.status FROM frontier_status_event e
+			WHERE e.hypothesis_id = h.id ORDER BY e.seq DESC LIMIT 1) IN (`+
+			strings.Join(placeholders, ", ")+`)`)
+	}
+	if filter.LeavesOnly {
+		conditions = append(conditions,
+			`NOT EXISTS(SELECT 1 FROM frontier_hypothesis d WHERE d.ancestor_id = h.id)`)
+	}
+	where := ""
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	total, err := s.count(ctx, `SELECT count(*) FROM frontier_hypothesis h`+where, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	limit, offset := filter.bounds()
+	query := hypothesisSelect + where + ` ORDER BY h.created_at, h.id LIMIT ? OFFSET ?`
+	rows, err := s.db.QueryContext(ctx, query, append(args, limit, offset)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list hypotheses: %w", err)
+	}
+	defer rows.Close()
+	var out []Hypothesis
+	for rows.Next() {
+		record, err := scanHypothesis(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, record)
+	}
+	return out, total, rows.Err()
+}
+
+// Findings enumerates consolidations, newest last, with the same bounding rules
+// as Hypotheses. Statuses does not apply: a finding's lifecycle lives in its
+// review dispositions rather than in status events.
+func (s *Store) Findings(ctx context.Context, filter ListFilter) ([]Finding, int, error) {
+	where := ""
+	if filter.LeavesOnly {
+		where = ` WHERE NOT EXISTS(SELECT 1 FROM frontier_finding d WHERE d.ancestor_id = frontier_finding.id)`
+	}
+	total, err := s.count(ctx, `SELECT count(*) FROM frontier_finding`+where)
+	if err != nil {
+		return nil, 0, err
+	}
+	limit, offset := filter.bounds()
+	ids, err := s.pageIDs(ctx, `SELECT id FROM frontier_finding`+where+
+		` ORDER BY created_at, id LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	// Read each through Finding so a listed record carries the same derived
+	// observation and hypothesis links a detail view shows. A leaner query
+	// would return a differently shaped record under the same type, which is
+	// how a list and a detail view start disagreeing.
+	out := make([]Finding, 0, len(ids))
+	for _, id := range ids {
+		record, err := s.Finding(ctx, id)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, record)
+	}
+	return out, total, nil
+}
+
+// Proposals enumerates review artifacts under the same rules as Findings.
+func (s *Store) Proposals(ctx context.Context, filter ListFilter) ([]Proposal, int, error) {
+	where := ""
+	if filter.LeavesOnly {
+		where = ` WHERE NOT EXISTS(SELECT 1 FROM frontier_proposal d WHERE d.ancestor_id = frontier_proposal.id)`
+	}
+	total, err := s.count(ctx, `SELECT count(*) FROM frontier_proposal`+where)
+	if err != nil {
+		return nil, 0, err
+	}
+	limit, offset := filter.bounds()
+	ids, err := s.pageIDs(ctx, `SELECT id FROM frontier_proposal`+where+
+		` ORDER BY created_at, id LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]Proposal, 0, len(ids))
+	for _, id := range ids {
+		record, err := s.Proposal(ctx, id)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, record)
+	}
+	return out, total, nil
+}
+
+// count runs a scalar count query, which every enumeration needs so a caller
+// can page without discovering the end by hitting it.
+func (s *Store) count(ctx context.Context, query string, args ...any) (int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count records: %w", err)
+	}
+	return total, nil
+}
+
+// pageIDs reads one page of identifiers. It is separate from queryIDs because
+// that helper takes exactly one argument, and widening it to a variadic would
+// cost every existing call site its readability for one new caller.
+func (s *Store) pageIDs(ctx context.Context, query string, limit, offset int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, query, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("list ids: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

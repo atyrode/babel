@@ -139,6 +139,540 @@ export interface LockResult {
   stopping: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Phase B: analysis, frontier, review, Reality, and retrieval wire types.
+//
+// Envelope keys follow the shared Phase B contract exactly (including its
+// camelCase statusHistory/contextId/duplicateOfId/questionId/planId/answerId);
+// record fields are snake_case, and every `payload` object mirrors the Go
+// service structs' own JSON tags, so the browser types cannot drift from what
+// the services store. See local://phaseb-web-wire-contract.md.
+// ---------------------------------------------------------------------------
+
+export type HypothesisStatus =
+  | "untriaged"
+  | "queued"
+  | "investigating"
+  | "deferred"
+  | "rejected"
+  | "promoted";
+
+export type Disposition = "accept" | "reject" | "defer" | "duplicate";
+
+export type ReviewStatus =
+  | "new"
+  | "accepted"
+  | "rejected"
+  | "deferred"
+  | "duplicate"
+  | "refine-requested";
+
+export type ReviewSubjectType = "hypothesis" | "finding" | "proposal";
+
+// Model-supplied gradings are three-valued, never numeric: §10 warns that
+// confidence never substitutes for evidence, and a decimal invites exactly
+// that. The UI renders them as words, never as bars or percentages.
+export type Grading = "low" | "moderate" | "high";
+
+export interface RunCounts {
+  tool_requests: number;
+  tools_denied: number;
+  retrieval: number;
+  deferred: number;
+  rejected: number;
+  failures: number;
+  // A non-zero redaction count is an audit signal: something on the far side
+  // of the worker boundary tried to write a credential into the record.
+  redactions: number;
+}
+
+export interface RunSummary {
+  receipt_id: string;
+  run_id: string;
+  preparation_id: string;
+  revision: number;
+  recorded_at: string;
+  sync: string; // "pending-sync" | "committed"
+  counts: RunCounts;
+}
+
+export interface RecipeSummary {
+  id: string;
+  version: number;
+  kind: string; // "policy" | "lens" | "meta"
+  title: string;
+  default: boolean;
+  scope: string[];
+  stages: string[];
+  capabilities: string[];
+}
+
+export interface WorkerAvailability {
+  available: boolean;
+  // Operator-facing prose from the server explaining why exploration cannot
+  // start here. The browser renders it verbatim and claims nothing itself.
+  detail: string;
+}
+
+export interface AnalysisState {
+  configured: boolean;
+  worker: WorkerAvailability;
+  runs: RunSummary[];
+  runs_total?: number;
+  cookbook: RecipeSummary[];
+}
+
+export interface EvidenceLocator {
+  path: string;
+  line: number;
+  byte_offset: number;
+  digest: string;
+}
+
+export interface EvidenceRef {
+  locator: EvidenceLocator;
+  note?: string;
+  // Best-effort catalog selector ("harness/source_id") when the server could
+  // resolve the locator to a described session; absent otherwise.
+  selector?: string;
+}
+
+export interface HypothesisSummary {
+  id: string;
+  run_id: string;
+  ancestor_id?: string;
+  created_at: string;
+  status: HypothesisStatus;
+  statement: string;
+  provisional_labels?: string[];
+  observations: number;
+  // Additive server field: the derived §4.7 review status beside the
+  // exploration status. Optional so the mock stays minimal.
+  review_status?: ReviewStatus;
+}
+
+export interface HypothesesResponse {
+  items: HypothesisSummary[];
+  total: number;
+}
+
+export interface HypothesisPayload {
+  statement: string;
+  origin_cues?: string[];
+  provisional_labels?: string[];
+  // Sorting signals in [0,1]. §5.2 confines them to ordering; the UI shows
+  // them as plain numbers labelled as such, never as a strength indicator.
+  novelty: number;
+  priority: number;
+  notes?: string;
+}
+
+export interface Hypothesis {
+  id: string;
+  ancestor_id?: string;
+  run_id: string;
+  schema_version: number;
+  created_at: string;
+  status: HypothesisStatus;
+  payload: HypothesisPayload;
+}
+
+export interface StatusEvent {
+  id: string;
+  hypothesis_id: string;
+  sequence: number;
+  status: HypothesisStatus;
+  run_id: string;
+  recorded_at: string;
+  note?: string;
+}
+
+export interface ObservationPayload {
+  claim: string;
+  category?: string;
+  confidence: Grading;
+  impact: Grading;
+  evidence: EvidenceRef[];
+  // Exactly one of counter_evidence / counter_evidence_absent is set, so an
+  // empty list can never be mistaken for an unasked question (§4.3).
+  counter_evidence?: EvidenceRef[];
+  counter_evidence_absent?: boolean;
+  temporal_status?: string;
+}
+
+export interface Observation {
+  id: string;
+  ancestor_id?: string;
+  hypothesis_id: string;
+  run_id: string;
+  recipe_id: string;
+  recipe_version: number;
+  schema_version: number;
+  evidence_count: number;
+  created_at: string;
+  payload: ObservationPayload;
+}
+
+export interface LinkView {
+  id: string;
+  from_id: string;
+  to_id: string;
+  type: string;
+  created_at: string;
+  note?: string;
+  // Statement excerpt of the far-end hypothesis, best-effort, so a link list
+  // reads as prose rather than identifiers.
+  other_statement?: string;
+}
+
+export interface LineageNode {
+  kind: string;
+  id: string;
+}
+
+export interface LineageEdge {
+  id: string;
+  relation: string;
+  from: LineageNode;
+  to: LineageNode;
+  created_at: string;
+  generation: number;
+}
+
+export interface Lineage {
+  node: LineageNode;
+  ancestors: LineageEdge[];
+  descendants: LineageEdge[];
+}
+
+export interface HypothesisDetail {
+  hypothesis: Hypothesis;
+  statusHistory: StatusEvent[];
+  observations: Observation[];
+  links: LinkView[];
+  lineage: Lineage;
+}
+
+export interface FindingSummary {
+  id: string;
+  run_id: string;
+  created_at: string;
+  title: string;
+  observations: number;
+  hypotheses: number;
+  review_status: ReviewStatus;
+}
+
+export interface FindingsResponse {
+  items: FindingSummary[];
+  total: number;
+}
+
+export interface FindingPayload {
+  title: string;
+  pattern: string;
+  significance?: string;
+  scope?: string[];
+  recurrence?: number;
+  counter_evidence?: EvidenceRef[];
+  counter_evidence_absent?: boolean;
+  temporal_status?: string;
+}
+
+export interface Finding {
+  id: string;
+  ancestor_id?: string;
+  run_id: string;
+  schema_version: number;
+  created_at: string;
+  observation_ids: string[];
+  hypothesis_ids: string[];
+  payload: FindingPayload;
+}
+
+export interface ProposalTarget {
+  system: string;
+  confidence: Grading;
+  rationale?: string;
+}
+
+export interface ProposalPayload {
+  title: string;
+  problem: string;
+  outcome: string;
+  applicability?: string;
+  temporal_status?: string;
+  supporting?: EvidenceRef[];
+  conflicting?: EvidenceRef[];
+  uncertainty?: string;
+  impact: Grading;
+  estimated_scope?: string;
+  targets?: ProposalTarget[];
+  risks?: string[];
+  open_questions?: string[];
+  prerequisites?: string[];
+  verification_criteria?: string[];
+  classification: string;
+  destinations?: string[];
+}
+
+export interface Proposal {
+  id: string;
+  ancestor_id?: string;
+  run_id: string;
+  schema_version: number;
+  created_at: string;
+  finding_ids: string[];
+  hypothesis_ids: string[];
+  review_status: ReviewStatus;
+  payload: ProposalPayload;
+}
+
+export interface FindingDetail {
+  finding: Finding;
+  observations: Observation[];
+  proposals: Proposal[];
+}
+
+export interface ReviewSubject {
+  type: ReviewSubjectType;
+  id: string;
+}
+
+export interface QueueItem {
+  subject: ReviewSubject;
+  enrolled_at: string;
+  status: ReviewStatus;
+  decisions: number;
+  last_decided_at?: string;
+  refinements: number;
+  // The subject's statement/title/claim, so the queue is readable.
+  excerpt: string;
+}
+
+export interface ReviewQueueResponse {
+  items: QueueItem[];
+  total?: number;
+}
+
+export interface DecideRequest {
+  subject: ReviewSubject;
+  disposition: Disposition;
+  contextId?: string;
+  duplicateOfId?: string;
+  note?: string;
+}
+
+export interface DecideResult {
+  status: ReviewStatus;
+  event: {
+    id: string;
+    sequence: number;
+    disposition: Disposition;
+    recorded_at: string;
+  };
+}
+
+export interface ReviewContext {
+  id: string;
+  author: string;
+  at: string;
+  text: string;
+}
+
+export interface DecisionView {
+  id: string;
+  sequence: number;
+  disposition: Disposition;
+  reviewer_id: string;
+  recorded_at: string;
+  duplicate_of_id?: string;
+  note?: string;
+  context?: ReviewContext;
+}
+
+export interface RefinementView {
+  request: {
+    id: string;
+    disposition_id: string;
+    subject: ReviewSubject;
+    created_at: string;
+    guidance: string;
+    scope?: string[];
+  };
+  // Absent until a refinement worker reported an outcome: an authorized
+  // request with no outcome is a normal, visible state rather than a gap.
+  outcome?: {
+    id: string;
+    mode: string;
+    agent_id: string;
+    recorded_at: string;
+    revision?: ReviewSubject;
+    memory_proposal_id?: string;
+  };
+}
+
+export interface ReviewHistory {
+  status: ReviewStatus;
+  decisions: DecisionView[];
+  refinements: RefinementView[];
+}
+
+export interface AnswerView {
+  id: string;
+  question_id: string;
+  sequence: number;
+  author: string;
+  at: string;
+  recorded_at: string;
+  outcome: string; // "answered" | "unknown" | "declined"
+  text: string;
+}
+
+export interface ActionView {
+  id: string;
+  position: number;
+  kind: string;
+  state: string;
+  result_id?: string;
+  applied_at?: string;
+  // The reality.ActionPayload verbatim: rationale plus exactly one
+  // kind-specific option field, rendered as structured JSON.
+  payload: { rationale: string } & Record<string, unknown>;
+}
+
+export interface PlanView {
+  id: string;
+  question_id: string;
+  answer_id: string;
+  interpreter_version: number;
+  created_at: string;
+  state: string; // "proposed" | "accepted" | "rejected" | ...
+  summary: string;
+  actions: ActionView[];
+}
+
+export interface QuestionSummary {
+  id: string;
+  kind: string;
+  class: string; // "blocking" | "maintenance" | "curiosity"
+  state: string;
+  sensitivity: string;
+  created_at: string;
+  prompt: string;
+  why_asked: string;
+  target_entity_ids: string[];
+  target_predicates?: string[];
+  // The §4.8 ranking with its per-factor terms, returned so the policy can
+  // be argued with rather than presented as a bare number.
+  score: number;
+  terms: Record<string, number>;
+  answers: AnswerView[];
+  plans: PlanView[];
+}
+
+export interface RealityInbox {
+  items: QuestionSummary[];
+  total?: number;
+}
+
+export interface EntityView {
+  id: string;
+  kind: string;
+  schema_version: number;
+  created_at: string;
+  role: string;
+  canonical_id: string;
+  display_name: string;
+  notes?: string;
+}
+
+export interface AliasView {
+  id: string;
+  entity_id: string;
+  kind: string;
+  state: string;
+  created_at: string;
+  value: string;
+  note?: string;
+}
+
+export interface RelationshipView {
+  id: string;
+  kind: string;
+  state: string;
+  created_at: string;
+  from: { id: string; display_name: string };
+  to: { id: string; display_name: string };
+  note?: string;
+}
+
+export interface FactValueView {
+  kind: string;
+  enum?: string;
+  text?: string;
+  object_id?: string;
+}
+
+export interface FactView {
+  id: string;
+  subject_id: string;
+  predicate: string;
+  value: FactValueView;
+  valid_from: string;
+  valid_until?: string;
+  observed_at: string;
+  recorded_at: string;
+  expires_at?: string;
+  authority: { kind: string; id: string };
+  confidence: Grading;
+  sensitivity: string;
+  status: string; // "proposed" | "active" | "superseded" | "disputed" | "stale"
+  supersedes?: string;
+  note?: string;
+}
+
+export interface EntityDetail {
+  entity: EntityView;
+  aliases: AliasView[];
+  relationships: RelationshipView[];
+  facts: FactView[];
+}
+
+export interface AnswerResult {
+  answerId: string;
+  state: string;
+}
+
+export interface PlanAcceptResult {
+  applied: Array<{ kind: string; id: string }>;
+  state: string;
+}
+
+// A hit deliberately carries no score, rank, or relevance field: §5.4's rule
+// is that retrieval rank never becomes evidence strength, and the UI keeps it
+// unrepresentable by never numbering or grading result rows.
+export interface SearchHit {
+  harness: string;
+  adapter_schema: number;
+  source_id: string;
+  selector: string;
+  index: number;
+  kind: string;
+  role?: string;
+  tool?: string;
+  outcome?: string;
+  time?: string;
+  paths?: string[];
+  partial: boolean;
+  text: string;
+  locator: EvidenceLocator;
+}
+
+export interface SearchResponse {
+  hits: SearchHit[];
+}
+
 const TOKEN_KEY = "babel.web.token";
 
 // The launch token arrives in the URL fragment, which the browser never sends
@@ -230,7 +764,14 @@ export class APIError extends Error {
 // interface that spins forever.
 const REQUEST_TIMEOUT_MS = 20_000;
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+// send is the one transport path every API call shares: bearer token, cache
+// bypass, bounded wait, error mapping, and error publication. Callers differ
+// only in how they read a successful body.
+async function send<T>(
+  path: string,
+  init: RequestInit,
+  read: (response: Response) => Promise<T>,
+): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -252,7 +793,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       }
       throw new APIError(response.status, message);
     }
-    return (await response.json()) as T;
+    return await read(response);
   } catch (error) {
     const failure = controller.signal.aborted
       ? new APIError(408, `${path} did not respond within ${REQUEST_TIMEOUT_MS / 1000}s`)
@@ -262,6 +803,18 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return send(path, init, async (response) => (await response.json()) as T);
+}
+
+function postJSON<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 function query(values: Record<string, string | number>): string {
@@ -325,4 +878,103 @@ export function fetchSession(selector: string, snapshot?: string): Promise<Fetch
 // whatever this resolves or rejects with is the last thing this page learns.
 export function lockServer(): Promise<LockResult> {
   return request<LockResult>("/api/lock", { method: "POST" });
+}
+
+// ---------------------------------------------------------------------------
+// Phase B fetchers. Every mutation below goes through the same authenticated
+// transport as every read: the browser renders what the services return and
+// carries no authority the CLI would not have (§2.7, §14).
+// ---------------------------------------------------------------------------
+
+export function getAnalysisState(): Promise<AnalysisState> {
+  return request<AnalysisState>("/api/analysis/state");
+}
+
+export function getHypotheses(
+  filter: { status?: string; limit?: number; offset?: number } = {},
+): Promise<HypothesesResponse> {
+  const values: Record<string, string | number> = {};
+  if (filter.status) values.status = filter.status;
+  if (filter.limit !== undefined) values.limit = filter.limit;
+  if (filter.offset !== undefined) values.offset = filter.offset;
+  const suffix = Object.keys(values).length ? `?${query(values)}` : "";
+  return request<HypothesesResponse>(`/api/hypotheses${suffix}`);
+}
+
+export function getHypothesis(id: string): Promise<HypothesisDetail> {
+  return request<HypothesisDetail>(`/api/hypothesis?${query({ id })}`);
+}
+
+export function getFindings(): Promise<FindingsResponse> {
+  return request<FindingsResponse>("/api/findings");
+}
+
+export function getFinding(id: string): Promise<FindingDetail> {
+  return request<FindingDetail>(`/api/finding?${query({ id })}`);
+}
+
+export function getReviewQueue(
+  filter: { type?: string; status?: string } = {},
+): Promise<ReviewQueueResponse> {
+  const values: Record<string, string> = {};
+  if (filter.type) values.type = filter.type;
+  if (filter.status) values.status = filter.status;
+  const suffix = Object.keys(values).length ? `?${query(values)}` : "";
+  return request<ReviewQueueResponse>(`/api/review/queue${suffix}`);
+}
+
+export function decideReview(decision: DecideRequest): Promise<DecideResult> {
+  return postJSON<DecideResult>("/api/review/decide", decision);
+}
+
+export function addReviewContext(text: string): Promise<{ id: string }> {
+  return postJSON<{ id: string }>("/api/review/context", { text });
+}
+
+export function getReviewHistory(type: string, id: string): Promise<ReviewHistory> {
+  return request<ReviewHistory>(`/api/review/history?${query({ type, id })}`);
+}
+
+// The export document is fetched rather than navigated to, so the record's
+// content stays out of the URL, browser history, and server request logs.
+export function getExportJSON(type: string, id: string): Promise<unknown> {
+  return request<unknown>(`/api/export?${query({ type, id, format: "json" })}`);
+}
+
+export function getExportMarkdown(type: string, id: string): Promise<string> {
+  return send(
+    `/api/export?${query({ type, id, format: "markdown" })}`,
+    {},
+    (response) => response.text(),
+  );
+}
+
+export function getRealityInbox(): Promise<RealityInbox> {
+  return request<RealityInbox>("/api/reality/inbox");
+}
+
+export function getRealityEntity(id: string): Promise<EntityDetail> {
+  return request<EntityDetail>(`/api/reality/entity?${query({ id })}`);
+}
+
+export function answerQuestion(
+  questionId: string,
+  text: string,
+  outcome: string,
+): Promise<AnswerResult> {
+  return postJSON<AnswerResult>("/api/reality/answer", { questionId, text, outcome });
+}
+
+export function acceptPlan(planId: string): Promise<PlanAcceptResult> {
+  return postJSON<PlanAcceptResult>("/api/reality/plan/accept", { planId });
+}
+
+export function searchCorpus(
+  params: { q: string; harness?: string; kind?: string; limit?: number },
+): Promise<SearchResponse> {
+  const values: Record<string, string | number> = { q: params.q };
+  if (params.harness) values.harness = params.harness;
+  if (params.kind) values.kind = params.kind;
+  if (params.limit !== undefined) values.limit = params.limit;
+  return request<SearchResponse>(`/api/search?${query(values)}`);
 }

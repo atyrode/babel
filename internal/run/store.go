@@ -528,3 +528,74 @@ const timestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
 // text in chronological order, and parses back to the exact instant it was
 // written from.
 func formatTime(t time.Time) string { return t.UTC().Format(timestampLayout) }
+
+// ListLimits bound an enumeration. A zero limit means the default rather than
+// everything, because a deployment accumulates one receipt per run per host and
+// an unbounded list would eventually be the whole history.
+const (
+	DefaultListLimit = 50
+	MaxListLimit     = 500
+)
+
+// Receipts enumerates receipts, newest first, with a total so a caller can page
+// without discovering the end by hitting it. It exists because a receipt that
+// cannot be listed cannot be reviewed: §7 makes the receipt the record of what
+// a run did, and a record reachable only by an identifier the operator would
+// have to already know is not a record they can consult.
+//
+// Only the newest revision of each run is returned. An amended receipt
+// supersedes its predecessor (§7 keeps both), so listing every revision would
+// show one run several times with no indication which is current.
+func (s *Store) Receipts(ctx context.Context, limit, offset int) ([]Receipt, int, error) {
+	if limit <= 0 {
+		limit = DefaultListLimit
+	}
+	if limit > MaxListLimit {
+		limit = MaxListLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	const newest = `SELECT id FROM run_receipt r
+		WHERE r.revision = (SELECT max(revision) FROM run_receipt x WHERE x.run_id = r.run_id)`
+
+	var total int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT count(*) FROM (`+newest+`)`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count receipts: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, newest+
+		` ORDER BY r.recorded_at DESC, r.id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list receipts: %w", err)
+	}
+	var ids []ReceiptID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, 0, fmt.Errorf("list receipts: %w", err)
+		}
+		ids = append(ids, ReceiptID(id))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, fmt.Errorf("list receipts: %w", err)
+	}
+	rows.Close()
+
+	// Read each through Receipt so a listed receipt is the same record a
+	// detail view shows, verification and all. A leaner projection would let a
+	// list and a detail view disagree about the same run.
+	out := make([]Receipt, 0, len(ids))
+	for _, id := range ids {
+		receipt, err := s.Receipt(ctx, id)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, receipt)
+	}
+	return out, total, nil
+}

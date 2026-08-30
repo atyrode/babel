@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate, NavLink, Route, Routes } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import {
   APIError,
   dismissAPIError,
@@ -9,6 +9,15 @@ import {
   type VersionInfo,
 } from "./api";
 import ArchivePage from "./pages/ArchivePage";
+import ExplorePage from "./pages/ExplorePage";
+import FindingPage from "./pages/FindingPage";
+import FindingsPage from "./pages/FindingsPage";
+import HypothesesPage from "./pages/HypothesesPage";
+import HypothesisPage from "./pages/HypothesisPage";
+import RealityEntityPage from "./pages/RealityEntityPage";
+import RealityPage from "./pages/RealityPage";
+import ReviewPage from "./pages/ReviewPage";
+import ReviewRecordPage from "./pages/ReviewRecordPage";
 import SessionPage from "./pages/SessionPage";
 import SessionsPage from "./pages/SessionsPage";
 
@@ -17,6 +26,7 @@ const LOCK_PROMPT =
   "page stops working. Run `babel web` again to get a new URL.";
 
 function App() {
+  const location = useLocation();
   const [version, setVersion] = useState<VersionInfo | null>(null);
   const [apiError, setAPIError] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -103,6 +113,24 @@ function App() {
             <NavLink to="/archive" className={({ isActive }) => isActive ? "active" : undefined}>
               Archive
             </NavLink>
+            <NavLink to="/explore" className={({ isActive }) => isActive ? "active" : undefined}>
+              Explore
+            </NavLink>
+            {/* The findings routes belong to the Hypotheses area: candidates
+                and their consolidations are one frontier. */}
+            <NavLink
+              to="/hypotheses"
+              className={({ isActive }) =>
+                isActive || location.pathname.startsWith("/findings") ? "active" : undefined}
+            >
+              Hypotheses
+            </NavLink>
+            <NavLink to="/reality" className={({ isActive }) => isActive ? "active" : undefined}>
+              Reality
+            </NavLink>
+            <NavLink to="/review" className={({ isActive }) => isActive ? "active" : undefined}>
+              Review
+            </NavLink>
           </nav>
           {/* The stop control lives in the shell rather than on a page because
               it ends the whole session, not one page's work. */}
@@ -133,6 +161,15 @@ function App() {
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/sessions/:selector" element={<SessionPage />} />
           <Route path="/archive" element={<ArchivePage />} />
+          <Route path="/explore" element={<ExplorePage />} />
+          <Route path="/hypotheses" element={<HypothesesPage />} />
+          <Route path="/hypotheses/:id" element={<HypothesisPage />} />
+          <Route path="/findings" element={<FindingsPage />} />
+          <Route path="/findings/:id" element={<FindingPage />} />
+          <Route path="/reality" element={<RealityPage />} />
+          <Route path="/reality/entities/:id" element={<RealityEntityPage />} />
+          <Route path="/review" element={<ReviewPage />} />
+          <Route path="/review/:type/:id" element={<ReviewRecordPage />} />
           {/* `replace` is load-bearing, not styling: the launch URL's
               "#token=…" fragment matches no route and lands here, so a
               replacing redirect drops that entry instead of leaving it
