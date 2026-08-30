@@ -83,6 +83,24 @@ Commands:
   sessions inspect SELECTOR   show one local session in full
   sessions fetch SELECTOR     restore one session's files from a snapshot
   sessions prune --local      remove locally fetched session directories
+  prepare [SELECTOR...]       fix an exploration's corpus scope
+  explore --preparation ID    run one exploration through Code
+  hypotheses                  list the candidate frontier
+  hypothesis show ID          show one candidate with its whole history
+  findings                    list consolidated findings
+  finding show ID             show one finding with its evidence
+  review queue                list records awaiting a decision
+  review decide ID            record one attributed review decision
+  review history ID           show one record's append-only decisions
+  export ID                   render one record to stdout or a file
+  reality inbox               list the prioritized Question inbox
+  reality entity ID           show one entity, its aliases and its facts
+  reality answer QUESTION_ID  record an attributed answer
+  reality accept PLAN_ID      accept one interpreter plan
+  cookbook list               list the analysis recipes
+  cookbook check              check recipe versions against their bodies
+  analysis profile configure  launch Code's profile configuration
+  analysis profile show       show the stored Code profile reference
 
 A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one.
 
@@ -90,12 +108,23 @@ Repository selection for the archive commands and for sessions fetch:
   --repo REPOSITORY           else $BABEL_RESTIC_REPO, else storage.json
   --password-file FILE        else $BABEL_RESTIC_PASSWORD_FILE, else storage.json
 
+Review, answer, and plan acceptance are attributed decisions (SPEC.md §4.7,
+§4.8): pass --operator ID or set $BABEL_OPERATOR. No command publishes an
+issue, writes to a source repository, or applies a proposal (§4.6).
+
 Machine-readable output goes to stdout; diagnostics go to stderr.
 Run "babel <command> -h" for a command's flags.
 `
 
 // errHelp reports that a help request was already served on stdout.
 var errHelp = errors.New("cli: help served")
+
+// errReported marks a failure whose explanation the command already wrote to
+// stderr itself. It exists for the diagnostics that are several lines of
+// remedy rather than one sentence: Sanitize escapes newlines, because it
+// renders values and never layout, so a multi-line remedy has to be composed
+// by the command that owns the layout instead of handed to run as one string.
+var errReported = errors.New("cli: failure already reported")
 
 // usageError marks an invocation rejected before any work was attempted.
 // It maps to exit code 2 and prints the offending command's usage.
@@ -119,6 +148,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch {
 	case err == nil, errors.Is(err, errHelp):
 		return exitOK
+	case errors.Is(err, errReported):
+		// The command already wrote its own multi-line explanation.
+		return exitFailure
 	}
 	var ue *usageError
 	if errors.As(err, &ue) {
@@ -161,6 +193,28 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.sessions(ctx, args[1:])
 	case "web":
 		return a.webCmd(ctx, args[1:])
+	case "prepare":
+		return a.prepare(ctx, args[1:])
+	case "explore":
+		return a.explore(ctx, args[1:])
+	case "analysis":
+		return a.analysis(ctx, args[1:])
+	case "hypotheses":
+		return a.hypothesesCmd(ctx, args[1:])
+	case "hypothesis":
+		return a.hypothesisCmd(ctx, args[1:])
+	case "findings":
+		return a.findingsCmd(ctx, args[1:])
+	case "finding":
+		return a.findingCmd(ctx, args[1:])
+	case "review":
+		return a.review(ctx, args[1:])
+	case "export":
+		return a.exportCmd(ctx, args[1:])
+	case "reality":
+		return a.reality(ctx, args[1:])
+	case "cookbook":
+		return a.cookbookCmd(args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown command %q", args[0]), usage: rootUsage}
 	}

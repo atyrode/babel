@@ -84,6 +84,12 @@ func newFixture(t *testing.T) *fixture {
 	t.Setenv("BABEL_RESTIC_REPO", "")
 	t.Setenv("BABEL_RESTIC_PASSWORD_FILE", "")
 	t.Setenv("BABEL_HOST_ID", testHostID)
+	// Phase B's own defaults, for the same reason: an attributed decision
+	// and a configured worker are exactly what several cases assert the
+	// absence of, and either would otherwise arrive from the developer's
+	// shell.
+	t.Setenv("BABEL_OPERATOR", "")
+	t.Setenv("BABEL_ANALYSIS_WORKER", "")
 	// Codex and Claude must find nothing: this fixture synthesizes only an
 	// OMP tree, and their default roots live under the private HOME, which
 	// has none.
