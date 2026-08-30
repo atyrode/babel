@@ -155,3 +155,54 @@ func buildSilentBinary(t *testing.T) string {
 	}
 	return binary
 }
+
+// TestUnsandboxedGradingIsolatesTheContainmentFinding is the difference between
+// two findings that need different work: an implementation that has not built a
+// sandbox yet, and one that does not speak the protocol.
+//
+// A worker declaring weak containment is refused at launch, so under the strict
+// default every obligation that reaches worker mode fails with the same
+// containment error and none of them says anything about the protocol. Relaxing
+// the requirement lets the rest of the contract be graded — while
+// run/declares-containment still fails, because checking the sandbox is that
+// obligation's entire purpose and relaxing the run must not relax it.
+func TestUnsandboxedGradingIsolatesTheContainmentFinding(t *testing.T) {
+	weak := func(unsandboxed bool) map[string]bool {
+		t.Helper()
+		outcome := map[string]bool{}
+		for _, result := range RunConformanceWith(context.Background(), ConformanceOptions{
+			Worker:      fakeWorkerPath,
+			Args:        []string{"-containment", "weak"},
+			Unsandboxed: unsandboxed,
+		}) {
+			outcome[result.Name] = result.Passed
+		}
+		return outcome
+	}
+
+	strict := weak(false)
+	relaxed := weak(true)
+
+	// Under the strict default the containment refusal swamps the report: a
+	// worker-mode obligation cannot even start.
+	for _, name := range []string{"run/well-behaved", "run/tool-allow", "run/cancellation"} {
+		if strict[name] {
+			t.Errorf("%s passed under the strict requirement; a weak declaration must be refused at launch", name)
+		}
+		if !relaxed[name] {
+			t.Errorf("%s failed under relaxed grading; the protocol obligations should be reachable once containment is not the gate", name)
+		}
+	}
+
+	// The one obligation that must never be relaxed.
+	if relaxed["run/declares-containment"] {
+		t.Error("run/declares-containment passed under relaxed grading; the obligation exists to check the sandbox, so relaxing the run must not relax it")
+	}
+
+	// The handshake never depended on containment either way.
+	for _, name := range []string{"handshake/accept", "handshake/refuse"} {
+		if !strict[name] || !relaxed[name] {
+			t.Errorf("%s should not depend on the containment requirement (strict=%v relaxed=%v)", name, strict[name], relaxed[name])
+		}
+	}
+}
