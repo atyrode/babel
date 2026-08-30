@@ -155,6 +155,22 @@ jobs:
           sudo mv restic /usr/local/bin/restic
           restic version
 
+      # internal/pgtest provisions its own clusters, so initdb and pg_ctl must
+      # be on PATH here too. BABEL_REQUIRE_POSTGRES makes that mandatory rather
+      # than optional: the harness refuses to skip when the environment
+      # promised a PostgreSQL and has none, which is how the omission of this
+      # step was caught. TestTwoClustersCoexist is concurrent, so this package
+      # is one the race detector should be watching rather than one to exclude.
+      - name: Expose PostgreSQL server binaries
+        run: |
+          dir=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)
+          if [ -z "$dir" ]; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql
+            dir=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)
+          fi
+          echo "$dir" >> "$GITHUB_PATH"
+
       - name: go test -race
         run: go test -race -count=1 ./internal/...
 
