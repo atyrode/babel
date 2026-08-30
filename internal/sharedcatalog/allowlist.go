@@ -8,11 +8,19 @@ import (
 	"strings"
 )
 
-// Class names one of the data classes SPEC.md 9 permits in the Phase A
-// PostgreSQL catalog. Every column in the shared schema must map to exactly one
-// of them, and nothing outside this set may be stored: titles, filesystem
-// paths, workspace names, transcript metadata, and derived judgements about
-// session content stay in the encrypted repository and local indexes.
+// Class names one of the data classes SPEC.md 9 permits in Babel's PostgreSQL
+// catalog. Every column in the shared schema must map to exactly one of them,
+// and nothing outside this set may be stored: titles, filesystem paths,
+// workspace names, transcript metadata, claims, operator context, and derived
+// judgements about session content stay in the encrypted repository, the
+// encrypted object store, and local indexes.
+//
+// Phase B needed no new class. SPEC.md 9's Phase B vocabulary - structured
+// identifiers, entity kind and schema version, encrypted-object references,
+// key ID, ciphertext size, commit/sync state, relationship IDs - lands on the
+// classes Phase A already defined: an object key, a key ID, and a relationship
+// ID are all opaque IDs or locators, and a sync state is a commit state. That
+// the vocabulary did not have to widen is the point.
 type Class string
 
 const (
@@ -32,7 +40,7 @@ const (
 	ClassTimestamp Class = "timestamp"
 )
 
-// allowlist enumerates every column the Phase A schema may contain, keyed by
+// allowlist enumerates every column the shared schema may contain, keyed by
 // table then column. It is the machine-checkable form of the contract: a column
 // that reaches the database without an entry here fails Verify, so widening the
 // shared catalog cannot happen by accident during a migration.
@@ -98,6 +106,33 @@ var allowlist = map[string]map[string]Class{
 		"idempotency_key": ClassOpaqueID,
 		"instance_id":     ClassOpaqueID,
 		"snapshot_id":     ClassOpaqueID,
+		"created_at":      ClassTimestamp,
+	},
+	// Phase B analysis output (migrations/0003). The payload is absent by
+	// design: a record's content is sealed into an object and PostgreSQL holds
+	// only the reference, the key ID, and the size.
+	"analysis_runs": {
+		"run_id":             ClassOpaqueID,
+		"deployment_id":      ClassOpaqueID,
+		"origin_instance_id": ClassOpaqueID,
+		"execution_host_id":  ClassOpaqueID,
+		"continues_run_id":   ClassOpaqueID,
+		"sync_state":         ClassCommitState,
+		"record_count":       ClassMeasure,
+		"created_at":         ClassTimestamp,
+		"updated_at":         ClassTimestamp,
+		"committed_at":       ClassTimestamp,
+	},
+	"analysis_records": {
+		"record_id":       ClassOpaqueID,
+		"run_id":          ClassOpaqueID,
+		"kind":            ClassIdentifier,
+		"record_schema":   ClassIdentifier,
+		"ordinal":         ClassOrdering,
+		"object_key":      ClassOpaqueID,
+		"key_id":          ClassOpaqueID,
+		"ciphertext_size": ClassMeasure,
+		"object_digest":   ClassOpaqueID,
 		"created_at":      ClassTimestamp,
 	},
 }
@@ -186,6 +221,6 @@ func Verify(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 	sort.Strings(problems)
-	return fmt.Errorf("shared catalog schema does not match the Phase A allowlist:\n  %s",
+	return fmt.Errorf("shared catalog schema does not match the plaintext allowlist:\n  %s",
 		strings.Join(problems, "\n  "))
 }

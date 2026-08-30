@@ -11,6 +11,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Phase B orchestration and durable surfaces.** `internal/explore` is the
+  §6.5 run controller: preflight, then discovery, then development, then a
+  logically separate challenger, then a synthesizer, with a resume ledger that
+  binds each worker-emitted reference to the durable record it produced so a
+  cancelled run resumes without duplicating. Every candidate is persisted
+  before any sorting, because §5.2 requires a finite run to defer the remainder
+  rather than erase it. `internal/reality` is the §4.8 ledger: entities whose
+  merges are genuinely reversible, immutable fact revisions with
+  predicate-separated lifecycle, ownership and analysis policy, scoped trusted
+  sources, versioned focus rules that must be evaluated rather than inferred
+  from lifecycle, the nine-state question machine, and plans whose fact
+  mutations wait for one explicit operator acceptance. `internal/review` is the
+  §4.7 service: append-only dispositions with attributed context that can never
+  satisfy an evidence requirement, durable-learning assessments whose memory
+  proposal is disposed independently of the revision it accompanies, lineage in
+  both directions, and export whose Markdown is inert. `internal/sharedcatalog`
+  gains the Phase B object-first commit protocol, sealing payloads before they
+  reach PostgreSQL and leaving an interrupted sync visibly `pending-sync`.
 - **The Phase B analysis core**, still on synthetic data only. `internal/index`
   is the provenance-preserving retrieval §5.4 requires and no more: SQLite FTS5
   over source records with structured, temporal, and repository-path filters,
@@ -605,6 +623,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Stored timestamps did not sort in chronological order.**
+  `time.RFC3339Nano` trims trailing zeros, so `12:00:00.1Z` compares its `Z`
+  against the `2` of `12:00:00.12Z` and the earlier instant sorted second. Two
+  frontier queries order by a timestamp column, so the defect was live, and it
+  would only have appeared when two records landed within a tenth of a second
+  — exactly when ordering matters. Timestamps now carry a fixed nine-digit
+  fraction, which `RFC3339Nano` still parses, and a regression test asserts
+  that text order equals time order and that every rendering is the same width.
+  Found by a sibling agent hitting it as a real test failure in a package that
+  reads these stores.
 - **The end-to-end suite could have read the operator's real `storage.json`.**
   `newEnv` isolated HOME, `XDG_DATA_HOME` and `XDG_CACHE_HOME` but not
   `XDG_CONFIG_HOME`, and `os.UserConfigDir` prefers that variable over HOME. It

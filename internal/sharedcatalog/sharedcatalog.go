@@ -1,11 +1,21 @@
-// Package sharedcatalog implements Babel's Phase A PostgreSQL catalog and
-// coordination schema (SPEC.md 6.2, 9).
+// Package sharedcatalog implements Babel's shared PostgreSQL schema: the
+// Phase A archive catalog and coordination surface (SPEC.md 6.2, 9), and the
+// Phase B object-first, database-last commit protocol for analysis output
+// (SPEC.md 6.5, 7, 9).
 //
-// PostgreSQL is derived state, never archive truth: restic commits a snapshot
-// first, and this catalog records opaque identity and ordering so any authorized
-// instance can see the fleet without downloading transcripts. Losing the
-// database is recoverable from the repository snapshot list plus source rescans,
-// so nothing here may hold data that exists nowhere else.
+// For Phase A, PostgreSQL is derived state, never archive truth: restic commits
+// a snapshot first, and this catalog records opaque identity and ordering so any
+// authorized instance can see the fleet without downloading transcripts. Losing
+// the database is recoverable from the repository snapshot list plus source
+// rescans, so nothing there may hold data that exists nowhere else.
+//
+// Phase B rows carry the opposite weight. A hypothesis, finding, or receipt
+// exists nowhere but Babel, so those rows are append-only and their content
+// never enters PostgreSQL at all: a record's payload is sealed with
+// internal/envelope, written to the injected object store, read back and
+// verified, and only then does a row name it (see sync.go). A run becomes
+// globally reviewable only once its whole closure has committed; an outage
+// leaves it visibly pending-sync and an idempotent later sync completes it.
 //
 // The plaintext boundary is enforced, not documented: see allowlist.go.
 package sharedcatalog
@@ -107,7 +117,7 @@ func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 
 // Migrate creates Babel's schema if it is absent, applies every pending
 // migration in one transaction per migration, records it in schema_migrations,
-// then verifies the resulting schema against the Phase A allowlist. A migration
+// then verifies the resulting schema against the plaintext allowlist. A migration
 // that widens the plaintext boundary therefore fails at apply time rather than
 // after data has been written.
 //

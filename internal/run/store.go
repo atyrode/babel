@@ -514,7 +514,17 @@ func (s *Store) SyncState(ctx context.Context, id ReceiptID) (string, error) {
 	return state, nil
 }
 
-// formatTime renders a stored timestamp: UTC, RFC3339 with nanoseconds, so a
-// stored time reads the same way everywhere in Babel and parses back to the
-// exact instant it was written from.
-func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// timestampLayout is RFC 3339 in UTC with a fixed nine-digit fraction. The
+// fixed width matters even where this package orders by revision rather than by
+// time: time.RFC3339Nano trims trailing zeros, so "12:00:00.1Z" sorts after
+// "12:00:00.12Z" as text while being the earlier instant, and a future ORDER BY
+// over a timestamp column would inherit that defect silently. Writing a fixed
+// fraction makes text order and time order the same relation everywhere, and
+// time.RFC3339Nano still parses it.
+const timestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// formatTime renders a stored timestamp: UTC, RFC 3339 with a fixed nine-digit
+// fraction, so a stored time reads the same way everywhere in Babel, sorts as
+// text in chronological order, and parses back to the exact instant it was
+// written from.
+func formatTime(t time.Time) string { return t.UTC().Format(timestampLayout) }

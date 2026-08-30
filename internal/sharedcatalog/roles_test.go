@@ -99,6 +99,58 @@ func TestAppRoleCannotForgeMigrationLedger(t *testing.T) {
 	}
 }
 
+// Phase B analysis rows are the only copy of what exploration produced, and
+// SPEC.md 4.7 says rejection never deletes a record. An application credential
+// therefore holds no DELETE on them, so the trigger that refuses the statement
+// and the privilege that refuses the credential fail independently.
+func TestAppRoleCannotDeleteAnalysisRows(t *testing.T) {
+	db := newDB(t)
+	mustMigrate(t, db)
+	ctx := context.Background()
+
+	const role, password = "babel_instance_c", "instance-c-secret"
+	if err := sharedcatalog.EnsureAppRole(ctx, db, role, password); err != nil {
+		t.Fatalf("EnsureAppRole: %v", err)
+	}
+	app := openAs(t, db, role, password)
+
+	// An instance must be able to commit its own analysis output.
+	for _, stmt := range []string{
+		`INSERT INTO deployments (deployment_id, schema_version) VALUES ('d1', 1)`,
+		`INSERT INTO instances (instance_id, deployment_id) VALUES ('inst-a', 'd1')`,
+		`INSERT INTO analysis_runs (run_id, deployment_id, origin_instance_id, sync_state, record_count)
+		 VALUES ('r1', 'd1', 'inst-a', 'pending-sync', 1)`,
+		`INSERT INTO analysis_records (record_id, run_id, kind, record_schema, ordinal,
+		                               object_key, key_id, ciphertext_size, object_digest)
+		 VALUES ('rec1', 'r1', 'finding', 1, 0, 'analysis/rec1/abc', 'k1', 64, 'abc')`,
+		`UPDATE analysis_runs SET sync_state = 'committed', committed_at = now() WHERE run_id = 'r1'`,
+	} {
+		if _, err := app.Exec(stmt); err != nil {
+			t.Fatalf("app role must be able to commit analysis output: %v\n%s", err, stmt)
+		}
+	}
+
+	// And must not be able to remove it.
+	for _, stmt := range []string{
+		`DELETE FROM analysis_records WHERE record_id = 'rec1'`,
+		`DELETE FROM analysis_runs WHERE run_id = 'r1'`,
+	} {
+		if _, err := app.Exec(stmt); err == nil {
+			t.Errorf("app role was allowed to delete analysis output: %s", stmt)
+		}
+	}
+
+	var records, runs int
+	if err := db.QueryRow(`SELECT
+	        (SELECT count(*) FROM analysis_records),
+	        (SELECT count(*) FROM analysis_runs)`).Scan(&records, &runs); err != nil {
+		t.Fatalf("count analysis rows: %v", err)
+	}
+	if records != 1 || runs != 1 {
+		t.Errorf("analysis rows = %d records, %d runs; want 1 and 1", records, runs)
+	}
+}
+
 // Revocation is per-instance: removing one credential must not disturb another.
 func TestRevokeAppRoleIsPerInstance(t *testing.T) {
 	db := newDB(t)

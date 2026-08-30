@@ -1378,9 +1378,19 @@ func nullableID(id string) any {
 	return id
 }
 
-// formatTime stores timestamps as UTC RFC 3339 with nanoseconds, which sorts
-// lexicographically in the same order it sorts chronologically.
-func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// timestampLayout is RFC 3339 in UTC with a fixed nine-digit fraction. The
+// fixed width is the whole point: time.RFC3339Nano trims trailing zeros, so
+// "12:00:00.1Z" and "12:00:00.12Z" compare as text by measuring 'Z' against
+// '2' and place the earlier instant second. Any ORDER BY over a timestamp
+// column would then be subtly wrong in a way that only shows up when two
+// events land within a tenth of a second of each other — which is exactly when
+// ordering matters. A fixed fraction makes lexicographic order and
+// chronological order the same relation, and time.RFC3339Nano still parses it.
+const timestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// formatTime stores timestamps as UTC RFC 3339 with a fixed nine-digit
+// fraction, so text order is time order.
+func formatTime(t time.Time) string { return t.UTC().Format(timestampLayout) }
 
 func parseTime(value string) (time.Time, error) {
 	parsed, err := time.Parse(time.RFC3339Nano, value)
