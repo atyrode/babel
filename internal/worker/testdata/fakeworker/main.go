@@ -38,6 +38,7 @@ func main() {
 		versions       = flag.String("versions", strconv.Itoa(worker.ProtocolVersion), "comma-separated protocol versions to declare")
 		modes          = flag.String("modes", worker.ModeConfigure+","+worker.ModeWorker, "comma-separated modes to declare")
 		record         = flag.String("record", "", "append every line read from stdin to this file")
+		containment    = flag.String("containment", "full", "containment to declare: full, weak, no-escape, none")
 		noHello        = flag.Bool("no-hello", false, "never send hello")
 		malformed      = flag.Bool("malformed", false, "emit a line that is not JSON")
 		unknownEvent   = flag.Bool("unknown-event", false, "emit an event with an undefined type")
@@ -121,7 +122,7 @@ func main() {
 	mode, _ := handshake["mode"].(string)
 	switch mode {
 	case worker.ModeConfigure:
-		w.emit(w.configuration(worker.ProfileRef{ID: "synthetic-profile", Revision: 1}, *secretMeta))
+		w.emit(w.configuration(worker.ProfileRef{ID: "synthetic-profile", Revision: 1}, *secretMeta, *containment))
 		return
 	case worker.ModeWorker:
 	default:
@@ -141,7 +142,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "fakeworker: broker token is %s\n", token)
 	}
 
-	w.emit(w.configuration(profile, *secretMeta))
+	w.emit(w.configuration(profile, *secretMeta, *containment))
 
 	switch {
 	case *malformed:
@@ -309,7 +310,7 @@ func (f *fake) next() (map[string]any, error) {
 }
 
 // configuration is the resolved-profile message both modes emit.
-func (f *fake) configuration(profile worker.ProfileRef, secretMeta bool) map[string]any {
+func (f *fake) configuration(profile worker.ProfileRef, secretMeta bool, containment string) map[string]any {
 	metadata := map[string]any{
 		"provider": "synthetic",
 		"model":    "synthetic-model",
@@ -318,7 +319,7 @@ func (f *fake) configuration(profile worker.ProfileRef, secretMeta bool) map[str
 	if secretMeta {
 		metadata["provider_api_key"] = "should-never-be-accepted"
 	}
-	return map[string]any{
+	message := map[string]any{
 		"type":         worker.MessageConfiguration,
 		"seq":          f.nextSeq(),
 		"time":         time.Now().UTC().Format(time.RFC3339Nano),
@@ -328,6 +329,40 @@ func (f *fake) configuration(profile worker.ProfileRef, secretMeta bool) map[str
 		"capabilities": []string{string(worker.CapabilityCorpusSearch), string(worker.CapabilityRepoRead)},
 		"metadata":     metadata,
 	}
+	// A correct worker declares the boundary it provides. The misbehaviours
+	// are separate flags so a test can distinguish "claims nothing" from
+	// "claims something insufficient" from "claims containment but no escape
+	// assumption" — three different operator situations.
+	switch containment {
+	case "none":
+	case "weak":
+		message["containment"] = map[string]any{
+			"backend":              "synthetic-weak",
+			"filesystem_isolation": true,
+			"network_default_deny": false,
+			"resource_ceilings":    false,
+			"disposable":           true,
+			"escape":               "synthetic: egress is not restricted",
+		}
+	case "no-escape":
+		message["containment"] = map[string]any{
+			"backend":              "synthetic",
+			"filesystem_isolation": true,
+			"network_default_deny": true,
+			"resource_ceilings":    true,
+			"disposable":           true,
+		}
+	default:
+		message["containment"] = map[string]any{
+			"backend":              "synthetic",
+			"filesystem_isolation": true,
+			"network_default_deny": true,
+			"resource_ceilings":    true,
+			"disposable":           true,
+			"escape":               "synthetic: a fixture contains nothing; it only declares",
+		}
+	}
+	return message
 }
 
 // progress is one progress event.

@@ -98,6 +98,25 @@
 // requires it because §6.5 makes resolved provider metadata part of the
 // receipt, and it must name the profile the job named (ErrProfileMismatch).
 //
+// In worker mode that configuration must also declare the sandbox the worker
+// provides. Babel does not implement one — Code owns the disposable sandbox and
+// credential isolation (SPEC.md §2.6, decision 53) — so the declaration is what
+// Babel holds the worker to before anything executes, and a declaration short
+// of the run's requirement is refused (ErrContainment):
+//
+//	{"type":"configuration","seq":1,"time":"…",
+//	 "profile":{"id":"p-1","revision":4},
+//	 "privacy":{"disclosure":"local","redaction_required":false},
+//	 "cost":{…},"capabilities":["corpus-search"],"metadata":{…},
+//	 "containment":{"backend":"…","filesystem_isolation":true,
+//	                "network_default_deny":true,"resource_ceilings":true,
+//	                "disposable":true,"escape":"what this does not contain"}}
+//
+// The "escape" field is required and may not be empty. A sandbox whose author
+// claims no residual risk has not been examined, and §10 requires uncertainty to
+// stay visible rather than be rounded to zero. Babel records the declaration in
+// the receipt so a reviewer sees which boundary the evidence came from.
+//
 //	{"type":"progress","seq":2,"time":"…","stage":"discover",
 //	 "message":"…","fraction":0.25,
 //	 "resources":{"cpu_seconds":1.5,"max_rss_bytes":1048576,
@@ -509,6 +528,7 @@ type event struct {
 	Cost         Cost              `json:"cost"`
 	Capabilities []Capability      `json:"capabilities"`
 	Metadata     map[string]string `json:"metadata"`
+	Containment  Containment       `json:"containment"`
 }
 
 // Resources is the worker's self-reported resource use. It is a pointer
@@ -537,6 +557,96 @@ type Cost struct {
 	EstimatedRun float64 `json:"estimated_run"`
 }
 
+// Containment is the sandbox a worker declares it provides. Babel does not
+// implement the sandbox — Code owns it, because Code owns the profile, the
+// provider credential, and the OMP controller (SPEC §2.6, decision 53) — so
+// Babel's containment is only as good as this declaration plus the obligations
+// the conformance suite checks. That is exactly why the declaration is
+// mandatory rather than advisory: launching analysis into an unspecified
+// sandbox would be trusting a boundary nobody stated.
+//
+// Every field is a claim by the worker about itself. Babel cannot verify a
+// claim from outside the process, and does not pretend to: it refuses a worker
+// whose declaration falls short of the run's requirement, and records the
+// declaration in the receipt so a later reviewer sees which boundary the
+// evidence was produced behind.
+type Containment struct {
+	// Backend names the mechanism, for the receipt and for an operator
+	// deciding whether to trust it. Free-form because the set is Code's to
+	// grow, but empty is refused: an unnamed mechanism cannot be assessed.
+	Backend string `json:"backend"`
+	// FilesystemIsolation reports that the worker's writes cannot reach the
+	// host filesystem outside paths the grant named.
+	FilesystemIsolation bool `json:"filesystem_isolation"`
+	// NetworkDefaultDeny reports that egress is denied unless a granted
+	// capability opens it. Public research reaches the network through
+	// Babel's broker, never from inside the sandbox, so a worker that cannot
+	// claim this is not eligible for a run that discloses anything.
+	NetworkDefaultDeny bool `json:"network_default_deny"`
+	// ResourceCeilings reports that CPU, memory, and disk are bounded, so a
+	// run cannot exhaust the machine that hosts the archive.
+	ResourceCeilings bool `json:"resource_ceilings"`
+	// Disposable reports that the execution environment is destroyed at
+	// teardown, so nothing a run wrote survives into the next one.
+	Disposable bool `json:"disposable"`
+	// Escape is the worker's own statement of what it does not contain. It is
+	// required and may not be empty: a sandbox whose author claims no
+	// residual risk has not been thought about, and §10 requires uncertainty
+	// to stay visible rather than be rounded to zero.
+	Escape string `json:"escape"`
+}
+
+// Requirement is the containment a run demands. Babel refuses to launch a
+// worker that declares less, before any job material reaches it.
+type Requirement struct {
+	FilesystemIsolation bool
+	NetworkDefaultDeny  bool
+	ResourceCeilings    bool
+	Disposable          bool
+}
+
+// SandboxedRun is the requirement every exploration run uses. It is the strict
+// setting deliberately: a weaker default would silently become the norm, and
+// the operator who wants to relax it should have to say so per run.
+func SandboxedRun() Requirement {
+	return Requirement{
+		FilesystemIsolation: true,
+		NetworkDefaultDeny:  true,
+		ResourceCeilings:    true,
+		Disposable:          true,
+	}
+}
+
+// Satisfies reports whether a declaration meets a requirement, naming every
+// shortfall rather than the first, so an operator sees the whole gap in one
+// message instead of fixing them one launch at a time.
+func (c Containment) Satisfies(r Requirement) error {
+	if strings.TrimSpace(c.Backend) == "" {
+		return fmt.Errorf("%w: worker declared no sandbox backend", ErrContainment)
+	}
+	if strings.TrimSpace(c.Escape) == "" {
+		return fmt.Errorf("%w: worker declared no escape assumption for backend %q", ErrContainment, c.Backend)
+	}
+	var missing []string
+	if r.FilesystemIsolation && !c.FilesystemIsolation {
+		missing = append(missing, "filesystem isolation")
+	}
+	if r.NetworkDefaultDeny && !c.NetworkDefaultDeny {
+		missing = append(missing, "network default-deny")
+	}
+	if r.ResourceCeilings && !c.ResourceCeilings {
+		missing = append(missing, "resource ceilings")
+	}
+	if r.Disposable && !c.Disposable {
+		missing = append(missing, "disposable environment")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w: backend %q does not provide %s",
+			ErrContainment, c.Backend, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // Configuration is a resolved Code profile: the reference Babel persists plus
 // the non-secret metadata a receipt and a consent prompt need.
 type Configuration struct {
@@ -547,6 +657,11 @@ type Configuration struct {
 	Metadata        map[string]string
 	Worker          Identity
 	ProtocolVersion int
+
+	// Containment is the sandbox the worker declares. It is empty in
+	// configuration-only mode, where nothing executes, and required in worker
+	// mode, where something does.
+	Containment Containment
 
 	// Extra holds fields this build does not know, preserved so a newer Code
 	// can carry profile metadata through an older Babel without loss.
@@ -660,6 +775,13 @@ var (
 	// which means the stream was reordered, replayed or truncated.
 	ErrSequence = errors.New("worker: event sequence violation")
 
+	// ErrContainment reports a worker whose declared sandbox falls short of
+	// the run's requirement, or that declared none. Babel does not implement
+	// the sandbox (decision 53), so an undeclared or insufficient boundary is
+	// refused before any job material reaches the worker rather than
+	// discovered from its behaviour afterwards.
+	ErrContainment = errors.New("worker: insufficient containment")
+
 	// ErrEventOrder reports the resolved-configuration rule: exactly one
 	// configuration event, first, before any other event.
 	ErrEventOrder = errors.New("worker: event out of order")
@@ -763,3 +885,9 @@ func knownFields(t reflect.Type) map[string]struct{} {
 	fieldCache.Store(t, names)
 	return names
 }
+
+// Unsandboxed is the requirement for a run that needs no boundary, such as a
+// configuration-only probe where nothing executes. It exists as a named value
+// rather than a bare zero Requirement so that choosing it is visible in a call
+// site and in review, instead of being the accident of an unset field.
+func Unsandboxed() Requirement { return Requirement{} }

@@ -11,6 +11,37 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The Phase B analysis core**, still on synthetic data only. `internal/index`
+  is the provenance-preserving retrieval §5.4 requires and no more: SQLite FTS5
+  over source records with structured, temporal, and repository-path filters,
+  and deliberately no score, rank, or relevance field, because §5.4's rule is
+  that retrieval order never becomes evidence strength. `internal/frontier` is
+  the durable hypothesis frontier, where the invariants are structural rather
+  than validated — a hypothesis has no status column, only append-only status
+  events, so no code path can overwrite a lifecycle; there is no delete
+  statement anywhere in the package; an observation row carries a
+  `CHECK(evidence_count > 0)` so §4.3's evidence rule survives payload
+  encryption, since a store that cannot read sealed evidence can still refuse a
+  row claiming none; and a refinement request cannot exist without the
+  rejection that authorized it. `internal/cookbook` loads versioned recipes
+  through a hand-rolled strict front-matter grammar, ships the five
+  default-enabled lenses and three drafts §5.5 names as real analytical
+  guidance, and enforces §5.1's version rule with a drift check whose digest
+  excludes the version field — otherwise an increment would move the digest and
+  the check would have no signal. `internal/run` holds immutable preparation
+  records with domain-separated derived IDs and the §7 run receipt, split into a
+  plaintext-eligible header and a sensitive body so a deployment that seals
+  bodies can still list, order, and chain receipts without a key.
+  `internal/preflight` is the deterministic secret and health preflight, whose
+  findings carry locators and placeholders but never a secret value.
+- **Containment is declared rather than assumed.** A worker's resolved
+  configuration must now name its sandbox backend, its filesystem, network,
+  resource, and teardown properties, and its own escape assumption, and Babel
+  refuses a declaration short of the run's requirement before any job material
+  reaches the worker. The strict requirement is the default so an unset field
+  fails closed, and even a relaxed run must still name a backend, because a
+  receipt that names no boundary cannot tell a reviewer what the evidence was
+  produced behind.
 - **The four Phase B foundations**, each buildable and testable with no real
   data, no credentials, and no network. `internal/event` is the SPEC §4.1/§6.3
   analysis event model: a streaming per-harness classifier into user reports,

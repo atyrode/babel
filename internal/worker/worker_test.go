@@ -1004,3 +1004,73 @@ func TestDiagnosticLinesAreBounded(t *testing.T) {
 		}
 	})
 }
+
+// TestInsufficientContainmentIsRefused is the enforcement behind decision 53.
+// Babel cannot verify a sandbox from outside the process, so its leverage is
+// refusing to proceed against a declaration that falls short. Each case is a
+// different operator situation: a worker that claims nothing, one that claims a
+// boundary weaker than the run needs, and one that claims containment while
+// stating no residual risk.
+func TestInsufficientContainmentIsRefused(t *testing.T) {
+	tests := []struct {
+		name     string
+		flag     string
+		wantText string
+	}{
+		{name: "declares nothing", flag: "none", wantText: "declared no sandbox backend"},
+		{name: "weaker than the run requires", flag: "weak", wantText: "network default-deny"},
+		{name: "no escape assumption", flag: "no-escape", wantText: "no escape assumption"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(ConformanceWellBehaved)
+			f.args = append(f.args, "-containment", tc.flag)
+			receipt, err := f.run(t)
+			if !errors.Is(err, ErrContainment) {
+				t.Fatalf("Run error = %v, want ErrContainment", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("error %q does not name the shortfall %q", err, tc.wantText)
+			}
+			// A refused run still yields a receipt: an operator needs to see
+			// what was declared in order to fix it.
+			if receipt.Result != nil {
+				t.Error("a refused run produced a result")
+			}
+		})
+	}
+}
+
+// TestSandboxedRunIsTheDefault proves a caller who sets no requirement gets the
+// strict one. That is what makes a forgotten field safe rather than silently
+// permissive, and it is the property most likely to erode later.
+func TestSandboxedRunIsTheDefault(t *testing.T) {
+	client, err := New(Config{Binary: fakeWorkerPath, Authorizer: AllowWithinGrant()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got, want := client.requirement(), SandboxedRun(); got != want {
+		t.Errorf("default requirement = %+v, want %+v", got, want)
+	}
+}
+
+// TestUnsandboxedStillRequiresANamedBackend keeps the escape hatch from
+// becoming a way to run against nothing at all. Relaxing which properties are
+// required is a legitimate operator choice; declining to say what mechanism is
+// in use is not, because a receipt that names no boundary cannot tell a
+// reviewer what the evidence was produced behind.
+func TestUnsandboxedStillRequiresANamedBackend(t *testing.T) {
+	unsandboxed := Unsandboxed()
+	client, err := New(Config{
+		Binary:      fakeWorkerPath,
+		Args:        []string{"-containment", "none"},
+		Authorizer:  AllowWithinGrant(),
+		Requirement: &unsandboxed,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := client.Run(context.Background(), newFixture(ConformanceWellBehaved).job); !errors.Is(err, ErrContainment) {
+		t.Fatalf("Run error = %v, want ErrContainment naming the missing backend", err)
+	}
+}
