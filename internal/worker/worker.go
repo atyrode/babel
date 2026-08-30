@@ -244,6 +244,14 @@ type Config struct {
 	// receipt regardless.
 	Diagnostics io.Writer
 
+	// Requirement is the containment the worker must declare. The zero value
+	// means SandboxedRun: the strict setting is the default deliberately,
+	// because a permissive default would quietly become the norm and the
+	// operator who wants to relax it should have to say so per run. Set
+	// Unsandboxed for a run that genuinely needs no boundary, such as a
+	// configuration-only probe against a local worker.
+	Requirement *Requirement
+
 	// OnProgress is called for each progress event as it arrives, so a
 	// caller's interface stays responsive while a run is in flight (SPEC.md
 	// §2.6). It runs on the supervision goroutine and must not block: a slow
@@ -384,13 +392,14 @@ func (c *Client) Run(ctx context.Context, job Job) (*Receipt, error) {
 	}
 
 	r := &runner{
-		client:  c,
-		session: s,
-		job:     job,
-		limits:  limits,
-		scrub:   scrub,
-		seen:    make(map[string]struct{}),
-		unknown: make(map[string]struct{}),
+		client:      c,
+		session:     s,
+		job:         job,
+		limits:      limits,
+		requirement: c.requirement(),
+		scrub:       scrub,
+		seen:        make(map[string]struct{}),
+		unknown:     make(map[string]struct{}),
 		receipt: &Receipt{
 			JobID:     job.JobID,
 			RunID:     job.RunID,
@@ -456,6 +465,11 @@ type runner struct {
 	limits  Limits
 	scrub   scrubber
 	receipt *Receipt
+
+	// requirement is the containment the run demands of the worker. Babel
+	// does not implement the sandbox (decision 53), so this is the boundary
+	// it can still refuse to proceed without.
+	requirement Requirement
 
 	lastSeq    int
 	events     int
@@ -651,10 +665,19 @@ func (r *runner) handleConfiguration(ev event) error {
 		return fmt.Errorf("%w: job named %s, worker resolved %s",
 			ErrProfileMismatch, r.job.Profile, ev.Profile)
 	}
+	// The containment check happens here, at the worker's first event, because
+	// this is the earliest moment Babel knows what boundary the worker claims
+	// and the last moment before the worker begins executing anything. Babel
+	// does not implement the sandbox (decision 53), so refusing an
+	// insufficient declaration is the whole of its leverage.
+	if err := ev.Containment.Satisfies(r.requirement); err != nil {
+		return err
+	}
 	r.sawConfig = true
 	r.receipt.Privacy = ev.Privacy
 	r.receipt.Cost = ev.Cost
 	r.receipt.ResolvedCapabilities = ev.Capabilities
+	r.receipt.Containment = ev.Containment
 	r.receipt.Metadata = r.scrub.cleanMap(ev.Metadata)
 	return nil
 }
@@ -1486,4 +1509,15 @@ func (t *tail) String() string {
 		return "..." + joined
 	}
 	return joined
+}
+
+// requirement resolves the containment the run demands. A nil Config field
+// means the strict default rather than none: the failure mode of the opposite
+// choice is a run that silently executes outside a sandbox because a caller
+// forgot a field.
+func (c *Client) requirement() Requirement {
+	if c.cfg.Requirement != nil {
+		return *c.cfg.Requirement
+	}
+	return SandboxedRun()
 }

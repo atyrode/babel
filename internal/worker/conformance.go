@@ -167,6 +167,28 @@ func Conformance(t *testing.T, workerPath string) {
 		}
 	})
 
+	t.Run("run/declares-containment", func(t *testing.T) {
+		// Babel does not implement the sandbox (decision 53), so a worker's
+		// declaration is the only thing Babel can hold it to before the run
+		// starts. An implementation that declares nothing is refused, which
+		// makes this obligation the difference between a stated boundary and
+		// an assumed one.
+		receipt, err := conformanceRun(t, workerPath, ConformanceWellBehaved, AllowWithinGrant())
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		got := receipt.Containment
+		if got.Backend == "" {
+			t.Error("worker declared no sandbox backend; an unnamed mechanism cannot be assessed")
+		}
+		if got.Escape == "" {
+			t.Error("worker declared no escape assumption; a sandbox with no stated residual risk has not been thought about")
+		}
+		if err := got.Satisfies(SandboxedRun()); err != nil {
+			t.Errorf("declared containment does not satisfy a sandboxed run: %v", err)
+		}
+	})
+
 	t.Run("run/forward-compatible-job", func(t *testing.T) {
 		// A newer Babel adds a field; an older worker must ignore it rather
 		// than fail. Nothing else about the run changes.

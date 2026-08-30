@@ -56,6 +56,11 @@ type Receipt struct {
 	Privacy Privacy
 	Cost    Cost
 
+	// Containment is the sandbox the worker declared, recorded so a later
+	// reviewer can see which boundary this evidence was produced behind
+	// rather than assuming the boundary current at review time.
+	Containment Containment
+
 	// ResolvedCapabilities is what the worker said the profile can do. It is
 	// the worker's claim, not a grant: authorization uses Grant.
 	ResolvedCapabilities []Capability

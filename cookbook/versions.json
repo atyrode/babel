@@ -1,0 +1,45 @@
+{
+  "manifest_schema": 1,
+  "recipes": [
+    {
+      "id": "code-health-comprehensibility",
+      "version": 1,
+      "digest": "sha256:ce14d7d47c816fa2319a185608400087e09e357f7599e1c4d10263402f9ad62b"
+    },
+    {
+      "id": "decision-quality-operational-risk",
+      "version": 1,
+      "digest": "sha256:9b236e44f01b437022e5206a971e9bce7bb56b6e2daace3565a8ba69f0fa940f"
+    },
+    {
+      "id": "durable-operator-model",
+      "version": 1,
+      "digest": "sha256:11f61bac4ae174c8cf8cfc20836a430b5f2f1cde49ad9a552ae4834c26f550db"
+    },
+    {
+      "id": "effective-patterns",
+      "version": 1,
+      "digest": "sha256:9cc44476db3d1f4e1460a65efe2f37cebae1b870bd57aec84c61c7c62a72a11b"
+    },
+    {
+      "id": "human-agent-coordination",
+      "version": 1,
+      "digest": "sha256:095da8a655841110fe9607b237798bc13b61c3078d7539c3803d5e6dce9ea394"
+    },
+    {
+      "id": "outcome-integrity",
+      "version": 1,
+      "digest": "sha256:277d73c35ce0c4d0a4741a2e77c9d0817bfa069acde20ac96d4dd6193cf32f4b"
+    },
+    {
+      "id": "reusable-practice-capability-leverage",
+      "version": 1,
+      "digest": "sha256:0f157fca31af78a1141185c44c160c3db3fbb53bb1642941f9fe4ee4558e2d51"
+    },
+    {
+      "id": "security-trust-boundaries",
+      "version": 1,
+      "digest": "sha256:25f944cbdc802604c759e5a76ece72dd3e570ca095a90d86b5954c7863560eff"
+    }
+  ]
+}
