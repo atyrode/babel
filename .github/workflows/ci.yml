@@ -142,6 +142,20 @@ jobs:
           "$chrome" --version
           echo "BABEL_TEST_CHROME=$chrome" >> "$GITHUB_ENV"
 
+      # Build the binary before the browser job rather than inside a test's
+      # lifecycle. leak.test.ts compiles it in beforeAll when BABEL_TEST_BINARY
+      # is unset, which put a cold build of the whole module inside a
+      # puppeteer timeout, on a two-core runner already hosting Chrome and two
+      # mock servers. That passed while the module was small and started
+      # failing as ERR_CONNECTION_REFUSED once it was not — a timing failure
+      # that reads like a broken web surface. The test already supports a
+      # prebuilt binary; using it makes the build a step that either succeeds
+      # or fails on its own terms.
+      - name: Build babel for the browser acceptance
+        run: |
+          go build -o "$RUNNER_TEMP/babel" ./cmd/babel
+          echo "BABEL_TEST_BINARY=$RUNNER_TEMP/babel" >> "$GITHUB_ENV"
+
       - name: Browser leak acceptance
         working-directory: web
         run: bun run test:browser
