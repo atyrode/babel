@@ -23,7 +23,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   interactive program that answers under a subcommand is graded as itself
   rather than through a wrapper script. Babel's own tests run the identical
   list against the fake worker, so the exam and the implementation still cannot
-  drift apart.
+  drift apart. `--unsandboxed` grades against the relaxed containment
+  requirement, because a worker that has not built a sandbox yet fails every
+  worker-mode obligation with the same containment error and the report cannot
+  otherwise distinguish that from a worker that does not speak the protocol;
+  the relaxation is always stated in the output, and
+  `run/declares-containment` fails either way.
 - **Phase B orchestration and durable surfaces.** `internal/explore` is the
   §6.5 run controller: preflight, then discovery, then development, then a
   logically separate challenger, then a synthesizer, with a resume ledger that
