@@ -176,6 +176,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -631,15 +632,41 @@ func SandboxedRun() Requirement {
 	}
 }
 
-// Satisfies reports whether a declaration meets a requirement, naming every
-// shortfall rather than the first, so an operator sees the whole gap in one
-// message instead of fixing them one launch at a time.
+// Satisfies reports whether a declaration meets a requirement on the platform
+// Babel is running on, naming every shortfall rather than the first, so an
+// operator sees the whole gap in one message instead of fixing them one launch
+// at a time.
 func (c Containment) Satisfies(r Requirement) error {
+	return c.satisfiesOn(r, runtime.GOOS)
+}
+
+// demandsContainment reports whether r asks for any boundary at all. A run that
+// asks for none — a configuration-only probe, where nothing executes, or one
+// the operator relaxed per run — has no boundary to disbelieve, so the platform
+// gate below does not apply to it.
+func (r Requirement) demandsContainment() bool {
+	return r.FilesystemIsolation || r.NetworkDefaultDeny || r.ResourceCeilings || r.Disposable
+}
+
+// satisfiesOn is Satisfies against an explicit host platform, which is what
+// makes the §10 gate exercisable from both sides of it rather than only on
+// whichever machine the test happens to run on.
+//
+// The platform is checked before the properties, and checked as a refusal
+// rather than as a phrasing choice: a platform with no backend that has passed
+// its escape scenario must not run analysis whatever a worker claims, since the
+// claim is exactly what §10 declines to take on faith. It is scoped to runs
+// that demand containment, because a run that demands none is not relying on a
+// boundary in the first place.
+func (c Containment) satisfiesOn(r Requirement, goos string) error {
 	if strings.TrimSpace(c.Backend) == "" {
 		return fmt.Errorf("%w: worker declared no sandbox backend", ErrContainment)
 	}
 	if strings.TrimSpace(c.Escape) == "" {
 		return fmt.Errorf("%w: worker declared no escape assumption for backend %q", ErrContainment, c.Backend)
+	}
+	if r.demandsContainment() && !platformQualified(goos) {
+		return &platformRefusal{goos: goos, backend: c.Backend}
 	}
 	var missing []string
 	if r.FilesystemIsolation && !c.FilesystemIsolation {
@@ -795,6 +822,16 @@ var (
 	// refused before any job material reaches the worker rather than
 	// discovered from its behaviour afterwards.
 	ErrContainment = errors.New("worker: insufficient containment")
+
+	// ErrPlatformUnqualified reports SPEC.md §10's gate: the platform Babel is
+	// running on has no sandbox backend that has passed its escape scenario, so
+	// exploration is refused there whatever a worker declares. Every error
+	// carrying it also matches ErrContainment, because an unqualified platform
+	// is one way the boundary is insufficient; it is a sentinel of its own so
+	// the operator surface can tell it apart from a worker that declares too
+	// little, which is a different problem with a different remedy — one is a
+	// stated limit of this platform, the other is a worker to fix.
+	ErrPlatformUnqualified = errors.New("worker: platform has no qualified sandbox backend")
 
 	// ErrEventOrder reports the resolved-configuration rule: exactly one
 	// configuration event, first, before any other event.

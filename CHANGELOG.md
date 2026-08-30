@@ -9,6 +9,62 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Added
+
+- **A real execution sandbox for the analysis worker, which is what stood
+  between Phase A working and Phase B being able to run at all.** Babel
+  refuses any worker that cannot declare filesystem isolation, egress denial,
+  resource ceilings and disposability; Code declared backend `process` with all
+  four false, honestly, so every exploration was correctly refused. The
+  operator settled three choices and both halves were built against them.
+  - **The Linux backend is `bwrap --unshare-all --die-with-parent` inside a
+    `systemd-run --user --scope`** — two mechanisms because neither covers both
+    halves, since bubblewrap has no resource accounting and a transient scope
+    has no isolation. Every declared property is read back off a live probe
+    before it is declared: a scope whose cgroup lacks the requested ceilings
+    degrades the declaration rather than inflating it, and a run whose ceilings
+    vanish after a declaration claiming them is torn down, because the claim has
+    already gone out on the wire.
+  - **The sandbox has no network at all.** Egress is host-side unix sockets
+    bind-mounted in: a `CONNECT` proxy Code owns, allowlisting exactly the
+    resolved provider endpoint, with an in-sandbox forwarder so OMP's
+    documented process-wide `PI_PROXY` hook carries it unmodified. A second
+    relay was discovered to be necessary while implementing rather than while
+    designing: the auth broker is a loopback service, OMP never proxies a
+    loopback target, and the sandbox's loopback is its own — so a networkless
+    run would have authenticated against nothing.
+  - **Darwin gets no qualified backend, so exploration is refused there** while
+    archival, verification, fetch, catalog, web and review continue untouched.
+    Its only unprivileged mechanism is a deprecated `sandbox-exec` with no
+    cgroup or mount-namespace equivalent, so two of the four properties could
+    not be declared without lying. Babel now refuses on an unqualified platform
+    whatever the worker declares, because §10 declines to take that declaration
+    on faith, and the refusal explains itself rather than reading as a fault.
+  - **Six escape scenarios drive the real launch path and attempt the violation
+    each property forbids** — a host write outside the grant, a non-allowlisted
+    `CONNECT` and a direct connect with no route, a fork bomb, a memory hog,
+    survival past teardown, an unreaped tree. Each is proven non-vacuous by
+    relaxing the control it tests, and a prerequisite guard fails loudly rather
+    than letting the scenarios skip into a green suite: dropping `net` from the
+    unshare set makes it report the 11 routes that leaked and name every
+    property that consequently went untested.
+  - **The threat model is written down** in `docs/sandbox-threat-model.md`,
+    with each property mapped to its mechanism, the prerequisites and their
+    absence behaviour, and eight ranked residuals — headed by exfiltration to
+    the one reachable endpoint, the provider credential living inside the
+    sandbox because OMP authenticates, and the local broker being reachable for
+    the life of the run. Code's `escape` string and that section are the same
+    account at two levels of detail and may not contradict each other.
+  - **Code now scores 14/14 against the conformance suite under the strict
+    requirement**, with both non-worker controls at 0/14. `run/reports-resources`
+    failed first and was right to: Code had started bounding memory, CPU, tasks
+    and disk space while reporting nothing, and a bound is enforced by measuring
+    what it bounds. Figures now come off the scope's `cgroup` (`cpu.stat`,
+    `memory.peak`) with each dimension carrying the file or syscall it was read
+    from, so a number cannot exist without naming its source; an unmeasurable
+    dimension is omitted rather than zero-filled, because a zero reads as a
+    measurement.
+
 ### Fixed
 
 - **An alignment audit of the whole system against `SPEC.md`, and the defects

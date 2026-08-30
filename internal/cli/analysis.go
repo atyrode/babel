@@ -273,7 +273,16 @@ reality, and cookbook.
 // one" and "the one you configured did not work" are different problems with
 // different remedies, and collapsing them would send an operator to
 // reconfigure a worker that is already configured.
+//
+// It routes SPEC.md §10's platform refusal to its own explanation for the same
+// reason. "This platform does not run analysis at all" is not a fault in the
+// worker, and printing it under a heading that blames the worker would send an
+// operator to debug an executable that is behaving correctly.
 func (a *app) reportWorkerFailure(binary string, err error) error {
+	var refusal worker.PlatformRefusal
+	if errors.As(err, &refusal) {
+		return a.reportPlatformRefusal(refusal)
+	}
 	fmt.Fprintf(a.stderr, `babel: the Code analysis worker could not run this exploration.
 
   worker: %s
@@ -285,6 +294,43 @@ repository was touched. Durable records the run committed before the
 failure are kept, and re-running with the same --run-id resumes rather
 than duplicating them.
 `, Sanitize(binary), Sanitize(err.Error()))
+	return errReported
+}
+
+// reportPlatformRefusal explains §10's platform gate and reports that the
+// explanation has been given.
+//
+// The message is the product here, the same way reportNoWorker's is. An
+// operator on an unqualified platform has a correctly installed Babel and a
+// correctly behaving worker, and the only true account of what happened is that
+// exploration is disabled on this platform by design. So it says which platform
+// it is, that no backend has passed its escape scenario there, that no worker
+// change lifts the limit, and what the machine still does — because refusing
+// exploration is not refusing Babel.
+func (a *app) reportPlatformRefusal(refusal worker.PlatformRefusal) error {
+	fmt.Fprintf(a.stderr, `babel: exploration is refused on %s: this platform has no qualified
+sandbox backend.
+
+  reason: %s
+
+Exploration runs provider inference over archived material inside a
+sandbox Code owns, and SPEC.md §10 disables analysis on any platform whose
+backend has not been driven through its escape scenario. None has passed on
+%s, so Babel refuses the run instead of executing behind a boundary nobody
+has tested. This is a stated limit rather than a fault: your installation
+is fine, the worker is fine, and no worker or configuration change lifts it
+— a platform becomes eligible by passing the scenario.
+
+Nothing was published, no source repository was touched, and no session
+material was sent anywhere.
+
+Everything that does not explore still works on this platform: web,
+archive init/push/status/verify, sessions list/inspect/fetch, prepare,
+hypotheses, findings, review queue/decide/history, export, reality,
+and cookbook. The archive is portable, so the same preparation explores on
+a platform that does have a qualified backend.
+`, Sanitize(refusal.UnqualifiedPlatform()), Sanitize(refusal.Error()),
+		Sanitize(refusal.UnqualifiedPlatform()))
 	return errReported
 }
 
