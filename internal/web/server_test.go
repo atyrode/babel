@@ -689,3 +689,54 @@ func (b *syncBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// TestLockStopsTheListenerUnderContention defends the lock's exit status
+// against the interleaving that decides it.
+//
+// shutdown closes the listener, then http.Server.Shutdown closes the
+// listeners it still tracks — which is the same one, unless Serve noticed
+// the closed listener first and untracked it on its way out. Whichever wins
+// is scheduling, and when Shutdown wins it reports closing an already-closed
+// listener as its error. That is not a failure: it is the state the operator
+// asked for.
+//
+// One iteration cannot pin this down, because on an idle machine Serve
+// almost always wins and the bug is invisible. Repetition is the mechanism:
+// the loser changes under contention, and this failed in CI on a runner with
+// four concurrent jobs while forty consecutive local runs passed. Each
+// iteration is a fresh server on an ephemeral port and costs microseconds,
+// so the loop is cheap insurance rather than a stress test.
+func TestLockStopsTheListenerUnderContention(t *testing.T) {
+	for i := range 200 {
+		s, err := New(Options{})
+		if err != nil {
+			t.Fatalf("iteration %d: New: %v", i, err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() { result <- s.Serve(ctx) }()
+
+		launch, err := url.Parse(s.URL())
+		if err != nil {
+			cancel()
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		launch.Fragment = ""
+		base := launch.String()
+
+		response := request(t, http.DefaultClient, http.MethodPost, base+"api/lock", s.token)
+		response.Body.Close()
+
+		select {
+		case err := <-result:
+			if err != nil {
+				cancel()
+				t.Fatalf("iteration %d: Serve after lock returned %v; a lock the operator asked for is a success, and an already-closed listener is the state it asked for", i, err)
+			}
+		case <-time.After(10 * time.Second):
+			cancel()
+			t.Fatalf("iteration %d: the lock did not stop the listener", i)
+		}
+		cancel()
+	}
+}

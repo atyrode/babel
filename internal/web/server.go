@@ -126,7 +126,14 @@ func (s *Server) shutdown(httpServer *http.Server, serveResult <-chan error) err
 	defer cancel()
 	shutdownErr := httpServer.Shutdown(shutdownCtx)
 	serveErr := <-serveResult
-	if shutdownErr != nil {
+	// Shutdown closes the listeners it tracks, so it closes the one already
+	// closed above and reports that as its error - unless Serve returned
+	// first and untracked it. Which of those happens is scheduling, so the
+	// error means nothing about whether the shutdown worked: an already
+	// closed listener is the state being asked for. Under load the loser
+	// changes, which is how an operator-requested lock could exit non-zero
+	// on a server that stopped exactly as told.
+	if shutdownErr != nil && !errors.Is(shutdownErr, net.ErrClosed) {
 		return shutdownErr
 	}
 	if errors.Is(serveErr, http.ErrServerClosed) || errors.Is(serveErr, net.ErrClosed) {

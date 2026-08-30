@@ -85,6 +85,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
     configure` documented no schema and accepted an insecure password file in
     silence; and `sessions fetch` failed without naming `--host`, the flag that
     recovers a session this machine no longer holds.
+  - **An operator-requested `babel web` lock could exit non-zero having
+    worked perfectly.** Found by the new race gate on its first CI run, which
+    is the whole argument for the gate. `shutdown` closes the listener, then
+    `http.Server.Shutdown` closes the listeners it still tracks — the same one
+    — and reports closing an already-closed listener as its error, unless
+    `Serve` returned first and untracked it. Which one wins is scheduling: on
+    an idle machine `Serve` wins and the bug is invisible, and forty
+    consecutive local runs passed. On a runner with four concurrent jobs
+    `Shutdown` won. An already-closed listener is the state the lock asked
+    for, so it is no longer read as a failure, and the regression test runs
+    the lock cycle enough times for the loser to change.
 
 ### Changed
 
