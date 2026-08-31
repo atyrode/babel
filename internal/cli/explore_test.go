@@ -12,13 +12,15 @@ import (
 	"github.com/atyrode/babel/internal/worker"
 )
 
-// shippedRecipes and defaultRecipes are SPEC.md §5.5's five-of-eight split,
-// written out here as counts rather than derived from the cookbook. A run's
-// implicit scope is the thing being defended: if default-enablement quietly
-// became "everything" again, deriving the expectation from the same source
-// would make this file agree with the bug.
+// shippedRecipes and defaultRecipes are what the embedded cookbook holds:
+// SPEC.md §5.5's five-of-eight lens split plus the three self-improvement duty
+// recipes of #88 and #94, none of which is default-enabled. They are written
+// out here as counts rather than derived from the cookbook. A run's implicit
+// scope is the thing being defended: if default-enablement quietly became
+// "everything" again, deriving the expectation from the same source would make
+// this file agree with the bug.
 const (
-	shippedRecipes = 8
+	shippedRecipes = 11
 	defaultRecipes = 5
 )
 

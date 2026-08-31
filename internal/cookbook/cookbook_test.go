@@ -12,27 +12,34 @@ import (
 
 // shipped is the cookbook this build is expected to carry: SPEC.md §5.5's
 // eight baseline lenses, five of them default-enabled and three shipped as
-// reviewable drafts. The table is written out rather than derived from the
-// asset tree so that adding, removing, or default-enabling a recipe is a
-// deliberate edit to a test someone reviews.
+// reviewable drafts, plus the three self-improvement duty recipes of issues
+// #88 and #94, none of which is default-enabled because each runs only under
+// the operator's own conductor toggle. The table is written out rather than
+// derived from the asset tree so that adding, removing, or default-enabling a
+// recipe is a deliberate edit to a test someone reviews.
 var shipped = []struct {
 	id       string
 	kind     Kind
 	enabled  bool
 	minScope int
 }{
+	{id: "babel-improves-babel", kind: KindMeta, enabled: false, minScope: 2},
+	{id: "babel-tunes-itself", kind: KindMeta, enabled: false, minScope: 2},
 	{id: "code-health-comprehensibility", kind: KindLens, enabled: true, minScope: 3},
 	{id: "decision-quality-operational-risk", kind: KindLens, enabled: false, minScope: 3},
 	{id: "durable-operator-model", kind: KindLens, enabled: false, minScope: 2},
 	{id: "effective-patterns", kind: KindLens, enabled: true, minScope: 3},
 	{id: "human-agent-coordination", kind: KindLens, enabled: true, minScope: 2},
+	{id: "mechanization-audit", kind: KindMeta, enabled: false, minScope: 2},
 	{id: "outcome-integrity", kind: KindLens, enabled: true, minScope: 3},
 	{id: "reusable-practice-capability-leverage", kind: KindLens, enabled: false, minScope: 3},
 	{id: "security-trust-boundaries", kind: KindLens, enabled: true, minScope: 3},
 }
 
 // defaultLenses is §5.5's list of the five lenses Phase B fully authors and
-// default-enables.
+// default-enables. Nothing outside it is enabled by omission: the duty recipes
+// are authorized per dimension by the operator, and a duty recipe that appeared
+// here would be scheduled by every bare `babel explore`.
 var defaultLenses = []string{
 	"code-health-comprehensibility",
 	"effective-patterns",
@@ -47,6 +54,14 @@ var drafts = []string{
 	"decision-quality-operational-risk",
 	"durable-operator-model",
 	"reusable-practice-capability-leverage",
+}
+
+// duties is the set of recipes the conductor's duty rung can schedule (#88,
+// #94), which is exactly the set of meta recipes this build ships.
+var duties = []string{
+	"babel-improves-babel",
+	"babel-tunes-itself",
+	"mechanization-audit",
 }
 
 func loadEmbedded(t *testing.T) *Set {
@@ -170,6 +185,24 @@ func TestDefaultsAreExactlyTheFiveNamedLenses(t *testing.T) {
 		}
 		if r.Default {
 			t.Errorf("draft recipe %q is default-enabled", id)
+		}
+	}
+
+	// The duty recipes are the same kind of opt-in as a draft and a stricter
+	// one: a draft is a lens the operator may name, while a duty recipe is
+	// scheduled only after the operator authorized its dimension (#88, #94).
+	// Default-enabling one would hand every bare `babel explore` an analysis
+	// of Babel itself.
+	for _, id := range duties {
+		r, ok := set.ByID(id)
+		if !ok {
+			t.Fatalf("duty recipe %q is missing", id)
+		}
+		if r.Default {
+			t.Errorf("duty recipe %q is default-enabled", id)
+		}
+		if r.Kind != KindMeta {
+			t.Errorf("duty recipe %q is a %s, want a %s", id, r.Kind, KindMeta)
 		}
 	}
 }

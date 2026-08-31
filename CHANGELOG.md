@@ -38,6 +38,77 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Self-improvement duties, behind operator toggles (operator direction
+  2026-08-31, issues #88 and #94).** Babel's charter has always included "and
+  Babel itself", and until now that meant an operator typing a command. The
+  conductor's rung two — declared and unimplemented since #96 — is now the
+  duty rung: when the operator has authorized a dimension, the loop schedules
+  that dimension's recipes on a slow cadence, and every such cycle records a
+  `policy` authority naming the duty it discharged.
+  - **`babel conductor configure --babel-improves-babel` and
+    `--babel-tunes-itself`, both off, each with an explicit `--no-` form.**
+    They are flags rather than #86-style ceremonies, and the reason is what
+    they authorize. A ceremony exists where the operator chooses model
+    authority through Code's own interface; a duty toggle grants nothing a
+    cycle did not already have — same ceremony-minted profile, same ceilings,
+    same read-only corpus, same "suggestions, never side effects" boundary.
+    What it authorizes is *scheduling*: that a cookbook recipe whose subject is
+    Babel itself may be drawn without being asked for each time, which is a
+    scheduling decision and belongs in the document that holds the other
+    scheduling decisions. The `--no-` forms exist because `configure` is
+    incremental: an operator adjusting the floor has not withdrawn a duty, so
+    "not named" has to stay distinguishable from "off", and naming both forms
+    at once is refused rather than resolved by precedence.
+  - **Three duties, two dimensions, one recipe each.**
+    `babel-improves-babel` and `mechanization-audit` ride the product toggle
+    (#94 places the audit in that dimension); `babel-tunes-itself` rides the
+    personal one. A duty is drawn at most once per day, only when the
+    operator's own invitation queue is empty, and the serendipity floor is
+    still checked first — standing work is exactly the pressure that would
+    converge the loop into pure dutifulness, so the protected chaotic share
+    binds against it rather than yielding to it. The cadence is computed from
+    the journal, so restarting the conductor does not hand its duties a fresh
+    day.
+  - **Off duties are visibly off.** `conductor status` gained a `duties` block
+    listing every duty this build knows with its own state — off with the flag
+    that would authorize it, due, or dated with when it comes back. "Babel has
+    no such duty" and "you have not authorized it" are different answers to
+    "why is the loop not doing this", and a status view that listed only what
+    was on would give the first answer for both. Rung two now reports itself
+    implemented with a depth, and its note still says what it lacks: the
+    spec's attention policy — lifecycle, focus, fleet — is not implemented in
+    this build.
+  - **Three new cookbook recipes, none default-enabled**, each following §5.1's
+    ten-section structure and each running only under its toggle or when named
+    explicitly. `babel-improves-babel` evaluates output quality and acceptance
+    from the evidence #87 already records — the disposition ledger, the
+    append-only revision chains, the frontier statuses — with no new telemetry
+    layer, and carries the constraint that makes that safe: acceptance is
+    evidence, never a target, because an instrument that optimized its own
+    acceptance rate would do it by saying less that is surprising. Its
+    proposals reach the public codebase as `draft-issue` dispositions anchored
+    to a repository verified from a local checkout's own git configuration.
+    `babel-tunes-itself` carries #87's item 6: it revisits authorized Reality
+    facts and accepted durable-learning notes against fresh archive state and
+    proposes amendments, scope narrowings, disputes and retirements through
+    `propose-reality-fact` and `store-memory`, and it treats silence as what it
+    is — a stable world produces no evidence, so absence never justifies a
+    retirement. `mechanization-audit` reads the receipts, the recorded usage
+    and the repeated-search patterns for places where inference substituted for
+    retrieval, and proposes the code that would have served the context;
+    its metric is mechanization rather than frugality, and it carries #94's
+    anti-convergence guardrail as a binding rule in its own wording: efficiency
+    pressure applies only to substrate — retrieval, tooling, context
+    assembly — never to hypothesis content or diversity, and no recipe may be
+    graded on producing cheaper thoughts, only on wasting less budget before
+    thinking starts.
+  - Each finding is classified into exactly one dimension. A product finding
+    stored as this operator's memory is a public proposal buried where nobody
+    will read it; an operator-specific amendment published as a draft issue is
+    a proposal nobody else can evaluate and a leak of this operator's working
+    context. Each recipe states the dispositions it may emit and the ones that
+    belong to the other dimension.
+
 - **The conductor: an attributable autonomous runtime (operator direction
   2026-08-31, issue #96).** Babel ran only when summoned. That is a strange
   default for an instrument whose subject matter accumulates whether or not

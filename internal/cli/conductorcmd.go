@@ -25,9 +25,10 @@ const conductorUsage = `Usage: babel conductor <command> [flags]
 
 Babel's runtime loop (SPEC.md §6.5, issue #96). A cycle asks "what deserves a
 run?" and answers it from a work ladder: the operator's invitations first, then
-attention policy, then a protected fraction of chaotic serendipity draws. Every
-cycle is an ordinary run — preparation, recipe, receipt, frontier, dispositions
-— and carries a recorded authority saying why it happened.
+the standing self-improvement duties the operator authorized, then a protected
+fraction of chaotic serendipity draws. Every cycle is an ordinary run —
+preparation, recipe, receipt, frontier, dispositions — and carries a recorded
+authority saying why it happened.
 
 Commands:
   configure    set the budget ceilings the loop runs under
@@ -41,7 +42,8 @@ is a foreground loop, and supervision belongs to the OS.
 
 const conductorConfigureUsage = `Usage: babel conductor configure --per-cycle USD --per-day USD [flags]
 
-Records the budget ceilings the loop runs under, beside the analysis settings.
+Records the budget ceilings the loop runs under, beside the analysis settings,
+with the scheduling dials and the standing-duty authorizations.
 
 Both ceilings are mandatory and neither has a default. Autonomy here is
 budget-bounded rather than trust-bounded, and a default ceiling would be a limit
@@ -54,7 +56,21 @@ Flags:
   --floor N            guarantee one serendipity cycle in every N (default 4)
   --interval DURATION   wait this long between cycles (default 1h)
   --slice-sessions N   bound a serendipity draw to N sessions (default 3)
+  --babel-improves-babel      schedule the product self-improvement duties
+  --no-babel-improves-babel   withdraw them
+  --babel-tunes-itself        schedule the personal tuning duty
+  --no-babel-tunes-itself     withdraw it
   --json               emit the stored configuration as JSON
+
+Both duties are off until you turn them on, and each takes an explicit --no-
+form: an invocation that adjusts one dial leaves everything it does not name
+alone, so "off" has to be said rather than implied.
+
+A duty toggle grants no new authority. The cycle it schedules runs under the
+profile the analysis ceremony stored, inside these ceilings, over the same
+read-only corpus, and its outputs are proposals like any other. What the toggle
+authorizes is scheduling: that Babel may analyse itself without being asked
+each time.
 
 Nothing here selects a provider, a model or a profile: those are Code's, and a
 loop that could choose them would be choosing its own spending limit.
@@ -84,12 +100,12 @@ belong to the OS, which already owns them.
 const conductorStatusUsage = `Usage: babel conductor status [--cycles N] [--json]
 
 Reports what the loop is doing: its state, the cycle in flight and the authority
-it is running under, every ladder rung's queue depth, today's spend against the
-ceilings, and the last few cycle outcomes.
+it is running under, every ladder rung's queue depth, each standing duty's own
+state, today's spend against the ceilings, and the last few cycle outcomes.
 
-A rung this build declares but does not implement is reported as absent rather
-than as empty, because "no policy is waiting" and "this build has no policies"
-are different answers to "why is the loop doing this".
+A duty the operator has not authorized is reported as off rather than omitted,
+because "Babel has no such duty" and "you have not authorized it" are different
+answers to "why is the loop not doing this".
 
 Flags:
   --cycles N   show the last N cycles (default 10)
@@ -110,10 +126,10 @@ const conductorFile = "conductor.json"
 // into a few minutes of runs.
 const defaultConductorInterval = time.Hour
 
-// conductorSettings is everything Babel keeps about the loop, which is the
-// ceilings and three scheduling dials. It holds no profile, no provider and no
-// model: those belong to Code (§2.6, decision 18), and the loop inherits
-// whatever the profile ceremony stored.
+// conductorSettings is everything Babel keeps about the loop: the ceilings,
+// three scheduling dials and the two standing-duty authorizations. It holds no
+// profile, no provider and no model: those belong to Code (§2.6, decision 18),
+// and the loop inherits whatever the profile ceremony stored.
 type conductorSettings struct {
 	Schema int `json:"schema"`
 	// Ceilings is a pointer so "never configured" and "configured with zeros"
@@ -122,7 +138,14 @@ type conductorSettings struct {
 	Floor           int            `json:"serendipity_floor,omitempty"`
 	IntervalSeconds int            `json:"interval_seconds,omitempty"`
 	SliceSessions   int            `json:"slice_sessions,omitempty"`
-	ConfiguredAt    string         `json:"configured_at,omitempty"`
+	// BabelImprovesBabel and BabelTunesItself are #88's two self-improvement
+	// dimensions. Both are absent from the document until the operator turns
+	// one on, which is the same statement as off: a duty nobody authorized is
+	// never scheduled, and a settings file that recorded `false` for it would
+	// look like a decision rather than the default.
+	BabelImprovesBabel bool   `json:"babel_improves_babel,omitempty"`
+	BabelTunesItself   bool   `json:"babel_tunes_itself,omitempty"`
+	ConfiguredAt       string `json:"configured_at,omitempty"`
 }
 
 // ceilingRecord is the operator's stated limits on autonomy.
@@ -148,6 +171,14 @@ func (s conductorSettings) interval() time.Duration {
 		return defaultConductorInterval
 	}
 	return time.Duration(s.IntervalSeconds) * time.Second
+}
+
+// duties is the standing-duty authorization the duty rung reads.
+func (s conductorSettings) duties() conductor.Duties {
+	return conductor.Duties{
+		ImprovesBabel: s.BabelImprovesBabel,
+		TunesItself:   s.BabelTunesItself,
+	}
 }
 
 func conductorPath() (string, error) {
@@ -236,14 +267,16 @@ func (a *app) conductorCmd(ctx context.Context, args []string) error {
 // conductorConfigResult is the machine-readable configuration document, shared
 // by configure and status so a script sees one shape whichever produced it.
 type conductorConfigResult struct {
-	Currency        string  `json:"currency"`
-	PerCycle        float64 `json:"per_cycle"`
-	PerDay          float64 `json:"per_day"`
-	Floor           int     `json:"serendipity_floor"`
-	IntervalSeconds int     `json:"interval_seconds"`
-	SliceSessions   int     `json:"slice_sessions"`
-	ConfiguredAt    string  `json:"configured_at,omitempty"`
-	Path            string  `json:"path"`
+	Currency           string  `json:"currency"`
+	PerCycle           float64 `json:"per_cycle"`
+	PerDay             float64 `json:"per_day"`
+	Floor              int     `json:"serendipity_floor"`
+	IntervalSeconds    int     `json:"interval_seconds"`
+	SliceSessions      int     `json:"slice_sessions"`
+	BabelImprovesBabel bool    `json:"babel_improves_babel"`
+	BabelTunesItself   bool    `json:"babel_tunes_itself"`
+	ConfiguredAt       string  `json:"configured_at,omitempty"`
+	Path               string  `json:"path"`
 }
 
 // conductorConfigure implements `babel conductor configure`.
@@ -252,8 +285,16 @@ type conductorConfigResult struct {
 // #86's profile configuration. That ceremony exists because the operator is
 // choosing a model and a provider through Code's own interface, where the
 // decision is made in front of them. Nothing here reaches a model: these are
-// two numbers, a ratio and a wait, and a terminal handover would add ritual
-// without adding intent.
+// two numbers, a ratio, a wait, and two switches that authorize scheduling of
+// recipes the ceremony's own profile already runs, so a terminal handover would
+// add ritual without adding intent.
+//
+// The duty toggles belong here for exactly that reason. Turning one on grants
+// no authority a cycle did not already have: same profile, same ceilings, same
+// read-only corpus, same "suggestions, never side effects" boundary. What it
+// authorizes is that a cookbook recipe whose subject is Babel itself may be
+// scheduled without the operator typing the command — which is a scheduling
+// decision, and scheduling decisions are what this document holds.
 func (a *app) conductorConfigure(args []string) error {
 	c := newCmd("conductor configure", conductorConfigureUsage)
 	perCycle := c.fs.Float64("per-cycle", 0, "the most one cycle may cost")
@@ -262,6 +303,17 @@ func (a *app) conductorConfigure(args []string) error {
 	floor := c.fs.Int("floor", 0, "guarantee one serendipity cycle in every N")
 	interval := c.fs.Duration("interval", 0, "wait this long between cycles")
 	slice := c.fs.Int("slice-sessions", 0, "bound a serendipity draw to N sessions")
+	// The flag names are the duty names, taken from the constants a receipt's
+	// authority reference is built from, so a renamed duty cannot leave a flag
+	// authorizing something the loop no longer knows.
+	improves := c.fs.Bool(conductor.DutyImprovesBabel, false,
+		"authorize the product self-improvement duties")
+	noImproves := c.fs.Bool("no-"+conductor.DutyImprovesBabel, false,
+		"withdraw the product self-improvement duties")
+	tunes := c.fs.Bool(conductor.DutyTunesItself, false,
+		"authorize the personal tuning duty")
+	noTunes := c.fs.Bool("no-"+conductor.DutyTunesItself, false,
+		"withdraw the personal tuning duty")
 	asJSON := c.fs.Bool("json", false, "emit the stored configuration as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -307,6 +359,16 @@ func (a *app) conductorConfigure(args []string) error {
 	if *slice < 0 {
 		return c.usagef("--slice-sessions cannot be negative")
 	}
+	improvesBabel, err := resolveDutyToggle(c, conductor.DutyImprovesBabel,
+		settings.BabelImprovesBabel, *improves, *noImproves)
+	if err != nil {
+		return err
+	}
+	tunesItself, err := resolveDutyToggle(c, conductor.DutyTunesItself,
+		settings.BabelTunesItself, *tunes, *noTunes)
+	if err != nil {
+		return err
+	}
 
 	settings.Ceilings = &next
 	if *floor > 0 {
@@ -318,6 +380,8 @@ func (a *app) conductorConfigure(args []string) error {
 	if *slice > 0 {
 		settings.SliceSessions = *slice
 	}
+	settings.BabelImprovesBabel = improvesBabel
+	settings.BabelTunesItself = tunesItself
 	settings.ConfiguredAt = formatTime(time.Now().UTC())
 	path, err := saveConductorSettings(settings)
 	if err != nil {
@@ -335,6 +399,8 @@ func (a *app) conductorConfigure(args []string) error {
 		{"interval", (time.Duration(res.IntervalSeconds) * time.Second).String()},
 		{"serendipity slice", fmt.Sprintf("up to %d %s", res.SliceSessions,
 			plural(res.SliceSessions, "session", "sessions"))},
+		{"babel improves babel", onOrOff(res.BabelImprovesBabel)},
+		{"babel tunes itself", onOrOff(res.BabelTunesItself)},
 		{"stored in", Sanitize(res.Path)},
 	})
 	fmt.Fprintf(a.stdout, "\nrun the loop with: babel conductor run\n")
@@ -343,11 +409,13 @@ func (a *app) conductorConfigure(args []string) error {
 
 func conductorConfigDocument(s conductorSettings, path string) conductorConfigResult {
 	res := conductorConfigResult{
-		Floor:           conductor.Floor{OneIn: s.Floor}.OneIn,
-		IntervalSeconds: int(s.interval().Seconds()),
-		SliceSessions:   s.SliceSessions,
-		ConfiguredAt:    s.ConfiguredAt,
-		Path:            path,
+		Floor:              conductor.Floor{OneIn: s.Floor}.OneIn,
+		IntervalSeconds:    int(s.interval().Seconds()),
+		SliceSessions:      s.SliceSessions,
+		ConfiguredAt:       s.ConfiguredAt,
+		BabelImprovesBabel: s.BabelImprovesBabel,
+		BabelTunesItself:   s.BabelTunesItself,
+		Path:               path,
 	}
 	if res.Floor <= 0 {
 		res.Floor = conductor.DefaultFloor
@@ -361,6 +429,35 @@ func conductorConfigDocument(s conductorSettings, path string) conductorConfigRe
 		res.PerDay = s.Ceilings.PerDay
 	}
 	return res
+}
+
+// resolveDutyToggle reads one standing-duty authorization out of its two flags.
+//
+// Two flags rather than one taking a value, because `conductor configure` is
+// incremental: an operator adjusting the floor has not withdrawn a duty, so
+// "not named" must stay distinguishable from "off", and a lone boolean flag
+// cannot say off. Naming both is a contradiction rather than a precedence
+// question — guessing which the operator meant is exactly the wrong place to
+// guess, because one of the two answers schedules autonomous runs.
+func resolveDutyToggle(c *cmd, name string, stored, on, off bool) (bool, error) {
+	switch {
+	case on && off:
+		return stored, c.usagef("--%s and --no-%s contradict each other", name, name)
+	case on:
+		return true, nil
+	case off:
+		return false, nil
+	default:
+		return stored, nil
+	}
+}
+
+// onOrOff renders a toggle for a terminal.
+func onOrOff(enabled bool) string {
+	if enabled {
+		return "on"
+	}
+	return "off"
 }
 
 // conductorRunResult is `babel conductor run --json`: the cycles this
@@ -443,6 +540,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 		Ladder: conductor.DefaultLadder(
 			conductor.NewInvitationRung(state.dispositions,
 				conductor.NewRecordOrigins(state.frontier, state.runs)),
+			conductor.NewDutyRung(settings.duties(), journal, nil, 0),
 			conductor.NewSerendipityRung(&hostCorpus{app: a, adapters: adapters(), roots: sf.rootList()},
 				embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 		),
@@ -841,8 +939,13 @@ type conductorStatusResult struct {
 	State      string                 `json:"state"`
 	Config     *conductorConfigResult `json:"config,omitempty"`
 	// Current is the cycle in flight, present only while one is.
-	Current *conductorCycleRow  `json:"current,omitempty"`
-	Rungs   []conductorRungRow  `json:"rungs"`
+	Current *conductorCycleRow `json:"current,omitempty"`
+	Rungs   []conductorRungRow `json:"rungs"`
+	// Duties is every standing duty this build knows with its own state,
+	// including the ones the operator has not authorized: a duty nobody turned
+	// on is reported off rather than omitted, so "Babel has no such duty" and
+	// "you have not authorized it" stay different answers.
+	Duties  []conductorDutyRow  `json:"duties"`
 	Spend   *conductorSpendRow  `json:"spend,omitempty"`
 	Cycles  []conductorCycleRow `json:"cycles"`
 	Journal string              `json:"journal"`
@@ -854,6 +957,18 @@ type conductorRungRow struct {
 	Waiting     int    `json:"waiting"`
 	Implemented bool   `json:"implemented"`
 	Note        string `json:"note"`
+}
+
+// conductorDutyRow is one standing duty's state (#88, #94).
+type conductorDutyRow struct {
+	Name      string `json:"name"`
+	Recipe    string `json:"recipe"`
+	Dimension string `json:"dimension"`
+	Enabled   bool   `json:"enabled"`
+	Due       bool   `json:"due"`
+	// LastDrawn is when the loop last drew this duty, absent when never.
+	LastDrawn string `json:"last_drawn,omitempty"`
+	Note      string `json:"note"`
 }
 
 // conductorSpendRow is today's spend against the ceilings.
@@ -911,11 +1026,13 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 	}
 	defer state.Close()
 
+	now := time.Now()
 	res := conductorStatusResult{
 		Configured: settings.Ceilings != nil,
 		Journal:    Sanitize(journal.Path()),
 		Cycles:     []conductorCycleRow{},
 		Rungs:      []conductorRungRow{},
+		Duties:     []conductorDutyRow{},
 	}
 	if res.Configured {
 		cfg := conductorConfigDocument(settings, path)
@@ -928,9 +1045,11 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 		res.Current = &row
 	}
 
+	dutyRung := conductor.NewDutyRung(settings.duties(), journal, func() time.Time { return now }, 0)
 	ladder := conductor.DefaultLadder(
 		conductor.NewInvitationRung(state.dispositions,
 			conductor.NewRecordOrigins(state.frontier, state.runs)),
+		dutyRung,
 		conductor.NewSerendipityRung(&hostCorpus{app: a, adapters: adapters()},
 			embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 	)
@@ -946,8 +1065,21 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 			Note:        Sanitize(rung.Depth.Note),
 		})
 	}
+	for _, duty := range dutyRung.States(now) {
+		row := conductorDutyRow{
+			Name:      Sanitize(duty.Name),
+			Recipe:    Sanitize(duty.Recipe),
+			Dimension: Sanitize(string(duty.Dimension)),
+			Enabled:   duty.Enabled,
+			Due:       duty.Due,
+			Note:      Sanitize(duty.Note),
+		}
+		if !duty.LastDrawnAt.IsZero() {
+			row.LastDrawn = formatTime(duty.LastDrawnAt)
+		}
+		res.Duties = append(res.Duties, row)
+	}
 
-	now := time.Now()
 	if res.Configured {
 		ceilings := settings.ceilings()
 		spend, err := conductor.NewReceiptLedger(state.runs).
@@ -1015,6 +1147,17 @@ func (a *app) writeConductorStatus(res conductorStatusResult) {
 			continue
 		}
 		fmt.Fprintf(a.stdout, "  %-12s %d — %s\n", rung.Name, rung.Waiting, rung.Note)
+	}
+
+	// The duties are printed whatever their state, and printed after the rung
+	// whose queue they are: an operator asking why the loop is not improving
+	// Babel needs to read that the duty exists and is off, which is one line
+	// and the difference between an absent feature and an unauthorized one.
+	if len(res.Duties) > 0 {
+		fmt.Fprintf(a.stdout, "\nduties\n")
+		for _, duty := range res.Duties {
+			fmt.Fprintf(a.stdout, "  %-22s %s\n", duty.Name, duty.Note)
+		}
 	}
 	fmt.Fprintln(a.stdout)
 	a.writeConductorCycles(res.Cycles)
