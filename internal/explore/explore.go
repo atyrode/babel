@@ -68,6 +68,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/cookbook"
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/preflight"
@@ -133,6 +134,7 @@ const (
 	FailureAuthority       = "stage-authority"
 	FailureUnknownRecipe   = "unknown-recipe"
 	FailureUnknownRecord   = "unknown-record"
+	FailureDisposition     = "disposition"
 	FailureStorage         = "storage"
 	FailureCancelled       = "cancelled"
 )
@@ -200,6 +202,13 @@ type Config struct {
 	Runs     *run.Store
 	Ledger   *Ledger
 
+	// Dispositions is the same file's #87 component: the proposed next
+	// actions a result carries, and the invitations #96 draws its first
+	// ladder rung from. It is required rather than optional because a run
+	// whose result proposes an action Babel silently dropped would render
+	// nothing for the operator to click and report success.
+	Dispositions *disposition.Store
+
 	// Index is the retrieval index corpus search is served from. It is
 	// optional: a run with no index has retrieval denied with that reason
 	// rather than answered with nothing.
@@ -256,8 +265,8 @@ func New(cfg Config) (*Controller, error) {
 	if cfg.Recipes == nil || len(cfg.Recipes.All()) == 0 {
 		return nil, fmt.Errorf("explore: no cookbook recipes selected")
 	}
-	if cfg.Frontier == nil || cfg.Runs == nil || cfg.Ledger == nil {
-		return nil, fmt.Errorf("explore: the frontier, receipt and ledger stores are all required")
+	if cfg.Frontier == nil || cfg.Runs == nil || cfg.Ledger == nil || cfg.Dispositions == nil {
+		return nil, fmt.Errorf("explore: the frontier, receipt, disposition and ledger stores are all required")
 	}
 	if cfg.Worker.Binary == "" {
 		return nil, fmt.Errorf("explore: no analysis worker binary configured")
@@ -449,6 +458,11 @@ type Outcome struct {
 	// counter-observations where they carried locators, contradicting
 	// candidates where they did not.
 	Objections []string
+
+	// Dispositions are the proposed next actions the run recorded against
+	// those records (#87). They are proposals waiting for an operator's
+	// click, so a run that emitted them changed nothing outside the store.
+	Dispositions []string
 
 	// Reused counts records recognized from a prior attempt rather than
 	// written again — the number that would be duplicates if resumption did

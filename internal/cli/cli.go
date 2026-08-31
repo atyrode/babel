@@ -96,6 +96,16 @@ Commands:
   hypothesis show ID          show one candidate with its whole history
   findings                    list consolidated findings
   finding show ID             show one finding with its evidence
+  revisions ID                show one record's append-only revision chain
+  revise ID                   append an attributed revision to a candidate
+  revive ID                   return a resting candidate to the frontier
+  invite ID                   invite the next run to process a record further
+  invitations                 list the open process-further queue
+  dispositions                list the proposed next actions on records
+  disposition show ID         show one proposed action with its ledger
+  disposition propose ID      attach a proposed action to a record by hand
+  disposition accept ID       record that the operator authorized it
+  disposition decline ID      record that the operator declined it
   review queue                list records awaiting a decision
   review decide ID            record one attributed review decision
   review history ID           show one record's append-only decisions
@@ -218,6 +228,20 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.findingsCmd(ctx, args[1:])
 	case "finding":
 		return a.findingCmd(ctx, args[1:])
+	case "revisions":
+		return a.revisionsCmd(ctx, args[1:])
+	case "revise":
+		return a.reviseCmd(ctx, args[1:])
+	case "revive":
+		return a.reviveCmd(ctx, args[1:])
+	case "invite":
+		return a.inviteCmd(ctx, args[1:])
+	case "invitations":
+		return a.invitationsCmd(ctx, args[1:])
+	case "dispositions":
+		return a.dispositionsCmd(ctx, args[1:])
+	case "disposition":
+		return a.dispositionCmd(ctx, args[1:])
 	case "review":
 		return a.review(ctx, args[1:])
 	case "export":

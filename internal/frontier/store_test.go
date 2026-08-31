@@ -661,6 +661,7 @@ func TestDescendantLeavesAncestorByteIdentical(t *testing.T) {
 	revisedHypothesis, err := store.CreateHypothesis(ctx, HypothesisInput{
 		RunID:      "run-2",
 		AncestorID: ancestor.ID,
+		Reason:     "the second run narrowed the claim to one repository",
 		Payload:    hypothesisPayload("handoffs drop constraints, narrowed to one repository", 0.8),
 	})
 	if err != nil {
@@ -669,18 +670,21 @@ func TestDescendantLeavesAncestorByteIdentical(t *testing.T) {
 	if _, err := store.CreateObservation(ctx, ObservationInput{
 		HypothesisID: revisedHypothesis.ID, RunID: "run-2", RecipeID: "lens", RecipeVersion: 2,
 		AncestorID: observation.ID,
+		Reason:     "a counterexample turned up",
 		Payload:    observationPayload("restated later, with one counterexample", mustEvidence(t, 21, "second")),
 	}); err != nil {
 		t.Fatalf("revise observation: %v", err)
 	}
 	if _, err := store.CreateFinding(ctx, FindingInput{
 		RunID: "run-2", AncestorID: finding.ID, ObservationIDs: []string{observation.ID},
+		Reason:  "narrowed with the hypothesis it consolidates",
 		Payload: findingPayload("late constraints, narrowed"),
 	}); err != nil {
 		t.Fatalf("revise finding: %v", err)
 	}
 	if _, err := store.CreateProposal(ctx, ProposalInput{
 		RunID: "run-2", AncestorID: proposal.ID, FindingIDs: []string{finding.ID},
+		Reason:  "restated over the narrowed finding",
 		Payload: proposalPayload("state constraints up front, narrowed"),
 	}); err != nil {
 		t.Fatalf("revise proposal: %v", err)
@@ -707,7 +711,8 @@ func TestDescendantLeavesAncestorByteIdentical(t *testing.T) {
 
 	t.Run("a descendant needs a real ancestor", func(t *testing.T) {
 		if _, err := store.CreateHypothesis(ctx, HypothesisInput{
-			RunID: "run-2", AncestorID: "hyp_absent", Payload: hypothesisPayload("orphan", 0.1),
+			RunID: "run-2", AncestorID: "hyp_absent", Reason: "reworded",
+			Payload: hypothesisPayload("orphan", 0.1),
 		}); !errors.Is(err, ErrUnknownEntity) {
 			t.Fatalf("got %v, want ErrUnknownEntity", err)
 		}
@@ -868,6 +873,7 @@ func TestDeferredFrontierSurvivesRestart(t *testing.T) {
 			RunID:      "run-2",
 			AncestorID: created[3].ID,
 			Status:     StatusQueued,
+			Reason:     "the wording was ambiguous",
 			Payload:    hypothesisPayload("candidate 3, reworded", 0.7),
 		})
 		if err != nil {
@@ -914,7 +920,7 @@ func TestPlaintextColumnsMatchAllowlist(t *testing.T) {
 	want := map[string][]string{
 		"frontier_hypothesis": {"id", "ancestor_id", "run_id", "schema_version", "created_at"},
 		"frontier_status_event": {
-			"id", "hypothesis_id", "seq", "status", "run_id", "recorded_at",
+			"id", "hypothesis_id", "seq", "status", "run_id", "actor_kind", "actor_id", "recorded_at",
 		},
 		"frontier_hypothesis_link": {"id", "from_id", "to_id", "link_type", "created_at"},
 		"frontier_observation": {
@@ -930,6 +936,10 @@ func TestPlaintextColumnsMatchAllowlist(t *testing.T) {
 			"context_id", "duplicate_of_id", "recorded_at",
 		},
 		"frontier_refinement_request": {"id", "disposition_id", "subject_type", "subject_id", "created_at"},
+		"frontier_revision": {
+			"id", "entity_type", "entity_id", "root_id", "supersedes_id", "seq",
+			"actor_kind", "actor_id", "recorded_at",
+		},
 	}
 	// Join tables are pure relationship IDs and carry no payload at all.
 	payloadFree := map[string]bool{
@@ -1036,6 +1046,7 @@ func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
 		"frontier_proposal_finding":    {`position = 7`, `proposal_id = ?`, []any{proposal.ID}},
 		"frontier_disposition":         {`disposition = 'accept'`, `subject_id = ?`, []any{proposal.ID}},
 		"frontier_refinement_request":  {`payload_json = '{}'`, `subject_id = ?`, []any{proposal.ID}},
+		"frontier_revision":            {`actor_id = 'forged'`, `entity_id = ?`, []any{hypothesis.ID}},
 	}
 
 	tables := frontierTables(t, store)

@@ -3,6 +3,7 @@ package explore
 import (
 	"fmt"
 
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 )
 
@@ -157,4 +158,45 @@ func (c *Controller) bind(st *state, stage Stage, ref string, kind frontier.Enti
 		ID:   id,
 		At:   c.now(),
 	})
+}
+
+// putDispositions records the next actions a job proposed against one record.
+//
+// Idempotence is the disposition store's rather than the resume ledger's. The
+// ledger binds a worker reference to a frontier record and its Commit names a
+// frontier entity kind; widening that kind to cover a second table would make
+// every resume read ambiguous about what it is resolving. The store keys a
+// run's proposal by (run, ref) instead, which is the same guarantee held one
+// table over: a replayed result finds its own prior proposal and adds nothing.
+//
+// Each action is recorded on its own. One refused action — an unknown kind, an
+// unverifiable repository — is a recorded failure for that action and leaves
+// the others, because a job that proposed four next steps and got one wrong
+// proposed three good ones.
+func (c *Controller) putDispositions(st *state, stage Stage, runID string, record frontier.Ref, actions []ProposedAction) {
+	for _, action := range actions {
+		payload := disposition.Payload{Summary: action.Summary, Rationale: action.Rationale}
+		if action.Kind == disposition.KindDraftIssue {
+			anchor, err := disposition.VerifyAnchor(action.Workspace)
+			if err != nil {
+				st.fail(stage, FailureDisposition, c.now(), fmt.Errorf(
+					"explore: draft-issue disposition %q: %w", action.Ref, err))
+				continue
+			}
+			payload.Anchor = &anchor
+		}
+		proposed, err := c.cfg.Dispositions.Propose(st.commit, disposition.ProposeInput{
+			Record:     record,
+			Kind:       action.Kind,
+			ProposedBy: frontier.Run(runID),
+			Ref:        action.Ref,
+			Payload:    payload,
+		})
+		if err != nil {
+			st.fail(stage, FailureDisposition, c.now(), fmt.Errorf(
+				"explore: persist disposition %q: %w", action.Ref, err))
+			continue
+		}
+		st.out.Dispositions = append(st.out.Dispositions, proposed.ID)
+	}
 }

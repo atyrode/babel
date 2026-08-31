@@ -16,6 +16,7 @@ import (
 
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/digest"
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/explore"
 	"github.com/atyrode/babel/internal/frontier"
@@ -82,6 +83,7 @@ type harness struct {
 	frontier *frontier.Store
 	runs     *run.Store
 	ledger   *explore.Ledger
+	actions  *disposition.Store
 	index    *index.Index
 	recipes  *cookbook.Set
 	locators []event.Locator
@@ -153,6 +155,10 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("open ledger: %v", err)
 	}
 	t.Cleanup(func() { h.ledger.Close() })
+	if h.actions, err = disposition.Open(state, h.frontier); err != nil {
+		t.Fatalf("open dispositions: %v", err)
+	}
+	t.Cleanup(func() { h.actions.Close() })
 	if h.recipes, err = cookbook.Embedded(); err != nil {
 		t.Fatalf("load cookbook: %v", err)
 	}
@@ -215,6 +221,7 @@ func (h *harness) config(args []string, mutate ...func(*explore.Config)) explore
 		Frontier:     h.frontier,
 		Runs:         h.runs,
 		Ledger:       h.ledger,
+		Dispositions: h.actions,
 		Index:        h.index,
 		Inputs:       h.inputs,
 		Capabilities: run.CapabilityVersions{Tool: "explore-test/1"},

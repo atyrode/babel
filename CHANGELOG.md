@@ -9,6 +9,81 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Added
+
+- **Actionable outputs: dispositions, revision chains, invitations, and
+  revive (operator direction 2026-08-31, issue #87).** Babel's records could
+  be read and decided on; they could not be acted on, argued with, or nudged.
+  A candidate's history was a chain of ancestor pointers with nobody's name on
+  it, `rejected` and `promoted` read as endings, and the only thing an
+  operator could tell Babel about a record was accept, reject, defer, or
+  duplicate. Four durable additions, all inside "suggestions, never side
+  effects": every one of them records a proposal or a decision, and none of
+  them publishes, applies, or writes anything outside the durable file.
+  - **Revision chains carry an author and a reason.** Every hypothesis,
+    observation, finding, and proposal now has exactly one row in
+    `frontier_revision` naming its place in a chain, who wrote it — a run
+    receipt or an operator — and, for anything that supersedes an existing
+    record, why. `babel revisions ID` reads the whole chain from any member of
+    it, so an operator pastes whichever identifier a listing printed. The
+    records themselves are unchanged: they were already immutable revisions
+    linked by ancestor, so this is the editorial record that link could never
+    carry, not a second copy of anything. The chain is single-successor —
+    revising a record something already supersedes is refused, naming the head
+    — because "current state = head" is only true when there is one head.
+    Existing durable files are backfilled: a chain that predates this release
+    reads as a chain, attributed to the runs that wrote it and carrying no
+    invented reasons.
+  - **`babel revise ID` is the operator's own edit.** A candidate's wording is
+    the one payload a person can retype, so hand revision is confined to it;
+    the structured payloads a run assembles are revised by runs. `--reason` is
+    required, and the ancestor stays byte-identical and readable at its own
+    identifier.
+  - **Nothing closes: `babel revive ID`.** Deferred, rejected, and promoted
+    are resting states with a transition out of each, taken by an operator or
+    proposed by a run, always attributed and always argued. It is refused for
+    a candidate that is untriaged, queued, or under investigation: the first
+    two are already on the frontier and the third belongs to a running
+    exploration. The resting status stays in the history — reviving argues
+    with it rather than erasing it — and every status event now records its
+    actor, because an operator's transition belongs to no run and `run_id`
+    could not name one.
+  - **Dispositions: typed next actions with an attributable ledger.** A new
+    `internal/disposition` component holds proposed next actions against a
+    record revision, in a closed vocabulary of five — `draft-issue`,
+    `propose-reality-fact`, `store-memory`, `ask-question`,
+    `develop-further` — each naming an existing Babel surface a click feeds,
+    so a model cannot invent a sixth wired to nothing. A run proposes them
+    through a new optional `dispositions` field on its result's candidates and
+    consolidations, idempotent under the run's own emitted ref so a resumed
+    run does not double every button; an operator synthesizes one with `babel
+    disposition propose`. `babel disposition accept|decline` appends to an
+    append-only ledger — attributed, timestamped, reconsiderable — which is
+    the provenance later self-evaluation reads (#88, #94) rather than a new
+    telemetry layer. Accepting authorizes and does not act: no issue is
+    opened, no fact is written, and every result document says so.
+  - **Draft issues bind only to a verified checkout (issue #88).** A
+    `draft-issue` disposition requires `--repo DIR`, and the repository comes
+    out of that checkout's own git configuration — origin URL, branch,
+    existence — read from the files git writes, following a linked worktree's
+    `gitdir` and `commondir`. git is never executed and GitHub is never asked:
+    existence is proven by the checkout being on this machine, which also
+    proves the operator works on it, and a repository nobody can point at is
+    structurally impossible to name. The rendered draft is markdown on stdout
+    and nowhere else.
+  - **Invitations are instruction-free by construction.** `babel invite ID`
+    records that a record deserves another look and offers no way to say what
+    to do with it — refine, question, amend, or abandon stays the model's
+    judgement (#87), and the table has no payload column an instruction could
+    later appear in. `babel invitations` is the queue, oldest first and
+    deliberately never re-sorted by a model-produced score. A run consumes each
+    invitation exactly once, enforced by a consumption table's primary key
+    rather than by a check, so two conductor cycles cannot spend the operator's
+    budget twice on one nudge (#96, rung one).
+  - Every new table carries UPDATE and DELETE triggers, matching
+    `internal/frontier`: an append-only ledger whose append-only-ness depends
+    on nobody writing the wrong statement is not append-only.
+
 ### Changed
 
 - **`babel analysis profile configure` hands the operator the terminal instead

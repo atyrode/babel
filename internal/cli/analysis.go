@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/atyrode/babel/internal/config"
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/review"
@@ -859,15 +860,17 @@ func sanitizeProfile(p *profileRecord) *profileRecord {
 }
 
 // analysisState is the durable Phase B state one command opened: the
-// hypothesis frontier, the run receipts, and the review log above them.
-// They are opened together because review.Open sits on the other two, and
-// closed in reverse order so the service releases its handle before the
-// stores it reads do.
+// hypothesis frontier, the run receipts, the proposed next actions of #87,
+// and the review log above them. They are opened together because
+// review.Open sits on the frontier and the receipts and disposition.Open sits
+// on the frontier, and closed in reverse order so the services release their
+// handles before the stores they read do.
 type analysisState struct {
-	dir      string
-	frontier *frontier.Store
-	runs     *runstore.Store
-	review   *review.Service
+	dir          string
+	frontier     *frontier.Store
+	runs         *runstore.Store
+	review       *review.Service
+	dispositions *disposition.Store
 }
 
 func openAnalysisState() (*analysisState, error) {
@@ -891,11 +894,21 @@ func openAnalysisState() (*analysisState, error) {
 		front.Close()
 		return nil, err
 	}
-	return &analysisState{dir: dir, frontier: front, runs: runs, review: svc}, nil
+	actions, err := disposition.Open(dir, front)
+	if err != nil {
+		svc.Close()
+		runs.Close()
+		front.Close()
+		return nil, err
+	}
+	return &analysisState{dir: dir, frontier: front, runs: runs, review: svc, dispositions: actions}, nil
 }
 
 func (s *analysisState) Close() error {
-	err := s.review.Close()
+	err := s.dispositions.Close()
+	if e := s.review.Close(); err == nil {
+		err = e
+	}
 	if e := s.runs.Close(); err == nil {
 		err = e
 	}
