@@ -875,6 +875,21 @@ function headOf(id: string): string {
   return chain.entries[chain.entries.length - 1].record_id;
 }
 
+// linksOf answers GET /api/record/links's lookup: a record with no citation
+// fixture is an empty graph rather than a 404, because "nothing cites this
+// yet" is not the same claim as "this record does not exist" -- the caller
+// already knows the record exists, or it would not be asking about its
+// references.
+function linksOf(type: string, id: string): ReferenceGraph {
+  const found = references[id];
+  if (found) return found;
+  return {
+    record: { kind: type, id },
+    cites: { edges: [], counts: [], total: 0, limit: 50, offset: 0 },
+    cited_by: { edges: [], counts: [], total: 0, limit: 50, offset: 0 },
+  };
+}
+
 // advanceRace appends a revision to the one chain that models a run revising a
 // record while the operator was reading it. Every mutation sent from a page
 // rendered before the advance is then stale, which is what makes the refusal
@@ -988,6 +1003,207 @@ const findingConflict: FindingDetail = {
 
 const findings: Record<string, FindingDetail> = {
   [findingConflict.finding.id]: findingConflict,
+};
+
+// ---------------------------------------------------------------------------
+// Reference graph (issue #113)
+//
+// GET /api/record/links answers the citation graph around one record: what it
+// cites and what cites it, each edge kept even when the record it names
+// cannot be opened from here, because a reference is a fact about what was
+// written, not a promise that the target is reachable. hyp_unverified-closures
+// carries one of every render case in both directions -- a followable
+// session, a followable frontier record, a namespace this build has no page
+// for, a namespace it understands but whose named record this host never
+// held, and a session whose durable key this host's catalog cannot match --
+// because that is the one record the browser test drives end to end.
+// hyp_hostile-content reuses HOSTILE_HTML on an edge's note so the same
+// rendering guarantee §2.7 makes for every other free-text field extends to
+// this one, and hyp_promoted-pattern is left with no edges at all so the
+// empty-state copy has a real record to render against.
+// ---------------------------------------------------------------------------
+
+interface ReferenceEndpoint {
+  kind: string;
+  id: string;
+  // route_id is the id the SPA routes on, present only when it differs from
+  // `id` -- a session's durable key is what the edge names, but a session
+  // page still routes on the harness/source-id selector.
+  route_id?: string;
+  // label is a short human identity for the endpoint. Untrusted content.
+  label?: string;
+  inert?: true;
+  reason?: string;
+}
+
+interface ReferenceEdge {
+  id: string;
+  kind: string;
+  // other is always the far endpoint, never the record the caller asked
+  // about -- a cites edge's other is what it points to, a cited_by edge's
+  // other is what points at it.
+  other: ReferenceEndpoint;
+  actor: { kind: string; id: string };
+  note?: string;
+  created_at: string;
+}
+
+interface ReferenceKindCount {
+  kind: string;
+  count: number;
+}
+
+interface ReferenceDirection {
+  edges: ReferenceEdge[];
+  // counts and total describe the whole direction, not the page window --
+  // narrowing the window narrows edges, never the vocabulary a reader is
+  // choosing among.
+  counts: ReferenceKindCount[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+interface RecordReferences {
+  record: { kind: string; id: string };
+  // available is false on a build with no reference store, and the two
+  // directions are then empty. It is a fact about the launch rather than about
+  // the record, so the route sets it and the fixtures below do not carry it:
+  // a page renders no citation section at all when it is false, which is why
+  // the real server answers 200 and says so instead of refusing.
+  available: boolean;
+  // host is omitted when the host identity is unknown, the way the real
+  // server omits it rather than inventing one.
+  host?: string;
+  cites: ReferenceDirection;
+  cited_by: ReferenceDirection;
+}
+
+// ReferenceGraph is one record's citations as a fixture states them: the
+// document without the launch-level `available` flag the route adds.
+type ReferenceGraph = Omit<RecordReferences, "available">;
+
+// REFERENCES_HOST is this synthetic machine's identity on reference edges.
+// Kept apart from FLEET_LOCAL_HOST because the two answer different
+// questions: an edge's actor is who asserted it, and this is only which
+// machine's catalog is answering the read.
+const REFERENCES_HOST = "workstation-01";
+
+const references: Record<string, ReferenceGraph> = {
+  "hyp_unverified-closures": {
+    record: { kind: "hypothesis", id: "hyp_unverified-closures" },
+    host: REFERENCES_HOST,
+    cites: {
+      edges: [
+        {
+          id: "rle_evidence-session-a", kind: "evidence",
+          other: {
+            kind: "session", id: "sk_7f3c1d9a204b6e58",
+            route_id: "claude/unverified-closures-a", label: "claude/unverified-closures-a",
+          },
+          actor: { kind: "run", id: "run_discovery-07" },
+          note: "Same completion-without-verification pattern observed directly in this synthetic session.",
+          created_at: "2026-08-30T10:15:00Z",
+        },
+        {
+          id: "rle_inspired-by-finding", kind: "inspired_by",
+          other: { kind: "finding", id: "fnd_conflicting-evidence" },
+          actor: { kind: "run", id: "run_discovery-07" },
+          note: "The finding's counter-evidence is what narrowed the original claim to this wording.",
+          created_at: "2026-08-30T09:40:00Z",
+        },
+        {
+          id: "rle_duplicates-absent-hyp", kind: "duplicates",
+          other: {
+            kind: "hypothesis", id: "hyp_absent-on-this-host", inert: true,
+            reason: "this host holds no hypothesis with that identifier: the edge's shape is visible here, the record it names is not",
+          },
+          actor: { kind: "operator", id: "operator" },
+          created_at: "2026-08-29T22:10:00Z",
+        },
+        {
+          id: "rle_addresses-complaint", kind: "addresses",
+          other: {
+            kind: "complaint", id: "cmp_slow-retrieval", inert: true,
+            reason: "this build opens no page for the \"complaint\" namespace, so the reference is recorded here but not followable from here",
+          },
+          actor: { kind: "system", id: "" },
+          created_at: "2026-08-29T18:05:00Z",
+        },
+        {
+          id: "rle_evidence-session-absent", kind: "evidence",
+          other: {
+            kind: "session", id: "sk_0000deadbeef0000", inert: true,
+            reason: "this host's catalog holds no session with that durable key: the edge's shape is visible here, the session it names is not",
+          },
+          actor: { kind: "run", id: "run_discovery-07" },
+          created_at: "2026-08-29T15:30:00Z",
+        },
+      ],
+      counts: [
+        { kind: "evidence", count: 2 },
+        { kind: "inspired_by", count: 1 },
+        { kind: "duplicates", count: 1 },
+        { kind: "addresses", count: 1 },
+      ],
+      total: 5,
+      limit: 50,
+      offset: 0,
+    },
+    cited_by: {
+      edges: [
+        {
+          id: "rle_refines-proposal", kind: "refines",
+          other: { kind: "proposal", id: "prp_criteria-template" },
+          actor: { kind: "run", id: "run_challenge-08" },
+          note: "Trials the template change this hypothesis's pattern suggests.",
+          created_at: "2026-08-30T11:00:00Z",
+        },
+        {
+          id: "rle_evidence-absent-obs", kind: "evidence",
+          other: {
+            kind: "observation", id: "obs_absent-on-this-host", inert: true,
+            reason: "this host holds no observation with that identifier: the edge's shape is visible here, the record it names is not",
+          },
+          actor: { kind: "run", id: "run_discovery-07" },
+          created_at: "2026-08-29T20:30:00Z",
+        },
+      ],
+      counts: [
+        { kind: "refines", count: 1 },
+        { kind: "evidence", count: 1 },
+      ],
+      total: 2,
+      limit: 50,
+      offset: 0,
+    },
+  },
+  "hyp_hostile-content": {
+    record: { kind: "hypothesis", id: "hyp_hostile-content" },
+    host: REFERENCES_HOST,
+    cites: {
+      edges: [
+        {
+          id: "rle_hostile-note", kind: "evidence",
+          other: { kind: "session", id: "sk_a1b2c3d4e5f60789", route_id: "claude/hostile-content-a", label: "claude/hostile-content-a" },
+          actor: { kind: "run", id: "run_challenge-08" },
+          note: HOSTILE_HTML,
+          created_at: "2026-08-29T02:05:00Z",
+        },
+      ],
+      counts: [{ kind: "evidence", count: 1 }],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    },
+    cited_by: { edges: [], counts: [], total: 0, limit: 50, offset: 0 },
+  },
+  "hyp_promoted-pattern": {
+    record: { kind: "hypothesis", id: "hyp_promoted-pattern" },
+    host: REFERENCES_HOST,
+    cites: { edges: [], counts: [], total: 0, limit: 50, offset: 0 },
+    cited_by: { edges: [], counts: [], total: 0, limit: 50, offset: 0 },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -1580,6 +1796,16 @@ function paged<T>(url: URL, items: T[]): { slice: T[]; total: number } {
   return { slice: items.slice(offset, offset + limit), total: items.length };
 }
 
+// linksUnwired mirrors serve.ts's routeServices gate for the one Phase B
+// route that table does not list: /api/record/links reads through the same
+// frontier service /api/hypotheses does, so the same MOCK_UNWIRED=frontier
+// launch that takes the dashboard's frontier panel away also has to refuse
+// this route rather than answer from fixtures a real launch could not reach.
+const linksUnwired = (Bun.env.MOCK_UNWIRED ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .includes("frontier");
+
 export async function phasebResponse(request: Request, url: URL): Promise<Response | null> {
   const { method } = request;
   const path = url.pathname;
@@ -1727,6 +1953,18 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
         last_decided_at: record.decisions[record.decisions.length - 1]?.recorded_at,
         refinements: record.refinements.length,
         excerpt: record.excerpt,
+        // #113's inbox column, counted from the same citation fixtures the
+        // record pages read, so a row's chip and the panel a click opens
+        // cannot disagree. Omitted entirely on an unwired launch: absent means
+        // nobody counted, which is not the claim a zero makes.
+        ...(linksUnwired
+          ? {}
+          : {
+              citations: {
+                cites: references[record.subject.id]?.cites.total ?? 0,
+                cited_by: references[record.subject.id]?.cited_by.total ?? 0,
+              },
+            }),
         ...localMark(localSync[record.subject.id] ?? "local", "2026-08-29T07:42:00Z"),
       }));
     const { slice, total } = paged(url, all);
@@ -2012,6 +2250,53 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
       invitations: invitations
         .filter((invitation) => invitation.record.type === ref.type && invitation.record.id === ref.id)
         .map(viewInvitation),
+    });
+  }
+
+  if (method === "GET" && path === "/api/record/links") {
+    const ref = recordRef(url);
+    if (!ref.type || !ref.id) {
+      return json({ error: "record type and id are required" }, 400);
+    }
+    const limitParam = url.searchParams.get("limit");
+    const limit = limitParam === null ? 50 : Number(limitParam);
+    if (!Number.isFinite(limit) || limit < 1 || limit > 200) {
+      return json({ error: "limit must be between 1 and 200" }, 400);
+    }
+    const offsetParam = url.searchParams.get("offset");
+    const offset = offsetParam === null ? 0 : Number(offsetParam);
+    if (!Number.isFinite(offset) || offset < 0) {
+      return json({ error: "offset must not be negative" }, 400);
+    }
+    const links = linksOf(ref.type, ref.id);
+    // windowed cuts one direction's edges to the requested page while leaving
+    // counts and total describing the whole direction, per the contract: the
+    // vocabulary a reader chooses among never narrows with the page.
+    const windowed = (direction: ReferenceDirection): ReferenceDirection => ({
+      edges: direction.edges.slice(offset, offset + limit),
+      counts: direction.counts,
+      total: direction.total,
+      limit,
+      offset,
+    });
+    // A launch with no reference store answers the shape with available false
+    // rather than refusing, which is what lets a record page drop the section
+    // instead of showing an error over a panel it never had.
+    if (linksUnwired) {
+      const nothing: ReferenceDirection = { edges: [], counts: [], total: 0, limit, offset };
+      return json({
+        record: { kind: ref.type, id: ref.id },
+        available: false,
+        cites: nothing,
+        cited_by: nothing,
+      });
+    }
+    return json({
+      record: links.record,
+      available: true,
+      ...(links.host ? { host: links.host } : {}),
+      cites: windowed(links.cites),
+      cited_by: windowed(links.cited_by),
     });
   }
 

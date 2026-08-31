@@ -622,6 +622,11 @@ export interface QueueItem extends FleetMark {
   refinements: number;
   // The subject's statement/title/claim, so the queue is readable.
   excerpt: string;
+  // How many typed references (#113) leave this record and arrive at it.
+  // Absent means not counted — this build has no reference graph, or the graph
+  // could not answer for this row — which is a different claim from a counted
+  // zero, so the chip is rendered only when the field is present.
+  citations?: { cites: number; cited_by: number };
 }
 
 export interface ReviewQueueResponse extends SyncNotice {
@@ -1568,12 +1573,87 @@ export interface ReviveResult {
   event: StatusEvent;
 }
 
+// Issue #113's typed reference graph, as a record surface reads it.
+//
+// ReferenceEndpoint carries an identity and never a destination. The route that
+// opens a record is derived from `kind` and `route_id ?? id` by this client's own
+// route table, so nothing a record's text contains can become an href: an edge
+// note is prose a model or an operator wrote, and a link built from it would make
+// the citation graph an injection surface.
+export interface ReferenceEndpoint {
+  kind: string;
+  id: string;
+  // The identifier this app's page for the record is reached by, present only
+  // when it differs from `id`. It exists for sessions: an edge records the
+  // deployment-scoped durable key, and the session page routes on the local
+  // selector.
+  route_id?: string;
+  // A short human identity for the record, when the server resolved one.
+  // Untrusted content.
+  label?: string;
+  // inert marks an endpoint that must render as identified text rather than as
+  // a link, and reason says why: a namespace with no page here, a service this
+  // session did not wire, a record this host does not hold, or a check that
+  // could not be completed. The reason is rendered rather than replaced with a
+  // generic message, on UnopenedNote's terms.
+  inert?: boolean;
+  reason?: string;
+}
+
+export interface ReferenceEdge {
+  id: string;
+  kind: string;
+  // The far endpoint only: the cited record under `cites`, the citing one under
+  // `cited_by`.
+  other: ReferenceEndpoint;
+  actor: { kind: string; id: string };
+  note?: string;
+  created_at: string;
+}
+
+export interface ReferenceKindCount {
+  kind: string;
+  count: number;
+}
+
+// One half of a record's citations. `counts` is over the whole direction while
+// `edges` is the page cut from it, so a chip row does not shrink as a reader
+// pages through the rows beneath it.
+export interface ReferenceDirection {
+  edges: ReferenceEdge[];
+  counts: ReferenceKindCount[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RecordReferences {
+  record: ReferenceEndpoint;
+  // false on a build with no reference store. The section renders nothing at
+  // all in that case: an absent feature is not a failed panel, which is why the
+  // route answers 200 and says so rather than refusing.
+  available: boolean;
+  // The machine whose catalog these edges were read from, absent when this
+  // instance cannot name itself.
+  host?: string;
+  cites: ReferenceDirection;
+  cited_by: ReferenceDirection;
+}
+
 export function getRecordRevisions(type: string, id: string): Promise<RevisionChain> {
   return request<RevisionChain>(`/api/record/revisions?${query({ type, id })}`);
 }
 
 export function getRecordDispositions(type: string, id: string): Promise<RecordDispositions> {
   return request<RecordDispositions>(`/api/record/dispositions?${query({ type, id })}`);
+}
+
+// getRecordLinks reads one record's citations, both directions in one request:
+// they are one section of one page, and two calls would let it render half an
+// answer. A session is named by its selector here, the identity every route and
+// command already uses; the server derives the durable key an edge records.
+export function getRecordLinks(type: string, id: string): Promise<RecordReferences> {
+  return request<RecordReferences>(`/api/record/links?${query({ type, id })}`);
 }
 
 export function decideDisposition(

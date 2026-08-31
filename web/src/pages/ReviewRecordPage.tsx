@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge, reviewTone, TimelineEntry } from "../analysis";
+import { RecordLinks } from "../references";
 
 // The four §4.7 dispositions, each with the sentence a reviewer needs before
 // choosing it. `reject-and-refine` is deliberately absent: it authorizes a
@@ -197,6 +198,11 @@ function ReviewRecordPage() {
             }}
           />
           <ExportCard type={type} id={id} />
+          {/* The citation section is on the disposition surface too, because
+              the question a reviewer asks before deciding is what else rests on
+              the record: a candidate four observations cite is not the same
+              decision as an isolated one. */}
+          <RecordLinks record={{ type, id }} heading="What this record cites" />
         </aside>
       </div>
     </section>

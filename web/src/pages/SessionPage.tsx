@@ -9,6 +9,7 @@ import {
   type TranscriptEvent,
 } from "../api";
 import { errorMessage, formatBytes, formatTime } from "../format";
+import { RecordLinks } from "../references";
 
 const TRANSCRIPT_PAGE_SIZE = 200;
 
@@ -248,6 +249,13 @@ function SessionPage() {
           <ul className="mono-list">{unresolvedRefs.map((ref) => <li key={ref}>{ref}</li>)}</ul>
         </article>
       )}
+
+      {/* A session's citations are almost entirely backlinks: an observation
+          rests on a session, never the reverse, so this panel is where an
+          operator finds what analysis was built on this conversation. It is
+          named by selector, and the server derives the durable key the edges
+          were recorded against. */}
+      <RecordLinks record={{ type: "session", id: session.selector }} heading="Analysis citing this session" />
 
       <article className="card transcript-card">
         <div className="section-heading">

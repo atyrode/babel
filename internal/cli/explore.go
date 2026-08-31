@@ -176,6 +176,11 @@ func (a *app) explore(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// An exploration is the run that mints most of #113's edges, so this is
+	// where the emission warnings get somewhere to go. They are warnings and
+	// never failures: the record is durable, one edge is missing, and the
+	// next append of the same triple restores it.
+	state.diag = func(err error) { a.diagf("babel: reference: %s\n", Sanitize(err.Error())) }
 	defer state.Close()
 
 	prep, err := state.runs.Preparation(ctx, runstore.PreparationID(*preparation))
@@ -306,6 +311,16 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		Ledger:       ledger,
 		Dispositions: state.dispositions,
 		Index:        idx,
+		// #113's emission half. Both are nil on a build with no reference
+		// store or no deployment identity, which internal/explore documents
+		// as the feature quietly absent: nothing is minted, no run is
+		// refused, and the records a run emits are durable either way.
+		// SessionKey is passed as a bare method value because
+		// resolve.Sessions.Key is total and nil-safe - it answers with the
+		// empty string rather than failing, and an emitter must not acquire
+		// a second failure mode.
+		References:   state.referenceAppender(),
+		SessionKey:   state.sessionKey(),
 		Inputs:       inputs,
 		Capabilities: runstore.CapabilityVersions{Tool: "babel/" + readBuildIdentity().Version},
 	})

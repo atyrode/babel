@@ -435,6 +435,15 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleRecordDispositions(w, r)
+	// Issue #113's reference graph read. It sits with #87's record routes
+	// because it is the third read one record page performs — the chain, the
+	// proposed actions, and now the citations — and it takes the same
+	// ?type=&id= pair the other two do so a page names its subject once.
+	case "/api/record/links":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRecordLinks(w, r)
 	case "/api/record/disposition/decide":
 		if !s.requireMethod(w, r, http.MethodPost) {
 			return

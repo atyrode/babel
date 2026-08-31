@@ -37,6 +37,17 @@ type QueueItem struct {
 	LastDecidedAt string  `json:"last_decided_at,omitempty"`
 	Refinements   int     `json:"refinements"`
 	Excerpt       string  `json:"excerpt"`
+	// Citations is issue #113's triage signal: how many typed references
+	// point out of this record and how many point at it. It is a count and
+	// not the edges themselves, because a queue is read to decide what to
+	// open next — "four records rest on this candidate" is what changes that
+	// decision, and the citations themselves are on the record's own page.
+	//
+	// Absent means not counted, which happens for two reasons and says so
+	// by being absent in both: this build has no reference graph wired, or
+	// the graph could not answer for this row. A zero is a different claim —
+	// counted, and nothing cites it — so the two are never collapsed.
+	Citations *citationCounts `json:"citations,omitempty"`
 }
 
 type queueResult struct {
@@ -130,6 +141,7 @@ func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 			LastDecidedAt: timeText(item.LastDecidedAt),
 			Refinements:   item.Refinements,
 			Excerpt:       excerpt,
+			Citations:     s.citationCounts(r.Context(), item.Subject),
 		})
 	}
 	if fleetWide {

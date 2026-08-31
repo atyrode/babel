@@ -13,6 +13,7 @@ import {
   statusTone,
   TimelineEntry,
 } from "../analysis";
+import { RecordLinks } from "../references";
 
 function HypothesisPage() {
   const { id: routeID } = useParams();
@@ -226,6 +227,13 @@ function HypothesisPage() {
               </ul>
             )}
           </article>
+
+          {/* #113's citation section, beside #87's lineage rather than merged
+              into it: lineage is the refinement chain internal/review derives,
+              and these are append-only typed edges any record may assert about
+              any other. One panel showing both would flatten two different
+              claims into one list. */}
+          <RecordLinks record={{ type: "hypothesis", id: hypothesis.id }} />
 
           <article className="card lineage-card">
             <div className="section-heading">
