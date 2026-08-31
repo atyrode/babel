@@ -77,6 +77,14 @@ const (
 	// account, and folding it into an existing class would have widened
 	// the boundary without the listing showing that anything new arrived.
 	ClassSpendMeasure Class = "spend measure"
+	// ClassRunState covers a run's own lifecycle state: whether a conductor
+	// cycle or an explore run is still working, and how it ended
+	// (migrations/0009). It is deliberately not ClassCommitState. A commit
+	// state says how far a record got through the object-first protocol; this
+	// says whether a process is alive, which is a claim about a machine rather
+	// than about a record, and it is the only class in this list whose value
+	// is expected to be wrong within minutes of being written.
+	ClassRunState Class = "run lifecycle state"
 )
 
 // allowlist enumerates every column the shared schema may contain, keyed by
@@ -225,6 +233,35 @@ var allowlist = map[string]map[string]Class{
 		"to_kind":    ClassIdentifier,
 		"to_id":      ClassOpaqueID,
 		"created_at": ClassTimestamp,
+	},
+	// Fleet presence (migrations/0009): what is running where, so a run is
+	// visible off-host before its receipt commits. It is the one table here
+	// that is neither archive metadata nor analysis output but ephemeral
+	// status, and every column is an identifier, a closed vocabulary or a
+	// timestamp - the same boundary, applied to a shorter-lived fact.
+	//
+	// recipe is classed as an identifier on 0001_init's own terms for
+	// `harness`: it names which cookbook guidance a run applied and says
+	// nothing about what the run read or concluded. The authority pair is
+	// #96's, which internal/run already keeps to a kind and an identifier
+	// reference and which the receipt header carries in the clear for the
+	// same reason. There is no note, reason, or failure-text column, and a
+	// future one would have no class to be listed under.
+	"presence": {
+		"presence_id":       ClassOpaqueID,
+		"deployment_id":     ClassOpaqueID,
+		"host_id":           ClassOpaqueID,
+		"kind":              ClassIdentifier,
+		"run_id":            ClassOpaqueID,
+		"recipe":            ClassIdentifier,
+		"preparation_id":    ClassOpaqueID,
+		"authority_kind":    ClassIdentifier,
+		"authority_ref":     ClassOpaqueID,
+		"state":             ClassRunState,
+		"started_at":        ClassTimestamp,
+		"heartbeat_at":      ClassTimestamp,
+		"finished_at":       ClassTimestamp,
+		"receipt_record_id": ClassOpaqueID,
 	},
 }
 
