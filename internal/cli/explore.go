@@ -113,6 +113,18 @@ type exploreResult struct {
 	Cancelled          bool          `json:"cancelled"`
 	Preflight          *preflightRow `json:"preflight,omitempty"`
 	Failures           []failureRow  `json:"failures,omitempty"`
+	// Duplicates are the near-duplicate warnings the run recorded against
+	// its own candidates (#87). Every one of those candidates was written:
+	// the warning says which existing record to compare it against, and
+	// answering it is the operator's call, not Babel's.
+	Duplicates []duplicateRow `json:"duplicates,omitempty"`
+}
+
+// duplicateRow is one near-duplicate warning in machine-readable output.
+type duplicateRow struct {
+	Hypothesis  string  `json:"hypothesis"`
+	DuplicateOf string  `json:"duplicate_of"`
+	Overlap     float64 `json:"overlap"`
 }
 
 // explore implements `babel explore`.
@@ -458,7 +470,10 @@ func (a *app) preflightInputs(ctx context.Context, prep runstore.Preparation, ro
 			SourceID:      sel.SourceID,
 			Path:          s.src.PrimaryPath,
 		}
-		capture, _, _, err := streamDigests(stream)
+		// No salience accumulator: this pass re-verifies the digests of a
+		// scope that was already fixed, and the terms that fixed it are in
+		// the preparation's related outputs already.
+		capture, _, _, err := streamDigests(stream, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -579,6 +594,13 @@ func exploreOutcome(prep runstore.Preparation, profile worker.ProfileRef, set *c
 		Enrolled:      enrolled,
 		Cancelled:     outcome.Cancelled,
 	}
+	for _, dup := range outcome.Duplicates {
+		res.Duplicates = append(res.Duplicates, duplicateRow{
+			Hypothesis:  Sanitize(dup.HypothesisID),
+			DuplicateOf: Sanitize(dup.DuplicateOf),
+			Overlap:     dup.Overlap,
+		})
+	}
 	for _, r := range set.All() {
 		res.Recipes = append(res.Recipes, Sanitize(r.ID)+"@"+strconv.Itoa(r.Version))
 	}
@@ -647,6 +669,13 @@ func (a *app) writeExplore(res exploreResult) {
 	writeDetail(a.stdout, rows)
 	for _, f := range res.Failures {
 		fmt.Fprintf(a.stdout, "failure  %s/%s: %s\n", f.Stage, f.Code, f.Message)
+	}
+	for _, dup := range res.Duplicates {
+		// Named as a suspicion, not a verdict. The candidate is recorded
+		// either way; what this says is which existing record to read
+		// beside it (#87).
+		fmt.Fprintf(a.stdout, "near-duplicate  %s resembles %s (%.0f%% of its terms)\n",
+			dup.Hypothesis, dup.DuplicateOf, dup.Overlap*100)
 	}
 	fmt.Fprintf(a.stdout, "\nreceipt %s\n", orMissing(res.ReceiptID))
 	if res.ChallengeReceiptID != "" {

@@ -290,6 +290,22 @@ type RetrievalStep struct {
 	// Results are the hits in the order they were returned. An empty result
 	// set is a recorded outcome, not a missing record.
 	Results []RetrievalResult `json:"results,omitempty"`
+	// Scope says which surface the retrieval read. Empty is the corpus,
+	// which is what every receipt written before #87's frontier
+	// self-retrieval means, so an old receipt reads correctly rather than
+	// reading as an unknown scope.
+	Scope string `json:"scope,omitempty"`
+	// Records are the durable frontier records a self-retrieval disclosed,
+	// by identifier and in the order they were served.
+	//
+	// They are not Results because they are not that kind of thing. A corpus
+	// hit is recovered by an event locator — file, line, offset, digest —
+	// and Evidence refuses to exist without one; a frontier record is
+	// recovered by its id, which is the whole of its address, and inventing
+	// a locator that pointed at the durable database would be a worse
+	// pointer than the id it wrapped. §9's plaintext allowlist admits
+	// structured identifiers, which is why they can be recorded here at all.
+	Records []string `json:"records,omitempty"`
 }
 
 // Candidate is one hypothesis a finite run surfaced but did not develop:
@@ -690,6 +706,15 @@ func validateTrace(b Body) error {
 			}
 			if err := validLocator(hit.Evidence.locator); err != nil {
 				return fmt.Errorf("receipt: retrieval step %d result %d: %w", i, j, err)
+			}
+		}
+		// A disclosed record with no usable identifier is refused for the
+		// same reason a hit with no locator is: a trace entry nobody can
+		// follow records that something was disclosed while making it
+		// impossible to check what.
+		for j, id := range step.Records {
+			if !validIdentifier(id) {
+				return fmt.Errorf("receipt: retrieval step %d record %d has no identity", i, j)
 			}
 		}
 	}

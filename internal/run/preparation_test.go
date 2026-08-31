@@ -54,7 +54,7 @@ func testSelection() []Selected {
 
 func mustPreparation(t *testing.T, at time.Time, selection []Selected) Preparation {
 	t.Helper()
-	p, err := NewPreparation(at, selection)
+	p, err := NewPreparation(at, selection, PreparationContext{})
 	if err != nil {
 		t.Fatalf("NewPreparation: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestNewPreparationRejectsInvalidSelections(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := NewPreparation(tc.at, tc.selection); err == nil {
+			if _, err := NewPreparation(tc.at, tc.selection, PreparationContext{}); err == nil {
 				t.Fatal("accepted an invalid preparation")
 			}
 		})

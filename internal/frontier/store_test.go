@@ -940,6 +940,7 @@ func TestPlaintextColumnsMatchAllowlist(t *testing.T) {
 			"id", "entity_type", "entity_id", "root_id", "supersedes_id", "seq",
 			"actor_kind", "actor_id", "recorded_at",
 		},
+		"frontier_duplicate_warning": {"id", "hypothesis_id", "duplicate_of", "recorded_at"},
 	}
 	// Join tables are pure relationship IDs and carry no payload at all.
 	payloadFree := map[string]bool{
@@ -1026,6 +1027,17 @@ func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
 	); err != nil {
 		t.Fatalf("reject and refine: %v", err)
 	}
+	// A third candidate carries the near-duplicate warning, so the table is
+	// populated: a DELETE against an empty table succeeds and would prove
+	// nothing.
+	warned, err := store.CreateHypothesis(ctx, HypothesisInput{
+		RunID:          "run-1",
+		Payload:        hypothesisPayload("a second idea, restated", 0.3),
+		NearDuplicates: []NearDuplicate{{HypothesisID: other.ID, Overlap: 0.8}},
+	})
+	if err != nil {
+		t.Fatalf("create warned hypothesis: %v", err)
+	}
 
 	// set is the mutation a future caller might plausibly write, and where
 	// selects the row it would aim at. The delete and the row count reuse
@@ -1047,6 +1059,7 @@ func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
 		"frontier_disposition":         {`disposition = 'accept'`, `subject_id = ?`, []any{proposal.ID}},
 		"frontier_refinement_request":  {`payload_json = '{}'`, `subject_id = ?`, []any{proposal.ID}},
 		"frontier_revision":            {`actor_id = 'forged'`, `entity_id = ?`, []any{hypothesis.ID}},
+		"frontier_duplicate_warning":   {`payload_json = '{}'`, `hypothesis_id = ?`, []any{warned.ID}},
 	}
 
 	tables := frontierTables(t, store)

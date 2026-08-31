@@ -189,6 +189,12 @@ func (c *Controller) job(st *state, stage Stage, runID string, recipes []*cookbo
 		Sources: sources,
 		Broker:  c.cfg.Broker,
 		Params:  merged,
+		// Every stage carries the refine-first context, not only discovery.
+		// A challenger arguing against a candidate the frontier already
+		// rejected, and a synthesizer consolidating a finding that restates
+		// an existing one, are the same duplication one step further down
+		// the development path (#87).
+		Extra: c.extra(st),
 	}
 }
 

@@ -108,6 +108,66 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
     instead of confidently working. There is no daemon mode: supervision,
     restart policy and wall-clock scheduling belong to the OS.
 
+- **Frontier self-retrieval and refine-first context (operator direction
+  2026-08-31, issue #87 item 4).** Babel could search the corpus and could not
+  search itself. Nothing in a run had any mechanical way to learn that the
+  candidate it was about to mint had already been minted, developed, argued
+  with and rejected three runs earlier, so the frontier grew a second copy of
+  every recurring idea — each with its own review history, and none of them
+  saying it was the second. Retrieval stays full-text only: §5.4 defers
+  semantic retrieval, and nothing here has an embedding, a similarity, or a
+  notion of a closest record.
+  - **The retrieval index gained a frontier surface.** Head revisions of every
+    hypothesis, observation and finding chain, plus the operator's recorded
+    review answers — §4.7 dispositions and the refinements they authorized —
+    are indexed beside the corpus, in the same rebuildable cache file and
+    through the same FTS5 match grammar, because a second copy of the grammar
+    that turns untrusted text into an FTS5 expression is a defect this
+    repository has already paid for. Reconciling is incremental by content: a
+    record whose derived text is unchanged is skipped without touching the
+    inverted index, a superseded wording is removed, and a candidate whose
+    status moved is rewritten. `babel prepare` and every run reconcile it, so
+    dedup and self-retrieval always answer about the same frontier. Index
+    schema version 2; a version 1 cache is discarded and rebuilt, which costs
+    one re-index of material derived from the corpus.
+  - **`babel prepare` records the prior outputs related to a scope.** The
+    prepared sessions' salient terms are computed mechanically during the pass
+    that already digests them — occurrences weighed against how many records
+    hold the term, so the boilerplate every transcript shares scores zero
+    without a stopword list to maintain — and the top page of a frontier search
+    with those terms is recorded in the preparation, bounded at twelve. The
+    record holds kinds and ids only, in canonical order: the summary a run
+    reads is derived from the record when the job is built, and sorting rather
+    than ranking keeps §5.4's rule that retrieval rank is not evidence
+    strength. Preparations carry a `serendipitous` marker for the conductor to
+    set; `--serendipitous` sets it by hand. Preparations recorded before this
+    release keep deriving their own ids, so a scope an operator already fixed
+    stays explorable.
+  - **Runs are told to refine rather than duplicate.** Every stage's job
+    document carries the related records with one-line summaries and a framing
+    that says exactly what they are: prior candidate ideas, untrusted, to be
+    refined, revived, or amended by naming their record id instead of restated.
+    A serendipity draw gets a different framing — inspiration, not constraint,
+    and following the corpus somewhere none of them mention is the correct
+    outcome. The five default-enabled lenses carry the same duty in their own
+    wording, at version 2.
+  - **A worker can search the frontier on demand.** `corpus-search` answers a
+    `"scope": "frontier"` argument out of the same index, bounded by the same
+    page limit and the same retrieval budget, redacted under the same
+    disclosure class, and receipted: the trace step records the scope and the
+    record identifiers it disclosed, because a frontier record is addressed by
+    id and has no locator to cite. An unserved scope is denied rather than
+    quietly answered with corpus hits. Every served page repeats the
+    refine-first framing from the constant the job document uses.
+  - **A near-duplicate candidate is recorded with a warning, never dropped.**
+    Before writing a candidate, Babel searches the frontier for it and measures
+    how much of the shorter statement's vocabulary the two share; past six
+    tenths, an immutable warning naming the record it resembles is written in
+    the same transaction as the candidate. The candidate keeps its wording, its
+    status history and its place on the frontier — honesty over tidiness, since
+    a duplicate recorded can be merged by a later revision and a duplicate
+    silently discarded cannot be recovered. `babel explore` reports the
+    warnings; the operator answers them.
 - **Actionable outputs: dispositions, revision chains, invitations, and
   revive (operator direction 2026-08-31, issue #87).** Babel's records could
   be read and decided on; they could not be acted on, argued with, or nudged.

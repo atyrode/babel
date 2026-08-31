@@ -52,7 +52,11 @@ import (
 // and rebuild the file, which is safe precisely because the index is
 // derived: the alternative — migrating a cache — would be work spent to
 // preserve rows that a re-index reproduces exactly.
-const schemaVersion = "1"
+// Version 2 adds the frontier surface: full-text search over Babel's own
+// output beside the search over the corpus (#87 item 4). A version 1 file is
+// discarded and rebuilt rather than altered, which costs one re-index of
+// material that is derived from the corpus and the durable store.
+const schemaVersion = "2"
 
 // FileName is the index database's name inside Babel's private local state
 // directory. It is a separate file from the durable local state on purpose
@@ -171,6 +175,34 @@ END;
 CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
 	INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, old.text);
 END;
+CREATE TABLE IF NOT EXISTS frontier_records(
+	id           INTEGER PRIMARY KEY,
+	record_id    TEXT NOT NULL UNIQUE,
+	kind         TEXT NOT NULL,
+	root_id      TEXT NOT NULL,
+	subject_kind TEXT NOT NULL,
+	subject_id   TEXT NOT NULL,
+	run_id       TEXT NOT NULL,
+	status       TEXT NOT NULL,
+	created_at   INTEGER NOT NULL,
+	fingerprint  TEXT NOT NULL,
+	summary      TEXT NOT NULL,
+	text         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS frontier_records_by_kind ON frontier_records(kind, created_at);
+CREATE INDEX IF NOT EXISTS frontier_records_by_root ON frontier_records(root_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS frontier_fts USING fts5(
+	text,
+	content='frontier_records',
+	content_rowid='id',
+	tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS frontier_fts_insert AFTER INSERT ON frontier_records BEGIN
+	INSERT INTO frontier_fts(rowid, text) VALUES(new.id, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS frontier_fts_delete AFTER DELETE ON frontier_records BEGIN
+	INSERT INTO frontier_fts(frontier_fts, rowid, text) VALUES('delete', old.id, old.text);
+END;
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`
 
 func (x *Index) init() error {
@@ -222,6 +254,18 @@ func (x *Index) init() error {
 		FROM events e JOIN sessions s ON s.id = e.session_id LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf("validate index schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	// The frontier surface is validated the same way and separately: it has
+	// no join to the corpus tables, and a query spanning both would report a
+	// drifted frontier row as a drifted event row.
+	rows, err = x.db.Query(`SELECT f.id, f.record_id, f.kind, f.root_id, f.subject_kind,
+		f.subject_id, f.run_id, f.status, f.created_at, f.fingerprint, f.summary, f.text
+		FROM frontier_records f LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf("validate frontier index schema: %w", err)
 	}
 	return rows.Close()
 }

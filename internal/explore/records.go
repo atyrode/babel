@@ -42,10 +42,17 @@ func (c *Controller) putHypothesis(st *state, stage Stage, runID string, committ
 	record, err := c.cfg.Frontier.CreateHypothesis(st.commit, frontier.HypothesisInput{
 		RunID:   runID,
 		Payload: cand.Hypothesis,
+		// The dedup check runs before the write and travels with it, so the
+		// warning and the candidate land in one transaction: a candidate
+		// stored without the warning computed for it would be a suspicion
+		// that existed only in a log. The candidate is written whatever the
+		// heuristic said — never dropped, never reworded (#87).
+		NearDuplicates: c.nearDuplicates(st, cand.Hypothesis.Statement),
 	})
 	if err != nil {
 		return "", false, err
 	}
+	st.out.Duplicates = append(st.out.Duplicates, record.Duplicates...)
 	return record.ID, false, c.bind(st, stage, cand.Ref, frontier.EntityHypothesis, record.ID)
 }
 

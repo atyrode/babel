@@ -4,14 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
 	"github.com/atyrode/babel/internal/digest"
 	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	runstore "github.com/atyrode/babel/internal/run"
 )
@@ -31,6 +34,12 @@ Each selected session is also read into the local retrieval index, which is
 the corpus a run's search tool is served from. The index is a rebuildable
 cache under the cache directory; the preparation record is durable state.
 
+Babel's own prior output is indexed alongside it and searched with the
+scope's own salient terms, mechanically and with no model involved. The
+records that come back are recorded in the preparation, and the run that
+explores it receives them as prior candidate ideas to refine, revive, or
+amend rather than duplicate (issue #87).
+
 Nothing is sent anywhere and no repository is opened: this command reads
 local files and writes local state only.
 
@@ -40,10 +49,25 @@ Flags:
   --host ID            archive host identity recorded in the selection
                        (default $BABEL_HOST_ID, else storage.json, else this
                        machine's hostname)
+  --serendipitous      mark the scope as drawn for exploration, so the
+                       related prior outputs reach the run as inspiration
+                       rather than as constraint
   --json               emit the preparation as JSON on stdout
 
 A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one.
 `
+
+// relatedRow is one prior Babel output a preparation names, in the
+// machine-readable document. The summary is not stored in the preparation —
+// only the kind and the id are — so what is shown here is read back from the
+// frontier and is the record's current wording.
+type relatedRow struct {
+	Kind    string  `json:"kind"`
+	ID      string  `json:"id"`
+	Summary string  `json:"summary"`
+	Status  string  `json:"status,omitempty"`
+	Overlap float64 `json:"-"`
+}
 
 // preparedRow is one session in a preparation's machine-readable document.
 // Digests are never truncated: a caller has to be able to compare them.
@@ -66,8 +90,17 @@ type prepareResult struct {
 	Host          string        `json:"host"`
 	Sessions      []preparedRow `json:"sessions"`
 	IndexedEvents int           `json:"indexed_events"`
-	Database      string        `json:"database"`
-	Index         string        `json:"index"`
+	// FrontierRecords is how many of Babel's own outputs the index now
+	// holds, and SalientTerms is the query the scope produced. Both are
+	// reported because the injection is mechanical: an operator who sees
+	// unexpected related records needs to be able to see the terms that
+	// found them.
+	FrontierRecords int          `json:"frontier_records"`
+	SalientTerms    []string     `json:"salient_terms,omitempty"`
+	Related         []relatedRow `json:"related,omitempty"`
+	Serendipitous   bool         `json:"serendipitous,omitempty"`
+	Database        string       `json:"database"`
+	Index           string       `json:"index"`
 }
 
 // prepare implements `babel prepare`.
@@ -78,6 +111,8 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 	sf.bindHarness(c)
 	sf.bindRoots(c)
 	c.fs.StringVar(&rf.host, "host", "", "archive host identity recorded in the selection")
+	serendipitous := c.fs.Bool("serendipitous", false,
+		"mark the scope as drawn for exploration rather than to answer something")
 	asJSON := c.fs.Bool("json", false, "emit the preparation as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -107,19 +142,23 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 	}
 	defer runs.Close()
 
-	scoped, err := a.fixScope(ctx, runs, chosen, host)
+	scoped, err := a.fixScope(ctx, runs, chosen, host, *serendipitous)
 	if err != nil {
 		return err
 	}
 
 	res := prepareResult{
-		PreparationID: string(scoped.prep.ID),
-		PreparedAt:    formatTime(scoped.prep.PreparedAt),
-		Host:          Sanitize(host),
-		Sessions:      scoped.rows,
-		IndexedEvents: scoped.indexed,
-		Database:      Sanitize(runs.Path()),
-		Index:         Sanitize(scoped.index),
+		PreparationID:   string(scoped.prep.ID),
+		PreparedAt:      formatTime(scoped.prep.PreparedAt),
+		Host:            Sanitize(host),
+		Sessions:        scoped.rows,
+		IndexedEvents:   scoped.indexed,
+		FrontierRecords: scoped.frontierRecords,
+		SalientTerms:    sanitizeAll(scoped.terms),
+		Related:         scoped.related,
+		Serendipitous:   scoped.prep.Serendipitous,
+		Database:        Sanitize(runs.Path()),
+		Index:           Sanitize(scoped.index),
 	}
 	if *asJSON {
 		return a.emitJSON(res)
@@ -134,6 +173,17 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 	fmt.Fprintf(a.stdout, "\npreparation %s over %d %s\n", res.PreparationID,
 		len(scoped.rows), plural(len(scoped.rows), "session", "sessions"))
 	fmt.Fprintf(a.stdout, "explore it with: babel explore --preparation %s\n", res.PreparationID)
+	if len(res.Related) > 0 {
+		framing := "to refine, revive, or amend rather than duplicate"
+		if res.Serendipitous {
+			framing = "as inspiration, not constraint"
+		}
+		fmt.Fprintf(a.stdout, "\n%d related prior %s, %s:\n",
+			len(res.Related), plural(len(res.Related), "output", "outputs"), framing)
+		for _, row := range res.Related {
+			fmt.Fprintf(a.stdout, "  %s %s  %s\n", row.Kind, row.ID, row.Summary)
+		}
+	}
 	return nil
 }
 
@@ -141,10 +191,13 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 // immutable preparation record, the per-session rows a caller reports, how many
 // events reached the retrieval index, and where that index lives.
 type scopedCorpus struct {
-	prep    runstore.Preparation
-	rows    []preparedRow
-	indexed int
-	index   string
+	prep            runstore.Preparation
+	rows            []preparedRow
+	indexed         int
+	frontierRecords int
+	terms           []string
+	related         []relatedRow
+	index           string
 }
 
 // fixScope digests and indexes the chosen sessions, derives the preparation
@@ -161,7 +214,7 @@ type scopedCorpus struct {
 // caller that fixed a scope without recording it would hold an identity nothing
 // could later resolve.
 func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
-	chosen []localSession, host string) (scopedCorpus, error) {
+	chosen []localSession, host string, serendipitous bool) (scopedCorpus, error) {
 	d, err := babelDirs()
 	if err != nil {
 		return scopedCorpus{}, err
@@ -178,6 +231,11 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 		index: idx.Path(),
 	}
 	selection := make([]runstore.Selected, 0, len(chosen))
+	// The scope's salient terms are accumulated during the digest pass, which
+	// already reads every event of every selected session. Deriving them
+	// there rather than in a third pass is what keeps the frontier query free
+	// on a corpus whose only real cost is bytes read.
+	salience := index.NewSalience()
 	for n, s := range chosen {
 		// A cold preparation reads every selected session twice, once to
 		// digest and once to index, which takes minutes on a large corpus:
@@ -194,7 +252,7 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 			SourceID:      s.src.SourceID,
 			Path:          s.src.PrimaryPath,
 		}
-		capture, source, size, err := streamDigests(stream)
+		capture, source, size, err := streamDigests(stream, salience)
 		if err != nil {
 			return scopedCorpus{}, err
 		}
@@ -228,7 +286,33 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 		})
 	}
 
-	prep, err := runstore.NewPreparation(time.Now().UTC(), selection)
+	// The frontier's own retrieval surface is reconciled here, with the
+	// sessions, because this is the command that fixes a scope: the related
+	// outputs a preparation records have to be the ones the frontier held
+	// when it was fixed, not the ones it held whenever some earlier command
+	// last looked.
+	front, err := frontier.Open(d.durableDir())
+	if err != nil {
+		return scopedCorpus{}, err
+	}
+	defer front.Close()
+	terms := salience.Terms(0)
+	frontierRecords, related, err := a.relatedOutputs(ctx, idx, front, terms)
+	if err != nil {
+		return scopedCorpus{}, err
+	}
+	refs := make([]runstore.RelatedOutput, 0, len(related))
+	for _, row := range related {
+		refs = append(refs, runstore.RelatedOutput{Kind: row.Kind, ID: row.ID})
+	}
+	out.frontierRecords = frontierRecords
+	out.terms = terms
+	out.related = related
+
+	prep, err := runstore.NewPreparation(time.Now().UTC(), selection, runstore.PreparationContext{
+		Related:       refs,
+		Serendipitous: serendipitous,
+	})
 	if err != nil {
 		return scopedCorpus{}, fmt.Errorf("fix the corpus scope: %w", err)
 	}
@@ -266,8 +350,63 @@ func selectSessions(c *cmd, sessions []localSession, selectors []string) ([]loca
 	return chosen, nil
 }
 
+// relatedOutputs reconciles the frontier surface of the retrieval index and
+// asks it, with the scope's own salient terms, what Babel has already said
+// about material like this (#87 item 4).
+//
+// It is mechanical from end to end: the terms come from term frequency against
+// document frequency over the prepared sessions, the query is the same
+// optional-term FTS expression a worker's search would use, and the page is
+// bounded by run.MaxRelatedOutputs. No model is consulted and none could be —
+// this runs inside `babel prepare`, which sends nothing anywhere.
+//
+// A scope with nothing searchable in it, or a frontier holding nothing, yields
+// no related records and no error. That is a real answer: the first
+// preparation on a machine has no prior output to relate to, and a preparation
+// that pretended otherwise would be recording an empty gesture in an immutable
+// record.
+func (a *app) relatedOutputs(ctx context.Context, idx *index.Index, front *frontier.Store,
+	terms []string) (int, []relatedRow, error) {
+	outputs, err := front.Outputs(ctx)
+	if err != nil {
+		return 0, nil, fmt.Errorf("read the frontier: %w", err)
+	}
+	indexed, err := idx.IndexFrontier(ctx, outputs)
+	if err != nil {
+		return 0, nil, fmt.Errorf("index the frontier: %w", err)
+	}
+	if len(terms) == 0 || indexed.Records == 0 {
+		return indexed.Records, nil, nil
+	}
+	hits, err := idx.FrontierSearch(ctx, index.FrontierQuery{
+		Match: strings.Join(terms, " "),
+		Order: index.OrderRelevance,
+		Limit: runstore.MaxRelatedOutputs,
+	})
+	if err != nil {
+		// An unsearchable query is not a failed preparation. The scope
+		// produced no term the tokenizer could match, which is a fact about
+		// the scope, and the preparation records no related outputs.
+		if errors.Is(err, index.ErrNoSearchableTerm) || errors.Is(err, index.ErrMatchTooLong) {
+			return indexed.Records, nil, nil
+		}
+		return 0, nil, fmt.Errorf("search the frontier: %w", err)
+	}
+	related := make([]relatedRow, 0, len(hits))
+	for _, hit := range hits {
+		related = append(related, relatedRow{
+			Kind:    Sanitize(string(hit.Kind)),
+			ID:      Sanitize(hit.ID),
+			Summary: Sanitize(hit.Summary),
+			Status:  Sanitize(string(hit.Status)),
+		})
+	}
+	return indexed.Records, related, nil
+}
+
 // streamDigests reads one primary log once and returns both digests §7
-// requires of a selection entry, plus the bytes read.
+// requires of a selection entry, plus the bytes read. It also feeds the
+// scope's salience accumulator, when one is supplied.
 //
 // The capture digest covers the file as it is on disk, which is what a
 // restore is checked against. The source digest covers the normalized event
@@ -276,8 +415,9 @@ func selectSessions(c *cmd, sessions []localSession, selectors []string) ([]loca
 // later reviewer needs in order to tell "the corpus changed" from "our
 // reading of it changed". Both come from one pass, because the corpus is
 // dominated by a handful of very large sessions and reading them twice per
-// preparation would double the only cost that matters.
-func streamDigests(stream event.Stream) (capture, source digest.Digest, size int64, err error) {
+// preparation would double the only cost that matters — which is also why
+// the salient terms are counted here instead of in a pass of their own.
+func streamDigests(stream event.Stream, salience *index.Salience) (capture, source digest.Digest, size int64, err error) {
 	file, err := os.Open(stream.Path)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("open %s: %w", stream.Path, err)
@@ -289,6 +429,9 @@ func streamDigests(stream event.Stream) (capture, source digest.Digest, size int
 	encoder := json.NewEncoder(sourceHash)
 	counted := &countingReader{r: io.TeeReader(file, captureHash)}
 	if err := event.Scan(counted, stream, func(e event.Event) error {
+		if salience != nil {
+			salience.Add(e.Text)
+		}
 		return encoder.Encode(e)
 	}); err != nil {
 		return "", "", 0, fmt.Errorf("read %s: %w", stream.Path, err)

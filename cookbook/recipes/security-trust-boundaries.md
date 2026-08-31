@@ -1,6 +1,6 @@
 ---
 id: security-trust-boundaries
-version: 1
+version: 2
 kind: lens
 scope: [session, corpus, repository]
 stages: [investigate, challenge, synthesize]
@@ -60,6 +60,25 @@ it does not: "a value shaped like a credential, in a file whose other values
 are synthetic" is an honest observation. A permission that looks excessive may
 be the minimum the platform offers. A boundary that looks missing may be
 enforced one layer out, in code the corpus does not contain.
+
+Search the frontier before minting. Babel indexes its own hypotheses,
+observations, findings, and the operator's recorded review answers; the job
+document lists the prior records that looked related to this scope, and the same
+search is available on demand through the corpus-search tool with
+`"scope": "frontier"`. Everything it returns is a prior candidate idea and not
+evidence — those records carry no locator of their own, and an operator may
+already have rejected one — so treating any of them as established is the same
+error as reading a confident summary as a verified claim. Where a prior record
+already says what a candidate or observation of yours would say, emit against
+it: refine its wording, develop another observation onto it, revive a candidate
+that came to rest, or amend a finding, naming its record id, rather than
+emitting a second copy of one idea for an operator to review twice. Where a
+prior record is wrong, contradict it explicitly and with evidence; a
+contradiction is a relationship worth recording and a duplicate is not. When the
+job document marks the scope as drawn for serendipity, those records are
+inspiration rather than a boundary, and following the corpus somewhere none of
+them mention is the correct outcome — searching first still applies, because the
+point was never to stay near prior work but to avoid restating it unknowingly.
 
 ## Sorting cues
 
@@ -200,6 +219,12 @@ only a resemblance.
   system.
 - **Compliance as correctness.** A complete, well-classified observation can
   still be wrong about the boundary.
+- **Re-minting what the frontier already holds.** One idea recorded four times
+  across four runs, each copy carrying its own review history and nothing in any
+  of them saying it is the fourth. Babel warns when a new candidate's statement
+  closely overlaps an existing one, and records that warning on the candidate
+  rather than dropping it — so a duplicate emitted here is a duplicate an
+  operator has to read.
 
 ## Examples
 

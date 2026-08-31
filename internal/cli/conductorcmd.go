@@ -706,7 +706,8 @@ func (r *conductorRunner) Run(ctx context.Context, runID string,
 	if err != nil {
 		return conductor.Result{}, err
 	}
-	scoped, err := r.app.fixScope(ctx, r.state.runs, chosen, r.host)
+	scoped, err := r.app.fixScope(ctx, r.state.runs, chosen, r.host,
+		a.Rung == conductor.RungSerendipity)
 	if err != nil {
 		return conductor.Result{}, err
 	}
