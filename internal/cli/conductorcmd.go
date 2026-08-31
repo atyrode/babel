@@ -965,6 +965,23 @@ type conductorStatusResult struct {
 	Spend   *conductorSpendRow  `json:"spend,omitempty"`
 	Cycles  []conductorCycleRow `json:"cycles"`
 	Journal string              `json:"journal"`
+	// Fleet is what every machine in the deployment says it is running
+	// (#118). It is a separate field from Cycles and never merged into it,
+	// because the two are different kinds of statement: a cycle row is this
+	// machine's own journal, observed on this filesystem, and a fleet row is
+	// another machine's claim read out of PostgreSQL minutes ago. A caller
+	// that could not tell them apart would treat an advisory heartbeat as a
+	// local fact.
+	//
+	// It is empty on a machine with no presence table, and FleetNote then says
+	// why. Both being present at once is not a state: either this host could
+	// read the fleet or it could not.
+	Fleet []conductorFleetRow `json:"fleet"`
+	// FleetNote is why there are no fleet rows, empty when there are. It is a
+	// note rather than an error because presence is advisory: a shared catalog
+	// this machine cannot reach must not stop `conductor status` answering
+	// about the loop it was actually asked about.
+	FleetNote string `json:"fleet_note,omitempty"`
 }
 
 // conductorRungRow is one ladder rung's queue.
@@ -1049,6 +1066,16 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 		Cycles:     []conductorCycleRow{},
 		Rungs:      []conductorRungRow{},
 		Duties:     []conductorDutyRow{},
+		Fleet:      []conductorFleetRow{},
+	}
+	// The fleet read is done first and never fails the command: presence is
+	// advisory, and a shared catalog this machine cannot reach must not stop
+	// `conductor status` answering about the local loop it was asked about.
+	// presencerows.go turns every failure into one sentence.
+	if rows, note := a.presenceRows(ctx); note != "" {
+		res.FleetNote = note
+	} else {
+		res.Fleet = rows
 	}
 	if res.Configured {
 		cfg := conductorConfigDocument(settings, path)
@@ -1177,6 +1204,12 @@ func (a *app) writeConductorStatus(res conductorStatusResult) {
 	}
 	fmt.Fprintln(a.stdout)
 	a.writeConductorCycles(res.Cycles)
+	// The fleet comes last, after this machine's own journal, and under its own
+	// heading. The order is the argument: everything above is observed here and
+	// true, and everything below is another machine's claim — so an operator who
+	// stops reading has read the reliable half, and one who continues crosses a
+	// visible boundary rather than a column.
+	a.writePresenceRows(res.Fleet, res.FleetNote)
 }
 
 // writeConductorCycles renders a cycle list as a table. Authority is a column
