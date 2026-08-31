@@ -267,7 +267,8 @@ func (h *harness) receipt(query, failure string) run.Receipt {
 			At:      started,
 		}},
 	}
-	receipt, err := run.NewReceipt(run.NewReceiptID(), "run-1", prep, body, started)
+	receipt, err := run.NewReceipt(run.NewReceiptID(), "run-1", prep,
+		run.Authority{Kind: run.AuthorityOperator, Ref: "command:explore"}, body, started)
 	if err != nil {
 		h.t.Fatalf("NewReceipt: %v", err)
 	}

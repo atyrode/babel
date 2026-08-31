@@ -21,7 +21,8 @@ import (
 const storeComponent = "run"
 
 // storeVersion is this component's schema version in the durable database.
-const storeVersion = 1
+// Version 2 added the authority a receipt was run under (#96).
+const storeVersion = 2
 
 // DatabaseName is the durable database file, held in Babel's private local
 // state directory.
@@ -114,6 +115,8 @@ CREATE TABLE IF NOT EXISTS run_receipt(
 	revision       INTEGER NOT NULL,
 	supersedes     TEXT REFERENCES run_receipt(id),
 	recorded_at    TEXT NOT NULL,
+	authority_kind TEXT,
+	authority_ref  TEXT,
 	sync_state     TEXT NOT NULL CHECK (sync_state IN ('pending-sync', 'committed')),
 	counts         TEXT NOT NULL,
 	payload        BLOB NOT NULL,
@@ -131,14 +134,21 @@ CREATE TRIGGER IF NOT EXISTS run_preparation_append_only
 BEFORE DELETE ON run_preparation
 BEGIN SELECT RAISE(ABORT, 'preparation records are append-only'); END;
 
-CREATE TRIGGER IF NOT EXISTS run_receipt_immutable
-BEFORE UPDATE OF id, schema_version, run_id, preparation_id, revision, supersedes,
-	recorded_at, counts, payload ON run_receipt
-BEGIN SELECT RAISE(ABORT, 'run receipts are immutable'); END;
+` + receiptImmutable + `
 
 CREATE TRIGGER IF NOT EXISTS run_receipt_append_only
 BEFORE DELETE ON run_receipt
 BEGIN SELECT RAISE(ABORT, 'run receipts are append-only'); END;`
+
+// receiptImmutable is the trigger that makes a stored receipt's content
+// unwritable. It is a separate constant because a migration that adds a column
+// has to recreate it: a trigger that still names the old column list would
+// leave the new one the single writable piece of an immutable record.
+const receiptImmutable = `
+CREATE TRIGGER IF NOT EXISTS run_receipt_immutable
+BEFORE UPDATE OF id, schema_version, run_id, preparation_id, revision, supersedes,
+	recorded_at, authority_kind, authority_ref, counts, payload ON run_receipt
+BEGIN SELECT RAISE(ABORT, 'run receipts are immutable'); END;`
 
 // migrate prepares the connection and brings this component's schema up to
 // storeVersion. The pragmas follow internal/catalog's: WAL so a reader is not
@@ -176,8 +186,60 @@ func (s *Store) migrate() error {
 		}
 	case err != nil:
 		return fmt.Errorf("run: read durable schema version: %w", err)
-	case version != storeVersion:
+	case version > storeVersion:
 		return fmt.Errorf("run: durable schema version %d is not supported by this build", version)
+	case version < storeVersion:
+		if err := s.upgrade(version); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// upgrade brings an older database up to storeVersion.
+//
+// Migrating rather than refusing matters here in a way it does not for the
+// retrieval index: nothing in this file is derivable, so a build that could
+// only read the schema it created would leave an operator choosing between an
+// old binary and their analysis. Each step is one version wide and runs in one
+// transaction with the ledger update, so an interrupted upgrade leaves the
+// database at the version it was.
+func (s *Store) upgrade(from int) error {
+	// Version 1 -> 2: receipts record the authority they ran under (#96).
+	// Existing rows are left with no authority rather than backfilled: those
+	// runs happened before anything was recording why, and writing "operator"
+	// over them would manufacture the provenance the column exists to carry.
+	steps := map[int][]string{
+		2: {
+			`ALTER TABLE run_receipt ADD COLUMN authority_kind TEXT`,
+			`ALTER TABLE run_receipt ADD COLUMN authority_ref TEXT`,
+			`DROP TRIGGER IF EXISTS run_receipt_immutable`,
+			receiptImmutable,
+		},
+	}
+	for v := from + 1; v <= storeVersion; v++ {
+		stmts, ok := steps[v]
+		if !ok {
+			return fmt.Errorf("run: this build has no migration to durable schema version %d", v)
+		}
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("run: begin durable migration to %d: %w", v, err)
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("run: migrate durable schema to %d: %w", v, err)
+			}
+		}
+		if _, err := tx.Exec(`UPDATE schema_migration SET version = ? WHERE component = ?`,
+			v, storeComponent); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("run: record durable schema version %d: %w", v, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("run: commit durable migration to %d: %w", v, err)
+		}
 	}
 	return nil
 }
@@ -292,12 +354,19 @@ func (s *Store) PutReceipt(ctx context.Context, r Receipt) error {
 	if r.Header.Supersedes != "" {
 		supersedes = string(r.Header.Supersedes)
 	}
+	// An unrecorded authority is stored as NULL rather than as empty strings,
+	// so a row from before the field existed and a row that claims an empty
+	// authority stay different states. Only the first can happen.
+	var kind, ref any
+	if r.Header.Authority.Recorded() {
+		kind, ref = string(r.Header.Authority.Kind), r.Header.Authority.Ref
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO run_receipt(
 		id, schema_version, run_id, preparation_id, revision, supersedes,
-		recorded_at, sync_state, counts, payload)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recorded_at, authority_kind, authority_ref, sync_state, counts, payload)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(r.Header.ID), r.Header.Schema, r.Header.RunID, string(r.Header.PreparationID),
-		r.Header.Revision, supersedes, formatTime(r.Header.RecordedAt), SyncPending,
+		r.Header.Revision, supersedes, formatTime(r.Header.RecordedAt), kind, ref, SyncPending,
 		counts, payload); err != nil {
 		return fmt.Errorf("run: store receipt: %w", wrapConstraint(err))
 	}
@@ -424,7 +493,8 @@ func (s *Store) Revisions(ctx context.Context, runID string) ([]Receipt, error) 
 }
 
 const receiptColumns = `SELECT id, schema_version, run_id, preparation_id, revision,
-	supersedes, recorded_at, sync_state, counts, payload FROM run_receipt`
+	supersedes, recorded_at, authority_kind, authority_ref, sync_state, counts, payload
+	FROM run_receipt`
 
 // scanner is satisfied by both *sql.Row and *sql.Rows, so one receipt decoder
 // serves the single-row and multi-row reads.
@@ -439,16 +509,24 @@ func decodeReceipt(row scanner) (Receipt, error) {
 		prepID     string
 		supersedes sql.NullString
 		recordedAt string
+		kind       sql.NullString
+		ref        sql.NullString
 		counts     []byte
 		payload    []byte
 	)
 	if err := row.Scan(&id, &h.Schema, &h.RunID, &prepID, &h.Revision, &supersedes,
-		&recordedAt, &h.Sync, &counts, &payload); err != nil {
+		&recordedAt, &kind, &ref, &h.Sync, &counts, &payload); err != nil {
 		return Receipt{}, err
 	}
 	h.ID = ReceiptID(id)
 	h.PreparationID = PreparationID(prepID)
 	h.Supersedes = ReceiptID(supersedes.String)
+	// A row written before the authority column existed decodes to no
+	// authority at all, which is what Recorded reports. It is not validated on
+	// the way out: the record is what it is, and refusing to read a receipt
+	// because it predates the field would lose the history the field was added
+	// to describe.
+	h.Authority = Authority{Kind: AuthorityKind(kind.String), Ref: ref.String}
 	parsed, err := time.Parse(time.RFC3339Nano, recordedAt)
 	if err != nil {
 		return Receipt{}, fmt.Errorf("run: stored receipt has an unreadable time: %w", err)

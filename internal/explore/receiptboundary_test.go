@@ -41,7 +41,7 @@ func TestExportedReceiptNeverCarriesAServedExcerpt(t *testing.T) {
 		"-request-capability", "corpus-search", "-search-query", "")
 	controller := h.controller(args)
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-boundary"})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-boundary"})
 	if err != nil {
 		t.Fatalf("Explore: %v (failures %+v)", err, outcome.Failures)
 	}

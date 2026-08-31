@@ -101,16 +101,83 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	idx, err := index.Open(d.indexDir())
+	runs, err := runstore.Open(d.durableDir())
 	if err != nil {
 		return err
+	}
+	defer runs.Close()
+
+	scoped, err := a.fixScope(ctx, runs, chosen, host)
+	if err != nil {
+		return err
+	}
+
+	res := prepareResult{
+		PreparationID: string(scoped.prep.ID),
+		PreparedAt:    formatTime(scoped.prep.PreparedAt),
+		Host:          Sanitize(host),
+		Sessions:      scoped.rows,
+		IndexedEvents: scoped.indexed,
+		Database:      Sanitize(runs.Path()),
+		Index:         Sanitize(scoped.index),
+	}
+	if *asJSON {
+		return a.emitJSON(res)
+	}
+	table := make([][]string, 0, len(scoped.rows))
+	for _, row := range scoped.rows {
+		table = append(table, []string{row.Selector, fmt.Sprintf("%d", row.Bytes), fmt.Sprintf("%d", row.Events)})
+	}
+	if err := writeTable(a.stdout, []string{"SELECTOR", "BYTES", "EVENTS"}, table); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.stdout, "\npreparation %s over %d %s\n", res.PreparationID,
+		len(scoped.rows), plural(len(scoped.rows), "session", "sessions"))
+	fmt.Fprintf(a.stdout, "explore it with: babel explore --preparation %s\n", res.PreparationID)
+	return nil
+}
+
+// scopedCorpus is what fixing one exploration's corpus scope produced: the
+// immutable preparation record, the per-session rows a caller reports, how many
+// events reached the retrieval index, and where that index lives.
+type scopedCorpus struct {
+	prep    runstore.Preparation
+	rows    []preparedRow
+	indexed int
+	index   string
+}
+
+// fixScope digests and indexes the chosen sessions, derives the preparation
+// identity from their content, and records it.
+//
+// It is the whole of §6.5's preparation step, shared by `babel prepare` and by a
+// conductor cycle. Sharing it is not tidiness: a preparation's identity is
+// derived from what was selected and digested, so a second implementation that
+// digested or normalized differently would mint a different identity for the
+// same corpus and make two runs over one scope look like runs over two.
+//
+// Storing is part of it. A preparation is content-addressed and idempotent
+// (§8), so a repeated scope is the same record rather than a second one, and a
+// caller that fixed a scope without recording it would hold an identity nothing
+// could later resolve.
+func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
+	chosen []localSession, host string) (scopedCorpus, error) {
+	d, err := babelDirs()
+	if err != nil {
+		return scopedCorpus{}, err
+	}
+	idx, err := index.Open(d.indexDir())
+	if err != nil {
+		return scopedCorpus{}, err
 	}
 	defer idx.Close()
 
 	version := readBuildIdentity().Version
-	rows := make([]preparedRow, 0, len(chosen))
+	out := scopedCorpus{
+		rows:  make([]preparedRow, 0, len(chosen)),
+		index: idx.Path(),
+	}
 	selection := make([]runstore.Selected, 0, len(chosen))
-	indexed := 0
 	for n, s := range chosen {
 		// A cold preparation reads every selected session twice, once to
 		// digest and once to index, which takes minutes on a large corpus:
@@ -119,7 +186,7 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 		a.diagf("preparing %d/%d %s...\n", n+1, len(chosen), Sanitize(s.key()))
 		desc, err := describe(ctx, s)
 		if err != nil {
-			return err
+			return scopedCorpus{}, err
 		}
 		stream := event.Stream{
 			Harness:       s.src.Harness,
@@ -129,13 +196,13 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 		}
 		capture, source, size, err := streamDigests(stream)
 		if err != nil {
-			return err
+			return scopedCorpus{}, err
 		}
 		result, err := idx.IndexSession(ctx, stream)
 		if err != nil {
-			return fmt.Errorf("index %s: %w", s.key(), err)
+			return scopedCorpus{}, fmt.Errorf("index %s: %w", s.key(), err)
 		}
-		indexed += result.Events
+		out.indexed += result.Events
 		selection = append(selection, runstore.Selected{
 			Host:          host,
 			Harness:       s.src.Harness,
@@ -148,7 +215,7 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 				Completeness: completenessOf(desc),
 			},
 		})
-		rows = append(rows, preparedRow{
+		out.rows = append(out.rows, preparedRow{
 			Harness:       Sanitize(s.src.Harness),
 			SourceID:      Sanitize(s.src.SourceID),
 			Selector:      Sanitize(s.key()),
@@ -163,39 +230,13 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 
 	prep, err := runstore.NewPreparation(time.Now().UTC(), selection)
 	if err != nil {
-		return fmt.Errorf("fix the corpus scope: %w", err)
+		return scopedCorpus{}, fmt.Errorf("fix the corpus scope: %w", err)
 	}
-	runs, err := runstore.Open(d.durableDir())
-	if err != nil {
-		return err
-	}
-	defer runs.Close()
 	if err := runs.PutPreparation(ctx, prep); err != nil {
-		return fmt.Errorf("record preparation %s: %w", prep.ID, err)
+		return scopedCorpus{}, fmt.Errorf("record preparation %s: %w", prep.ID, err)
 	}
-
-	res := prepareResult{
-		PreparationID: string(prep.ID),
-		PreparedAt:    formatTime(prep.PreparedAt),
-		Host:          Sanitize(host),
-		Sessions:      rows,
-		IndexedEvents: indexed,
-		Database:      Sanitize(runs.Path()),
-		Index:         Sanitize(idx.Path()),
-	}
-	if *asJSON {
-		return a.emitJSON(res)
-	}
-	table := make([][]string, 0, len(rows))
-	for _, row := range rows {
-		table = append(table, []string{row.Selector, fmt.Sprintf("%d", row.Bytes), fmt.Sprintf("%d", row.Events)})
-	}
-	if err := writeTable(a.stdout, []string{"SELECTOR", "BYTES", "EVENTS"}, table); err != nil {
-		return err
-	}
-	fmt.Fprintf(a.stdout, "\npreparation %s over %d %s\n", res.PreparationID, len(rows), plural(len(rows), "session", "sessions"))
-	fmt.Fprintf(a.stdout, "explore it with: babel explore --preparation %s\n", res.PreparationID)
-	return nil
+	out.prep = prep
+	return out, nil
 }
 
 // selectSessions narrows a scan to the named selectors, or to everything

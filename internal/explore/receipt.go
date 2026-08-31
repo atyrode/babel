@@ -61,7 +61,8 @@ func (c *Controller) writeReceipt(st *state, runID string, workerReceipt *worker
 	}
 	var receipt run.Receipt
 	if len(prior) == 0 {
-		receipt, err = run.NewReceipt(run.NewReceiptID(), runID, c.cfg.Preparation, body, c.now())
+		receipt, err = run.NewReceipt(run.NewReceiptID(), runID, c.cfg.Preparation,
+			st.opt.Authority, body, c.now())
 	} else {
 		body.AmendmentReason = "the run was resumed after an interruption"
 		receipt, err = run.Amend(prior[len(prior)-1], run.NewReceiptID(), body, c.now())

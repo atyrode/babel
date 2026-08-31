@@ -53,6 +53,79 @@ type ReceiptID string
 // mean when there is no coordinator to ask.
 func NewReceiptID() ReceiptID { return ReceiptID("rcpt-" + rand.Text()) }
 
+// AuthorityKind names what caused a run to happen. SPEC.md §7 makes a receipt
+// the record of what a run did; issue #96 makes it the record of why the run
+// was allowed to start, which is a different question and the one an operator
+// watching an autonomous loop actually asks.
+//
+// The vocabulary is closed at three because there are exactly three ways work
+// can be authorized: a person asked for it, a named standing policy directed
+// it, or the loop's protected serendipity floor drew it. A fourth kind would
+// be a run nobody could be held to.
+type AuthorityKind string
+
+// The three authorities a run may carry.
+const (
+	// AuthorityOperator is a person's own request: a command they typed or an
+	// invitation they left. The operator always outranks the loop.
+	AuthorityOperator AuthorityKind = "operator"
+	// AuthorityPolicy is a named standing policy or duty directing the run.
+	AuthorityPolicy AuthorityKind = "policy"
+	// AuthoritySerendipity is a declared draw from the loop's chaotic floor,
+	// which has no aim by design and says so rather than borrowing a reason.
+	AuthoritySerendipity AuthorityKind = "serendipity"
+)
+
+// Authority is a run's why: which of the three authorities started it, and the
+// reference that makes the claim checkable — the command, the invitation id,
+// the policy name, or the identity of the draw.
+//
+// It lives in the header rather than the body because it is an identifier pair
+// and nothing else, which is inside SPEC.md §9's plaintext allowlist: a
+// deployment that seals receipt bodies must still be able to list runs by why
+// they happened, and an authority readable only by opening the payload would
+// make the legibility invariant depend on holding a key.
+//
+// A zero Authority is not an error everywhere: receipts recorded before this
+// field existed carry none, and Recorded reports that honestly rather than
+// letting a renderer attribute them to whoever is asking. What is refused is
+// recording a *new* receipt without one — no nameable authority, no run.
+type Authority struct {
+	Kind AuthorityKind `json:"kind"`
+	Ref  string        `json:"ref"`
+}
+
+// Recorded reports whether this receipt says why its run happened. It is false
+// only for a receipt written before the field existed; a receipt this build
+// wrote always carries one.
+func (a Authority) Recorded() bool { return a.Kind != "" }
+
+// String renders an authority for a diagnostic as kind:ref.
+func (a Authority) String() string {
+	if !a.Recorded() {
+		return "unrecorded"
+	}
+	return string(a.Kind) + ":" + a.Ref
+}
+
+// validate refuses an authority that cannot be held to what it claims. The
+// reference is mandatory for every kind, including serendipity: a draw that
+// names no draw is indistinguishable from a loop that ran for no reason it
+// could state afterwards.
+func (a Authority) validate() error {
+	switch a.Kind {
+	case AuthorityOperator, AuthorityPolicy, AuthoritySerendipity:
+	case "":
+		return fmt.Errorf("receipt: a run records no authority; no nameable authority, no run")
+	default:
+		return fmt.Errorf("receipt: authority kind is not one this build implements")
+	}
+	if !validIdentifier(a.Ref) {
+		return fmt.Errorf("receipt: authority %s names no reference", a.Kind)
+	}
+	return nil
+}
+
 // Evidence binds a claim about the corpus to the locator that recovers the
 // bytes behind it. SPEC.md §4.3 is explicit that an observation cannot exist
 // without evidence, and the same rule is what keeps a receipt inspectable
@@ -323,8 +396,12 @@ type Header struct {
 	// Amendment appends a linked revision; it never edits the prior record.
 	Supersedes ReceiptID `json:"supersedes,omitempty"`
 	RecordedAt time.Time `json:"recorded_at"`
-	Sync       string    `json:"sync"`
-	Counts     Counts    `json:"counts"`
+	// Authority is why this run happened (#96). It is the one field a
+	// receipt may lack: records written before the field existed carry no
+	// authority, and Recorded distinguishes that from a claim.
+	Authority Authority `json:"authority"`
+	Sync      string    `json:"sync"`
+	Counts    Counts    `json:"counts"`
 }
 
 // Body is the sensitive half of a run receipt: the material SPEC.md §9 names
@@ -395,12 +472,18 @@ type Receipt struct {
 
 // NewReceipt records a run's first receipt over prep.
 //
+// The authority is mandatory: issue #96 makes "no nameable authority, no run"
+// the scheduling counterpart of §2.6's intentionality rule, and a receipt is
+// where the claim becomes checkable. A caller that cannot say why the run
+// happened records nothing rather than a run attributable to no one.
+//
 // The body is deep-copied and passed through credential redaction before it is
 // validated, so no value a counterpart supplied can reach the stored record or
 // any error this package returns. Errors here name fields and never values,
 // for the same reason.
-func NewReceipt(id ReceiptID, runID string, prep Preparation, body Body, recordedAt time.Time) (Receipt, error) {
-	return newReceipt(id, runID, prep, body, recordedAt, 1, "")
+func NewReceipt(id ReceiptID, runID string, prep Preparation, authority Authority,
+	body Body, recordedAt time.Time) (Receipt, error) {
+	return newReceipt(id, runID, prep, authority, body, recordedAt, 1, "")
 }
 
 // Amend records the next revision of a run's receipt.
@@ -409,6 +492,14 @@ func NewReceipt(id ReceiptID, runID string, prep Preparation, body Body, recorde
 // rewritten. The new revision links back to it, and the store refuses a second
 // revision claiming the same predecessor, so the history of a run is a chain a
 // reviewer can walk rather than a set of competing versions.
+//
+// The authority is inherited rather than supplied. A resumed run is the same
+// run: the invitation that authorized it does not become a different reason
+// because the first attempt was interrupted, and letting an amendment restate
+// the why would make the record of who started a run editable after the fact.
+// A prior revision that carries none — a receipt from before the field
+// existed — is amended as it stands, because inventing an authority for it
+// would be worse than recording that nobody wrote one down.
 func Amend(prior Receipt, id ReceiptID, body Body, recordedAt time.Time) (Receipt, error) {
 	if prior.Header.ID == "" || prior.Header.Revision < 1 {
 		return Receipt{}, fmt.Errorf("receipt: amend needs a recorded prior revision")
@@ -416,11 +507,12 @@ func Amend(prior Receipt, id ReceiptID, body Body, recordedAt time.Time) (Receip
 	if body.AmendmentReason == "" {
 		return Receipt{}, fmt.Errorf("receipt: amendment reason is required")
 	}
-	return newReceipt(id, prior.Header.RunID, prior.Preparation, body,
+	return newReceipt(id, prior.Header.RunID, prior.Preparation, prior.Header.Authority, body,
 		recordedAt, prior.Header.Revision+1, prior.Header.ID)
 }
 
-func newReceipt(id ReceiptID, runID string, prep Preparation, body Body, recordedAt time.Time, revision int, supersedes ReceiptID) (Receipt, error) {
+func newReceipt(id ReceiptID, runID string, prep Preparation, authority Authority, body Body,
+	recordedAt time.Time, revision int, supersedes ReceiptID) (Receipt, error) {
 	if !validIdentifier(string(id)) {
 		return Receipt{}, fmt.Errorf("receipt: invalid receipt id")
 	}
@@ -429,6 +521,13 @@ func newReceipt(id ReceiptID, runID string, prep Preparation, body Body, recorde
 	}
 	if recordedAt.IsZero() {
 		return Receipt{}, fmt.Errorf("receipt: recorded_at is required")
+	}
+	// An unrecorded authority survives amendment and nothing else: a first
+	// revision this build writes has to name one.
+	if revision == 1 || authority.Recorded() {
+		if err := authority.validate(); err != nil {
+			return Receipt{}, err
+		}
 	}
 	if err := prep.Verify(); err != nil {
 		return Receipt{}, err
@@ -451,6 +550,7 @@ func newReceipt(id ReceiptID, runID string, prep Preparation, body Body, recorde
 			Revision:      revision,
 			Supersedes:    supersedes,
 			RecordedAt:    recordedAt.UTC(),
+			Authority:     authority,
 			Sync:          SyncPending,
 			Counts:        counts,
 		},

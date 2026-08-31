@@ -109,6 +109,12 @@ func testWorkerReceipt() *worker.Receipt {
 	}
 }
 
+// testAuthority is the why every receipt in these tests was run under: an
+// operator command, which is what a hand-typed `babel explore` records.
+func testAuthority() Authority {
+	return Authority{Kind: AuthorityOperator, Ref: "command:explore"}
+}
+
 // testBody populates every field SPEC.md §7 and §6.5 require, so a test that
 // walks it is walking the whole contract.
 func testBody(t *testing.T) Body {
@@ -160,7 +166,7 @@ func testBody(t *testing.T) Body {
 func mustReceipt(t *testing.T) Receipt {
 	t.Helper()
 	prep := mustPreparation(t, preparedAt, testSelection())
-	r, err := NewReceipt(NewReceiptID(), "run-1", prep, testBody(t), recorded)
+	r, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), testBody(t), recorded)
 	if err != nil {
 		t.Fatalf("NewReceipt: %v", err)
 	}
@@ -194,7 +200,7 @@ func TestNewReceiptIgnoresSuppliedCounts(t *testing.T) {
 	body := testBody(t)
 	body.Failures = nil
 	body.Retrieval = nil
-	r, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded)
+	r, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded)
 	if err != nil {
 		t.Fatalf("NewReceipt: %v", err)
 	}
@@ -238,12 +244,12 @@ func TestReceiptWithoutWorkerRequiresAFailure(t *testing.T) {
 	body := testBody(t)
 	body.Worker = nil
 	body.Failures = nil
-	if _, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded); err == nil {
+	if _, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded); err == nil {
 		t.Fatal("accepted a receipt with neither a worker receipt nor a failure")
 	}
 	body.Failures = []Failure{{Stage: "launch", Code: "code-missing",
 		Message: "no compatible Code capability", At: runEnd}}
-	if _, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded); err != nil {
+	if _, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded); err != nil {
 		t.Fatalf("refused a receipt that explains its missing worker: %v", err)
 	}
 }
@@ -265,7 +271,7 @@ func TestReceiptRequiresFacilityVersionsForGrantedCapabilities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := testBody(t)
 			tc.clear(&body.Capabilities)
-			if _, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded); err == nil {
+			if _, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded); err == nil {
 				t.Fatalf("accepted a granted %s capability with no version", tc.name)
 			}
 		})
@@ -304,7 +310,7 @@ func TestReceiptRejectsIncompleteProvenance(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := testBody(t)
 			tc.mutate(&body)
-			if _, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded); err == nil {
+			if _, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded); err == nil {
 				t.Fatal("accepted a receipt with incomplete provenance")
 			}
 		})
@@ -372,11 +378,11 @@ func TestRetrievalRankCarriesNothingButOrder(t *testing.T) {
 		{Rank: 1, Evidence: hits[1].Evidence},
 		{Rank: 2, Evidence: hits[0].Evidence},
 	}
-	forward, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded)
+	forward, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded)
 	if err != nil {
 		t.Fatalf("NewReceipt: %v", err)
 	}
-	backward, err := NewReceipt(NewReceiptID(), "run-1", prep, reversed, recorded)
+	backward, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), reversed, recorded)
 	if err != nil {
 		t.Fatalf("NewReceipt: %v", err)
 	}
@@ -451,7 +457,7 @@ func TestCredentialSentinelReachesNoStoredFieldOrError(t *testing.T) {
 	body.Deferred[0].Reason = "deferred after seeing " + credentialSentinel
 	body.Rejected[0].Reason = "password: " + credentialSentinel
 
-	r, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded)
+	r, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded)
 	if err != nil {
 		if strings.Contains(err.Error(), credentialSentinel) {
 			t.Fatal("an error carried the credential sentinel")
@@ -494,7 +500,7 @@ func TestCredentialSentinelReachesNoStoredFieldOrError(t *testing.T) {
 func TestNewReceiptCopiesTheBodyItIsGiven(t *testing.T) {
 	prep := mustPreparation(t, preparedAt, testSelection())
 	body := testBody(t)
-	r, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded)
+	r, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded)
 	if err != nil {
 		t.Fatalf("NewReceipt: %v", err)
 	}
@@ -545,19 +551,19 @@ func TestTimingDurationIsDerived(t *testing.T) {
 
 func TestNewReceiptRejectsBadIdentityAndScope(t *testing.T) {
 	prep := mustPreparation(t, preparedAt, testSelection())
-	if _, err := NewReceipt("", "run-1", prep, testBody(t), recorded); err == nil {
+	if _, err := NewReceipt("", "run-1", prep, testAuthority(), testBody(t), recorded); err == nil {
 		t.Error("accepted a receipt with no id")
 	}
-	if _, err := NewReceipt(NewReceiptID(), "run 1", prep, testBody(t), recorded); err == nil {
+	if _, err := NewReceipt(NewReceiptID(), "run 1", prep, testAuthority(), testBody(t), recorded); err == nil {
 		t.Error("accepted a run id with a space in it")
 	}
-	if _, err := NewReceipt(NewReceiptID(), "run-1", prep, testBody(t), time.Time{}); err == nil {
+	if _, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), testBody(t), time.Time{}); err == nil {
 		t.Error("accepted a receipt with no recording time")
 	}
 	broken := prep
 	broken.Selection = append([]Selected(nil), prep.Selection...)
 	broken.Selection[0].Host = "elsewhere"
-	if _, err := NewReceipt(NewReceiptID(), "run-1", broken, testBody(t), recorded); err == nil {
+	if _, err := NewReceipt(NewReceiptID(), "run-1", broken, testAuthority(), testBody(t), recorded); err == nil {
 		t.Error("accepted a preparation whose content does not derive its id")
 	}
 }
@@ -586,7 +592,7 @@ func TestRejectionErrorsCarryNoValues(t *testing.T) {
 	// Break the record so construction has to refuse it.
 	body.Retrieval[1].Index = 9
 
-	_, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded)
+	_, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded)
 	if err == nil {
 		t.Fatal("accepted a receipt with an out-of-sequence retrieval trace")
 	}
