@@ -35,6 +35,14 @@
 // is why it is the one table here with no payload_json: a §9 payload column
 // would be a place for operator prose to appear later, and its absence is the
 // invariant.
+//
+// Publication never gates a write. A store opened WithSync stages each durable
+// record for the shared catalog inside the very transaction that makes it
+// durable, so "this decision is recorded" and "this decision is owed to the
+// fleet" are one event; but a failure to reach the fleet afterwards leaves the
+// record durable and visibly pending-sync, and the operator's command still
+// succeeds (SPEC.md §6.5, §9). A store opened without it publishes nothing and
+// is otherwise the same store. See publish.go.
 package disposition
 
 import (

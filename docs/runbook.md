@@ -732,6 +732,225 @@ legacy-backup absence, and available rollback generations observed live; no
 generation was activated, since that would mutate this machine's deployment).
 
 ---
+## 8. Phase B publication: payload keys and `babel sync`
+
+**This section is about the one thing in Babel that exists nowhere else.** A
+snapshot is rederivable from the repository and a Phase A catalog row is
+rederivable from the snapshot list, which is what makes §5 a small problem. A
+hypothesis, a finding, an operator's decision or a run receipt is rederivable
+from nothing: it exists in `durable.db` on the machine that produced it until
+it reaches the shared catalog, and `durable.db` is deliberately not under the
+hourly archive roots. Until it is published, a dead workstation disk loses it.
+
+`babel sync` is what publishes it, and every Phase B write already attempts the
+same publication inline the moment it commits locally.
+
+### 8.1 The payload key document
+
+Phase B payloads are sealed before they leave the process (SPEC.md §9, decision
+55, `internal/envelope`), so publication needs a key. It lives in its own
+mode-0600 document beside `storage.json`:
+
+```
+$XDG_CONFIG_HOME/babel/payload-keys.json
+```
+
+It is a **separate document from `storage.json` on purpose**, for two reasons.
+`config_schema` 2 is frozen (SPEC.md §14) after running against real Cellar and
+real managed PostgreSQL, so a new field in it is a schema change rather than an
+addition. And the lifecycles differ: a repository locator and a database
+credential are current values an operator edits, while a key document is a
+*history* — every sealed object ever written under a retired key still needs
+that key to open.
+
+Create it once per deployment:
+
+```sh
+babel sync --generate-key phase-b-1
+```
+
+```
+$ babel sync --generate-key phase-b-1
+payload key phase-b-1 written to /home/operator/.config/babel/payload-keys.json
+```
+
+The key material is never printed, never logged, and never appears in an error.
+A second invocation **refuses**:
+
+```
+$ babel sync --generate-key phase-b-2
+babel: /home/operator/.config/babel/payload-keys.json: payload key document already exists
+```
+
+That refusal is the point. Replacing the document orphans every sealed object
+written under the keys it held, and Babel deletes no remote object, so those
+objects would remain in Cellar forever and unreadable by anything. Rotation is
+an **append**: a new key becomes the one new envelopes are sealed under while
+every previous key stays in the ring, so historical records keep opening. That
+is `internal/config`'s `AddPayloadKey`, and it is why `SavePayloadKeys` will not
+overwrite.
+
+**Custody.** This document is in the same class as the restic repository
+password (§3): if every copy of a key is lost, the records sealed under it are
+unrecoverable, and no provider can reissue it. Back it up with the repository
+password, in the same place, at the same time. A coordinated backup of
+PostgreSQL and Cellar without the key document restores ciphertext and nothing
+else.
+
+**Every authorized instance holds the same keys.** SPEC.md §9 states that
+plainly: every fully authorized instance can necessarily decrypt the shared
+corpus, and compromise of one has that blast radius. Distributing the document
+to a second machine is therefore a deliberate act with a stated cost, not a
+convenience.
+
+### 8.2 What is pending, and why
+
+Every durable Phase B record is born `pending-sync` and stays visibly pending
+until its rows and its objects have both committed remotely. `babel sync`
+reports both halves:
+
+```
+$ babel sync
+committed 3 hypotheses, 1 finding, 1 receipt
+3 runs committed, 5 objects written
+nothing pending
+```
+
+Three states are worth telling apart in that report:
+
+- **pending, in a declared closure** — the records are ready and the backend was
+  unreachable. The next `babel sync` finishes them, and nothing is lost by
+  waiting.
+- **undeclared** — records of a run that has not finished. A run's record count
+  is fixed when its closure is declared and is immutable in the catalog
+  (`migrations/0003`), so a closure may not be declared while it can still grow.
+  These publish as soon as that run ends, and resuming an interrupted
+  exploration under the same run id is what ends it. They are never dropped.
+- **local** — this build has no shared publication configured (local mode, no
+  catalog, or no payload key document). Nothing is owed to anybody, and the
+  report says so rather than implying a sync that nothing will perform.
+
+**Publication never blocks a write.** An unreachable catalog, a refused object
+write, a missing key: all of them leave the record durable and pending, emit one
+diagnostic line, and let the command that produced the record succeed. That is
+SPEC.md §6.5's ordering, and it is the only arrangement under which an outage
+cannot destroy analysis output.
+
+### 8.3 Reconcile after a push
+
+`babel archive push` runs the Phase B sync as its final step, after the Phase A
+catalog reconcile. It is **non-fatal**: a failure there never changes the push's
+exit code or its reported catalog state, because the snapshot is already durable
+and the Phase B records are already durable locally. On an hourly timer that
+makes the backlog self-draining without a second schedule.
+
+### 8.4 When a record will not publish
+
+`babel sync` names each closure that failed and why. Two causes are
+misconfiguration rather than outage, and neither resolves itself:
+
+- **the instance is not registered.** A Phase B run row references the
+  deployment and the instance, and those rows are written by the first
+  `babel archive push`. A machine that has never pushed cannot publish
+  analysis. Run a push first.
+- **a pending migration.** `babel storage verify` reports it; the catalog needs
+  `migrations/0003`, which is part of schema version 1 and applied by
+  `babel storage migrate`.
+
+An unreachable PostgreSQL or Cellar is neither of those and needs nothing but a
+later `babel sync`.
+
+**Not exercised against the real deployment.** Everything in this section is
+proven against a throwaway PostgreSQL and a local-directory object store, which
+is what the test suite drives. Publication against the real Cellar endpoint and
+the real managed catalog is an operator-gated step; see *What remains
+operator-gated* below.
+
+---
+
+## 9. Reading the fleet's analysis
+
+Phase B records are globally durable, so every authorized instance can read what every other
+machine committed. Two commands expose it, and they answer different questions.
+
+**Preconditions.** Shared mode configured (`~/.config/babel/storage.json`, §4) and payload keys
+placed (§8.1). Without payload keys the catalog is still readable and every plaintext row still
+renders, but no record's content can be opened, so both commands report that rather than printing
+a wall of unopenable rows.
+
+### 9.1 What the fleet holds
+
+```
+$ babel fleet records --limit 5
+```
+
+One row per committed record, newest commit first. `HOST` is the machine that produced it,
+`SYNC` is whether it is globally reviewable, and `SUMMARY` is the record's own first line,
+decrypted locally.
+
+Three values appear under `SYNC` and they are not interchangeable:
+
+| Value | Meaning |
+| --- | --- |
+| `committed` | The record's rows and objects are both durable remotely. Globally reviewable. |
+| `pending-sync` | Staged but not globally committed. Not reviewable yet; `babel sync` finishes it. |
+| `local` | No remote row and nothing claims it is owed. Either this machine is in local mode, or the record was never staged. |
+
+`local` is deliberately not spelled `pending-sync`. A record marked pending is a promise that
+something will carry it; for a `local` record nothing will, and rendering it as pending would be
+the one lie the visible-staging requirement must not tell.
+
+`HOST` reads `unattributed` when the record's origin instance has no registered host. That is a
+real state, not an error: an instance that last registered before the `instances.host_id` column
+existed has no host to attribute, and the remedy is one push from the owning machine. Babel will
+not guess — a record filed under the wrong machine is invisible, and a gap is not.
+
+`--host alex-x86_64-linux-wsl` narrows to one machine, repeatable. `--kind` narrows to a record
+type. `--pending` additionally shows staged records, which is how an operator answers "why is my
+hypothesis not visible on the other machine".
+
+### 9.2 Making the other hosts' work searchable here
+
+```
+$ babel fleet ingest
+```
+
+This is what stops two conductors on two machines from silently duplicating one another. It
+fetches every host's committed records, decrypts them on this machine, and indexes them into the
+local retrieval cache, so self-retrieval and dedup answer across the fleet instead of across one
+workstation.
+
+**It writes only to the cache.** Nothing it does touches `durable.db`, and that is the whole
+design: a remote record is never copied into the local durable store, so it can never be
+republished by the machine that read it, and losing the index costs a re-index and never data.
+
+`--rebuild` drops every remote partition and rebuilds it from the catalog. It is safe to run at
+any time and it does not touch this machine's own analysis.
+
+The report names, per host, what changed, plus three totals worth reading:
+
+* **unattributed** — committed records skipped because their origin instance has no registered
+  host, so there is no machine to file them under. They remain readable in `fleet records`; they
+  are just not searchable per-host. Expect this to fall to zero as each machine pushes again.
+* **unopened** — records this instance could not read, one line each with the reason: a key this
+  machine does not hold, a payload from a newer build, or an object the store would not return.
+  Each costs one record and never the ingest, so one host publishing something this binary cannot
+  open never makes the rest of the fleet unreadable.
+* **forgotten** — hosts whose rows were dropped because the catalog no longer reports records for
+  them. A cache eviction; the records are still in PostgreSQL and Cellar.
+
+### 9.3 What these commands do not tell you
+
+Neither command judges recency. A host that last committed six days ago renders identically to one
+that committed minutes ago, apart from a timestamp to compare by eye — the same deliberate
+restraint `archive status` has, and for the same reason: publication recency is a per-host
+judgement, and `babel archive fleet` is where that judgement lives.
+
+And an empty result is an answer. A deployment where nothing has been explored yet reports no
+records and exits zero; it is not a malfunction and is not distinguished from one, because there
+is nothing to distinguish.
+
+---
 
 ## What remains operator-gated
 

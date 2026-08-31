@@ -84,6 +84,7 @@ Commands:
   archive status              report snapshots per host
   archive fleet               report whether every host has published recently
   archive verify              check repository integrity
+  sync                        publish this host's durable records to the fleet
   sessions list               list this host's local sessions
   sessions inspect SELECTOR   show one local session in full
   sessions title infer        have a model write titles for untitled sessions
@@ -216,6 +217,8 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.storage(ctx, args[1:])
 	case "archive":
 		return a.archive(ctx, args[1:])
+	case "sync":
+		return a.syncCmd(ctx, args[1:])
 	case "sessions":
 		return a.sessions(ctx, args[1:])
 	case "web":

@@ -459,6 +459,15 @@ func (a *app) archivePush(ctx context.Context, args []string) error {
 			}
 			return pubErr
 		}
+
+		// Phase B rides the same visit to the shared backend, after Phase A
+		// has finished with it: the snapshot's own publication holds this
+		// host's lease and must not wait behind a record commit, and a Phase A
+		// failure that is a real misconfiguration has already returned above
+		// rather than let this attempt repeat it. It is the last step and it
+		// changes nothing this push reports - see syncAfterPush for why a
+		// failure here cannot be allowed to move the push's exit code.
+		a.syncAfterPush(ctx, d)
 	}
 
 	if err := a.reportPush(res, *asJSON); err != nil {

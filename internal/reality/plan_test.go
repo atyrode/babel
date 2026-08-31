@@ -38,11 +38,14 @@ type planFixture struct {
 	retained Retained
 }
 
-func newPlanFixture(t *testing.T) *planFixture {
+// The options are the caller's, so a publication test can attach a sync hook to
+// this fixture rather than rebuilding a question, an answer and a plan beside
+// it.
+func newPlanFixture(t *testing.T, opts ...Option) *planFixture {
 	t.Helper()
 	ctx := context.Background()
 	sink := &recordingSink{}
-	store, clock := newStore(t, WithHypothesisSink(sink))
+	store, clock := newStore(t, append([]Option{WithHypothesisSink(sink)}, opts...)...)
 	fixture := &planFixture{store: store, clock: clock, sink: sink}
 
 	fixture.project = mustEntity(t, store, EntityProject, "a project")

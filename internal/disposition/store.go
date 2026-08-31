@@ -14,6 +14,7 @@ import (
 
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/run"
+	"github.com/atyrode/babel/internal/sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -131,6 +132,13 @@ type Store struct {
 	path     string
 	frontier *frontier.Store
 
+	// sync publishes this store's durable records to the shared catalog.
+	// It is nil in local-only mode, which is why every write path guards on
+	// it rather than relying on a no-op implementation being installed: a
+	// store opened without WithSync must behave exactly as it did before
+	// publication existed, including opening no journal tables.
+	sync sync.Hook
+
 	// now supplies timestamps. It is a field so a test can make ordering
 	// deterministic without sleeping; production never replaces it.
 	now func() time.Time
@@ -145,7 +153,11 @@ type Store struct {
 //
 // A schema version this build does not know is an error, never a rebuild: an
 // operator's accept and decline clicks are not derivable from anything.
-func Open(dir string, front *frontier.Store) (*Store, error) {
+//
+// WithSync is the only option so far, and it is an option rather than a third
+// parameter because every existing caller opens a store that publishes nothing
+// and should not have to say so.
+func Open(dir string, front *frontier.Store, opts ...Option) (*Store, error) {
 	if front == nil {
 		return nil, fmt.Errorf("%w: the disposition store needs a frontier store", ErrInvalidValue)
 	}
@@ -161,9 +173,23 @@ func Open(dir string, front *frontier.Store) (*Store, error) {
 	// durable file a single writer.
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, path: path, frontier: front, now: func() time.Time { return time.Now().UTC() }}
+	for _, opt := range opts {
+		opt(s)
+	}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if s.sync != nil {
+		// The journal tables have to exist on this handle, because this
+		// store stages inside its own transactions on its own connection.
+		// It is cheap and idempotent, and doing it here rather than at the
+		// first write means a misconfigured deployment fails at Open rather
+		// than halfway through an operator's decision.
+		if err := sync.EnsureSchema(s.db); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -275,6 +301,10 @@ func (s *Store) Propose(ctx context.Context, in ProposeInput) (Disposition, erro
 	if err := s.requireRecord(ctx, in.Record); err != nil {
 		return Disposition{}, err
 	}
+	// A resumed run's replay returns the stored action and stages nothing
+	// again: the transaction that made it durable is the one that recorded it
+	// as owed to the fleet, and re-offering the same record would be offering
+	// the journal a pair it already holds.
 	if in.Ref != "" {
 		existing, err := s.byEmittedRef(ctx, in.ProposedBy.ID, in.Ref)
 		if err == nil {
@@ -304,6 +334,21 @@ func (s *Store) Propose(ctx context.Context, in ProposeInput) (Disposition, erro
 		Status:        StatusProposed,
 		Payload:       in.Payload,
 	}
+	// producedBy names the run whose result emitted this action, so a run's
+	// proposal joins that run's still-open closure and publishes when the
+	// receipt that ends the run declares it. An operator's synthesized action
+	// was produced by no run and becomes its own closure of one: naming the
+	// run the record happens to be about would try to join a closure that run
+	// already declared, and migration 0003 fixes a closure's record_count at
+	// declaration and never lets it move.
+	var producedBy string
+	if in.ProposedBy.Kind == frontier.ActorRun {
+		producedBy = in.ProposedBy.ID
+	}
+	var (
+		closure sync.Closure
+		publish bool
+	)
 	err = s.transact(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO disposition_proposal(
 			id, record_type, record_id, kind, proposer_kind, proposer_id, emitted_ref,
@@ -314,10 +359,40 @@ func (s *Store) Propose(ctx context.Context, in ProposeInput) (Disposition, erro
 		if err != nil {
 			return fmt.Errorf("insert proposed action: %w", err)
 		}
-		return nil
+		if s.sync == nil {
+			return nil
+		}
+		wire, err := marshalPayload(publishedDisposition{
+			ID:           id,
+			RecordType:   in.Record.Type,
+			RecordID:     in.Record.ID,
+			Kind:         in.Kind,
+			ProposerKind: in.ProposedBy.Kind,
+			ProposerID:   in.ProposedBy.ID,
+			EmittedRef:   in.Ref,
+			CreatedAt:    formatTime(created),
+			Payload:      payload,
+		})
+		if err != nil {
+			return err
+		}
+		closure, publish, err = s.stage(ctx, tx, producedBy, sync.Record{
+			EntityID: id, Kind: dispositionKind, Schema: RecordSchema, Payload: wire,
+		})
+		return err
 	})
 	if err != nil {
 		return Disposition{}, err
+	}
+	if publish {
+		// Best-effort by contract: CommitInline returns nil for every
+		// transient failure and reports one diagnostic line itself, leaving
+		// the action durable and visibly pending-sync. It errors only on a
+		// caller bug, which is a fault in this write path rather than a
+		// condition of the deployment.
+		if err := s.sync.CommitInline(ctx, closure); err != nil {
+			return Disposition{}, err
+		}
 	}
 	return record, nil
 }
@@ -571,6 +646,18 @@ func (s *Store) Decide(ctx context.Context, in DecideInput) (LedgerEntry, error)
 		By:            in.By,
 		Payload:       payload,
 	}
+	// A decision is produced by no run, so producedBy is empty and the entry
+	// becomes its own closure of one, declared inside the transaction that
+	// stages it. Answering is the authorization step #87 reserves for a
+	// person: DecideInput carries an operator id and deliberately not a
+	// frontier.Actor, so there is no run whose closure this could join, and
+	// naming the run that proposed the action would try to join a closure that
+	// run declared when it ended — which migration 0003 refuses, permanently,
+	// because record_count is immutable there.
+	var (
+		closure sync.Closure
+		publish bool
+	)
 	err = s.transact(ctx, func(tx *sql.Tx) error {
 		var found int
 		err := tx.QueryRowContext(ctx, `SELECT 1 FROM disposition_proposal WHERE id = ?`,
@@ -594,10 +681,37 @@ func (s *Store) Decide(ctx context.Context, in DecideInput) (LedgerEntry, error)
 			RecordSchema, formatTime(entry.RecordedAt), encoded); err != nil {
 			return fmt.Errorf("append ledger entry: %w", err)
 		}
-		return nil
+		if s.sync == nil {
+			return nil
+		}
+		wire, err := marshalPayload(publishedLedgerEntry{
+			ID:            id,
+			DispositionID: in.DispositionID,
+			Sequence:      entry.Sequence,
+			Ruling:        in.Ruling,
+			OperatorID:    in.By,
+			RecordedAt:    formatTime(entry.RecordedAt),
+			Payload:       encoded,
+		})
+		if err != nil {
+			return err
+		}
+		closure, publish, err = s.stage(ctx, tx, "", sync.Record{
+			EntityID: id, Kind: dispositionKind, Schema: RecordSchema, Payload: wire,
+		})
+		return err
 	})
 	if err != nil {
 		return LedgerEntry{}, err
+	}
+	if publish {
+		// Best-effort by contract: CommitInline returns nil for every
+		// transient failure and reports one diagnostic line itself, leaving
+		// the decision durable and visibly pending-sync. It errors only on a
+		// caller bug.
+		if err := s.sync.CommitInline(ctx, closure); err != nil {
+			return LedgerEntry{}, err
+		}
 	}
 	return entry, nil
 }
@@ -651,6 +765,11 @@ type InviteInput struct {
 // instruction-free so that refine, question, amend, or abandon stays the
 // model's judgement. Inviting the same record twice is two invitations, which
 // is honest — the operator asked twice — and the queue shows both.
+//
+// The single insert runs in a transaction because staging shares it. That is
+// the whole reason it is not a bare statement any more: an invitation that
+// committed locally while its journal row did not would be a nudge the fleet
+// never hears about and nothing reports as owed.
 func (s *Store) Invite(ctx context.Context, in InviteInput) (Invitation, error) {
 	if in.By == "" {
 		return Invitation{}, fmt.Errorf("%w: an invitation is attributed to an operator", ErrInvalidValue)
@@ -663,10 +782,48 @@ func (s *Store) Invite(ctx context.Context, in InviteInput) (Invitation, error) 
 		return Invitation{}, err
 	}
 	created := s.now()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO disposition_invitation(
-		id, record_type, record_id, operator_id, created_at) VALUES(?, ?, ?, ?, ?)`,
-		id, string(in.Record.Type), in.Record.ID, in.By, formatTime(created)); err != nil {
-		return Invitation{}, fmt.Errorf("insert invitation: %w", err)
+	// An invitation is an operator's act, so producedBy is empty and the
+	// invitation is its own closure of one: no run produced it, and the run
+	// that later consumes it did not exist when the operator wrote it.
+	var (
+		closure sync.Closure
+		publish bool
+	)
+	err = s.transact(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO disposition_invitation(
+			id, record_type, record_id, operator_id, created_at) VALUES(?, ?, ?, ?, ?)`,
+			id, string(in.Record.Type), in.Record.ID, in.By, formatTime(created)); err != nil {
+			return fmt.Errorf("insert invitation: %w", err)
+		}
+		if s.sync == nil {
+			return nil
+		}
+		wire, err := marshalPayload(publishedInvitation{
+			ID:         id,
+			RecordType: in.Record.Type,
+			RecordID:   in.Record.ID,
+			OperatorID: in.By,
+			CreatedAt:  formatTime(created),
+		})
+		if err != nil {
+			return err
+		}
+		closure, publish, err = s.stage(ctx, tx, "", sync.Record{
+			EntityID: id, Kind: invitationKind, Schema: RecordSchema, Payload: wire,
+		})
+		return err
+	})
+	if err != nil {
+		return Invitation{}, err
+	}
+	if publish {
+		// Best-effort by contract: CommitInline returns nil for every
+		// transient failure and reports one diagnostic line itself, leaving
+		// the invitation durable and visibly pending-sync. It errors only on
+		// a caller bug.
+		if err := s.sync.CommitInline(ctx, closure); err != nil {
+			return Invitation{}, err
+		}
 	}
 	return Invitation{ID: id, Record: in.Record, By: in.By, CreatedAt: created}, nil
 }
@@ -856,6 +1013,16 @@ func (s *Store) ConsumeOne(ctx context.Context, invitationID, runID string) (Inv
 // is what makes an invitation consumable once, so the decision has to be the
 // write itself. A caller that checked first and inserted second would have a
 // window in which two runs both saw an open invitation.
+//
+// Nothing here is staged for the shared catalog, and the absence is deliberate
+// rather than an unfinished write path. A consumption is not a durable record
+// about the corpus; it is this machine's scheduling note that one of its runs
+// has taken an invitation whose own record was already published, and #96's
+// consume-once guarantee is the local primary key that serialized the claim.
+// The run that took it accounts for what it did with it in its own receipt, so
+// a published consumption would be a second, weaker answer to a question that
+// receipt already answers — and it would need a kind the closed 0003 vocabulary
+// does not have.
 func (s *Store) claim(ctx context.Context, invitationID, runID string, at time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO disposition_invitation_consumption(
 		invitation_id, run_id, consumed_at) VALUES(?, ?, ?)`,

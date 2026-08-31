@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	babelsync "github.com/atyrode/babel/internal/sync"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -377,6 +379,11 @@ type Store struct {
 	// so a test can prove the transaction leaves neither behind. It is nil
 	// on every production path.
 	faultAfterReject func() error
+
+	// sync stages every durable record for the shared catalog inside the
+	// transaction that writes it. It is nil in local-only mode, which is the
+	// default and a supported deployment; see publish.go.
+	sync babelsync.Hook
 }
 
 // Open opens the durable database in dir, creating the directory and applying
@@ -384,7 +391,7 @@ type Store struct {
 // integrity surprise here is returned as an error and never resolved by
 // discarding the file: these rows are the only copy of analysis that has not
 // yet synchronized.
-func Open(dir string) (*Store, error) {
+func Open(dir string, opts ...Option) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create durable state directory: %w", err)
 	}
@@ -397,9 +404,22 @@ func Open(dir string) (*Store, error) {
 	// file has a single writer per §9's local state-writer lock invariant.
 	db.SetMaxOpenConns(1)
 	store := &Store{db: db, path: path, now: func() time.Time { return time.Now().UTC() }}
+	for _, opt := range opts {
+		opt(store)
+	}
 	if err := store.init(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if store.sync != nil {
+		// The staging journal is a component of this same durable file, and
+		// this store stages on its own connection, so its tables have to
+		// exist here before any write path opens a transaction. It is cheap
+		// and idempotent.
+		if err := babelsync.EnsureSchema(db); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return store, nil
 }
@@ -566,6 +586,7 @@ func (s *Store) CreateHypothesis(ctx context.Context, in HypothesisInput) (Hypot
 		Status:        status,
 		Payload:       in.Payload,
 	}
+	var pub publication
 	err = s.transact(ctx, func(tx *sql.Tx) error {
 		if in.AncestorID != "" {
 			if err := requireRow(ctx, tx, "frontier_hypothesis", in.AncestorID); err != nil {
@@ -578,13 +599,14 @@ func (s *Store) CreateHypothesis(ctx context.Context, in HypothesisInput) (Hypot
 			id, nullableID(in.AncestorID), in.RunID, RecordSchema, formatTime(created), payload); err != nil {
 			return fmt.Errorf("insert hypothesis: %w", err)
 		}
-		if _, err := s.appendRevision(ctx, tx, revisionWrite{
+		revision, err := s.appendRevision(ctx, tx, revisionWrite{
 			entity:     Ref{Type: EntityHypothesis, ID: id},
 			supersedes: in.AncestorID,
 			actor:      actor,
 			reason:     in.Reason,
 			recordedAt: created,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 		if _, err := s.appendStatus(ctx, tx, statusWrite{
@@ -596,10 +618,25 @@ func (s *Store) CreateHypothesis(ctx context.Context, in HypothesisInput) (Hypot
 			return err
 		}
 		warnings, err := appendDuplicateWarnings(ctx, tx, id, in.NearDuplicates, created)
+		if err != nil {
+			return err
+		}
 		record.Duplicates = warnings
+		// The chain root comes off the revision this transaction just wrote
+		// rather than from a second walk of the ancestor column: the two agree,
+		// and reading the same fact twice is how they would eventually stop
+		// agreeing.
+		staged, err := stagedHypothesis(record, revision.RootID, payload)
+		if err != nil {
+			return err
+		}
+		pub, err = s.stage(ctx, tx, in.RunID, staged)
 		return err
 	})
 	if err != nil {
+		return Hypothesis{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Hypothesis{}, err
 	}
 	return record, nil
@@ -1012,6 +1049,8 @@ func (s *Store) Link(ctx context.Context, in LinkInput) (Link, error) {
 		return Link{}, err
 	}
 	created := s.now()
+	record := Link{ID: id, FromID: in.FromID, ToID: in.ToID, Type: in.Type, CreatedAt: created, Payload: payload}
+	var pub publication
 	err = s.transact(ctx, func(tx *sql.Tx) error {
 		if err := requireRow(ctx, tx, "frontier_hypothesis", in.FromID); err != nil {
 			return fmt.Errorf("link source: %w", err)
@@ -1024,12 +1063,23 @@ func (s *Store) Link(ctx context.Context, in LinkInput) (Link, error) {
 			id, in.FromID, in.ToID, string(in.Type), formatTime(created), encoded); err != nil {
 			return fmt.Errorf("insert hypothesis link: %w", err)
 		}
-		return nil
+		staged, err := stagedLink(record, encoded)
+		if err != nil {
+			return err
+		}
+		// A link carries no run id: LinkInput has none, and asserting a
+		// relationship is an act in its own right rather than part of a run's
+		// closure. So it publishes as its own commit of one, immediately.
+		pub, err = s.stage(ctx, tx, "", staged)
+		return err
 	})
 	if err != nil {
 		return Link{}, err
 	}
-	return Link{ID: id, FromID: in.FromID, ToID: in.ToID, Type: in.Type, CreatedAt: created, Payload: payload}, nil
+	if err := s.commit(ctx, pub); err != nil {
+		return Link{}, err
+	}
+	return record, nil
 }
 
 // LinksFrom reads the relationships this candidate asserts about others.
@@ -1130,6 +1180,7 @@ func (s *Store) CreateObservation(ctx context.Context, in ObservationInput) (Obs
 		CreatedAt:     created,
 		Payload:       in.Payload,
 	}
+	var pub publication
 	err = s.transact(ctx, func(tx *sql.Tx) error {
 		if err := requireRow(ctx, tx, "frontier_hypothesis", in.HypothesisID); err != nil {
 			return fmt.Errorf("observation hypothesis: %w", err)
@@ -1147,16 +1198,27 @@ func (s *Store) CreateObservation(ctx context.Context, in ObservationInput) (Obs
 			RecordSchema, record.EvidenceCount, formatTime(created), payload); err != nil {
 			return fmt.Errorf("insert observation: %w", err)
 		}
-		_, err := s.appendRevision(ctx, tx, revisionWrite{
+		revision, err := s.appendRevision(ctx, tx, revisionWrite{
 			entity:     Ref{Type: EntityObservation, ID: id},
 			supersedes: in.AncestorID,
 			actor:      actor,
 			reason:     in.Reason,
 			recordedAt: created,
 		})
+		if err != nil {
+			return err
+		}
+		staged, err := stagedObservation(record, revision.RootID, payload)
+		if err != nil {
+			return err
+		}
+		pub, err = s.stage(ctx, tx, in.RunID, staged)
 		return err
 	})
 	if err != nil {
+		return Observation{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Observation{}, err
 	}
 	return record, nil
@@ -1268,6 +1330,7 @@ func (s *Store) CreateFinding(ctx context.Context, in FindingInput) (Finding, er
 		ObservationIDs: append([]string(nil), in.ObservationIDs...),
 		Payload:        in.Payload,
 	}
+	var pub publication
 	err = s.transact(ctx, func(tx *sql.Tx) error {
 		if in.AncestorID != "" {
 			if err := requireRow(ctx, tx, "frontier_finding", in.AncestorID); err != nil {
@@ -1288,13 +1351,14 @@ func (s *Store) CreateFinding(ctx context.Context, in FindingInput) (Finding, er
 				return fmt.Errorf("link finding observation: %w", err)
 			}
 		}
-		if _, err := s.appendRevision(ctx, tx, revisionWrite{
+		revision, err := s.appendRevision(ctx, tx, revisionWrite{
 			entity:     Ref{Type: EntityFinding, ID: id},
 			supersedes: in.AncestorID,
 			actor:      actor,
 			reason:     in.Reason,
 			recordedAt: created,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 		hypotheses, err := findingHypotheses(ctx, tx, id)
@@ -1302,9 +1366,17 @@ func (s *Store) CreateFinding(ctx context.Context, in FindingInput) (Finding, er
 			return err
 		}
 		record.HypothesisIDs = hypotheses
-		return nil
+		staged, err := stagedFinding(record, revision.RootID, payload)
+		if err != nil {
+			return err
+		}
+		pub, err = s.stage(ctx, tx, in.RunID, staged)
+		return err
 	})
 	if err != nil {
+		return Finding{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Finding{}, err
 	}
 	return record, nil
@@ -1403,6 +1475,7 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 		ReviewStatus:  ReviewNew,
 		Payload:       in.Payload,
 	}
+	var pub publication
 	err = s.transact(ctx, func(tx *sql.Tx) error {
 		if in.AncestorID != "" {
 			if err := requireRow(ctx, tx, "frontier_proposal", in.AncestorID); err != nil {
@@ -1423,13 +1496,14 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 				return fmt.Errorf("link proposal finding: %w", err)
 			}
 		}
-		if _, err := s.appendRevision(ctx, tx, revisionWrite{
+		revision, err := s.appendRevision(ctx, tx, revisionWrite{
 			entity:     Ref{Type: EntityProposal, ID: id},
 			supersedes: in.AncestorID,
 			actor:      actor,
 			reason:     in.Reason,
 			recordedAt: created,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 		hypotheses, err := proposalHypotheses(ctx, tx, id)
@@ -1437,9 +1511,17 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 			return err
 		}
 		record.HypothesisIDs = hypotheses
-		return nil
+		staged, err := stagedProposal(record, revision.RootID, payload)
+		if err != nil {
+			return err
+		}
+		pub, err = s.stage(ctx, tx, in.RunID, staged)
+		return err
 	})
 	if err != nil {
+		return Proposal{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Proposal{}, err
 	}
 	return record, nil
@@ -1510,13 +1592,36 @@ type DispositionInput struct {
 // design, so a refinement can only be created by RejectAndRefine, where a
 // recorded rejection authorizes it.
 func (s *Store) Decide(ctx context.Context, in DispositionInput) (DispositionEvent, error) {
-	var recorded DispositionEvent
+	var (
+		recorded DispositionEvent
+		pub      publication
+	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		event, err := s.appendDisposition(ctx, tx, in)
+		if err != nil {
+			return err
+		}
 		recorded = event
+		encoded, err := marshalPayload(event.Payload)
+		if err != nil {
+			return err
+		}
+		staged, err := stagedDisposition(event, encoded)
+		if err != nil {
+			return err
+		}
+		// A decision names no producing run, and that is not an omission: a
+		// disposition is an operator's own act about a record, so it is its own
+		// commit of one rather than part of the closure of whichever run
+		// happened to produce the record it is about - a closure that run has
+		// already declared and closed.
+		pub, err = s.stage(ctx, tx, "", staged)
 		return err
 	})
 	if err != nil {
+		return DispositionEvent{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return DispositionEvent{}, err
 	}
 	return recorded, nil
@@ -1591,6 +1696,8 @@ func (s *Store) RejectAndRefine(ctx context.Context, in DispositionInput, refine
 	var (
 		rejection DispositionEvent
 		request   RefinementRequest
+		closure   babelsync.Closure
+		publish   bool
 	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		event, err := s.appendDisposition(ctx, tx, in)
@@ -1625,9 +1732,49 @@ func (s *Store) RejectAndRefine(ctx context.Context, in DispositionInput, refine
 			CreatedAt:     created,
 			Payload:       refinement,
 		}
-		return nil
+		if s.sync == nil {
+			return nil
+		}
+		// The two records publish as ONE closure of two rather than as two
+		// closures of one, and that is §4.7's atomicity carried across the
+		// boundary this store cannot reach on its own. Locally the transaction
+		// makes the rejection and the refinement exist together or not at all;
+		// remotely, two independent commits could leave the fleet holding a
+		// rejection that authorized nothing, or a refinement request no
+		// recorded rejection authorizes - which is exactly the state SPEC.md
+		// §4.7 says cannot exist. A run row is the visibility boundary, so one
+		// closure is what makes the pair atomic there too.
+		//
+		// Its run id is the rejection's, because the rejection is what
+		// authorized the other half; the refinement can never exist without it.
+		notePayload, err := marshalPayload(event.Payload)
+		if err != nil {
+			return err
+		}
+		stagedReject, err := stagedDisposition(event, notePayload)
+		if err != nil {
+			return err
+		}
+		stagedReject.RunID = event.ID
+		if err := s.sync.StageTx(ctx, tx, stagedReject); err != nil {
+			return err
+		}
+		stagedRequest, err := stagedRefinement(request, in.ReviewerID, encoded)
+		if err != nil {
+			return err
+		}
+		stagedRequest.RunID = event.ID
+		if err := s.sync.StageTx(ctx, tx, stagedRequest); err != nil {
+			return err
+		}
+		closure = babelsync.Closure{RunID: event.ID}
+		publish = true
+		return s.sync.DeclareTx(ctx, tx, closure)
 	})
 	if err != nil {
+		return DispositionEvent{}, RefinementRequest{}, err
+	}
+	if err := s.commit(ctx, publication{closure: closure, publish: publish}); err != nil {
 		return DispositionEvent{}, RefinementRequest{}, err
 	}
 	return rejection, request, nil

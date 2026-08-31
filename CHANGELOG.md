@@ -38,6 +38,78 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Phase B records now reach the shared catalog (operator direction
+  2026-08-31, issue #109 items 1-2).** SPEC.md §6.5 and §9 have always promised
+  globally durable, object-first/PostgreSQL-last Phase B records with visibly
+  `pending-sync` outage staging, and every durable record has been born
+  `pending-sync` since it was first written — but the publisher that flips them
+  to `committed` was never built. So tonight's hypotheses were bound to the
+  workstation that produced them, and `durable.db` is deliberately not under the
+  hourly archive roots: a dead disk lost analysis outputs that exist nowhere
+  else. It no longer does.
+  - **`internal/sync`, the publisher.** A local journal in the same
+    `durable.db` every Phase B component shares records what has been staged
+    and what has reached the fleet, which is the only thing that can answer
+    "what does this machine owe" while PostgreSQL is unreachable. Publication
+    is `internal/sharedcatalog`'s existing commit protocol: declare the run,
+    seal each missing record's payload into the object store and read it back
+    before any row names it, then flip the run — the visibility boundary —
+    conditional on the catalog holding the whole declared closure. The local
+    flip happens strictly after that transaction commits, so the two crash
+    windows behave differently and both converge: killed between the object
+    write and the row, the retry writes a new content-addressed object beside
+    the orphan and inserts exactly one row; killed after the commit and before
+    the flip, the retry writes no object, inserts no row, and flips only.
+  - **Staging shares the writer's transaction, and that is the whole design.**
+    A record that committed locally while its journal row did not would be
+    durable, invisible to the publisher, and reported by nothing. So
+    `internal/frontier`, `internal/run`, `internal/disposition` and
+    `internal/reality` stage inside the transaction that makes the record
+    durable, and attempt publication immediately after it commits. A writer
+    with no publication hook — local mode, the default — behaves exactly as
+    before and stages nothing.
+  - **A run publishes as one closure.** `migrations/0003` fixes a run's
+    `record_count` at declaration and never lets it move, which is what makes
+    "a partial commit is not a commit" a database property. So a record a run
+    produced joins that run's closure and publishes nothing yet, and
+    `internal/explore` — the only thing that knows when a run has ended —
+    declares and publishes it. §5.4's challenger and synthesizer join it too:
+    their `<run>/<stage>` identities name jobs within a run, and three closures
+    would make one exploration become globally reviewable in three unrelated
+    pieces. A record no run produced — an operator's decision, a Reality fact,
+    a preparation — is its own closure of one, declared in the writer's own
+    transaction because nobody resumes an operator's decision. Reject-and-refine
+    publishes as one closure of two, so §4.7's atomicity survives the boundary
+    rather than stopping at the local transaction.
+  - **`babel sync`, and a reconcile after every push.** It retries every
+    pending closure, is idempotent by global entity id, and reports per-kind
+    counts plus what is still owed — including records of a run that has not
+    finished, which are deliberately unpublishable and never dropped.
+    `babel archive push` runs it as a final, non-fatal step after the Phase A
+    catalog reconcile, so an hourly timer drains the backlog without a second
+    schedule.
+  - **Publication is never a write-path dependency.** An unreachable catalog, a
+    refused object write, a missing payload key: each leaves the record durable
+    and visibly pending, emits one sanitized diagnostic line, and lets the
+    command that produced the record succeed. That is not leniency; it is the
+    only ordering under which an outage cannot destroy output.
+  - **`internal/objectstore`, a Cellar-backed store with no new dependency.**
+    Hand-rolled AWS SigV4 over `net/http` for two verbs against one bucket,
+    because adding a provider SDK to a public repository whose crypto is meant
+    to be audited by reading is the worse trade. The Phase B object namespace is
+    derived from the restic locator as a *sibling* prefix — `babel/v1-analysis/`
+    beside `babel/v1` — so it lives in the operator's own bucket, provably
+    disjoint from restic's tree, and needs no field in the frozen
+    `storage.json`.
+  - **Payload keys live in their own document**,
+    `$XDG_CONFIG_HOME/babel/payload-keys.json` at mode 0600 beside
+    `storage.json`, created by `babel sync --generate-key ID`. It is separate
+    because `config_schema` 2 is frozen, and because the lifecycles differ: a
+    locator is a current value, a key document is a history. Rotation appends
+    and promotes; the writer refuses to replace an existing document, because
+    doing so would orphan every sealed object written under the keys it held and
+    Babel deletes no remote object. See docs/runbook.md §8 for custody.
+
 - **Self-improvement duties, behind operator toggles (operator direction
   2026-08-31, issues #88 and #94).** Babel's charter has always included "and
   Babel itself", and until now that meant an operator typing a command. The

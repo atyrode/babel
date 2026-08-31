@@ -16,13 +16,30 @@ import (
 // can be undone — which together are what §4.8 means by an identity that
 // renames and moves without being lost.
 func (s *Store) CreateEntity(ctx context.Context, in EntityInput) (Entity, error) {
-	var record Entity
+	var (
+		record Entity
+		pub    publication
+	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		created, err := s.createEntity(ctx, tx, in)
+		if err != nil {
+			return err
+		}
 		record = created
+		wire, err := stagedEntity(created)
+		if err != nil {
+			return err
+		}
+		// Staged inside the transaction that makes the entity durable, so
+		// "this subject exists" and "the fleet is owed this subject" are one
+		// event. A staging failure takes the durable write down with it.
+		pub, err = s.stage(ctx, tx, wire)
 		return err
 	})
 	if err != nil {
+		return Entity{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Entity{}, err
 	}
 	return record, nil
@@ -52,7 +69,11 @@ func (s *Store) createEntity(ctx context.Context, tx *sql.Tx, in EntityInput) (E
 		id, string(in.Kind), RecordSchema, formatTime(created), payload); err != nil {
 		return Entity{}, fmt.Errorf("reality: insert entity: %w", err)
 	}
-	if err := s.appendMembership(ctx, tx, id, RoleSelf, id, ""); err != nil {
+	// The first membership entry says the identity speaks for itself, and it
+	// is the one entry that never publishes: a reading host assumes exactly
+	// that of an entity record, and every later move travels under the
+	// resolution that made it.
+	if _, err := s.appendMembership(ctx, tx, id, RoleSelf, id, ""); err != nil {
 		return Entity{}, err
 	}
 	return Entity{
@@ -66,24 +87,47 @@ func (s *Store) createEntity(ctx context.Context, tx *sql.Tx, in EntityInput) (E
 	}, nil
 }
 
+// membership is one entry of an identity's append-only resolution history: what
+// the ledger now says the identity is, and which resolution said so.
+//
+// It exists so appendMembership can hand back the row it just wrote. The
+// recorded instant is chosen inside, and the wire form needs it, so without
+// this the caller would have to either read the row back inside the transaction
+// or take five positional values from a function that already has them.
+type membership struct {
+	entityID     string
+	role         EntityRole
+	canonicalID  string
+	resolutionID string
+	recordedAt   time.Time
+}
+
 // appendMembership records what the resolution history now says an entity is.
 // Every identity change in this package is one of these appends, which is why
 // none of them rewrites anything.
 func (s *Store) appendMembership(ctx context.Context, tx *sql.Tx, entityID string,
-	role EntityRole, canonicalID, resolutionID string) error {
+	role EntityRole, canonicalID, resolutionID string) (membership, error) {
 	if !role.valid() {
-		return fmt.Errorf("%w: entity role %q", ErrInvalidValue, role)
+		return membership{}, fmt.Errorf("%w: entity role %q", ErrInvalidValue, role)
 	}
 	seq, err := nextSeq(ctx, tx, "reality_entity_membership", "entity_id", entityID)
 	if err != nil {
-		return err
+		return membership{}, err
+	}
+	entry := membership{
+		entityID:     entityID,
+		role:         role,
+		canonicalID:  canonicalID,
+		resolutionID: resolutionID,
+		recordedAt:   s.now(),
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO reality_entity_membership(
 		entity_id, seq, role, canonical_id, resolution_id, recorded_at) VALUES(?, ?, ?, ?, ?, ?)`,
-		entityID, seq, string(role), canonicalID, nullableID(resolutionID), formatTime(s.now())); err != nil {
-		return fmt.Errorf("reality: append entity membership: %w", err)
+		entityID, seq, string(role), canonicalID, nullableID(resolutionID),
+		formatTime(entry.recordedAt)); err != nil {
+		return membership{}, fmt.Errorf("reality: append entity membership: %w", err)
 	}
-	return nil
+	return entry, nil
 }
 
 const entitySelect = `SELECT e.id, e.kind, e.schema_version, e.created_at, e.payload_json,
@@ -459,13 +503,29 @@ func (s *Store) Relationships(ctx context.Context, entityID string) ([]Relations
 // repository folded into a machine is a resolution mistake this can catch
 // deterministically rather than a judgement call.
 func (s *Store) MergeEntities(ctx context.Context, in MergeInput) (Resolution, error) {
-	var record Resolution
+	var (
+		record Resolution
+		pub    publication
+	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
-		resolution, err := s.mergeEntities(ctx, tx, in)
+		set := s.newRecordSet()
+		resolution, err := s.mergeEntities(ctx, tx, in, set)
+		if err != nil {
+			return err
+		}
 		record = resolution
+		// The resolution is the anchor. The membership entries exist because
+		// it authorized them, and a fleet reader holding the entries without
+		// it would know an identity moved without knowing what moved it —
+		// which is also the state §4.8's reversibility could not be checked
+		// against.
+		pub, err = s.stageSet(ctx, tx, resolution.ID, set)
 		return err
 	})
 	if err != nil {
+		return Resolution{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Resolution{}, err
 	}
 	return record, nil
@@ -473,7 +533,12 @@ func (s *Store) MergeEntities(ctx context.Context, in MergeInput) (Resolution, e
 
 // mergeEntities performs a merge inside a caller's transaction, so an accepted
 // plan's entity resolution commits with the acceptance that authorized it.
-func (s *Store) mergeEntities(ctx context.Context, tx *sql.Tx, in MergeInput) (Resolution, error) {
+//
+// The set it adds to belongs to whichever record authorized the merge: its own
+// resolution when an operator merged directly, the acceptance when a plan did.
+// That is why the anchor is the caller's to name.
+func (s *Store) mergeEntities(ctx context.Context, tx *sql.Tx, in MergeInput,
+	set *recordSet) (Resolution, error) {
 	if len(in.SourceIDs) == 0 {
 		return Resolution{}, fmt.Errorf("%w: merge names no source entity", ErrInvalidValue)
 	}
@@ -524,8 +589,18 @@ func (s *Store) mergeEntities(ctx context.Context, tx *sql.Tx, in MergeInput) (R
 	if err != nil {
 		return Resolution{}, err
 	}
+	if err := set.add(stagedResolution(resolution)); err != nil {
+		return Resolution{}, err
+	}
 	for _, id := range sources {
-		if err := s.appendMembership(ctx, tx, id, RoleMerged, in.TargetID, resolution.ID); err != nil {
+		entry, err := s.appendMembership(ctx, tx, id, RoleMerged, in.TargetID, resolution.ID)
+		if err != nil {
+			return Resolution{}, err
+		}
+		// One entry per folded identity, and it is the only thing that says
+		// what that identity now resolves to: the resolution names the
+		// target, and this names the pointer.
+		if err := set.add(stagedMembership(entry)); err != nil {
 			return Resolution{}, err
 		}
 	}
@@ -543,20 +618,34 @@ func (s *Store) SplitEntity(ctx context.Context, in SplitInput) (Resolution, []E
 	var (
 		record Resolution
 		parts  []Entity
+		pub    publication
 	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
-		resolution, created, err := s.splitEntity(ctx, tx, in)
+		set := s.newRecordSet()
+		resolution, created, err := s.splitEntity(ctx, tx, in, set)
+		if err != nil {
+			return err
+		}
 		record, parts = resolution, created
+		// The resolution is the anchor: the parts exist because the split
+		// said the parent covered several subjects, so a part published
+		// without it would be an identity the fleet cannot explain.
+		pub, err = s.stageSet(ctx, tx, resolution.ID, set)
 		return err
 	})
 	if err != nil {
 		return Resolution{}, nil, err
 	}
+	if err := s.commit(ctx, pub); err != nil {
+		return Resolution{}, nil, err
+	}
 	return record, parts, nil
 }
 
-// splitEntity performs a split inside a caller's transaction.
-func (s *Store) splitEntity(ctx context.Context, tx *sql.Tx, in SplitInput) (Resolution, []Entity, error) {
+// splitEntity performs a split inside a caller's transaction, adding its records
+// to the set the caller anchors.
+func (s *Store) splitEntity(ctx context.Context, tx *sql.Tx, in SplitInput,
+	set *recordSet) (Resolution, []Entity, error) {
 	if in.ParentID == "" {
 		return Resolution{}, nil, fmt.Errorf("%w: split names no parent entity", ErrInvalidValue)
 	}
@@ -583,6 +672,13 @@ func (s *Store) splitEntity(ctx context.Context, tx *sql.Tx, in SplitInput) (Res
 		if err != nil {
 			return Resolution{}, nil, err
 		}
+		// The parts are staged here rather than by createEntity because
+		// CreateEntity's own path publishes a subject an operator asked for
+		// as its own closure of one. A split's parts exist because the split
+		// said so, so they belong in the split's closure instead.
+		if err := set.add(stagedEntity(created)); err != nil {
+			return Resolution{}, nil, err
+		}
 		parts = append(parts, created)
 		ids = append(ids, created.ID)
 	}
@@ -591,7 +687,14 @@ func (s *Store) splitEntity(ctx context.Context, tx *sql.Tx, in SplitInput) (Res
 	if err != nil {
 		return Resolution{}, nil, err
 	}
-	if err := s.appendMembership(ctx, tx, in.ParentID, RoleSplit, in.ParentID, resolution.ID); err != nil {
+	if err := set.add(stagedResolution(resolution)); err != nil {
+		return Resolution{}, nil, err
+	}
+	entry, err := s.appendMembership(ctx, tx, in.ParentID, RoleSplit, in.ParentID, resolution.ID)
+	if err != nil {
+		return Resolution{}, nil, err
+	}
+	if err := set.add(stagedMembership(entry)); err != nil {
 		return Resolution{}, nil, err
 	}
 	return resolution, parts, nil
@@ -607,6 +710,14 @@ func (s *Store) splitEntity(ctx context.Context, tx *sql.Tx, in SplitInput) (Res
 // and nothing is deleted, so afterwards the merge, its reversal, and every
 // identity involved are all still addressable.
 //
+// That append-only shape is also what makes the reversal publishable, and it is
+// worth saying which way round that goes. 0003's published row is insert-only
+// by trigger, so a reversal that had mutated the resolution it undoes would
+// have no wire form at all and would be visible only on the owning host. This
+// one appends, so the undo and the entries restoring each identity travel as
+// their own closure, and §4.8's reversibility is a fleet property rather than a
+// local one.
+//
 // The database's unique index on reverses_id is what makes a second reversal
 // impossible, so two concurrent undos cannot both succeed.
 func (s *Store) UndoResolution(ctx context.Context, in UndoInput) (Resolution, error) {
@@ -616,7 +727,10 @@ func (s *Store) UndoResolution(ctx context.Context, in UndoInput) (Resolution, e
 	if err := checkNoCredential("undo reason", in.Reason); err != nil {
 		return Resolution{}, err
 	}
-	var record Resolution
+	var (
+		record Resolution
+		pub    publication
+	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		original, err := readResolution(ctx, tx, in.ResolutionID)
 		if err != nil {
@@ -640,30 +754,53 @@ func (s *Store) UndoResolution(ctx context.Context, in UndoInput) (Resolution, e
 		if err != nil {
 			return err
 		}
+		set := s.newRecordSet()
+		if err := set.add(stagedResolution(undo)); err != nil {
+			return err
+		}
 		switch original.Kind {
 		case ResolutionMerge:
 			for _, id := range original.SourceIDs {
-				if err := s.appendMembership(ctx, tx, id, RoleSelf, id, undo.ID); err != nil {
+				entry, err := s.appendMembership(ctx, tx, id, RoleSelf, id, undo.ID)
+				if err != nil {
+					return err
+				}
+				if err := set.add(stagedMembership(entry)); err != nil {
 					return err
 				}
 			}
 		case ResolutionSplit:
 			parent := original.SourceIDs[0]
-			if err := s.appendMembership(ctx, tx, parent, RoleSelf, parent, undo.ID); err != nil {
+			entry, err := s.appendMembership(ctx, tx, parent, RoleSelf, parent, undo.ID)
+			if err != nil {
+				return err
+			}
+			if err := set.add(stagedMembership(entry)); err != nil {
 				return err
 			}
 			// The parts are not deleted — nothing here is — so they fold
 			// into the parent they were split from and resolve to it.
 			for _, id := range original.ResultIDs {
-				if err := s.appendMembership(ctx, tx, id, RoleMerged, parent, undo.ID); err != nil {
+				entry, err := s.appendMembership(ctx, tx, id, RoleMerged, parent, undo.ID)
+				if err != nil {
+					return err
+				}
+				if err := set.add(stagedMembership(entry)); err != nil {
 					return err
 				}
 			}
 		}
 		record = undo
-		return nil
+		// The undo is the anchor: it is the record that authorized every
+		// entry restoring an identity, and a fleet holding the entries
+		// without it would see identities move back for no stated reason.
+		pub, err = s.stageSet(ctx, tx, undo.ID, set)
+		return err
 	})
 	if err != nil {
+		return Resolution{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Resolution{}, err
 	}
 	return record, nil
@@ -821,6 +958,10 @@ func factSubjects(ctx context.Context, q querier, canonicalID string) ([]string,
 // from one to the other. Guidance can be linked to a fact, an answer, or an
 // acceptance, and linking it never satisfies the requirement that a
 // non-operator authority produce a locator.
+//
+// The single insert runs in a transaction because staging shares it. A
+// one-statement transaction costs nothing and is what makes the guidance and
+// the fleet's claim on it commit together.
 func (s *Store) AttachContext(ctx context.Context, in ContextInput) (Context, error) {
 	if err := in.validate(); err != nil {
 		return Context{}, err
@@ -837,12 +978,29 @@ func (s *Store) AttachContext(ctx context.Context, in ContextInput) (Context, er
 	if err != nil {
 		return Context{}, err
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO reality_context(
-		id, author, supplied_at, recorded_at, payload_json) VALUES(?, ?, ?, ?, ?)`,
-		id, in.Author, formatTime(at), formatTime(s.now()), payload); err != nil {
-		return Context{}, fmt.Errorf("reality: insert operator context: %w", err)
+	record := Context{ID: id, Author: in.Author, At: at.UTC(), Text: in.Text}
+	recorded := s.now()
+	var pub publication
+	err = s.transact(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reality_context(
+			id, author, supplied_at, recorded_at, payload_json) VALUES(?, ?, ?, ?, ?)`,
+			id, in.Author, formatTime(at), formatTime(recorded), payload); err != nil {
+			return fmt.Errorf("reality: insert operator context: %w", err)
+		}
+		wire, err := stagedContext(record, recorded)
+		if err != nil {
+			return err
+		}
+		pub, err = s.stage(ctx, tx, wire)
+		return err
+	})
+	if err != nil {
+		return Context{}, err
 	}
-	return Context{ID: id, Author: in.Author, At: at.UTC(), Text: in.Text}, nil
+	if err := s.commit(ctx, pub); err != nil {
+		return Context{}, err
+	}
+	return record, nil
 }
 
 // Context reads one piece of attributed guidance.

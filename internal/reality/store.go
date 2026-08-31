@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	babelsync "github.com/atyrode/babel/internal/sync"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -599,6 +601,12 @@ type Store struct {
 	// the candidate.
 	sink HypothesisSink
 
+	// sync publishes this ledger's durable records to the shared backend.
+	// Nil is local-only mode and a supported deployment: nothing is staged,
+	// no write path changes, and the records stay on this disk. See
+	// publish.go for what is published and what deliberately is not.
+	sync babelsync.Hook
+
 	// faultBeforeDisposition is a fault-injection seam used only by the
 	// acceptance atomicity test. It runs inside AcceptPlan's transaction,
 	// after the acceptance and the authoritative actions are written and
@@ -621,6 +629,19 @@ func WithClock(now func() time.Time) Option {
 // WithHypothesisSink configures where a plan's retained hypotheses go.
 func WithHypothesisSink(sink HypothesisSink) Option {
 	return func(s *Store) { s.sink = sink }
+}
+
+// WithSync attaches the Phase B publication hook.
+//
+// SPEC.md §266 makes globally durable encrypted Reality Ledger state a Phase B
+// capability, and this is what makes it one: without a hook the ledger is
+// durable only on the machine that wrote it, so a dead workstation disk loses
+// facts an operator answered for and no re-index recovers them.
+//
+// A nil hook is local-only mode rather than a misconfiguration, which is why
+// this is an option and not a parameter of Open.
+func WithSync(h babelsync.Hook) Option {
+	return func(s *Store) { s.sync = h }
 }
 
 // Open opens the durable database in dir, creating the directory and applying
@@ -649,6 +670,17 @@ func Open(dir string, opts ...Option) (*Store, error) {
 	if err := store.init(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if store.sync != nil {
+		// The journal's tables have to exist on this handle before a write
+		// path can stage on it, because staging shares the writer's own
+		// transaction on the writer's own connection. It runs after the
+		// migrations so an unfamiliar ledger schema still stops the store
+		// before anything touches the file, and it is cheap and idempotent.
+		if err := babelsync.EnsureSchema(db); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return store, nil
 }
