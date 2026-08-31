@@ -360,6 +360,53 @@ CREATE TRIGGER frontier_duplicate_warning_immutable BEFORE UPDATE ON frontier_du
 BEGIN SELECT RAISE(ABORT, 'a duplicate warning is immutable; it records what the heuristic said when the candidate was written'); END;
 CREATE TRIGGER frontier_duplicate_warning_kept BEFORE DELETE ON frontier_duplicate_warning
 BEGIN SELECT RAISE(ABORT, 'duplicate warnings are never deleted; a warning that can be removed is one nobody has to answer'); END;
+`,
+	// Migration 5 gives #114's remedy half of a candidate somewhere to say
+	// which claim it answers.
+	//
+	// A consolidated proposal already has that: frontier_proposal_finding
+	// names its findings, and the hypotheses follow transitively through
+	// those findings' observations. A candidate proposal has no finding to
+	// follow, so the relation has to be stored, and it is stored as its own
+	// table for the reason frontier_proposal_finding is: the set of records
+	// a proposal rests on is a relationship rather than content, §9's
+	// plaintext allowlist admits relationship identifiers, and a list inside
+	// payload_json would be sealed away from every reader that only needs to
+	// know the shape.
+	//
+	// It is a second table rather than a `kind` column on the first, because
+	// the two relations are not the same relation. A finding is material a
+	// proposal was consolidated from; a hypothesis is the claim a remedy
+	// answers. Merging them would make the foreign key untypeable — a column
+	// referencing either frontier_finding or frontier_hypothesis references
+	// neither — and SQLite would stop enforcing the one rule that makes the
+	// join trustworthy: that the record on the other end exists.
+	//
+	// Many-to-many in both directions, which #114 states in as many words:
+	// competing remedies may coexist against one claim, and one remedy may
+	// address several. So the primary key is the position within the
+	// proposal and the index is on the hypothesis, and nothing here is
+	// unique on the hypothesis alone.
+	//
+	// Nothing back-fills. The operator's scope decision on #114 is that this
+	// is new outputs only: a retro-migration would have to invent which half
+	// of an existing hypothesis was its remedy and who authored it, so
+	// existing records keep their shape and only new emissions come in
+	// pairs. This migration therefore creates a table and touches no row.
+	`
+CREATE TABLE frontier_proposal_hypothesis(
+	proposal_id   TEXT NOT NULL REFERENCES frontier_proposal(id),
+	hypothesis_id TEXT NOT NULL REFERENCES frontier_hypothesis(id),
+	position      INTEGER NOT NULL,
+	PRIMARY KEY(proposal_id, position)
+);
+CREATE INDEX frontier_proposal_hypothesis_hypothesis
+	ON frontier_proposal_hypothesis(hypothesis_id);
+
+CREATE TRIGGER frontier_proposal_hypothesis_immutable BEFORE UPDATE ON frontier_proposal_hypothesis
+BEGIN SELECT RAISE(ABORT, 'the addressed claims of a proposal are immutable; revise the proposal instead'); END;
+CREATE TRIGGER frontier_proposal_hypothesis_kept BEFORE DELETE ON frontier_proposal_hypothesis
+BEGIN SELECT RAISE(ABORT, 'the addressed claims of a proposal are never deleted; a remedy that can be detached from its claim is a want about nothing'); END;
 `}
 
 // Store is the durable hypothesis frontier. It exposes no operation that
@@ -1442,7 +1489,8 @@ func findingHypotheses(ctx context.Context, q querier, findingID string) ([]stri
 		WHERE fo.finding_id = ? ORDER BY o.hypothesis_id`, findingID)
 }
 
-// ProposalInput assembles findings into one proposal revision.
+// ProposalInput assembles findings into one §4.5 consolidated proposal
+// revision.
 type ProposalInput struct {
 	RunID      string
 	AncestorID string
@@ -1454,25 +1502,110 @@ type ProposalInput struct {
 	Reason string
 }
 
-// CreateProposal persists a §4.5 review artifact. A proposal with no finding
-// is refused: §4.5 defines a proposal as suggested by one or more findings,
-// and §4.8 separately forbids any path that reaches a proposal without
+// CandidateProposalInput assembles addressed claims into one #114 candidate
+// proposal revision: the remedy half of an emitted candidate.
+//
+// It is a separate input type from ProposalInput rather than a nullable field
+// on it, because the two forms are refused for different reasons and a caller
+// that meant one must not be able to produce the other by leaving a slice
+// empty. A consolidation with no finding is a step skipped in §4.2's
+// development path; a remedy with no addressed claim is a want about nothing.
+// One struct with both slices would make those one error message.
+type CandidateProposalInput struct {
+	RunID      string
+	AncestorID string
+	// HypothesisIDs are the claims this remedy answers: at least one, each
+	// an existing hypothesis. #114 makes the relation many-to-many, so
+	// naming several is ordinary rather than exceptional.
+	HypothesisIDs []string
+	Payload       ProposalPayload
+	Actor         Actor
+	Reason        string
+}
+
+// CreateProposal persists a §4.5 consolidated review artifact. A consolidated
+// proposal with no finding is refused: §4.5 defines it as suggested by one or
+// more findings, and §4.8 separately forbids any path that reaches one without
 // travelling hypothesis -> observation -> finding first.
+//
+// #114's candidate proposal is the other form and has its own constructor;
+// nothing here is relaxed for it.
 func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal, error) {
-	if in.RunID == "" {
-		return Proposal{}, fmt.Errorf("%w: proposal run id is empty", ErrInvalidValue)
-	}
 	if len(in.FindingIDs) == 0 {
 		return Proposal{}, ErrNoFindings
 	}
-	if err := in.Payload.validate(); err != nil {
+	return s.createProposal(ctx, proposalWrite{
+		runID:      in.RunID,
+		ancestorID: in.AncestorID,
+		findingIDs: in.FindingIDs,
+		payload:    in.Payload,
+		actor:      in.Actor,
+		reason:     in.Reason,
+	})
+}
+
+// CreateCandidateProposal persists #114's remedy half of an emitted candidate:
+// a suggested change joined to the claim or claims it answers.
+//
+// It carries no finding and travels no part of the development path, because
+// it makes no evidential claim that would need one. What it asserts is that
+// somebody proposes this change in answer to that hypothesis, and the record
+// says so in the only two ways that matter: the addressed ids are validated
+// against stored hypotheses before the write is accepted, so a remedy cannot
+// address a claim nobody made, and the resulting record's Form is
+// ProposalCandidate on every surface that shows it, so it is never rendered
+// with a consolidated proposal's authority.
+//
+// A candidate proposal is reviewable in its own right and revisable in its own
+// chain (§4.7, #87). That is the whole point of the split: rejecting the remedy
+// leaves the hypothesis untouched, and accepting the hypothesis authorizes
+// nothing about the remedy.
+func (s *Store) CreateCandidateProposal(ctx context.Context, in CandidateProposalInput) (Proposal, error) {
+	if len(in.HypothesisIDs) == 0 {
+		return Proposal{}, ErrNoAddressedHypotheses
+	}
+	return s.createProposal(ctx, proposalWrite{
+		runID:      in.RunID,
+		ancestorID: in.AncestorID,
+		addressed:  in.HypothesisIDs,
+		payload:    in.Payload,
+		actor:      in.Actor,
+		reason:     in.Reason,
+	})
+}
+
+// proposalWrite is what the two forms have in common, which is everything
+// except which relation they store. Exactly one of findingIDs and addressed is
+// non-empty; the exported constructors are what guarantee that, so nothing
+// below has to decide what a proposal with both would mean.
+type proposalWrite struct {
+	runID      string
+	ancestorID string
+	findingIDs []string
+	addressed  []string
+	payload    ProposalPayload
+	actor      Actor
+	reason     string
+}
+
+// createProposal is the one write path both forms take.
+//
+// Sharing it is not tidiness: a second copy of this transaction would be a
+// second answer to whether a proposal's revision chain, its staging, its
+// closure and its `addresses` edges happen, and the two answers would drift
+// exactly once and never be noticed.
+func (s *Store) createProposal(ctx context.Context, in proposalWrite) (Proposal, error) {
+	if in.runID == "" {
+		return Proposal{}, fmt.Errorf("%w: proposal run id is empty", ErrInvalidValue)
+	}
+	if err := in.payload.validate(); err != nil {
 		return Proposal{}, err
 	}
-	actor, err := revisionActor(in.Actor, in.RunID, in.AncestorID, in.Reason)
+	actor, err := revisionActor(in.actor, in.runID, in.ancestorID, in.reason)
 	if err != nil {
 		return Proposal{}, err
 	}
-	payload, err := marshalPayload(in.Payload)
+	payload, err := marshalPayload(in.payload)
 	if err != nil {
 		return Proposal{}, err
 	}
@@ -1483,27 +1616,28 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 	created := s.now()
 	record := Proposal{
 		ID:            id,
-		AncestorID:    in.AncestorID,
-		RunID:         in.RunID,
+		AncestorID:    in.ancestorID,
+		RunID:         in.runID,
 		SchemaVersion: RecordSchema,
 		CreatedAt:     created,
-		FindingIDs:    append([]string(nil), in.FindingIDs...),
+		FindingIDs:    append([]string(nil), in.findingIDs...),
+		Form:          proposalForm(in.findingIDs),
 		ReviewStatus:  ReviewNew,
-		Payload:       in.Payload,
+		Payload:       in.payload,
 	}
 	var pub publication
 	err = s.transact(ctx, func(tx *sql.Tx) error {
-		if in.AncestorID != "" {
-			if err := requireRow(ctx, tx, "frontier_proposal", in.AncestorID); err != nil {
+		if in.ancestorID != "" {
+			if err := requireRow(ctx, tx, "frontier_proposal", in.ancestorID); err != nil {
 				return fmt.Errorf("proposal ancestor: %w", err)
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_proposal(
 			id, ancestor_id, run_id, schema_version, created_at, payload_json) VALUES(?, ?, ?, ?, ?, ?)`,
-			id, nullableID(in.AncestorID), in.RunID, RecordSchema, formatTime(created), payload); err != nil {
+			id, nullableID(in.ancestorID), in.runID, RecordSchema, formatTime(created), payload); err != nil {
 			return fmt.Errorf("insert proposal: %w", err)
 		}
-		for position, findingID := range in.FindingIDs {
+		for position, findingID := range in.findingIDs {
 			if err := requireRow(ctx, tx, "frontier_finding", findingID); err != nil {
 				return fmt.Errorf("proposal finding: %w", err)
 			}
@@ -1512,11 +1646,26 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 				return fmt.Errorf("link proposal finding: %w", err)
 			}
 		}
+		// The addressed claims are validated one at a time against stored
+		// hypotheses. #113's rule that a link may only bind to a record
+		// that demonstrably exists is the same rule, applied here at the
+		// row that will produce the edge rather than at the edge: a remedy
+		// answering a hallucinated claim is refused before it is durable,
+		// not warned about afterwards.
+		for position, hypothesisID := range in.addressed {
+			if err := requireRow(ctx, tx, "frontier_hypothesis", hypothesisID); err != nil {
+				return fmt.Errorf("addressed hypothesis: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_proposal_hypothesis(
+				proposal_id, hypothesis_id, position) VALUES(?, ?, ?)`, id, hypothesisID, position); err != nil {
+				return fmt.Errorf("link addressed hypothesis: %w", err)
+			}
+		}
 		revision, err := s.appendRevision(ctx, tx, revisionWrite{
 			entity:     Ref{Type: EntityProposal, ID: id},
-			supersedes: in.AncestorID,
+			supersedes: in.ancestorID,
 			actor:      actor,
-			reason:     in.Reason,
+			reason:     in.reason,
 			recordedAt: created,
 		})
 		if err != nil {
@@ -1531,7 +1680,7 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 		if err != nil {
 			return err
 		}
-		pub, err = s.stage(ctx, tx, in.RunID, staged)
+		pub, err = s.stage(ctx, tx, in.runID, staged)
 		return err
 	})
 	if err != nil {
@@ -1540,12 +1689,14 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 	if err := s.commit(ctx, pub); err != nil {
 		return Proposal{}, err
 	}
-	s.mintSupersedes(ctx, EntityProposal, id, in.AncestorID, actor)
+	s.mintSupersedes(ctx, EntityProposal, id, in.ancestorID, actor)
+	s.mintAddresses(ctx, id, record.HypothesisIDs, actor)
 	return record, nil
 }
 
-// Proposal reads one review artifact with its derived lineage and its review
-// status, which is computed from the disposition history rather than stored.
+// Proposal reads one review artifact with its derived lineage, its form, and
+// its review status, the last two computed from the rows and the disposition
+// history rather than stored.
 func (s *Store) Proposal(ctx context.Context, id string) (Proposal, error) {
 	var (
 		record   Proposal
@@ -1573,6 +1724,7 @@ func (s *Store) Proposal(ctx context.Context, id string) (Proposal, error) {
 		WHERE proposal_id = ? ORDER BY position`, id); err != nil {
 		return Proposal{}, err
 	}
+	record.Form = proposalForm(record.FindingIDs)
 	if record.HypothesisIDs, err = proposalHypotheses(ctx, s.db, id); err != nil {
 		return Proposal{}, err
 	}
@@ -1582,11 +1734,58 @@ func (s *Store) Proposal(ctx context.Context, id string) (Proposal, error) {
 	return record, nil
 }
 
+// proposalHypotheses reports the claims one proposal answers, whichever form
+// it has.
+//
+// The union is what makes one question have one answer. A consolidated
+// proposal's claims are reached transitively through its findings'
+// observations; a candidate proposal's are the rows it asserted. Every caller
+// - the record page, the staging wire form, the `addresses` edges - wants "the
+// claims this proposal answers" and none of them should have to ask which form
+// it is first, so the derivation covers both and each side contributes nothing
+// when it has nothing.
+//
+// UNION already de-duplicates, and the outer ORDER BY makes the result stable
+// across both halves, which matters because these ids become edges and a
+// listing an operator reads.
 func proposalHypotheses(ctx context.Context, q querier, proposalID string) ([]string, error) {
-	return queryIDs(ctx, q, `SELECT DISTINCT o.hypothesis_id FROM frontier_proposal_finding pf
-		JOIN frontier_finding_observation fo ON fo.finding_id = pf.finding_id
-		JOIN frontier_observation o ON o.id = fo.observation_id
-		WHERE pf.proposal_id = ? ORDER BY o.hypothesis_id`, proposalID)
+	return queryIDs(ctx, q, `SELECT hypothesis_id FROM (
+			SELECT o.hypothesis_id AS hypothesis_id FROM frontier_proposal_finding pf
+				JOIN frontier_finding_observation fo ON fo.finding_id = pf.finding_id
+				JOIN frontier_observation o ON o.id = fo.observation_id
+				WHERE pf.proposal_id = ?
+			UNION
+			SELECT ph.hypothesis_id AS hypothesis_id FROM frontier_proposal_hypothesis ph
+				WHERE ph.proposal_id = ?
+		) ORDER BY hypothesis_id`, proposalID, proposalID)
+}
+
+// ProposalsAddressing lists the proposals that address one hypothesis
+// directly, newest first.
+//
+// It reads the asserted relation only, not the transitive one, and the
+// asymmetry is the point: a consolidated proposal is already reachable from a
+// hypothesis through its findings, and #114's question - which competing
+// remedies has anybody offered for this claim - is a question about remedies.
+// Answering it with every proposal that happens to share an observation would
+// bury the competing remedies among the consolidations.
+func (s *Store) ProposalsAddressing(ctx context.Context, hypothesisID string) ([]Proposal, error) {
+	ids, err := queryIDs(ctx, s.db, `SELECT ph.proposal_id FROM frontier_proposal_hypothesis ph
+		JOIN frontier_proposal p ON p.id = ph.proposal_id
+		WHERE ph.hypothesis_id = ?
+		ORDER BY p.created_at DESC, ph.proposal_id`, hypothesisID)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]Proposal, 0, len(ids))
+	for _, id := range ids {
+		record, err := s.Proposal(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, nil
 }
 
 // DispositionInput records one §4.7 review decision.
@@ -1964,8 +2163,13 @@ func requireRow(ctx context.Context, q querier, table, id string) error {
 	return nil
 }
 
-func queryIDs(ctx context.Context, q querier, query, arg string) ([]string, error) {
-	rows, err := q.QueryContext(ctx, query, arg)
+// queryIDs reads a one-column list of related record ids.
+//
+// The arguments are variadic because a derivation over two relations binds the
+// same id twice (proposalHypotheses), and a second helper differing only in
+// arity would be a second place the error wrapping could drift.
+func queryIDs(ctx context.Context, q querier, query string, args ...any) ([]string, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read related ids: %w", err)
 	}

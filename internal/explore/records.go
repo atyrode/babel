@@ -174,6 +174,33 @@ func (c *Controller) putProposal(st *state, stage Stage, runID string, committed
 	return record.ID, false, c.bind(st, stage, ref, frontier.EntityProposal, record.ID)
 }
 
+// putRemedy writes the value-claim half of a candidate: a #114 candidate
+// proposal addressing the hypothesis the same candidate produced.
+//
+// It runs after the hypothesis and takes that record's durable id, which is why
+// the split cannot be reordered: the remedy names the claim it answers, and a
+// remedy written first would have nothing to name. A candidate whose hypothesis
+// failed to persist therefore emits no remedy at all, which is the honest
+// outcome — the alternative is a want addressing a claim the frontier does not
+// hold.
+//
+// The remedy carries its own ref, so a resumed attempt recognizes the proposal
+// independently of the hypothesis and neither is written twice.
+func (c *Controller) putRemedy(st *state, stage Stage, runID string, committed map[string]Commit, rem Remedy, hypothesisID string) (string, bool, error) {
+	if id, reused, err := reuse(committed, rem.Ref, frontier.EntityProposal); reused || err != nil {
+		return id, reused, err
+	}
+	record, err := c.cfg.Frontier.CreateCandidateProposal(st.commit, frontier.CandidateProposalInput{
+		RunID:         runID,
+		HypothesisIDs: []string{hypothesisID},
+		Payload:       rem.Proposal,
+	})
+	if err != nil {
+		return "", false, err
+	}
+	return record.ID, false, c.bind(st, stage, rem.Ref, frontier.EntityProposal, record.ID)
+}
+
 // bind records the reference-to-record binding a resumed attempt reads.
 func (c *Controller) bind(st *state, stage Stage, ref string, kind frontier.EntityType, id string) error {
 	return c.cfg.Ledger.Record(st.commit, st.opt.RunID, stage, Commit{

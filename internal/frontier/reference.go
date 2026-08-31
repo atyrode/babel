@@ -68,6 +68,19 @@ func WithReferences(a reference.Appender, diag func(error)) Option {
 const edgeNoteDuplicates = "candidate resemblance recorded by the dedup heuristic: " +
 	"a prompt to compare the two records, never a finding that they say the same thing"
 
+// edgeNoteAddresses is the hedge every addresses edge from a proposal carries.
+//
+// #114 separates a claim about how things are from a suggested change, and the
+// separation is only worth anything if the second is never read with the
+// first's authority. So the note says what the edge actually establishes: that
+// somebody proposed this change in answer to that claim, which is a want and
+// an option rather than a verified fact, and that the two records are reviewed
+// independently - rejecting the remedy leaves the claim standing, and
+// accepting the claim authorizes nothing about the remedy.
+const edgeNoteAddresses = "suggested change offered in answer to this claim: " +
+	"a want or an option under separate review, never a verified fact and never " +
+	"a disposition of the claim itself"
+
 // recordRef addresses one of this store's records in the reference graph.
 //
 // The namespace is the entity kind verbatim, so "hypothesis", "observation",
@@ -121,6 +134,41 @@ func (s *Store) mintDuplicates(ctx context.Context, id string, warnings []Duplic
 			ActorKind: string(actor.Kind),
 			ActorRef:  actor.ID,
 			Note:      edgeNoteDuplicates,
+		})
+	}
+}
+
+// mintAddresses records the graph shadow of what a proposal answers (#114).
+//
+// One edge per hypothesis the proposal reaches, whichever form it has. A
+// candidate proposal reaches the claims its own rows assert; a consolidated
+// proposal reaches them transitively through its findings' observations. Both
+// are `addresses` because both say the same thing in the graph - this suggested
+// change answers that claim - and a reader browsing the corpus should not have
+// to know which table established it to see that it holds.
+//
+// The ids are the record's own derived HypothesisIDs rather than the caller's
+// input, for the reason mintDuplicates takes appendDuplicateWarnings' output:
+// the derivation de-duplicates and orders, so the graph and the rows describe
+// one set rather than two.
+//
+// The note is the epistemic rule #114 extends, stated on the edge because the
+// edge is what survives on a host with no payload key: the kind and both
+// endpoints are plaintext (SPEC.md §763) while the proposal's own words are
+// sealed, so without it a keyless reader would see an arrow into a claim and
+// nothing telling them the arrow is a want rather than a verdict.
+func (s *Store) mintAddresses(ctx context.Context, id string, hypothesisIDs []string, actor Actor) {
+	if s.refs == nil {
+		return
+	}
+	for _, hypothesisID := range hypothesisIDs {
+		s.appendEdge(ctx, reference.Edge{
+			Kind:      reference.KindAddresses,
+			From:      recordRef(EntityProposal, id),
+			To:        recordRef(EntityHypothesis, hypothesisID),
+			ActorKind: string(actor.Kind),
+			ActorRef:  actor.ID,
+			Note:      edgeNoteAddresses,
 		})
 	}
 }

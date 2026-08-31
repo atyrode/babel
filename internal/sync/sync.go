@@ -133,6 +133,26 @@ type Record struct {
 	// them for a reader that cannot open them, never the authority: a host
 	// holding the key reads the object and needs none of these columns.
 	Edge *sharedcatalog.RecordEdge
+	// Subjects is what a proposal rests on or addresses (issue #114), and
+	// empty for every record that is not a proposal.
+	//
+	// It is staged rather than recomputed for the same reason Edge is, and the
+	// consequence of losing it is worse. The columns have to survive the crash
+	// window between the transaction that made the record durable and the sync
+	// that publishes it, and nothing could re-derive them from a sealed
+	// payload; but where a missing citation leaves an edge merely absent from
+	// the graph, a missing subject list leaves a proposal's form
+	// undeterminable. #114 makes two forms lawful - resting on findings, or
+	// addressing hypotheses and resting on nothing - and a fleet host with no
+	// payload key that cannot tell them apart will render an unbacked want
+	// with the authority of a verified conclusion.
+	//
+	// Order is the producer's, and internal/sharedcatalog publishes it as the
+	// rows' position: the first finding a proposal was consolidated from stays
+	// the first one. As with Edge, the bytes in Payload are still the whole
+	// record and this is only a projection of them for a reader that cannot
+	// open them.
+	Subjects []sharedcatalog.RecordSubject
 }
 
 // validate refuses at stage time what the remote protocol would refuse at
@@ -160,6 +180,23 @@ func (r Record) validate() error {
 	if r.Edge != nil {
 		if err := r.Edge.Validate(); err != nil {
 			return fmt.Errorf("sync: record %s: %w", r.EntityID, err)
+		}
+	}
+	if len(r.Subjects) > 0 {
+		// A subject list is proposal vocabulary, and the pairing is refused
+		// here rather than left to the remote protocol because
+		// analysis_proposal_subjects has no column saying which kind of record
+		// a row belongs to: subjects staged on a hypothesis would make that
+		// table mean two things, and a staged row the catalog will refuse is a
+		// permanent pending-sync entry with no remedy.
+		if r.Kind != sharedcatalog.KindProposal {
+			return fmt.Errorf("sync: record %s carries proposal subjects but is a %s, not a %s",
+				r.EntityID, r.Kind, sharedcatalog.KindProposal)
+		}
+		for i, subject := range r.Subjects {
+			if err := subject.Validate(); err != nil {
+				return fmt.Errorf("sync: record %s subject %d: %w", r.EntityID, i, err)
+			}
 		}
 	}
 	return nil

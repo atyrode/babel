@@ -1,6 +1,6 @@
 ---
 id: effective-patterns
-version: 2
+version: 3
 kind: lens
 scope: [session, corpus, repository]
 stages: [investigate, challenge, synthesize]
@@ -168,6 +168,43 @@ good alternative explanation — and record that, because "we cannot tell what
 made this work" is a useful result. Stop before generalizing beyond the
 contexts the evidence covers; the scope of a pattern is part of the finding,
 and an unbounded one is a slogan.
+
+**Claims and remedies.** A hypothesis here states what is the case about the
+corpus: that an approach recurred, that an outcome was good, that a condition
+was shared. A remedy states what should change — usually that a practice be
+adopted, written down, or made a default. The optional per-candidate `remedy`
+is a want or an option, never a verified fact and never a finding, and it
+carries no evidence weight of its own; its backing is the claim it addresses.
+That distinction does the most work in this lens, because a pattern is already
+a claim about the future and the standing hazard is letting a good outcome
+argue for a rule. Five successes are evidence for the recurrence claim; they
+are not evidence that the rule is worth its maintenance. Candidate-status
+framing and the sanitization rules are unchanged, and the dispositions are
+independent: declining to adopt a practice does not dispute that it worked, and
+accepting that it worked authorizes nothing about making it standard.
+
+A candidate carrying both emits both records, joined by an `addresses` edge,
+which is exactly what this lens wants — the observation that an approach
+reliably preceded good outcomes is durable corpus knowledge and survives an
+operator who does not want a new rule. Several competing remedies may address
+one claim: a standing instruction, a template, a checklist line, and a tooling
+change are four ways to make one practice the default, with four different
+permanences, and collapsing them into "adopt this practice" removes the only
+decision review can usefully make. One remedy may address several claims where
+several successes share the condition it installs. The honest default is a
+claim alone, and it is mandatory under `unattributable-success` and
+`already-standard` — a practice that is already the default needs no remedy,
+and a good outcome whose cause the record does not isolate must not acquire one
+to look actionable.
+
+Concretely: "for a task class that elsewhere required corrections, the two
+sessions that enumerated call sites before editing delivered without one, and
+the three that began editing immediately each needed a follow-up" is the claim,
+evidenced by the five sessions and the snapshot's call sites. "Make pre-edit
+call-site enumeration a standing step for shared-interface changes" is a remedy
+addressing it. The contrast holds whether or not the step is adopted, and if
+the operator declines the rule as too heavy for its recurrence count,
+`contrast-supported-pattern` stands unchanged.
 
 ## Cross-session synthesis keys
 

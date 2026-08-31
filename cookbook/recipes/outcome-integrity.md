@@ -1,6 +1,6 @@
 ---
 id: outcome-integrity
-version: 2
+version: 3
 kind: lens
 scope: [session, corpus, repository]
 stages: [investigate, challenge, synthesize]
@@ -162,6 +162,37 @@ three retrieval attempts across sessions and repository state have produced no
 new evidence; or the candidate has become a question about a decision rather
 than about correspondence, in which case hand it to the decision-quality lens
 rather than continuing here. Stop before speculating about why a gap exists.
+
+**Claims and remedies.** A hypothesis says what is the case; a remedy says
+what should change. The optional per-candidate `remedy` is a want or an
+option, never a verified fact and never a finding, and it carries no evidence
+weight of its own — its whole backing is the claim it addresses.
+Candidate-status framing and the sanitization rules are unchanged by it: a
+remedy is reviewed as a suggestion, and the divergence it hangs from is still
+what has to be evidenced with locators on both sides. The two dispositions are
+independent. Rejecting the remedy says nothing about the divergence, and
+accepting the claim that a check never ran authorizes nothing about how the
+gap should be closed.
+
+Mechanically, a candidate that carries a remedy emits both records, joined by
+an `addresses` edge, so the claim survives the remedy's rejection with its
+evidence intact. Several competing remedies may address one claim, and one
+remedy may address several claims; where the record supports two ways of
+closing a gap, emit both and let review choose rather than collapsing them
+into one hedged suggestion that is neither. The honest default here is a claim
+alone. This lens's subject is correspondence between record and reality, and a
+divergence is often fully worth reviewing with nobody yet knowing what should
+change about it — a remedy invented to make the candidate feel actionable is
+worse than no remedy, because it converts a defensible observation into an
+unwanted suggestion the operator now has to decline.
+
+Concretely: "the completion summary asserted that the suite passed, and no
+recorded command ran it" is the claim, evidenced by the quoted summary and the
+absence of any tool observation. "Require that a completion claim quote the
+check's output" is a separable remedy addressing it. The claim stands at
+`claim-without-verification` whether or not that rule is ever adopted, and if
+the operator declines the rule the divergence is still recorded, still
+located, and still true.
 
 ## Cross-session synthesis keys
 

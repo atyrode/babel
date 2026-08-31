@@ -234,6 +234,26 @@ var allowlist = map[string]map[string]Class{
 		"to_id":      ClassOpaqueID,
 		"created_at": ClassTimestamp,
 	},
+	// What a proposal rests on (migrations/0010, issue #114). A proposal has
+	// two lawful forms - consolidated from findings, or a candidate remedy
+	// addressing hypotheses directly - and which one it is decides how much
+	// authority a reader may lend it. That is relationship shape rather than
+	// content, which SPEC.md 9's Phase B allowlist admits, so it travels in
+	// columns while the proposal's own words stay in the sealed object.
+	//
+	// subject_kind is a closed two-value vocabulary naming which frontier
+	// store an id belongs to, classed as an identifier on exactly the terms
+	// analysis_edges.from_kind is. position is closure-style ordering,
+	// preserving the order the producer asserted. There is no note, no
+	// rationale and no score column, and a future one would have no class to
+	// be listed under.
+	"analysis_proposal_subjects": {
+		"record_id":    ClassOpaqueID,
+		"position":     ClassOrdering,
+		"subject_kind": ClassIdentifier,
+		"subject_id":   ClassOpaqueID,
+		"created_at":   ClassTimestamp,
+	},
 	// Fleet presence (migrations/0009): what is running where, so a run is
 	// visible off-host before its receipt commits. It is the one table here
 	// that is neither archive metadata nor analysis output but ephemeral
@@ -279,15 +299,17 @@ func Allowlist() []string {
 }
 
 // phaseBTables names the tables that hold Phase B analysis output
-// (migrations/0003, migrations/0008). They are singled out because they carry a
-// different weight from every other table here: a snapshot row is rebuildable
-// from the repository, while a hypothesis, finding, receipt, or citation exists
-// nowhere else, so the question of what may sit beside it in the clear is a
-// narrower question than the one the general allowlist answers.
+// (migrations/0003, migrations/0008, migrations/0010). They are singled out
+// because they carry a different weight from every other table here: a
+// snapshot row is rebuildable from the repository, while a hypothesis,
+// finding, receipt, or citation exists nowhere else, so the question of what
+// may sit beside it in the clear is a narrower question than the one the
+// general allowlist answers.
 var phaseBTables = map[string]bool{
-	"analysis_runs":    true,
-	"analysis_records": true,
-	"analysis_edges":   true,
+	"analysis_runs":              true,
+	"analysis_records":           true,
+	"analysis_edges":             true,
+	"analysis_proposal_subjects": true,
 }
 
 // phaseBPlaintextClasses is SPEC.md 14's open item closed: which fields of a

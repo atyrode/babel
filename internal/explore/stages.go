@@ -24,6 +24,18 @@ type authority struct {
 	// consolidate permits findings, proposals and the promotion transitions
 	// they justify.
 	consolidate bool
+	// remedies permits a candidate to arrive with the suggested change it
+	// carries (#114).
+	//
+	// It is its own bit rather than a reading of consolidate, because a
+	// remedy is not a consolidation: it rests on the claim beside it and on
+	// no finding, so a stage that may emit one has not thereby been granted
+	// the development path. The challenger is the stage this separates. §5.4
+	// grants it evidence-backed counter-observations, contradicting
+	// candidates, and objections — criticism, in other words — and a critic
+	// that also prescribed the fix would be answering its own objection
+	// inside the stage that raised it.
+	remedies bool
 	// objections permits §5.4 criticism.
 	objections bool
 	// schedule permits the job to defer or reject its own candidates.
@@ -31,9 +43,9 @@ type authority struct {
 }
 
 var authorities = map[Stage]authority{
-	StageExplore:    {observations: true, consolidate: true, schedule: true},
+	StageExplore:    {observations: true, consolidate: true, remedies: true, schedule: true},
 	StageChallenge:  {objections: true},
-	StageSynthesize: {consolidate: true},
+	StageSynthesize: {consolidate: true, remedies: true},
 }
 
 // cookbookStage maps a run stage to the recipe stage that declares
@@ -280,6 +292,7 @@ func (c *Controller) persist(st *state, stage Stage, runID string, res *Result) 
 		st.out.Hypotheses = append(st.out.Hypotheses, id)
 		c.record(st, RecordEvent{Stage: stage, Type: frontier.EntityHypothesis, Ref: cand.Ref, ID: id, Reused: reused})
 		c.putDispositions(st, stage, runID, frontier.Ref{Type: frontier.EntityHypothesis, ID: id}, cand.Dispositions)
+		c.remedy(st, stage, runID, committed, auth, cand, id)
 	}
 
 	c.develop(st, stage, runID, committed, auth, res)
@@ -293,6 +306,41 @@ func (c *Controller) persist(st *state, stage Stage, runID string, res *Result) 
 	c.object(st, stage, runID, committed, auth, res)
 	c.consolidate(st, stage, runID, committed, auth, res)
 	c.schedule(st, stage, auth, res)
+}
+
+// remedy writes the value-claim half of one candidate, splitting the truth from
+// the suggestion (#114).
+//
+// It runs inside the candidate loop rather than as a pass of its own, and that
+// is deliberate: the two records are one emission, so the remedy is durable in
+// the same iteration that made its claim durable, and a run cancelled between
+// candidates leaves pairs rather than orphaned halves. The loop above already
+// guarantees the ordering the split needs — the remedy is written only after
+// the hypothesis it addresses exists.
+//
+// A refused remedy is a recorded failure for that one candidate and never for
+// the claim beside it. That is the split's whole promise carried into the error
+// path: an unwritable suggestion must not take a persisted claim down with it,
+// because §5.2 requires every emitted candidate to be persisted and the claim
+// already is.
+func (c *Controller) remedy(st *state, stage Stage, runID string, committed map[string]Commit, auth authority, cand Candidate, hypothesisID string) {
+	if cand.Remedy == nil {
+		return
+	}
+	if !auth.remedies {
+		st.fail(stage, FailureAuthority, c.now(), fmt.Errorf(
+			"%w: the %s stage cannot suggest changes, and candidate %q arrived with a remedy",
+			ErrStageAuthority, stage, cand.Ref))
+		return
+	}
+	id, reused, err := c.putRemedy(st, stage, runID, committed, *cand.Remedy, hypothesisID)
+	if err != nil {
+		st.fail(stage, FailureStorage, c.now(),
+			fmt.Errorf("explore: persist remedy %q for candidate %q: %w", cand.Remedy.Ref, cand.Ref, err))
+		return
+	}
+	st.out.Proposals = append(st.out.Proposals, id)
+	c.record(st, RecordEvent{Stage: stage, Type: frontier.EntityProposal, Ref: cand.Remedy.Ref, ID: id, Reused: reused})
 }
 
 // develop writes the observations a candidate arrived with, bounded by the

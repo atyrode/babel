@@ -1,6 +1,6 @@
 ---
 id: human-agent-coordination
-version: 2
+version: 3
 kind: lens
 scope: [session, corpus]
 stages: [investigate, challenge, synthesize]
@@ -177,6 +177,44 @@ a default, a template, a checklist item, an interface change. Stop when
 counter-evidence shows a changed requirement. Stop immediately if the next
 step requires characterizing a participant; the candidate is finished, and what
 remains is out of scope by construction.
+
+**Claims and remedies.** A hypothesis states what the record shows — a
+correction issued four times, an instruction that admits two readings, a
+constraint absent from the work that followed. A remedy states what should
+change, and it is where the smallest durable change this section asks you to
+name belongs. The optional per-candidate `remedy` is a want or an option, never
+a verified fact and never a finding, and it carries no evidence weight of its
+own; its backing is the claim it addresses. The hard boundary governs it
+undiminished: a remedy changes an instruction, a default, a template, or an
+interface, never a person, and "be clearer" is not a remedy because it names
+nothing that could be changed. Candidate-status framing and the sanitization
+rules are unchanged. The dispositions are independent — declining a proposed
+rule does not dispute that the correction recurred, and accepting the count
+authorizes nothing about adding an instruction.
+
+A candidate carrying both emits both records, joined by an `addresses` edge,
+and that separation is the direct answer to rule inflation. The friction count
+is worth recording on its own; whether it earns a permanent rule is a judgement
+about maintenance cost that belongs to review, and a rejected rule leaves the
+recurrence evidence in place for the next occurrence to strengthen. Several
+competing remedies may address one claim — a line in the standing conventions,
+a default in the tool, and a checklist item are three durations of commitment
+against one recurrence — and one remedy may address several claims where a
+single default resolves corrections that looked unrelated. The honest default
+is a claim alone, and it is the only honest option under
+`friction-without-identified-cause`: observable repetition whose cause the
+record does not show cannot support a remedy, and inventing one to make the
+candidate feel actionable produces exactly the unwanted rule an operator must
+decline.
+
+Concretely: "the same correction about where generated files belong was issued
+in four unrelated sessions, each preceding instruction named the task without
+naming the location, and the snapshot contains no written convention" is the
+claim, with all nine locators. "Add one line about generated-file location to
+the repository's standing conventions" is a remedy addressing it. The four
+corrections happened whether or not the line is ever written, and
+`repeated-correction` with a count of four survives the rule's rejection
+intact.
 
 ## Cross-session synthesis keys
 

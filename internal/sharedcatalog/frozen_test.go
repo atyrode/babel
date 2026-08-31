@@ -137,6 +137,7 @@ func TestMigrationLedgerIsExactlyThese(t *testing.T) {
 		"0007_instance_host",
 		"0008_reference_edges",
 		"0009_fleet_presence",
+		"0010_proposal_subjects",
 	}
 
 	entries, err := migrations()
@@ -176,15 +177,16 @@ func TestAppliedMigrationBodiesAreFrozen(t *testing.T) {
 	// Frozen 2026-08-30. Every migration in the ledger is pinned; an entry is
 	// added here only when its migration is added, never when its text moves.
 	frozen := map[string]string{
-		"0001_init":             "fa5cca80104ea0d2216293492593f55e45371229927391cade1d17199b35ae57",
-		"0002_unknown_counts":   "655ce49ea51d1eb371bcd54835455d6b0f6ae8d6de9a2eb9d126a39b4a138f85",
-		"0003_phase_b_records":  "6d25e2945cacd27369ee8085b12fb69264b8feecff9476367c9b3d49acc1c0e3",
-		"0004_fleet_metadata":   "d32ea349fba87e00af31237e0f9d523e4167d9d99ba894e3ba53b03bfdcf0fe8",
-		"0005_title_provenance": "16252f11ec1e69ce0eda55f247b7199320f1b36ecd7c790e4e929b99587b36cf",
-		"0006_usage_metadata":   "d44410ff6885b93b2a964eee95a838a64e9e6a8ba6d3af79c6a51f845b68f66d",
-		"0007_instance_host":    "613485056617e5e7b0a2a8210e4699ec3b7e281f779190e1ad4758d58853da64",
-		"0008_reference_edges":  "f99bdd8f847118c30693fa7c3d5f8e66a4025ce61fb4ab3114276e9ccd24d6ba",
-		"0009_fleet_presence":   "dea82160aaeebb5bb38dae80395b2129850339633317f750948b032d97a3b562",
+		"0001_init":              "fa5cca80104ea0d2216293492593f55e45371229927391cade1d17199b35ae57",
+		"0002_unknown_counts":    "655ce49ea51d1eb371bcd54835455d6b0f6ae8d6de9a2eb9d126a39b4a138f85",
+		"0003_phase_b_records":   "6d25e2945cacd27369ee8085b12fb69264b8feecff9476367c9b3d49acc1c0e3",
+		"0004_fleet_metadata":    "d32ea349fba87e00af31237e0f9d523e4167d9d99ba894e3ba53b03bfdcf0fe8",
+		"0005_title_provenance":  "16252f11ec1e69ce0eda55f247b7199320f1b36ecd7c790e4e929b99587b36cf",
+		"0006_usage_metadata":    "d44410ff6885b93b2a964eee95a838a64e9e6a8ba6d3af79c6a51f845b68f66d",
+		"0007_instance_host":     "613485056617e5e7b0a2a8210e4699ec3b7e281f779190e1ad4758d58853da64",
+		"0008_reference_edges":   "f99bdd8f847118c30693fa7c3d5f8e66a4025ce61fb4ab3114276e9ccd24d6ba",
+		"0009_fleet_presence":    "dea82160aaeebb5bb38dae80395b2129850339633317f750948b032d97a3b562",
+		"0010_proposal_subjects": "0db9e9a935b0eaa776fb94ece018ba048c8378ca5d4a1c10bea4ac8af2b44f3e",
 	}
 
 	const remedy = "Two changes are legitimate here, and they are not the same " +

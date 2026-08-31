@@ -931,6 +931,9 @@ func TestPlaintextColumnsMatchAllowlist(t *testing.T) {
 		"frontier_finding_observation": {"finding_id", "observation_id", "position"},
 		"frontier_proposal":            {"id", "ancestor_id", "run_id", "schema_version", "created_at"},
 		"frontier_proposal_finding":    {"proposal_id", "finding_id", "position"},
+		// What #114's candidate proposal addresses: relationship ids only,
+		// which is why it is payload-free like the finding join beside it.
+		"frontier_proposal_hypothesis": {"proposal_id", "hypothesis_id", "position"},
 		"frontier_disposition": {
 			"id", "subject_type", "subject_id", "seq", "disposition", "reviewer_id",
 			"context_id", "duplicate_of_id", "recorded_at",
@@ -946,6 +949,7 @@ func TestPlaintextColumnsMatchAllowlist(t *testing.T) {
 	payloadFree := map[string]bool{
 		"frontier_finding_observation": true,
 		"frontier_proposal_finding":    true,
+		"frontier_proposal_hypothesis": true,
 	}
 
 	tables := frontierTables(t, store)
@@ -1038,6 +1042,16 @@ func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create warned hypothesis: %v", err)
 	}
+	// A candidate proposal populates #114's addressed-claim join, for the
+	// same reason the warned candidate populates the one above it.
+	remedy, err := store.CreateCandidateProposal(ctx, CandidateProposalInput{
+		RunID:         "run-1",
+		HypothesisIDs: []string{hypothesis.ID},
+		Payload:       proposalPayload("state constraints up front"),
+	})
+	if err != nil {
+		t.Fatalf("create candidate proposal: %v", err)
+	}
 
 	// set is the mutation a future caller might plausibly write, and where
 	// selects the row it would aim at. The delete and the row count reuse
@@ -1056,6 +1070,7 @@ func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
 		"frontier_finding_observation": {`position = 7`, `finding_id = ?`, []any{finding.ID}},
 		"frontier_proposal":            {`payload_json = '{}'`, `id = ?`, []any{proposal.ID}},
 		"frontier_proposal_finding":    {`position = 7`, `proposal_id = ?`, []any{proposal.ID}},
+		"frontier_proposal_hypothesis": {`position = 7`, `proposal_id = ?`, []any{remedy.ID}},
 		"frontier_disposition":         {`disposition = 'accept'`, `subject_id = ?`, []any{proposal.ID}},
 		"frontier_refinement_request":  {`payload_json = '{}'`, `subject_id = ?`, []any{proposal.ID}},
 		"frontier_revision":            {`actor_id = 'forged'`, `entity_id = ?`, []any{hypothesis.ID}},

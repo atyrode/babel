@@ -14,9 +14,21 @@
 // through hypothesis -> one or more observations -> finding -> proposal, and
 // §4.3 states that an observation cannot exist without evidence. Those are not
 // warnings here: an evidence-free observation, a finding with no observations,
-// and a proposal with no finding are each a refused write, enforced in the
-// constructors, in foreign keys, and — for the evidence rule — in a column
-// constraint that survives §9 payload encryption.
+// and a consolidated proposal with no finding are each a refused write,
+// enforced in the constructors, in foreign keys, and — for the evidence rule —
+// in a column constraint that survives §9 payload encryption.
+//
+// #114 splits truth from remedy without loosening any of that. A hypothesis
+// states what is the case and a proposal states what should change, so a
+// candidate that carries both emits both, joined by an `addresses` edge, and
+// each gets its own revision chain and its own dispositions. The remedy half
+// is a second, explicitly weaker form of proposal — ProposalCandidate — and it
+// does not travel the development path because it makes no claim that would
+// need to: it rests on the hypothesis it addresses and on nothing else, is a
+// want or an option rather than a verified fact, and can never become §4.5's
+// consolidated artifact except by a run consolidating the findings that would
+// justify one. The path still governs everything that rests on evidence; what
+// it no longer governs is a suggestion that never claimed to.
 //
 // Storage is split for §9. Every record carries exactly one Payload field
 // holding the material §9 requires to be sealed in a randomized AEAD envelope
@@ -54,9 +66,15 @@ var (
 	// ErrNoObservations reports §4.2's rule that a finding is consolidated
 	// from observations and never skips them.
 	ErrNoObservations = errors.New("finding requires at least one observation")
-	// ErrNoFindings reports §4.5's rule that a proposal is suggested by one
-	// or more findings.
+	// ErrNoFindings reports §4.5's rule that a consolidated proposal is
+	// suggested by one or more findings.
 	ErrNoFindings = errors.New("proposal requires at least one finding")
+	// ErrNoAddressedHypotheses reports #114's rule for the other form a
+	// proposal takes: a candidate proposal is the remedy half of an emitted
+	// candidate, so it must name the claim it answers. A remedy addressing
+	// nothing is a want with no subject, which is neither a truth-claim nor
+	// a value-claim about anything.
+	ErrNoAddressedHypotheses = errors.New("candidate proposal must address at least one hypothesis")
 	// ErrCounterEvidenceUnstated reports that counter-evidence was neither
 	// listed nor explicitly declared absent, which §4.3 and §4.4 require to
 	// be a stated position rather than an empty field.
@@ -648,24 +666,92 @@ func (p FindingPayload) validate() error {
 	return counterEvidenceStated(len(p.CounterEvidence), p.CounterEvidenceAbsent)
 }
 
-// Proposal is one immutable revision of §4.5's canonical private review
-// artifact. It is not an issue, document, or instruction and has no external
-// effect; §4.6 rendering reads it without changing it.
+// ProposalForm names which of the two lawful provenances a proposal has
+// (#114).
+//
+// A hypothesis is a claim about how things are; a proposal is a suggested
+// change. Splitting them is what lets an operator accept a truth-claim and
+// reject the remedy that came with it, and it leaves a proposal with two
+// honest ways to come into being rather than one.
+//
+// The distinction is not decoration. A consolidated proposal has travelled
+// §4.2's development path and rests on findings that rest on evidence; a
+// candidate proposal is the remedy half of a freshly emitted candidate and
+// rests on nothing but the claim it addresses. Rendering the second with the
+// authority of the first is exactly the epistemic failure #114 exists to
+// prevent, so the form travels with the record on every surface that shows
+// one.
+//
+// It is derived rather than stored: a proposal that names findings is
+// consolidated and one that does not is a candidate, which is a property of
+// the rows themselves and therefore cannot drift from them.
+type ProposalForm string
+
+// The two forms a proposal takes.
+const (
+	// ProposalConsolidated is §4.5's canonical review artifact: suggested by
+	// one or more findings, reached only through hypothesis -> observation
+	// -> finding.
+	ProposalConsolidated ProposalForm = "consolidated"
+	// ProposalCandidate is #114's remedy half of an emitted candidate. It
+	// addresses hypotheses directly, carries no finding, and is a want or an
+	// option rather than a verified fact.
+	ProposalCandidate ProposalForm = "candidate"
+)
+
+func (f ProposalForm) valid() bool {
+	switch f {
+	case ProposalConsolidated, ProposalCandidate:
+		return true
+	}
+	return false
+}
+
+// Proposal is one immutable revision of a suggested change. In its
+// consolidated form it is §4.5's canonical private review artifact; in its
+// candidate form it is #114's remedy half of an emitted candidate. Neither is
+// an issue, document, or instruction and neither has any external effect; §4.6
+// rendering reads a proposal without changing it.
 type Proposal struct {
 	ID            string
 	AncestorID    string
 	RunID         string
 	SchemaVersion int
 	CreatedAt     time.Time
-	FindingIDs    []string // at least one (§4.5)
-	// HypothesisIDs is derived through the supporting findings and their
-	// observations, giving §4.5's "linked hypotheses/findings" without
-	// letting a caller assert a lineage the records do not support.
+	// FindingIDs are the consolidated form's supporting findings: at least
+	// one (§4.5), and none at all for a candidate proposal.
+	FindingIDs []string
+	// HypothesisIDs are the claims this proposal answers, and how they were
+	// established depends on the form.
+	//
+	// For a consolidated proposal they are derived through the supporting
+	// findings and their observations, giving §4.5's "linked
+	// hypotheses/findings" without letting a caller assert a lineage the
+	// records do not support. For a candidate proposal they are asserted by
+	// the emitting run, which is lawful because that assertion is the
+	// record's whole content: a remedy exists in order to address a claim,
+	// and #114 makes the relation many-to-many, so competing remedies may
+	// coexist against one claim and one remedy may address several.
+	//
+	// Either way each id is validated against a stored hypothesis before the
+	// write is accepted, and each is minted as an `addresses` edge in the
+	// typed reference graph (#113).
 	HypothesisIDs []string
+	// Form says which provenance this proposal has. It is derived from
+	// FindingIDs and never stored, so it cannot disagree with them.
+	Form ProposalForm
 	// ReviewStatus is derived from the append-only disposition history, so
 	// it always agrees with the events that justify it.
 	ReviewStatus ReviewStatus
 	Payload      ProposalPayload
+}
+
+// proposalForm reads the form off the rows that decide it.
+func proposalForm(findingIDs []string) ProposalForm {
+	if len(findingIDs) == 0 {
+		return ProposalCandidate
+	}
+	return ProposalConsolidated
 }
 
 // ProposalPayload is the §9 encryption-bound part of a proposal: §9 names
