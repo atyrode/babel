@@ -11,6 +11,56 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A dashboard at `#/`, and a Help page that says what Babel is.** The web
+  interface opened on the session listing, which is the right page for the
+  question "what did this machine record" and the wrong one for "what is Babel
+  holding right now" — an operator had to visit six pages to learn whether the
+  archive was current, whether the catalog had described anything, and whether
+  anything was waiting on a human. The dashboard answers all six at a glance
+  and then gets out of the way: every panel states its totals, shows the few
+  most recent rows, and links to the page that owns them. It is a landing page
+  rather than a seventh source of truth, so its numbers are the owning pages'
+  own numbers, read through one new authorized endpoint, `GET /api/overview`.
+  - **One request, six independently degrading sections.** A dashboard that
+    refused the whole document because one store would not open would take
+    away the five panels that had answers, which is the opposite of what a
+    landing page is for. Each section carries its own availability and the
+    server's own note — "no repository is configured", "the hypothesis
+    frontier is not available in this session" — so a partial deployment reads
+    as an explanation rather than as a failure. The review tile carries two
+    sections, because the review log and the Reality ledger are different
+    stores: a machine can hold one and not the other, and the question inbox
+    stays on screen when the review log is gone.
+  - **Nothing here starts work.** No route added by this change invokes a
+    model, begins an exploration, or writes a record; the endpoint reads
+    durable state the services already held. The one number the receipts could
+    not supply — which recipe a run applied, which §9's plaintext allowlist
+    keeps in the sealed body — is read from the frontier instead, because an
+    observation records the recipe that produced it and the cookbook is
+    public. Candidate counts per run come from the frontier for the same
+    reason: a receipt records what a run did, and the frontier records what
+    survived it.
+  - **The framing survives the summary.** A panel showing candidates shows
+    them in the model's own wording, untruncated, with the fallibility note
+    beside them; the status distribution lists all six exploration statuses
+    including the empty ones, so a frontier with nothing rejected still shows
+    that rejection is a state records keep rather than a state they leave. The
+    question inbox says its ranking is ordering estimates only, never
+    evidence. Title coverage is split by provenance — recorded by the harness,
+    derived by Babel, inferred by a model — because merging them would report
+    a model's guess as the corpus's own name for a session, and an
+    uncatalogued or catalog-pending count that was never read reports
+    "unknown" rather than zero.
+  - **A Help page at `#/help`, reachable from a persistent `?` in the header.**
+    What Babel is and what it is not, the archive → catalog → prepare →
+    explore → hypotheses → review lifecycle, the vocabulary a reader meets in
+    the interface (session, revision, preparation, recipe, receipt, the two
+    status vocabularies, provenance), a command-to-page map, and a quickstart.
+    It reads no API at all, so it renders on a machine where nothing else
+    does — which is exactly when an operator needs it. The dashboard points at
+    it once, on a first visit, with a dismissible one-line banner and a
+    `localStorage` flag; there is no tour and nothing to click through.
+
 - **`babel archive fleet`, which answers "did all my machines back up" in one
   command.** `archive status` already reported each host's newest snapshot
   time, and that turned out to be the raw material rather than the answer: a

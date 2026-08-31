@@ -25,6 +25,10 @@ import type {
   HypothesisStatus,
   HypothesisSummary,
   Observation,
+  OverviewFrontier,
+  OverviewQuestions,
+  OverviewReview,
+  OverviewRuns,
   PlanView,
   QuestionSummary,
   QueueItem,
@@ -36,6 +40,10 @@ import type {
 
 const phasebMode = Bun.env.MOCK_PHASEB ?? "rich";
 const empty = phasebMode === "empty";
+
+// OVERVIEW_ROWS is internal/web's own panel bound: a dashboard panel shows a
+// fixed few rows and links to the page that lists the rest.
+export const OVERVIEW_ROWS = 5;
 
 // Hostile content fixtures. If any of these ever executes, injects markup, or
 // escapes its quoted frame, the UI has failed §2.7. The window flag is what
@@ -884,6 +892,130 @@ const searchHits: SearchHit[] = [
     locator: { path: "/home/demo/.claude/projects/synthetic-bravo.jsonl", line: 3, byte_offset: 411, digest: digest("2d") },
   },
 ];
+
+// ---------------------------------------------------------------------------
+// Dashboard: the Phase B half of GET /api/overview
+// ---------------------------------------------------------------------------
+
+// overviewPhaseB builds the three dashboard sections that read analysis state.
+//
+// The unwired set is a parameter rather than a second read of MOCK_UNWIRED, so
+// a service simulated as unwired degrades its panel in exactly the launch whose
+// own routes answer 409. That pairing is the point of previewing it at all: the
+// dashboard must lose one panel and keep five, and only a browser can show
+// whether the remaining page still reads as usable.
+export function overviewPhaseB(unwired: Set<string>): {
+  frontier: OverviewFrontier;
+  review: OverviewReview;
+  runs: OverviewRuns;
+} {
+  const details = Object.values(hypotheses);
+  const statuses: HypothesisStatus[] = [
+    "untriaged", "queued", "investigating", "deferred", "rejected", "promoted",
+  ];
+  // Zeros included, in §4.2 order, exactly as internal/web serves them: the
+  // panel describes the lifecycle rather than only its populated half.
+  const lifecycle = statuses.map((status) => ({
+    status,
+    count: unwired.has("frontier") ? 0 : details.filter((d) => d.hypothesis.status === status).length,
+  }));
+  const frontier: OverviewFrontier = unwired.has("frontier")
+    ? {
+        available: false,
+        unavailable: "The hypothesis frontier is not available in this session.",
+        hypotheses: 0,
+        statuses: lifecycle,
+        truncated: false,
+        rows: [],
+      }
+    : {
+        available: true,
+        hypotheses: details.length,
+        statuses: lifecycle,
+        truncated: false,
+        rows: [...details]
+          .sort((a, b) => b.hypothesis.created_at.localeCompare(a.hypothesis.created_at))
+          .slice(0, OVERVIEW_ROWS)
+          .map((detail) => ({
+            id: detail.hypothesis.id,
+            run_id: detail.hypothesis.run_id,
+            status: detail.hypothesis.status,
+            created_at: detail.hypothesis.created_at,
+            statement: detail.hypothesis.payload.statement,
+          })),
+      };
+
+  const inbox: OverviewQuestions = unwired.has("reality")
+    ? { available: false, unavailable: "The reality ledger is not available in this session.", open: 0, rows: [] }
+    : {
+        available: true,
+        open: questions.length,
+        rows: questions.slice(0, OVERVIEW_ROWS).map((question) => ({
+          id: question.id,
+          state: question.state,
+          class: question.class,
+          score: question.score,
+          prompt: question.prompt,
+        })),
+      };
+  const awaiting = reviewRecords.filter((record) => derivedStatus(record) === "new");
+  const review: OverviewReview = unwired.has("review")
+    ? {
+        available: false,
+        unavailable: "The review service is not available in this session.",
+        awaiting: 0,
+        rows: [],
+        questions: inbox,
+      }
+    : {
+        available: true,
+        awaiting: awaiting.length,
+        rows: awaiting.slice(0, OVERVIEW_ROWS).map((record) => ({
+          type: record.subject.type,
+          id: record.subject.id,
+          status: derivedStatus(record),
+          enrolled_at: record.enrolled_at,
+          excerpt: record.excerpt,
+        })),
+        questions: inbox,
+      };
+
+  // The receipts are the same listing /api/analysis/state serves, joined to
+  // the frontier for the two things a receipt's header cannot carry: how many
+  // candidates the run produced, and which recipe its observations recorded.
+  const runs: OverviewRuns = unwired.has("frontier")
+    ? { available: false, unavailable: "Run receipts are not available in this session.", total: 0, rows: [] }
+    : {
+        available: true,
+        total: analysisState.runs.length,
+        rows: analysisState.runs.slice(0, OVERVIEW_ROWS).map((receipt) => {
+          const seen = new Map<string, { id: string; version: number }>();
+          for (const detail of details) {
+            for (const observed of detail.observations) {
+              if (observed.run_id !== receipt.run_id) continue;
+              seen.set(`${observed.recipe_id} v${observed.recipe_version}`, {
+                id: observed.recipe_id,
+                version: observed.recipe_version,
+              });
+            }
+          }
+          return {
+            receipt_id: receipt.receipt_id,
+            run_id: receipt.run_id,
+            preparation_id: receipt.preparation_id,
+            recorded_at: receipt.recorded_at,
+            sync: receipt.sync,
+            retrievals: receipt.counts.retrieval,
+            deferred: receipt.counts.deferred,
+            failures: receipt.counts.failures,
+            redactions: receipt.counts.redactions,
+            hypotheses: details.filter((d) => d.hypothesis.run_id === receipt.run_id).length,
+            recipes: [...seen.values()],
+          };
+        }),
+      };
+  return { frontier, review, runs };
+}
 
 // ---------------------------------------------------------------------------
 // Route handling

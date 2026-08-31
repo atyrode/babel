@@ -15,3 +15,8 @@ observations, conflicting evidence, a plan awaiting acceptance, hostile
 HTML/Markdown/URL/terminal-control content, and unbroken kilocharacter
 tokens; `MOCK_PHASEB=empty` presents the day-one empty frontier, queue, and
 inbox.
+
+The dashboard reads one aggregate endpoint, `/api/overview`. `MOCK_OVERVIEW=healthy`
+(default) answers every panel; `MOCK_OVERVIEW=degraded` takes the archive and
+catalog panels away, and combines with `MOCK_UNWIRED` to preview a launch where
+neither storage nor analysis state is available — the state a first launch is in.

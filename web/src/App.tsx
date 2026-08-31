@@ -9,9 +9,11 @@ import {
   type VersionInfo,
 } from "./api";
 import ArchivePage from "./pages/ArchivePage";
+import DashboardPage from "./pages/DashboardPage";
 import ExplorePage from "./pages/ExplorePage";
 import FindingPage from "./pages/FindingPage";
 import FindingsPage from "./pages/FindingsPage";
+import HelpPage from "./pages/HelpPage";
 import HypothesesPage from "./pages/HypothesesPage";
 import HypothesisPage from "./pages/HypothesisPage";
 import RealityEntityPage from "./pages/RealityEntityPage";
@@ -119,6 +121,11 @@ function App() {
         </div>
         <div className="topbar-actions">
           <nav aria-label="Primary navigation">
+            {/* Home is the dashboard, so it is `end`: without it every route
+                would match "/" and two entries would read as active at once. */}
+            <NavLink to="/" end className={({ isActive }) => isActive ? "active" : undefined}>
+              Dashboard
+            </NavLink>
             <NavLink to="/sessions" className={({ isActive }) => isActive ? "active" : undefined}>
               Sessions
             </NavLink>
@@ -142,6 +149,17 @@ function App() {
             </NavLink>
             <NavLink to="/review" className={({ isActive }) => isActive ? "active" : undefined}>
               Review
+            </NavLink>
+            {/* Help is a destination, not a mode: one persistent character, at
+                the end of the row, reachable from every page including the
+                ones that could not load their data. */}
+            <NavLink
+              to="/help"
+              className={({ isActive }) => isActive ? "help-link active" : "help-link"}
+              title="What Babel is, the lifecycle, and the vocabulary"
+              aria-label="Help"
+            >
+              ?
             </NavLink>
           </nav>
           {/* The stop control lives in the shell rather than on a page because
@@ -170,6 +188,8 @@ function App() {
 
       <main>
         <Routes>
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/help" element={<HelpPage />} />
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/sessions/:selector" element={<SessionPage />} />
           <Route path="/archive" element={<ArchivePage />} />
@@ -187,7 +207,7 @@ function App() {
               replacing redirect drops that entry instead of leaving it
               reachable by Back with a live credential in it. web/browser
               asserts the property; see api.ts for the measurement. */}
-          <Route path="*" element={<Navigate to="/sessions" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </div>

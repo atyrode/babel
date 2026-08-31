@@ -283,6 +283,17 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleState(w, r)
+	// The dashboard's aggregate read. It spans both generations of routes,
+	// which is why it is here rather than with either: it reads the archive,
+	// the catalog, the frontier, the review log, the ledger and the receipts
+	// through the same interfaces their own routes use, and reports each
+	// section's availability instead of refusing the whole document when one
+	// store is missing.
+	case "/api/overview":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleOverview(w, r)
 	case "/api/sessions":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return

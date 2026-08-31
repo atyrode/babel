@@ -41,9 +41,21 @@ type fakeArchive struct {
 	// rows: an unreachable repository is a failure of the read, not an
 	// empty archive.
 	listErr error
+	// status and statusErr override the default snapshot status. The
+	// dashboard reads catalog lag and per-host publication times that a
+	// one-host default cannot express, and it has to render a repository
+	// that would not answer at all.
+	status    *StatusResult
+	statusErr error
 }
 
-func (*fakeArchive) ArchiveStatus(context.Context) (StatusResult, error) {
+func (f *fakeArchive) ArchiveStatus(context.Context) (StatusResult, error) {
+	if f.statusErr != nil {
+		return StatusResult{}, f.statusErr
+	}
+	if f.status != nil {
+		return *f.status, nil
+	}
 	return StatusResult{Repository: "repo", Snapshots: 1, Hosts: []StatusHostRow{{Host: "host", Snapshots: 1}}}, nil
 }
 

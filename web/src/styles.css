@@ -2049,17 +2049,352 @@ a.link-target:hover {
   margin-top: 0.6rem;
 }
 
-/* Six destinations plus the stop control no longer fit one row on narrow
-   screens; the topbar wraps rather than clipping the newest areas. */
+/* Dashboard */
+
+/* The first-visit pointer to Help. It is a note, not an alert: one line, one
+   dismissal, and no colour that competes with the error banner above it. */
+.guide-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1.4rem;
+  padding: 0.6rem 0.5rem 0.6rem 0.9rem;
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 0.55rem;
+  background: var(--accent-soft);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.guide-banner a {
+  color: var(--accent-bright);
+}
+
+/* Panels are equal citizens: an auto-fit grid so the row count follows the
+   viewport rather than a breakpoint per panel, and a minimum wide enough that
+   a statement and its metadata still read as two lines rather than a column of
+   single words. */
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.panel {
+  display: grid;
+  gap: 0.7rem;
+  min-width: 0;
+  padding: 1.3rem;
+  align-content: start;
+}
+
+.panel > * {
+  min-width: 0;
+}
+
+.panel .section-heading {
+  align-items: baseline;
+  margin-bottom: 0;
+}
+
+.panel h2 {
+  margin-bottom: 0;
+  font-size: 1.15rem;
+}
+
+.panel h3 {
+  margin-bottom: 0;
+  font-size: 0.92rem;
+}
+
+.panel-link {
+  color: var(--accent-bright);
+  text-decoration: none;
+  font-size: 0.78rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.panel-link:hover {
+  text-decoration: underline;
+}
+
+/* A section that could not be read says so where its numbers would have been,
+   in the server's own words. It is not an error state: the rest of the page
+   loaded, and this panel is reporting a fact about the deployment. */
+.panel-note {
+  margin: 0;
+  padding: 0.7rem 0.8rem;
+  border: 1px dashed var(--line);
+  border-radius: 0.55rem;
+  background: var(--surface-inset);
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.panel-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.6rem;
+  margin: 0;
+}
+
+.panel-facts > div {
+  min-width: 0;
+}
+
+.panel-facts dt {
+  color: var(--subtle);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.panel-facts dd {
+  margin: 0.15rem 0 0;
+  color: var(--text);
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.panel-facts dd .not-observed,
+.panel-facts dd .muted {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.panel-caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.mono-caption {
+  color: var(--subtle);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+
+.scan-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.panel-rows {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.panel-rows li {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.55rem;
+  background: rgba(9, 12, 18, 0.62);
+  font-size: 0.8rem;
+}
+
+.panel-row-main {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.panel-row-main .secondary {
+  margin-top: 0;
+  font-size: 0.68rem;
+}
+
+/* A panel row is a glance, and a model's statement can be a kilocharacter
+   long. The clamp is visual only: the whole wording stays in the document —
+   selectable, searchable, and one click from the record that owns it — but
+   three lines is what a tile can show without one candidate deciding the
+   height of the whole grid row. Truncating the text itself would edit the
+   model's wording, which §5.2 forbids. */
+.panel-row-link,
+.panel-row-main > strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 650;
+}
+
+.panel-row-link:hover {
+  color: var(--accent-bright);
+  text-decoration: underline;
+}
+
+.panel-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.6rem;
+  color: var(--subtle);
+  font-size: 0.72rem;
+}
+
+.panel-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.55rem;
+}
+
+.panel-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.panel-subsection {
+  display: grid;
+  gap: 0.6rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* Help */
+
+.help-page .card {
+  margin-top: 1rem;
+}
+
+.help-card {
+  padding: 1.3rem;
+}
+
+.help-card p {
+  max-width: 62rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.help-card strong {
+  color: var(--text);
+}
+
+.help-list,
+.help-lifecycle {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0.5rem 0 0;
+  padding-left: 1.3rem;
+  max-width: 62rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.help-list {
+  list-style: "— ";
+  padding-left: 1.1rem;
+}
+
+.help-lifecycle li .panel-link {
+  margin-left: 0.5rem;
+}
+
+.help-terms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: 0;
+  margin: 0.6rem 0 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.help-terms > div {
+  min-width: 0;
+  padding: 0.8rem 1rem 0.8rem 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.help-terms dt {
+  margin-bottom: 0.25rem;
+  color: var(--accent-bright);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.help-terms dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.help-vocab {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: 1.2rem;
+  margin-top: 1.2rem;
+}
+
+.help-badge-list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.78rem;
+}
+
+.help-badge-list li {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: baseline;
+  color: var(--muted);
+}
+
+.help-page table {
+  font-size: 0.78rem;
+}
+
+/* Seven destinations, the help link and the stop control no longer fit one row
+   on narrow screens; the topbar wraps rather than clipping the newest areas. */
 .topbar {
   flex-wrap: wrap;
   row-gap: 0.25rem;
+}
+
+/* The help entry is a character, so it needs a square hit area rather than the
+   word-shaped padding the other destinations carry. */
+.topbar nav a.help-link {
+  min-width: 2.2rem;
+  padding: 0.65rem 0.5rem;
+  text-align: center;
+  font-weight: 800;
 }
 
 @media (max-width: 850px) {
   .page {
     width: min(100% - 1.5rem, 1240px);
     padding-top: 2.3rem;
+  }
+
+  /* One column below the two-panel threshold: a 24rem minimum would
+     otherwise overflow a 390px viewport rather than wrap. */
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .help-badge-list li {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
   }
 
   .toolbar,
