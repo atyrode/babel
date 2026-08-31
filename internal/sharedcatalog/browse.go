@@ -194,7 +194,17 @@ type CatalogSessionRow struct {
 	ArtifactCount       int
 	BlobCount           int
 	UnresolvedBlobCount int
-	SourceModifiedAt    *time.Time
+	// CostUSD, TotalTokens, Turns and ToolErrors are the usage summary the
+	// publishing host's adapter recomputed from the session's own transcript
+	// (migrations/0006). All four are nil when no push has supplied them, and
+	// nil is not zero: a session that cost nothing and a session nobody
+	// measured are different facts, and this is the reader that cannot tell
+	// them apart from anything else in the row.
+	CostUSD          *float64
+	TotalTokens      *int64
+	Turns            *int64
+	ToolErrors       *int64
+	SourceModifiedAt *time.Time
 	// LatestSnapshotID is the newest snapshot this session was published in,
 	// which is the restic snapshot a fetch would read it from.
 	LatestSnapshotID string
@@ -211,6 +221,7 @@ const hostSessionsQuery = `
 	       coalesce(title, ''), coalesce(title_provenance, ''),
 	       coalesce(workspace, ''), continuation_grade,
 	       primary_size, artifact_count, blob_count, unresolved_blob_count,
+	       cost_usd, total_tokens, turns, tool_errors,
 	       source_modified_at, latest_snapshot_id
 	  FROM sessions
 	 WHERE $1::text = '' OR host_id = $1
@@ -242,9 +253,12 @@ func HostSessions(ctx context.Context, db *sql.DB, hostID string) ([]CatalogSess
 		var r CatalogSessionRow
 		var grade sql.NullBool
 		var modified sql.NullTime
+		var cost sql.NullFloat64
+		var totalTokens, turns, toolErrors sql.NullInt64
 		if err := rows.Scan(&r.SessionUID, &r.HostID, &r.Harness,
 			&r.Title, &r.TitleProvenance, &r.Workspace, &grade,
 			&r.PrimarySize, &r.ArtifactCount, &r.BlobCount, &r.UnresolvedBlobCount,
+			&cost, &totalTokens, &turns, &toolErrors,
 			&modified, &r.LatestSnapshotID); err != nil {
 			return nil, fmt.Errorf("scan catalog session row: %w", err)
 		}
@@ -257,6 +271,24 @@ func HostSessions(ctx context.Context, db *sql.DB, hostID string) ([]CatalogSess
 		if modified.Valid {
 			t := modified.Time
 			r.SourceModifiedAt = &t
+		}
+		// The usage summary reads back the same way: NULL stays nil so an
+		// unmeasured session never renders as a free one.
+		if cost.Valid {
+			c := cost.Float64
+			r.CostUSD = &c
+		}
+		if totalTokens.Valid {
+			t := totalTokens.Int64
+			r.TotalTokens = &t
+		}
+		if turns.Valid {
+			t := turns.Int64
+			r.Turns = &t
+		}
+		if toolErrors.Valid {
+			t := toolErrors.Int64
+			r.ToolErrors = &t
 		}
 		out = append(out, r)
 	}

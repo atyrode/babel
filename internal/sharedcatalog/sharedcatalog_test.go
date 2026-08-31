@@ -241,17 +241,24 @@ func TestAllowlistExcludesSensitiveNames(t *testing.T) {
 		}
 	}
 
-	// The other half of the contract: the four columns the operator did admit
-	// must actually be listed, or Verify would reject the schema this
-	// repository's own migration creates and the widening would be a
-	// half-change nobody could apply.
+	// The other half of the contract: every column deliberately admitted must
+	// actually be listed, or Verify would reject the schema this repository's
+	// own migrations create and the widening would be a half-change nobody
+	// could apply.
+	//
+	// The usage columns (migrations/0006) are on this list rather than the one
+	// above because they are measures of a session's consumption, not its
+	// content: they say a session was long or expensive and cannot be
+	// inverted into a word of what it said.
 	for _, want := range []string{
 		"sessions.title:", "sessions.title_provenance:",
 		"sessions.workspace:", "sessions.continuation_grade:",
 		"hosts.display_name:",
+		"sessions.cost_usd:", "sessions.total_tokens:",
+		"sessions.turns:", "sessions.tool_errors:",
 	} {
 		if !strings.Contains(listing, want) {
-			t.Errorf("allowlist omits %q, admitted by operator decision 2026-08-30", want)
+			t.Errorf("allowlist omits %q, admitted by explicit operator decision", want)
 		}
 	}
 }

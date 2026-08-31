@@ -353,6 +353,82 @@ func TestRowJSONRoundTripsLosslessly(t *testing.T) {
 	}
 }
 
+// The publish path reads these columns rather than RowJSON, so a value that
+// does not survive the cache is a value other machines never see. The pairing
+// that matters is zero against nil: a session measured at zero cost and a
+// session nothing measured must not read back the same.
+func TestUsageColumnsRoundTripAndKeepAbsenceAbsent(t *testing.T) {
+	cache, refs := testCache(t, 2)
+	measured, unmeasured := refs[0], refs[1]
+
+	rows, err := cache.Refresh(context.Background(), ompScope, refs, func(ref Ref) (Row, bool) {
+		row := testRow(ref, []byte(`{"ok":true}`))
+		if ref.Selector == measured.Selector {
+			// Deliberately all zeros but all present: the free session is
+			// the case a NOT NULL column would make indistinguishable from
+			// the unmeasured one below.
+			row.CostUSD = new(0.0)
+			row.TotalTokens = new(int64(0))
+			row.Turns = new(int64(0))
+			row.ToolErrors = new(int64(0))
+		}
+		return row, true
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("cached %d rows, want 2", len(rows))
+	}
+
+	bySelector := map[string]Row{}
+	for _, row := range rows {
+		bySelector[row.Selector] = row
+	}
+	free := bySelector[measured.Selector]
+	if free.CostUSD == nil || *free.CostUSD != 0 {
+		t.Errorf("a measured free session read back cost %v, want a present 0", free.CostUSD)
+	}
+	if free.Turns == nil || *free.Turns != 0 {
+		t.Errorf("turns = %v, want a present 0", free.Turns)
+	}
+	silent := bySelector[unmeasured.Selector]
+	if silent.CostUSD != nil || silent.TotalTokens != nil || silent.Turns != nil || silent.ToolErrors != nil {
+		t.Errorf("an unmeasured session read back with usage: %+v", silent)
+	}
+
+	// A session whose transcript grew is re-described, and the new aggregate
+	// replaces the old one rather than being coalesced with it: a session
+	// that ran another twenty turns costs more than it did.
+	if err := os.WriteFile(measured.PrimaryPath, []byte("synthetic, and longer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updated := Row{
+		Selector: measured.Selector, Harness: measured.Harness, SourceID: measured.SourceID,
+		PrimaryPath: measured.PrimaryPath, RowJSON: []byte(`{"ok":true}`),
+		CostUSD: new(3.5), TotalTokens: new(int64(90210)), Turns: new(int64(7)), ToolErrors: new(int64(2)),
+	}
+	if _, err := cache.Refresh(context.Background(), ompScope, []Ref{measured},
+		func(Ref) (Row, bool) { return updated, true }, nil); err != nil {
+		t.Fatal(err)
+	}
+	// And it survives the read path an hourly push actually takes, which
+	// describes nothing because nothing changed.
+	reread, err := cache.Refresh(context.Background(), ompScope, []Ref{measured},
+		func(Ref) (Row, bool) { t.Fatal("an unchanged session was described again"); return Row{}, false }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reread) != 1 {
+		t.Fatalf("reread %d rows, want 1", len(reread))
+	}
+	got := reread[0]
+	if got.CostUSD == nil || *got.CostUSD != 3.5 || got.TotalTokens == nil || *got.TotalTokens != 90210 ||
+		got.Turns == nil || *got.Turns != 7 || got.ToolErrors == nil || *got.ToolErrors != 2 {
+		t.Errorf("the cached usage summary did not survive: %+v", got)
+	}
+}
+
 var ompScope = []string{"omp"}
 
 func testCache(t *testing.T, count int) (*Cache, []Ref) {

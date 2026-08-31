@@ -371,6 +371,14 @@ func (a *app) publishableSessions(
 			TitleProvenance:   publishProvenance,
 			Workspace:         row.Workspace,
 			ContinuationGrade: &grade,
+			// The usage summary travels as the cache holds it: nil when this
+			// host's adapter extracted none, never flattened to zero. A
+			// reader on another machine has no transcript to recompute from,
+			// so a zero here would be the only thing it could believe.
+			CostUSD:     row.CostUSD,
+			TotalTokens: row.TotalTokens,
+			Turns:       row.Turns,
+			ToolErrors:  row.ToolErrors,
 		})
 	}
 	return rows, nil

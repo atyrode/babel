@@ -63,6 +63,19 @@ type SessionRow struct {
 	TitleProvenance   *string
 	Workspace         *string
 	ContinuationGrade *bool
+	// CostUSD, TotalTokens, Turns and ToolErrors are the usage summary
+	// migrations/0006 admits: what the harness recorded about this session's
+	// spend, summed by the publishing host's adapter over the raw transcript.
+	// They are pointers for the same reason the fields above are, and the
+	// distinction matters more here because zero is a legitimate value: a
+	// session that cost nothing and a session nobody measured are different
+	// facts, and a reader handed 0 for both would conclude the corpus was
+	// free. NULL means unmeasured - every row written before this column
+	// existed, and every harness whose adapter extracts no usage.
+	CostUSD     *float64
+	TotalTokens *int64
+	Turns       *int64
+	ToolErrors  *int64
 }
 
 // SessionUID derives a session's opaque catalog identity.
@@ -170,20 +183,23 @@ func PublishSnapshot(
 		// first_snapshot_id records where a session was first seen and is never
 		// rewritten; latest_snapshot_id moves forward with each publication.
 		//
-		// title, workspace and continuation_grade are overwritten from this
-		// push rather than coalesced with what the row held. The publishing
-		// host is the authority on its own sessions: a renamed workspace or a
-		// session that stopped being continuable must be able to say so, and
-		// coalescing would make the first value ever published permanent. A
-		// push cannot silently blank them by failing to describe - a session
-		// whose describe fails is pruned from the local cache and is not
-		// published at all (internal/catalog.Refresh).
+		// title, workspace, continuation_grade and the usage summary are
+		// overwritten from this push rather than coalesced with what the row
+		// held. The publishing host is the authority on its own sessions: a
+		// renamed workspace, a session that stopped being continuable, or one
+		// whose transcript grew by another twenty turns must be able to say
+		// so, and coalescing would make the first value ever published
+		// permanent. A push cannot silently blank them by failing to describe
+		// - a session whose describe fails is pruned from the local cache and
+		// is not published at all (internal/catalog.Refresh).
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO sessions (session_uid, host_id, harness, first_snapshot_id,
 			                      latest_snapshot_id, primary_size, artifact_count,
 			                      blob_count, unresolved_blob_count, source_modified_at,
-			                      title, title_provenance, workspace, continuation_grade)
-			VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			                      title, title_provenance, workspace, continuation_grade,
+			                      cost_usd, total_tokens, turns, tool_errors)
+			VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+			        $14, $15, $16, $17)
 			ON CONFLICT (session_uid) DO UPDATE
 			   SET latest_snapshot_id    = excluded.latest_snapshot_id,
 			       primary_size          = excluded.primary_size,
@@ -195,10 +211,15 @@ func PublishSnapshot(
 			       title_provenance      = excluded.title_provenance,
 			       workspace             = excluded.workspace,
 			       continuation_grade    = excluded.continuation_grade,
+			       cost_usd              = excluded.cost_usd,
+			       total_tokens          = excluded.total_tokens,
+			       turns                 = excluded.turns,
+			       tool_errors           = excluded.tool_errors,
 			       updated_at            = now()`,
 			s.SessionUID, l.HostID, s.Harness, snap.SnapshotID,
 			s.PrimarySize, s.ArtifactCount, s.BlobCount, s.UnresolvedBlobCount,
-			s.SourceModifiedAt, s.Title, s.TitleProvenance, s.Workspace, s.ContinuationGrade); err != nil {
+			s.SourceModifiedAt, s.Title, s.TitleProvenance, s.Workspace, s.ContinuationGrade,
+			s.CostUSD, s.TotalTokens, s.Turns, s.ToolErrors); err != nil {
 			return false, fmt.Errorf("publish snapshot: upsert session: %w", err)
 		}
 	}

@@ -69,6 +69,14 @@ const (
 	// architecture. It does not cover a system hostname or any other
 	// infrastructure identity.
 	ClassHostIdentity Class = "host identity or machine fact"
+	// ClassSpendMeasure covers what a session cost in money: the priced
+	// total a harness recorded for its own turns, summed by Babel and
+	// republished unchanged (migrations/0006). It is deliberately not
+	// ClassMeasure. Sizes and counts describe how big a session is; a
+	// dollar figure is a different kind of fact about the operator's
+	// account, and folding it into an existing class would have widened
+	// the boundary without the listing showing that anything new arrived.
+	ClassSpendMeasure Class = "spend measure"
 )
 
 // allowlist enumerates every column the shared schema may contain, keyed by
@@ -139,6 +147,15 @@ var allowlist = map[string]map[string]Class{
 		"continuation_grade": ClassSessionGrade,
 		"created_at":         ClassTimestamp,
 		"updated_at":         ClassTimestamp,
+		// The usage summary (migrations/0006). Three of the four are plain
+		// counts of a session's own records; cost_usd is money and carries
+		// its own class so this listing shows it as its own kind of fact.
+		// None of them can be inverted into transcript content: they say a
+		// session was long or expensive, never what it said.
+		"cost_usd":     ClassSpendMeasure,
+		"total_tokens": ClassMeasure,
+		"turns":        ClassMeasure,
+		"tool_errors":  ClassMeasure,
 	},
 	"host_leases": {
 		"host_id":     ClassOpaqueID,

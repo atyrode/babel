@@ -118,6 +118,71 @@ type CommonMeta struct {
 	Completeness    []CompletenessReason
 }
 
+// Usage is the model-usage aggregate an adapter recomputed from one
+// session's own raw records: what the harness itself wrote down about
+// what the session cost to run.
+//
+// It is recomputed rather than read from the harness's telemetry, and
+// that is the design decision rather than an implementation detail. OMP
+// keeps a per-turn ledger in ~/.omp/stats.db that answers these exact
+// questions and is joinable to Babel's own identities, and it is garbage
+// collected with OMP's local session retention - so a session archived
+// last year has no row there, while the usage blocks embedded in the raw
+// transcript Babel already holds are durable and cover the whole corpus.
+// The ledger is a cross-check, never a dependency (issue #89).
+//
+// Nothing here is inference. Every number is a sum over values the
+// harness wrote into the transcript, so this document is recorded in
+// exactly the sense TitleProvenance means it, and producing it invokes
+// no model and reads no network.
+type Usage struct {
+	// AssistantTurns is every assistant record the transcript holds.
+	// TurnsWithUsage is how many of them carried a usage block, and
+	// TurnsWithCost how many of those priced one. The sums below are over
+	// exactly those turns, so a reader that finds either short of
+	// AssistantTurns knows the totals are a floor rather than the
+	// session's whole spend - which is the difference between reporting a
+	// measure and implying a complete one.
+	AssistantTurns int `json:"assistant_turns"`
+	TurnsWithUsage int `json:"turns_with_usage"`
+	TurnsWithCost  int `json:"turns_with_cost"`
+	// UnreadableRecords counts the records the scan could not read at all:
+	// a torn tail, a garbage line, or a record too large to assemble. It
+	// is zero for a healthy log, and a nonzero value is the only thing
+	// that distinguishes a complete aggregate from one with holes in it.
+	UnreadableRecords int `json:"unreadable_records"`
+
+	// CostUSD is the sum of the per-turn totals the harness priced, in US
+	// dollars. It is the harness's own arithmetic over its own rate card,
+	// repeated: Babel prices nothing itself.
+	CostUSD float64 `json:"cost_usd"`
+
+	InputTokens      int64 `json:"input_tokens"`
+	OutputTokens     int64 `json:"output_tokens"`
+	CacheReadTokens  int64 `json:"cache_read_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+	// TotalTokens is the sum of the per-turn totals the harness reported
+	// rather than of the four counts above, because a harness that counts
+	// reasoning tokens separately reports a total larger than their sum
+	// and its own number is the authoritative one.
+	TotalTokens int64 `json:"total_tokens"`
+
+	// Models and Providers are the sorted deduplicated sets named by the
+	// turns whose usage was counted, so they say what served the tokens
+	// summed above rather than everything the log mentions. A session
+	// commonly holds more than one of each: the operator switches models
+	// mid-session, and subagents run on their own.
+	Models    []string `json:"models,omitempty"`
+	Providers []string `json:"providers,omitempty"`
+
+	// ToolCalls counts the tool invocations the assistant turns issued and
+	// ToolErrors the results that came back marked as errors. They are not
+	// a ratio: a session may end with a call whose result was never
+	// written, and a harness may retry one failing call many times.
+	ToolCalls  int `json:"tool_calls"`
+	ToolErrors int `json:"tool_errors"`
+}
+
 // Description is one best-effort view of a session's metadata and file
 // closure, read from the live source files at DescribedAt.
 type Description struct {
@@ -126,6 +191,18 @@ type Description struct {
 	PrimarySize int64
 
 	Meta CommonMeta
+
+	// Usage is what the harness recorded about this session's model spend,
+	// aggregated from the raw transcript, and is a typed view of the same
+	// document the adapter also publishes inside AdapterMetadata.
+	//
+	// It is nil when the adapter extracted none, which is two different
+	// states: an adapter that reads no usage at all, and one whose
+	// transcript carried none - a log written before the harness recorded
+	// per-turn usage. An adapter that can tell those apart says which in
+	// Meta.Completeness under "usage"; a nil here on its own asserts only
+	// that no aggregate was produced, never that the session was free.
+	Usage *Usage
 
 	// AdapterMetadata is canonical compact JSON (CanonicalRawMessage) or
 	// nil; its schema is versioned independently of the common shape.

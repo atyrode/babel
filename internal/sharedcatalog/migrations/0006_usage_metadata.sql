@@ -1,0 +1,112 @@
+-- Per-session usage metadata: what a session cost (SPEC.md 3, 9; issue #89).
+--
+-- WHAT THIS ADMITS, AND WHY IT IS FREE
+--
+-- Every harness Babel archives writes a usage block into its own transcript:
+-- the tokens a turn consumed, the price it was charged, the model and provider
+-- that served it. Babel's adapters now sum those blocks at describe time and
+-- publish four of the totals here, so an instance browsing the fleet can ask
+-- which sessions were expensive, which were long, and which fought their tools
+-- - without reading a transcript and without invoking a model.
+--
+-- The whole feature is arithmetic over bytes Babel already holds. Nothing here
+-- costs an API call, nothing leaves the machine to produce it, and the numbers
+-- are reproducible from the same log by any binary carrying the same adapter.
+-- That is what puts this migration before the ceremony gates rather than behind
+-- them: there is no spend to authorize.
+--
+-- WHY NOT READ THE HARNESS'S OWN LEDGER
+--
+-- OMP keeps a per-turn ledger in ~/.omp/stats.db keyed by session file and
+-- entry id, which is exactly the path Babel ingested and the turn ids inside
+-- it: a free, exact join was available. It was declined. That ledger is garbage
+-- collected with OMP's local session retention, so it answers for this month's
+-- sessions and knows nothing about the ones Babel archived a year ago - while
+-- the usage blocks in the raw transcript are durable and cover the whole
+-- corpus. Recomputing from the archive is the version that keeps working, and
+-- the ledger remains available as a cross-check (issue #89).
+--
+-- WHY THESE FOUR COLUMNS AND NOT THE WHOLE AGGREGATE
+--
+-- The adapter's aggregate is larger than this: input, output, cache-read and
+-- cache-write tokens separately, the set of models and providers, how many
+-- turns carried usage at all, how many records the scan could not read. All of
+-- it travels in the session's adapter metadata, which lives in the encrypted
+-- repository where transcripts live.
+--
+-- What lands in PostgreSQL is the summary a cross-host reader can act on: the
+-- priced total, the token total, the number of assistant turns, and the number
+-- of tool results that came back as errors. Adding the rest would put more
+-- plaintext in a managed provider's database to answer questions nobody has
+-- asked, and 0004's permission was for browsable metadata rather than for
+-- everything an adapter can compute.
+--
+-- WHY THIS IS NOT TRANSCRIPT CONTENT
+--
+-- 0001_init excluded transcript bodies and any deterministic function of them,
+-- and 0004 kept that exclusion while admitting titles. These four columns stay
+-- on the right side of it. They are scalar measures of a session's consumption:
+-- they say a session cost $3.20 across 41 turns and 900k tokens, and they
+-- cannot be inverted into a word of what it said. They answer no question of
+-- the form "does this session contain X", which is the oracle SPEC.md 9
+-- forbids - a keyword set, a plaintext full-text index, or a digest over
+-- transcript bytes would be that oracle, and none of them is admitted here.
+--
+-- What they do reveal is a session's shape and price, which is the same class
+-- of fact `primary_size`, `artifact_count` and `blob_count` have carried since
+-- 0001_init. cost_usd is the one genuinely new kind of fact, and allowlist.go
+-- classes it separately for that reason: money is not a size or a count, and
+-- folding it into one would have hidden a new disclosure inside an existing
+-- class.
+--
+-- WHY double precision AND NOT numeric
+--
+-- cost_usd is a sum of the float totals the harness wrote into the transcript,
+-- computed in float64 by the adapter. numeric would store that sum to an
+-- exactness the input never had and imply Babel priced something, which it does
+-- not: the arithmetic is the harness's own, repeated. double precision states
+-- the precision honestly. The column is a browsing measure, not a ledger, and
+-- nothing bills from it.
+--
+-- NULL MEANS UNMEASURED, AND EMPHATICALLY NOT ZERO
+--
+-- This is the same rule 0004 wrote for continuation_grade, and it bites harder
+-- here because zero is a legitimate value. A session that cost nothing and a
+-- session nobody measured are different facts, and a reader handed 0 for both
+-- would conclude the corpus was free. Every row currently in the table holds
+-- NULL until its owning host republishes from a binary carrying these columns,
+-- and rows for harnesses whose adapter extracts no usage keep holding NULL
+-- afterwards.
+--
+-- The CHECK constraints say the rest: a negative cost, a negative token count,
+-- a negative turn count or a negative error count is not an unmeasured session,
+-- it is a broken writer, and it should be refused at the boundary rather than
+-- browsed. A CHECK on a nullable column is only evaluated against values
+-- actually supplied, so a NULL passes and a writer predating this migration -
+-- which never names these columns - is unaffected.
+--
+-- COMPATIBILITY WITH WRITERS THAT PREDATE THIS MIGRATION
+--
+-- Additive nullable columns with no defaults, exactly as 0004 and 0005 added
+-- theirs. No row is rewritten and no INSERT that was valid before becomes
+-- invalid, because Babel's writers name their columns explicitly. That matters
+-- concretely: the operator's hourly systemd timer runs a Nix-profile binary
+-- older than 0004 and has kept publishing across both of those migrations.
+--
+-- SchemaVersion stays 1. Raising it would make EnsureCompatible refuse every
+-- writer that has not been updated, which is the opposite of what an additive
+-- change needs (SPEC.md 14).
+--
+-- BACKFILL
+--
+-- The owning host's next push, and nothing else. The numbers come from the
+-- host's own transcripts, so no other instance can compute them, and
+-- `babel storage rebuild` cannot: it reconstructs snapshot rows from the
+-- repository listing and deletes the host's session rows, and session detail is
+-- not derivable from a snapshot list (SPEC.md 9).
+
+ALTER TABLE sessions
+    ADD COLUMN cost_usd     double precision CHECK (cost_usd >= 0),
+    ADD COLUMN total_tokens bigint           CHECK (total_tokens >= 0),
+    ADD COLUMN turns        integer          CHECK (turns >= 0),
+    ADD COLUMN tool_errors  integer          CHECK (tool_errors >= 0);

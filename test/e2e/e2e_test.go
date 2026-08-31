@@ -315,6 +315,13 @@ type sessionRow struct {
 	TitleProv  *string `json:"title_provenance"`
 	Workspace  *string `json:"workspace"`
 	Continuous bool    `json:"continuation_grade"`
+	// The usage summary the adapter recomputed from the transcript. This
+	// suite decodes with DisallowUnknownFields, so an unmirrored field fails
+	// here rather than reaching an operator as a dropped value.
+	CostUSD     *float64 `json:"cost_usd"`
+	TotalTokens *int64   `json:"total_tokens"`
+	Turns       *int64   `json:"turns"`
+	ToolErrors  *int64   `json:"tool_errors"`
 }
 
 type sessionsResult struct {

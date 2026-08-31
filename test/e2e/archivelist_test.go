@@ -27,6 +27,12 @@ type archiveListRow struct {
 	TitleProv  *string `json:"title_provenance"`
 	Workspace  *string `json:"workspace"`
 	Continuous *bool   `json:"continuation_grade"`
+	// The usage summary, absent for a cross-host listing for the same reason
+	// the title is: nothing read the transcript.
+	CostUSD     *float64 `json:"cost_usd"`
+	TotalTokens *int64   `json:"total_tokens"`
+	Turns       *int64   `json:"turns"`
+	ToolErrors  *int64   `json:"tool_errors"`
 }
 
 type archiveListResult struct {
@@ -68,6 +74,10 @@ func requireArchiveOnlyFields(t *testing.T, row archiveListRow) {
 	}
 	if row.Continuous != nil {
 		t.Fatalf("archive row %s graded continuation as %v without reading its closure", row.Selector, *row.Continuous)
+	}
+	if row.CostUSD != nil || row.TotalTokens != nil || row.Turns != nil || row.ToolErrors != nil {
+		t.Fatalf("archive row %s reports usage, which only the transcript's own records carry: %+v",
+			row.Selector, row)
 	}
 }
 
