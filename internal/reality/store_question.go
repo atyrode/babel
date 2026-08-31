@@ -435,7 +435,10 @@ func (s *Store) RecordAnswer(ctx context.Context, in AnswerInput) (Answer, error
 	if err := in.validate(); err != nil {
 		return Answer{}, err
 	}
-	var record Answer
+	var (
+		record Answer
+		pub    publication
+	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		if err := requireContext(ctx, tx, in.ContextID); err != nil {
 			return fmt.Errorf("reality: answer context: %w", err)
@@ -476,9 +479,21 @@ func (s *Store) RecordAnswer(ctx context.Context, in AnswerInput) (Answer, error
 			ContextID:     in.ContextID,
 			Payload:       AnswerPayload{Text: in.Text},
 		}
-		return nil
+		wire, err := stagedAnswer(record)
+		if err != nil {
+			return err
+		}
+		// The answer is staged; the question's new state is not. A reading
+		// host derives the disposition from the outcome the envelope
+		// carries, and a state event published as a record of its own would
+		// be a second answer to that question.
+		pub, err = s.stage(ctx, tx, wire)
+		return err
 	})
 	if err != nil {
+		return Answer{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Answer{}, err
 	}
 	return record, nil
@@ -610,7 +625,10 @@ func (s *Store) RecordPlan(ctx context.Context, in PlanInput) (Plan, Retained, e
 		retained.HypothesisIDs = append(retained.HypothesisIDs, id)
 	}
 
-	var plan Plan
+	var (
+		plan Plan
+		pub  publication
+	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		if err := requireRow(ctx, tx, "reality_question", "id", in.QuestionID); err != nil {
 			return err
@@ -708,10 +726,29 @@ func (s *Store) RecordPlan(ctx context.Context, in PlanInput) (Plan, Retained, e
 			}
 			plan.Actions = append(plan.Actions, action)
 		}
-		return s.transitionQuestion(ctx, tx, in.QuestionID, QuestionPlanReady,
-			component, "plan "+id+" is ready for review")
+		if err := s.transitionQuestion(ctx, tx, in.QuestionID, QuestionPlanReady,
+			component, "plan "+id+" is ready for review"); err != nil {
+			return err
+		}
+		wire, err := stagedPlan(plan)
+		if err != nil {
+			return err
+		}
+		// One record rather than a set: a plan's actions are its own content
+		// and travel inside it, and everything else this transaction wrote is
+		// published by somebody else or by nobody. The retained hypothesis is
+		// internal/frontier's row and internal/frontier publishes it, the
+		// follow-up question is a question, and a recorded pipeline request is
+		// a work item for the review pipeline rather than a claim about
+		// reality. So the plan is its own closure of one, and the acceptance
+		// that may later apply it anchors a closure of its own.
+		pub, err = s.stage(ctx, tx, wire)
+		return err
 	})
 	if err != nil {
+		return Plan{}, Retained{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Plan{}, Retained{}, err
 	}
 	return plan, retained, nil
@@ -1003,6 +1040,7 @@ func (s *Store) AcceptPlan(ctx context.Context, in AcceptanceInput) (Acceptance,
 	var (
 		acceptance  Acceptance
 		application Application
+		pub         publication
 	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		plan, err := readPlan(ctx, tx, in.PlanID)
@@ -1047,13 +1085,18 @@ func (s *Store) AcceptPlan(ctx context.Context, in AcceptanceInput) (Acceptance,
 			RecordedAt: recorded,
 			Payload:    payload,
 		}
+		set := s.newRecordSet()
+		if err := set.add(stagedAcceptance(acceptance)); err != nil {
+			return err
+		}
 
 		authority := Authority{Kind: AuthorityOperator, ID: in.Actor, At: recorded}
 		for _, action := range plan.Actions {
 			if !action.Kind.RequiresAcceptance() {
 				continue
 			}
-			resultID, err := s.applyAction(ctx, tx, action, authority, in.ContextID, &application)
+			resultID, err := s.applyAction(ctx, tx, action, authority, in.ContextID,
+				&application, set)
 			if err != nil {
 				return fmt.Errorf("reality: apply plan action %d: %w", action.Position, err)
 			}
@@ -1075,18 +1118,34 @@ func (s *Store) AcceptPlan(ctx context.Context, in AcceptanceInput) (Acceptance,
 			return err
 		}
 		application.QuestionState = QuestionAnswered
-		return nil
+		// The acceptance is the anchor, and this is the clearest case for a
+		// set in this package. §4.8 makes the accepting operator the authority
+		// behind every fact, resolution, membership entry and dispute applied
+		// above, so an acceptance that reached the fleet without them would
+		// claim an authority over records nobody else can see, and facts that
+		// reached it without the acceptance would be attributed to an operator
+		// act the fleet has no record of. Either half alone is a lie.
+		//
+		// The rule set a change-focus action installed is deliberately not in
+		// the set; stage says why a locally numbered policy version has no
+		// wire identity to publish under.
+		pub, err = s.stageSet(ctx, tx, acceptance.ID, set)
+		return err
 	})
 	if err != nil {
+		return Acceptance{}, Application{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Acceptance{}, Application{}, err
 	}
 	return acceptance, application, nil
 }
 
 // applyAction performs one authoritative action under the accepting operator's
-// authority.
+// authority, adding whatever it makes durable to the acceptance's set.
 func (s *Store) applyAction(ctx context.Context, tx *sql.Tx, action Action,
-	authority Authority, contextID string, application *Application) (string, error) {
+	authority Authority, contextID string, application *Application,
+	set *recordSet) (string, error) {
 	switch action.Kind {
 	case ActionAssertFact:
 		input := *action.Payload.Fact
@@ -1098,8 +1157,14 @@ func (s *Store) applyAction(ctx context.Context, tx *sql.Tx, action Action,
 		if err != nil {
 			return "", err
 		}
+		if err := set.add(stagedFact(fact)); err != nil {
+			return "", err
+		}
 		application.FactIDs = append(application.FactIDs, fact.ID)
 		if dispute.ID != "" {
+			// The contradiction check opened this one, so it is derived from
+			// facts that travel on their own and does not join the set; the
+			// dispute an action asked for below does.
 			application.DisputeIDs = append(application.DisputeIDs, dispute.ID)
 		}
 		return fact.ID, nil
@@ -1114,6 +1179,11 @@ func (s *Store) applyAction(ctx context.Context, tx *sql.Tx, action Action,
 		if err != nil {
 			return "", err
 		}
+		// Only the successor, on SupersedeFact's own terms: the ancestor is
+		// byte-identical afterwards and what it gained is a status event.
+		if err := set.add(stagedFact(fact)); err != nil {
+			return "", err
+		}
 		application.FactIDs = append(application.FactIDs, fact.ID)
 		return fact.ID, nil
 	case ActionDisputeFact:
@@ -1126,12 +1196,18 @@ func (s *Store) applyAction(ctx context.Context, tx *sql.Tx, action Action,
 		if err != nil {
 			return "", err
 		}
+		// An accepted plan's dispute is a judgement the operator made by
+		// accepting it, which no deterministic check reaches, so it travels
+		// for the same reason DisputeFacts' does.
+		if err := set.add(stagedDispute(dispute, authority.ID)); err != nil {
+			return "", err
+		}
 		application.DisputeIDs = append(application.DisputeIDs, dispute.ID)
 		return dispute.ID, nil
 	case ActionMergeEntities:
 		merge := *action.Payload.Merge
 		merge.Actor = authority.ID
-		resolution, err := s.mergeEntities(ctx, tx, merge)
+		resolution, err := s.mergeEntities(ctx, tx, merge, set)
 		if err != nil {
 			return "", err
 		}
@@ -1140,7 +1216,7 @@ func (s *Store) applyAction(ctx context.Context, tx *sql.Tx, action Action,
 	case ActionSplitEntity:
 		split := *action.Payload.Split
 		split.Actor = authority.ID
-		resolution, _, err := s.splitEntity(ctx, tx, split)
+		resolution, _, err := s.splitEntity(ctx, tx, split, set)
 		if err != nil {
 			return "", err
 		}
@@ -1151,6 +1227,10 @@ func (s *Store) applyAction(ctx context.Context, tx *sql.Tx, action Action,
 		if err != nil {
 			return "", err
 		}
+		// Nothing is staged for a rule set version. Its identity is an
+		// integer chosen on this host, so two hosts' version 2 would be two
+		// policies with one wire id and 0003's insert-only row would keep
+		// whichever landed first.
 		application.FocusVersions = append(application.FocusVersions, rules.Version)
 		return fmt.Sprintf("focus-ruleset-%d", rules.Version), nil
 	}

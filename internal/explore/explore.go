@@ -73,6 +73,7 @@ import (
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/preflight"
 	"github.com/atyrode/babel/internal/run"
+	"github.com/atyrode/babel/internal/sync"
 	"github.com/atyrode/babel/internal/worker"
 )
 
@@ -145,6 +146,13 @@ const (
 	// FailureRelatedContext reports a prior output the preparation named that
 	// could not be resolved into the job's refine-first context (#87).
 	FailureRelatedContext = "related-context"
+	// FailureSyncPublish reports that this run's closure could not be
+	// declared for the shared catalog. internal/sync returns an error only
+	// for a caller bug — a closure with no staged records, or one already
+	// declared at another size — and never for an unreachable backend, so the
+	// code names a defect to fix rather than an outage to wait out. Every
+	// record stays durable and visibly pending-sync either way.
+	FailureSyncPublish = "sync-publish"
 )
 
 // ErrRedactionRequired reports a run refused before launch because §6.4's
@@ -216,6 +224,22 @@ type Config struct {
 	// whose result proposes an action Babel silently dropped would render
 	// nothing for the operator to click and report success.
 	Dispositions *disposition.Store
+
+	// Sync declares this run's closure to the shared catalog when the run
+	// ends (§6.5, §12 Phase B). The stores above stage each record as they
+	// write it, into the closure this run's id names, and none of them can
+	// declare it: migration 0003 fixes a closure's record count at
+	// declaration and never lets it move, so the count is only right once no
+	// further record can arrive, and this control plane is the only thing
+	// that knows when that is.
+	//
+	// Nil is local-only mode, which is a supported deployment: every method
+	// of a nil *sync.Publisher is a silent no-op, and New does not require
+	// this field. Publication is never a precondition for a run — §6.5 makes
+	// it a step that may be completed later — and refusing a run for want of
+	// a reachable shared backend would trade durable analysis for a database
+	// connection.
+	Sync sync.Hook
 
 	// Index is the retrieval index corpus search is served from. It is
 	// optional: a run with no index has retrieval denied with that reason
@@ -644,6 +668,9 @@ func (c *Controller) Explore(ctx context.Context, opt Options) (*Outcome, error)
 	if err != nil {
 		st.out.Receipt = c.writeReceipt(st, opt.RunID, nil, nil,
 			st.failuresFor(StagePreflight, StageExplore), started)
+		// A refused run publishes too: the refusal's receipt is a durable
+		// record, and the closure naming it has to be declared by somebody.
+		c.publishRun(st)
 		st.out.Failures = st.allFailures()
 		return st.out, err
 	}
@@ -685,8 +712,15 @@ func (c *Controller) Explore(ctx context.Context, opt Options) (*Outcome, error)
 		workerReceipt, steps = exploration.receipt, exploration.steps
 	}
 	st.out.Receipt = c.writeReceipt(st, opt.RunID, workerReceipt, steps, c.runFailures(st), started)
+	// The run's own verdict is fixed before publication is attempted. A
+	// closure that failed to publish is a recorded failure and never the
+	// run's outcome: §6.5 makes publication a step that may be completed
+	// later, so whether a catalog was reachable must not decide whether an
+	// exploration succeeded.
+	outcomeErr := st.err
+	c.publishRun(st)
 	st.out.Failures = st.allFailures()
-	return st.out, st.err
+	return st.out, outcomeErr
 }
 
 // runPreflight runs §6.4 and enforces its disclosure verdict.
@@ -732,4 +766,46 @@ func (c *Controller) runFailures(st *state) []run.Failure {
 		}
 	}
 	return st.failuresFor(stages...)
+}
+
+// publishRun declares this run's closure and attempts to publish it.
+//
+// The records a run produces are staged into its closure by the stores that
+// write them, publishing nothing, because a closure may not be declared while
+// it can still grow. Ending the run is what completes it, and no store can
+// observe that: a frontier record and a receipt look identical whether the run
+// is over or merely between writes. So this call is the one place a run's
+// closure is declared, and every record the run staged publishes together or
+// stays visibly pending together.
+//
+// It runs on st.commit, the context detached from the run's cancellation, for
+// exactly the reason every other durable write in this package does: once
+// output exists, recording and publishing it is not work a budget may cut
+// short. A cancelled run has candidates and a receipt; declaring their closure
+// on the cancelled context would fail on its first query, and a cancellation
+// would then cost the fleet the work rather than only the remainder.
+//
+// A refused or failed run publishes too. Its receipt is a durable record, §6.5
+// requires a failed exploration not to erase successful work, and a run whose
+// closure is never declared leaves its records staged and visibly pending
+// forever with nobody left to complete them. That is the failure this call
+// prevents, not one it risks.
+//
+// Only a returned error is recorded, because internal/sync documents that as a
+// caller bug rather than a transient condition: an unreachable catalog reports
+// its own single diagnostic line, leaves every record durable and pending-sync,
+// and returns nil, so there is nothing here to record and nothing to fail. The
+// failure reaches the outcome rather than the receipt, and it cannot reach the
+// receipt: the receipt is the record this publication was declaring, so a
+// failure to publish it can never also be inside it. It is attributed to
+// StageExplore on the same reasoning writeReceipt's storage failures are —
+// this control plane degraded, not a worker boundary.
+func (c *Controller) publishRun(st *state) {
+	if c.cfg.Sync == nil {
+		return
+	}
+	if err := c.cfg.Sync.CommitInline(st.commit, sync.Closure{RunID: st.opt.RunID}); err != nil {
+		st.fail(StageExplore, FailureSyncPublish, c.now(),
+			fmt.Errorf("explore: declare the shared-catalog closure for run %s: %w", st.opt.RunID, err))
+	}
 }

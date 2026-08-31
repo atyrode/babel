@@ -11,6 +11,10 @@ import (
 	"strings"
 	"time"
 
+	// internal/sync, not the standard library's: what this file needs from a
+	// package by that name is the Phase B publication hook, not a mutex.
+	"github.com/atyrode/babel/internal/sync"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -62,7 +66,31 @@ var (
 type Store struct {
 	db   *sql.DB
 	path string
+	// sync stages this store's records for the shared catalog, and is nil in
+	// local-only mode. It is held on the Store rather than reached for at
+	// publication time because staging shares the writer's own transaction:
+	// a record that committed locally while the journal row saying it is
+	// owed to the fleet did not would be durable, invisible to the publisher
+	// and reported by nothing (SPEC.md §6.5).
+	sync sync.Hook
 }
+
+// Option configures a Store at Open time.
+//
+// Publication is an option rather than a parameter because a local-only
+// deployment is a supported deployment and is what every caller of Open was
+// before Phase B: a store opened without one writes exactly what it always
+// wrote and owes the fleet nothing.
+type Option func(*Store)
+
+// WithSync attaches the Phase B publication hook, so a preparation or a
+// receipt is staged for the shared catalog inside the transaction that makes
+// it durable and published immediately afterwards (SPEC.md §6.5, §12 Phase B).
+//
+// A nil *sync.Publisher satisfies sync.Hook and every method of it is a
+// silent no-op, so a caller whose configuration resolved to local-only may
+// pass what it has rather than branching on it.
+func WithSync(h sync.Hook) Option { return func(s *Store) { s.sync = h } }
 
 // Open opens the durable database in dir, creating the directory and this
 // component's tables if they are absent.
@@ -71,7 +99,11 @@ type Store struct {
 // retrieval index may be discarded and recreated because every row in it is
 // derivable; nothing here is, so meeting an unfamiliar schema means stopping
 // rather than deleting analysis to make the shape fit.
-func Open(dir string) (*Store, error) {
+//
+// Options are applied before the schema is prepared, so a store opened with a
+// publication hook has the journal's tables on its own connection before any
+// write can reach them.
+func Open(dir string, opts ...Option) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("run: create state directory: %w", err)
 	}
@@ -82,9 +114,22 @@ func Open(dir string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, path: path}
+	for _, opt := range opts {
+		opt(s)
+	}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	// The journal lives in this same file and stages on this same connection,
+	// so its tables have to exist here before a writer opens a transaction.
+	// It is cheap and idempotent. A local-only store skips it: a deployment
+	// that never publishes should not carry tables nothing will ever read.
+	if s.sync != nil {
+		if err := sync.EnsureSchema(s.db); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -251,8 +296,33 @@ func (s *Store) upgrade(from int) error {
 // definition, and preparation is described as an idempotent, resumable step
 // (SPEC.md §8). The stored bytes are compared rather than assumed: an ID that
 // already names different content is a corrupt database, not a duplicate.
+//
+// The insert and the journal row that says the record is owed to the fleet
+// are one transaction, which is why a single statement is not enough here any
+// more. A preparation that committed locally while its journal row did not
+// would be durable, invisible to the publisher and reported by nothing.
 func (s *Store) PutPreparation(ctx context.Context, p Preparation) error {
-	return putPreparation(ctx, s.db, p)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("run: begin preparation write: %w", err)
+	}
+	defer tx.Rollback()
+
+	payload, err := putPreparation(ctx, tx, p)
+	if err != nil {
+		return err
+	}
+	// A staging failure returns before the commit, so the deferred rollback
+	// takes the durable insert with it: there is no state in which the record
+	// exists locally and nothing knows it is owed.
+	closure, ready, err := s.stagePreparation(ctx, tx, p, payload)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("run: commit preparation: %w", err)
+	}
+	return s.publish(ctx, closure, ready)
 }
 
 // execer is the subset of *sql.DB and *sql.Tx one write needs, so a
@@ -263,30 +333,35 @@ type execer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func putPreparation(ctx context.Context, q execer, p Preparation) error {
+// putPreparation writes one preparation and reports the canonical bytes that
+// are now stored under its ID, whether this call wrote them or found them
+// already there. Handing them back is what lets the caller stage exactly the
+// bytes the row holds: re-deriving them at the publication site would be a
+// second chance to disagree with what was written.
+func putPreparation(ctx context.Context, q execer, p Preparation) ([]byte, error) {
 	payload, err := p.MarshalCanonical()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	res, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO run_preparation(
 		id, schema_version, prepared_at, source_count, sync_state, payload)
 		VALUES(?, ?, ?, ?, ?, ?)`,
 		string(p.ID), p.Schema, formatTime(p.PreparedAt), len(p.Selection), SyncPending, payload)
 	if err != nil {
-		return fmt.Errorf("run: store preparation: %w", err)
+		return nil, fmt.Errorf("run: store preparation: %w", err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 1 {
-		return nil
+		return payload, nil
 	}
 	var stored []byte
 	if err := q.QueryRowContext(ctx, `SELECT payload FROM run_preparation WHERE id = ?`,
 		string(p.ID)).Scan(&stored); err != nil {
-		return fmt.Errorf("run: read stored preparation: %w", err)
+		return nil, fmt.Errorf("run: read stored preparation: %w", err)
 	}
 	if string(stored) != string(payload) {
-		return fmt.Errorf("run: stored preparation differs from the one being written: %w", ErrExists)
+		return nil, fmt.Errorf("run: stored preparation differs from the one being written: %w", ErrExists)
 	}
-	return nil
+	return payload, nil
 }
 
 // Preparation reads a preparation record and re-verifies that its content
@@ -343,7 +418,12 @@ func (s *Store) PutReceipt(ctx context.Context, r Receipt) error {
 	}
 	defer tx.Rollback()
 
-	if err := putPreparation(ctx, tx, r.Preparation); err != nil {
+	// The preparation is written but not staged here. `babel prepare` is the
+	// only thing that creates one, and it staged and published the record as
+	// its own closure of one before this run could name it; this write is the
+	// idempotent re-assertion that the scope is present, and staging it a
+	// second time under the run would be a second closure for one record.
+	if _, err := putPreparation(ctx, tx, r.Preparation); err != nil {
 		return err
 	}
 
@@ -370,10 +450,16 @@ func (s *Store) PutReceipt(ctx context.Context, r Receipt) error {
 		counts, payload); err != nil {
 		return fmt.Errorf("run: store receipt: %w", wrapConstraint(err))
 	}
+	// Staging shares this transaction, so a staging failure returns here and
+	// the deferred rollback takes the receipt with it.
+	closure, ready, err := s.stageReceipt(ctx, tx, r.Header, payload)
+	if err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("run: commit receipt: %w", err)
 	}
-	return nil
+	return s.publish(ctx, closure, ready)
 }
 
 // checkChain rejects a write that would duplicate, fork or skip a run's

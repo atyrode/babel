@@ -41,13 +41,29 @@ func (s *Store) AssertFact(ctx context.Context, in FactInput) (Fact, Dispute, er
 	var (
 		record  Fact
 		dispute Dispute
+		pub     publication
 	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		created, found, err := s.assertFact(ctx, tx, in, "", "", "")
+		if err != nil {
+			return err
+		}
 		record, dispute = created, found
+		wire, err := stagedFact(created)
+		if err != nil {
+			return err
+		}
+		// The revision is staged, never the dispute or the status events a
+		// contradiction appends: those are the append-only lifecycle
+		// publish.go does not carry, and the fact row itself is the durable
+		// thing another machine cannot reproduce.
+		pub, err = s.stage(ctx, tx, wire)
 		return err
 	})
 	if err != nil {
+		return Fact{}, Dispute{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Fact{}, Dispute{}, err
 	}
 	return record, dispute, nil
@@ -248,13 +264,31 @@ func (s *Store) SupersedeFact(ctx context.Context, in SupersedeInput) (Fact, err
 			"%w: a trusted source's facts enter through ImportFacts, which checks its declared scope",
 			ErrOutsideScope)
 	}
-	var record Fact
+	var (
+		record Fact
+		pub    publication
+	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		created, err := s.supersedeFact(ctx, tx, in, "", "")
+		if err != nil {
+			return err
+		}
 		record = created
+		wire, err := stagedFact(created)
+		if err != nil {
+			return err
+		}
+		// Only the successor is staged. The ancestor is byte-identical
+		// afterwards and was published when it was written; what it gained
+		// is a status event, and the successor's Supersedes link is what
+		// tells a reading host which revision came after which.
+		pub, err = s.stage(ctx, tx, wire)
 		return err
 	})
 	if err != nil {
+		return Fact{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Fact{}, err
 	}
 	return record, nil
@@ -548,7 +582,10 @@ func (s *Store) DisputeFacts(ctx context.Context, in DisputeInput) (Dispute, err
 	if err := checkNoCredential("dispute reason", in.Reason); err != nil {
 		return Dispute{}, err
 	}
-	var record Dispute
+	var (
+		record Dispute
+		pub    publication
+	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		first, err := readFact(ctx, tx, in.FactIDs[0])
 		if err != nil {
@@ -556,10 +593,32 @@ func (s *Store) DisputeFacts(ctx context.Context, in DisputeInput) (Dispute, err
 		}
 		created, err := s.openDispute(ctx, tx, first.SubjectID, first.Predicate,
 			sortedUnique(in.FactIDs), in.Actor, in.Reason)
+		if err != nil {
+			return err
+		}
 		record = created
+		wire, err := stagedDispute(created, in.Actor)
+		if err != nil {
+			return err
+		}
+		// This dispute is staged and the ones assertFact opens by itself are
+		// not, and the difference is derivation rather than importance. A
+		// contradiction the deterministic check found is recomputable by any
+		// host holding the two facts — same canonical subject, same predicate,
+		// overlapping valid time, different value. A contradiction a human
+		// judged is recomputable by nobody, which is the same reason an
+		// operator's answer travels and the question does not.
+		//
+		// The member facts' disputed statuses and the dispute's own state are
+		// the append-only half publish.go does not carry, so what travels is
+		// the judgement and never its standing.
+		pub, err = s.stage(ctx, tx, wire)
 		return err
 	})
 	if err != nil {
+		return Dispute{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return Dispute{}, err
 	}
 	return record, nil
@@ -873,7 +932,10 @@ func (s *Store) ImportFacts(ctx context.Context, in ImportInput) ([]Fact, error)
 	if len(in.Facts) == 0 {
 		return nil, fmt.Errorf("%w: import carries no facts", ErrInvalidValue)
 	}
-	var imported []Fact
+	var (
+		imported []Fact
+		pub      publication
+	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
 		source, err := readTrustedSource(ctx, tx, in.SourceID)
 		if err != nil {
@@ -883,9 +945,10 @@ func (s *Store) ImportFacts(ctx context.Context, in ImportInput) ([]Fact, error)
 		if err != nil {
 			return err
 		}
+		importedAt := s.now()
 		if _, err := tx.ExecContext(ctx, `INSERT INTO reality_import(
 			id, source_id, batch_key, imported_at, fact_count) VALUES(?, ?, ?, ?, ?)`,
-			importID, source.ID, in.BatchKey, formatTime(s.now()), len(in.Facts)); err != nil {
+			importID, source.ID, in.BatchKey, formatTime(importedAt), len(in.Facts)); err != nil {
 			return fmt.Errorf("reality: record import batch: %w", err)
 		}
 		for i, fact := range in.Facts {
@@ -917,9 +980,45 @@ func (s *Store) ImportFacts(ctx context.Context, in ImportInput) ([]Fact, error)
 			}
 			imported = append(imported, record)
 		}
-		return nil
+
+		// The batch is staged after the loop rather than fact by fact,
+		// because this is the one path here whose record count is the
+		// caller's: a local-only store must not encode five hundred wire
+		// forms it will never stage.
+		set := s.newRecordSet()
+		if set == nil {
+			return nil
+		}
+		// The import row is the anchor. Decision 30 admits a non-operator
+		// fact only as part of a predicate-scoped trusted import, so the
+		// import is the record that authorizes every fact staged with it, and
+		// half an inventory batch on the wire is worse than none: a reader
+		// holding some of these facts and not the batch cannot tell whether
+		// the source asserted the rest.
+		//
+		// The first fact of the batch would have been the wrong anchor even
+		// though it is available. It authorizes nothing, and reordering the
+		// caller's slice would rename the closure.
+		//
+		// Nothing puts a fact's import_id on the wire, because 0003 already
+		// carries it: every fact here commits in the import's closure, and
+		// that closure's run id is the import's id.
+		if err := set.add(stagedImport(importID, source.ID, in.BatchKey,
+			len(in.Facts), importedAt)); err != nil {
+			return err
+		}
+		for _, record := range imported {
+			if err := set.add(stagedFact(record)); err != nil {
+				return err
+			}
+		}
+		pub, err = s.stageSet(ctx, tx, importID, set)
+		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
 		return nil, err
 	}
 	return imported, nil

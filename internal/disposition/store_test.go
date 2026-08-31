@@ -18,7 +18,7 @@ type harness struct {
 	store *Store
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, opts ...Option) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	front, err := frontier.Open(dir)
@@ -30,7 +30,7 @@ func newHarness(t *testing.T) *harness {
 			t.Errorf("close frontier: %v", err)
 		}
 	})
-	store, err := Open(dir, front)
+	store, err := Open(dir, front, opts...)
 	if err != nil {
 		t.Fatalf("open dispositions: %v", err)
 	}

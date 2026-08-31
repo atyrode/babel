@@ -360,13 +360,8 @@ func (s *Store) dispositionAnswers(ctx context.Context, subject Ref, id string) 
 			return nil, fmt.Errorf("review answer %s: %w", record.ID, err)
 		}
 		record.CreatedAt = at
-		record.Summary = summarize(fmt.Sprintf("%s on %s %s: %s",
-			decision, subjectType, record.Subject.ID, note.Note))
-		// The reviewer identity is indexed with the words. §9's allowlist
-		// admits it in the clear, internal/review already keeps reviewer
-		// identities unsealed, and "what did this reviewer decide about
-		// this area" is a question the frontier could not answer before.
-		record.Text = joinText([]string{decision, reviewer, note.Note})
+		record.Summary, record.Text = describeDispositionAnswer(
+			record.Subject, decision, reviewer, note.Note)
 		out = append(out, record)
 	}
 	return out, rows.Err()
@@ -413,13 +408,37 @@ func (s *Store) refinementAnswers(ctx context.Context, subject Ref, id string) (
 			return nil, fmt.Errorf("refinement answer %s: %w", record.ID, err)
 		}
 		record.CreatedAt = at
-		record.Summary = summarize(fmt.Sprintf("refinement requested on %s %s: %s",
-			subjectType, record.Subject.ID, refinement.Guidance))
-		record.Text = joinText([]string{"refinement requested",
-			refinement.Guidance, strings.Join(refinement.Scope, " ")})
+		record.Summary, record.Text = describeRefinementAnswer(
+			record.Subject, refinement.Guidance, refinement.Scope)
 		out = append(out, record)
 	}
 	return out, rows.Err()
+}
+
+// describeDispositionAnswer and describeRefinementAnswer derive a review
+// answer's searchable summary and text.
+//
+// They are functions rather than inline code because this package stopped being
+// the only producer of these two values: a record another host committed is
+// flattened by PublishedRecord.Output (see remote.go), and a second copy of
+// this phrasing would make one operator decision read differently depending on
+// which machine happened to write it - which is precisely the drift the rest of
+// this file is arranged to prevent.
+//
+// The reviewer identity is in the indexed text and not in the summary. §9's
+// allowlist admits it in the clear and internal/review already keeps reviewer
+// identities unsealed, so "what did this reviewer decide about this area" is
+// answerable; the summary is the line a listing shows, and a name in it would
+// crowd out the decision it is there to report.
+func describeDispositionAnswer(subject Ref, decision, reviewer, note string) (summary, text string) {
+	return summarize(fmt.Sprintf("%s on %s %s: %s", decision, subject.Type, subject.ID, note)),
+		joinText([]string{decision, reviewer, note})
+}
+
+func describeRefinementAnswer(subject Ref, guidance string, scope []string) (summary, text string) {
+	return summarize(fmt.Sprintf("refinement requested on %s %s: %s",
+			subject.Type, subject.ID, guidance)),
+		joinText([]string{"refinement requested", guidance, strings.Join(scope, " ")})
 }
 
 // ReviewAnswers reads the recorded answers about one record, oldest first. It
