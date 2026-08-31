@@ -7,7 +7,7 @@ import {
   type OverviewSection,
 } from "../api";
 import { errorMessage, formatTime } from "../format";
-import { Badge, FallibilityNote, statusTone, reviewTone, type Tone } from "../analysis";
+import { AuthorityMark, Badge, FallibilityNote, statusTone, reviewTone, type Tone } from "../analysis";
 
 // The landing page. It aggregates and it does not act: every number here is
 // durable state one of the six services already held, read through the single
@@ -753,6 +753,21 @@ function DashboardPage() {
                 }
                 small
               />
+              {/* #87's proposed next actions. It is a third number rather than
+                  folded into "awaiting a decision" because the two are
+                  different questions: one is a verdict on a record, the other
+                  authorizes an action about it, and an operator who saw one
+                  total could not tell how many of each are waiting. */}
+              <Hero
+                value={data.review.dispositions.available ? data.review.dispositions.pending : "—"}
+                label="proposed actions"
+                title={
+                  data.review.dispositions.available
+                    ? "Next actions a run proposed. Authorizing one records that you authorized it; Babel performs none of them."
+                    : data.review.dispositions.unavailable
+                }
+                small
+              />
             </div>
             {data.review.rows.length === 0 ? (
               <p className="quiet-line">
@@ -817,6 +832,7 @@ function DashboardPage() {
                           <Relative at={row.recorded_at} />
                         </span>
                       </span>
+                      <AuthorityMark authority={row.authority} />
                       <strong className="mono receipt-id" title={row.receipt_id}>
                         {row.receipt_id}
                       </strong>
@@ -857,7 +873,8 @@ function DashboardPage() {
             )}
             <p className="panel-caption panel-bottom">
               Candidate counts come from the frontier and recipes from the observations a run
-              recorded, because a receipt's header carries neither.
+              recorded, because a receipt's header carries neither. The authority is the header's
+              own: it says why the run happened, not whether what it found is true.
             </p>
           </Panel>
 

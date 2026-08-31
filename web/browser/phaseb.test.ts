@@ -205,8 +205,12 @@ test.skipIf(!chrome)("a rejected hypothesis stays reachable and visibly rejected
 
   await open("hypotheses/hyp_lens-overlap");
   await visible("rejected, and kept");
+  // Scoped to the status-history card: the page also renders #87's revision
+  // chain as a timeline, and the two histories are different questions about
+  // the record — where it stands, and what it has said.
   const history = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".timeline-entry .badge")).map((badge) => badge.textContent));
+    Array.from(document.querySelectorAll(".history-card .timeline-entry .badge"))
+      .map((badge) => badge.textContent));
   expect(history).toEqual(["untriaged", "investigating", "rejected"]);
 });
 

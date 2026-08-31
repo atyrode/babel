@@ -239,6 +239,8 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	opts.Runs = services.runs()
 	opts.Reality = services.realityService()
 	opts.Search = services.search()
+	opts.Dispositions = services.dispositions()
+	opts.Reviver = services.reviver()
 	opts.Cookbook = services.cookbook
 
 	srv, err := web.New(opts)
@@ -311,7 +313,7 @@ func (a *app) openWebServices(d dirs) *webServices {
 	return s
 }
 
-// The five accessors below return a typed nil-free interface value or nil,
+// The accessors below return a typed nil-free interface value or nil,
 // which is the whole point: web.Options tests each service for nil to decide
 // whether its routes can answer, and a non-nil interface wrapping a nil
 // pointer would pass that test and then panic inside a handler.
@@ -323,6 +325,24 @@ func (s *webServices) review() web.ReviewService {
 }
 
 func (s *webServices) frontier() web.FrontierReader {
+	if s.analysis == nil {
+		return nil
+	}
+	return s.analysis.frontier
+}
+
+// dispositions and reviver are #87's record actions. They are two accessors
+// over one open analysis state because internal/web takes them as two fields:
+// the proposed actions live in their own component of the durable file and the
+// revive transition is the frontier's own write.
+func (s *webServices) dispositions() web.DispositionService {
+	if s.analysis == nil {
+		return nil
+	}
+	return s.analysis.dispositions
+}
+
+func (s *webServices) reviver() web.FrontierReviver {
 	if s.analysis == nil {
 		return nil
 	}

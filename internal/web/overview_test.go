@@ -123,7 +123,11 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 		t.Errorf("an undescribed session claimed a title or a time: %+v", got.Activity.Rows[4])
 	}
 
-	if !got.Frontier.Available || got.Frontier.Hypotheses != 2 || got.Frontier.Truncated {
+	// Three candidates are enumerable: the two the development path enrolled
+	// and the head of the operator-revised chain. The chain's superseded
+	// original and the rejected candidate the revive fixture needs are
+	// neither enrolled nor unexplored, so neither reaches this enumeration.
+	if !got.Frontier.Available || got.Frontier.Hypotheses != 3 || got.Frontier.Truncated {
 		t.Errorf("frontier section = %+v", got.Frontier)
 	}
 	// All six exploration statuses, in §4.2 order, zeros included: a
@@ -137,15 +141,20 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 			t.Errorf("status %d = %q, want %q", i, got.Frontier.Statuses[i].Status, want)
 		}
 	}
-	if got.Frontier.Statuses[0].Count != 2 {
-		t.Errorf("untriaged count = %d, want 2", got.Frontier.Statuses[0].Count)
+	if got.Frontier.Statuses[0].Count != 3 {
+		t.Errorf("untriaged count = %d, want 3", got.Frontier.Statuses[0].Count)
 	}
-	if len(got.Frontier.Rows) != 2 {
+	if len(got.Frontier.Rows) != 3 {
 		t.Fatalf("frontier rows = %+v", got.Frontier.Rows)
 	}
-	// The candidate arrives in the model's own wording, whole.
-	if !strings.Contains(got.Frontier.Rows[0].Statement, "verification may be reported rather than performed") &&
-		!strings.Contains(got.Frontier.Rows[1].Statement, "verification may be reported rather than performed") {
+	// The candidate arrives in the model's own wording, whole. Which row it
+	// is depends on creation order, so every row is searched rather than the
+	// first two.
+	var carried bool
+	for _, row := range got.Frontier.Rows {
+		carried = carried || strings.Contains(row.Statement, "verification may be reported rather than performed")
+	}
+	if !carried {
 		t.Errorf("no row carries the fixture's statement: %+v", got.Frontier.Rows)
 	}
 
@@ -173,10 +182,11 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 		run.Failures != 1 || run.Redactions != 3 {
 		t.Errorf("run row counts = %+v", run)
 	}
-	// The two candidates this run put on the frontier, counted from the
-	// frontier, and the §5.1 recipe read from the observation it recorded.
-	if run.Hypotheses != 2 {
-		t.Errorf("run hypotheses = %d, want 2", run.Hypotheses)
+	// The three candidates this run put on the frontier that are still
+	// enumerable, counted from the frontier, and the §5.1 recipe read from
+	// the observation it recorded.
+	if run.Hypotheses != 3 {
+		t.Errorf("run hypotheses = %d, want 3", run.Hypotheses)
 	}
 	if len(run.Recipes) != 1 || run.Recipes[0].ID != "outcome-integrity" || run.Recipes[0].Version != 1 {
 		t.Errorf("run recipes = %+v", run.Recipes)

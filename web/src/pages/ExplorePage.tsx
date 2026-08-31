@@ -7,7 +7,7 @@ import {
   type SearchHit,
 } from "../api";
 import { errorMessage, formatTime } from "../format";
-import { Badge, Quoted } from "../analysis";
+import { AuthorityMark, Badge, Quoted } from "../analysis";
 
 const HARNESSES = ["omp", "codex", "claude-code"];
 
@@ -134,6 +134,7 @@ function ExplorePage() {
                       <th>Run</th>
                       <th>Recorded</th>
                       <th>Commit state</th>
+                      <th>Authority</th>
                       <th>Counts</th>
                     </tr>
                   </thead>
@@ -157,6 +158,9 @@ function ExplorePage() {
                               label={run.sync}
                               tone={run.sync === "committed" ? "green" : "amber"}
                             />
+                          </td>
+                          <td>
+                            <AuthorityMark authority={run.authority} />
                           </td>
                           <td className="counts-cell">
                             <span>{run.counts.retrieval} retrievals</span>

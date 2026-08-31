@@ -8,6 +8,7 @@ import (
 	"io/fs"
 
 	"github.com/atyrode/babel/internal/cookbook"
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/reality"
@@ -58,6 +59,15 @@ type Options struct {
 	Reality  RealityService
 	Runs     RunLister
 	Search   SearchIndex
+	// Dispositions and Reviver are #87's record actions. They are two
+	// fields rather than one because they are two stores: the proposed
+	// actions and their ledger live beside the frontier in internal/
+	// disposition, and the revive transition is the frontier's own. A
+	// deployment can hold either without the other — a durable file whose
+	// disposition component would not open still renders revision chains —
+	// so each route names the ones it needs and the rest keep answering.
+	Dispositions DispositionService
+	Reviver      FrontierReviver
 	// Cookbook is the loaded analysis cookbook. It is read-only by
 	// construction: a *cookbook.Set exposes lookups and nothing that
 	// changes an asset.
@@ -100,6 +110,54 @@ type FrontierReader interface {
 	StatusHistory(context.Context, string) ([]frontier.StatusEvent, error)
 	ReviewStatus(context.Context, frontier.Ref) (frontier.ReviewStatus, error)
 	Unexplored(context.Context, int) ([]frontier.Hypothesis, error)
+	// Revisions and Head are #87's chain reads. They are reads in the
+	// strictest sense — one is the whole append-only chain a record belongs
+	// to and the other is its last entry — so they belong here rather than
+	// beside the revive transition, and neither can produce a revision: a
+	// chain grows only when a run or `babel revise` appends to it, and
+	// neither is reachable from a browser.
+	Revisions(context.Context, frontier.Ref) ([]frontier.Revision, error)
+	Head(context.Context, frontier.Ref) (frontier.Ref, error)
+}
+
+// FrontierReviver is the one frontier write this surface may perform, and it
+// is separate from FrontierReader for exactly that reason: a reader that had
+// grown a writer would make "the frontier is read-only here" a sentence in a
+// comment rather than a property of a type.
+//
+// #87 removes the idea that a status can be an ending, so a resting candidate
+// has to be able to move again, and an operator's click is one of the two
+// authors that may move it. The method set is one method: reviving states where
+// the candidate lands and why, and internal/frontier refuses a candidate that
+// is not at rest, a landing that is itself a resting state, and a revive with
+// no reason. None of those rules is restated by a handler.
+type FrontierReviver interface {
+	Revive(context.Context, frontier.ReviveInput) (frontier.StatusEvent, error)
+}
+
+// DispositionService is #87's actionable-output surface the web API may reach,
+// satisfied by *disposition.Store.
+//
+// Two writes are listed and they are the two the issue gives an operator: an
+// attributed answer to a proposed action, and an instruction-free invitation to
+// process a record further. Neither does anything outside Babel — accepting a
+// draft-issue opens no issue and this package holds no credential — so what a
+// browser can reach here is the durable record that a person authorized an
+// action, never the action.
+//
+// Propose is deliberately absent. A run proposes actions through its result
+// schema and an operator may synthesize one with `babel disposition propose`;
+// a browser button that minted proposals would make the surface whose job is
+// authorizing them also their author. Consume and ConsumeOne are absent for the
+// mirror-image reason: an invitation is taken by a run that is about to work,
+// and a browser request is not one.
+type DispositionService interface {
+	Disposition(context.Context, string) (disposition.Disposition, error)
+	List(context.Context, disposition.ListFilter) ([]disposition.Disposition, int, error)
+	Ledger(context.Context, string) ([]disposition.LedgerEntry, error)
+	Decide(context.Context, disposition.DecideInput) (disposition.LedgerEntry, error)
+	Invite(context.Context, disposition.InviteInput) (disposition.Invitation, error)
+	Invitations(context.Context, disposition.InvitationFilter) ([]disposition.Invitation, error)
 }
 
 // RealityService is the §4.8 ledger surface the web API may reach, satisfied by
@@ -155,6 +213,26 @@ type RunSummary struct {
 	RecordedAt    string    `json:"recorded_at"`
 	Sync          string    `json:"sync"`
 	Counts        RunCounts `json:"counts"`
+	// Authority is why this run happened: an operator's command or
+	// invitation, a conductor policy, or a serendipity draw. It is a
+	// listing-level field rather than a payload one because "why did Babel
+	// spend a token" is the question a receipt strip is read for, and a
+	// listing that could only answer it by opening a sealed body would not
+	// answer it at all.
+	//
+	// The zero value means the receipt was written before receipts recorded
+	// one. That is an absence rather than an operator authority, and the
+	// surfaces that render it say so instead of filling the gap in.
+	Authority RunAuthority `json:"authority"`
+}
+
+// RunAuthority mirrors the authority a run receipt's header carries. Kind is
+// "operator", "policy" or "serendipity", and Ref names the command, invitation,
+// policy or draw behind it; both are empty on a receipt recorded before the
+// field existed.
+type RunAuthority struct {
+	Kind string `json:"kind"`
+	Ref  string `json:"ref"`
 }
 
 // RunCounts mirrors run.Counts field-for-field. A non-zero Redactions is the
@@ -175,10 +253,12 @@ type RunCounts struct {
 // service method that changed shape is a compile failure here instead of a
 // second implementation growing beside it.
 var (
-	_ ReviewService  = (*review.Service)(nil)
-	_ FrontierReader = (*frontier.Store)(nil)
-	_ RealityService = (*reality.Store)(nil)
-	_ SearchIndex    = (*index.Index)(nil)
+	_ ReviewService      = (*review.Service)(nil)
+	_ FrontierReader     = (*frontier.Store)(nil)
+	_ FrontierReviver    = (*frontier.Store)(nil)
+	_ RealityService     = (*reality.Store)(nil)
+	_ DispositionService = (*disposition.Store)(nil)
+	_ SearchIndex        = (*index.Index)(nil)
 )
 
 // State is the non-secret subset of persistent storage configuration exposed

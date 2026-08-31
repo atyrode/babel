@@ -226,6 +226,9 @@ export interface RunSummary {
   recorded_at: string;
   sync: string; // "pending-sync" | "committed"
   counts: RunCounts;
+  // Why the run happened, as its receipt recorded it. Empty on a receipt
+  // written before receipts carried one.
+  authority: RunAuthority;
 }
 
 export interface RecipeSummary {
@@ -309,12 +312,21 @@ export interface Hypothesis {
   payload: HypothesisPayload;
 }
 
+export interface Actor {
+  // "run" or "operator". The distinction is #87's whole attribution story:
+  // a chain that cannot say whether a candidate was reworded by inference or
+  // by its owner is a history nobody can audit.
+  kind: string;
+  id: string;
+}
+
 export interface StatusEvent {
   id: string;
   hypothesis_id: string;
   sequence: number;
   status: HypothesisStatus;
   run_id: string;
+  actor: Actor;
   recorded_at: string;
   note?: string;
 }
@@ -805,6 +817,21 @@ export interface OverviewReview extends OverviewSection {
   awaiting: number;
   rows: OverviewReviewRow[];
   questions: OverviewQuestions;
+  dispositions: OverviewDispositions;
+}
+
+// The count of proposed next actions nobody has answered (#87). It is its own
+// section because it comes from its own component of the durable file: a
+// session can have a review log and be unable to say anything about actions.
+export interface OverviewDispositions extends OverviewSection {
+  pending: number;
+}
+
+// RunAuthority mirrors the authority a run receipt's header carries: an
+// operator's command or invitation, a conductor policy, or a serendipity draw.
+export interface RunAuthority {
+  kind: string;
+  ref: string;
 }
 
 export interface OverviewRecipe {
@@ -824,6 +851,10 @@ export interface OverviewRunRow {
   redactions: number;
   hypotheses: number;
   recipes: OverviewRecipe[];
+  // Why the run happened. Both fields are empty on a receipt recorded before
+  // receipts carried an authority, which is an absence the surface states
+  // rather than fills in.
+  authority: RunAuthority;
 }
 
 export interface OverviewRuns extends OverviewSection {
@@ -1186,4 +1217,154 @@ export function searchCorpus(
 // rest, so the window belongs to the server rather than to the caller.
 export function getOverview(): Promise<Overview> {
   return request<Overview>("/api/overview");
+}
+
+// ---------------------------------------------------------------------------
+// Record actions (issue #87)
+//
+// A record's revision chain, the next actions proposed against it, and the
+// three things an operator may authorize from a record page. Two rules from the
+// issue are visible in these shapes rather than only in the pages that render
+// them.
+//
+// Accepting authorizes and publishes nothing. DecideDispositionResult carries a
+// `published` sentence from the server for exactly that reason: a caller
+// reading this module is the reader most likely to assume an accepted
+// draft-issue was filed.
+//
+// Every mutation confirms the wording the operator was shown. `headId` is the
+// chain head the page rendered against, and a head that moved since is a 409
+// with an explanation rather than a write — so these three request types have
+// no optional field and no default for it.
+
+export interface Revision {
+  id: string;
+  record: RecordRef;
+  root_id: string;
+  supersedes_id?: string;
+  sequence: number;
+  actor: Actor;
+  recorded_at: string;
+  // Why this revision replaced the one before it. Absent on a chain's first
+  // entry: an original supersedes nothing and has no reason to give.
+  reason?: string;
+  head: boolean;
+}
+
+export interface RecordRef {
+  type: string;
+  id: string;
+}
+
+export interface RevisionChain {
+  record: RecordRef;
+  head_id: string;
+  revisions: Revision[];
+}
+
+export interface DispositionAnchor {
+  workspace: string;
+  remote: string;
+  url: string;
+  branch?: string;
+}
+
+export interface DispositionRuling {
+  id: string;
+  sequence: number;
+  ruling: string;
+  by: string;
+  recorded_at: string;
+  note?: string;
+}
+
+export interface ProposedAction {
+  id: string;
+  record: RecordRef;
+  kind: string;
+  status: string;
+  proposed_by: Actor;
+  ref?: string;
+  created_at: string;
+  summary: string;
+  rationale?: string;
+  anchor?: DispositionAnchor;
+  ledger: DispositionRuling[];
+  // The issue text a draft-issue renders to, absent for every other kind. It
+  // is text and it is rendered as text: nothing here opens a link, and the
+  // draft is filed by the operator or by nobody.
+  draft?: string;
+}
+
+export interface RecordInvitation {
+  id: string;
+  record: RecordRef;
+  by: string;
+  created_at: string;
+  consumed_by?: string;
+  consumed_at?: string;
+  open: boolean;
+}
+
+export interface RecordDispositions {
+  record: RecordRef;
+  head_id: string;
+  dispositions: ProposedAction[];
+  invitations: RecordInvitation[];
+}
+
+export interface DecideDispositionResult {
+  entry: DispositionRuling;
+  status: string;
+  published: string;
+}
+
+export interface InviteResult {
+  invitation: RecordInvitation;
+  instruction: string;
+}
+
+export interface ReviveResult {
+  record: RecordRef;
+  event: StatusEvent;
+}
+
+export function getRecordRevisions(type: string, id: string): Promise<RevisionChain> {
+  return request<RevisionChain>(`/api/record/revisions?${query({ type, id })}`);
+}
+
+export function getRecordDispositions(type: string, id: string): Promise<RecordDispositions> {
+  return request<RecordDispositions>(`/api/record/dispositions?${query({ type, id })}`);
+}
+
+export function decideDisposition(
+  dispositionId: string,
+  ruling: "accepted" | "declined",
+  headId: string,
+  note = "",
+): Promise<DecideDispositionResult> {
+  return postJSON<DecideDispositionResult>("/api/record/disposition/decide", {
+    dispositionId,
+    ruling,
+    note,
+    headId,
+  });
+}
+
+// inviteRecord takes no text, and the absence is the point rather than an
+// oversight: #87's nudge says a record deserves attention and deliberately does
+// not say what to do about it. The route refuses an unknown field, so a caller
+// that added one here would get a 400 rather than a silently dropped
+// instruction.
+export function inviteRecord(record: RecordRef, headId: string): Promise<InviteResult> {
+  return postJSON<InviteResult>("/api/record/invite", { record, headId });
+}
+
+export function reviveRecord(
+  record: RecordRef,
+  reason: string,
+  headId: string,
+  status = "",
+): Promise<ReviveResult> {
+  return postJSON<ReviveResult>("/api/record/revive", { record, reason, status, headId });
 }

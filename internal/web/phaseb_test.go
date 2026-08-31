@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/cookbook"
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
@@ -45,16 +46,32 @@ type phaseB struct {
 	front      *frontier.Store
 	runs       *run.Store
 	review     *review.Service
+	actions    *disposition.Store
 	reality    *reality.Store
 	index      *index.Index
 	authority  review.Authority
 	hypothesis frontier.Hypothesis
 	finding    frontier.Finding
 	proposal   frontier.Proposal
-	entity     reality.Entity
-	question   reality.Question
-	answer     reality.Answer
-	plan       reality.Plan
+	// action and invitation are #87's fixtures: one proposed next action
+	// nobody has answered, and one instruction-free invitation nobody has
+	// consumed, both against the candidate.
+	action     disposition.Disposition
+	invitation disposition.Invitation
+	// resting is a candidate the frontier has rejected, which is what a
+	// revive needs: #87 makes rejection a resting place rather than an
+	// ending, and the transition out of one is refused for a candidate that
+	// is already on the frontier.
+	resting frontier.Hypothesis
+	// original and revised are one two-entry chain: the wording a run
+	// emitted and the operator revision that superseded it. The head is
+	// revised, which is what makes original a stale-head fixture.
+	original frontier.Hypothesis
+	revised  frontier.Hypothesis
+	entity   reality.Entity
+	question reality.Question
+	answer   reality.Answer
+	plan     reality.Plan
 }
 
 // newPhaseB opens the services, writes one whole §4.2 development path plus one
@@ -81,6 +98,11 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		t.Fatalf("review.Open: %v", err)
 	}
 	t.Cleanup(func() { service.Close() })
+	actions, err := disposition.Open(dir, front)
+	if err != nil {
+		t.Fatalf("disposition.Open: %v", err)
+	}
+	t.Cleanup(func() { actions.Close() })
 	ledger, err := reality.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("reality.Open: %v", err)
@@ -96,8 +118,10 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		t.Fatalf("review.NewAuthority: %v", err)
 	}
 	h.front, h.runs, h.review, h.reality, h.index, h.authority = front, runs, service, ledger, retrieval, authority
+	h.actions = actions
 
 	h.writeFrontier(text)
+	h.writeActions(text)
 	h.writeReality(text)
 	h.indexSession(text)
 	recipes, err := cookbook.Embedded()
@@ -106,12 +130,14 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 	}
 
 	opts := Options{
-		Operator: operatorID,
-		Review:   service,
-		Frontier: front,
-		Reality:  ledger,
-		Search:   retrieval,
-		Cookbook: recipes,
+		Operator:     operatorID,
+		Review:       service,
+		Frontier:     front,
+		Reality:      ledger,
+		Search:       retrieval,
+		Cookbook:     recipes,
+		Dispositions: actions,
+		Reviver:      front,
 		Runs: runLister{{
 			ReceiptID:     "rcp-1 " + text,
 			RunID:         "run-1 " + text,
@@ -119,6 +145,7 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 			Revision:      1,
 			RecordedAt:    "2026-03-01T12:00:00Z",
 			Sync:          run.SyncPending,
+			Authority:     RunAuthority{Kind: "operator", Ref: "babel explore " + text},
 		}},
 	}
 	if mutate != nil {
@@ -229,6 +256,86 @@ func (h *phaseB) writeFrontier(text string) {
 			h.t.Fatalf("Enroll(%s): %v", subject.ID, err)
 		}
 	}
+}
+
+// writeActions records #87's fixtures: a candidate a run rejected so a revive
+// has something at rest to move, one proposed next action against the live
+// candidate, and one open invitation against it.
+//
+// The action is a develop-further rather than a draft-issue, because a
+// draft-issue binds to a verified git checkout (#88) and a unit test that
+// needed one would be testing internal/disposition's anchor reader instead of
+// this surface. The draft rendering has its own test, against a real checkout.
+func (h *phaseB) writeActions(text string) {
+	h.t.Helper()
+	resting, err := h.front.CreateHypothesis(h.ctx, frontier.HypothesisInput{
+		RunID:   "run-1",
+		Payload: frontier.HypothesisPayload{Statement: "the retry loop hides the first failure " + text, Novelty: 0.3, Priority: 0.3},
+	})
+	if err != nil {
+		h.t.Fatalf("CreateHypothesis: %v", err)
+	}
+	if _, err := h.front.SetStatus(h.ctx, frontier.StatusInput{
+		HypothesisID: resting.ID,
+		Status:       frontier.StatusRejected,
+		RunID:        "run-1",
+		Note:         "the evidence names one session " + text,
+	}); err != nil {
+		h.t.Fatalf("SetStatus: %v", err)
+	}
+	reread, err := h.front.Hypothesis(h.ctx, resting.ID)
+	if err != nil {
+		h.t.Fatalf("Hypothesis: %v", err)
+	}
+	h.resting = reread
+
+	record := frontier.Ref{Type: frontier.EntityHypothesis, ID: h.hypothesis.ID}
+	action, err := h.actions.Propose(h.ctx, disposition.ProposeInput{
+		Record:     record,
+		Kind:       disposition.KindDevelopFurther,
+		ProposedBy: frontier.Run("run-1"),
+		Ref:        "action-1",
+		Payload: disposition.Payload{
+			Summary:   "read the two adjacent sessions before rewording " + text,
+			Rationale: "the claim rests on one transcript " + text,
+		},
+	})
+	if err != nil {
+		h.t.Fatalf("Propose: %v", err)
+	}
+	h.action = action
+
+	invitation, err := h.actions.Invite(h.ctx, disposition.InviteInput{Record: record, By: operatorID})
+	if err != nil {
+		h.t.Fatalf("Invite: %v", err)
+	}
+	h.invitation = invitation
+
+	// A two-entry chain: a run's original and an operator's revision of it,
+	// which is what a revision-history timeline is for. The original is left
+	// readable, because #87's chain replaces nothing it supersedes.
+	original, err := h.front.CreateHypothesis(h.ctx, frontier.HypothesisInput{
+		RunID:   "run-1",
+		Payload: frontier.HypothesisPayload{Statement: "the manifest is read once per deploy " + text, Novelty: 0.6, Priority: 0.6},
+	})
+	if err != nil {
+		h.t.Fatalf("CreateHypothesis: %v", err)
+	}
+	h.original = original
+	revised, err := h.front.CreateHypothesis(h.ctx, frontier.HypothesisInput{
+		RunID:      "run-1",
+		AncestorID: original.ID,
+		Actor:      frontier.Operator(operatorID),
+		Reason:     "the original conflated two deploy steps " + text,
+		Payload: frontier.HypothesisPayload{
+			Statement: "the manifest is re-read per deploy step, and the second read is stale " + text,
+			Novelty:   0.6, Priority: 0.6,
+		},
+	})
+	if err != nil {
+		h.t.Fatalf("CreateHypothesis: %v", err)
+	}
+	h.revised = revised
 }
 
 // writeReality records an entity with an alias and a question whose answer the
@@ -456,6 +563,10 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{name: "reality inbox", method: http.MethodGet, path: "/api/reality/inbox"},
 		{name: "reality entity", method: http.MethodGet, path: "/api/reality/entity?id=" + h.entity.ID},
 		{name: "search", method: http.MethodGet, path: "/api/search?q=verification"},
+		{name: "record revisions", method: http.MethodGet,
+			path: "/api/record/revisions?type=hypothesis&id=" + h.original.ID},
+		{name: "record dispositions", method: http.MethodGet,
+			path: "/api/record/dispositions?type=hypothesis&id=" + h.hypothesis.ID},
 		{
 			name: "review decide", method: http.MethodPost, path: "/api/review/decide", mutating: true,
 			body: `{"subject":{"type":"proposal","id":"` + h.proposal.ID + `"},"disposition":"defer"}`,
@@ -471,6 +582,24 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{
 			name: "reality plan accept", method: http.MethodPost, path: "/api/reality/plan/accept", mutating: true,
 			body: `{"planId":"` + h.plan.ID + `"}`,
+		},
+		// #87's three record actions. Each body carries the chain head the
+		// page would have been rendered against, which for an unrevised
+		// record is the record itself; records_test.go covers what happens
+		// when it is not.
+		{
+			name: "record disposition decide", method: http.MethodPost,
+			path: "/api/record/disposition/decide", mutating: true,
+			body: `{"dispositionId":"` + h.action.ID + `","ruling":"declined","headId":"` + h.hypothesis.ID + `"}`,
+		},
+		{
+			name: "record invite", method: http.MethodPost, path: "/api/record/invite", mutating: true,
+			body: `{"record":{"type":"hypothesis","id":"` + h.hypothesis.ID + `"},"headId":"` + h.hypothesis.ID + `"}`,
+		},
+		{
+			name: "record revive", method: http.MethodPost, path: "/api/record/revive", mutating: true,
+			body: `{"record":{"type":"hypothesis","id":"` + h.resting.ID + `"},` +
+				`"reason":"a second session shows the same first failure","headId":"` + h.resting.ID + `"}`,
 		},
 	}
 }
@@ -593,7 +722,7 @@ func TestPhaseBReadRoutes(t *testing.T) {
 	t.Run("hypotheses list every status", func(t *testing.T) {
 		var got hypothesisList
 		decodeResponse(t, h.get("/api/hypotheses"), &got)
-		if got.Total != 2 || len(got.Items) != 2 {
+		if got.Total != 3 || len(got.Items) != 3 {
 			t.Fatalf("hypotheses = %+v", got)
 		}
 		var found HypothesisSummary
@@ -616,7 +745,7 @@ func TestPhaseBReadRoutes(t *testing.T) {
 		}
 		var filtered hypothesisList
 		decodeResponse(t, h.get("/api/hypotheses?status=untriaged"), &filtered)
-		if filtered.Total != 2 {
+		if filtered.Total != 3 {
 			t.Fatalf("filtered = %+v", filtered)
 		}
 		var none hypothesisList
@@ -788,6 +917,11 @@ func TestPhaseBRoutesAnswerHonestlyWithoutServices(t *testing.T) {
 		{http.MethodPost, "/api/review/context", `{"text":"x"}`},
 		{http.MethodPost, "/api/reality/answer", `{"questionId":"qst-1","text":"x"}`},
 		{http.MethodPost, "/api/reality/plan/accept", `{"planId":"pln-1"}`},
+		{http.MethodGet, "/api/record/revisions?type=hypothesis&id=hyp-1", ""},
+		{http.MethodGet, "/api/record/dispositions?type=hypothesis&id=hyp-1", ""},
+		{http.MethodPost, "/api/record/disposition/decide", `{"dispositionId":"dsp-1","ruling":"accepted","headId":"hyp-1"}`},
+		{http.MethodPost, "/api/record/invite", `{"record":{"type":"hypothesis","id":"hyp-1"},"headId":"hyp-1"}`},
+		{http.MethodPost, "/api/record/revive", `{"record":{"type":"hypothesis","id":"hyp-1"},"reason":"x","headId":"hyp-1"}`},
 	} {
 		var reader io.Reader
 		if route.body != "" {
@@ -856,6 +990,43 @@ func (h *phaseB) snapshot() string {
 		for _, decision := range history.Decisions {
 			fmt.Fprintf(&out, "  decision %s %s by=%s\n",
 				decision.Event.ID, decision.Event.Disposition, decision.Event.ReviewerID)
+		}
+	}
+	// #87's ledgers and the lifecycle history a revive appends to. All three
+	// are here because all three are now writable from this surface, and a
+	// snapshot that did not describe them could not tell a refused mutation
+	// from a successful one.
+	actions, _, err := h.actions.List(h.ctx, disposition.ListFilter{Limit: disposition.MaxListLimit})
+	if err != nil {
+		h.t.Fatalf("List: %v", err)
+	}
+	for _, action := range actions {
+		fmt.Fprintf(&out, "action %s %s/%s kind=%s status=%s\n",
+			action.ID, action.Record.Type, action.Record.ID, action.Kind, action.Status)
+		ledger, err := h.actions.Ledger(h.ctx, action.ID)
+		if err != nil {
+			h.t.Fatalf("Ledger: %v", err)
+		}
+		for _, entry := range ledger {
+			fmt.Fprintf(&out, "  ruling %s %s by=%s\n", entry.ID, entry.Ruling, entry.By)
+		}
+	}
+	queue, err := h.actions.Invitations(h.ctx, disposition.InvitationFilter{All: true})
+	if err != nil {
+		h.t.Fatalf("Invitations: %v", err)
+	}
+	for _, invitation := range queue {
+		fmt.Fprintf(&out, "invitation %s %s/%s by=%s open=%t\n", invitation.ID,
+			invitation.Record.Type, invitation.Record.ID, invitation.By, invitation.Open())
+	}
+	for _, id := range []string{h.hypothesis.ID, h.resting.ID} {
+		history, err := h.front.StatusHistory(h.ctx, id)
+		if err != nil {
+			h.t.Fatalf("StatusHistory: %v", err)
+		}
+		for _, event := range history {
+			fmt.Fprintf(&out, "status %s %s seq=%d actor=%s/%s\n", id, event.Status,
+				event.Sequence, event.Actor.Kind, event.Actor.ID)
 		}
 	}
 	inbox, err := h.reality.Inbox(h.ctx, reality.InboxQuery{})
@@ -1022,7 +1193,7 @@ func TestPhaseBPaginationBoundsALargeResult(t *testing.T) {
 			t.Fatalf("Enroll: %v", err)
 		}
 	}
-	total := extra + 2
+	total := extra + 3
 
 	// The default page is bounded even though the caller named no limit.
 	var first hypothesisList

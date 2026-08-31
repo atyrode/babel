@@ -11,6 +11,7 @@ import {
   reviewTone,
 } from "../analysis";
 import { ObservationCard } from "./HypothesisPage";
+import { RecordActions } from "../records";
 
 function FindingPage() {
   const { id: routeID } = useParams();
@@ -147,6 +148,7 @@ function FindingPage() {
               ))}
             </div>
           </article>
+          <RecordActions record={{ type: "finding", id: finding.id }} />
         </div>
 
         <aside className="detail-side">

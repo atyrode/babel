@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { EvidenceRef, HypothesisStatus, ReviewStatus } from "./api";
+import type { EvidenceRef, HypothesisStatus, ReviewStatus, RunAuthority } from "./api";
 import { formatTime } from "./format";
 
 // Shared vocabulary for the Phase B analytical areas. Three product rules from
@@ -209,5 +209,44 @@ export function TimelineEntry({
         )}
       </div>
     </li>
+  );
+}
+
+// AUTHORITY_TONES colours the three authorities a run can have (#96's ladder).
+// Operator is violet because it is the one a person exercised; policy and
+// serendipity are the conductor's own, and telling them apart at a glance is
+// the point of rendering the authority at all.
+const AUTHORITY_TONES: Record<string, Tone> = {
+  operator: "violet",
+  policy: "blue",
+  serendipity: "cyan",
+};
+
+// AuthorityMark renders why a run happened, wherever a receipt is listed.
+//
+// An unrecorded authority is stated rather than filled in. Receipts written
+// before the field existed carry none, and every one of them was in fact
+// started by an operator's own command — but "operator" and "operator, as far
+// as anyone can tell from when this was written" are different claims, and a
+// badge that made the second look like the first would be this interface
+// inventing provenance. It also says nothing about whether the run's findings
+// are true: authority is why Babel spent the tokens, not evidence about what
+// it produced.
+export function AuthorityMark({ authority }: { authority: RunAuthority | undefined }) {
+  if (!authority || !authority.kind) {
+    return (
+      <span
+        className="receipt-authority not-observed"
+        title="This receipt was recorded before receipts carried an authority. Runs then were started by an operator's own command, which is what the label says and all it says."
+      >
+        operator (recorded before authority)
+      </span>
+    );
+  }
+  return (
+    <span className="receipt-authority">
+      <Badge label={authority.kind} tone={AUTHORITY_TONES[authority.kind] ?? "neutral"} />
+      {authority.ref && <span className="mono untrusted-inline">{authority.ref}</span>}
+    </span>
   );
 }
