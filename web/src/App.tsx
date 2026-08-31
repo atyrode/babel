@@ -24,7 +24,7 @@ import SessionPage from "./pages/SessionPage";
 import SessionsPage from "./pages/SessionsPage";
 
 const LOCK_PROMPT =
-  "Lock and stop the server?\n\nThe launch token is revoked immediately and this " +
+  "Lock and stop the server?\n\nThe session is revoked immediately and this " +
   "page stops working. Run `babel web` again to get a new URL.";
 
 function App() {
@@ -73,7 +73,7 @@ function App() {
       await lockServer();
       setStopped(true);
     } catch (reason) {
-      // A 401 means the token is already revoked, so the lock did land and
+      // A 401 means the session is already revoked, so the lock did land and
       // this page simply never read the confirmation; reporting anything but
       // the terminal state would be wrong. Any other failure is honestly
       // unknown, so api.ts's banner stands and the control stays usable.
@@ -95,11 +95,11 @@ function App() {
             <span className="empty-icon" aria-hidden="true">■</span>
             <strong>Server stopped</strong>
             <span>
-              The launch token was revoked and the listener has shut down. This page can no longer
+              The session was revoked and the listener has shut down. This page can no longer
               reach Babel, and its URL will not work again.
             </span>
             <span className="muted">
-              Run <code>babel web</code> in a terminal to start a new session with a new token.
+              Run <code>babel web</code> in a terminal to start a new session.
             </span>
           </div>
         </section>
@@ -169,7 +169,7 @@ function App() {
             className="danger-button lock-button"
             onClick={lockAndStop}
             disabled={stopping}
-            title="Revoke the launch token and stop this server"
+            title="Revoke this session and stop this server"
           >
             {stopping && <span className="spinner small" />}
             {stopping ? "Stopping…" : "Lock & stop"}
@@ -203,9 +203,9 @@ function App() {
           <Route path="/review" element={<ReviewPage />} />
           <Route path="/review/:type/:id" element={<ReviewRecordPage />} />
           {/* `replace` is load-bearing, not styling: the launch URL's
-              "#token=…" fragment matches no route and lands here, so a
+              "#nonce=…" fragment matches no route and lands here, so a
               replacing redirect drops that entry instead of leaving it
-              reachable by Back with a live credential in it. web/browser
+              reachable by Back with a bootstrap credential in it. web/browser
               asserts the property; see api.ts for the measurement. */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

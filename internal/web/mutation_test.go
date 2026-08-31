@@ -592,7 +592,7 @@ func TestServiceFailuresRevealNothing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		request.Header.Set("Authorization", "Bearer "+s.token)
+		authorize(request, bootstrapSession(t, s, httpServer))
 		response, err := httpServer.Client().Do(request)
 		if err != nil {
 			t.Fatal(err)

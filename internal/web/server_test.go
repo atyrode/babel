@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
@@ -122,14 +123,109 @@ func testServer(t *testing.T, opts Options) (*Server, *httptest.Server) {
 	return s, httpServer
 }
 
-func request(t *testing.T, client *http.Client, method, target, token string) *http.Response {
+// launchNonce and liveSession read this launch's credentials the way the
+// exchange does: under the mutex that makes consuming one and issuing the
+// other a single step.
+func launchNonce(s *Server) string {
+	s.creds.mu.Lock()
+	defer s.creds.mu.Unlock()
+	return s.creds.nonce
+}
+
+func liveSession(s *Server) string {
+	s.creds.mu.Lock()
+	defer s.creds.mu.Unlock()
+	return s.creds.session
+}
+
+// bootstrapSession performs the §2.7 exchange a browser performs on the launch
+// URL: it posts this launch's nonce and returns the value of the session cookie
+// the server sets.
+//
+// The exchange happens once per server and the established session is returned
+// on every later call, because the nonce is single-use: a second exchange over
+// one launch is refused exactly as a replayed launch URL is. Tests whose
+// subject is that refusal drive the endpoint directly instead.
+func bootstrapSession(t *testing.T, s *Server, httpServer *httptest.Server) string {
+	t.Helper()
+	if established := liveSession(s); established != "" {
+		return established
+	}
+	response := exchange(t, httpServer.Client(), httpServer.URL, launchNonce(s))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap exchange status = %d, want 200", response.StatusCode)
+	}
+	session := sessionCookie(response)
+	if session == nil {
+		t.Fatalf("bootstrap set no %s cookie: %v", sessionCookieName, response.Cookies())
+	}
+	return session.Value
+}
+
+// bootstrapLaunch is the same exchange performed the way a real launch is
+// reached: from the printed URL, against the server's own listener. It returns
+// the origin to address and the session established, so a caller never
+// re-derives either.
+func bootstrapLaunch(t *testing.T, client *http.Client, launchURL string) (base, session string) {
+	t.Helper()
+	base, nonce, ok := strings.Cut(launchURL, "/#nonce=")
+	if !ok {
+		t.Fatalf("launch URL %q carries no bootstrap nonce", launchURL)
+	}
+	response := exchange(t, client, base, nonce)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap exchange status = %d, want 200", response.StatusCode)
+	}
+	cookie := sessionCookie(response)
+	if cookie == nil {
+		t.Fatalf("bootstrap set no %s cookie: %v", sessionCookieName, response.Cookies())
+	}
+	return base, cookie.Value
+}
+
+// exchange posts one bootstrap nonce and returns the raw response, so a caller
+// can assert on the refusal as well as on the success.
+func exchange(t *testing.T, client *http.Client, base, nonce string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+bootstrapPath, strings.NewReader(`{"nonce":"`+nonce+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+// sessionCookie reads the session credential out of a response, or "" when it
+// set none.
+func sessionCookie(response *http.Response) *http.Cookie {
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == sessionCookieName {
+			return cookie
+		}
+	}
+	return nil
+}
+
+// authorize presents the session the way a bootstrapped browser does: in the
+// session cookie, which is the only credential this server accepts.
+func authorize(req *http.Request, session string) {
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session})
+}
+
+func request(t *testing.T, client *http.Client, method, target, session string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(method, target, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if session != "" {
+		authorize(req, session)
 	}
 	response, err := client.Do(req)
 	if err != nil {
@@ -155,35 +251,42 @@ func TestServeUsesLaunchURLAndStopsWithContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The token rides in the fragment and nowhere else, so opening the launch
-	// URL transmits no credential at all (SPEC.md §146).
+	// The nonce rides in the fragment and nowhere else, so opening the launch
+	// URL transmits no credential at all (SPEC.md §148).
 	fragment, err := url.ParseQuery(launch.Fragment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if launch.Hostname() != "127.0.0.1" || fragment.Get("token") != s.token || len(s.token) != 64 {
+	nonce := fragment.Get("nonce")
+	if launch.Hostname() != "127.0.0.1" || nonce != launchNonce(s) || len(nonce) != 64 {
 		t.Fatalf("launch URL = %q", s.URL())
 	}
-	if launch.Query().Get("token") != "" {
-		t.Fatalf("launch URL carries the token in the query string: %q", s.URL())
+	if launch.Query().Get("nonce") != "" || launch.Query().Get("token") != "" {
+		t.Fatalf("launch URL carries the credential in the query string: %q", s.URL())
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- s.Serve(ctx) }()
 
-	// Because the fragment never leaves the browser, the bootstrap presents the
-	// token as a bearer header instead; the launch URL alone authenticates
-	// nothing.
-	launch.Path = "/api/version"
-	launch.Fragment = ""
-	request, err := http.NewRequest(http.MethodGet, launch.String(), nil)
+	// Because the fragment never leaves the browser, the bootstrap posts the
+	// nonce in a body and authenticates with the cookie it gets back; the
+	// launch URL alone authenticates nothing. A cookie jar is what makes this
+	// the browser's own sequence rather than a hand-assembled header.
+	base := "http://" + launch.Host
+	jar, err := cookiejar.New(nil)
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "Bearer "+s.token)
-	response, err := http.DefaultClient.Do(request)
+	client := &http.Client{Jar: jar}
+	established := exchange(t, client, base, nonce)
+	established.Body.Close()
+	if established.StatusCode != http.StatusOK {
+		cancel()
+		t.Fatalf("bootstrap status = %d, want 200", established.StatusCode)
+	}
+	response, err := client.Get(base + "/api/version")
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -207,17 +310,23 @@ func TestServeUsesLaunchURLAndStopsWithContext(t *testing.T) {
 
 func TestAuthentication(t *testing.T) {
 	s, httpServer := testServer(t, Options{})
+	nonce := launchNonce(s)
+	session := bootstrapSession(t, s, httpServer)
 	for _, test := range []struct {
-		name   string
-		token  string
-		status int
+		name    string
+		session string
+		status  int
 	}{
 		{name: "missing", status: http.StatusUnauthorized},
-		{name: "wrong", token: strings.Repeat("0", 64), status: http.StatusUnauthorized},
-		{name: "right", token: s.token, status: http.StatusOK},
+		{name: "wrong", session: strings.Repeat("0", 64), status: http.StatusUnauthorized},
+		// The nonce authorized the exchange and was spent by it. Presenting
+		// it as a session is the mistake a client that kept the fragment
+		// would make, and it is refused like any other wrong value.
+		{name: "spent nonce", session: nonce, status: http.StatusUnauthorized},
+		{name: "right", session: session, status: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/version", test.token)
+			response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/version", test.session)
 			defer response.Body.Close()
 			if response.StatusCode != test.status {
 				t.Fatalf("status = %d, want %d", response.StatusCode, test.status)
@@ -234,15 +343,267 @@ func TestAuthentication(t *testing.T) {
 		})
 	}
 
-	// A correct token in the query string is refused. The fragment is the only
-	// place a launch token belongs (SPEC.md §146): a query string reaches the
-	// request line, so honouring it would invite a live credential into access
-	// logs, caches, and Referer headers.
-	response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/version?token="+s.token, "")
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("query token status = %d, want 401", response.StatusCode)
+	// The session is accepted from its cookie and from nowhere else. Each of
+	// these is a channel a future change could move the credential into, and
+	// each is a channel that gets logged, cached, put in a Referer, or read by
+	// script: the exchange exists to keep the live credential out of all of
+	// them (SPEC.md §148, decision 34).
+	for _, refused := range []struct {
+		name    string
+		prepare func(*http.Request)
+	}{
+		{name: "query string", prepare: func(r *http.Request) {
+			r.URL.RawQuery = "session=" + session + "&token=" + session
+		}},
+		{name: "bearer header", prepare: func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer "+session)
+		}},
+		{name: "custom header", prepare: func(r *http.Request) {
+			r.Header.Set("X-Babel-Session", session)
+		}},
+		{name: "wrongly named cookie", prepare: func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: "session", Value: session})
+		}},
+	} {
+		t.Run("refuses the session from a "+refused.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, httpServer.URL+"/api/version", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused.prepare(req)
+			response, err := httpServer.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", response.StatusCode)
+			}
+		})
 	}
+}
+
+// TestBootstrapExchange is the §2.7 gate itself: one nonce, one session, and
+// nothing reusable left behind.
+func TestBootstrapExchange(t *testing.T) {
+	t.Run("exchanges the nonce for a cookie the page cannot read", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{})
+		response := exchange(t, httpServer.Client(), httpServer.URL, launchNonce(s))
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", response.StatusCode, body(t, response))
+		}
+		cookie := sessionCookie(response)
+		if cookie == nil {
+			t.Fatalf("no %s cookie: %v", sessionCookieName, response.Cookies())
+		}
+		if !cookie.HttpOnly {
+			t.Error("the session cookie is readable from JavaScript, which is the exposure this exchange removes")
+		}
+		if cookie.SameSite != http.SameSiteStrictMode {
+			t.Errorf("SameSite = %v, want Strict", cookie.SameSite)
+		}
+		if cookie.Path != "/" {
+			t.Errorf("Path = %q, want /", cookie.Path)
+		}
+		// Host-only: no Domain widens it to a parent, and no lifetime
+		// outlives the browser session.
+		if cookie.Domain != "" {
+			t.Errorf("Domain = %q, want none so the cookie stays host-only", cookie.Domain)
+		}
+		if cookie.MaxAge != 0 || !cookie.Expires.IsZero() {
+			t.Errorf("cookie persists: MaxAge = %d Expires = %v", cookie.MaxAge, cookie.Expires)
+		}
+		// Secure is deliberately absent on an http:// loopback origin; see
+		// setSessionCookie for why, and note that a Secure cookie would
+		// never be sent to this server by the engines that honour the
+		// attribute strictly.
+		if cookie.Secure {
+			t.Error("Secure is set on a loopback http:// origin, where browsers disagree about honouring it")
+		}
+		// Rotated, not the nonce renamed.
+		if cookie.Value == launchNonce(s) || len(cookie.Value) != 64 {
+			t.Fatalf("session %q is not a rotated 256-bit credential", cookie.Value)
+		}
+		// The nonce is gone from the server, not merely refused later.
+		if launchNonce(s) != "" {
+			t.Error("the launch nonce survived its own exchange")
+		}
+	})
+
+	t.Run("refuses a second exchange of the same nonce", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{})
+		nonce := launchNonce(s)
+		first := bootstrapSession(t, s, httpServer)
+
+		replay := exchange(t, httpServer.Client(), httpServer.URL, nonce)
+		defer replay.Body.Close()
+		if replay.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("replay status = %d, want 401", replay.StatusCode)
+		}
+		if text := body(t, replay); !strings.Contains(text, "already used") {
+			t.Errorf("the refusal does not name the reason: %s", text)
+		}
+		if sessionCookie(replay) != nil {
+			t.Fatal("a replayed launch link was handed a second session")
+		}
+		// The first session is untouched: a replay must not be able to
+		// disturb the page that legitimately bootstrapped.
+		response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/version", first)
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("the established session stopped working after a replay: %d", response.StatusCode)
+		}
+	})
+
+	t.Run("refuses an expired nonce and consumes it", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{})
+		nonce := launchNonce(s)
+		s.creds.mu.Lock()
+		s.creds.deadline = time.Now().Add(-time.Second)
+		s.creds.mu.Unlock()
+
+		expired := exchange(t, httpServer.Client(), httpServer.URL, nonce)
+		defer expired.Body.Close()
+		if expired.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expired status = %d, want 401", expired.StatusCode)
+		}
+		if text := body(t, expired); !strings.Contains(text, "expired") || !strings.Contains(text, "babel web") {
+			t.Errorf("the refusal does not say what happened or how to recover: %s", text)
+		}
+		// A clock that moves backwards must not resurrect it.
+		s.creds.mu.Lock()
+		s.creds.deadline = time.Now().Add(BootstrapTTL)
+		s.creds.mu.Unlock()
+		retried := exchange(t, httpServer.Client(), httpServer.URL, nonce)
+		defer retried.Body.Close()
+		if retried.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("an expired nonce was exchangeable again: %d", retried.StatusCode)
+		}
+	})
+
+	t.Run("refuses a wrong nonce without spending the live one", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{})
+		wrong := exchange(t, httpServer.Client(), httpServer.URL, strings.Repeat("0", 64))
+		defer wrong.Body.Close()
+		if wrong.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("wrong nonce status = %d, want 401", wrong.StatusCode)
+		}
+		// A local process that could kill a live launch by posting rubbish
+		// at it would be a denial of service the 256-bit nonce does not
+		// otherwise permit.
+		if session := bootstrapSession(t, s, httpServer); session == "" {
+			t.Fatal("the live nonce was spent by a wrong guess")
+		}
+	})
+
+	t.Run("refuses a malformed or empty request", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{})
+		for _, test := range []struct {
+			name string
+			body string
+		}{
+			{name: "not json", body: `nonce=` + launchNonce(s)},
+			{name: "no nonce field", body: `{}`},
+			{name: "empty nonce", body: `{"nonce":""}`},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				response, err := httpServer.Client().Post(
+					httpServer.URL+bootstrapPath, "application/json", strings.NewReader(test.body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer response.Body.Close()
+				if response.StatusCode != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400", response.StatusCode)
+				}
+			})
+		}
+		// None of them consumed the nonce.
+		if session := bootstrapSession(t, s, httpServer); session == "" {
+			t.Fatal("a malformed request spent the launch nonce")
+		}
+	})
+
+	t.Run("is reachable only as a POST from this origin", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{})
+		get := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+bootstrapPath, "")
+		defer get.Body.Close()
+		if get.StatusCode != http.StatusBadRequest {
+			t.Errorf("GET status = %d, want 400", get.StatusCode)
+		}
+		// The origin guard runs before the exchange, so a cross-site page
+		// that somehow held the nonce still cannot spend it.
+		for _, guard := range []struct {
+			name   string
+			origin string
+			host   string
+		}{
+			{name: "cross origin", origin: "http://evil.example"},
+			{name: "rebound host", host: "evil.example"},
+		} {
+			t.Run(guard.name, func(t *testing.T) {
+				req, err := http.NewRequest(http.MethodPost, httpServer.URL+bootstrapPath,
+					strings.NewReader(`{"nonce":"`+launchNonce(s)+`"}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if guard.origin != "" {
+					req.Header.Set("Origin", guard.origin)
+				}
+				if guard.host != "" {
+					req.Host = guard.host
+				}
+				response, err := httpServer.Client().Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer response.Body.Close()
+				if response.StatusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403", response.StatusCode)
+				}
+				if sessionCookie(response) != nil {
+					t.Fatal("a refused origin was handed a session")
+				}
+			})
+		}
+		if session := bootstrapSession(t, s, httpServer); session == "" {
+			t.Fatal("a refused request spent the launch nonce")
+		}
+	})
+
+	// Lock and stop is the other half of §2.7's credential lifecycle: it
+	// revokes the session server-side, and it revokes the nonce too, so a
+	// launch link the operator never opened is worthless after the stop.
+	t.Run("lock revokes the session and the nonce", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{})
+		session := bootstrapSession(t, s, httpServer)
+		s.creds.revoke()
+
+		response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/version", session)
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("a revoked session still authenticates: %d", response.StatusCode)
+		}
+	})
+
+	t.Run("a locked launch cannot be bootstrapped at all", func(t *testing.T) {
+		s, httpServer := testServer(t, Options{})
+		nonce := launchNonce(s)
+		s.creds.revoke()
+
+		refused := exchange(t, httpServer.Client(), httpServer.URL, nonce)
+		defer refused.Body.Close()
+		if refused.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", refused.StatusCode)
+		}
+		if text := body(t, refused); !strings.Contains(text, "locked") {
+			t.Errorf("the refusal does not name the lock: %s", text)
+		}
+		if sessionCookie(refused) != nil {
+			t.Fatal("a locked server established a session")
+		}
+	})
 }
 
 func TestEveryAPIEndpoint(t *testing.T) {
@@ -367,7 +728,7 @@ func TestEveryAPIEndpoint(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			response := request(t, httpServer.Client(), test.method, httpServer.URL+test.path, s.token)
+			response := request(t, httpServer.Client(), test.method, httpServer.URL+test.path, bootstrapSession(t, s, httpServer))
 			if response.StatusCode != http.StatusOK {
 				defer response.Body.Close()
 				t.Fatalf("status = %d", response.StatusCode)
@@ -403,7 +764,7 @@ func TestScanEndpoints(t *testing.T) {
 
 	// Idle: nothing running, nothing described.
 	var idle ScanState
-	response := request(t, client, http.MethodGet, httpServer.URL+"/api/scan", s.token)
+	response := request(t, client, http.MethodGet, httpServer.URL+"/api/scan", bootstrapSession(t, s, httpServer))
 	decodeResponse(t, response, &idle)
 	if idle != (ScanState{}) {
 		t.Fatalf("idle scan = %+v", idle)
@@ -412,7 +773,7 @@ func TestScanEndpoints(t *testing.T) {
 	// Two refreshes are one scan, and both callers learn it is running.
 	for attempt := range 2 {
 		var started ScanState
-		response := request(t, client, http.MethodPost, httpServer.URL+"/api/sessions/refresh", s.token)
+		response := request(t, client, http.MethodPost, httpServer.URL+"/api/sessions/refresh", bootstrapSession(t, s, httpServer))
 		decodeResponse(t, response, &started)
 		if !started.Running || started.Total != 3 {
 			t.Fatalf("refresh %d = %+v", attempt, started)
@@ -422,27 +783,27 @@ func TestScanEndpoints(t *testing.T) {
 		t.Fatalf("two refreshes started %d scans, want 1", scanning.starts)
 	}
 	var running ScanState
-	response = request(t, client, http.MethodGet, httpServer.URL+"/api/scan", s.token)
+	response = request(t, client, http.MethodGet, httpServer.URL+"/api/scan", bootstrapSession(t, s, httpServer))
 	decodeResponse(t, response, &running)
 	if !running.Running || running.StartedAt == "" {
 		t.Fatalf("running scan = %+v", running)
 	}
 
-	// Both endpoints are behind the token and accept exactly one method.
+	// Both endpoints are behind the session and accept exactly one method.
 	for _, test := range []struct {
-		name   string
-		method string
-		path   string
-		token  string
-		status int
+		name    string
+		method  string
+		path    string
+		session string
+		status  int
 	}{
 		{name: "scan unauthenticated", method: http.MethodGet, path: "/api/scan", status: http.StatusUnauthorized},
 		{name: "refresh unauthenticated", method: http.MethodPost, path: "/api/sessions/refresh", status: http.StatusUnauthorized},
-		{name: "scan wrong method", method: http.MethodPost, path: "/api/scan", token: s.token, status: http.StatusBadRequest},
-		{name: "refresh wrong method", method: http.MethodGet, path: "/api/sessions/refresh", token: s.token, status: http.StatusBadRequest},
+		{name: "scan wrong method", method: http.MethodPost, path: "/api/scan", session: bootstrapSession(t, s, httpServer), status: http.StatusBadRequest},
+		{name: "refresh wrong method", method: http.MethodGet, path: "/api/sessions/refresh", session: bootstrapSession(t, s, httpServer), status: http.StatusBadRequest},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := request(t, client, test.method, httpServer.URL+test.path, test.token)
+			response := request(t, client, test.method, httpServer.URL+test.path, test.session)
 			defer response.Body.Close()
 			if response.StatusCode != test.status {
 				t.Fatalf("status = %d, want %d", response.StatusCode, test.status)
@@ -457,7 +818,7 @@ func TestScanEndpoints(t *testing.T) {
 		{http.MethodGet, "/api/scan"},
 		{http.MethodPost, "/api/sessions/refresh"},
 	} {
-		response := request(t, bareServer.Client(), endpoint.method, bareServer.URL+endpoint.path, bare.token)
+		response := request(t, bareServer.Client(), endpoint.method, bareServer.URL+endpoint.path, bootstrapSession(t, bare, bareServer))
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusInternalServerError {
 			t.Errorf("%s without a scanner = %d", endpoint.path, response.StatusCode)
@@ -473,7 +834,7 @@ func TestUnconfiguredArchiveReturnsConflict(t *testing.T) {
 		{http.MethodPost, "/api/archive/verify"},
 		{http.MethodPost, "/api/fetch?selector=omp%2Fone"},
 	} {
-		response := request(t, httpServer.Client(), endpoint.method, httpServer.URL+endpoint.path, s.token)
+		response := request(t, httpServer.Client(), endpoint.method, httpServer.URL+endpoint.path, bootstrapSession(t, s, httpServer))
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusConflict {
 			t.Errorf("%s status = %d", endpoint.path, response.StatusCode)
@@ -511,7 +872,7 @@ func TestSessionScopeStatesAreDistinguishable(t *testing.T) {
 		// host, because whose sessions these are does not depend on whether
 		// a repository was ever configured.
 		var reported State
-		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", s.token), &reported)
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", bootstrapSession(t, s, httpServer)), &reported)
 		if reported.Configured || reported.Repository != "" {
 			t.Fatalf("unconfigured state = %+v, want no repository claimed", reported)
 		}
@@ -524,7 +885,7 @@ func TestSessionScopeStatesAreDistinguishable(t *testing.T) {
 		// does not apply here, where 200 with zero hosts would say the
 		// archive is empty.
 		for _, path := range []string{"/api/archive/status", "/api/archive/sessions?host=elsewhere-host"} {
-			response := request(t, client, http.MethodGet, httpServer.URL+path, s.token)
+			response := request(t, client, http.MethodGet, httpServer.URL+path, bootstrapSession(t, s, httpServer))
 			defer response.Body.Close()
 			if response.StatusCode != http.StatusConflict {
 				t.Errorf("%s = %d, want 409 so no client can read it as an empty archive", path, response.StatusCode)
@@ -534,7 +895,7 @@ func TestSessionScopeStatesAreDistinguishable(t *testing.T) {
 		// Local sessions are still served in full: an absent archive
 		// narrows nothing about this host.
 		var sessions SessionsResult
-		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/sessions", s.token), &sessions)
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/sessions", bootstrapSession(t, s, httpServer)), &sessions)
 		if len(sessions.Sessions) != 1 {
 			t.Fatalf("local sessions without a repository = %d rows, want 1", len(sessions.Sessions))
 		}
@@ -550,7 +911,7 @@ func TestSessionScopeStatesAreDistinguishable(t *testing.T) {
 		// what separates this state from the one above: something exists
 		// and this machine could not reach it.
 		var reported State
-		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", s.token), &reported)
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", bootstrapSession(t, s, httpServer)), &reported)
 		if !reported.Configured || reported.Repository != "repo" {
 			t.Fatalf("configured state = %+v", reported)
 		}
@@ -558,7 +919,7 @@ func TestSessionScopeStatesAreDistinguishable(t *testing.T) {
 		// A failed read is a failed read. Not 409 — that would say the
 		// question does not apply — and never 200 with no rows, which would
 		// say the host published nothing.
-		response := request(t, client, http.MethodGet, httpServer.URL+"/api/archive/sessions?host=elsewhere-host", s.token)
+		response := request(t, client, http.MethodGet, httpServer.URL+"/api/archive/sessions?host=elsewhere-host", bootstrapSession(t, s, httpServer))
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusInternalServerError {
 			t.Fatalf("unreachable archive listing = %d, want 500", response.StatusCode)
@@ -587,12 +948,12 @@ func TestSessionScopeStatesAreDistinguishable(t *testing.T) {
 		client := httpServer.Client()
 
 		var status StatusResult
-		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/archive/status", s.token), &status)
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/archive/status", bootstrapSession(t, s, httpServer)), &status)
 		if len(status.Hosts) != 1 || status.Hosts[0].Host != "host" {
 			t.Fatalf("status hosts = %#v", status.Hosts)
 		}
 		var reported State
-		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", s.token), &reported)
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", bootstrapSession(t, s, httpServer)), &reported)
 		if reported.HostID != status.Hosts[0].Host {
 			t.Fatalf("host id %q is not the only publisher %q", reported.HostID, status.Hosts[0].Host)
 		}
@@ -605,9 +966,9 @@ func TestSessionScopeStatesAreDistinguishable(t *testing.T) {
 		// state(true) reports "this-host"; the archive reports "host". The
 		// two differ, which is the whole signal that there is more to see.
 		var status StatusResult
-		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/archive/status", s.token), &status)
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/archive/status", bootstrapSession(t, s, httpServer)), &status)
 		var reported State
-		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", s.token), &reported)
+		decodeResponse(t, request(t, client, http.MethodGet, httpServer.URL+"/api/state", bootstrapSession(t, s, httpServer)), &reported)
 		if len(status.Hosts) != 1 || status.Hosts[0].Host == reported.HostID {
 			t.Fatalf("expected a publisher other than %q, got %#v", reported.HostID, status.Hosts)
 		}
@@ -616,7 +977,7 @@ func TestSessionScopeStatesAreDistinguishable(t *testing.T) {
 		// machine's own listing does not hold.
 		var listing ArchiveSessionsResult
 		decodeResponse(t, request(t, client, http.MethodGet,
-			httpServer.URL+"/api/archive/sessions?host="+status.Hosts[0].Host, s.token), &listing)
+			httpServer.URL+"/api/archive/sessions?host="+status.Hosts[0].Host, bootstrapSession(t, s, httpServer)), &listing)
 		if len(listing.Sessions) != 2 || listing.Sessions[0].Selector != "claude/elsewhere" {
 			t.Fatalf("cross-host listing = %#v", listing)
 		}
@@ -633,7 +994,7 @@ func TestArchiveSessionsRequiresAHost(t *testing.T) {
 	archive := &fakeArchive{}
 	s, httpServer := testServer(t, Options{Archive: archive})
 	for _, path := range []string{"/api/archive/sessions", "/api/archive/sessions?host="} {
-		response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+path, s.token)
+		response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+path, bootstrapSession(t, s, httpServer))
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s = %d, want 400", path, response.StatusCode)
@@ -642,7 +1003,7 @@ func TestArchiveSessionsRequiresAHost(t *testing.T) {
 	if archive.listHost != "" {
 		t.Fatalf("a hostless request still read the repository as %q", archive.listHost)
 	}
-	response := request(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/api/archive/sessions?host=h", s.token)
+	response := request(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/api/archive/sessions?host=h", bootstrapSession(t, s, httpServer))
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusBadRequest {
 		t.Errorf("POST to the listing = %d, want 400", response.StatusCode)
@@ -667,7 +1028,7 @@ func TestTranscriptEndpointWithHarnessFixturesAndRawRecords(t *testing.T) {
 	for selector := range paths {
 		t.Run(selector, func(t *testing.T) {
 			target := httpServer.URL + "/api/transcript?selector=" + url.QueryEscape(selector) + "&limit=100"
-			response := request(t, httpServer.Client(), http.MethodGet, target, s.token)
+			response := request(t, httpServer.Client(), http.MethodGet, target, bootstrapSession(t, s, httpServer))
 			if response.StatusCode != http.StatusOK {
 				defer response.Body.Close()
 				t.Fatalf("status = %d", response.StatusCode)
@@ -723,13 +1084,13 @@ func TestSanitizesErrorsAndDiagnostics(t *testing.T) {
 			return SessionsResult{}, errorsWithControl("bad\x1b[2J\nline")
 		}),
 	})
-	response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/sessions", s.token)
+	response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/sessions", bootstrapSession(t, s, httpServer))
 	var got map[string]string
 	decodeResponse(t, response, &got)
 	if strings.ContainsRune(got["error"], '\x1b') || strings.ContainsRune(got["error"], '\n') {
 		t.Fatalf("unsanitized error %q", got["error"])
 	}
-	if strings.ContainsRune(diagnostics.String(), '\x1b') || strings.Contains(diagnostics.String(), s.token) {
+	if strings.ContainsRune(diagnostics.String(), '\x1b') || strings.Contains(diagnostics.String(), bootstrapSession(t, s, httpServer)) {
 		t.Fatalf("unsafe diagnostics %q", diagnostics.String())
 	}
 }
@@ -745,16 +1106,16 @@ func TestLockRefusesForgeableRequests(t *testing.T) {
 	client := httpServer.Client()
 
 	for _, test := range []struct {
-		name   string
-		method string
-		token  string
-		origin string
-		host   string
-		status int
+		name    string
+		method  string
+		session string
+		origin  string
+		host    string
+		status  int
 	}{
-		{name: "get is not a state change", method: http.MethodGet, token: s.token, status: http.StatusBadRequest},
-		{name: "cross-origin post", method: http.MethodPost, token: s.token, origin: "http://evil.example", status: http.StatusForbidden},
-		{name: "rebound host", method: http.MethodPost, token: s.token, host: "evil.example", status: http.StatusForbidden},
+		{name: "get is not a state change", method: http.MethodGet, session: bootstrapSession(t, s, httpServer), status: http.StatusBadRequest},
+		{name: "cross-origin post", method: http.MethodPost, session: bootstrapSession(t, s, httpServer), origin: "http://evil.example", status: http.StatusForbidden},
+		{name: "rebound host", method: http.MethodPost, session: bootstrapSession(t, s, httpServer), host: "evil.example", status: http.StatusForbidden},
 		{name: "no credential", method: http.MethodPost, status: http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -762,8 +1123,8 @@ func TestLockRefusesForgeableRequests(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.token != "" {
-				req.Header.Set("Authorization", "Bearer "+test.token)
+			if test.session != "" {
+				authorize(req, test.session)
 			}
 			if test.origin != "" {
 				req.Header.Set("Origin", test.origin)
@@ -780,7 +1141,7 @@ func TestLockRefusesForgeableRequests(t *testing.T) {
 				t.Fatalf("status = %d, want %d", response.StatusCode, test.status)
 			}
 
-			alive := request(t, client, http.MethodGet, httpServer.URL+"/api/version", s.token)
+			alive := request(t, client, http.MethodGet, httpServer.URL+"/api/version", bootstrapSession(t, s, httpServer))
 			alive.Body.Close()
 			if alive.StatusCode != http.StatusOK {
 				t.Fatalf("a refused lock revoked the session anyway: /api/version = %d", alive.StatusCode)
@@ -799,8 +1160,11 @@ func TestLockRevokesTheLaunchSession(t *testing.T) {
 	var diagnostics syncBuffer
 	s, httpServer := testServer(t, Options{Diagnostics: &diagnostics})
 	client := httpServer.Client()
+	// Held from before the lock deliberately: after it there is no session to
+	// establish, and the assertion below is that this one stopped working.
+	session := bootstrapSession(t, s, httpServer)
 
-	response := request(t, client, http.MethodPost, httpServer.URL+"/api/lock", s.token)
+	response := request(t, client, http.MethodPost, httpServer.URL+"/api/lock", session)
 	if response.StatusCode != http.StatusOK {
 		response.Body.Close()
 		t.Fatalf("status = %d", response.StatusCode)
@@ -822,7 +1186,7 @@ func TestLockRevokesTheLaunchSession(t *testing.T) {
 		{http.MethodGet, "/api/version"},
 		{http.MethodPost, "/api/lock"},
 	} {
-		after := request(t, client, target.method, httpServer.URL+target.path, s.token)
+		after := request(t, client, target.method, httpServer.URL+target.path, session)
 		after.Body.Close()
 		if after.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("%s %s after lock = %d, want 401", target.method, target.path, after.StatusCode)
@@ -865,14 +1229,9 @@ func TestLockStopsTheListener(t *testing.T) {
 	result := make(chan error, 1)
 	go func() { result <- s.Serve(ctx) }()
 
-	launch, err := url.Parse(s.URL())
-	if err != nil {
-		t.Fatal(err)
-	}
-	launch.Fragment = ""
-	base := launch.String()
+	base, session := bootstrapLaunch(t, http.DefaultClient, s.URL())
 
-	response := request(t, http.DefaultClient, http.MethodPost, base+"api/lock", s.token)
+	response := request(t, http.DefaultClient, http.MethodPost, base+"/api/lock", session)
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", response.StatusCode)
@@ -895,7 +1254,7 @@ func TestLockStopsTheListener(t *testing.T) {
 
 	// The port is no longer served at all, which is the difference between a
 	// revoked session and a stopped server.
-	if _, err := http.Get(base + "api/version"); err == nil {
+	if _, err := http.Get(base + "/api/version"); err == nil {
 		t.Fatal("the listener still accepts connections after the lock")
 	}
 }
@@ -952,15 +1311,8 @@ func TestLockStopsTheListenerUnderContention(t *testing.T) {
 		result := make(chan error, 1)
 		go func() { result <- s.Serve(ctx) }()
 
-		launch, err := url.Parse(s.URL())
-		if err != nil {
-			cancel()
-			t.Fatalf("iteration %d: %v", i, err)
-		}
-		launch.Fragment = ""
-		base := launch.String()
-
-		response := request(t, http.DefaultClient, http.MethodPost, base+"api/lock", s.token)
+		base, session := bootstrapLaunch(t, http.DefaultClient, s.URL())
+		response := request(t, http.DefaultClient, http.MethodPost, base+"/api/lock", session)
 		response.Body.Close()
 
 		select {

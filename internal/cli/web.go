@@ -27,10 +27,13 @@ import (
 
 const webUsage = `Usage: babel web [flags]
 
-Serves the local web interface on 127.0.0.1 and prints a launch URL
-containing a one-time access token. The page browses this host's sessions,
-renders transcripts, and drives archive status, verify, and fetch. Nothing
-binds beyond loopback and no command served here can delete archived data.
+Serves the local web interface on 127.0.0.1 and prints a launch URL whose
+fragment carries a one-time bootstrap nonce. Opening it exchanges the nonce
+for a session cookie the page cannot read; the link then authenticates
+nothing, so a second use needs a second launch. The page browses this
+host's sessions, renders transcripts, and drives archive status, verify, and
+fetch. Nothing binds beyond loopback and no command served here can delete
+archived data.
 
 Repository selection follows the usual precedence (flags, then
 $BABEL_RESTIC_REPO/$BABEL_RESTIC_PASSWORD_FILE, then storage.json). Without
@@ -110,7 +113,12 @@ func (a *app) webCmd(ctx context.Context, args []string) error {
 	defer stop()
 
 	fmt.Fprintf(a.stdout, "babel web listening at %s\n", srv.URL())
-	fmt.Fprint(a.stdout, "the token in the URL is required; press Ctrl-C to stop\n")
+	// The sentence states the two properties the link actually has, and takes
+	// the lifetime from the server rather than repeating it, so the printed
+	// promise cannot drift from what is enforced.
+	fmt.Fprintf(a.stdout,
+		"open the URL once within %s; it authenticates a single browser session, then stops working. Press Ctrl-C to stop\n",
+		web.BootstrapTTL)
 	if *open {
 		if err := openBrowser(srv.URL()); err != nil {
 			a.diagf("warning: open browser: %s\n", Sanitize(err.Error()))

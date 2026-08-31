@@ -11,7 +11,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import puppeteer, { type Browser, type Page } from "puppeteer-core";
+import puppeteer, { type Browser, type BrowserContext, type Page } from "puppeteer-core";
 import { resolveChrome } from "./chrome";
 
 const TRANSCRIPT_SENTINEL = "TRANSCRIPTSENTINELa1b2c3d4e5f60718";
@@ -29,20 +29,79 @@ const chrome = resolveChrome({
   gate: "§548 leak gate",
   covers: "the SPEC.md §548 browser channels",
   unverified: [
-    "that the session token leaves the address bar and is absent from every reachable history entry",
+    "that the launch nonce is exchanged for a session cookie the page cannot read, leaves the address bar, and is absent from every reachable history entry",
+    "that the launch link authenticates exactly one browser session and a second use of it is refused",
     "that no transcript or credential sentinel reaches a URL",
     "that no /api response is served from the browser cache",
-    "that a browser context without the token is refused",
+    "that a browser context with no session is refused",
   ],
 });
 
+// One launch of `babel web`: the process, the printed URL, and the two halves
+// of that URL a test needs separately.
+//
+// It is a helper rather than beforeAll's local state because the launch nonce
+// is single-use, and two of the properties below are about exactly that: a
+// suite that shared one launch could not prove a second use is refused, nor
+// walk the history of a page that bootstrapped successfully. Each launch is a
+// process against the same fixture, which costs milliseconds.
+interface Launch {
+  process: Bun.Subprocess;
+  url: string;
+  base: string;
+  nonce: string;
+}
+
 let root = "";
-let server: Bun.Subprocess | null = null;
 let browser: Browser | null = null;
 let page: Page;
-let launchURL = "";
-let token = "";
+let primary: Launch;
 let binaryPath = "";
+// session is the established credential, read out of the browser's cookie
+// store by the first test. Every later leak assertion checks it as well as the
+// nonce: the value the page cannot read must also never appear in a URL.
+let session = "";
+let env: Record<string, string> = {};
+let selection: string[] = [];
+
+// Every launch this suite starts, killed together at the end.
+const launched: Bun.Subprocess[] = [];
+
+async function launch(): Promise<Launch> {
+  // The local binding keeps the piped-stdout type; reading through a widened
+  // handle loses it.
+  const process_ = Bun.spawn([binaryPath, "web", "--port", "0", ...selection], {
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  launched.push(process_);
+
+  const deadline = Date.now() + 30_000;
+  const reader = process_.stdout.getReader();
+  const decoder = new TextDecoder();
+  let banner = "";
+  let url = "";
+  while (!url && Date.now() < deadline) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    banner += decoder.decode(value, { stream: true });
+    const match = banner.match(/(http:\/\/127\.0\.0\.1:\d+\/#nonce=[0-9a-f]{64})/);
+    if (match) url = match[1];
+  }
+  reader.releaseLock();
+  if (!url) throw new Error(`server printed no launch URL: ${banner}`);
+  const [base, nonce] = url.split("/#nonce=");
+  return { process: process_, url, base, nonce };
+}
+
+// sessionCookie reads the credential the page itself cannot: an HttpOnly cookie
+// is invisible to `document.cookie` and visible to the browser's own cookie
+// store, which is the whole property being asserted.
+async function sessionCookie(context: BrowserContext) {
+  const cookies = await context.cookies();
+  return cookies.find((cookie) => cookie.name === "babel_session");
+}
 
 // visited records every URL the browser actually held, which is the set browser
 // history is built from. Every assertion about the history channel reads this.
@@ -92,14 +151,14 @@ beforeAll(async () => {
   // babel runs against the synthetic home; the Go toolchain must not. Pointing
   // HOME at the fixture would move the module cache with it and make the build
   // re-download the world.
-  const env = {
+  env = {
     ...process.env,
     HOME: home,
     XDG_DATA_HOME: join(root, "data"),
     XDG_CACHE_HOME: join(root, "cache"),
     XDG_CONFIG_HOME: join(root, "config"),
     BABEL_HOST_ID: "browserhost",
-  };
+  } as Record<string, string>;
 
   const prebuilt = process.env.BABEL_TEST_BINARY;
   if (prebuilt) {
@@ -117,35 +176,13 @@ beforeAll(async () => {
   // The repository is created explicitly: `archive push` deliberately refuses
   // to create one, because concurrent creation corrupts a restic repository and
   // silent creation would hide a mistyped locator (SPEC.md §6.1).
-  const selection = ["--repo", repo, "--password-file", passwordFile];
+  selection = ["--repo", repo, "--password-file", passwordFile];
   const init = Bun.spawnSync([binaryPath, "archive", "init", ...selection], { env });
   if (!init.success) throw new Error(`archive init failed: ${init.stderr.toString()}`);
   const push = Bun.spawnSync([binaryPath, "archive", "push", "--json", ...selection], { env });
   if (!push.success) throw new Error(`archive push failed: ${push.stderr.toString()}`);
 
-  // The local binding keeps the piped-stdout type; reading through the
-  // module-level handle widens it back to number | ReadableStream.
-  const process_ = Bun.spawn([binaryPath, "web", "--port", "0", ...selection], {
-    env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  server = process_;
-
-  const deadline = Date.now() + 30_000;
-  const reader = process_.stdout.getReader();
-  const decoder = new TextDecoder();
-  let banner = "";
-  while (!launchURL && Date.now() < deadline) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    banner += decoder.decode(value, { stream: true });
-    const match = banner.match(/(http:\/\/127\.0\.0\.1:\d+\/#token=[0-9a-f]{64})/);
-    if (match) launchURL = match[1];
-  }
-  reader.releaseLock();
-  if (!launchURL) throw new Error(`server printed no launch URL: ${banner}`);
-  token = launchURL.split("#token=")[1];
+  primary = await launch();
 
   browser = await puppeteer.launch({
     executablePath: chrome,
@@ -157,7 +194,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await browser?.close();
-  server?.kill();
+  for (const process_ of launched) process_.kill();
   if (!root) return;
   // restic writes its repository read-only, so the tree cannot be removed
   // until it is writable again. A cleanup failure must not mask a result.
@@ -169,20 +206,37 @@ afterAll(async () => {
   }
 });
 
-test.skipIf(!chrome)("the fragment token authenticates and leaves the address bar", async () => {
-  await page.goto(launchURL, { waitUntil: "networkidle2" });
+test.skipIf(!chrome)("the fragment nonce becomes a cookie the page cannot read", async () => {
+  await page.goto(primary.url, { waitUntil: "networkidle2" });
   // The scrubbed launch URL carries no hash, so it lands on the dashboard.
   // Waiting for its own authorized read is the non-vacuity check: the panel
   // heading below only appears once GET /api/overview answered 200, which it
-  // cannot do without the token this test is about.
+  // cannot do without the session this test is about.
   await page.waitForFunction(
     () => document.body.innerText.includes("Archive health"),
     { timeout: 30_000 },
   );
   await show(page);
 
-  expect(page.url()).not.toContain(token);
-  expect(await page.evaluate(() => Object.keys(sessionStorage))).toContain("babel.web.token");
+  expect(page.url()).not.toContain(primary.nonce);
+
+  // The live credential is a cookie with the flags §2.7 requires, and it is
+  // read here out of the browser's own cookie store rather than out of the
+  // page: `document.cookie` cannot see it, which is the entire point of the
+  // exchange. Nothing is in web storage any more, because a cookie the page
+  // cannot read needs no page-side copy.
+  const cookie = await sessionCookie(browser!.defaultBrowserContext());
+  expect(cookie, "the bootstrap set no session cookie").toBeDefined();
+  expect(cookie!.httpOnly).toBe(true);
+  expect(cookie!.sameSite).toBe("Strict");
+  expect(cookie!.session).toBe(true);
+  expect(cookie!.value).not.toBe(primary.nonce);
+  session = cookie!.value;
+
+  expect(await page.evaluate(() => document.cookie)).not.toContain("babel_session");
+  expect(await page.evaluate(() => document.cookie)).not.toContain(session);
+  expect(await page.evaluate(() => Object.keys(sessionStorage))).toHaveLength(0);
+  expect(await page.evaluate(() => Object.keys(localStorage))).not.toContain("babel.web.token");
 
   // The rest of this suite browses the session and its transcript, which is
   // where the §548 channels are, so it starts from the listing. The hash
@@ -214,7 +268,8 @@ test.skipIf(!chrome)("a session's transcript renders without its content enterin
   expect(await page.evaluate(() => document.body.innerText)).toContain(TRANSCRIPT_SENTINEL);
   expect(page.url()).toContain("#/sessions/");
   expect(page.url()).not.toContain(TRANSCRIPT_SENTINEL);
-  expect(page.url()).not.toContain(token);
+  expect(page.url()).not.toContain(primary.nonce);
+  expect(page.url()).not.toContain(session);
 });
 
 test.skipIf(!chrome)("a reload stays authenticated with no credential in the URL", async () => {
@@ -228,7 +283,8 @@ test.skipIf(!chrome)("a reload stays authenticated with no credential in the URL
 
   const text = await page.evaluate(() => document.body.innerText);
   expect(text).not.toMatch(/unauthorized/i);
-  expect(page.url()).not.toContain(token);
+  expect(page.url()).not.toContain(primary.nonce);
+  expect(page.url()).not.toContain(session);
 });
 
 // Back and forward change the hash immediately, but the view behind it renders
@@ -267,13 +323,14 @@ test.skipIf(!chrome)("back and forward keep working and stay credential-free", a
   expect(await page.evaluate(() => document.body.innerText)).toContain(TRANSCRIPT_SENTINEL);
 });
 
-test.skipIf(!chrome)("no history entry or request URL carries a sentinel or the token", async () => {
+test.skipIf(!chrome)("no history entry or request URL carries a sentinel or a credential", async () => {
   // Guard against the whole suite passing because nothing was ever visited.
   expect(visited.length).toBeGreaterThanOrEqual(5);
   expect(await page.evaluate(() => history.length)).toBeGreaterThan(1);
 
   for (const url of visited) {
-    expect(url).not.toContain(token);
+    expect(url).not.toContain(primary.nonce);
+    expect(url).not.toContain(session);
     expect(url).not.toContain(TRANSCRIPT_SENTINEL);
     expect(url).not.toContain(CREDENTIAL_SENTINEL);
   }
@@ -283,7 +340,8 @@ test.skipIf(!chrome)("no history entry or request URL carries a sentinel or the 
   );
   expect(requests.length).toBeGreaterThan(0);
   for (const url of requests) {
-    expect(url).not.toContain(token);
+    expect(url).not.toContain(primary.nonce);
+    expect(url).not.toContain(session);
     expect(url).not.toContain(TRANSCRIPT_SENTINEL);
     expect(url).not.toContain(CREDENTIAL_SENTINEL);
   }
@@ -315,12 +373,11 @@ test.skipIf(!chrome)("no /api response is served from the browser cache", async 
   }
 });
 
-test.skipIf(!chrome)("a context without the token is refused", async () => {
+test.skipIf(!chrome)("a context with no session is refused", async () => {
   const isolated = await browser!.createBrowserContext();
   try {
     const fresh = await isolated.newPage();
-    const base = launchURL.split("/#token=")[0];
-    await fresh.goto(`${base}/#/sessions`, { waitUntil: "networkidle2" });
+    await fresh.goto(`${primary.base}/#/sessions`, { waitUntil: "networkidle2" });
     // Waiting for a character count would race the shell against the 401: the
     // app frame can exceed any threshold before the refusal arrives. Waiting
     // for either outcome keeps the failure fast and named — if an unauthorized
@@ -340,35 +397,97 @@ test.skipIf(!chrome)("a context without the token is refused", async () => {
     expect(text).not.toContain(SESSION_TITLE);
     expect(text).not.toContain(TRANSCRIPT_SENTINEL);
     expect(await fresh.evaluate(() => Object.keys(sessionStorage))).toHaveLength(0);
+    // A context reached without a launch link holds no session either: the
+    // static shell is served to anyone on loopback and authenticates nothing.
+    expect(await sessionCookie(isolated)).toBeUndefined();
   } finally {
     await isolated.close();
   }
 });
 
+// The §2.7 property this file exists for after #72: the launch link is spent by
+// the browser that uses it. Two real contexts against one launch, because that
+// is the shape of the mistake it prevents — a URL left in a terminal, pasted
+// again later, or read by someone else on the machine — and a second exchange
+// is the only way the nonce could be worth anything to them.
+//
+// This launch is its own, since the suite's primary launch was spent by the
+// first test and a single-use credential cannot be proven twice.
+test.skipIf(!chrome)("the launch link authenticates once and is then refused", async () => {
+  const single = await launch();
+  const first = await browser!.createBrowserContext();
+  const second = await browser!.createBrowserContext();
+  try {
+    const opened = await first.newPage();
+    await opened.goto(single.url, { waitUntil: "networkidle2" });
+    await opened.waitForFunction(
+      () => document.body.innerText.includes("Archive health"),
+      { timeout: 30_000 },
+    );
+    const established = await sessionCookie(first);
+    expect(established, "the first use established no session").toBeDefined();
+
+    // The same URL again, in a browser that holds none of the first one's
+    // state. The server has already consumed the nonce, so the page reports the
+    // refusal it was given rather than a bare "unauthorized" the operator
+    // cannot act on.
+    const replayed = await second.newPage();
+    await replayed.goto(single.url, { waitUntil: "networkidle2" });
+    await replayed.waitForFunction(
+      () => /already used|unauthorized/i.test(document.body.innerText)
+        || document.body.innerText.includes("Archive health"),
+      { timeout: 30_000 },
+    );
+    const refused = await replayed.evaluate(() => document.body.innerText);
+    expect(refused).toMatch(/already used/i);
+    expect(refused).toMatch(/babel web/i);
+    expect(refused).not.toContain("Archive health");
+    expect(await sessionCookie(second)).toBeUndefined();
+
+    // And the legitimate page is undisturbed by the replay: a reload still
+    // authenticates with the cookie it holds, which is what makes the refusal
+    // above a property of the nonce rather than of a server that broke.
+    await opened.reload({ waitUntil: "networkidle2" });
+    await opened.waitForFunction(
+      () => document.body.innerText.includes("Archive health"),
+      { timeout: 30_000 },
+    );
+    expect((await sessionCookie(first))!.value).toBe(established!.value);
+  } finally {
+    await first.close();
+    await second.close();
+    single.process.kill();
+  }
+});
+
 // The property that matters is not "we call replaceState" but "no history entry
-// the operator can navigate to holds the token". Two mechanisms independently
-// satisfy it today — the bootstrap's scrub, and App.tsx's catch-all
-// <Navigate to="/" replace />, which the unmatched "#token=…" fragment falls
-// through to — so removing either alone is not observable here. Removing both
-// is: the walk fails and names the retained entry.
+// the operator can navigate to holds the launch nonce". Two mechanisms
+// independently satisfy it today — the bootstrap's scrub, and App.tsx's
+// catch-all <Navigate to="/" replace />, which the unmatched "#nonce=…"
+// fragment falls through to — so removing either alone is not observable here.
+// Removing both is: the walk fails and names the retained entry.
 //
 // The walk is bounded by the stack the browser reports, and completion is
 // proven by landing on the context's initial blank entry rather than by the
 // loop finishing. A fixed bound, or trusting goBack's return value, would let
 // part of the stack go unexamined while the test still claimed every reachable
 // entry was checked.
-test.skipIf(!chrome)("no reachable history entry retains the token", async () => {
+//
+// It gets its own launch, because the walk has to start from a page that
+// actually bootstrapped and the nonce is spent by whoever does that first.
+test.skipIf(!chrome)("no reachable history entry retains the launch nonce", async () => {
+  const walked = await launch();
   const walker = await browser!.createBrowserContext();
   try {
     const trail = await walker.newPage();
-    await trail.goto(launchURL, { waitUntil: "networkidle2" });
+    await trail.goto(walked.url, { waitUntil: "networkidle2" });
     await trail.waitForFunction(
       () => document.body.innerText.includes("Archive health"),
       { timeout: 30_000 },
     );
 
     // Visit two more routes so the stack has somewhere to walk back from, and
-    // so the walk crosses the landing entry the token arrived on.
+    // so the walk crosses the landing entry the nonce arrived on.
     await trail.evaluate(() => {
       window.location.hash = "#/sessions";
     });
@@ -402,25 +521,26 @@ test.skipIf(!chrome)("no reachable history entry retains the token", async () =>
     // Reaching the context's initial blank entry is what proves the whole stack
     // was traversed. URL-progress alone could stop early if two adjacent
     // entries happened to share a URL, and the launch entry is the first one,
-    // so an early stop is precisely the failure that would hide a token. It
-    // also stops early when a retained token entry redirects away on arrival,
-    // which is why the trail is reported: that is what a reviewer needs to see.
-    // The token is redacted, since a test about credential hygiene should not
-    // print one into CI output.
-    const trailText = landed.map((url) => url.replace(token, "<TOKEN>")).join(" -> ");
+    // so an early stop is precisely the failure that would hide a nonce. It
+    // also stops early when a retained credential entry redirects away on
+    // arrival, which is why the trail is reported: that is what a reviewer
+    // needs to see. The nonce is redacted, since a test about credential
+    // hygiene should not print one into CI output.
+    const trailText = landed.map((url) => url.replace(walked.nonce, "<NONCE>")).join(" -> ");
     expect(landed.at(-1), `the walk stopped before the bottom of the stack: ${trailText}`).toBe(
       "about:blank",
     );
     expect(landed.length).toBeGreaterThan(1);
     for (const url of landed) {
       // Compared in redacted form deliberately: asserting on the raw URL would
-      // make Bun print the received string, and the token with it.
-      const redacted = url.replace(token, "<TOKEN>");
-      expect(redacted, `a history entry retains the launch token: ${trailText}`).not.toContain(
-        "<TOKEN>",
+      // make Bun print the received string, and the credential with it.
+      const redacted = url.replace(walked.nonce, "<NONCE>");
+      expect(redacted, `a history entry retains the launch nonce: ${trailText}`).not.toContain(
+        "<NONCE>",
       );
     }
   } finally {
     await walker.close();
+    walked.process.kill();
   }
 });

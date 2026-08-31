@@ -199,7 +199,7 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 // observe.
 func TestOverviewDegradesSectionBySection(t *testing.T) {
 	s, httpServer := testServer(t, Options{})
-	response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/overview", s.token)
+	response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/overview", bootstrapSession(t, s, httpServer))
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", response.StatusCode, body(t, response))
 	}
@@ -286,7 +286,7 @@ func TestOverviewLeaksNoServiceFailure(t *testing.T) {
 			opts := Options{Diagnostics: &diagnostics}
 			deployment.build(&opts)
 			s, httpServer := testServer(t, opts)
-			response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/overview", s.token)
+			response := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/overview", bootstrapSession(t, s, httpServer))
 			if response.StatusCode != http.StatusOK {
 				t.Fatalf("status = %d, want 200", response.StatusCode)
 			}

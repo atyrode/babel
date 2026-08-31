@@ -126,8 +126,8 @@ afterAll(async () => {
 });
 
 test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel answered", async () => {
-  // No hash at all is what the token bootstrap leaves behind, so this is the
-  // route a real launch actually arrives on.
+  // No hash at all is what the bootstrap exchange leaves behind, so this is
+  // the route a real launch actually arrives on.
   await page.goto(`${rich?.base}/`, { waitUntil: "networkidle2" });
   await page.waitForSelector(".panel-grid", { timeout: 15_000 });
 

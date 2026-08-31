@@ -30,7 +30,7 @@ const REVIEW_STATUSES: Array<[string, string]> = [
 ];
 
 const COMMANDS: Array<[string, string, string, string]> = [
-  ["babel web", "Serves this interface on loopback with a one-time token.", "/", "Dashboard"],
+  ["babel web", "Serves this interface on loopback behind a one-time launch link.", "/", "Dashboard"],
   ["babel storage configure", "Stores the repository and catalog configuration.", "/archive", "Archive"],
   ["babel archive push", "Backs this host's sessions into the restic repository.", "/archive", "Archive"],
   ["babel archive status", "Reports snapshots per host and the catalog's lag.", "/archive", "Archive"],
@@ -622,9 +622,9 @@ function HelpPage() {
           </li>
         </ol>
         <p className="panel-caption">
-          Stopping: the <strong>Lock &amp; stop</strong> control in the header revokes the launch
-          token and shuts the listener down. The URL never works again; run <code>babel web</code>{" "}
-          for a new one.
+          Stopping: the <strong>Lock &amp; stop</strong> control in the header revokes this
+          session and shuts the listener down. The URL never works again; run{" "}
+          <code>babel web</code> for a new one.
         </p>
       </article>
     </section>

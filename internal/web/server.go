@@ -4,9 +4,6 @@ package web
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 )
@@ -33,52 +29,47 @@ const defaultTranscriptLimit = 200
 type Server struct {
 	opts     Options
 	listener net.Listener
-	token    string
+	// creds is the launch's §2.7 authentication state: the single-use
+	// bootstrap nonce and the session cookie it is exchanged for. It is a
+	// value rather than a pointer because a Server is never copied, and it
+	// owns its own mutex because the exchange is a read-modify-write.
+	creds    credentials
 	url      string
 	logMu    sync.Mutex
-	// revoked is the launch session's kill switch. It is separate from the
-	// shutdown signal below because the two must not happen at the same
-	// instant: the token has to be dead before the listener starts winding
-	// down, so a request that raced the lock cannot be served by a process
-	// that is already stopping.
-	revoked  atomic.Bool
 	lockOnce sync.Once
 	locked   chan struct{}
 }
 
-// New generates an access token and binds a loopback listener. Port zero asks
-// the kernel for an available port. The listener is held until Serve begins so
-// URL is immediately stable and safe to launch.
+// New mints the launch nonce and binds a loopback listener. Port zero asks the
+// kernel for an available port. The listener is held until Serve begins so URL
+// is immediately stable and safe to launch.
 //
-// The token is placed in the URL fragment, which browsers never transmit
-// (SPEC.md §146), so it reaches neither the request line nor anything that
-// records one.
+// The nonce is placed in the URL fragment, which browsers never transmit
+// (SPEC.md §148), so it reaches neither the request line nor anything that
+// records one. It authorizes exactly one thing — the bootstrap exchange — and
+// it expires after BootstrapTTL.
 func New(opts Options) (*Server, error) {
 	if opts.Port < 0 || opts.Port > 65535 {
 		return nil, fmt.Errorf("port %d is out of range", opts.Port)
-	}
-	var tokenBytes [32]byte
-	if _, err := rand.Read(tokenBytes[:]); err != nil {
-		return nil, fmt.Errorf("generate web token: %w", err)
 	}
 	listener, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(opts.Port)))
 	if err != nil {
 		return nil, fmt.Errorf("listen on loopback: %w", err)
 	}
-	token := hex.EncodeToString(tokenBytes[:])
+	nonce := secret()
 	port := listener.Addr().(*net.TCPAddr).Port
 	return &Server{
 		opts:     opts,
 		listener: listener,
-		token:    token,
-		url:      fmt.Sprintf("http://127.0.0.1:%d/#token=%s", port, token),
+		creds:    credentials{nonce: nonce, deadline: time.Now().Add(BootstrapTTL)},
+		url:      fmt.Sprintf("http://127.0.0.1:%d/#nonce=%s", port, nonce),
 		locked:   make(chan struct{}),
 	}, nil
 }
 
-// URL is the launch URL. The token rides in the fragment, so opening this URL
-// sends no credential to the server; the bootstrap code reads it and presents
-// it as a bearer header instead.
+// URL is the launch URL. The nonce rides in the fragment, so opening this URL
+// sends no credential to the server; the bootstrap code reads it once, posts it
+// in a body, and holds the session cookie the exchange returns.
 func (s *Server) URL() string { return s.url }
 
 // Serve handles requests until ctx is canceled, the operator locks the server,
@@ -164,7 +155,13 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				s.writeError(rw, http.StatusForbidden, "forbidden origin")
 				return
 			}
-			if !s.authorized(r) {
+			// The bootstrap exchange is the one /api route that
+			// authenticates rather than requiring authentication,
+			// so it is exempt from this check and from nothing
+			// else: it still passes the origin guard above, still
+			// answers `no-store`, and still refuses a locked
+			// server.
+			if r.URL.Path != bootstrapPath && !s.authorized(r) {
 				s.writeError(rw, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -207,21 +204,26 @@ func (w *statusWriter) statusCode() int {
 }
 
 // sameOrigin is the shared guard every /api request passes before its
-// credential is even examined. The launch token is the real CSRF defence -- a
-// page the operator merely visited cannot attach an Authorization header
-// without a preflight this server never grants -- but /api/lock turns a forged
-// request into a denial of service, so the two weaker signals a browser does
-// send are checked rather than trusted to stay unreachable:
+// credential is even examined. Two weak signals, checked rather than trusted
+// to stay unreachable, because /api/lock turns a forged request into a denial
+// of service:
 //
 // Host must name the loopback literal this server binds. A request arriving
 // here under any other name was aimed at a hostname that resolves to
 // 127.0.0.1, which is DNS rebinding.
 //
-// Origin, when present, must be this server's own. A browser sends it on every
-// state-changing fetch, so a cross-site POST is refused even if the token ever
-// leaked. A missing Origin is allowed: non-browser clients send none, and a
-// browser omits it only for same-origin navigations and GETs, which forge
-// nothing that a token-bearing request had not already authorized.
+// Origin, when present, must be this server's own.
+//
+// A missing Origin is still allowed, and the cookie exchange is what makes
+// that safe to keep rather than merely inherited. The session cookie is
+// SameSite=Strict, so no cross-site request carries it at all; a browser that
+// omits Origin is making a same-origin GET or navigation, and every mutation
+// on this surface is a POST, which browsers always send an Origin with. The
+// one attacker the SameSite attribute does not stop is a page on another
+// loopback *port* — cookies are not isolated by port — and that page's POST
+// does carry an Origin, naming its own port, which this refuses. A non-browser
+// client can of course send any Origin it likes; it holds no session cookie,
+// which is the defence that actually decides the request.
 func (s *Server) sameOrigin(r *http.Request) bool {
 	if !loopbackHost(r.Host) {
 		return false
@@ -238,29 +240,25 @@ func loopbackHost(host string) bool {
 	return hostname == "127.0.0.1" || hostname == "localhost"
 }
 
-// authorized accepts the launch token from the Authorization header only.
-// SPEC.md §146 keeps the token in the URL fragment precisely because
-// fragments are never sent in HTTP requests, so a token arriving in a query
-// string is either a paste mistake or an attempt to move a live credential
-// through a channel that gets logged, cached, and put in a Referer. It is
-// refused rather than honoured.
+// authorized accepts the session established by the §2.7 exchange, from its
+// cookie and from nowhere else.
+//
+// There is no header, query-parameter or body credential to accept. The
+// bootstrap nonce is not one either: it authorizes the exchange and is spent by
+// it, so a request presenting the nonce as a session is refused like any other
+// wrong value. A credential this narrow is what makes the guarantee checkable —
+// the live credential is unreadable from JavaScript, and there is no second
+// channel a future change could quietly widen it through.
 func (s *Server) authorized(r *http.Request) bool {
-	// A locked server has no valid credential at all. This is checked before
-	// the header is read so a request that raced the lock, or a retry from a
-	// tab the operator left open, is refused by a process that is still
-	// answering only because it has not finished stopping.
-	if s.revoked.Load() {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
 		return false
 	}
-	authorization := r.Header.Get("Authorization")
-	if authorization == "" {
-		return false
-	}
-	scheme, credential, ok := strings.Cut(authorization, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") || credential == "" || strings.ContainsAny(credential, " \t") {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(credential), []byte(s.token)) == 1
+	// A locked server has no live session at all, which credentials.authorize
+	// enforces: a request that raced the lock, or a retry from a tab the
+	// operator left open, is refused by a process that is still answering
+	// only because it has not finished stopping.
+	return s.creds.authorize(cookie.Value)
 }
 
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
@@ -273,6 +271,13 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
+	// The §2.7 bootstrap exchange comes first because it is what every other
+	// case below requires: no session exists until this one runs.
+	case bootstrapPath:
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleBootstrap(w, r)
 	case "/api/version":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return
@@ -724,8 +729,8 @@ type lockResult struct {
 // §8.2, decisions 34 and 45).
 //
 // The order is the contract. Revoking first means there is no window in which
-// the process still honours the launch token while it winds down; only then is
-// the listener asked to go away. Because the token is dead by the time this
+// the process still honours the session while it winds down; only then is the
+// listener asked to go away. Because the session is dead by the time this
 // responds, the confirmation cannot be re-fetched, so it is flushed here
 // rather than left to the graceful drain. A flush that could not happen is
 // reported rather than swallowed: it would mean the wrapper stopped exposing
@@ -739,12 +744,12 @@ type lockResult struct {
 // to be recorded in it. Closing `locked` last makes that channel a barrier for
 // the whole handler rather than for part of it.
 func (s *Server) handleLock(w http.ResponseWriter) {
-	s.revoked.Store(true)
+	s.creds.revoke()
 	s.writeJSON(w, http.StatusOK, lockResult{Revoked: true, Stopping: true})
 	if err := http.NewResponseController(w).Flush(); err != nil {
 		s.logf("lock confirmation was not flushed: %v", err)
 	}
-	s.logf("locked by operator: launch token revoked, stopping listener")
+	s.logf("locked by operator: launch nonce and session revoked, stopping listener")
 	// Serve owns the shutdown; signalling it keeps this handler off the path
 	// that closes the connection it is still writing to. Once, because a
 	// second lock must not close a closed channel.

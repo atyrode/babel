@@ -500,7 +500,7 @@ func (h *phaseB) indexSession(text string) {
 // get performs an authorized GET and returns the response.
 func (h *phaseB) get(path string) *http.Response {
 	h.t.Helper()
-	return request(h.t, h.http.Client(), http.MethodGet, h.http.URL+path, h.server.token)
+	return request(h.t, h.http.Client(), http.MethodGet, h.http.URL+path, bootstrapSession(h.t, h.server, h.http))
 }
 
 // post performs an authorized POST with a JSON body.
@@ -510,7 +510,7 @@ func (h *phaseB) post(path, body string) *http.Response {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+h.server.token)
+	authorize(req, bootstrapSession(h.t, h.server, h.http))
 	req.Header.Set("Content-Type", "application/json")
 	response, err := h.http.Client().Do(req)
 	if err != nil {
@@ -615,16 +615,16 @@ func TestPhaseBRoutesShareThePhaseAGuard(t *testing.T) {
 	for _, route := range phaseBRoutes(h) {
 		t.Run(route.name, func(t *testing.T) {
 			for _, guard := range []struct {
-				name   string
-				token  string
-				origin string
-				host   string
-				status int
+				name    string
+				session string
+				origin  string
+				host    string
+				status  int
 			}{
 				{name: "no session", status: http.StatusUnauthorized},
-				{name: "wrong session", token: strings.Repeat("0", 64), status: http.StatusUnauthorized},
-				{name: "cross origin", token: h.server.token, origin: "http://evil.example", status: http.StatusForbidden},
-				{name: "rebound host", token: h.server.token, host: "evil.example", status: http.StatusForbidden},
+				{name: "wrong session", session: strings.Repeat("0", 64), status: http.StatusUnauthorized},
+				{name: "cross origin", session: bootstrapSession(h.t, h.server, h.http), origin: "http://evil.example", status: http.StatusForbidden},
+				{name: "rebound host", session: bootstrapSession(h.t, h.server, h.http), host: "evil.example", status: http.StatusForbidden},
 			} {
 				t.Run(guard.name, func(t *testing.T) {
 					var reader io.Reader
@@ -635,8 +635,8 @@ func TestPhaseBRoutesShareThePhaseAGuard(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if guard.token != "" {
-						req.Header.Set("Authorization", "Bearer "+guard.token)
+					if guard.session != "" {
+						authorize(req, guard.session)
 					}
 					if guard.origin != "" {
 						req.Header.Set("Origin", guard.origin)
@@ -692,7 +692,7 @@ func TestPhaseBRoutesAcceptOneMethodEach(t *testing.T) {
 			if route.mutating {
 				wrong = http.MethodGet
 			}
-			response := request(t, h.http.Client(), wrong, h.http.URL+route.path, h.server.token)
+			response := request(t, h.http.Client(), wrong, h.http.URL+route.path, bootstrapSession(h.t, h.server, h.http))
 			defer response.Body.Close()
 			if response.StatusCode != http.StatusBadRequest {
 				t.Fatalf("%s %s status = %d, want 400", wrong, route.path, response.StatusCode)
@@ -931,7 +931,7 @@ func TestPhaseBRoutesAnswerHonestlyWithoutServices(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("Authorization", "Bearer "+s.token)
+		authorize(req, bootstrapSession(t, s, httpServer))
 		response, err := httpServer.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -944,7 +944,7 @@ func TestPhaseBRoutesAnswerHonestlyWithoutServices(t *testing.T) {
 	// The analysis state route is the one that must still answer, because it
 	// is how a page learns there is nothing to show.
 	var state analysisState
-	decodeResponse(t, request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/analysis/state", s.token), &state)
+	decodeResponse(t, request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/analysis/state", bootstrapSession(t, s, httpServer)), &state)
 	if state.Configured || state.Worker.Available || len(state.Runs) != 0 || len(state.Cookbook) != 0 {
 		t.Fatalf("unconfigured state = %+v", state)
 	}

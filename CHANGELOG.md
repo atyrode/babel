@@ -327,6 +327,67 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The web session is now a cookie the page cannot read (issue #72, SPEC.md
+  §2.7, decision 34).** The launch credential was one 256-bit token generated
+  at server start, delivered in the URL fragment, copied into `sessionStorage`,
+  and presented as `Authorization: Bearer` on every request for the process's
+  whole lifetime. Nothing about it was single-use and nothing rotated, and
+  because it lived where script could read it, any future cross-site-scripting
+  hole or compromised frontend dependency could have read it out of the page
+  and used it elsewhere. §2.7 has required the exchange that closes that
+  channel since the specification was written; it is built now, and the bearer
+  path is gone rather than kept beside it.
+  - **One nonce, one session, one use.** Each launch mints a 256-bit bootstrap
+    nonce and prints it in the launch URL's fragment, which browsers never
+    transmit. The page reads it once, erases the fragment, and posts it to
+    `POST /api/bootstrap`; the server answers with a rotated host-only
+    `HttpOnly; SameSite=Strict` session cookie and drops the nonce. Consuming
+    the nonce and issuing the session happen in one step under one mutex, so
+    two requests replaying the same launch URL cannot both be served — the
+    property "single-use" would otherwise be a comment rather than a
+    guarantee. A wrong nonce consumes nothing: a local process able to kill a
+    live launch by posting rubbish at it would be a denial of service the
+    256-bit nonce does not otherwise permit.
+  - **The nonce expires two minutes after the launch.** §2.7 says quickly, and
+    quickly is measured against what it replaces: a credential that stayed live
+    in a terminal's scrollback for as long as the process ran. Two minutes
+    rather than seconds because the link has to survive a cold browser start
+    and an operator who pastes it by hand; the printed line states the lifetime
+    from the enforced constant rather than repeating it, and every refusal names
+    the one command that fixes it. A stale link is not a broken launch.
+  - **The cookie is the only credential the server accepts.** No bearer header,
+    no query parameter, no differently-named cookie, and not the spent nonce.
+    That is asserted per channel rather than implied, because the value of an
+    unreadable credential is exactly the absence of a second channel a later
+    change could widen. Lock and stop revokes the session and the nonce
+    together, so a launch link the operator never opened is worthless after a
+    stop.
+  - **`Secure` is deliberately absent, and the cost is recorded.** The origin is
+    `http://` on 127.0.0.1: there is no network path to downgrade, and engines
+    disagree about whether a loopback origin may set the attribute, so setting
+    it would make the session work in some browsers and silently fail in others
+    while defending against nothing. The same reasoning rules out the `__Host-`
+    prefix, which requires it. What that leaves is a nuisance rather than a
+    compromise: cookies are not isolated by port, so a page on another loopback
+    port can overwrite this cookie in the operator's browser — it cannot forge a
+    valid value, so the operator gets 401s and relaunches, and no attribute
+    available to an `http://` origin prevents it.
+  - **Nothing authentication-related is stored in the page any more.** The
+    `sessionStorage` copy is gone, and a reload re-authenticates with a
+    credential that was never reachable from script. The frontend's import-order
+    coupling remains and is documented where it lives: the fragment is still
+    route state, so the bootstrap still has to read it before the router mounts.
+    An earlier record predicted this exchange would remove that coupling; it
+    does not, because the only way to read the fragment earlier is an inline
+    script in the served shell, which `default-src 'self'` does not admit.
+  - **Proven at three levels.** internal/web drives the exchange, the replay,
+    the expiry — including a clock that moves backwards — revocation, every
+    cookie flag, the refused origins, and each channel the session must not be
+    accepted from. A real browser bootstraps one launch and is refused the
+    second use of the same link, and reads the established cookie out of
+    Chromium's own store to prove `document.cookie` cannot see it. And the
+    built binary was launched, exchanged, replayed and locked by hand.
+
 - **`babel analysis profile configure` hands the operator the terminal instead
   of negotiating a profile over a pipe.** Every model invocation Babel makes
   has to trace back to an operator who intentionally set it up (operator

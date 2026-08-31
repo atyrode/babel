@@ -19,7 +19,7 @@ import (
 
 // TestWebServerServesCLIBackedAPI proves the wired `babel web` server end to
 // end in process: static SPA bytes come from the embedded dist, and the API
-// answers with the same documents the headless CLI emits, behind its token.
+// answers with the same documents the headless CLI emits, behind its session.
 func TestWebServerServesCLIBackedAPI(t *testing.T) {
 	f := newFixture(t)
 	f.threeSessions()
@@ -43,10 +43,7 @@ func TestWebServerServesCLIBackedAPI(t *testing.T) {
 		}
 	}()
 
-	base, token, ok := strings.Cut(srv.URL(), "/#token=")
-	if !ok {
-		t.Fatalf("launch URL %q carries no token", srv.URL())
-	}
+	base, _, session := bootstrapWeb(t, srv.URL())
 
 	get := func(path string, out any) int {
 		t.Helper()
@@ -54,7 +51,7 @@ func TestWebServerServesCLIBackedAPI(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
+		authorizeWeb(req, session)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
@@ -79,13 +76,13 @@ func TestWebServerServesCLIBackedAPI(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("tokenless request got %d, want 401", resp.StatusCode)
+		t.Fatalf("credential-free request got %d, want 401", resp.StatusCode)
 	}
 
-	// The SPA shell is served for the root path.
-	req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	shell, err := http.DefaultClient.Do(req)
+	// The SPA shell is served for the root path. It carries no credential at
+	// all, because the shell is what runs the bootstrap: a browser's very
+	// first request cannot be authenticated and must not need to be.
+	shell, err := http.Get(base + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,12 +156,12 @@ func TestWebServerServesCLIBackedAPI(t *testing.T) {
 	}
 }
 
-// webClient is the caller a browser is: the launch token that arrived in the
-// URL fragment, attached as the bearer header the server accepts.
+// webClient is the caller a browser is: the session cookie that the launch
+// nonce was exchanged for, presented on every request.
 type webClient struct {
-	t     *testing.T
-	base  string
-	token string
+	t       *testing.T
+	base    string
+	session string
 }
 
 // serveWeb serves srv until the test ends and returns a client aimed at it.
@@ -186,11 +183,56 @@ func serveWeb(t *testing.T, srv *web.Server) *webClient {
 
 func newWebClient(t *testing.T, launchURL string) *webClient {
 	t.Helper()
-	base, token, ok := strings.Cut(launchURL, "/#token=")
+	base, _, session := bootstrapWeb(t, launchURL)
+	return &webClient{t: t, base: base, session: session}
+}
+
+// bootstrapWeb performs the §2.7 bootstrap exchange a browser performs on the
+// launch URL: it posts the one-time nonce from the fragment and keeps the
+// `HttpOnly; SameSite=Strict` session cookie the server answers with. Both
+// credentials are returned because the tests assert on both — the nonce is
+// spent and must appear in no request line or log, and the session is the only
+// thing that authenticates afterwards.
+//
+// The nonce is single-use, so this runs once per launch. A test that needs a
+// second session needs a second launch.
+func bootstrapWeb(t *testing.T, launchURL string) (base, nonce, session string) {
+	t.Helper()
+	base, nonce, ok := strings.Cut(launchURL, "/#nonce=")
 	if !ok {
-		t.Fatalf("launch URL %q carries no token", launchURL)
+		t.Fatalf("launch URL %q carries no bootstrap nonce", launchURL)
 	}
-	return &webClient{t: t, base: base, token: token}
+	response, err := http.Post(base+"/api/bootstrap", "application/json",
+		strings.NewReader(`{"nonce":"`+nonce+`"}`))
+	if err != nil {
+		t.Fatalf("bootstrap exchange: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("bootstrap exchange: status %d body %s", response.StatusCode, body)
+	}
+	for _, cookie := range response.Cookies() {
+		if cookie.Name != "babel_session" {
+			continue
+		}
+		// The flags are internal/web's contract and tested there; asserting
+		// the two that matter here keeps a harness that silently accepted a
+		// readable credential from passing for a browser.
+		if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+			t.Fatalf("session cookie is not HttpOnly SameSite=Strict: %+v", cookie)
+		}
+		return base, nonce, cookie.Value
+	}
+	t.Fatalf("bootstrap exchange set no session cookie: %v", response.Cookies())
+	return "", "", ""
+}
+
+// authorizeWeb presents the session the way a bootstrapped browser does. It is
+// the only credential channel the server accepts, so a test that forgets it
+// gets a 401 rather than a differently-authenticated request.
+func authorizeWeb(req *http.Request, session string) {
+	req.AddCookie(&http.Cookie{Name: "babel_session", Value: session})
 }
 
 // do issues one authenticated request and returns the status with the raw
@@ -209,7 +251,7 @@ func (c *webClient) do(method, path, body string) (int, string) {
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	authorizeWeb(req, c.session)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
