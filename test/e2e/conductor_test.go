@@ -96,6 +96,12 @@ type conductorStatusDoc struct {
 	Spend      *conductorSpendDoc  `json:"spend"`
 	Cycles     []conductorCycleDoc `json:"cycles"`
 	Journal    string              `json:"journal"`
+	// Fleet is #118's presence block: what every machine says it is running.
+	// On these local-mode deployments it is always empty with the note saying
+	// why, and its shape is asserted where the presence tests own it; here it
+	// only has to be a declared part of the document.
+	Fleet     []map[string]any `json:"fleet"`
+	FleetNote string           `json:"fleet_note,omitempty"`
 }
 
 // The conductor, driven end to end through the shipped executable against the
