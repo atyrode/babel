@@ -762,6 +762,11 @@ type inspectResult struct {
 	Blobs              []blobRow `json:"blobs,omitempty"`
 	UnresolvedBlobRefs []string  `json:"unresolved_blob_refs,omitempty"`
 	ContinuationGrade  bool      `json:"continuation_grade"`
+	// References is #113's citation graph around this session. A session is
+	// named in the graph by its durable key rather than by its selector, so
+	// the field is absent when this build records no citations and when this
+	// machine cannot derive that key at all.
+	References *citations `json:"references,omitempty"`
 }
 
 // sessionsInspect implements `babel sessions inspect`.
@@ -828,16 +833,24 @@ func (a *app) sessionsInspect(ctx context.Context, args []string) error {
 			Size:       b.Size,
 		})
 	}
+	refs, refsErr := sessionCitations(ctx, desc.Source.Harness, desc.Source.SourceID)
+	res.References = refs
 	if *asJSON {
+		a.noteUnreadCitations(refsErr)
 		return a.emitJSON(res)
 	}
-	return a.printInspect(res)
+	return a.printInspect(res, refsErr)
 }
 
 // printInspect writes one description in human form. Adapter metadata is
 // rendered as one sanitized line rather than re-indented: it is an opaque
 // versioned document here, and --json is where a caller parses it.
-func (a *app) printInspect(res inspectResult) error {
+//
+// citationErr is why the citation section has nothing to show, nil when it
+// has. It is a parameter rather than a field on the result because the
+// machine-readable document states an absence by omitting the field, and a
+// reason for that absence belongs to the terminal rendering of it.
+func (a *app) printInspect(res inspectResult, citationErr error) error {
 	rows := [][2]string{
 		{"selector", res.Selector},
 		{"harness", res.Harness},
@@ -902,7 +915,7 @@ func (a *app) printInspect(res inspectResult) error {
 			return err
 		}
 	}
-	return nil
+	return a.writeCitations(res.References, citationErr)
 }
 
 // fetchResult is the machine-readable outcome of one materialization.

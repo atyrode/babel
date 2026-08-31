@@ -153,6 +153,11 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 			Sync:          run.SyncPending,
 			Authority:     RunAuthority{Kind: "operator", Ref: "babel explore " + text},
 		}},
+		// Issue #113's citation graph, wired by default for fleetFixture's
+		// reason: an edge note is content somebody wrote, so the escaping
+		// sweep has to see one without a test remembering to ask.
+		// references_test.go describes the fixture.
+		References: referencesFixture(h, text),
 	}
 	if mutate != nil {
 		mutate(&opts)
@@ -573,6 +578,11 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 			path: "/api/record/revisions?type=hypothesis&id=" + h.original.ID},
 		{name: "record dispositions", method: http.MethodGet,
 			path: "/api/record/dispositions?type=hypothesis&id=" + h.hypothesis.ID},
+		// Issue #113's citation read. Its endpoints deliberately include
+		// records this host does not hold, so every reason string this
+		// surface can produce passes through the escaping sweep too.
+		{name: "record links", method: http.MethodGet,
+			path: "/api/record/links?type=hypothesis&id=" + h.hypothesis.ID},
 		// Issue #109's fleet read. Both carry another host's records, which
 		// means every string in them arrived from a machine this one does not
 		// control: hostile content is the normal case here rather than the

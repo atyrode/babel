@@ -16,10 +16,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/atyrode/babel/internal/catalog"
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
+	"github.com/atyrode/babel/internal/reference"
+	"github.com/atyrode/babel/internal/reference/resolve"
 	"github.com/atyrode/babel/internal/review"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
@@ -939,16 +942,56 @@ func sanitizeProfile(p *profileRecord) *profileRecord {
 
 // analysisState is the durable Phase B state one command opened: the
 // hypothesis frontier, the run receipts, the proposed next actions of #87,
-// and the review log above them. They are opened together because
-// review.Open sits on the frontier and the receipts and disposition.Open sits
-// on the frontier, and closed in reverse order so the services release their
-// handles before the stores they read do.
+// the review log above them, and the typed reference graph of #113. They are
+// opened together because review.Open sits on the frontier and the receipts,
+// disposition.Open sits on the frontier, and the edge store's anchoring gate
+// sits on all three; they are closed in reverse order so the services release
+// their handles before the stores they read do.
 type analysisState struct {
 	dir          string
 	frontier     *frontier.Store
 	runs         *runstore.Store
 	review       *review.Service
 	dispositions *disposition.Store
+	// references is #113's append-only edge store. It opens last because its
+	// resolver registry is built over the stores above it: an edge may only
+	// bind to a record that demonstrably exists, and the things that can
+	// vouch for one are exactly the handles this state already holds.
+	references *reference.Store
+	// sessionCatalog is the session cache the session-endpoint resolver
+	// borrows for the life of the edge store, held here because whoever opens
+	// a handle owes its close. It is nil whenever no session resolver was
+	// built.
+	sessionCatalog *catalog.Cache
+	// resolverNote states why the edge store opened with a smaller resolver
+	// registry than this machine's stores could support, and is empty when it
+	// did not.
+	//
+	// It is carried rather than returned because a registry gates Append and
+	// nothing else: listing a record's citations validates no endpoint, so
+	// failing the open would cost every read surface its record over a
+	// validator none of them consults. It is stated by whichever caller
+	// reports what this machine has and has not - openWebServices does - and
+	// a command that only reads citations says nothing, because for it the
+	// gap has no consequence.
+	resolverNote string
+	// sessions derives the durable key of one local session, which is the
+	// identity a session endpoint carries. Nil on a machine with no
+	// deployment identity, because there is then no key to derive.
+	sessions *resolve.Sessions
+	// diag is where a failed edge emission lands. It is a settable field
+	// rather than a parameter because openAnalysisState is called from every
+	// analysis command and none of them has a sink to offer at that point,
+	// and it is a func rather than an io.Writer for internal/frontier's own
+	// reason: the error may quote a store's words, and only the command
+	// surface owns the terminal-safe renderer that may put those on a
+	// terminal.
+	//
+	// Nil drops the warning, which is the documented consequence rather than
+	// a silent one: the record is durable, its edge is missing, and the next
+	// append of the same (kind, from, to) restores it because Append is
+	// idempotent on that triple.
+	diag func(error)
 }
 
 func openAnalysisState() (*analysisState, error) {
@@ -957,7 +1000,16 @@ func openAnalysisState() (*analysisState, error) {
 		return nil, err
 	}
 	dir := d.durableDir()
-	front, err := frontier.Open(dir)
+	// The two stores below are mutually constructed, and the cycle is real
+	// rather than accidental: internal/frontier takes the edge appender at
+	// Open so that minting a revision also mints its supersedes edge (#113),
+	// and the edge store takes the frontier at Open so that an edge can only
+	// bind to a record that demonstrably exists. Neither can be built second,
+	// so the frontier is handed a forwarder that reaches the store as soon as
+	// there is one.
+	state := &analysisState{dir: dir}
+	appender := &deferredAppender{}
+	front, err := frontier.Open(dir, frontier.WithReferences(appender, state.reportEdgeFailure))
 	if err != nil {
 		return nil, err
 	}
@@ -979,11 +1031,149 @@ func openAnalysisState() (*analysisState, error) {
 		front.Close()
 		return nil, err
 	}
-	return &analysisState{dir: dir, frontier: front, runs: runs, review: svc, dispositions: actions}, nil
+
+	// The Reality Ledger is deliberately absent from the registry below. It
+	// is a separate handle by design (see openReality), and opening it here
+	// to widen the namespace set would undo that separation for a check no
+	// analysis command performs. The consequence is stated rather than
+	// hidden: internal/reference refuses an edge naming a reality record by
+	// listing the namespaces this machine can vouch for, which is the honest
+	// answer from a state that never opened the ledger.
+	sessions, cache, note := openSessionResolver(d)
+	var opts []reference.Option
+	registry, err := resolve.Registry(resolve.Stores{
+		Frontier:     front,
+		Runs:         runs,
+		Dispositions: actions,
+		Sessions:     sessions,
+	})
+	if err != nil {
+		note = "no citation endpoint can be validated on this machine, because the resolver registry would not build: " +
+			Sanitize(err.Error())
+	} else {
+		opts = append(opts, reference.WithResolvers(registry))
+	}
+	edges, err := reference.Open(dir, opts...)
+	if err != nil {
+		if cache != nil {
+			cache.Close()
+		}
+		actions.Close()
+		svc.Close()
+		runs.Close()
+		front.Close()
+		return nil, err
+	}
+	// The forwarder is completed here and nowhere else, which is what keeps
+	// the cycle above a construction detail rather than a mutable dependency:
+	// before this line no edge could be minted, and after it every write path
+	// the frontier owns reaches the store the registry gated.
+	appender.store = edges
+	state.frontier, state.runs, state.review, state.dispositions = front, runs, svc, actions
+	state.references, state.sessionCatalog, state.resolverNote = edges, cache, note
+	state.sessions = sessions
+	return state, nil
+}
+
+// deferredAppender resolves one construction cycle and nothing else: the
+// frontier is handed this before the edge store exists, and the store is
+// installed on it once the registry that gates writes has been built over the
+// frontier.
+//
+// An append before the store exists is refused rather than dropped. It cannot
+// happen from openAnalysisState - the frontier performs no write during Open -
+// so a call arriving here would mean a new construction path minted a record
+// before its graph was ready, and an error is how that gets noticed instead of
+// silently producing records with no edges.
+type deferredAppender struct{ store *reference.Store }
+
+func (d *deferredAppender) Append(ctx context.Context, e reference.Edge) (reference.Edge, error) {
+	if d.store == nil {
+		return reference.Edge{}, errors.New("the reference graph is not open yet")
+	}
+	return d.store.Append(ctx, e)
+}
+
+// reportEdgeFailure hands one failed edge emission to whichever command asked
+// for the warnings.
+func (s *analysisState) reportEdgeFailure(err error) {
+	if s.diag != nil {
+		s.diag(err)
+	}
+}
+
+// referenceAppender is the write half emission sites take, and it is nil when
+// there is nothing to write to. A typed nil interface would pass every caller's
+// nil check and then mint nothing while reporting success, which is the one
+// failure mode a graph nobody reads cannot recover from.
+func (s *analysisState) referenceAppender() reference.Appender {
+	if s == nil || s.references == nil {
+		return nil
+	}
+	return s.references
+}
+
+// sessionKey is the derivation an evidence edge's session endpoint needs, or
+// nil when this machine has no deployment identity to derive one under.
+// resolve.Sessions.Key is total, so the method value is passed bare: an emitter
+// must not acquire a second failure mode, and an empty key is the answer that
+// leaves the edge unminted and the observation's locator intact.
+func (s *analysisState) sessionKey() func(harness, sourceID string) string {
+	if s == nil || s.sessions == nil {
+		return nil
+	}
+	return s.sessions.Key
+}
+
+// openSessionResolver builds the resolver for session endpoints, which is the
+// one namespace whose identity Babel derives rather than stores.
+//
+// A machine with no deployment identity gets none, and that is an absence
+// rather than a failure: the durable session key is a digest over the
+// deployment, the host, the harness and the source id, so without a deployment
+// there is no key at all, and deriving one under the empty string would mint
+// endpoints no other host in the fleet could match. The session namespace is
+// then simply unregistered.
+//
+// Only a machine that has an identity and cannot read its own sessions is
+// reported. That is a fault; having no fleet identity for them is not.
+func openSessionResolver(d dirs) (*resolve.Sessions, *catalog.Cache, string) {
+	cfg, _, err := config.Load()
+	if err != nil {
+		return nil, nil, "no citation can name a session, because the stored configuration would not load: " +
+			Sanitize(err.Error())
+	}
+	if cfg.DeploymentID == "" {
+		return nil, nil, ""
+	}
+	host, err := localHostID()
+	if err != nil {
+		return nil, nil, "no citation can name a session, because this machine's own identity is unresolved: " +
+			Sanitize(err.Error())
+	}
+	cache, err := catalog.Open(d.data)
+	if err != nil {
+		return nil, nil, "no citation can name a session, because the session catalog would not open: " +
+			Sanitize(err.Error())
+	}
+	sessions, err := resolve.NewSessions(cache, cfg.DeploymentID, host)
+	if err != nil {
+		cache.Close()
+		return nil, nil, "no citation can name a session: " + Sanitize(err.Error())
+	}
+	return sessions, cache, ""
 }
 
 func (s *analysisState) Close() error {
-	err := s.dispositions.Close()
+	err := s.references.Close()
+	if s.sessionCatalog != nil {
+		if e := s.sessionCatalog.Close(); err == nil {
+			err = e
+		}
+	}
+	if e := s.dispositions.Close(); err == nil {
+		err = e
+	}
 	if e := s.review.Close(); err == nil {
 		err = e
 	}

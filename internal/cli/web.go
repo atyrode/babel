@@ -20,7 +20,9 @@ import (
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/reality"
+	"github.com/atyrode/babel/internal/reference"
 	runstore "github.com/atyrode/babel/internal/run"
+	"github.com/atyrode/babel/internal/sharedcatalog"
 	"github.com/atyrode/babel/internal/transcript"
 	"github.com/atyrode/babel/internal/web"
 	webdist "github.com/atyrode/babel/web"
@@ -251,6 +253,23 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	opts.Dispositions = services.dispositions()
 	opts.Reviver = services.reviver()
 	opts.Cookbook = services.cookbook
+	opts.References = services.references()
+
+	// The two identities one session has, for the citation surfaces. A machine
+	// with no deployment identity leaves this nil, and internal/web renders
+	// every session endpoint inert with that stated as the reason. That is the
+	// only honest answer available: a session's durable key is a digest over
+	// the deployment, the host, the harness and the source id, so keys derived
+	// without a deployment would match nothing any host in the fleet minted,
+	// and testing an edge's endpoint against them would report a real session
+	// as absent.
+	//
+	// Nothing is warned about here, on the same terms the fleet reader below
+	// stays silent when it is simply not configured: local mode is a supported
+	// deployment rather than a fault, and the page that shows the endpoint is
+	// where the reason belongs.
+	services.sessions = newWebSessionKeys(sc, cfg.DeploymentID, hostID)
+	opts.Sessions = services.sessionKeys()
 
 	// The fleet read surface, when this machine has one. A launch on a
 	// machine in local mode, or one whose payload keys are not placed, leaves
@@ -311,6 +330,12 @@ type webServices struct {
 	// session that ends, both have to release it or it leaks for the
 	// process's life.
 	fleet *fleet.Reader
+	// sessions resolves the durable session keys #113's edges record, nil on a
+	// machine with no deployment identity. It holds no handle of its own: it
+	// reads the scan coordinator's listing, which is the same listing the
+	// Lister option serves, so the sessions page and a citation's endpoint can
+	// never disagree about which sessions this host has.
+	sessions *webSessionKeys
 }
 
 // openWebServices opens what this machine has, reporting what it does not.
@@ -327,6 +352,13 @@ func (a *app) openWebServices(d dirs) *webServices {
 			Sanitize(err.Error()))
 	} else {
 		s.analysis = state
+		// The citation pages read this state and need no resolver, so a
+		// smaller registry than this machine's stores could support costs
+		// them nothing. It is still said, because the same state is what a
+		// write would be validated against.
+		if state.resolverNote != "" {
+			a.diagf("note: %s\n", state.resolverNote)
+		}
 	}
 	if store, err := openReality(); err != nil {
 		a.diagf("warning: reality ledger unavailable, so the reality pages will report it: %s\n",
@@ -406,6 +438,25 @@ func (s *webServices) search() web.SearchIndex {
 		return nil
 	}
 	return s.index
+}
+
+// references is #113's edge graph, read-only. The nil test reaches inside the
+// analysis state as well as at it: a launch whose durable file opened but
+// whose edge store did not would otherwise hand internal/web an interface
+// holding a nil *reference.Store, which passes the option's nil test and then
+// answers reads from nothing.
+func (s *webServices) references() reference.Lister {
+	if s.analysis == nil || s.analysis.references == nil {
+		return nil
+	}
+	return s.analysis.references
+}
+
+func (s *webServices) sessionKeys() web.SessionKeyResolver {
+	if s.sessions == nil {
+		return nil
+	}
+	return s.sessions
 }
 
 // Close releases every handle this launch opened, in the reverse of the order
@@ -521,19 +572,111 @@ func webScanState(state scanState) web.ScanState {
 func webSessionRows(rows []sessionRow) []web.SessionRow {
 	out := make([]web.SessionRow, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, web.SessionRow{
-			Harness:           row.Harness,
-			SourceID:          row.SourceID,
-			Selector:          row.Selector,
-			Size:              row.Size,
-			Modified:          row.Modified,
-			Title:             row.Title,
-			TitleProvenance:   row.TitleProvenance,
-			Workspace:         row.Workspace,
-			ContinuationGrade: row.Continuous,
-		})
+		out = append(out, webSessionRow(row))
 	}
 	return out
+}
+
+// webSessionRow maps one row. It exists because the citation surfaces answer
+// with individual rows picked out of the same listing, and two spellings of
+// this mapping would be two answers to "what does the browser know about this
+// session".
+func webSessionRow(row sessionRow) web.SessionRow {
+	return web.SessionRow{
+		Harness:           row.Harness,
+		SourceID:          row.SourceID,
+		Selector:          row.Selector,
+		Size:              row.Size,
+		Modified:          row.Modified,
+		Title:             row.Title,
+		TitleProvenance:   row.TitleProvenance,
+		Workspace:         row.Workspace,
+		ContinuationGrade: row.Continuous,
+	}
+}
+
+// webSessionKeys translates between a session's two identities for #113's
+// citation surfaces: the durable key an edge records, and the selector every
+// page routes on.
+//
+// It answers from the scan coordinator's listing rather than from the session
+// catalog directly, and that is deliberate: the sessions page is served from
+// exactly that listing, so a citation resolving to a session the page does not
+// show - or failing to resolve one it does - is made impossible rather than
+// merely unlikely. Nothing here starts a scan of its own; Listing is the same
+// non-blocking read the Lister option performs.
+//
+// The digest is taken over the listing's harness and source id, which are the
+// terminal-safe rendering of the catalog identities the publish path digests.
+// That is exact rather than approximate: adapter.ValidSourceID admits only
+// "/"-separated [A-Za-z0-9._-] segments and harness names are lowercase words,
+// so Sanitize is the identity on both, and webArchive.materialization already
+// rests on the same fact. A key derived from an escaped value would match
+// nothing this deployment ever published.
+type webSessionKeys struct {
+	coordinator  *scanCoordinator
+	deploymentID string
+	hostID       string
+}
+
+// newWebSessionKeys builds the resolver, or nil when this machine cannot
+// derive a durable session key at all. Nil is a state internal/web renders as
+// a stated reason, so it is returned rather than a resolver that would answer
+// every lookup under an identity no other host shares.
+func newWebSessionKeys(sc *scanCoordinator, deploymentID, hostID string) *webSessionKeys {
+	if sc == nil || deploymentID == "" || hostID == "" {
+		return nil
+	}
+	return &webSessionKeys{coordinator: sc, deploymentID: deploymentID, hostID: hostID}
+}
+
+// SessionsByKey returns the rows among this host's sessions whose durable key
+// was asked for.
+//
+// One pass answers the whole batch. A key is a digest and cannot be inverted,
+// so a lookup means deriving the key of every local session; doing that per key
+// would make a page of citations cost a pass over the corpus per endpoint. A
+// key with no local session is absent from the result rather than an error,
+// which is what an edge naming another host's session is.
+//
+// The request's context is unused for the reason the Lister option gives: the
+// listing is answered from what the catalog already holds, and the scan that
+// keeps it current belongs to this process rather than to any request.
+func (w *webSessionKeys) SessionsByKey(_ context.Context, keys []string) (map[string]web.SessionRow, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	wanted := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		wanted[key] = struct{}{}
+	}
+	rows, _, _ := w.coordinator.Listing(adapters(), nil)
+	out := make(map[string]web.SessionRow, len(wanted))
+	for _, row := range rows {
+		key := sharedcatalog.SessionUID(w.deploymentID, w.hostID, row.Harness, row.SourceID)
+		if _, ok := wanted[key]; !ok {
+			continue
+		}
+		out[key] = webSessionRow(row)
+	}
+	return out, nil
+}
+
+// KeyForSelector derives the durable key of one local session, reporting false
+// for a selector this host has no session for.
+//
+// The selector is rebuilt from the row's own harness and source id rather than
+// compared against the row's selector field, so the value that identifies the
+// session and the value that is digested are the same two strings.
+func (w *webSessionKeys) KeyForSelector(_ context.Context, selector string) (string, bool, error) {
+	rows, _, _ := w.coordinator.Listing(adapters(), nil)
+	for _, row := range rows {
+		if row.Harness+"/"+row.SourceID != selector {
+			continue
+		}
+		return sharedcatalog.SessionUID(w.deploymentID, w.hostID, row.Harness, row.SourceID), true, nil
+	}
+	return "", false, nil
 }
 
 // webArchive drives the archive commands in process. Only status, verify,

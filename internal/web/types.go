@@ -13,6 +13,7 @@ import (
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/reality"
+	"github.com/atyrode/babel/internal/reference"
 	"github.com/atyrode/babel/internal/review"
 	"github.com/atyrode/babel/internal/transcript"
 )
@@ -87,6 +88,32 @@ type Options struct {
 	// requires to stay visible.
 	Fleet       FleetReader
 	SyncJournal fleet.SyncJournal
+	// References is issue #113's typed reference graph, read-only: the
+	// outgoing citations and backlinks a record surface renders beside the
+	// record itself.
+	//
+	// It is reference.Lister and never reference.Appender, on the same terms
+	// FrontierReader excludes the frontier's writers: an edge is asserted by
+	// a run absorbing evidence, by a revision being minted, or by `babel`
+	// itself, and a browser GET that could mint a citation would let a page
+	// invent provenance nobody asserted.
+	//
+	// Nil is a state rather than a fault. A build with no reference store
+	// keeps every record page it already served; the link section reports
+	// that this session has no reference graph rather than the page failing,
+	// which is the same degradation a missing fleet backend gets.
+	References reference.Lister
+	// Sessions resolves the durable session keys a reference edge records
+	// (#113). It is separate from Lister, which serves the sessions page: one
+	// answers "what does this host have" and the other "is this particular
+	// durable key one of them", and only the second needs the deployment
+	// identity that turns a harness and a source id into a key.
+	//
+	// Nil leaves every session endpoint inert with that stated as the reason,
+	// which is the honest degradation: the edges are still shown, and a
+	// reader is told this build cannot follow them rather than being handed a
+	// link that resolves to nothing.
+	Sessions SessionKeyResolver
 	// Cookbook is the loaded analysis cookbook. It is read-only by
 	// construction: a *cookbook.Set exposes lookups and nothing that
 	// changes an asset.
@@ -377,6 +404,29 @@ type SessionLister interface {
 type SessionListerFunc func(context.Context) (SessionsResult, error)
 
 func (f SessionListerFunc) ListSessions(ctx context.Context) (SessionsResult, error) { return f(ctx) }
+
+// SessionKeyResolver translates between the two identities one session has
+// (#113): the durable key a reference edge records, and the selector every
+// Babel surface routes on.
+//
+// Both exist because the two answer different questions. An endpoint publishes
+// as a plaintext catalog column, so an edge records a digest of the deployment,
+// the host, the harness and the source id — a selector carries a
+// workspace-derived path and cannot travel there. A page, a CLI argument and a
+// route have always named a session by selector.
+//
+// SessionsByKey is a batch call because the catalog answers by enumeration:
+// matching keys means deriving them for the rows this machine has, so one call
+// for a page of endpoints is one pass and one call per endpoint is a pass per
+// endpoint. A key with no local session is absent from the result rather than an
+// error — an edge naming another host's session is the expected case on a
+// deployment whose graph is fleet-wide, not a failure.
+type SessionKeyResolver interface {
+	SessionsByKey(ctx context.Context, keys []string) (map[string]SessionRow, error)
+	// KeyForSelector derives the durable key of one local session, reporting
+	// false for a selector this host has no session for.
+	KeyForSelector(ctx context.Context, selector string) (string, bool, error)
+}
 
 // CompletenessRow mirrors internal/cli completenessRow field-for-field.
 type CompletenessRow struct {

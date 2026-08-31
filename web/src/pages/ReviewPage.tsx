@@ -17,6 +17,7 @@ import {
   useFleetHosts,
   type HostScope,
 } from "../analysis";
+import { CitationCount } from "../references";
 
 const TYPES = ["hypothesis", "finding", "proposal"];
 const STATUSES = ["accepted", "rejected", "deferred", "duplicate", "refine-requested"];
@@ -203,6 +204,13 @@ function ReviewPage() {
                         )}
                         <span className="secondary mono">{item.subject.id}</span>
                         <UnopenedNote reason={item.unopened} />
+                        {/* #113's compact form of the record's citations: how
+                            many typed references leave it and arrive at it,
+                            which is what makes an isolated candidate
+                            distinguishable from one four observations rest on
+                            before it is opened. Absent for a record nobody
+                            counted, never rendered as a zero. */}
+                        <CitationCount citations={item.citations} />
                       </td>
                       <td><Badge label={item.subject.type} tone="neutral" /></td>
                       {/* The review status, the decision count, the last

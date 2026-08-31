@@ -10,6 +10,8 @@ import (
 
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/reference"
+	"github.com/atyrode/babel/internal/reference/resolve"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
@@ -254,6 +256,11 @@ type hypothesisResult struct {
 	Observations  []observationRow `json:"observations"`
 	LinksFrom     []linkRow        `json:"links_from"`
 	LinksTo       []linkRow        `json:"links_to"`
+	// References is #113's citation graph around this candidate. It is absent
+	// rather than empty on a build with no edge store, because an empty
+	// object would state that nothing cites this candidate and a machine
+	// without the graph never looked.
+	References *citations `json:"references,omitempty"`
 }
 
 type findingsResult struct {
@@ -270,6 +277,8 @@ type findingResult struct {
 	Finding      findingRow       `json:"finding"`
 	Observations []observationRow `json:"observations"`
 	Proposals    []proposalRow    `json:"proposals"`
+	// References carries what hypothesisResult's does, for the same reason.
+	References *citations `json:"references,omitempty"`
 }
 
 // hypothesesCmd implements `babel hypotheses`.
@@ -438,14 +447,19 @@ func (a *app) hypothesisShow(ctx context.Context, args []string) error {
 		return err
 	}
 
+	refs, refsErr := citationsFor(ctx, state.references,
+		reference.RecordRef{Kind: resolve.NamespaceHypothesis, ID: id})
+
 	res := hypothesisResult{
 		Hypothesis:    renderHypothesis(record, reviewStatus),
 		StatusHistory: renderStatusHistory(history),
 		Observations:  renderObservations(observations),
 		LinksFrom:     renderLinks(from),
 		LinksTo:       renderLinks(to),
+		References:    refs,
 	}
 	if *asJSON {
+		a.noteUnreadCitations(refsErr)
 		return a.emitJSON(res)
 	}
 	rows := [][2]string{
@@ -487,7 +501,10 @@ func (a *app) hypothesisShow(ctx context.Context, args []string) error {
 	for _, l := range res.LinksTo {
 		linkTable = append(linkTable, []string{"in", l.Type, l.FromID, orMissing(l.Note)})
 	}
-	return writeTable(a.stdout, []string{"DIR", "TYPE", "OTHER", "NOTE"}, linkTable)
+	if err := writeTable(a.stdout, []string{"DIR", "TYPE", "OTHER", "NOTE"}, linkTable); err != nil {
+		return err
+	}
+	return a.writeCitations(refs, refsErr)
 }
 
 // findingsCmd implements `babel findings`.
@@ -637,12 +654,17 @@ func (a *app) findingShow(ctx context.Context, args []string) error {
 		return err
 	}
 
+	refs, refsErr := citationsFor(ctx, state.references,
+		reference.RecordRef{Kind: resolve.NamespaceFinding, ID: id})
+
 	res := findingResult{
 		Finding:      renderFinding(record, status),
 		Observations: renderObservations(observations),
 		Proposals:    proposals,
+		References:   refs,
 	}
 	if *asJSON {
+		a.noteUnreadCitations(refsErr)
 		return a.emitJSON(res)
 	}
 	rows := [][2]string{
@@ -670,7 +692,10 @@ func (a *app) findingShow(ctx context.Context, args []string) error {
 	for _, p := range res.Proposals {
 		table = append(table, []string{p.ID, p.ReviewStatus, p.Classification, p.Title})
 	}
-	return writeTable(a.stdout, []string{"ID", "REVIEW", "CLASS", "TITLE"}, table)
+	if err := writeTable(a.stdout, []string{"ID", "REVIEW", "CLASS", "TITLE"}, table); err != nil {
+		return err
+	}
+	return a.writeCitations(refs, refsErr)
 }
 
 // writeObservations renders a claim table with its evidence count. Locators

@@ -12,6 +12,7 @@ import {
 } from "../analysis";
 import { ObservationCard } from "./HypothesisPage";
 import { RecordActions } from "../records";
+import { RecordLinks } from "../references";
 
 function FindingPage() {
   const { id: routeID } = useParams();
@@ -170,6 +171,8 @@ function FindingPage() {
               </div>
             )}
           </article>
+
+          <RecordLinks record={{ type: "finding", id: finding.id }} />
 
           <article className="card review-shortcut-card">
             <p className="eyebrow">Review</p>

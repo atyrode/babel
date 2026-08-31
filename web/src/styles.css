@@ -1536,6 +1536,7 @@ select:focus {
 .history-card,
 .links-card,
 .lineage-card,
+.references-card,
 .review-shortcut-card,
 .proposals-card,
 .question-card,
@@ -1963,6 +1964,103 @@ select:focus {
 
 a.link-target:hover {
   text-decoration: underline;
+}
+
+/* Typed references (#113). The panel reuses .link-list for its rows so a
+   citation reads like the typed links and lineage edges beside it; what is new
+   here is the per-direction heading with its kind chips, the provenance line
+   under each row, and the inert target that must read as identified text rather
+   than as a link somebody failed to style. */
+
+.citation-direction + .citation-direction {
+  margin-top: 1.1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+}
+
+.citation-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.citation-heading h3 {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.citation-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.citation-list .citation-entry {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.citation-relation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.citation-phrase {
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.citation-target {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+/* An unfollowable endpoint is deliberately not accent-coloured and not
+   underlined on hover: it is a record this build cannot open, and a target that
+   looked clickable would be a promise the page cannot keep. */
+.citation-target.inert {
+  color: var(--text-secondary, #9aa4b2);
+  cursor: default;
+}
+
+.citation-provenance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 0.74rem;
+}
+
+.citation-note {
+  display: block;
+}
+
+.references-host {
+  margin-top: 0.9rem;
+  font-size: 0.74rem;
+}
+
+/* The inbox row's compact form. Two arrows and two numbers, sized to sit under
+   an excerpt without competing with it. */
+.citation-count {
+  display: inline-flex;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary, #9aa4b2);
+}
+
+.citation-count.none {
+  font-style: italic;
+  opacity: 0.75;
 }
 
 /* Reality */
