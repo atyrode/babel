@@ -51,6 +51,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/run"
 )
 
@@ -191,6 +192,24 @@ type Config struct {
 	// process identity. Both default to the real ones.
 	Now func() time.Time
 	PID int
+
+	// Presence announces each cycle that draws work to the shared catalog, so
+	// a loop on this machine is visible from every other machine in the fleet
+	// before its receipt commits (#118). It is the loop's own row, distinct
+	// from the one internal/explore announces for the run inside the cycle:
+	// the conductor can be alive while the run it started is not, and a fleet
+	// view that merged the two could not say which.
+	//
+	// Nil is the feature quietly absent, on the same terms Runner's presence
+	// is mandatory and this is not: a presence write may never block, fail or
+	// slow a cycle, so a loop with no announcer schedules identically and is
+	// simply invisible off-host.
+	//
+	// A parked or idle cycle announces nothing, deliberately. It drew no work,
+	// it has no authority to name, and there is nothing for a heartbeat to be
+	// about; a row for it would be the loop asserting presence on behalf of
+	// work that does not exist.
+	Presence presence.Announcer
 
 	// Log narrates the loop on the operator's diagnostic stream. A silent
 	// autonomous process is the opaque model #96 exists to replace, so this is
@@ -398,7 +417,27 @@ func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
 	c.cfg.Log("conductor: cycle %d on the %s rung, authority %s: %s\n",
 		cycle.Seq, cycle.Rung, cycle.Authority, cycle.Note)
 
+	// The cycle becomes visible to the fleet here, between the journal entry
+	// and the run: the journal is this machine's own record and presence is
+	// every other machine's, and both are written before the work rather than
+	// after it, for the same reason - a conductor that died mid-cycle must
+	// leave the fact behind rather than leaving no trace of what it was paying
+	// for.
+	//
+	// Nothing below can fail this cycle. Announce returns an empty id when the
+	// catalog was unreachable, which makes the heartbeat loop and the finalize
+	// no-ops, and the errors it swallowed have already reached the store's own
+	// diagnostic sink. So the loop runs identically on a machine whose
+	// PostgreSQL is down; it is only invisible.
+	presenceID := c.announce(ctx, cycle)
+	stopBeat := presence.Beat(ctx, c.cfg.Presence, presenceID)
+
 	result, runErr := c.cfg.Runner.Run(ctx, runID, assignment)
+	// The heartbeat stops before the row is finalized, so the last thing the
+	// fleet sees about this cycle is how it ended rather than a heartbeat that
+	// raced past it.
+	stopBeat()
+
 	cycle.FinishedAt = c.cfg.Now()
 	cycle.PreparationID = result.PreparationID
 	cycle.ReceiptID = result.ReceiptID
@@ -413,6 +452,7 @@ func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
 	default:
 		cycle.Outcome = OutcomeRan
 	}
+	c.finalize(ctx, presenceID, cycle)
 	if err := c.cfg.Journal.Record(cycle); err != nil {
 		return Cycle{}, err
 	}
@@ -430,6 +470,64 @@ func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
 		return c.park(c.cfg.Now(), reason)
 	}
 	return cycle, nil
+}
+
+// announce makes this cycle visible to the fleet and returns the row's id, or
+// the empty id when there is no announcer or the catalog would not take it.
+//
+// The recipe is the first the assignment named, singular because a presence row
+// is a status line rather than a receipt: the receipt records every recipe a
+// cycle applied with its version, and this says what the cycle is for. No
+// preparation id is announced, because there is none yet - the runner prepares
+// the corpus, and a cycle announces before the runner has been called at all.
+//
+// The returned error is discarded rather than checked, and that is the contract
+// rather than sloppiness: internal/presence routes every failure to its own
+// diagnostic sink and returns an error only for a caller bug. A loop that
+// stopped because it could not tell the fleet it was working would have
+// inverted the whole point of the feature.
+func (c *Conductor) announce(ctx context.Context, cycle Cycle) presence.PresenceID {
+	if c.cfg.Presence == nil {
+		return ""
+	}
+	var recipe string
+	if len(cycle.Recipes) > 0 {
+		recipe = cycle.Recipes[0]
+	}
+	id, _ := c.cfg.Presence.Announce(ctx, presence.Announcement{
+		Kind:      presence.KindConductor,
+		RunID:     cycle.RunID,
+		Recipe:    recipe,
+		Authority: cycle.Authority,
+	})
+	return id
+}
+
+// finalize records how the cycle ended, in the presence vocabulary rather than
+// the journal's: OutcomeRan and OutcomeFailed are statements about the loop,
+// and what the fleet asks is whether the work finished, failed, or was stopped.
+//
+// A cancelled cycle is finalized as cancelled rather than failed even though
+// the journal records it as either, because everything the run committed before
+// the cancellation is durable and rendering that as a failure would misreport
+// the most common way a long cycle ends. The receipt id is attached whether or
+// not it has published yet: it is the join a fleet reader follows from "this
+// cycle finished" to what it produced.
+func (c *Conductor) finalize(ctx context.Context, id presence.PresenceID, cycle Cycle) {
+	if c.cfg.Presence == nil || id == "" {
+		return
+	}
+	state := presence.StateFinished
+	switch {
+	case cycle.Cancelled:
+		state = presence.StateCancelled
+	case cycle.Outcome == OutcomeFailed:
+		state = presence.StateFailed
+	}
+	_ = c.cfg.Presence.Finalize(ctx, id, presence.Outcome{
+		State:           state,
+		ReceiptRecordID: cycle.ReceiptID,
+	})
 }
 
 // reconcile deals with whatever the last conductor left in flight. A cycle that

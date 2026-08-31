@@ -18,6 +18,7 @@ import (
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/preflight"
+	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/review"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
@@ -201,6 +202,12 @@ func (a *app) explore(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// One store for this one run. It is opened after the signal handler so a
+	// Ctrl-C during a slow connection attempt still stops the command, and
+	// before the run so the announcement precedes the first worker.
+	announcer, closePresence := a.openPresence(ctx)
+	defer closePresence()
+
 	res, outcome, runErr := a.runExploration(ctx, state, explorePlan{
 		prep:    prep,
 		profile: profileRef,
@@ -217,6 +224,7 @@ func (a *app) explore(ctx context.Context, args []string) error {
 		challenge:  *challenge,
 		synthesize: *synthesize,
 		budget:     explore.Budget{Develop: *develop, Retrievals: *retrievals},
+		presence:   announcer,
 	})
 	if outcome == nil {
 		return a.reportWorkerFailure(wcfg.Binary, runErr)
@@ -258,6 +266,12 @@ type explorePlan struct {
 	challenge  bool
 	synthesize bool
 	budget     explore.Budget
+	// presence announces this run to the fleet, nil when this machine has no
+	// shared catalog to announce into (#118). It travels on the plan rather
+	// than being opened here because a conductor loop opens one store for its
+	// whole life and hands the same one to every cycle, while a typed command
+	// opens one for its single run.
+	presence presence.Announcer
 }
 
 // runExploration runs one attempt and reports it, without deciding anything
@@ -319,8 +333,13 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		// resolve.Sessions.Key is total and nil-safe - it answers with the
 		// empty string rather than failing, and an emitter must not acquire
 		// a second failure mode.
-		References:   state.referenceAppender(),
-		SessionKey:   state.sessionKey(),
+		References: state.referenceAppender(),
+		SessionKey: state.sessionKey(),
+		// #118's write half, nil when this machine has no fleet to be present
+		// in. It is on the same terms as the two above: a presence write can
+		// never fail or delay this run, so an absent announcer changes nothing
+		// except who can see the run happening.
+		Presence:     p.presence,
 		Inputs:       inputs,
 		Capabilities: runstore.CapabilityVersions{Tool: "babel/" + readBuildIdentity().Version},
 	})
