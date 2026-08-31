@@ -34,11 +34,17 @@ import type {
   OverviewReview,
   OverviewRuns,
   PlanView,
+  PresenceFreshness,
+  PresenceKind,
+  PresenceResponse,
+  PresenceRow,
+  PresenceState,
   QuestionSummary,
   QueueItem,
   ReviewContext,
   ReviewStatus,
   RefinementView,
+  RunAuthority,
   SearchHit,
   StatusEvent,
   SyncState,
@@ -253,6 +259,204 @@ function syncEnvelope(): { sync_degraded?: boolean; sync_detail?: string } {
     sync_degraded: true,
     sync_detail:
       "the shared catalog could not be reached, so these records' global sync state and host attribution are not known",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Fleet presence (issue #118).
+//
+// What every machine says it is running right now, as GET /api/fleet/presence
+// answers it. The fixture is built to make the page's one hard claim checkable
+// in a browser: that a row past the staleness threshold says in words that this
+// host cannot tell whether the run is alive, and that nothing anywhere renders a
+// liveness colour it did not observe.
+//
+// So all four classifications are present, on two machines, including this one
+// — an operator has to be able to see that his own runs announce here too — and
+// the awkward rows are deliberate: a conductor cycle and the run inside it
+// sharing one run id, a row with no recipe yet, a finalized row with its receipt,
+// and hostile content in the recipe and authority ref, which are the two strings
+// on this page authored by another machine's model.
+// ---------------------------------------------------------------------------
+
+// PRESENCE_NOW is the instant every age here is measured from. The ages are
+// fixed offsets from it rather than fixed timestamps, so the preview does not
+// decay into a fleet where everything is lost after the fixtures sit a day.
+const PRESENCE_NOW = Date.now();
+
+// isoAgo turns one of those offsets into a timestamp.
+const isoAgo = (secondsAgo: number) => new Date(PRESENCE_NOW - secondsAgo * 1000).toISOString();
+
+// presenceRow builds one announced run. Freshness is computed here from the
+// same thresholds internal/presence classifies by, because the mock previews
+// the server's answer and the page must never see a classification that
+// disagrees with the age beside it.
+const PRESENCE_STALE_AFTER = 120;
+const PRESENCE_LOST_AFTER = 900;
+const PRESENCE_RETENTION = 86400;
+
+function presenceFreshness(state: PresenceState, ageSeconds: number): PresenceFreshness {
+  if (state !== "running") return "finished";
+  if (ageSeconds >= PRESENCE_LOST_AFTER) return "lost";
+  if (ageSeconds >= PRESENCE_STALE_AFTER) return "stale";
+  return "fresh";
+}
+
+function presenceRow(row: {
+  id: string;
+  host: string;
+  kind: PresenceKind;
+  run_id: string;
+  recipe?: string;
+  preparation_id?: string;
+  authority: RunAuthority;
+  state: PresenceState;
+  startedAgo: number;
+  heartbeatAgo: number;
+  finishedAgo?: number;
+  receipt_record_id?: string;
+}): PresenceRow {
+  return {
+    id: row.id,
+    host: row.host,
+    local_host: row.host === FLEET_LOCAL_HOST,
+    kind: row.kind,
+    run_id: row.run_id,
+    recipe: row.recipe,
+    preparation_id: row.preparation_id,
+    authority: row.authority,
+    state: row.state,
+    started_at: isoAgo(row.startedAgo),
+    heartbeat_at: isoAgo(row.heartbeatAgo),
+    finished_at: row.finishedAgo === undefined ? undefined : isoAgo(row.finishedAgo),
+    heartbeat_age_seconds: row.heartbeatAgo,
+    freshness: presenceFreshness(row.state, row.heartbeatAgo),
+    receipt_record_id: row.receipt_record_id,
+  };
+}
+
+// The rows arrive in internal/presence's own order: running before finished,
+// newest heartbeat first. The page keeps that order rather than re-sorting, so
+// the fixture has to carry it.
+const presenceRows: PresenceRow[] = fleetConfigured && !empty
+  ? [
+      presenceRow({
+        id: "prs_laptop-conductor",
+        host: FLEET_LOCAL_HOST,
+        kind: "conductor",
+        run_id: "run_discovery-07",
+        // A cycle that has not resolved an assignment announces no recipe. The
+        // page must render the absence as an absence rather than as an empty
+        // cell that reads like a missing value.
+        authority: { kind: "conductor", ref: "cycle-41" },
+        state: "running",
+        startedAgo: 1200,
+        heartbeatAgo: 12,
+      }),
+      presenceRow({
+        id: "prs_laptop-explore",
+        host: FLEET_LOCAL_HOST,
+        kind: "explore",
+        run_id: "run_discovery-07",
+        recipe: "verification-gaps",
+        preparation_id: "prep_2026-08-29-a",
+        authority: { kind: "conductor", ref: "cycle-41" },
+        state: "running",
+        startedAgo: 900,
+        heartbeatAgo: 26,
+      }),
+      // The row the whole page exists for: quiet long enough to be doubted, and
+      // still claiming to run. Nothing here knows whether it is alive.
+      presenceRow({
+        id: "prs_build-stale",
+        host: FLEET_REMOTE_HOST,
+        kind: "explore",
+        run_id: "run_build-11",
+        // Hostile content in the recipe: another machine's model authored this
+        // string and it must reach the page as characters.
+        recipe: "retry-clustering " + HOSTILE_HTML,
+        authority: { kind: "operator", ref: HOSTILE_HTML },
+        state: "running",
+        startedAgo: 5400,
+        heartbeatAgo: 260,
+      }),
+      presenceRow({
+        id: "prs_build-lost",
+        host: FLEET_REMOTE_HOST,
+        kind: "conductor",
+        run_id: "run_build-13",
+        recipe: "flaky-suite-census",
+        authority: { kind: "conductor", ref: "cycle-12" },
+        state: "running",
+        startedAgo: 43200,
+        heartbeatAgo: 4200,
+      }),
+      presenceRow({
+        id: "prs_build-finished",
+        host: FLEET_REMOTE_HOST,
+        kind: "explore",
+        run_id: "run_build-12",
+        recipe: "sealed-record-audit",
+        authority: { kind: "operator", ref: "alex" },
+        state: "finished",
+        startedAgo: 9000,
+        heartbeatAgo: 7200,
+        finishedAgo: 7200,
+        receipt_record_id: "rec_remote-sealed",
+      }),
+      presenceRow({
+        id: "prs_laptop-cancelled",
+        host: FLEET_LOCAL_HOST,
+        kind: "explore",
+        run_id: "run_discovery-06",
+        recipe: "verification-gaps",
+        authority: { kind: "operator", ref: "alex" },
+        state: "cancelled",
+        startedAgo: 20000,
+        heartbeatAgo: 18000,
+        finishedAgo: 18000,
+        receipt_record_id: "rec_local-committed",
+      }),
+    ]
+  : [];
+
+// presenceEnvelope is the whole answer, degradation included. The three
+// unavailable sentences are internal/web/presence.go's own, so the preview shows
+// the wording an operator will actually read rather than a paraphrase of it.
+function presenceEnvelope(): PresenceResponse {
+  const thresholds = {
+    stale_after_seconds: PRESENCE_STALE_AFTER,
+    lost_after_seconds: PRESENCE_LOST_AFTER,
+    retention_seconds: PRESENCE_RETENTION,
+  };
+  if (!fleetConfigured) {
+    return {
+      available: false,
+      configured: false,
+      unavailable:
+        "this machine is in local mode, so no host announces presence to it; configure shared mode to see what the fleet is running",
+      rows: [],
+      running: 0,
+      ...thresholds,
+    };
+  }
+  if (fleetDegraded) {
+    return {
+      available: false,
+      configured: true,
+      unavailable:
+        "the shared catalog could not be reached, so this machine cannot see what the fleet is running; runs elsewhere are unaffected and their receipts still commit",
+      rows: [],
+      running: 0,
+      ...thresholds,
+    };
+  }
+  return {
+    available: true,
+    configured: true,
+    rows: presenceRows,
+    running: presenceRows.filter((row) => row.state === "running").length,
+    ...thresholds,
   };
 }
 
@@ -1842,6 +2046,13 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
       hosts: fleetHosts,
       pending: slice.filter((record) => record.sync !== "committed").length,
     });
+  }
+
+  // Fleet presence (#118). Every path answers 200, degradation included: the
+  // route's whole purpose is to say what this host can and cannot see, and a
+  // status code that refused would take that answer away.
+  if (method === "GET" && path === "/api/fleet/presence") {
+    return json(presenceEnvelope());
   }
 
   if (method === "GET" && path === "/api/hypotheses") {

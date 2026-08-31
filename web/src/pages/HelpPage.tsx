@@ -46,6 +46,7 @@ const COMMANDS: Array<[string, string, string, string]> = [
   ["babel review decide", "Appends one attributed decision.", "/review", "Review"],
   ["babel reality inbox", "Lists the prioritized question inbox.", "/reality", "Reality"],
   ["babel reality answer", "Records an attributed answer, verbatim.", "/reality", "Reality"],
+  ["babel conductor status", "Reports this host's duty state and what the fleet announced.", "/fleet", "Fleet"],
   ["babel export", "Renders one record as JSON or Markdown.", "/review", "Review"],
 ];
 
@@ -497,6 +498,18 @@ function HelpPage() {
               Versioned, reviewable investigation guidance from the cookbook. A recipe structures
               exploration without constraining what discovery may propose; a draft recipe simply is
               not enabled by default. Observations record the recipe that produced them.
+            </dd>
+          </div>
+          <div>
+            <dt>Presence · heartbeat</dt>
+            <dd>
+              While a conductor cycle or an exploration runs, it announces itself into the shared
+              catalog and writes a heartbeat. <Link to="/fleet">Fleet</Link> lists those
+              announcements from every machine, this one included. A heartbeat is evidence and never
+              an observation: a run that has gone quiet may be working, blocked, or gone, and no
+              host can tell those apart — so the page states the age of the last word rather than
+              claiming a run is alive. Presence never steers anything; nothing in Babel starts or
+              stops a run on another machine.
             </dd>
           </div>
           <div>

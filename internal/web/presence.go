@@ -141,7 +141,7 @@ type presenceFleet struct {
 	// one flag would tell an operator whose PostgreSQL is down to configure
 	// something he configured months ago.
 	Configured bool          `json:"configured"`
-	Rows        []presenceRow `json:"rows"`
+	Rows       []presenceRow `json:"rows"`
 	// Running counts the rows whose own state is "running", whatever their
 	// freshness. It is a count of claims rather than of live processes, and the
 	// caption the interface renders says so.
