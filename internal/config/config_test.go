@@ -196,6 +196,7 @@ var documentSecrets = map[string]bool{
 	"Catalog.Password":                true,
 	"Catalog.TLSMode":                 false,
 	"Catalog.TLSRootCAFile":           false,
+	"Catalog.MaxConnections":          false,
 	"Catalog.MigrationUser":           false,
 	"Catalog.MigrationPassword":       true,
 }
@@ -227,6 +228,7 @@ func populatedDocument() Config {
 			Password:          sentinelRedactCatalogPassword,
 			TLSMode:           TLSVerifyFull,
 			TLSRootCAFile:     "/etc/ssl/certs/fixture-root.pem",
+			MaxConnections:    2,
 			MigrationUser:     "babel_migration",
 			MigrationPassword: sentinelRedactMigrationPassword,
 		},

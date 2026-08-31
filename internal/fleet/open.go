@@ -70,7 +70,7 @@ func OpenReader(ctx context.Context, cfg config.Config, localHostID string) (*Re
 	// The catalog is opened last, because it is the only step that touches the
 	// network: a misconfigured key document or an unreadable repository locator
 	// should be reported without dialling PostgreSQL first.
-	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
+	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN(), sharedcatalog.WithMaxConnections(cfg.Catalog.MaxConnections))
 	if err != nil {
 		return nil, err
 	}

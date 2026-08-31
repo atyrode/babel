@@ -116,7 +116,7 @@ func (a *app) publishToCatalog(
 		return "", 0, err
 	}
 
-	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
+	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN(), sharedcatalog.WithMaxConnections(cfg.Catalog.MaxConnections))
 	if err != nil {
 		return a.catalogDeferred(err, "reach the shared catalog")
 	}

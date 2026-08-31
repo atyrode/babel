@@ -39,6 +39,13 @@ additionally requires deployment_id, instance_id, and a catalog object;
 config.Config and config.Validate in internal/config define those fields and
 every rule this command enforces.
 
+One catalog field is worth naming here because a provider limit is what
+surfaces it: max_connections caps the pool this instance opens, and omitting it
+takes Babel's default of four. A managed plan that allows one role fewer
+connections than the fleet opens needs it — Clever Cloud's DEV PostgreSQL
+allows five in total, so two instances at the default cannot both connect, and
+"too many connections for role" is what an operator sees instead.
+
 Unknown names are ignored by design, so a document written by a compatible
 newer Babel stays readable — which also means a misspelled name is dropped
 silently rather than refused. Read back what was actually installed with

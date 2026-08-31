@@ -86,12 +86,53 @@ const Schema = "babel"
 // stay a bare lowercase identifier.
 const createSchemaDDL = `CREATE SCHEMA IF NOT EXISTS ` + Schema
 
+// DefaultMaxConnections is the pool ceiling Open applies when no option
+// narrows it.
+//
+// The pool is deliberately small: an instance publishes from one goroutine
+// under a host lease, and a wide pool would only add ways to interleave writes.
+const DefaultMaxConnections = 4
+
+// defaultMaxIdleConns is how many of those connections stay warm between
+// commands. It is a ceiling too, so a pool smaller than it keeps every
+// connection idle-eligible rather than reconnecting per statement.
+const defaultMaxIdleConns = 2
+
+// Option adjusts how Open configures the pool. The DSN remains the only
+// connection input: an Option carries a local resource decision and never a
+// credential, so unlike a DSN it is safe to log.
+type Option func(*openOptions)
+
+type openOptions struct {
+	maxConns int
+}
+
+// WithMaxConnections caps the pool at n connections. A value below one selects
+// DefaultMaxConnections, which is what an omitted document field means, so a
+// caller may pass a configured value straight through without branching on
+// "unset" - and so no caller can accidentally request the unlimited pool
+// database/sql gives a non-positive ceiling.
+//
+// A deployment needs this when the server's ceiling is lower than the fleet
+// wants. Clever Cloud's DEV PostgreSQL plan limits one role to five
+// connections (measured against the real add-on, 2026-08-31, issue #20), so
+// two instances at the default four cannot coexist on it. Sizing the pool is
+// the deployment's answer to its provider's limit, not a Babel default.
+func WithMaxConnections(n int) Option {
+	return func(o *openOptions) {
+		if n > 0 {
+			o.maxConns = n
+		}
+	}
+}
+
 // Open connects to the shared catalog. The DSN is supplied by validated storage
 // configuration and never logged; callers pass it through and must not echo it.
-//
-// The pool is deliberately small: an instance publishes from one goroutine under
-// a host lease, and a wide pool would only add ways to interleave writes.
-func Open(ctx context.Context, dsn string) (*sql.DB, error) {
+func Open(ctx context.Context, dsn string, opts ...Option) (*sql.DB, error) {
+	o := openOptions{maxConns: DefaultMaxConnections}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		// Parsing does not dial, so an error here is a malformed DSN. Do not
@@ -104,8 +145,8 @@ func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 	// that a provider extension or an operator put in `public`.
 	cfg.RuntimeParams["search_path"] = Schema
 	db := stdlib.OpenDB(*cfg)
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
+	db.SetMaxOpenConns(o.maxConns)
+	db.SetMaxIdleConns(min(o.maxConns, defaultMaxIdleConns))
 	db.SetConnMaxLifetime(30 * time.Minute)
 
 	if err := db.PingContext(ctx); err != nil {

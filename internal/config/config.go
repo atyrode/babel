@@ -113,6 +113,21 @@ type Catalog struct {
 	TLSMode       string `json:"tls_mode"`
 	TLSRootCAFile string `json:"tls_root_ca_file,omitempty"`
 
+	// MaxConnections caps the connection pool this instance opens against the
+	// catalog. Zero means the built-in default (sharedcatalog.Open's four),
+	// which is what an omitted field has always meant and what every existing
+	// document keeps.
+	//
+	// It is a per-provider fact, like TLSMode: a managed plan may cap
+	// connections per role well below what a fleet of instances would open at
+	// the default. Clever Cloud's DEV PostgreSQL plan allows one role five
+	// connections in total (measured against the real add-on, 2026-08-31,
+	// issue #20), so two instances at four each cannot both be up. Recording
+	// the ceiling in the deployment document is what lets one document
+	// describe a deployment that fits its provider, instead of the provider
+	// deciding which of two instances gets to connect.
+	MaxConnections int `json:"max_connections,omitempty"`
+
 	MigrationUser     string `json:"migration_user,omitempty"`
 	MigrationPassword string `json:"migration_password,omitempty"`
 }
@@ -353,6 +368,12 @@ func validateCatalog(cat Catalog) error {
 	}
 	if cat.TLSRootCAFile != "" && !filepath.IsAbs(cat.TLSRootCAFile) {
 		return errors.New("storage configuration catalog.tls_root_ca_file must be an absolute path")
+	}
+	// Zero is "not stated" and takes the default; a negative ceiling would
+	// reach database/sql as an unlimited pool, which is the opposite of what
+	// anyone writing a number here wants.
+	if cat.MaxConnections < 0 {
+		return fmt.Errorf("storage configuration catalog.max_connections %d is invalid: omit it for the default, or give a positive ceiling", cat.MaxConnections)
 	}
 	if (cat.MigrationUser == "") != (cat.MigrationPassword == "") {
 		return errors.New("storage configuration catalog.migration_user and catalog.migration_password must be supplied together")

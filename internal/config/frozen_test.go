@@ -45,6 +45,11 @@ func TestFrozenDocumentFieldNames(t *testing.T) {
 		"Catalog": {
 			"database",
 			"host",
+			// Added 2026-08-31 (#20 phase 2): a new optional name, absent from
+			// every document written before it and defaulted when omitted, so
+			// old readers ignoring it and old documents lacking it both stay
+			// correct.
+			"max_connections",
 			"migration_password",
 			"migration_user",
 			"password",

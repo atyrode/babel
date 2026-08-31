@@ -222,6 +222,9 @@ func TestValidateModesAndCatalogFields(t *testing.T) {
 				c.TLSRootCAFile = "certs/root.crt"
 			})
 		}, "catalog.tls_root_ca_file"},
+		{"catalog max connections negative", func() Config {
+			return withCatalog(func(c *Catalog) { c.MaxConnections = -1 })
+		}, "catalog.max_connections"},
 		{"migration user without password", func() Config {
 			return withCatalog(func(c *Catalog) { c.MigrationUser = "babel_migration" })
 		}, "together"},
@@ -278,6 +281,16 @@ func TestValidateAcceptsSharedDocuments(t *testing.T) {
 	})
 	if err := Validate(verify); err != nil {
 		t.Fatalf("verify-full with a root CA: %v", err)
+	}
+	// A stated ceiling and an omitted one are both valid documents: the
+	// omitted case is every deployment written before the field existed, and
+	// the stated case is the one a provider connection cap forces (#20).
+	ceiling := withCatalog(func(c *Catalog) { c.MaxConnections = 2 })
+	if err := Validate(ceiling); err != nil {
+		t.Fatalf("a stated connection ceiling: %v", err)
+	}
+	if sharedConfig().Catalog.MaxConnections != 0 {
+		t.Fatal("the shared fixture states a connection ceiling, so the omitted case is untested")
 	}
 }
 
