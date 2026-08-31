@@ -94,6 +94,12 @@ func TestFrozenAllowlistShape(t *testing.T) {
 		// Phase B analysis output, and the citation graph over it
 		// (migrations/0008).
 		"analysis_edges", "analysis_records", "analysis_runs",
+		// Fleet presence (migrations/0009). It is neither archive metadata
+		// nor analysis output but ephemeral status, and it is the one table
+		// here that admits UPDATE - narrowed by its own trigger to the four
+		// liveness columns. Nothing was widened to make room for it: every
+		// column is an identifier, a closed vocabulary or a timestamp.
+		"presence",
 	}
 	var got []string
 	for table := range tables {
@@ -130,6 +136,7 @@ func TestMigrationLedgerIsExactlyThese(t *testing.T) {
 		"0006_usage_metadata",
 		"0007_instance_host",
 		"0008_reference_edges",
+		"0009_fleet_presence",
 	}
 
 	entries, err := migrations()
@@ -177,6 +184,7 @@ func TestAppliedMigrationBodiesAreFrozen(t *testing.T) {
 		"0006_usage_metadata":   "d44410ff6885b93b2a964eee95a838a64e9e6a8ba6d3af79c6a51f845b68f66d",
 		"0007_instance_host":    "613485056617e5e7b0a2a8210e4699ec3b7e281f779190e1ad4758d58853da64",
 		"0008_reference_edges":  "f99bdd8f847118c30693fa7c3d5f8e66a4025ce61fb4ab3114276e9ccd24d6ba",
+		"0009_fleet_presence":   "dea82160aaeebb5bb38dae80395b2129850339633317f750948b032d97a3b562",
 	}
 
 	const remedy = "Two changes are legitimate here, and they are not the same " +

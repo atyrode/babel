@@ -18,6 +18,7 @@ import (
 	"github.com/atyrode/babel/internal/conductor"
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/cookbook"
+	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/worker"
 )
 
@@ -533,6 +534,14 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// One store for the whole loop, shared by the conductor's own cycle rows
+	// and by every run inside them (#118). Opening it per cycle would dial
+	// PostgreSQL once a cycle for a table whose writes are best-effort, and
+	// the loop is exactly the process that is meant to be visible from
+	// elsewhere for hours at a time.
+	announcer, closePresence := a.openPresence(ctx)
+	defer closePresence()
+
 	loop, err := conductor.New(conductor.Config{
 		Ceilings: settings.ceilings(),
 		Floor:    conductor.Floor{OneIn: settings.Floor},
@@ -553,10 +562,12 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			host:      host,
 			adapters:  adapters(),
 			scanRoots: sf.rootList(),
+			presence:  announcer,
 		},
-		Ledger:  conductor.NewReceiptLedger(state.runs),
-		Journal: journal,
-		Log:     a.diagf,
+		Ledger:   conductor.NewReceiptLedger(state.runs),
+		Journal:  journal,
+		Presence: announcer,
+		Log:      a.diagf,
 	})
 	if err != nil {
 		return err
@@ -779,6 +790,10 @@ type conductorRunner struct {
 	host      string
 	adapters  []adapter.Adapter
 	scanRoots []string
+	// presence is the loop's announcer, handed on to every cycle's run so a
+	// cycle's two rows - the loop's and the run's - come from one connection
+	// (#118). Nil on a machine with no fleet.
+	presence presence.Announcer
 }
 
 // Run prepares the assignment's corpus slice and explores it.
@@ -823,6 +838,7 @@ func (r *conductorRunner) Run(ctx context.Context, runID string,
 		authority: a.Authority,
 		roots:     a.Roots,
 		scanRoots: r.scanRoots,
+		presence:  r.presence,
 	})
 	result := conductor.Result{
 		PreparationID: string(scoped.prep.ID),

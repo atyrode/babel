@@ -72,6 +72,7 @@ import (
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/preflight"
+	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/reference"
 	"github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/sync"
@@ -270,6 +271,18 @@ type Config struct {
 	// the bytes either way. Nil is the same answer, and is what a caller that
 	// wired References and nothing else gets.
 	SessionKey func(harness, sourceID string) string
+
+	// Presence announces this run to the shared catalog so that a run is
+	// visible from every machine in the fleet while it is happening, instead
+	// of only once its receipt commits an hour of model work later (#118).
+	//
+	// Nil is the feature quietly absent, on the same terms Sync and References
+	// are: nothing is announced, no write path behaves differently, and no run
+	// is refused. That is not a convenience - a presence write may never
+	// block, fail or slow a run, so an unreachable catalog leaves the run
+	// proceeding exactly as it would have and merely invisible, and
+	// internal/presence is built so that this holds without a branch here.
+	Presence presence.Announcer
 
 	// Inputs are the sessions preflight checks, one per preparation entry.
 	Inputs []preflight.Input
@@ -744,6 +757,27 @@ func (c *Controller) Explore(ctx context.Context, opt Options) (*Outcome, error)
 		failures:     map[Stage][]run.Failure{},
 	}
 
+	// The run becomes visible to the fleet before the first worker starts and
+	// stops being claimed as running the moment this call returns, whichever
+	// way it returns - so the deferred finalize is the whole reason this is
+	// structured as a defer rather than a call at each exit. A refused
+	// preflight returns early below, and a run that announced itself and never
+	// finalized would sit on every other machine's fleet view going stale, for
+	// a run that ended cleanly in a fraction of a second.
+	//
+	// The heartbeat runs for the whole attempt rather than only inside worker
+	// supervision, because that is where the time goes and because the
+	// stages are not the only slow part: persisting a large result and
+	// declaring a closure both take long enough to matter at these thresholds.
+	presenceID := c.announce(st)
+	stopBeat := presence.Beat(ctx, c.cfg.Presence, presenceID)
+	defer func() {
+		// Stopped before finalizing so the last thing the fleet hears about
+		// this run is how it ended, not a heartbeat that raced past it.
+		stopBeat()
+		c.finalize(st, presenceID)
+	}()
+
 	// The report is part of the outcome whether or not it let the run
 	// proceed: an operator who has just been refused needs to read the
 	// findings that refused them.
@@ -884,12 +918,20 @@ func (c *Controller) runFailures(st *state) []run.Failure {
 // failure to publish it can never also be inside it. It is attributed to
 // StageExplore on the same reasoning writeReceipt's storage failures are —
 // this control plane degraded, not a worker boundary.
+//
+// It is recorded with warn rather than fail because §6.5 keeps publication out
+// of the run's verdict: a run that produced everything it was asked for did not
+// fail because a catalog was unreachable. Explore's returned error is
+// snapshotted before this call either way, so the distinction was invisible
+// until #118 read the run's verdict again afterwards to finalize its presence
+// row - and a fleet row reading "failed" for a complete run would be worse than
+// no row at all.
 func (c *Controller) publishRun(st *state) {
 	if c.cfg.Sync == nil {
 		return
 	}
 	if err := c.cfg.Sync.CommitInline(st.commit, sync.Closure{RunID: st.opt.RunID}); err != nil {
-		st.fail(StageExplore, FailureSyncPublish, c.now(),
+		st.warn(StageExplore, FailureSyncPublish, c.now(),
 			fmt.Errorf("explore: declare the shared-catalog closure for run %s: %w", st.opt.RunID, err))
 	}
 }
