@@ -332,12 +332,16 @@ real  0m2.235s   exit 0
 5.687 GiB and is the deep check behind `babel archive verify --deep`.
 
 > **OPERATOR STEP — clear the two stale locks.** `restic unlock` is a write verb
-> and was deliberately not run by this drill. Having confirmed above that both
-> holding PIDs are dead, run:
+> and was deliberately not run by this drill. Bare `restic` reads nothing from
+> Babel's `storage.json`, so first assemble the environment with the four-line
+> `jq` block that opens §2.3 — that block is the prerequisite for **every**
+> direct `restic` command in this runbook. Then, having confirmed above that the
+> holding PIDs are dead — a check that is only meaningful when the lock names
+> this host — run:
 >
 > ```sh
 > restic unlock          # add --remove-all only if a lock is exclusive and provably stale
-> babel archive verify   # success looks like: OK (structure), exit 0
+> babel archive verify   # success looks like: ok (structure), exit 0
 > ```
 >
 > Never run `restic forget` or `restic prune`: Babel's retention contract is
