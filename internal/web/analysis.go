@@ -309,14 +309,34 @@ type hypothesisView struct {
 	Payload       frontier.HypothesisPayload `json:"payload"`
 }
 
+// statusEventView is one entry of a candidate's lifecycle history.
+//
+// Actor is beside RunID rather than derived from it. #87 makes every resting
+// status revivable by an operator, and such a transition belongs to no run at
+// all: a view that reported only the run identity would render an operator's
+// revive as a transition with no author.
 type statusEventView struct {
-	ID           string `json:"id"`
-	HypothesisID string `json:"hypothesis_id"`
-	Sequence     int64  `json:"sequence"`
-	Status       string `json:"status"`
-	RunID        string `json:"run_id"`
-	RecordedAt   string `json:"recorded_at"`
-	Note         string `json:"note,omitempty"`
+	ID           string    `json:"id"`
+	HypothesisID string    `json:"hypothesis_id"`
+	Sequence     int64     `json:"sequence"`
+	Status       string    `json:"status"`
+	RunID        string    `json:"run_id"`
+	Actor        actorView `json:"actor"`
+	RecordedAt   string    `json:"recorded_at"`
+	Note         string    `json:"note,omitempty"`
+}
+
+func viewStatusEvent(event frontier.StatusEvent) statusEventView {
+	return statusEventView{
+		ID:           event.ID,
+		HypothesisID: event.HypothesisID,
+		Sequence:     event.Sequence,
+		Status:       string(event.Status),
+		RunID:        event.RunID,
+		Actor:        viewActor(event.Actor),
+		RecordedAt:   timeText(event.RecordedAt),
+		Note:         event.Payload.Note,
+	}
 }
 
 type observationView struct {
@@ -428,15 +448,7 @@ func (s *Server) handleHypothesis(w http.ResponseWriter, r *http.Request) {
 		Lineage:       viewLineage(lineage),
 	}
 	for _, entry := range history {
-		detail.StatusHistory = append(detail.StatusHistory, statusEventView{
-			ID:           entry.ID,
-			HypothesisID: entry.HypothesisID,
-			Sequence:     entry.Sequence,
-			Status:       string(entry.Status),
-			RunID:        entry.RunID,
-			RecordedAt:   timeText(entry.RecordedAt),
-			Note:         entry.Payload.Note,
-		})
+		detail.StatusHistory = append(detail.StatusHistory, viewStatusEvent(entry))
 	}
 	s.writeJSON(w, http.StatusOK, detail)
 }

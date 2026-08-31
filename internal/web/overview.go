@@ -23,6 +23,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/review"
@@ -172,6 +173,24 @@ type overviewReview struct {
 	Awaiting  int                 `json:"awaiting"`
 	Rows      []overviewReviewRow `json:"rows"`
 	Questions overviewQuestions   `json:"questions"`
+	// Dispositions is #87's proposed next actions waiting for an answer. It
+	// is a section of its own for the reason Questions is: the ledger of
+	// proposed actions is a different component of the durable file, so a
+	// machine can have a review log and no answer to give about actions,
+	// and the panel then shows one and says so about the other.
+	Dispositions overviewDispositions `json:"dispositions"`
+}
+
+// overviewDispositions counts what #87 put in front of the operator: actions a
+// run proposed that nobody has accepted or declined yet.
+//
+// Only the pending count is here. A dashboard panel is a glance, and the
+// records the actions belong to are what the record pages show; a landing page
+// that listed every proposed action would be a second review queue with a
+// different vocabulary.
+type overviewDispositions struct {
+	overviewSection
+	Pending int `json:"pending"`
 }
 
 type overviewReviewRow struct {
@@ -230,6 +249,10 @@ type overviewRunRow struct {
 	// is empty when the run recorded no observation this server could
 	// reach, which is an absence rather than a run without a recipe.
 	Recipes []overviewRecipe `json:"recipes"`
+	// Authority is why the run happened, as the receipt recorded it. The
+	// zero value means the receipt predates the field, which the surfaces
+	// that render it say rather than filling in.
+	Authority RunAuthority `json:"authority"`
 }
 
 type overviewRecipe struct {
@@ -526,6 +549,7 @@ func (s *Server) overviewRuns(r *http.Request, byRun map[string][]string) overvi
 			Redactions:    summary.Counts.Redactions,
 			Hypotheses:    len(byRun[summary.RunID]),
 			Recipes:       s.overviewRecipes(r.Context(), summary.RunID, byRun[summary.RunID]),
+			Authority:     summary.Authority,
 		}
 		section.Rows = append(section.Rows, row)
 	}
@@ -578,6 +602,7 @@ func (s *Server) overviewRecipes(ctx context.Context, runID string, hypotheses [
 func (s *Server) overviewReview(r *http.Request) overviewReview {
 	section := overviewReview{Rows: []overviewReviewRow{}}
 	section.Questions = s.overviewQuestions(r)
+	section.Dispositions = s.overviewDispositions(r)
 	if s.opts.Review == nil || s.opts.Frontier == nil {
 		section.overviewSection = sectionMissing("The review service is not available in this session.")
 		return section
@@ -612,6 +637,35 @@ func (s *Server) overviewReview(r *http.Request) overviewReview {
 			Excerpt:    excerpt,
 		})
 	}
+	return section
+}
+
+// overviewDispositions counts the proposed next actions nobody has answered.
+//
+// The count is of proposed actions rather than of the records carrying them: an
+// operator answers actions one at a time, and a count of records would say a
+// smaller number than the number of clicks waiting.
+func (s *Server) overviewDispositions(r *http.Request) overviewDispositions {
+	section := overviewDispositions{}
+	if s.opts.Dispositions == nil {
+		section.overviewSection = sectionMissing("Proposed next actions are not available in this session.")
+		return section
+	}
+	// The store derives status from its ledger rather than storing it, so a
+	// status filter is applied after the derivation and the total it reports
+	// is what matched — which is the count this panel wants, not the length
+	// of the page it would have served.
+	_, total, err := s.opts.Dispositions.List(r.Context(), disposition.ListFilter{
+		Statuses: []disposition.Status{disposition.StatusProposed},
+		Limit:    1,
+	})
+	if err != nil {
+		s.logf("GET %s: proposed actions refused", r.URL.Path)
+		section.overviewSection = sectionMissing("Proposed next actions could not be read.")
+		return section
+	}
+	section.overviewSection = sectionReady()
+	section.Pending = total
 	return section
 }
 

@@ -416,6 +416,35 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleRealityPlanAccept(w, r)
+	// Issue #87's record actions. The three POSTs are the browser's first
+	// writes against the frontier's own state, and each carries the chain
+	// head the page was rendered against; internal/web/records.go states
+	// why.
+	case "/api/record/revisions":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRecordRevisions(w, r)
+	case "/api/record/dispositions":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRecordDispositions(w, r)
+	case "/api/record/disposition/decide":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleDecideDisposition(w, r)
+	case "/api/record/invite":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleInviteRecord(w, r)
+	case "/api/record/revive":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleReviveRecord(w, r)
 	case "/api/search":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return

@@ -168,6 +168,61 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
     a duplicate recorded can be merged by a later revision and a duplicate
     silently discarded cannot be recovered. `babel explore` reports the
     warnings; the operator answers them.
+- **Record actions in the browser: revision history, dispositions,
+  process-further, and revive (issue #87).** #98 gave Babel actionable outputs
+  and reached them only from a terminal; the web app — the primary surface —
+  could read records and had no way to act on one. It now has the same four
+  verbs, and they are the first writes the browser performs against the
+  frontier's own state.
+  - **A record page renders its chain.** `GET /api/record/revisions` reads a
+    record's whole revision chain from any member of it, and the
+    hypothesis and finding pages render it as a timeline: every wording, its
+    author — a run or an operator, distinguished, because #87 makes the
+    difference auditable — when, and why it superseded the one before it. A
+    chain's first entry states that it supersedes nothing rather than showing
+    an empty reason. The candidate's status history gains the same treatment:
+    an operator's revive belongs to no run, and the timeline now names the
+    person instead of rendering an authorless transition.
+  - **Dispositions are answered where the record is read.**
+    `GET /api/record/dispositions` lists the next actions proposed against a
+    record with each one's ledger, and `POST /api/record/disposition/decide`
+    appends an attributed authorization or decline. The response says what
+    happened outside Babel — nothing — in a field rather than a comment, and
+    the page repeats it: authorizing records that a person authorized an
+    action and performs none of it. A draft-issue's rendered draft travels with
+    the action and stays a closed disclosure until a reader opens it; the
+    repository it binds to is shown beside it. Nothing here opens a link, and
+    Babel still files nothing.
+  - **"Process further" is one button and no text field.**
+    `POST /api/record/invite` records #87's instruction-free nudge; the request
+    body has no field an instruction could travel in, and the route refuses an
+    unknown one rather than accepting it with the field dropped. The page shows
+    the queued state and, once a run has taken an invitation, who took it.
+  - **Resting statuses offer a revive, with a required argument.**
+    `POST /api/record/revive` is offered on deferred, rejected and promoted
+    candidates only, and the reason is required by both the page and the store:
+    a candidate that can always come back is only safe if coming back leaves an
+    argument behind.
+  - **Every mutation confirms the wording the operator read.** Each of the
+    three writes carries the chain head the page was rendered against, and a
+    head that moved since is a 409 that names the current wording and says to
+    reload — never a write. It is the one rule the web layer adds that the
+    services do not have, because it is a fact about the page rather than about
+    the store: internal/frontier cannot tell that the text under a button
+    changed after the button was drawn, and an authorization attributed to
+    someone who was shown different words is exactly the dishonest record #87's
+    chain exists to prevent.
+  - **The dashboard counts what is waiting and says why runs happened.** The
+    review inbox gains a pending-proposed-actions count, kept separate from
+    "awaiting a decision" because a verdict on a record and an authorization of
+    an action about it are different questions. The receipt strip and the
+    Explore run table render each receipt's authority; a receipt recorded before
+    receipts carried one reads as "operator (recorded before authority)" rather
+    than being filled in.
+  - The web surface reaches all of this through two new narrow interfaces —
+    `DispositionService` and a one-method `FrontierReviver` — so a browser
+    request cannot propose an action, consume an invitation, or set a status,
+    and the §14 structural test enumerates both.
 - **Actionable outputs: dispositions, revision chains, invitations, and
   revive (operator direction 2026-08-31, issue #87).** Babel's records could
   be read and decided on; they could not be acted on, argued with, or nudged.

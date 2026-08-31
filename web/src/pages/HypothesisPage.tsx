@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getHypothesis, type HypothesisDetail, type Observation } from "../api";
 import { errorMessage, formatTime } from "../format";
+import { RecordActions } from "../records";
 import {
   Badge,
   CounterEvidence,
@@ -153,6 +154,10 @@ function HypothesisPage() {
               </div>
             )}
           </article>
+          <RecordActions
+            record={{ type: "hypothesis", id: hypothesis.id }}
+            lifecycle={hypothesis.status}
+          />
         </div>
 
         <aside className="detail-side">
@@ -175,7 +180,15 @@ function HypothesisPage() {
                   tone={statusTone(event.status)}
                   at={event.recorded_at}
                 >
-                  {event.run_id && <span className="mono secondary">{event.run_id}</span>}
+                  {/* A transition belongs either to a run or to an operator,
+                      and #87 made the second possible: an operator's revive
+                      borrows no run identity, so the author is rendered from
+                      the actor rather than from the run column. */}
+                  {event.actor.kind === "operator" ? (
+                    <span className="secondary">operator <span className="mono">{event.actor.id}</span></span>
+                  ) : (
+                    event.run_id && <span className="mono secondary">{event.run_id}</span>
+                  )}
                   {event.note && <span className="untrusted-inline">{event.note}</span>}
                 </TimelineEntry>
               ))}

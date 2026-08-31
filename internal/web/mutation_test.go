@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/reality"
@@ -265,13 +266,37 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			name:     "frontier",
 			surface:  reflect.TypeOf((*FrontierReader)(nil)).Elem(),
 			concrete: reflect.TypeOf((*frontier.Store)(nil)),
-			permitted: []string{"Finding", "Hypothesis", "LinksFrom", "LinksTo", "Observation",
-				"ObservationsFor", "Proposal", "ReviewStatus", "StatusHistory", "Unexplored"},
-			// Every frontier write, including its own Decide: one
-			// disposition log exists and internal/review is the only way
-			// this surface may append to it.
+			permitted: []string{"Finding", "Head", "Hypothesis", "LinksFrom", "LinksTo", "Observation",
+				"ObservationsFor", "Proposal", "ReviewStatus", "Revisions", "StatusHistory", "Unexplored"},
+			// Every frontier write, including its own Decide and the
+			// revive transition #87 added: one disposition log exists and
+			// internal/review is the only way this surface may append to
+			// it, and a revive is reachable only through FrontierReviver.
 			forbidden: []string{"CreateHypothesis", "CreateObservation", "CreateFinding", "CreateProposal",
-				"Decide", "RejectAndRefine", "SetStatus", "Link", "DeferFrontier", "Close"},
+				"Decide", "RejectAndRefine", "SetStatus", "Link", "DeferFrontier", "Revive", "Close"},
+		},
+		{
+			name:      "frontier reviver",
+			surface:   reflect.TypeOf((*FrontierReviver)(nil)).Elem(),
+			concrete:  reflect.TypeOf((*frontier.Store)(nil)),
+			permitted: []string{"Revive"},
+			// The reviver is one method wide on purpose. SetStatus is the
+			// bookkeeping a run does about a candidate it is working on,
+			// and a browser holding it could move a live exploration's
+			// candidate from outside the run; DeferFrontier is the same
+			// authority in bulk.
+			forbidden: []string{"SetStatus", "DeferFrontier", "CreateHypothesis", "Close"},
+		},
+		{
+			name:      "dispositions",
+			surface:   reflect.TypeOf((*DispositionService)(nil)).Elem(),
+			concrete:  reflect.TypeOf((*disposition.Store)(nil)),
+			permitted: []string{"Decide", "Disposition", "Invitations", "Invite", "Ledger", "List"},
+			// Proposing is the loop's job and consuming is a run's. A
+			// browser that could propose would be authoring the actions it
+			// exists to authorize, and one that could consume would spend
+			// an invitation without a run to spend it on.
+			forbidden: []string{"Propose", "Consume", "ConsumeOne", "Close"},
 		},
 		{
 			name:     "reality",

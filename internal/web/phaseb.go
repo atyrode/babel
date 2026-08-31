@@ -154,6 +154,9 @@ func (s *Server) serviceError(w http.ResponseWriter, r *http.Request, err error)
 // sentence: an error nobody classified is an error nobody has read, and echoing
 // it would publish whatever it happens to quote.
 func classifyService(err error) (int, string) {
+	if status, message, ok := classifyRecordAction(err); ok {
+		return status, message
+	}
 	switch {
 	case errors.Is(err, review.ErrUnknownRecord),
 		errors.Is(err, reality.ErrUnknownRecord),

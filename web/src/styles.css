@@ -1689,6 +1689,126 @@ select:focus {
   background: rgba(9, 12, 18, 0.62);
 }
 
+/* Record actions (issue #87). The block sits in a record page's main column
+   and reuses the frontier's card vocabulary, because the actions are part of
+   reading the record rather than a separate console: a proposal an operator
+   answers belongs beside the wording it is about. */
+
+.revisions-card,
+.dispositions-card,
+.invite-card,
+.revive-card {
+  padding: 1.3rem;
+  margin-top: 1rem;
+}
+
+.revision-timeline .revision-record {
+  display: block;
+  font-size: 0.74rem;
+}
+
+/* "current" and "the wording shown above" are marks on a history entry, not
+   verdicts on it: the superseded wordings stay as readable as the head. */
+.revision-mark {
+  color: var(--subtle);
+  font-size: 0.72rem;
+}
+
+.disposition-list {
+  display: grid;
+  gap: 0.9rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.disposition-entry {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.9rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.65rem;
+  background: rgba(9, 12, 18, 0.62);
+}
+
+.disposition-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.disposition-id {
+  margin-left: auto;
+  font-size: 0.68rem;
+}
+
+.disposition-summary {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.disposition-rationale,
+.disposition-provenance,
+.disposition-effect {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.disposition-anchor {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0.2rem 0 0;
+  font-size: 0.76rem;
+}
+
+/* The draft is closed by default and stays a disclosure. It is the text of a
+   public issue: opening it has to be the reader's act, and rendering it as
+   anything but preformatted text would be Babel interpreting material it
+   drafted for somewhere else. */
+.draft-disclosure pre {
+  max-height: 22rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ruling-timeline {
+  margin-top: 0.35rem;
+}
+
+.disposition-actions {
+  margin-top: 0.2rem;
+}
+
+/* One click and no field beside it. The button is wide because it is the
+   record page's least consequential action and its most inviting one: saying
+   "look at this again" costs nothing and commits nobody to anything. */
+.invite-button,
+.revive-button {
+  margin-top: 0.6rem;
+}
+
+.invite-queued {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0;
+  font-size: 0.78rem;
+}
+
+.invite-history {
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.revive-rule {
+  margin: 0.35rem 0 0;
+  font-size: 0.76rem;
+}
+
 .observation-heading {
   display: flex;
   flex-wrap: wrap;
@@ -2792,6 +2912,24 @@ a.link-target:hover {
   -webkit-line-clamp: 1;
   color: var(--muted);
   font-size: 0.72rem;
+}
+
+/* Why a run happened, beside what it recorded. An unrecorded authority renders
+   through .not-observed, the same class every other unobserved value on this
+   page uses, so "we did not record this" never looks like a value. */
+.receipt-authority {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+}
+
+.receipt-authority .mono {
+  overflow: hidden;
+  color: var(--subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .receipt-counts {

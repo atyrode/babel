@@ -25,6 +25,7 @@ import type {
   HypothesisStatus,
   HypothesisSummary,
   Observation,
+  OverviewDispositions,
   OverviewFrontier,
   OverviewQuestions,
   OverviewReview,
@@ -36,6 +37,7 @@ import type {
   ReviewStatus,
   RefinementView,
   SearchHit,
+  StatusEvent,
 } from "../src/api";
 
 const phasebMode = Bun.env.MOCK_PHASEB ?? "rich";
@@ -76,6 +78,13 @@ function ev(
   };
 }
 
+// runEvents stamps a run's own authorship onto lifecycle events. Issue #87 gave
+// every transition an actor, and a run's transition carries the same identity
+// its run_id does; the fixtures state that once here rather than on every line.
+function runEvents(events: Array<Omit<StatusEvent, "actor">>): StatusEvent[] {
+  return events.map((event) => ({ ...event, actor: { kind: "run", id: event.run_id } }));
+}
+
 // ---------------------------------------------------------------------------
 // Analysis state
 // ---------------------------------------------------------------------------
@@ -107,6 +116,10 @@ const analysisState: AnalysisState = {
         failures: 0,
         redactions: 2,
       },
+      // One receipt carries an authority and one deliberately does not, so
+      // both renderings are previewable: a run the conductor started under a
+      // policy, and an older receipt written before receipts recorded why.
+      authority: { kind: "policy", ref: "nightly-frontier" },
     },
     {
       receipt_id: "rcp_01synthetic0002",
@@ -124,6 +137,7 @@ const analysisState: AnalysisState = {
         failures: 1,
         redactions: 0,
       },
+      authority: { kind: "", ref: "" },
     },
   ],
   cookbook: [
@@ -193,11 +207,11 @@ const hypInvestigating: HypothesisDetail = {
       notes: "Synthetic fixture note: check whether the pattern survives the challenger.",
     },
   },
-  statusHistory: [
+  statusHistory: runEvents([
     { id: "sev_001", hypothesis_id: "hyp_unverified-closures", sequence: 1, status: "untriaged", run_id: "run_discovery-07", recorded_at: "2026-08-28T21:55:00Z" },
     { id: "sev_002", hypothesis_id: "hyp_unverified-closures", sequence: 2, status: "queued", run_id: "run_discovery-07", recorded_at: "2026-08-28T21:58:00Z" },
     { id: "sev_003", hypothesis_id: "hyp_unverified-closures", sequence: 3, status: "investigating", run_id: "run_discovery-07", recorded_at: "2026-08-28T22:00:00Z", note: "Selected within budget." },
-  ],
+  ]),
   observations: [
     observation("obs_claim-no-verify", "hyp_unverified-closures",
       "In the synthetic charlie session the agent reported the fix complete; no test or build command appears afterwards.",
@@ -251,11 +265,11 @@ const hypRejected: HypothesisDetail = {
       priority: 0.4,
     },
   },
-  statusHistory: [
+  statusHistory: runEvents([
     { id: "sev_010", hypothesis_id: "hyp_lens-overlap", sequence: 1, status: "untriaged", run_id: "run_discovery-07", recorded_at: "2026-08-28T21:50:00Z" },
     { id: "sev_011", hypothesis_id: "hyp_lens-overlap", sequence: 2, status: "investigating", run_id: "run_discovery-07", recorded_at: "2026-08-28T21:57:00Z" },
     { id: "sev_012", hypothesis_id: "hyp_lens-overlap", sequence: 3, status: "rejected", run_id: "run_discovery-07", recorded_at: "2026-08-28T23:10:00Z", note: "Rejected on review; kept, as everything is." },
-  ],
+  ]),
   observations: [
     observation("obs_overlap", "hyp_lens-overlap",
       "Both lens drafts emitted near-identical candidates for the synthetic bravo session.",
@@ -293,10 +307,10 @@ const hypFifty: HypothesisDetail = {
       priority: 0.66,
     },
   },
-  statusHistory: [
+  statusHistory: runEvents([
     { id: "sev_020", hypothesis_id: "hyp_many-observations", sequence: 1, status: "untriaged", run_id: "run_discovery-07", recorded_at: "2026-08-28T22:20:00Z" },
     { id: "sev_021", hypothesis_id: "hyp_many-observations", sequence: 2, status: "deferred", run_id: "run_discovery-07", recorded_at: "2026-08-28T23:30:00Z", note: "Budget exhausted; the frontier keeps the remainder." },
-  ],
+  ]),
   observations: fiftyObservations,
   links: [],
   lineage: { node: { kind: "hypothesis", id: "hyp_many-observations" }, ancestors: [], descendants: [] },
@@ -317,9 +331,9 @@ const hypHostile: HypothesisDetail = {
       notes: `Note body carrying a hostile URL ${HOSTILE_URL} that must render as text.`,
     },
   },
-  statusHistory: [
+  statusHistory: runEvents([
     { id: "sev_030", hypothesis_id: "hyp_hostile-content", sequence: 1, status: "untriaged", run_id: "run_discovery-07", recorded_at: "2026-08-28T22:30:00Z" },
-  ],
+  ]),
   observations: [
     observation("obs_hostile", "hyp_hostile-content",
       `Claim quoting hostile transcript bytes: ${HOSTILE_HTML} ${HOSTILE_CONTROL}`,
@@ -346,8 +360,21 @@ const hypDense: HypothesisDetail = {
     },
   },
   statusHistory: [
-    { id: "sev_040", hypothesis_id: "hyp_dense-token", sequence: 1, status: "untriaged", run_id: "run_discovery-07", recorded_at: "2026-08-28T23:00:00Z" },
-    { id: "sev_041", hypothesis_id: "hyp_dense-token", sequence: 2, status: "queued", run_id: "run_discovery-07", recorded_at: "2026-08-28T23:05:00Z" },
+    ...runEvents([
+      { id: "sev_040", hypothesis_id: "hyp_dense-token", sequence: 1, status: "untriaged", run_id: "run_discovery-07", recorded_at: "2026-08-28T23:00:00Z" },
+      { id: "sev_041", hypothesis_id: "hyp_dense-token", sequence: 2, status: "queued", run_id: "run_discovery-07", recorded_at: "2026-08-28T23:05:00Z" },
+      { id: "sev_042", hypothesis_id: "hyp_dense-token", sequence: 3, status: "deferred", run_id: "run_discovery-07", recorded_at: "2026-08-29T01:20:00Z", note: "Budget exhausted before the token was traced." },
+    ]),
+    // One operator transition, so the preview shows the author a run cannot
+    // be: #87 makes deferred a resting place rather than an ending, and an
+    // operator's revive belongs to no run at all, which is why run_id is empty
+    // and the actor names the person.
+    {
+      id: "sev_043", hypothesis_id: "hyp_dense-token", sequence: 4, status: "queued",
+      run_id: "", actor: { kind: "operator", id: "operator" },
+      recorded_at: "2026-08-30T09:12:00Z",
+      note: "A second synthetic session carries the same token; worth another run.",
+    },
   ],
   observations: [],
   links: [],
@@ -374,11 +401,11 @@ const hypPromoted: HypothesisDetail = {
       priority: 0.7,
     },
   },
-  statusHistory: [
+  statusHistory: runEvents([
     { id: "sev_050", hypothesis_id: "hyp_promoted-pattern", sequence: 1, status: "untriaged", run_id: "run_discovery-07", recorded_at: "2026-08-28T21:40:00Z" },
     { id: "sev_051", hypothesis_id: "hyp_promoted-pattern", sequence: 2, status: "investigating", run_id: "run_discovery-07", recorded_at: "2026-08-28T21:45:00Z" },
     { id: "sev_052", hypothesis_id: "hyp_promoted-pattern", sequence: 3, status: "promoted", run_id: "run_challenge-08", recorded_at: "2026-08-29T07:40:00Z", note: "Survived the challenger with one unresolved objection preserved." },
-  ],
+  ]),
   observations: [
     observation("obs_criteria", "hyp_promoted-pattern",
       "Synthetic sessions with explicit acceptance criteria show verification commands before the closing claim.",
@@ -395,6 +422,312 @@ const hypotheses: Record<string, HypothesisDetail> = Object.fromEntries(
   [hypInvestigating, hypRejected, hypFifty, hypHostile, hypDense, hypPromoted]
     .map((detail) => [detail.hypothesis.id, detail]),
 );
+
+// ---------------------------------------------------------------------------
+// Record actions (issue #87)
+//
+// A revision chain per record, the next actions proposed against it, and the
+// invitations recorded on it. Everything here is mutable in memory so the
+// authorize, decline, invite and revive flows are exercisable end to end.
+//
+// Two fixtures exist to make an awkward state previewable rather than to fill
+// out the set. hyp_lens-overlap carries a draft-issue with a rendered draft, so
+// the one action a reader is most likely to mistake for publication can be seen
+// as text. hyp_many-observations is the raced record: reading it hands back the
+// wording that was current at read time and then a synthetic run revises it, so
+// every mutation from that page is stale and the refusal is previewable without
+// a second browser.
+// ---------------------------------------------------------------------------
+
+interface ChainEntry {
+  id: string;
+  record_id: string;
+  supersedes_id?: string;
+  sequence: number;
+  actor: { kind: string; id: string };
+  recorded_at: string;
+  reason?: string;
+}
+
+interface RecordChain {
+  type: string;
+  entries: ChainEntry[];
+  // racing marks the chain that advances one revision each time it is read.
+  racing?: boolean;
+}
+
+const chains: Record<string, RecordChain> = {
+  "hyp_unverified-closures": {
+    type: "hypothesis",
+    entries: [
+      { id: "rev_100", record_id: "hyp_unverified-closures@1", sequence: 1, actor: { kind: "run", id: "run_discovery-07" }, recorded_at: "2026-08-28T21:55:00Z" },
+      {
+        id: "rev_101", record_id: "hyp_unverified-closures", supersedes_id: "hyp_unverified-closures@1",
+        sequence: 2, actor: { kind: "operator", id: "operator" }, recorded_at: "2026-08-29T08:02:00Z",
+        reason: "The first wording said \"never verified\"; the sessions show verification claimed but not observed, which is a narrower claim.",
+      },
+    ],
+  },
+  "hyp_lens-overlap": {
+    type: "hypothesis",
+    entries: [
+      { id: "rev_110", record_id: "hyp_lens-overlap", sequence: 1, actor: { kind: "run", id: "run_discovery-07" }, recorded_at: "2026-08-28T21:50:00Z" },
+    ],
+  },
+  "hyp_many-observations": {
+    type: "hypothesis",
+    racing: true,
+    entries: [
+      { id: "rev_120", record_id: "hyp_many-observations", sequence: 1, actor: { kind: "run", id: "run_discovery-07" }, recorded_at: "2026-08-28T22:20:00Z" },
+    ],
+  },
+  "hyp_hostile-content": {
+    type: "hypothesis",
+    entries: [
+      { id: "rev_130", record_id: "hyp_hostile-content@1", sequence: 1, actor: { kind: "run", id: "run_discovery-07" }, recorded_at: "2026-08-28T22:30:00Z" },
+      {
+        id: "rev_131", record_id: "hyp_hostile-content", supersedes_id: "hyp_hostile-content@1",
+        sequence: 2, actor: { kind: "run", id: "run_challenge-08" }, recorded_at: "2026-08-29T02:00:00Z",
+        reason: `Reworded after the challenger ${HOSTILE_HTML} ${HOSTILE_CONTROL}`,
+      },
+    ],
+  },
+  "hyp_dense-token": {
+    type: "hypothesis",
+    entries: [
+      { id: "rev_140", record_id: "hyp_dense-token", sequence: 1, actor: { kind: "run", id: "run_discovery-07" }, recorded_at: "2026-08-28T23:00:00Z" },
+    ],
+  },
+  "hyp_promoted-pattern": {
+    type: "hypothesis",
+    entries: [
+      { id: "rev_150", record_id: "hyp_promoted-pattern", sequence: 1, actor: { kind: "run", id: "run_discovery-07" }, recorded_at: "2026-08-28T21:40:00Z" },
+    ],
+  },
+  "fnd_conflicting-evidence": {
+    type: "finding",
+    entries: [
+      { id: "rev_160", record_id: "fnd_conflicting-evidence", sequence: 1, actor: { kind: "run", id: "run_challenge-08" }, recorded_at: "2026-08-29T07:41:00Z" },
+    ],
+  },
+  "fnd_hostile-title": {
+    type: "finding",
+    entries: [
+      { id: "rev_170", record_id: "fnd_hostile-title", sequence: 1, actor: { kind: "run", id: "run_challenge-08" }, recorded_at: "2026-08-29T07:45:00Z" },
+    ],
+  },
+};
+
+// racedReads counts how many times a racing chain has been read, so the second
+// read is the one that finds the record revised.
+let racedReads = 0;
+
+interface ActionRuling {
+  id: string;
+  sequence: number;
+  ruling: string;
+  by: string;
+  recorded_at: string;
+  note?: string;
+}
+
+interface ActionRecord {
+  id: string;
+  record: { type: string; id: string };
+  kind: string;
+  proposed_by: { kind: string; id: string };
+  ref?: string;
+  created_at: string;
+  summary: string;
+  rationale?: string;
+  anchor?: { workspace: string; remote: string; url: string; branch?: string };
+  draft?: string;
+  ledger: ActionRuling[];
+}
+
+const HOSTILE_DRAFT = [
+  "# Draft issue",
+  "",
+  `Two lenses produce the same candidate ${HOSTILE_HTML}`,
+  "",
+  `Repository: git@github.com:atyrode/synthetic-preview ${HOSTILE_MARKDOWN}`,
+  "",
+  "Babel drafted this and published nothing. Filing it is the operator's act, under their own credentials.",
+].join("\n");
+
+const actions: ActionRecord[] = empty ? [] : [
+  {
+    id: "dsp_001",
+    record: { type: "hypothesis", id: "hyp_unverified-closures" },
+    kind: "develop-further",
+    proposed_by: { kind: "run", id: "run_discovery-07" },
+    ref: "act-1",
+    created_at: "2026-08-29T08:05:00Z",
+    summary: "Read the two adjacent sessions before rewording this again.",
+    rationale: "The claim rests on one transcript, and the corpus holds two more from the same day.",
+    ledger: [],
+  },
+  {
+    id: "dsp_002",
+    record: { type: "hypothesis", id: "hyp_unverified-closures" },
+    kind: "ask-operator-question",
+    proposed_by: { kind: "run", id: "run_discovery-07" },
+    ref: "act-2",
+    created_at: "2026-08-29T08:05:30Z",
+    summary: "Ask whether the harness was configured to run tests at all in that period.",
+    rationale: "A claim about skipped verification is unscoped without knowing whether it was available.",
+    ledger: [
+      { id: "dld_001", sequence: 1, ruling: "declined", by: "operator", recorded_at: "2026-08-29T09:00:00Z", note: "Answered offline: it was. Declining rather than deleting, so the ask stays readable." },
+    ],
+  },
+  {
+    id: "dsp_003",
+    record: { type: "hypothesis", id: "hyp_lens-overlap" },
+    kind: "draft-issue",
+    proposed_by: { kind: "run", id: "run_discovery-07" },
+    ref: "act-3",
+    created_at: "2026-08-28T23:15:00Z",
+    summary: "Two lenses emit the same candidate; give preparation a dedup obligation.",
+    rationale: "Both lenses reached the same wording from the same session, which the frontier stored twice.",
+    anchor: {
+      workspace: "/home/demo/src/synthetic-preview",
+      remote: "origin",
+      url: "git@github.com:atyrode/synthetic-preview",
+      branch: "main",
+    },
+    draft: HOSTILE_DRAFT,
+    ledger: [],
+  },
+  {
+    id: "dsp_004",
+    record: { type: "hypothesis", id: "hyp_hostile-content" },
+    kind: "store-memory",
+    proposed_by: { kind: "run", id: "run_challenge-08" },
+    ref: "act-4",
+    created_at: "2026-08-29T02:05:00Z",
+    summary: `Keep this wording as a rendering fixture ${HOSTILE_HTML}`,
+    rationale: `Hostile in four ways at once ${HOSTILE_MARKDOWN} ${HOSTILE_CONTROL} ${HOSTILE_URL}`,
+    ledger: [],
+  },
+  {
+    id: "dsp_005",
+    record: { type: "hypothesis", id: "hyp_many-observations" },
+    kind: "develop-further",
+    proposed_by: { kind: "run", id: "run_discovery-07" },
+    ref: "act-5",
+    created_at: "2026-08-28T23:35:00Z",
+    summary: "Consolidate the fifty observations before adding a fifty-first.",
+    ledger: [],
+  },
+  {
+    id: "dsp_006",
+    record: { type: "finding", id: "fnd_conflicting-evidence" },
+    kind: "propose-reality-fact",
+    proposed_by: { kind: "run", id: "run_challenge-08" },
+    ref: "act-6",
+    created_at: "2026-08-29T07:50:00Z",
+    summary: "Record that this synthetic project states acceptance criteria as a matter of practice.",
+    rationale: "Three sessions show the same practice; the ledger is where a claim like that belongs.",
+    ledger: [],
+  },
+];
+
+interface InvitationRecord {
+  id: string;
+  record: { type: string; id: string };
+  by: string;
+  created_at: string;
+  consumed_by?: string;
+  consumed_at?: string;
+}
+
+const invitations: InvitationRecord[] = empty ? [] : [
+  {
+    id: "inv_001",
+    record: { type: "hypothesis", id: "hyp_lens-overlap" },
+    by: "operator",
+    created_at: "2026-08-29T09:05:00Z",
+  },
+  {
+    id: "inv_002",
+    record: { type: "finding", id: "fnd_conflicting-evidence" },
+    by: "operator",
+    created_at: "2026-08-29T08:00:00Z",
+    consumed_by: "run_challenge-08",
+    consumed_at: "2026-08-29T08:30:00Z",
+  },
+];
+
+let invitationCounter = invitations.length;
+let rulingCounter = 1;
+
+function recordRef(url: URL): { type: string; id: string } {
+  return { type: url.searchParams.get("type") ?? "", id: url.searchParams.get("id") ?? "" };
+}
+
+function headOf(id: string): string {
+  const chain = chains[id];
+  if (!chain) return "";
+  return chain.entries[chain.entries.length - 1].record_id;
+}
+
+// advanceRace appends a revision to the one chain that models a run revising a
+// record while the operator was reading it. Every mutation sent from a page
+// rendered before the advance is then stale, which is what makes the refusal
+// previewable in one browser.
+function advanceRace(id: string): void {
+  const chain = chains[id];
+  if (!chain?.racing) return;
+  racedReads += 1;
+  const previous = chain.entries[chain.entries.length - 1];
+  chain.entries.push({
+    id: `rev_9${String(racedReads).padStart(2, "0")}`,
+    record_id: `${id}@r${racedReads}`,
+    supersedes_id: previous.record_id,
+    sequence: previous.sequence + 1,
+    actor: { kind: "run", id: "run_challenge-08" },
+    recorded_at: new Date().toISOString(),
+    reason: "A run reworded this candidate while the page was open.",
+  });
+}
+
+// actionStatus derives a proposed action's state from its ledger, the way
+// internal/disposition does: a status that were stored beside the entries could
+// disagree with them.
+function actionStatus(action: ActionRecord): string {
+  const last = action.ledger[action.ledger.length - 1];
+  return last ? last.ruling : "proposed";
+}
+
+function viewInvitation(invitation: InvitationRecord) {
+  return {
+    id: invitation.id,
+    record: invitation.record,
+    by: invitation.by,
+    created_at: invitation.created_at,
+    ...(invitation.consumed_by ? { consumed_by: invitation.consumed_by } : {}),
+    ...(invitation.consumed_at ? { consumed_at: invitation.consumed_at } : {}),
+    open: !invitation.consumed_by,
+  };
+}
+
+// staleHead mirrors internal/web's confirmation contract, wording included: a
+// mutation names the revision it was shown, and a head that moved since is a
+// 409 that says so and names the current wording.
+function staleHead(id: string, seen: string | undefined): Response | null {
+  if (!seen) {
+    return json({ error: "a record action confirms the revision it was shown; headId is required" }, 400);
+  }
+  const head = headOf(id);
+  if (head !== seen) {
+    return json({
+      error: "this record was revised after the page was rendered: the current wording is " +
+        `${head}, and authorizing an action against the wording it replaced would record a ` +
+        "decision about text nobody read. Reload the record and decide again.",
+    }, 409);
+  }
+  return null;
+}
 
 const findingConflict: FindingDetail = {
   finding: {
@@ -959,6 +1292,15 @@ export function overviewPhaseB(unwired: Set<string>): {
         })),
       };
   const awaiting = reviewRecords.filter((record) => derivedStatus(record) === "new");
+  // #87's pending count, from the same in-memory ledger the record pages
+  // answer from, so authorizing one in the browser moves the dashboard number.
+  const proposed: OverviewDispositions = unwired.has("review")
+    ? {
+        available: false,
+        unavailable: "Proposed next actions are not available in this session.",
+        pending: 0,
+      }
+    : { available: true, pending: actions.filter((action) => actionStatus(action) === "proposed").length };
   const review: OverviewReview = unwired.has("review")
     ? {
         available: false,
@@ -966,6 +1308,7 @@ export function overviewPhaseB(unwired: Set<string>): {
         awaiting: 0,
         rows: [],
         questions: inbox,
+        dispositions: proposed,
       }
     : {
         available: true,
@@ -978,6 +1321,7 @@ export function overviewPhaseB(unwired: Set<string>): {
           excerpt: record.excerpt,
         })),
         questions: inbox,
+        dispositions: proposed,
       };
 
   // The receipts are the same listing /api/analysis/state serves, joined to
@@ -1011,6 +1355,7 @@ export function overviewPhaseB(unwired: Set<string>): {
             redactions: receipt.counts.redactions,
             hypotheses: details.filter((d) => d.hypothesis.run_id === receipt.run_id).length,
             recipes: [...seen.values()],
+            authority: receipt.authority,
           };
         }),
       };
@@ -1305,6 +1650,169 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
       .filter((hit) => !kind || hit.kind === kind)
       .filter((hit) => terms.every((term) => hit.text.toLocaleLowerCase().includes(term)));
     return json({ hits });
+  }
+
+  if (method === "GET" && path === "/api/record/revisions") {
+    const ref = recordRef(url);
+    const chain = chains[ref.id];
+    if (!chain || chain.type !== ref.type) {
+      return json({ error: `synthetic record not found: ${ref.id}` }, 404);
+    }
+    return json({
+      record: ref,
+      head_id: headOf(ref.id),
+      revisions: chain.entries.map((entry, index) => ({
+        id: entry.id,
+        record: { type: chain.type, id: entry.record_id },
+        root_id: chain.entries[0].record_id,
+        ...(entry.supersedes_id ? { supersedes_id: entry.supersedes_id } : {}),
+        sequence: entry.sequence,
+        actor: entry.actor,
+        recorded_at: entry.recorded_at,
+        ...(entry.reason ? { reason: entry.reason } : {}),
+        head: index === chain.entries.length - 1,
+      })),
+    });
+  }
+
+  if (method === "GET" && path === "/api/record/dispositions") {
+    const ref = recordRef(url);
+    const chain = chains[ref.id];
+    if (!chain || chain.type !== ref.type) {
+      return json({ error: `synthetic record not found: ${ref.id}` }, 404);
+    }
+    // The head is read before the race advances it, so the page holds exactly
+    // what was current when it rendered — which is the state a stale
+    // confirmation comes from.
+    const head = headOf(ref.id);
+    advanceRace(ref.id);
+    return json({
+      record: ref,
+      head_id: head,
+      dispositions: actions
+        .filter((action) => action.record.type === ref.type && action.record.id === ref.id)
+        .map((action) => ({
+          id: action.id,
+          record: action.record,
+          kind: action.kind,
+          status: actionStatus(action),
+          proposed_by: action.proposed_by,
+          ...(action.ref ? { ref: action.ref } : {}),
+          created_at: action.created_at,
+          summary: action.summary,
+          ...(action.rationale ? { rationale: action.rationale } : {}),
+          ...(action.anchor ? { anchor: action.anchor } : {}),
+          ledger: action.ledger,
+          ...(action.draft ? { draft: action.draft } : {}),
+        })),
+      invitations: invitations
+        .filter((invitation) => invitation.record.type === ref.type && invitation.record.id === ref.id)
+        .map(viewInvitation),
+    });
+  }
+
+  if (method === "POST" && path === "/api/record/disposition/decide") {
+    const body = (await request.json()) as {
+      dispositionId?: string;
+      ruling?: string;
+      note?: string;
+      headId?: string;
+    };
+    const action = actions.find((candidate) => candidate.id === body.dispositionId);
+    if (!action) return json({ error: `synthetic action not found: ${body.dispositionId}` }, 404);
+    if (!["accepted", "declined"].includes(body.ruling ?? "")) {
+      return json({ error: `unknown ruling: ${body.ruling}` }, 400);
+    }
+    const stale = staleHead(action.record.id, body.headId);
+    if (stale) return stale;
+    rulingCounter += 1;
+    const entry: ActionRuling = {
+      id: `dld_${String(rulingCounter).padStart(3, "0")}`,
+      sequence: action.ledger.length + 1,
+      ruling: body.ruling as string,
+      by: "operator",
+      recorded_at: new Date().toISOString(),
+      ...(body.note?.trim() ? { note: body.note.trim() } : {}),
+    };
+    action.ledger.push(entry);
+    return json({
+      entry,
+      status: actionStatus(action),
+      published: "nothing; Babel authorized this action and performed none of it",
+    });
+  }
+
+  if (method === "POST" && path === "/api/record/invite") {
+    const body = (await request.json()) as { record?: { type?: string; id?: string }; headId?: string };
+    // The route accepts these two fields and nothing else. An invitation
+    // carries no instruction, so a body that smuggled one in is refused rather
+    // than accepted with the extra field dropped.
+    for (const key of Object.keys(body)) {
+      if (key !== "record" && key !== "headId") {
+        return json({ error: `request body is not the JSON object this route accepts: ${key}` }, 400);
+      }
+    }
+    const id = body.record?.id ?? "";
+    if (!chains[id] || chains[id].type !== body.record?.type) {
+      return json({ error: `synthetic record not found: ${id}` }, 404);
+    }
+    const stale = staleHead(id, body.headId);
+    if (stale) return stale;
+    invitationCounter += 1;
+    const invitation: InvitationRecord = {
+      id: `inv_${String(invitationCounter).padStart(3, "0")}`,
+      record: { type: chains[id].type, id },
+      by: "operator",
+      created_at: new Date().toISOString(),
+    };
+    invitations.push(invitation);
+    return json({
+      invitation: viewInvitation(invitation),
+      instruction: "none; what to do with it is the next run's judgement",
+    });
+  }
+
+  if (method === "POST" && path === "/api/record/revive") {
+    const body = (await request.json()) as {
+      record?: { type?: string; id?: string };
+      reason?: string;
+      status?: string;
+      headId?: string;
+    };
+    const id = body.record?.id ?? "";
+    const detail = hypotheses[id];
+    if (body.record?.type !== "hypothesis") {
+      return json({
+        error: "only a candidate carries a lifecycle status, so only a candidate has one to revive",
+      }, 400);
+    }
+    if (!detail) return json({ error: `synthetic candidate not found: ${id}` }, 404);
+    if (!body.reason?.trim()) {
+      return json({
+        error: "a revive states why the candidate deserves to move again; reason is required",
+      }, 400);
+    }
+    if (!["deferred", "rejected", "promoted"].includes(detail.hypothesis.status)) {
+      return json({
+        error: `this candidate is not at rest, so it is already on the frontier`,
+      }, 409);
+    }
+    const stale = staleHead(id, body.headId);
+    if (stale) return stale;
+    const landing = (body.status?.trim() || "queued") as HypothesisStatus;
+    const event: StatusEvent = {
+      id: `sev_${String(900 + detail.statusHistory.length).padStart(3, "0")}`,
+      hypothesis_id: id,
+      sequence: detail.statusHistory.length + 1,
+      status: landing,
+      run_id: "",
+      actor: { kind: "operator", id: "operator" },
+      recorded_at: new Date().toISOString(),
+      note: body.reason.trim(),
+    };
+    detail.statusHistory.push(event);
+    detail.hypothesis.status = landing;
+    return json({ record: { type: "hypothesis", id }, event });
   }
 
   return null;
