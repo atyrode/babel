@@ -36,9 +36,10 @@ import { AuthorityMark, Badge, FallibilityNote, statusTone, reviewTone, type Ton
 // GUIDE_KEY records that the operator has seen the pointer to Help. The banner
 // is one line and appears once: a first visit deserves an orientation, and a
 // tour that reappeared would be an interface arguing with someone who already
-// knows where things are. Storage is best-effort, exactly as the token
-// bootstrap treats it — a locked-down browser shows the banner again rather
-// than failing to render the dashboard.
+// knows where things are. Storage is best-effort: a locked-down browser shows
+// the banner again rather than failing to render the dashboard. Nothing about
+// authentication depends on it — the session lives in a cookie the page cannot
+// read — so this is the only thing in the interface that wants storage at all.
 const GUIDE_KEY = "babel.web.guide-dismissed";
 
 type Flavor = "archive" | "corpus" | "frontier" | "review" | "runs" | "activity";
@@ -331,8 +332,8 @@ function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // A first visit is the only one that gets the pointer to Help; storage is
-  // best-effort exactly as the token bootstrap treats it, so a locked-down
-  // browser shows the banner again rather than failing to render.
+  // best-effort, so a locked-down browser shows the banner again rather than
+  // failing to render.
   const [guide, setGuide] = useState(() => {
     try {
       return window.localStorage.getItem(GUIDE_KEY) !== "1";

@@ -31,7 +31,7 @@ const chrome = resolveChrome({
   covers: "the SPEC.md §2 lock and stop control through the browser",
   unverified: [
     "that the control the operator actually sees asks for confirmation before it can end the session, and that declining leaves the server still serving",
-    "that confirming revokes the launch token and the server process really exits, rather than the page merely claiming it did",
+    "that confirming revokes the session server-side and the server process really exits, rather than the page merely claiming it did",
     "that the stopped page is terminal -- no navigation left, no stale shell still polling -- and tells the operator how to start Babel again",
   ],
 });
@@ -42,7 +42,11 @@ let browser: Browser | null = null;
 let page: Page;
 let launchURL = "";
 let base = "";
-let token = "";
+let nonce = "";
+// session is the credential the page holds after the bootstrap exchange, read
+// out of the browser's own cookie store because the page cannot read it. It is
+// what makes `call` below a report on the server rather than on the page.
+let session = "";
 
 // answerConfirm installs a one-shot handler for the control's confirmation
 // dialog. Puppeteer dismisses dialogs when nothing is listening, so the
@@ -64,16 +68,31 @@ async function answerConfirm(accept: boolean, act: () => Promise<void>): Promise
 }
 
 // call reaches the API the way the CLI would, from outside the browser, so it
-// reports on the server rather than on the page's state.
+// reports on the server rather than on the page's state. It presents the
+// session the browser established, which is the only credential the server
+// accepts: the launch nonce was spent by the page and authenticates nothing.
 async function call(path: string): Promise<number | "unreachable"> {
   try {
     const response = await fetch(`${base}${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Cookie: `babel_session=${session}` },
     });
     return response.status;
   } catch {
     return "unreachable";
   }
+}
+
+// adoptSession copies the page's own session out of the browser, and asserts on
+// the way past that it is the cookie §2.7 requires. A test that read a
+// JavaScript-readable credential here would be testing a different design.
+async function adoptSession(): Promise<void> {
+  const cookies = await browser!.defaultBrowserContext().cookies();
+  const cookie = cookies.find((candidate) => candidate.name === "babel_session");
+  expect(cookie, "the page established no session cookie").toBeDefined();
+  expect(cookie!.httpOnly).toBe(true);
+  expect(cookie!.sameSite).toBe("Strict");
+  expect(cookie!.value).not.toBe(nonce);
+  session = cookie!.value;
 }
 
 beforeAll(async () => {
@@ -139,13 +158,12 @@ beforeAll(async () => {
     const { value, done } = await reader.read();
     if (done) break;
     banner += decoder.decode(value, { stream: true });
-    const match = banner.match(/(http:\/\/127\.0\.0\.1:\d+\/#token=[0-9a-f]{64})/);
+    const match = banner.match(/(http:\/\/127\.0\.0\.1:\d+\/#nonce=[0-9a-f]{64})/);
     if (match) launchURL = match[1];
   }
   reader.releaseLock();
   if (!launchURL) throw new Error(`server printed no launch URL: ${banner}`);
-  token = launchURL.split("#token=")[1];
-  base = launchURL.split("/#token=")[0];
+  [base, nonce] = launchURL.split("/#nonce=");
 
   browser = await puppeteer.launch({
     executablePath: chrome,
@@ -171,6 +189,9 @@ test.skipIf(!chrome)("the stop control is guarded by a confirmation the operator
   await page.goto(launchURL, { waitUntil: "networkidle2" });
   const control = await page.waitForSelector(LOCK_BUTTON, { timeout: 30_000 });
   expect(control).not.toBeNull();
+  // The shell rendered, so the bootstrap exchange has run; its session is what
+  // `call` uses to observe the server from outside the browser.
+  await adoptSession();
 
   const prompt = await answerConfirm(false, async () => {
     await control?.click();
@@ -218,8 +239,10 @@ test.skipIf(!chrome)("confirming it revokes the session, stops the server, and s
   // failure than the suite's own timeout.
   expect(await server!.exited).toBe(0);
 
-  // The token was revoked before the listener closed, so neither the
-  // credential nor the port is worth anything now.
+  // The session was revoked before the listener closed, so neither the
+  // credential nor the port is worth anything now. Revocation is asserted
+  // separately from the exit in internal/web, where a server can be locked
+  // without being stopped; here the two are one operator action.
   expect(await call("/api/version")).toBe("unreachable");
   expect(await call("/api/lock")).toBe("unreachable");
 });

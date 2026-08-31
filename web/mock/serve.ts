@@ -533,6 +533,22 @@ function overviewResponse(): Response {
 
 function apiResponse(request: Request, url: URL): Response | null {
   if (!url.pathname.startsWith("/api/")) return null;
+  // The §2.7 bootstrap exchange. The mock has no credential to protect — it
+  // serves synthetic fixtures on loopback and checks nothing — so any nonce is
+  // accepted, and accepted repeatedly: a preview that died on its second tab
+  // would be a worse tool without being a more faithful one. What is faithful
+  // is the shape, so the same Set-Cookie a real launch answers with is set
+  // here, and the frontend's bootstrap path is exercised rather than skipped.
+  if (request.method === "POST" && url.pathname === "/api/bootstrap") {
+    return new Response(JSON.stringify({ established: true }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "Set-Cookie": "babel_session=synthetic-preview-session; Path=/; HttpOnly; SameSite=Strict",
+      },
+    });
+  }
   if (request.method === "GET" && url.pathname === "/api/version") return json(version);
   if (request.method === "GET" && url.pathname === "/api/state") {
     return json({ configured: true, repository: archiveStatus.repository, host_id: "demo-laptop" });
@@ -673,7 +689,7 @@ const server = Bun.serve({
   },
 });
 
-console.log(`Babel mock: http://${server.hostname}:${server.port}/?token=synthetic-preview-token`);
+console.log(`Babel mock: http://${server.hostname}:${server.port}/#nonce=synthetic-preview-nonce`);
 console.log(`Scan simulation: MOCK_SCAN=${scanMode} (running | error | idle | empty)`);
 console.log(
   `Unwired services: MOCK_UNWIRED=${unwired.size === 0 ? "<none>" : [...unwired].join(",")} (frontier | review | reality | search)`,

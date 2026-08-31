@@ -886,59 +886,98 @@ export interface Overview {
   activity: OverviewActivity;
 }
 
-const TOKEN_KEY = "babel.web.token";
-
-// The launch token arrives in the URL fragment, which the browser never sends
-// to any server (SPEC.md §146). It is copied into session storage and the
-// fragment is erased immediately, so a reload or a screenshot carries no
-// credential. Every later request presents it as a bearer header.
+// ---------------------------------------------------------------------------
+// The §2.7 bootstrap exchange (decision 34, issue #72).
 //
-// Honest accounting of that erasure: there are two independent mechanisms, and
-// this replaceState is only one of them. "#token=…" matches no route, so it
+// The launch URL's fragment carries a one-time nonce, which the browser never
+// sends to any server. It is read once, erased from the URL, and posted in a
+// request body; the server answers with an `HttpOnly; SameSite=Strict` session
+// cookie and kills the nonce. From then on the browser authenticates by cookie
+// and this module holds no credential at all — there is no value here for an
+// XSS hole or a compromised dependency to read out of the page, which is the
+// whole reason the exchange exists.
+//
+// Nothing is stored. The old bootstrap copied the launch token into
+// sessionStorage because every request had to attach it as a header; a cookie
+// the page cannot read survives a reload without the page remembering
+// anything, so a reload re-authenticates with a credential that was never
+// reachable from script.
+// ---------------------------------------------------------------------------
+
+const BOOTSTRAP_PATH = "/api/bootstrap";
+
+// takeNonce reads the launch nonce and erases the fragment in one step, so the
+// value is used exactly once no matter how the page is later navigated.
+//
+// Honest accounting of the erasure: there are two independent mechanisms, and
+// this replaceState is only one of them. "#nonce=…" matches no route, so it
 // falls through to App.tsx's catch-all, which is <Navigate to="/"
-// replace /> — a replacing redirect that drops the token-bearing entry on its
+// replace /> — a replacing redirect that drops the nonce-bearing entry on its
 // own. Measured rather than assumed, by disabling each in turn and running the
 // browser acceptance: scrub off with the redirect replacing passes; scrub on
 // with the redirect pushing passes; with both disabled the history walk fails
-// and names the retained "#token=" entry.
+// and names the retained "#nonce=" entry.
 //
-// Both are kept because either alone is a single point of failure for a
-// credential, and the redirect's `replace` is easy to drop while editing
-// routes. The test defends the property, not the mechanism: no reachable
-// history entry retains the token.
+// Both are kept because either alone is a single point of failure, and the
+// redirect's `replace` is easy to drop while editing routes. The test defends
+// the property, not the mechanism: no reachable history entry retains the
+// nonce. A retained entry is now a smaller exposure than it was — the nonce is
+// spent and expires — but it is still a credential in a history list.
 //
 // The fragment is also route state, so this must read it before the router
 // mounts. ES module evaluation guarantees that: main.tsx imports App, which
-// imports this module, so this function runs during import and therefore
-// before createRoot().render(). Lazy-loading this module would let the router
-// rewrite the fragment away from "#token=" first and silently break
-// authentication. The nonce-to-cookie exchange in SPEC.md §146 would remove
-// this coupling by using the fragment exactly once.
-function bootstrapToken(): string {
+// imports this module, so this runs during import and therefore before
+// createRoot().render(). Lazy-loading this module would let the router rewrite
+// the fragment away from "#nonce=" first and silently break the bootstrap.
+function takeNonce(): string {
   const hash = window.location.hash.replace(/^#/u, "");
-  const supplied = new URLSearchParams(hash).get("token") ?? "";
-  if (supplied) {
-    try {
-      window.sessionStorage.setItem(TOKEN_KEY, supplied);
-    } catch {
-      // A locked-down browser can disable session storage; the current request still works.
-    }
-    const url = new URL(window.location.href);
-    window.history.replaceState(
-      window.history.state,
-      "",
-      `${url.pathname}${url.search}`,
-    );
-    return supplied;
-  }
-  try {
-    return window.sessionStorage.getItem(TOKEN_KEY) ?? "";
-  } catch {
-    return "";
-  }
+  const supplied = new URLSearchParams(hash).get("nonce") ?? "";
+  if (!supplied) return "";
+  const url = new URL(window.location.href);
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
+  return supplied;
 }
 
-const token = bootstrapToken();
+// refusal remembers why the exchange failed, so the first request's bare 401
+// can be reported as the thing that actually happened — an expired or
+// already-used launch link — instead of as an anonymous authorization failure
+// the operator cannot act on.
+let refusal = "";
+
+// established is awaited by every request. It resolves rather than rejects on
+// failure: a page whose exchange was refused must still render and report the
+// refusal, which is what the ordinary unauthorized path already does.
+//
+// A load with no nonce in the fragment — every reload, and every navigation
+// after the first — exchanges nothing and authenticates with the cookie it
+// already holds.
+const established: Promise<void> = (async () => {
+  const nonce = takeNonce();
+  if (!nonce) return;
+  try {
+    const response = await fetch(BOOTSTRAP_PATH, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nonce }),
+      cache: "no-store",
+      // Explicit because the whole exchange depends on it: the response's
+      // Set-Cookie must be kept, and every later request must carry it.
+      credentials: "same-origin",
+    });
+    if (response.ok) return;
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      const body = (await response.json()) as { error?: unknown };
+      if (typeof body.error === "string" && body.error) message = body.error;
+    } catch {
+      // Keep the status fallback for a malformed or empty refusal.
+    }
+    refusal = message;
+  } catch (error) {
+    refusal = safeMessage(error);
+  }
+})();
+
 const errorListeners = new Set<(message: string | null) => void>();
 let currentError: string | null = null;
 
@@ -977,9 +1016,13 @@ export class APIError extends Error {
 // interface that spins forever.
 const REQUEST_TIMEOUT_MS = 20_000;
 
-// send is the one transport path every API call shares: bearer token, cache
-// bypass, bounded wait, error mapping, and error publication. Callers differ
-// only in how they read a successful body.
+// send is the one transport path every API call shares: the session cookie,
+// cache bypass, bounded wait, error mapping, and error publication. Callers
+// differ only in how they read a successful body.
+//
+// Every request waits for the bootstrap exchange. A request that overtook it
+// would be sent before the session cookie existed and refused, which on a
+// first load is every request the dashboard makes.
 async function send<T>(
   path: string,
   init: RequestInit,
@@ -988,12 +1031,11 @@ async function send<T>(
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${token}`);
+    await established;
     const response = await fetch(path, {
       ...init,
-      headers,
       cache: "no-store",
+      credentials: "same-origin",
       signal: controller.signal,
     });
     if (!response.ok) {
@@ -1004,6 +1046,10 @@ async function send<T>(
       } catch {
         // Keep the status fallback for malformed or empty error responses.
       }
+      // A 401 after a refused exchange has one cause, and the server already
+      // named it. Reporting "unauthorized" instead would hide an expired or
+      // already-used launch link behind a message the operator cannot act on.
+      if (response.status === 401 && refusal) message = refusal;
       throw new APIError(response.status, message);
     }
     return await read(response);
@@ -1106,7 +1152,7 @@ export function fetchSession(
   return request<FetchResult>(`/api/fetch?${query(values)}`, { method: "POST" });
 }
 
-// lockServer is one-way. The server revokes the launch token as it answers, so
+// lockServer is one-way. The server revokes the session as it answers, so
 // there is no second attempt to make and no way to re-read the confirmation:
 // whatever this resolves or rejects with is the last thing this page learns.
 export function lockServer(): Promise<LockResult> {

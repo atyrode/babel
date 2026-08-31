@@ -42,10 +42,12 @@ type observed struct {
 // change that puts a title or a workspace path into a route would defeat the
 // inference without failing this test.
 //
-// The launch token is not exempt here. SPEC.md §146 keeps it in the URL
-// fragment, which is never transmitted, so it must appear in no request line
-// and no log line even when a client mistakenly supplies it as a query
-// parameter — which this exercises, and which the server now refuses.
+// Neither launch credential is exempt here. SPEC.md §148 keeps the bootstrap
+// nonce in the URL fragment, which is never transmitted, and the session it is
+// exchanged for lives in an `HttpOnly` cookie: so the nonce must appear in no
+// request line and no log line, the session must not authenticate from a query
+// string — which this exercises, and which the server refuses — and neither
+// may reach the diagnostics stream.
 func TestNoSentinelReachesLeakChannels(t *testing.T) {
 	f := newFixture(t).withRepoPassword(credentialSentinel + "\n")
 	f.writeSession(sessionSpec{
@@ -77,7 +79,7 @@ func TestNoSentinelReachesLeakChannels(t *testing.T) {
 			t.Fatal(err)
 		}
 		if authorize {
-			req.Header.Set("Authorization", "Bearer "+h.token)
+			authorizeWeb(req, h.session)
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -131,13 +133,15 @@ func TestNoSentinelReachesLeakChannels(t *testing.T) {
 		// only manufactures a false positive.
 		call(http.MethodGet, "/api/session?selector="+url.QueryEscape("omp/does-not-exist"), true),
 		call(http.MethodGet, "/api/nope", true),
-		// The browser's real first load sends no credential at all: the token
-		// lives in the fragment, which no browser transmits.
+		// The browser's real first load sends no credential at all: the
+		// nonce lives in the fragment, which no browser transmits, and the
+		// session cookie does not exist until the exchange runs.
 		call(http.MethodGet, "/", false),
-		// A token pasted into a query string is refused, and must not be logged
-		// on the way to being refused. This is what keeps the token assertion
-		// below load-bearing.
-		call(http.MethodGet, "/api/version?token="+h.token, false),
+		// Either credential pasted into a query string is refused, and must
+		// not be logged on the way to being refused. This is what keeps the
+		// credential assertion below load-bearing.
+		call(http.MethodGet, "/api/version?session="+h.session, false),
+		call(http.MethodGet, "/api/version?nonce="+h.nonce, false),
 		call(http.MethodPost, "/api/version", true),
 		call(http.MethodGet, "/api/sessions", false),
 	}
@@ -155,16 +159,16 @@ func TestNoSentinelReachesLeakChannels(t *testing.T) {
 		}
 	}
 
-	// A query-string token must not authenticate. If that regressed, live
-	// credentials would travel in request lines again and the token assertion
-	// below would become this file's only guard against it. The token value is
+	// A query-string credential must not authenticate. If that regressed, live
+	// credentials would travel in request lines again and the log assertion
+	// below would become this file's only guard against it. The values are
 	// deliberately kept out of the failure message.
 	for _, r := range responses {
-		if !strings.Contains(r.path, "token=") {
+		if !strings.Contains(r.path, "session=") && !strings.Contains(r.path, "nonce=") {
 			continue
 		}
 		if r.status != http.StatusUnauthorized {
-			t.Errorf("query-string token authenticated: status %d, want 401", r.status)
+			t.Errorf("a query-string credential authenticated: status %d, want 401", r.status)
 		}
 	}
 
@@ -230,11 +234,17 @@ func TestNoSentinelReachesLeakChannels(t *testing.T) {
 	}
 
 	// Server logs. The middleware logs r.URL.Path deliberately rather than the
-	// full URL; logging the query would put the launch token and every
-	// selector into a stream operators paste into bug reports.
+	// full URL; logging the query would put every selector into a stream
+	// operators paste into bug reports. The nonce is checked as well as the
+	// session: it travels in a POST body, which is logged nowhere, and the
+	// exchange's own log line says what happened without naming what was
+	// spent.
 	logs := h.stderr.String()
 	if !strings.Contains(logs, "/api/sessions") {
 		t.Fatalf("server logged no requests, so the log channel is untested:\n%s", logs)
+	}
+	if !strings.Contains(logs, "/api/bootstrap") {
+		t.Fatalf("the bootstrap exchange was not logged, so its own log line is untested:\n%s", logs)
 	}
 	if strings.Contains(logs, credentialSentinel) {
 		t.Error("server logs carry the repository credential")
@@ -242,11 +252,14 @@ func TestNoSentinelReachesLeakChannels(t *testing.T) {
 	if strings.Contains(logs, transcriptSentinel) {
 		t.Error("server logs carry transcript content")
 	}
-	if strings.Contains(logs, h.token) {
-		t.Error("server logs carry the launch token")
+	if strings.Contains(logs, h.session) {
+		t.Error("server logs carry the launch session")
+	}
+	if strings.Contains(logs, h.nonce) {
+		t.Error("server logs carry the bootstrap nonce")
 	}
 
-	// The launch URL is the token's one sanctioned location, and it must carry
+	// The launch URL is the nonce's one sanctioned location, and it must carry
 	// nothing else.
 	if strings.Contains(h.base, credentialSentinel) || strings.Contains(h.base, transcriptSentinel) {
 		t.Errorf("launch URL %q carries a sentinel", h.base)

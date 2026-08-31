@@ -46,9 +46,14 @@ func (b *syncBuffer) String() string {
 // webHarness drives a live `babel web` server the way a browser does, with
 // access to the scan coordinator behind it.
 type webHarness struct {
-	t           *testing.T
-	base        string
-	token       string
+	t    *testing.T
+	base string
+	// nonce is the spent bootstrap nonce and session is what it was
+	// exchanged for. Both are kept because the leak assertions are about
+	// both: the nonce must never reach a request line or a log, and the
+	// session must never leave its cookie.
+	nonce       string
+	session     string
 	coordinator *scanCoordinator
 	stderr      *syncBuffer
 }
@@ -79,11 +84,11 @@ func newWebHarness(t *testing.T, f *fixture) *webHarness {
 			t.Error("server did not stop within 20s, well past its own 5s shutdown budget")
 		}
 	})
-	base, token, ok := strings.Cut(srv.URL(), "/#token=")
-	if !ok {
-		t.Fatalf("launch URL %q carries no token", srv.URL())
+	base, nonce, session := bootstrapWeb(t, srv.URL())
+	return &webHarness{
+		t: t, base: base, nonce: nonce, session: session,
+		coordinator: scanner(f.dataDir), stderr: stderr,
 	}
-	return &webHarness{t: t, base: base, token: token, coordinator: scanner(f.dataDir), stderr: stderr}
 }
 
 // do performs one authenticated request, decoding the response document.
@@ -93,7 +98,7 @@ func (h *webHarness) do(ctx context.Context, method, path string, out any) int {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+h.token)
+	authorizeWeb(req, h.session)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		h.t.Fatalf("%s %s: %v", method, path, err)
