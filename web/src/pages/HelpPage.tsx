@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import { Link } from "react-router-dom";
 import { Badge, statusTone, reviewTone } from "../analysis";
 
@@ -47,6 +48,218 @@ const COMMANDS: Array<[string, string, string, string]> = [
   ["babel reality answer", "Records an attributed answer, verbatim.", "/reality", "Reality"],
   ["babel export", "Renders one record as JSON or Markdown.", "/review", "Review"],
 ];
+
+// The "Am I talking to an AI?" table. One row per surface an operator actually
+// touches, and the middle column deliberately has only two values: nothing in
+// Babel is a conversation with a model. "Only during a run" is as close as it
+// gets, and both rows carrying it name the command that starts the run.
+const AI_SURFACES: Array<{
+  surface: string;
+  mono: boolean;
+  answer: "never" | "only during a run";
+  reason: string;
+}> = [
+  {
+    surface: "Web pages — every route",
+    mono: false,
+    answer: "never",
+    reason:
+      "Pages read records Babel already wrote. They can quote what a model once wrote — framed " +
+      "and labeled — but nothing you do in a browser reaches a model.",
+  },
+  {
+    surface: "babel archive push · status · verify",
+    mono: true,
+    answer: "never",
+    reason:
+      "restic plus catalog arithmetic. The hourly timer runs push unattended; still no model.",
+  },
+  {
+    surface: "babel sessions list · inspect · fetch",
+    mono: true,
+    answer: "never",
+    reason:
+      "They read harness files and the archive as they are. Fetch restores bytes; nothing " +
+      "interprets them.",
+  },
+  {
+    surface: "babel prepare",
+    mono: true,
+    answer: "never",
+    reason:
+      "Fixes an exploration's scope and builds its retrieval index — offline computation. " +
+      "Preparation never infers.",
+  },
+  {
+    surface: "babel explore",
+    mono: true,
+    answer: "only during a run",
+    reason:
+      "Starts the one sandboxed Code worker. When the run ends the worker is terminated, and no " +
+      "agent exists anywhere.",
+  },
+  {
+    surface: "Titles — recorded · derived",
+    mono: false,
+    answer: "never",
+    reason:
+      "The harness recorded it, or Babel computed it offline from the session's own records.",
+  },
+  {
+    surface: "Titles — inferred",
+    mono: false,
+    answer: "only during a run",
+    reason:
+      "babel sessions title infer previews exactly what would leave this machine and runs only " +
+      "on --confirm; the value is labeled inferred wherever it shows.",
+  },
+];
+
+// In-page cross-links. The router owns the URL fragment (#/help is a route),
+// so a native #anchor link would be read as navigation to a route that does
+// not exist. The href stays the page's own route — which keeps middle-click
+// and the link-audit test honest — and the click scrolls instead.
+function scrollTo(id: string) {
+  return (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+}
+
+// The two-loops diagram, drawn as static inline SVG rather than with a chart
+// library: this page must render with no network and no data, and the diagram
+// is a fixed statement about the system, not a visualization of state. Each
+// SVG carries role="img" with a linked title and description, so a screen
+// reader gets the same claim the picture makes.
+function ArchiveLoopDiagram() {
+  return (
+    <svg
+      className="runtime-diagram"
+      viewBox="0 0 360 300"
+      role="img"
+      aria-labelledby="rt-loop-title rt-loop-desc"
+    >
+      <title id="rt-loop-title">The archive loop: automatic, and no AI anywhere</title>
+      <desc id="rt-loop-desc">
+        An hourly timer runs babel archive push, which writes the encrypted restic repository and
+        the session catalog. Web pages and CLI browsing only read what the loop wrote. No model is
+        involved at any point in this loop.
+      </desc>
+      <defs>
+        <marker id="rt-arrow-loop" markerWidth="7" markerHeight="7" refX="5.4" refY="3" orient="auto">
+          <path className="runtime-arrowhead" d="M0 0L6 3L0 6Z" />
+        </marker>
+      </defs>
+      <rect className="rt-box" x="14" y="34" width="150" height="52" rx="9" />
+      <text className="rt-title" x="89" y="57" textAnchor="middle">Hourly timer</text>
+      <text className="rt-sub" x="89" y="74" textAnchor="middle">systemd user timer</text>
+      <rect className="rt-box" x="196" y="34" width="150" height="52" rx="9" />
+      <text className="rt-title rt-mono" x="271" y="57" textAnchor="middle">babel archive push</text>
+      <text className="rt-sub" x="271" y="74" textAnchor="middle">backs up session files</text>
+      <path className="rt-flow" d="M164 60H190" markerEnd="url(#rt-arrow-loop)" />
+      {/* The hourly return arc is two segments with a deliberate gap: the
+          label sits in the gap rather than being struck through by the arc. */}
+      <path className="rt-flow rt-flow--again" d="M271 32C271 14 242 9 222 9" />
+      <path className="rt-flow rt-flow--again" d="M138 9C104 9 89 14 89 26" markerEnd="url(#rt-arrow-loop)" />
+      <text className="rt-label" x="180" y="12" textAnchor="middle">again next hour</text>
+      <path className="rt-flow" d="M271 86V112" markerEnd="url(#rt-arrow-loop)" />
+      <text className="rt-label" x="279" y="104">writes</text>
+      <rect className="rt-box rt-box--records" x="14" y="118" width="332" height="66" rx="9" />
+      <text className="rt-title" x="180" y="142" textAnchor="middle">Babel's records</text>
+      <text className="rt-sub" x="180" y="160" textAnchor="middle">
+        restic repository (encrypted) · session catalog
+      </text>
+      <path className="rt-flow" d="M180 244V190" markerEnd="url(#rt-arrow-loop)" />
+      <text className="rt-label" x="188" y="220">read — never written back</text>
+      <rect className="rt-box" x="14" y="248" width="332" height="48" rx="9" />
+      <text className="rt-title" x="180" y="268" textAnchor="middle">Web pages · CLI browsing</text>
+      <text className="rt-sub" x="180" y="284" textAnchor="middle">
+        show what the loop already wrote — and start nothing
+      </text>
+    </svg>
+  );
+}
+
+function ExploreRunDiagram() {
+  return (
+    <svg
+      className="runtime-diagram"
+      viewBox="0 0 360 520"
+      role="img"
+      aria-labelledby="rt-run-title rt-run-desc"
+    >
+      <title id="rt-run-title">An exploration run: the only place a model runs</title>
+      <desc id="rt-run-desc">
+        The operator starts a run from a terminal with babel explore. Inside the AI boundary,
+        exactly one sandboxed Code worker runs under the profile fixed by the operator's terminal
+        ceremony. Its evidence requests cross the boundary to Babel's broker, which grants or
+        denies each one and receipts every decision. Everything the run produces lands in Babel's
+        own records: the hypothesis frontier and the run receipt. The worker is terminated when
+        the run ends; between runs, no agent exists.
+      </desc>
+      <defs>
+        <marker id="rt-arrow-run" markerWidth="7" markerHeight="7" refX="5.4" refY="3" orient="auto">
+          <path className="runtime-arrowhead" d="M0 0L6 3L0 6Z" />
+        </marker>
+        <marker id="rt-arrow-run-x" markerWidth="7" markerHeight="7" refX="5.4" refY="3" orient="auto">
+          <path className="runtime-arrowhead runtime-arrowhead--exchange" d="M0 0L6 3L0 6Z" />
+        </marker>
+      </defs>
+      <rect className="rt-box" x="14" y="14" width="332" height="52" rx="9" />
+      <text className="rt-title" x="180" y="36" textAnchor="middle">You, in a terminal</text>
+      <text className="rt-sub rt-mono" x="180" y="54" textAnchor="middle">
+        babel explore --preparation ID
+      </text>
+      <path className="rt-flow" d="M180 66V90" markerEnd="url(#rt-arrow-run)" />
+      <text className="rt-label" x="188" y="82">starts one run</text>
+      <rect className="rt-boundary" x="14" y="96" width="332" height="150" rx="10" />
+      <text className="rt-boundary-label" x="30" y="117">
+        AI BOUNDARY — THE ONLY PLACE A MODEL RUNS
+      </text>
+      <rect className="rt-box rt-box--worker" x="30" y="130" width="300" height="102" rx="9" />
+      <text className="rt-title" x="180" y="154" textAnchor="middle">One sandboxed Code worker</text>
+      <text className="rt-sub" x="180" y="174" textAnchor="middle">
+        no network · no host files · no credentials
+      </text>
+      <text className="rt-sub" x="180" y="196" textAnchor="middle">
+        profile — which model, which provider —
+      </text>
+      <text className="rt-sub" x="180" y="210" textAnchor="middle">
+        fixed in your terminal ceremony, never here
+      </text>
+      <path className="rt-flow rt-flow--exchange" d="M120 248V286" markerEnd="url(#rt-arrow-run-x)" />
+      <path className="rt-flow rt-flow--exchange" d="M240 286V248" markerEnd="url(#rt-arrow-run-x)" />
+      <text className="rt-exchange-label" x="130" y="271">asks for evidence</text>
+      <text className="rt-exchange-label" x="248" y="265">granted or denied,</text>
+      <text className="rt-exchange-label" x="248" y="277">receipted</text>
+      <rect className="rt-box" x="14" y="290" width="332" height="64" rx="9" />
+      <text className="rt-title" x="180" y="312" textAnchor="middle">Babel's evidence broker</text>
+      <text className="rt-sub" x="180" y="330" textAnchor="middle">
+        checks each request against the run's grant
+      </text>
+      <text className="rt-sub" x="180" y="344" textAnchor="middle">
+        — grants, denies, and receipts every decision
+      </text>
+      <path className="rt-flow" d="M180 354V378" markerEnd="url(#rt-arrow-run)" />
+      <text className="rt-label" x="188" y="370">one supervised stream</text>
+      <rect className="rt-box rt-box--records" x="14" y="384" width="332" height="64" rx="9" />
+      <text className="rt-title" x="180" y="406" textAnchor="middle">Babel's own records</text>
+      <text className="rt-sub" x="180" y="424" textAnchor="middle">
+        hypotheses → frontier · observations · run receipt
+      </text>
+      <text className="rt-sub" x="180" y="438" textAnchor="middle">
+        nothing published, nothing written anywhere else
+      </text>
+      <rect className="rt-endbar" x="14" y="464" width="332" height="42" rx="9" />
+      <text className="rt-sub" x="180" y="482" textAnchor="middle">
+        The worker is terminated when the run ends.
+      </text>
+      <text className="rt-end-strong" x="180" y="497" textAnchor="middle">
+        Between runs, no agent exists.
+      </text>
+    </svg>
+  );
+}
 
 function HelpPage() {
   return (
@@ -104,7 +317,97 @@ function HelpPage() {
         </ul>
       </article>
 
-      <article className="card help-card">
+      <article className="card help-card" id="runtime-model">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Runtime model</p>
+            <h2>When does Babel run?</h2>
+          </div>
+        </div>
+        <p>
+          Babel is not a resident agent: no daemon thinks between your visits, and there is nothing
+          here to talk to. It runs as <strong>two loops that never overlap</strong>. The first
+          archives this host every hour and involves no model at all. The second is an exploration
+          run — the only place a model ever executes — and it exists exactly as long as the run
+          you started. <a href="#/help" onClick={scrollTo("lifecycle")}>The lifecycle</a> below
+          follows the records these loops write.
+        </p>
+        <div className="runtime-loops">
+          <figure className="runtime-loop">
+            <figcaption>
+              <Badge label="no AI · automatic" tone="green" />
+              <strong>The archive loop</strong>
+              <span className="runtime-loop-sub">
+                Runs every hour, attended by nobody, and only copies and describes files.
+              </span>
+            </figcaption>
+            <ArchiveLoopDiagram />
+          </figure>
+          <figure className="runtime-loop">
+            <figcaption>
+              <Badge label="AI · only inside the boundary" tone="violet" />
+              <strong>An exploration run</strong>
+              <span className="runtime-loop-sub">
+                Exists only after you run <code>babel explore</code>, and ends by terminating its
+                worker.
+              </span>
+            </figcaption>
+            <ExploreRunDiagram />
+          </figure>
+        </div>
+        <p className="panel-caption">
+          The dashed violet box is the entire AI surface: one sandboxed worker per run, no network,
+          talking only to Babel's broker. Between runs the box is empty — no agent exists.
+        </p>
+
+        <h3>Am I talking to an AI?</h3>
+        <div className="table-scroll">
+          <table className="runtime-ai-table">
+            <thead>
+              <tr>
+                <th>Surface</th>
+                <th>A model involved?</th>
+                <th>Why</th>
+              </tr>
+            </thead>
+            <tbody>
+              {AI_SURFACES.map(({ surface, mono, answer, reason }) => (
+                <tr key={surface}>
+                  <td className={mono ? "mono" : undefined}>{surface}</td>
+                  <td><Badge label={answer} tone={answer === "never" ? "green" : "violet"} /></td>
+                  <td>{reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="panel-caption">
+          No row says <strong>yes</strong>: Babel has no conversational surface. Even during a run
+          you are not talking to the worker — it talks to Babel's broker, and you read what it
+          left behind.
+        </p>
+
+        <h3>Who holds authority</h3>
+        <p>
+          Every run today is <strong>operator-started</strong>: <code>babel explore</code> and{" "}
+          <code>babel sessions title infer --confirm</code> are the only doors, and both are
+          terminal commands. The <strong>profile</strong> — which model, which provider — is
+          chosen only through the operator's terminal ceremony
+          (<code>babel analysis profile configure</code>); no page and no API can pick or change
+          it. A <strong>broker grant is per-run</strong>: a capability the grant never named is
+          denied even where policy would allow it, and the receipt records every decision. And
+          nothing Babel runs <strong>publishes or writes outside Babel's own records</strong> — no
+          issue opened, no repository edited, nothing published.
+        </p>
+        <p className="help-planned">
+          <strong>Planned, not built.</strong> An autonomous conductor that could start runs on
+          its own is designed with per-run attributable authority — every run it started would
+          name it and be bounded by the same per-run grant. Today it does not exist: nothing
+          starts a run but you.
+        </p>
+      </article>
+
+      <article className="card help-card" id="lifecycle">
         <div className="section-heading">
           <div>
             <p className="eyebrow">How work flows</p>
@@ -136,6 +439,9 @@ function HelpPage() {
             started from this interface: a run outlives the browser session, and the disclosure
             consent belongs to a terminal.
             <Link className="panel-link" to="/explore">Explore →</Link>
+            <a className="panel-link" href="#/help" onClick={scrollTo("runtime-model")}>
+              When does Babel run? ↑
+            </a>
           </li>
           <li>
             <strong>Hypotheses</strong> — every emergent candidate is preserved in a resumable

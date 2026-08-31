@@ -31,6 +31,7 @@ const chrome = resolveChrome({
     "that a panel whose service is unavailable explains itself while the rest of the page still renders",
     "that the first-visit pointer to Help dismisses and stays dismissed across a reload",
     "that Help is reachable from every page, including one whose data could not load",
+    "that the runtime model section renders its two labelled loop diagrams and the per-surface AI table",
     "that a hostile candidate statement renders inert inside a panel",
     "that neither route overflows at 390px or 1440px",
   ],
@@ -354,6 +355,70 @@ test.skipIf(!chrome)("the Help guide explains the lifecycle and maps the command
   await page.waitForSelector(".help-page", { timeout: 15_000 });
   page.off("request", listener);
   expect(requests.filter((url) => url.includes("/api/overview"))).toHaveLength(0);
+});
+
+// The runtime model section exists because "when does Babel run, and where
+// does a model touch?" was genuinely unanswerable from the interface
+// (operator report, 2026-08-31). What only a browser can prove: the two loop
+// diagrams really render as labelled images, the table really answers per
+// surface with no "yes" row, and the lifecycle's in-page cross-link scrolls
+// instead of being read as a route by the hash router.
+test.skipIf(!chrome)("the runtime model says when Babel runs and where AI touches", async () => {
+  await open("help");
+  await page.waitForSelector("#runtime-model", { timeout: 15_000 });
+  const text = await page.evaluate(() => document.body.innerText);
+  expect(text).toContain("When does Babel run?");
+  expect(text).toContain("Am I talking to an AI?");
+  expect(text).toContain("Between runs, no agent exists.");
+
+  // The diagrams are labelled images, not decoration: role="img" with an
+  // aria-labelledby that resolves to a non-empty title and description.
+  const diagrams = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".runtime-loops svg")).map((svg) => ({
+      role: svg.getAttribute("role"),
+      labels: (svg.getAttribute("aria-labelledby") ?? "")
+        .split(/\s+/u)
+        .map((id) => document.getElementById(id)?.textContent?.trim().length ?? 0),
+    })));
+  expect(diagrams).toHaveLength(2);
+  for (const diagram of diagrams) {
+    expect(diagram.role).toBe("img");
+    expect(diagram.labels).toHaveLength(2);
+    for (const length of diagram.labels) expect(length).toBeGreaterThan(0);
+  }
+
+  // The table answers per surface, and no answer is "yes": Babel has no
+  // conversational surface. Both run-scoped rows name the command that
+  // starts the run.
+  const table = await page.evaluate(() => ({
+    surfaces: Array.from(document.querySelectorAll(".runtime-ai-table tbody td:first-child"))
+      .map((cell) => cell.textContent ?? ""),
+    answers: Array.from(document.querySelectorAll(".runtime-ai-table tbody .badge"))
+      .map((badge) => badge.textContent ?? ""),
+  }));
+  expect(table.surfaces.length).toBeGreaterThanOrEqual(6);
+  expect(table.surfaces.join("\n")).toContain("babel explore");
+  expect(table.surfaces.join("\n")).toContain("babel prepare");
+  expect([...new Set(table.answers)].sort()).toEqual(["never", "only during a run"]);
+
+  // The lifecycle's cross-link scrolls to the section instead of navigating:
+  // the hash keeps naming this page, and the section heading lands below the
+  // sticky topbar rather than under it.
+  await page.evaluate(() => {
+    const link = Array.from(document.querySelectorAll(".help-lifecycle a"))
+      .find((a) => a.textContent?.includes("When does Babel run?"));
+    if (!(link instanceof HTMLElement)) throw new Error("the lifecycle cross-link is missing");
+    link.scrollIntoView();
+    link.click();
+  });
+  await page.waitForFunction(() => {
+    const section = document.getElementById("runtime-model");
+    const bar = document.querySelector(".topbar");
+    if (!section || !bar) return false;
+    const top = section.getBoundingClientRect().top;
+    return top >= bar.getBoundingClientRect().bottom - 8 && top < window.innerHeight / 2;
+  }, { timeout: 15_000 });
+  expect(await page.evaluate(() => location.hash)).toBe("#/help");
 });
 
 test.skipIf(!chrome)("the first-visit pointer to Help dismisses and stays dismissed", async () => {
