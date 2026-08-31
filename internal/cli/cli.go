@@ -107,7 +107,7 @@ Commands:
   reality import --source ID  apply one trusted source's versioned fact batch
   cookbook list               list the analysis recipes
   cookbook check              check recipe versions against their bodies
-  analysis profile configure  launch Code's profile configuration
+  analysis profile configure  hand this terminal to Code's configuration
   analysis profile show       show the stored Code profile reference
   conformance WORKER          run the analysis-worker contract suite
 

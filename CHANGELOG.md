@@ -9,6 +9,77 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Changed
+
+- **`babel analysis profile configure` hands the operator the terminal instead
+  of negotiating a profile over a pipe.** Every model invocation Babel makes
+  has to trace back to an operator who intentionally set it up (operator
+  decision 2026-08-31, issue #86), and the old ceremony could not carry that
+  claim. It ran Code in the protocol's configuration mode over stdio, so
+  whatever Code resolved a profile from — a dial passed straight through
+  `--worker-arg`, an environment variable, a compiled default — became Babel's
+  stored configuration with nobody present to choose it. It is a ceremony now.
+  The worker is launched as `WORKER [ARG]... --configure --result-file PATH`
+  with the operator's terminal on its stdin, stdout, and stderr; Code draws its
+  own configuration interface there; the operator picks and confirms; Code
+  writes the reference it saved to `PATH`; Babel stores that reference and
+  prints the same summary as before. Nothing else is exchanged, and Babel still
+  never sees the provider configuration behind the reference (SPEC.md §2.6,
+  decision 18).
+  - **No terminal, no configuration.** stdin and stdout must both be a
+    terminal or the command refuses in one line, having launched nothing. The
+    question is asked with an ioctl only a terminal answers rather than from
+    the file's mode, because `/dev/null` is a character device too and a
+    mode-based test would hand an interactive configuration to nothing. No flag
+    substitutes for a terminal: automation binds a run to a profile that
+    already exists with `babel explore --profile ID@REVISION`, which mints
+    nothing, and there is no path left that mints one without an operator.
+  - **A dial is refused rather than forwarded.** `--worker-arg` exists because
+    Code speaks the worker protocol under a subcommand, so the executable has
+    to be put into a mode; it was also a channel for handing Code a `--set`.
+    Such an argument is now rejected — whether it was typed or stored by an
+    earlier configuration, because a machine configured that way otherwise
+    keeps reproducing it — and `$CODE_SELECTION_STATE` is removed from the
+    worker's environment with a line saying so. The rest of the environment is
+    inherited whole, unlike a supervised run's strict allowlist: this child is
+    drawing an interface and needs `$TERM`, the locale, and wherever its own
+    configuration lives.
+  - **An abandoned ceremony changes nothing, and says which happened.** A
+    worker that exits nonzero, writes no result file, or writes a file Babel
+    cannot read leaves the settings document byte-for-byte as it was, reports
+    `configuration unchanged` with the reason, names `babel analysis profile
+    show` as the way to see what survived, and exits nonzero. A worker that
+    writes a reference and *then* fails is the same case: the exit status
+    decides, not the file. The result file is created empty and `0600` in a
+    private directory Babel removes afterwards, so the operator's choice
+    travels through a file Babel owns rather than one anybody could plant.
+  - **A stored reference no longer carries metadata nobody can refresh.** The
+    worker build, disclosure class, cost estimate, and capability list used to
+    arrive on the same stdio channel the operator's terminal now occupies, so a
+    record the ceremony mints has none of them, and the previous record's
+    metadata is replaced rather than carried onto the profile that superseded
+    it. `redaction_required` became nullable for the same reason: "Code never
+    told Babel" and "Code said no redaction is required" are different
+    documents, the second is a claim about what may leave this machine raw, and
+    `analysis profile show` now prints the unknown one as absent instead of as
+    a verdict. A document an earlier build wrote keeps displaying what it
+    holds.
+  - **`--timeout` is gone.** It bounded a protocol exchange. An operator
+    reading Code's dials is not a hung process, and the ceremony ends when the
+    operator or Code ends it.
+
+  Verified against a real pty: the refusal on captured buffers, on a pipe, and
+  on `/dev/null`; the full handover, with a stub worker recording that all
+  three of its streams were terminals, that its argv carried Babel's two flags
+  after its own, and that `$CODE_SELECTION_STATE` had been removed; every
+  abandoned-ceremony path leaving the stored document unchanged; and the
+  dial refusals launching nothing. The Code half of decision 1 is
+  `atyrode/code`'s: configuration mode there stops resolving dials from
+  `CODE_SELECTION_STATE`, `--set`, and compiled defaults. Babel's own
+  conformance suite still grades the protocol's configuration mode, so a worker
+  that has never been configured by an operator now fails that obligation —
+  which is the honest reading of it.
+
 ### Added
 
 - **A dashboard at `#/`, and a Help page that says what Babel is.** The web
