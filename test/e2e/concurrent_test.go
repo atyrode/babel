@@ -378,7 +378,13 @@ func TestCatalogRebuildsFromTheRepository(t *testing.T) {
 	// The rebuilt catalog is a working catalog, not just rows: a second instance
 	// browses it and the deployment's session identities are back.
 	assertDistinctSessions(t, dep, 2)
-	if _, err := sharedcatalog.Open(context.Background(), dep.dsn()); err != nil {
+	// Closed immediately: against a real server the role's connection budget is
+	// small enough that a handle held for the rest of the run is one an instance
+	// cannot have (#20).
+	db, err := sharedcatalog.Open(context.Background(), dep.dsn(),
+		sharedcatalog.WithMaxConnections(dep.probeConns))
+	if err != nil {
 		t.Fatalf("the rebuilt catalog is not usable: %v", err)
 	}
+	db.Close()
 }
