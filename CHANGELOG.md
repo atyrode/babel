@@ -38,6 +38,76 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The conductor: an attributable autonomous runtime (operator direction
+  2026-08-31, issue #96).** Babel ran only when summoned. That is a strange
+  default for an instrument whose subject matter accumulates whether or not
+  anyone is watching, and the operator's objection to the summoned-only model
+  was not that it was slow but that it was opaque: what Babel analyses, when,
+  and by whose authority. `babel conductor run` is a foreground loop that
+  answers "what deserves a run?" once per cycle, and every part of the answer
+  is recorded. It adds scheduling and nothing else — a cycle is an ordinary
+  preparation, recipe, receipt, frontier and disposition write, reached through
+  the same code a typed `babel prepare` and `babel explore` take — so turning
+  it off degrades Babel to exactly the manual instrument it was.
+  - **Every run says why it happened.** Run receipts gained an `authority`:
+    `operator` with the command or invitation that asked for it, `policy` with
+    the standing policy that directed it, or `serendipity` with the identity of
+    the draw. It lives in the receipt header rather than the body, because it
+    is an identifier pair and §9's plaintext allowlist admits one: a deployment
+    that seals receipt bodies can still list runs by why they happened. A run
+    with no nameable authority is refused before it reaches a worker, which is
+    #86's intentionality rule applied to scheduling. Receipts written before
+    the field existed carry none and say so; nothing is backfilled, because
+    writing "operator" over them would manufacture the provenance the field
+    exists to carry. The durable schema migrates in place — the run component
+    moves to version 2 — so an existing file opens and keeps its history.
+  - **A work ladder, with the operator above the loop.** Rung one is the
+    process-further queue of #87: the oldest invitation nobody has taken, run
+    over the sessions the invited record came out of, with the recipe that
+    produced it. Rung two is the spec's attention policy, and this build
+    declares it and does not implement it — `conductor status` prints it as
+    absent rather than as empty, because "no policy is waiting" and "this build
+    has no policies" are different answers to the question the loop exists to
+    keep answerable. The floor is serendipity: a random corpus slice crossed
+    with a random default-enabled recipe, no aim, its draw declared as a ULID
+    the receipt records.
+  - **The serendipity floor is a protected fraction, not a last resort.** One
+    cycle in four is chaotic by default even while invitations are queueing,
+    configurable with `--floor`. The ratio is computed from the journal rather
+    than from one process's memory, so restarting the loop does not hand it
+    three free dutiful cycles. Every incentive in a loop like this pushes
+    towards pure dutifulness, which is why the share is guaranteed rather than
+    left to whatever is waiting.
+  - **Autonomy is budget-bounded, not trust-bounded.** `babel conductor
+    configure --per-cycle AMOUNT --per-day AMOUNT` is mandatory and has no
+    defaults, and the loop refuses to run without both. Before each cycle the
+    day's receipted estimated costs are summed — from the receipts, so a run an
+    operator started by hand spends the same budget and a restart does not
+    forget the day — and a cycle that would not fit parks the loop with a
+    reason an operator can read. A cycle that overran the per-cycle ceiling
+    parks it too: the first breach is evidence the next one will do the same.
+    A run whose profile quoted no usable currency is counted as unpriced rather
+    than as free, and `conductor status` shows the count beside the total.
+  - **A cycle inherits the stored profile.** The conductor never configures
+    one and has no `--profile`: a loop that could choose its own profile could
+    choose its own spending limit.
+  - **Stopping is clean at cycle granularity.** The first SIGTERM or Ctrl-C
+    ends the loop after the cycle in flight finishes and is receipted; a second
+    cancels the run itself, which internal/explore already makes safe. A cycle
+    is journalled before its run starts, so a killed conductor leaves the fact
+    behind — and the next one resumes that cycle under its original run
+    identity rather than drawing the same work twice. An invitation is claimed
+    before the run, so losing a conductor costs one amended receipt and never a
+    duplicate run over an operator's request.
+  - **`babel conductor status` is the loop read back.** State, the cycle in
+    flight and its authority, every rung's queue depth, today's spend against
+    the ceilings, and the last N cycle outcomes — assembled from the journal
+    and the durable stores rather than from a second source that could disagree
+    with them. A journal entry claiming a cycle is running is checked against
+    whether that process still exists, so a crashed loop reads as interrupted
+    instead of confidently working. There is no daemon mode: supervision,
+    restart policy and wall-clock scheduling belong to the OS.
+
 - **Actionable outputs: dispositions, revision chains, invitations, and
   revive (operator direction 2026-08-31, issue #87).** Babel's records could
   be read and decided on; they could not be acted on, argued with, or nudged.

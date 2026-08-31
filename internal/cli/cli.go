@@ -92,6 +92,9 @@ Commands:
   sessions prune --local      remove locally fetched session directories
   prepare [SELECTOR...]       fix an exploration's corpus scope
   explore --preparation ID    run one exploration through Code
+  conductor run               run the autonomous cycle loop in the foreground
+  conductor status            report the loop, its queues and its spend
+  conductor configure         set the budget ceilings the loop runs under
   hypotheses                  list the candidate frontier
   hypothesis show ID          show one candidate with its whole history
   findings                    list consolidated findings
@@ -255,6 +258,8 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.reality(ctx, args[1:])
 	case "cookbook":
 		return a.cookbookCmd(args[1:])
+	case "conductor":
+		return a.conductorCmd(ctx, args[1:])
 	case "conformance":
 		return a.conformanceCmd(ctx, args[1:])
 	default:

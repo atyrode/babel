@@ -174,53 +174,6 @@ func (a *app) explore(ctx context.Context, args []string) error {
 		return fmt.Errorf("read preparation %s: %w", *preparation, err)
 	}
 
-	inputs, err := a.preflightInputs(ctx, prep, sf.rootList())
-	if err != nil {
-		return err
-	}
-
-	d, err := babelDirs()
-	if err != nil {
-		return err
-	}
-	idx, err := index.Open(d.indexDir())
-	if err != nil {
-		return err
-	}
-	defer idx.Close()
-	ledger, err := explore.OpenLedger(state.dir)
-	if err != nil {
-		return err
-	}
-	defer ledger.Close()
-
-	wcfg.Diagnostics = &sanitizingWriter{w: a.stderr, prefix: "worker: "}
-	controller, err := explore.New(explore.Config{
-		Preparation: prep,
-		Recipes:     set,
-		// Corpus search is the one facility this build brokers: §14 defers
-		// the evidence-tool and public-research broker protocols, and a
-		// sandbox or repository grant would name a facility with no version
-		// to record. Granting only what Babel can actually serve is what
-		// keeps the receipt's containment answer true.
-		Grant: worker.Grant{
-			Capabilities: []worker.Capability{worker.CapabilityCorpusSearch},
-			Disclosure:   worker.DisclosureLocal,
-		},
-		Profile:      profileRef,
-		Worker:       wcfg,
-		Frontier:     state.frontier,
-		Runs:         state.runs,
-		Ledger:       ledger,
-		Dispositions: state.dispositions,
-		Index:        idx,
-		Inputs:       inputs,
-		Capabilities: runstore.CapabilityVersions{Tool: "babel/" + readBuildIdentity().Version},
-	})
-	if err != nil {
-		return err
-	}
-
 	id := *runID
 	if id == "" {
 		id = newRunID()
@@ -231,31 +184,26 @@ func (a *app) explore(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	a.diagf("exploring %s over %d %s as run %s...\n",
-		Sanitize(string(prep.ID)), len(prep.Selection),
-		plural(len(prep.Selection), "session", "sessions"), Sanitize(id))
-	reporter := &exploreReporter{app: a, last: time.Now()}
-	outcome, runErr := controller.Explore(ctx, explore.Options{
-		RunID:      id,
-		Roots:      roots,
-		Challenge:  *challenge,
-		Synthesize: *synthesize,
-		Budget:     explore.Budget{Develop: *develop, Retrievals: *retrievals},
-		OnRecord:   reporter.record,
-		OnProgress: reporter.progress,
+	res, outcome, runErr := a.runExploration(ctx, state, explorePlan{
+		prep:    prep,
+		profile: profileRef,
+		recipes: set,
+		worker:  wcfg,
+		runID:   id,
+		// The command is the authority (#96). An operator typed it, which is
+		// the same intentionality #86 requires of a profile applied to
+		// scheduling: the receipt records that a person asked for this run
+		// rather than leaving it indistinguishable from one the loop drew.
+		authority:  runstore.Authority{Kind: runstore.AuthorityOperator, Ref: authorityCommandExplore},
+		roots:      roots,
+		scanRoots:  sf.rootList(),
+		challenge:  *challenge,
+		synthesize: *synthesize,
+		budget:     explore.Budget{Develop: *develop, Retrievals: *retrievals},
 	})
 	if outcome == nil {
 		return a.reportWorkerFailure(wcfg.Binary, runErr)
 	}
-
-	// Enrolment is the wiring step §6.7 needs and internal/explore does not
-	// perform: internal/frontier exposes no enumeration, so a produced
-	// record that is never enrolled is invisible to the review queue. It
-	// runs even for a failed run, because what a degraded run did produce is
-	// exactly what a reviewer has to look at.
-	enrolled := a.enrol(ctx, state.review, outcome)
-
-	res := exploreOutcome(prep, profileRef, set, outcome, enrolled)
 	if *asJSON {
 		if err := a.emitJSON(res); err != nil {
 			return err
@@ -267,6 +215,118 @@ func (a *app) explore(ctx context.Context, args []string) error {
 		return a.reportWorkerFailure(wcfg.Binary, runErr)
 	}
 	return nil
+}
+
+// authorityCommandExplore is the authority reference a hand-typed exploration
+// records. It names the command rather than the operator identity: §4.7's
+// attributed decisions carry a person, and starting a run is not one of them —
+// what the receipt has to answer is whether a person or the loop asked for it.
+const authorityCommandExplore = "command:explore"
+
+// explorePlan is one exploration, resolved from whatever asked for it: a typed
+// `babel explore`, or a conductor cycle drawing from its work ladder. Both go
+// through runExploration, so a scheduled run and a summoned one are the same run
+// in every respect except the authority they record.
+type explorePlan struct {
+	prep      runstore.Preparation
+	profile   worker.ProfileRef
+	recipes   *cookbook.Set
+	worker    worker.Config
+	runID     string
+	authority runstore.Authority
+	// roots are frontier candidates the run starts from; scanRoots are source
+	// directories preflight rediscovers the selected sessions under.
+	roots      []string
+	scanRoots  []string
+	challenge  bool
+	synthesize bool
+	budget     explore.Budget
+}
+
+// runExploration runs one attempt and reports it, without deciding anything
+// about how it was asked for.
+//
+// Signal handling is deliberately absent: the caller owns what an interruption
+// means. A typed command wants Ctrl-C to stop the pass; a conductor wants a
+// SIGTERM to end the loop at a cycle boundary while the cycle in flight finishes.
+// Both are honest, and a shared core that installed one of them would take the
+// choice away from the other.
+func (a *app) runExploration(ctx context.Context, state *analysisState,
+	p explorePlan) (exploreResult, *explore.Outcome, error) {
+	inputs, err := a.preflightInputs(ctx, p.prep, p.scanRoots)
+	if err != nil {
+		return exploreResult{}, nil, err
+	}
+
+	d, err := babelDirs()
+	if err != nil {
+		return exploreResult{}, nil, err
+	}
+	idx, err := index.Open(d.indexDir())
+	if err != nil {
+		return exploreResult{}, nil, err
+	}
+	defer idx.Close()
+	ledger, err := explore.OpenLedger(state.dir)
+	if err != nil {
+		return exploreResult{}, nil, err
+	}
+	defer ledger.Close()
+
+	wcfg := p.worker
+	wcfg.Diagnostics = &sanitizingWriter{w: a.stderr, prefix: "worker: "}
+	controller, err := explore.New(explore.Config{
+		Preparation: p.prep,
+		Recipes:     p.recipes,
+		// Corpus search is the one facility this build brokers: §14 defers
+		// the evidence-tool and public-research broker protocols, and a
+		// sandbox or repository grant would name a facility with no version
+		// to record. Granting only what Babel can actually serve is what
+		// keeps the receipt's containment answer true.
+		Grant: worker.Grant{
+			Capabilities: []worker.Capability{worker.CapabilityCorpusSearch},
+			Disclosure:   worker.DisclosureLocal,
+		},
+		Profile:      p.profile,
+		Worker:       wcfg,
+		Frontier:     state.frontier,
+		Runs:         state.runs,
+		Ledger:       ledger,
+		Dispositions: state.dispositions,
+		Index:        idx,
+		Inputs:       inputs,
+		Capabilities: runstore.CapabilityVersions{Tool: "babel/" + readBuildIdentity().Version},
+	})
+	if err != nil {
+		return exploreResult{}, nil, err
+	}
+
+	a.diagf("exploring %s over %d %s as run %s (%s)...\n",
+		Sanitize(string(p.prep.ID)), len(p.prep.Selection),
+		plural(len(p.prep.Selection), "session", "sessions"), Sanitize(p.runID),
+		Sanitize(p.authority.String()))
+	reporter := &exploreReporter{app: a, last: time.Now()}
+	outcome, runErr := controller.Explore(ctx, explore.Options{
+		RunID:      p.runID,
+		Authority:  p.authority,
+		Roots:      p.roots,
+		Challenge:  p.challenge,
+		Synthesize: p.synthesize,
+		Budget:     p.budget,
+		OnRecord:   reporter.record,
+		OnProgress: reporter.progress,
+	})
+	if outcome == nil {
+		return exploreResult{}, nil, runErr
+	}
+
+	// Enrolment is the wiring step §6.7 needs and internal/explore does not
+	// perform: internal/frontier exposes no enumeration, so a produced
+	// record that is never enrolled is invisible to the review queue. It
+	// runs even for a failed run, because what a degraded run did produce is
+	// exactly what a reviewer has to look at.
+	enrolled := a.enrol(ctx, state.review, outcome)
+	return exploreOutcome(p.prep, p.profile, p.recipes, outcome, enrolled), outcome, runErr
 }
 
 // idList renders a set of record identifiers for a document whose consumer
@@ -328,6 +388,22 @@ func resolveProfile(c *cmd, flagValue string, s analysisSettings) (worker.Profil
 // wearing a quieter costume: the operator naming a draft by id is the
 // authorization to run it.
 func selectRecipes(c *cmd, chosen []string) (*cookbook.Set, error) {
+	set, err := recipeSet(chosen)
+	var unknown *cookbook.UnknownRecipeError
+	if errors.As(err, &unknown) {
+		return nil, c.usagef("unknown --recipe %q; the cookbook holds %s",
+			unknown.ID, strings.Join(unknown.Available, " "))
+	}
+	return set, err
+}
+
+// recipeSet is selectRecipes without a command to reject an invocation with.
+// It exists because a conductor cycle can legitimately meet a recipe id this
+// build no longer ships — an invitation on an observation an older cookbook
+// produced — and that is a fact to report and work around, not an invocation to
+// reject. The unknown-recipe error is returned unwrapped so a caller can tell
+// that case from a broken cookbook.
+func recipeSet(chosen []string) (*cookbook.Set, error) {
 	full, err := cookbook.Embedded()
 	if err != nil {
 		return nil, err
@@ -348,16 +424,7 @@ func selectRecipes(c *cmd, chosen []string) (*cookbook.Set, error) {
 			ids = append(ids, r.ID)
 		}
 	}
-	set, err := full.Select(ids)
-	if err != nil {
-		var unknown *cookbook.UnknownRecipeError
-		if errors.As(err, &unknown) {
-			return nil, c.usagef("unknown --recipe %q; the cookbook holds %s",
-				unknown.ID, strings.Join(unknown.Available, " "))
-		}
-		return nil, err
-	}
-	return set, nil
+	return full.Select(ids)
 }
 
 // preflightInputs reconstructs §6.4's inputs for a recorded scope.

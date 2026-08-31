@@ -57,6 +57,11 @@ func TestMain(m *testing.M) {
 // stages, so one identity serves discovery, critique and synthesis.
 var testRecipe = worker.RecipeRef{ID: "outcome-integrity", Version: 1}
 
+// testAuthority is why every run in these tests happened: an operator command,
+// which is what a hand-typed `babel explore` records. A run with no authority
+// is refused before it reaches a worker (#96), so this is not decoration.
+var testAuthority = run.Authority{Kind: run.AuthorityOperator, Ref: "command:explore"}
+
 // smallProfile is a corpus with no deliberate defects: three tiny sessions
 // across two harnesses. Defects have their own coverage in internal/preflight,
 // and a clean corpus is what makes a preflight verdict in these tests
@@ -354,7 +359,7 @@ func TestFullRunProducesDurableRecordsAndAReceipt(t *testing.T) {
 	payload := h.writeResult("discovery.json", h.discovery())
 	controller := h.controller(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}))
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-full"})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-full"})
 	if err != nil {
 		t.Fatalf("Explore: %v (failures %+v)", err, outcome.Failures)
 	}
@@ -450,7 +455,7 @@ func TestReceiptRecordsEveryToolDecisionAndTheRetrievalTrace(t *testing.T) {
 		"-search-query", "")
 	controller := h.controller(args)
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-trace"})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-trace"})
 	if err != nil {
 		t.Fatalf("Explore: %v (failures %+v)", err, outcome.Failures)
 	}
@@ -505,6 +510,7 @@ func TestEveryCandidateIsPersistedWhenTheRunIsCancelled(t *testing.T) {
 	defer cancel()
 	first := true
 	outcome, err := controller.Explore(ctx, explore.Options{
+		Authority: testAuthority,
 		RunID:     "r-cancelled",
 		Challenge: true,
 		OnRecord: func(e explore.RecordEvent) {
@@ -564,7 +570,8 @@ func TestResumeAfterCancellationNeitherLosesNorDuplicates(t *testing.T) {
 	defer cancel()
 	first := true
 	interrupted, err := controller.Explore(ctx, explore.Options{
-		RunID: "r-resumed",
+		Authority: testAuthority,
+		RunID:     "r-resumed",
 		OnRecord: func(e explore.RecordEvent) {
 			if first && e.Type == frontier.EntityHypothesis {
 				first = false
@@ -576,7 +583,7 @@ func TestResumeAfterCancellationNeitherLosesNorDuplicates(t *testing.T) {
 		t.Fatalf("first attempt error = %v, want a cancellation", err)
 	}
 
-	resumed, err := controller.Explore(context.Background(), explore.Options{RunID: "r-resumed"})
+	resumed, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-resumed"})
 	if err != nil {
 		t.Fatalf("resumed attempt: %v (failures %+v)", err, resumed.Failures)
 	}
@@ -637,7 +644,7 @@ func TestResultSkippingTheDevelopmentPathIsRefused(t *testing.T) {
 	payload := h.writeResult("skipped.json", result)
 	controller := h.controller(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}))
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-skipped"})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-skipped"})
 	if !errors.Is(err, explore.ErrUnknownReference) {
 		t.Fatalf("Explore error = %v, want an unresolvable consolidation", err)
 	}
@@ -666,7 +673,7 @@ func TestDeniedCapabilityDoesNotEndTheRun(t *testing.T) {
 		cfg.Capabilities.PublicResearch = "unavailable"
 	})
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-denied"})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-denied"})
 	if err != nil {
 		t.Fatalf("a denial ended the run: %v (failures %+v)", err, outcome.Failures)
 	}
@@ -699,7 +706,7 @@ func TestHostedRunWithASecretIsBlockedUntilRedactionIsApplied(t *testing.T) {
 	hosted := func(cfg *explore.Config) { cfg.Grant.Disclosure = worker.DisclosureHosted }
 
 	blocked := h.controller(args, hosted)
-	outcome, err := blocked.Explore(context.Background(), explore.Options{RunID: "r-hosted"})
+	outcome, err := blocked.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-hosted"})
 	if !errors.Is(err, explore.ErrRedactionRequired) {
 		t.Fatalf("Explore error = %v, want a refusal to launch", err)
 	}
@@ -724,7 +731,7 @@ func TestHostedRunWithASecretIsBlockedUntilRedactionIsApplied(t *testing.T) {
 	redacting := h.controller(append(args,
 		"-request-capability", "corpus-search", "-search-query", secretProbe),
 		hosted, func(cfg *explore.Config) { cfg.Redact = true })
-	outcome, err = redacting.Explore(context.Background(), explore.Options{RunID: "r-hosted-redacted"})
+	outcome, err = redacting.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-hosted-redacted"})
 	if err != nil {
 		t.Fatalf("the redacted run was refused too: %v (failures %+v)", err, outcome.Failures)
 	}
@@ -768,7 +775,7 @@ func TestChallengerCannotCreateAFinding(t *testing.T) {
 		explore.StageChallenge: challengePayload,
 	}))
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-challenger", Challenge: true})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-challenger", Challenge: true})
 	if !errors.Is(err, explore.ErrUnauthorizedFinding) {
 		t.Fatalf("Explore error = %v, want the challenger refused finding authority", err)
 	}
@@ -818,7 +825,7 @@ func TestChallengerRecordsObjectionsByWhatBacksThem(t *testing.T) {
 		explore.StageChallenge: challengePayload,
 	}))
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-objections", Challenge: true})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-objections", Challenge: true})
 	if err != nil {
 		t.Fatalf("Explore: %v (failures %+v)", err, outcome.Failures)
 	}
@@ -867,7 +874,7 @@ func TestSynthesizerCannotConsolidateAnObservationWithNoLocator(t *testing.T) {
 		explore.StageSynthesize: synthesisPayload,
 	}))
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-synth", Synthesize: true})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-synth", Synthesize: true})
 	if !errors.Is(err, explore.ErrDevelopmentPath) {
 		t.Fatalf("Explore error = %v, want a refused consolidation", err)
 	}
@@ -902,7 +909,7 @@ func TestChallengerFailureLeavesExplorationIntact(t *testing.T) {
 		explore.StageChallenge: filepath.Join(t.TempDir(), "absent.json"),
 	}))
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-challenge-fails", Challenge: true})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-challenge-fails", Challenge: true})
 	if err == nil {
 		t.Fatal("a failed challenger was reported as a clean run")
 	}
@@ -954,7 +961,7 @@ func TestObservationOrderIsIndependentOfRetrievalRank(t *testing.T) {
 		"-request-capability", "corpus-search", "-search-query", "")
 	controller := h.controller(args)
 
-	outcome, err := controller.Explore(context.Background(), explore.Options{RunID: "r-order"})
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-order"})
 	if err != nil {
 		t.Fatalf("Explore: %v (failures %+v)", err, outcome.Failures)
 	}
@@ -1016,7 +1023,7 @@ func TestConfidenceIsNeverEvidence(t *testing.T) {
 	shape := func(name string, res explore.Result, runID string) (int, int, int, int, int) {
 		payload := h.writeResult(name, res)
 		controller := h.controller(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}))
-		outcome, err := controller.Explore(context.Background(), explore.Options{RunID: runID})
+		outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: runID})
 		if err != nil {
 			t.Fatalf("%s: %v (failures %+v)", runID, err, outcome.Failures)
 		}
@@ -1041,8 +1048,9 @@ func TestBudgetDefersRatherThanErases(t *testing.T) {
 	controller := h.controller(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}))
 
 	outcome, err := controller.Explore(context.Background(), explore.Options{
-		RunID:  "r-budget",
-		Budget: explore.Budget{Develop: 1},
+		Authority: testAuthority,
+		RunID:     "r-budget",
+		Budget:    explore.Budget{Develop: 1},
 	})
 	if err != nil {
 		t.Fatalf("Explore: %v (failures %+v)", err, outcome.Failures)

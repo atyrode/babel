@@ -404,6 +404,15 @@ type Options struct {
 	// rather than replaced (§6.5, §7).
 	RunID string
 
+	// Authority is why this run is happening (#96): the operator command or
+	// invitation, the standing policy, or the declared serendipity draw that
+	// authorized it. It is required, because "no nameable authority, no run"
+	// applies to the caller that summons an exploration as much as to the
+	// loop that schedules one, and it reaches durable state only through the
+	// receipt: nothing about scheduling may change what a run is allowed to
+	// do, so no grant, no policy version and no frontier transition reads it.
+	Authority run.Authority
+
 	// Roots and Prior are the run's starting position on the durable
 	// frontier (§5.2). Both may be empty: broad discovery starts from no
 	// root, and recording that is a different statement from recording roots
@@ -584,6 +593,12 @@ func (s *state) record(e RecordEvent) {
 func (c *Controller) Explore(ctx context.Context, opt Options) (*Outcome, error) {
 	if opt.RunID == "" {
 		return nil, fmt.Errorf("explore: a run id is required, because resuming one is naming it again")
+	}
+	// Refused here rather than at the receipt, so a run nobody can account for
+	// never reaches a worker: the receipt would refuse it afterwards, and by
+	// then the model spend and whatever the run wrote have already happened.
+	if !opt.Authority.Recorded() {
+		return nil, fmt.Errorf("explore: a run records why it happened; no nameable authority, no run")
 	}
 	started := c.now()
 	st := &state{

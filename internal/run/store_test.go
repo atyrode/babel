@@ -502,7 +502,7 @@ func TestStoredBytesNeverCarryTheCredentialSentinel(t *testing.T) {
 	body.Failures[0].Message = "broker refused " + credentialSentinel
 	body.Retrieval[0].Query = credentialSentinel
 
-	r, err := NewReceipt(NewReceiptID(), "run-1", prep, body, recorded)
+	r, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded)
 	if err != nil {
 		t.Fatalf("NewReceipt: %v", err)
 	}
