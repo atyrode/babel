@@ -9,6 +9,7 @@ import (
 
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
 // The commands in this file are issue #87's operator surface: the revision
@@ -133,11 +134,17 @@ a propose-reality-fact writes no fact; the ledger records that a person
 authorized the action, and the action itself remains the operator's own, taken
 through the surface that owns it under their own credentials (SPEC.md §4.6).
 
+Every row carries its sync state (SPEC.md §9). --fleet adds the dispositions
+the other hosts have committed: a cross-host disposition write is an ordinary
+record, attributed to the actor and the machine that made it (issue #109
+item 3), so it is read here beside this machine's own.
+
 Flags:
   --record ID   narrow to one record's proposed actions
   --kind K      narrow to one kind: draft-issue, propose-reality-fact,
                 store-memory, ask-question, develop-further
   --status S    narrow to one state: proposed, accepted, declined
+  --fleet       also list the other hosts' committed dispositions
   --limit N     page size (default 100, maximum 500)
   --offset N    skip this many rows
   --json        emit the listing as JSON on stdout
@@ -293,9 +300,14 @@ type ledgerRow struct {
 
 type dispositionsResult struct {
 	Dispositions []dispositionRow `json:"dispositions"`
-	Total        int              `json:"total"`
-	Limit        int              `json:"limit"`
-	Offset       int              `json:"offset"`
+	// Sync maps each listed record id to its sync state, and Fleet carries the
+	// other hosts' committed dispositions, for the reasons hypothesesResult
+	// gives.
+	Sync   map[string]string `json:"sync,omitempty"`
+	Fleet  []fleetRecordRow  `json:"fleet,omitempty"`
+	Total  int               `json:"total"`
+	Limit  int               `json:"limit"`
+	Offset int               `json:"offset"`
 }
 
 type dispositionResult struct {
@@ -628,7 +640,9 @@ func (a *app) dispositionsCmd(ctx context.Context, args []string) error {
 	kind := c.fs.String("kind", "", "narrow to one kind")
 	status := c.fs.String("status", "", "narrow to one state")
 	var pf pageFlags
+	var ff fleetFlags
 	pf.bind(c)
+	ff.bind(c)
 	asJSON := c.fs.Bool("json", false, "emit the listing as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -658,6 +672,11 @@ func (a *app) dispositionsCmd(ctx context.Context, args []string) error {
 		}
 		filter.Statuses = []disposition.Status{parsed}
 	}
+	reader, release, err := a.fleetListingReader(ctx, ff.fleetWide)
+	if err != nil {
+		return fleetUnavailable(err)
+	}
+	defer release()
 
 	state, err := openAnalysisState()
 	if err != nil {
@@ -675,18 +694,56 @@ func (a *app) dispositionsCmd(ctx context.Context, args []string) error {
 		Limit:        pf.limit,
 		Offset:       pf.offset,
 	}
+	ids := make([]string, 0, len(actions))
 	for _, action := range actions {
 		res.Dispositions = append(res.Dispositions, renderDisposition(action))
+		ids = append(ids, action.ID)
+	}
+	sync, err := a.syncColumn(ctx, reader, ids)
+	if err != nil {
+		return err
+	}
+	res.Sync = sync
+	var fetched int
+	if ff.fleetWide {
+		// sharedcatalog.KindDisposition is the catalog's word for a recorded
+		// disposition, which is what this listing is about and what a
+		// cross-host disposition write commits as (issue #109 item 3).
+		res.Fleet, fetched, err = a.fleetListingRows(ctx, reader,
+			[]sharedcatalog.RecordKind{sharedcatalog.KindDisposition}, ids, pf.limit)
+		if err != nil {
+			return err
+		}
 	}
 	if *asJSON {
 		return a.emitJSON(res)
 	}
-	rows := make([][]string, 0, len(res.Dispositions))
+	header := []string{"SYNC", "ID", "KIND", "STATE", "TYPE", "RECORD", "SUMMARY"}
+	rows := make([][]string, 0, len(res.Dispositions)+len(res.Fleet))
 	for _, d := range res.Dispositions {
-		rows = append(rows, []string{d.ID, d.Kind, d.Status, d.Type, d.RecordID, d.Summary})
+		rows = append(rows, []string{syncCell(sync, d.ID), d.ID, d.Kind, d.Status,
+			d.Type, d.RecordID, d.Summary})
 	}
-	if err := writeTable(a.stdout, []string{"ID", "KIND", "STATE", "TYPE", "RECORD", "SUMMARY"}, rows); err != nil {
+	if ff.fleetWide {
+		header = append([]string{"HOST"}, header...)
+		for i, row := range rows {
+			rows[i] = append([]string{localHostCell(reader)}, row...)
+		}
+		for _, row := range res.Fleet {
+			// A remote disposition's own ledger state lives on the machine that
+			// recorded it, so STATE is absent here rather than reported as
+			// proposed. Its subject travels on the record, so TYPE and RECORD
+			// are the ones the fleet read actually read.
+			rows = append(rows, []string{row.hostCell(), row.Sync, row.RecordID,
+				orMissing(row.Kind), missingValue, orMissing(row.SubjectType),
+				orMissing(row.SubjectID), row.summaryCell()})
+		}
+	}
+	if err := writeTable(a.stdout, header, rows); err != nil {
 		return err
+	}
+	if ff.fleetWide {
+		a.fleetListingNote(res.Fleet, fetched, pf.limit)
 	}
 	return a.writePageFooter(len(res.Dispositions), res.Offset, res.Total)
 }

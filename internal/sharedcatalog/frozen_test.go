@@ -127,6 +127,7 @@ func TestMigrationLedgerIsExactlyThese(t *testing.T) {
 		"0004_fleet_metadata",
 		"0005_title_provenance",
 		"0006_usage_metadata",
+		"0007_instance_host",
 	}
 
 	entries, err := migrations()
@@ -172,6 +173,7 @@ func TestAppliedMigrationBodiesAreFrozen(t *testing.T) {
 		"0004_fleet_metadata":   "d32ea349fba87e00af31237e0f9d523e4167d9d99ba894e3ba53b03bfdcf0fe8",
 		"0005_title_provenance": "16252f11ec1e69ce0eda55f247b7199320f1b36ecd7c790e4e929b99587b36cf",
 		"0006_usage_metadata":   "d44410ff6885b93b2a964eee95a838a64e9e6a8ba6d3af79c6a51f845b68f66d",
+		"0007_instance_host":    "613485056617e5e7b0a2a8210e4699ec3b7e281f779190e1ad4758d58853da64",
 	}
 
 	const remedy = "Two changes are legitimate here, and they are not the same " +

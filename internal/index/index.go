@@ -56,7 +56,13 @@ import (
 // output beside the search over the corpus (#87 item 4). A version 1 file is
 // discarded and rebuilt rather than altered, which costs one re-index of
 // material that is derived from the corpus and the durable store.
-const schemaVersion = "2"
+// Version 3 adds the origin dimension: a frontier row now records which
+// machine's analysis it holds, so one search answers across the fleet (#109
+// item 4). Discarding a version 2 file costs a re-index of the local durable
+// store plus a re-fetch of the committed remote records, which is exactly the
+// cost SPEC.md 14's local-only-indexing decision says this file may cost —
+// its loss is a re-index and never data.
+const schemaVersion = "3"
 
 // FileName is the index database's name inside Babel's private local state
 // directory. It is a separate file from the durable local state on purpose
@@ -178,6 +184,7 @@ END;
 CREATE TABLE IF NOT EXISTS frontier_records(
 	id           INTEGER PRIMARY KEY,
 	record_id    TEXT NOT NULL UNIQUE,
+	origin       TEXT NOT NULL,
 	kind         TEXT NOT NULL,
 	root_id      TEXT NOT NULL,
 	subject_kind TEXT NOT NULL,
@@ -191,6 +198,12 @@ CREATE TABLE IF NOT EXISTS frontier_records(
 );
 CREATE INDEX IF NOT EXISTS frontier_records_by_kind ON frontier_records(kind, created_at);
 CREATE INDEX IF NOT EXISTS frontier_records_by_root ON frontier_records(root_id);
+-- The origin index serves both halves of a fleet reconcile: listing what one
+-- machine's partition currently holds, and narrowing a search to a host the
+-- operator picked. record_id stays globally UNIQUE across origins because a
+-- record has exactly one producer; see indexFrontier for what happens when two
+-- partitions claim one id anyway.
+CREATE INDEX IF NOT EXISTS frontier_records_by_origin ON frontier_records(origin, created_at);
 CREATE VIRTUAL TABLE IF NOT EXISTS frontier_fts USING fts5(
 	text,
 	content='frontier_records',

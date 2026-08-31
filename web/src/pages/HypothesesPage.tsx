@@ -2,7 +2,21 @@ import { useCallback, useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { getHypotheses, type HypothesesResponse, type HypothesisSummary } from "../api";
 import { errorMessage, formatTime } from "../format";
-import { Badge, statusTone } from "../analysis";
+import {
+  Badge,
+  FleetNotice,
+  HostChips,
+  HostLabel,
+  LOCAL_SCOPE,
+  SyncBadge,
+  SyncDegradedNotice,
+  UnopenedNote,
+  inHostScope,
+  statusTone,
+  syncRowClass,
+  useFleetHosts,
+  type HostScope,
+} from "../analysis";
 
 const STATUSES = ["untriaged", "queued", "investigating", "deferred", "rejected", "promoted"];
 
@@ -28,23 +42,35 @@ function HypothesesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  // The host scope is the fleet chip row's selection. It is separate from the
+  // status filter because the two narrow different things: a status is a fact
+  // about a candidate, a host is a fact about which machine produced it.
+  const [scope, setScope] = useState<HostScope>(LOCAL_SCOPE);
+  const fleet = useFleetHosts();
 
-  const load = useCallback((filter: string | null) => {
+  const load = useCallback((filter: string | null, hostScope: HostScope) => {
     setLoading(true);
     setError(null);
-    getHypotheses(filter ? { status: filter } : {})
+    getHypotheses({ ...(filter ? { status: filter } : {}), fleet: hostScope.fleet })
       .then((value) => setData(value))
       .catch((reason) => setError(errorMessage(reason)))
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => load(status), [load, status]);
+  useEffect(() => load(status, scope), [load, status, scope]);
 
   function openHypothesis(item: HypothesisSummary) {
+    // Only this machine's candidates open: the detail route reads the local
+    // durable store, and another host's record is not in it. A row that
+    // navigated to a 404 would be this page offering a control that cannot
+    // work.
+    if (item.local_host === false) return;
     navigate(`/hypotheses/${encodeURIComponent(item.id)}`);
   }
 
-  const items = data?.items ?? [];
+  // Narrowed client-side over the merged list, so selecting a host hides rows
+  // the browser already holds rather than costing a round trip.
+  const items = (data?.items ?? []).filter((item) => inHostScope(item, scope));
 
   return (
     <section className="page hypotheses-page">
@@ -58,7 +84,16 @@ function HypothesesPage() {
           </p>
         </div>
         <div className="heading-meta">
-          {data && <span className="count-label">{data.total} in the frontier</span>}
+          {/* The count is this host's frontier, and stays that way when the
+              fleet block is shown: "the frontier" is this machine's, and the
+              other hosts' candidates are stated separately rather than folded
+              into a number that would then mean two things. */}
+          {data && <span className="count-label">{data.total} in this host's frontier</span>}
+          {scope.fleet && (
+            <span className="count-label fleet-count">
+              {items.length - items.filter((item) => item.local_host !== false).length} from other hosts
+            </span>
+          )}
           <FrontierToggle />
         </div>
       </div>
@@ -79,7 +114,16 @@ function HypothesesPage() {
             </button>
           ))}
         </div>
+        <HostChips
+          hosts={fleet.hosts}
+          scope={scope}
+          localHost={fleet.localHost}
+          onSelect={setScope}
+        />
       </div>
+
+      {fleet.configured === false && <FleetNotice />}
+      {data?.sync_degraded && <SyncDegradedNotice detail={data.sync_detail} />}
 
       {loading && !data && (
         <div className="state-card"><span className="spinner" /> Reading the frontier…</div>
@@ -88,7 +132,7 @@ function HypothesesPage() {
         <div className="state-card error-state">
           <strong>Hypotheses could not be loaded.</strong>
           <span>{error}</span>
-          <button type="button" onClick={() => load(status)}>Try again</button>
+          <button type="button" onClick={() => load(status, scope)}>Try again</button>
         </div>
       )}
       {!loading && !error && items.length === 0 && (
@@ -111,6 +155,8 @@ function HypothesesPage() {
                 <tr>
                   <th>Candidate</th>
                   <th>Status</th>
+                  <th>Host</th>
+                  <th>Sync</th>
                   <th className="numeric">Observations</th>
                   <th>Created</th>
                 </tr>
@@ -121,8 +167,9 @@ function HypothesesPage() {
                   return (
                     <tr
                       key={item.id}
-                      tabIndex={0}
-                      role="link"
+                      className={syncRowClass(item)}
+                      tabIndex={item.local_host === false ? undefined : 0}
+                      role={item.local_host === false ? undefined : "link"}
                       onClick={() => openHypothesis(item)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") openHypothesis(item);
@@ -131,6 +178,7 @@ function HypothesesPage() {
                       <td className="statement-cell">
                         <strong className="untrusted-inline">{item.statement}</strong>
                         <span className="secondary mono">{item.id}</span>
+                        <UnopenedNote reason={item.unopened} />
                         {item.provisional_labels && item.provisional_labels.length > 0 && (
                           <span className="tag-list">
                             {item.provisional_labels.map((label) => (
@@ -140,7 +188,15 @@ function HypothesesPage() {
                         )}
                       </td>
                       <td><Badge label={item.status} tone={statusTone(item.status)} /></td>
-                      <td className="numeric mono">{item.observations}</td>
+                      <td><HostLabel mark={item} /></td>
+                      <td><SyncBadge sync={item.sync} /></td>
+                      {/* A candidate another host committed carries no
+                          observation count: the evidence is in that host's
+                          durable store, and a zero would say it rests on
+                          none. */}
+                      <td className="numeric mono">
+                        {item.local_host === false ? <span className="muted">—</span> : item.observations}
+                      </td>
                       <td>
                         {created
                           ? <span title={created.absolute}>{created.relative}</span>

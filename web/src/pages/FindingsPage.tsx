@@ -2,7 +2,21 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getFindings, type FindingsResponse, type FindingSummary } from "../api";
 import { errorMessage, formatTime } from "../format";
-import { Badge, reviewTone } from "../analysis";
+import {
+  Badge,
+  FleetNotice,
+  HostChips,
+  HostLabel,
+  LOCAL_SCOPE,
+  SyncBadge,
+  SyncDegradedNotice,
+  UnopenedNote,
+  inHostScope,
+  reviewTone,
+  syncRowClass,
+  useFleetHosts,
+  type HostScope,
+} from "../analysis";
 import { FrontierToggle } from "./HypothesesPage";
 
 function FindingsPage() {
@@ -11,22 +25,29 @@ function FindingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(() => {
+  const [scope, setScope] = useState<HostScope>(LOCAL_SCOPE);
+  const fleet = useFleetHosts();
+
+  const load = useCallback((hostScope: HostScope) => {
     setLoading(true);
     setError(null);
-    getFindings()
+    getFindings({ fleet: hostScope.fleet })
       .then((value) => setData(value))
       .catch((reason) => setError(errorMessage(reason)))
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(load, [load]);
+  useEffect(() => load(scope), [load, scope]);
 
   function openFinding(item: FindingSummary) {
+    // The detail route reads this machine's durable store, which does not hold
+    // another host's record.
+    if (item.local_host === false) return;
     navigate(`/findings/${encodeURIComponent(item.id)}`);
   }
 
-  const items = data?.items ?? [];
+  // Narrowed client-side over the merged list.
+  const items = (data?.items ?? []).filter((item) => inHostScope(item, scope));
 
   return (
     <section className="page findings-page">
@@ -40,10 +61,23 @@ function FindingsPage() {
           </p>
         </div>
         <div className="heading-meta">
-          {data && <span className="count-label">{data.total} findings</span>}
+          {/* This host's count, kept that way when the fleet block is shown. */}
+          {data && <span className="count-label">{data.total} on this host</span>}
           <FrontierToggle />
         </div>
       </div>
+
+      <div className="toolbar card">
+        <HostChips
+          hosts={fleet.hosts}
+          scope={scope}
+          localHost={fleet.localHost}
+          onSelect={setScope}
+        />
+      </div>
+
+      {fleet.configured === false && <FleetNotice />}
+      {data?.sync_degraded && <SyncDegradedNotice detail={data.sync_detail} />}
 
       {loading && !data && (
         <div className="state-card"><span className="spinner" /> Reading findings…</div>
@@ -52,7 +86,7 @@ function FindingsPage() {
         <div className="state-card error-state">
           <strong>Findings could not be loaded.</strong>
           <span>{error}</span>
-          <button type="button" onClick={load}>Try again</button>
+          <button type="button" onClick={() => load(scope)}>Try again</button>
         </div>
       )}
       {!loading && !error && items.length === 0 && (
@@ -74,6 +108,8 @@ function FindingsPage() {
                 <tr>
                   <th>Finding</th>
                   <th>Review</th>
+                  <th>Host</th>
+                  <th>Sync</th>
                   <th className="numeric">Observations</th>
                   <th className="numeric">Hypotheses</th>
                   <th>Created</th>
@@ -85,8 +121,9 @@ function FindingsPage() {
                   return (
                     <tr
                       key={item.id}
-                      tabIndex={0}
-                      role="link"
+                      className={syncRowClass(item)}
+                      tabIndex={item.local_host === false ? undefined : 0}
+                      role={item.local_host === false ? undefined : "link"}
                       onClick={() => openFinding(item)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") openFinding(item);
@@ -95,10 +132,24 @@ function FindingsPage() {
                       <td className="statement-cell">
                         <strong className="untrusted-inline">{item.title}</strong>
                         <span className="secondary mono">{item.id}</span>
+                        <UnopenedNote reason={item.unopened} />
                       </td>
-                      <td><Badge label={item.review_status} tone={reviewTone(item.review_status)} /></td>
-                      <td className="numeric mono">{item.observations}</td>
-                      <td className="numeric mono">{item.hypotheses}</td>
+                      {/* The review status and the evidence counts are the
+                          owning host's derivations, so a row from elsewhere
+                          reports an absence rather than a zero. */}
+                      <td>
+                        {item.local_host === false
+                          ? <span className="muted">—</span>
+                          : <Badge label={item.review_status} tone={reviewTone(item.review_status)} />}
+                      </td>
+                      <td><HostLabel mark={item} /></td>
+                      <td><SyncBadge sync={item.sync} /></td>
+                      <td className="numeric mono">
+                        {item.local_host === false ? <span className="muted">—</span> : item.observations}
+                      </td>
+                      <td className="numeric mono">
+                        {item.local_host === false ? <span className="muted">—</span> : item.hypotheses}
+                      </td>
                       <td>
                         {created
                           ? <span title={created.absolute}>{created.relative}</span>

@@ -420,27 +420,13 @@ func (a *app) archiveFleet(ctx context.Context, args []string) error {
 // reported missing: "MISSING" must mean "this machine did not publish", and a
 // typo that cannot be a host id at all would make it mean "you mistyped
 // something", which is a different answer wearing the same word.
+//
+// The parsing itself is parseHostIDs', so this flag and `babel fleet records`'
+// --host filter validate, split and deduplicate host ids by one rule. Two
+// rules would eventually disagree about which of two commands accepts a
+// borderline id.
 func expectedHosts(c *cmd, raw string) ([]string, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-	var out []string
-	seen := make(map[string]struct{})
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if !validHostID(part) {
-			return nil, c.usagef("invalid --expect host %q: host ids are 1-%d characters of [a-z0-9._-] starting alphanumeric", part, maxHostIDLen)
-		}
-		if _, dup := seen[part]; dup {
-			continue
-		}
-		seen[part] = struct{}{}
-		out = append(out, part)
-	}
-	return out, nil
+	return parseHostIDs(c, "--expect", []string{raw})
 }
 
 // reportFleet writes the recency report for a terminal.

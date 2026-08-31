@@ -36,11 +36,17 @@ enrolment order and nothing else: §5.2 confines novelty and priority to
 ordering and a queue that re-sorted itself by a model-produced score would
 be doing the reviewer's job.
 
+Every row carries its sync state (SPEC.md §9). --fleet adds the other hosts'
+committed reviewable records, attributed to the machines that produced them:
+a review inbox that stopped at this machine would leave the deployment's
+analysis reviewable only where it was produced.
+
 Flags:
   --type T      narrow to one kind: hypothesis, observation, finding, proposal
   --status S    narrow to one review status: new, accepted, rejected,
                 deferred, duplicate, refine-requested
   --all         include records already decided
+  --fleet       also list the other hosts' committed reviewable records
   --limit N     bound the listing (default 100)
   --json        emit the queue as JSON on stdout
 `
@@ -123,6 +129,11 @@ type queueRow struct {
 // real total, report one.
 type queueResult struct {
 	Items []queueRow `json:"items"`
+	// Sync maps each listed record id to its sync state, and Fleet carries the
+	// other hosts' committed reviewable records, for the reasons
+	// hypothesesResult gives.
+	Sync  map[string]string `json:"sync,omitempty"`
+	Fleet []fleetRecordRow  `json:"fleet,omitempty"`
 }
 
 // decisionRow is one recorded disposition.
@@ -186,9 +197,11 @@ func (a *app) review(ctx context.Context, args []string) error {
 
 func (a *app) reviewQueue(ctx context.Context, args []string) error {
 	c := newCmd("review queue", reviewQueueUsage)
+	var ff fleetFlags
 	kind := c.fs.String("type", "", "narrow to one record kind")
 	status := c.fs.String("status", "", "narrow to one review status")
 	all := c.fs.Bool("all", false, "include records already decided")
+	ff.bind(c)
 	limit := c.fs.Int("limit", review.DefaultQueueLimit, "bound the listing")
 	asJSON := c.fs.Bool("json", false, "emit the queue as JSON")
 	if err := c.parse(a, args); err != nil {
@@ -212,6 +225,11 @@ func (a *app) reviewQueue(ctx context.Context, args []string) error {
 		}
 		filter.Status = s
 	}
+	reader, release, err := a.fleetListingReader(ctx, ff.fleetWide)
+	if err != nil {
+		return fleetUnavailable(err)
+	}
+	defer release()
 
 	state, err := openAnalysisState()
 	if err != nil {
@@ -224,6 +242,7 @@ func (a *app) reviewQueue(ctx context.Context, args []string) error {
 		return err
 	}
 	rows := make([]queueRow, 0, len(items))
+	ids := make([]string, 0, len(items))
 	for _, item := range items {
 		title, err := recordTitle(ctx, state, item.Subject)
 		if err != nil {
@@ -242,22 +261,60 @@ func (a *app) reviewQueue(ctx context.Context, args []string) error {
 			row.LastDecidedAt = formatTime(item.LastDecidedAt)
 		}
 		rows = append(rows, row)
+		ids = append(ids, item.Subject.ID)
+	}
+	sync, err := a.syncColumn(ctx, reader, ids)
+	if err != nil {
+		return err
 	}
 
-	res := queueResult{Items: rows}
+	res := queueResult{Items: rows, Sync: sync}
+	var fetched int
+	if ff.fleetWide {
+		// The queue's own --type vocabulary decides which kinds cross: an
+		// operator who narrowed the local queue to findings did not ask to see
+		// every other machine's candidates.
+		res.Fleet, fetched, err = a.fleetListingRows(ctx, reader,
+			reviewableRecordKinds(filter.Type), ids, *limit)
+		if err != nil {
+			return err
+		}
+	}
 	if *asJSON {
 		return a.emitJSON(res)
 	}
-	if len(rows) == 0 {
+	if len(rows) == 0 && len(res.Fleet) == 0 {
 		fmt.Fprint(a.stdout, "nothing awaiting review\n")
 		return nil
 	}
-	table := make([][]string, 0, len(rows))
+	header := []string{"SYNC", "TYPE", "ID", "STATUS", "DECISIONS", "TITLE"}
+	table := make([][]string, 0, len(rows)+len(res.Fleet))
 	for _, row := range rows {
-		table = append(table, []string{row.Type, row.ID, row.Status,
+		table = append(table, []string{syncCell(sync, row.ID), row.Type, row.ID, row.Status,
 			strconv.Itoa(row.Decisions), row.Title})
 	}
-	return writeTable(a.stdout, []string{"TYPE", "ID", "STATUS", "DECISIONS", "TITLE"}, table)
+	if ff.fleetWide {
+		header = append([]string{"HOST"}, header...)
+		for i, row := range table {
+			table[i] = append([]string{localHostCell(reader)}, row...)
+		}
+		for _, row := range res.Fleet {
+			// A remote record's review status and decision count are this
+			// machine's review log's, and this machine's review log holds no
+			// decisions about another machine's record until someone here makes
+			// one. Absent, therefore, rather than "new" with zero decisions —
+			// which would claim the record has been triaged nowhere.
+			table = append(table, []string{row.hostCell(), row.Sync, orMissing(row.Kind),
+				row.RecordID, missingValue, missingValue, row.summaryCell()})
+		}
+	}
+	if err := writeTable(a.stdout, header, table); err != nil {
+		return err
+	}
+	if ff.fleetWide {
+		a.fleetListingNote(res.Fleet, fetched, *limit)
+	}
+	return nil
 }
 
 func (a *app) reviewDecide(ctx context.Context, args []string) error {

@@ -11,9 +11,11 @@ import (
 
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/review"
+	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
 // exploreRefusal is why no route starts an exploration, reported by
@@ -48,6 +50,7 @@ const exploreRefusal = "Exploration cannot be started from the web surface. " +
 // to read, whether a run can be started from here, the runs already recorded,
 // and the cookbook this build carries.
 type analysisState struct {
+	syncNotice
 	Configured bool               `json:"configured"`
 	Worker     workerAvailability `json:"worker"`
 	Runs       []RunSummary       `json:"runs"`
@@ -83,6 +86,13 @@ type RecipeSummary struct {
 	Capabilities []string `json:"capabilities"`
 }
 
+// handleAnalysisState is the Phase B landing read.
+//
+// The receipt strip is attributed as well as sync-marked (issue #109 item 4).
+// The sync state is the receipt's own — internal/run records it when the run
+// commits — and the host is the shared catalog's, read from the origin
+// instance's registration. Neither is derived here, and a run the catalog
+// cannot attribute renders as unattributed rather than as this machine's.
 func (s *Server) handleAnalysisState(w http.ResponseWriter, r *http.Request) {
 	pg, ok := s.requirePage(w, r)
 	if !ok {
@@ -104,6 +114,18 @@ func (s *Server) handleAnalysisState(w http.ResponseWriter, r *http.Request) {
 			state.Runs = runs
 		}
 		state.RunsTotal = total
+		ids := make([]string, 0, len(state.Runs))
+		for _, run := range state.Runs {
+			ids = append(ids, run.RunID)
+		}
+		hosts, degraded := s.runHosts(r.Context(), r, ids)
+		if degraded {
+			state.syncNotice = degradedNotice()
+		}
+		for i := range state.Runs {
+			mark := hosts[state.Runs[i].RunID]
+			state.Runs[i].Host, state.Runs[i].HostAttributed = mark.Host, mark.HostAttributed
+		}
 	}
 	if s.opts.Cookbook != nil {
 		for _, recipe := range s.opts.Cookbook.All() {
@@ -139,7 +161,14 @@ func summarizeRecipe(recipe *cookbook.Recipe) RecipeSummary {
 // HypothesisSummary is one candidate as a listing shows it: enough to decide
 // whether to open it, and the model's original wording, which §5.2 requires to
 // survive sorting and classification.
+//
+// The embedded fleetMark says which machine produced the candidate and whether
+// it is globally reviewable yet (issue #109 item 4). A candidate another host
+// committed carries no ReviewStatus and no Observations count: both are derived
+// from that host's own durable store, and a zero rendered as a fact would say a
+// remote candidate rests on no evidence.
 type HypothesisSummary struct {
+	fleetMark
 	ID                string   `json:"id"`
 	RunID             string   `json:"run_id"`
 	AncestorID        string   `json:"ancestor_id,omitempty"`
@@ -152,6 +181,7 @@ type HypothesisSummary struct {
 }
 
 type hypothesisList struct {
+	syncNotice
 	Items []HypothesisSummary `json:"items"`
 	Total int                 `json:"total"`
 }
@@ -160,6 +190,12 @@ type hypothesisList struct {
 // status. No filter lists every status, including rejected: nothing is deleted
 // (§5.2, §4.7), so a listing that hid rejected candidates would misrepresent
 // the frontier as smaller than it is.
+//
+// ?fleet=1 appends the other hosts' committed candidates after this machine's,
+// attributed. Total stays this machine's frontier count: the fleet block is
+// another deployment-wide fact beside the local one, not more of it, and a
+// count that silently spanned both would make "the frontier" mean two things on
+// one page.
 func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
 	if !s.requireService(w, s.opts.Frontier != nil && s.opts.Review != nil, "the hypothesis frontier") {
 		return
@@ -169,6 +205,10 @@ func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status, ok := s.hypothesisStatus(w, r)
+	if !ok {
+		return
+	}
+	fleetWide, ok := s.fleetRequested(w, r)
 	if !ok {
 		return
 	}
@@ -209,7 +249,61 @@ func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
 		}
 		result.Items = append(result.Items, summary)
 	}
+	if s.markLocalHypotheses(r.Context(), r, result.Items) {
+		result.syncNotice = degradedNotice()
+	}
+	if fleetWide {
+		records, err := s.otherHosts(r.Context(), pg.limit, sharedcatalog.KindHypothesis)
+		if err != nil {
+			s.fleetError(w, r, err)
+			return
+		}
+		host := s.opts.Fleet.LocalHost()
+		for _, record := range records {
+			result.Items = append(result.Items, fleetHypothesis(record, host))
+		}
+	}
 	s.writeJSON(w, http.StatusOK, result)
+}
+
+// markLocalHypotheses stamps this machine's rows with their sync state, in one
+// resolution for the whole page.
+func (s *Server) markLocalHypotheses(ctx context.Context, r *http.Request,
+	items []HypothesisSummary) bool {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	states, degraded := s.syncStates(ctx, r, ids)
+	for i := range items {
+		items[i].fleetMark = s.localMark(states[items[i].ID])
+	}
+	return degraded
+}
+
+// fleetHypothesis renders another host's committed candidate as a listing row.
+//
+// Statement is frontier.Output's summary of the record, which for a candidate
+// is its statement bounded to one line — the model's own wording clipped, never
+// reworded. Status is the lifecycle state the record carried when it was staged
+// for publication and is documented as a snapshot: a candidate's status lives in
+// an append-only history on its owning host, and this machine cannot know
+// whether that host has moved it since.
+func fleetHypothesis(record fleet.Record, localHost string) HypothesisSummary {
+	mark, summary := markFleetRecord(record, localHost)
+	out := HypothesisSummary{
+		fleetMark: mark,
+		ID:        record.Record.RecordID,
+		RunID:     record.Record.RunID,
+		CreatedAt: timeText(record.Record.CreatedAt),
+		Statement: summary,
+	}
+	if record.Published != nil {
+		out.AncestorID = record.Published.Ancestor
+		out.Status = string(record.Published.Status)
+		out.CreatedAt = timeText(record.Published.CreatedAt)
+	}
+	return out
 }
 
 // hypothesisStatus resolves the ?status= filter against internal/frontier's own
@@ -534,7 +628,13 @@ func viewEdges(edges []review.Edge) []edgeView {
 }
 
 // FindingSummary is one consolidation as a listing shows it.
+//
+// The embedded fleetMark attributes the row and reports whether it is globally
+// reviewable (issue #109 item 4). A consolidation another host committed
+// carries no ReviewStatus and no evidence counts, for HypothesisSummary's
+// reason: they are the owning host's derivations, not this machine's.
 type FindingSummary struct {
+	fleetMark
 	ID           string `json:"id"`
 	RunID        string `json:"run_id"`
 	CreatedAt    string `json:"created_at"`
@@ -545,6 +645,7 @@ type FindingSummary struct {
 }
 
 type findingList struct {
+	syncNotice
 	Items []FindingSummary `json:"items"`
 	Total int              `json:"total"`
 }
@@ -552,11 +653,18 @@ type findingList struct {
 // handleFindings lists consolidations from the review queue, which is the only
 // enumeration of findings any service offers: internal/frontier answers
 // Finding(id) and nothing wider.
+//
+// ?fleet=1 appends the other hosts' committed consolidations, on the same terms
+// handleHypotheses states.
 func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireService(w, s.opts.Frontier != nil && s.opts.Review != nil, "the hypothesis frontier") {
 		return
 	}
 	pg, ok := s.requirePage(w, r)
+	if !ok {
+		return
+	}
+	fleetWide, ok := s.fleetRequested(w, r)
 	if !ok {
 		return
 	}
@@ -571,12 +679,14 @@ func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 	}
 	result := findingList{Items: []FindingSummary{}, Total: len(items)}
 	start, end := pg.window(len(items))
+	ids := make([]string, 0, end-start)
 	for _, item := range items[start:end] {
 		record, err := s.opts.Frontier.Finding(r.Context(), item.Subject.ID)
 		if err != nil {
 			s.serviceError(w, r, err)
 			return
 		}
+		ids = append(ids, record.ID)
 		result.Items = append(result.Items, FindingSummary{
 			ID:           record.ID,
 			RunID:        record.RunID,
@@ -587,7 +697,43 @@ func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 			ReviewStatus: string(item.Status),
 		})
 	}
+	states, degraded := s.syncStates(r.Context(), r, ids)
+	if degraded {
+		result.syncNotice = degradedNotice()
+	}
+	for i := range result.Items {
+		result.Items[i].fleetMark = s.localMark(states[result.Items[i].ID])
+	}
+	if fleetWide {
+		records, err := s.otherHosts(r.Context(), pg.limit, sharedcatalog.KindFinding)
+		if err != nil {
+			s.fleetError(w, r, err)
+			return
+		}
+		host := s.opts.Fleet.LocalHost()
+		for _, record := range records {
+			result.Items = append(result.Items, fleetFinding(record, host))
+		}
+	}
 	s.writeJSON(w, http.StatusOK, result)
+}
+
+// fleetFinding renders another host's committed consolidation as a listing row.
+// Title is frontier.Output's summary, which for a finding is its title bounded
+// to one line.
+func fleetFinding(record fleet.Record, localHost string) FindingSummary {
+	mark, summary := markFleetRecord(record, localHost)
+	out := FindingSummary{
+		fleetMark: mark,
+		ID:        record.Record.RecordID,
+		RunID:     record.Record.RunID,
+		CreatedAt: timeText(record.Record.CreatedAt),
+		Title:     summary,
+	}
+	if record.Published != nil {
+		out.CreatedAt = timeText(record.Published.CreatedAt)
+	}
+	return out
 }
 
 type findingView struct {

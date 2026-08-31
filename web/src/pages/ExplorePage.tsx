@@ -2,12 +2,28 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import {
   getAnalysisState,
+  getFleetRecords,
   searchCorpus,
   type AnalysisState,
+  type FleetRecordsResponse,
   type SearchHit,
 } from "../api";
 import { errorMessage, formatTime } from "../format";
-import { AuthorityMark, Badge, Quoted } from "../analysis";
+import {
+  AuthorityMark,
+  Badge,
+  FleetNotice,
+  HostChips,
+  HostLabel,
+  SyncBadge,
+  SyncDegradedNotice,
+  UnopenedNote,
+  Quoted,
+  inHostScope,
+  syncRowClass,
+  useFleetHosts,
+  type HostScope,
+} from "../analysis";
 
 const HARNESSES = ["omp", "codex", "claude-code"];
 
@@ -111,6 +127,8 @@ function ExplorePage() {
             </article>
           )}
 
+          {analysis.sync_degraded && <SyncDegradedNotice detail={analysis.sync_detail} />}
+
           <article className="card runs-card">
             <div className="section-heading">
               <div>
@@ -133,6 +151,7 @@ function ExplorePage() {
                       <th>Receipt</th>
                       <th>Run</th>
                       <th>Recorded</th>
+                      <th>Host</th>
                       <th>Commit state</th>
                       <th>Authority</th>
                       <th>Counts</th>
@@ -153,12 +172,12 @@ function ExplorePage() {
                               ? <span title={recorded.absolute}>{recorded.relative}</span>
                               : <span className="muted">—</span>}
                           </td>
-                          <td>
-                            <Badge
-                              label={run.sync}
-                              tone={run.sync === "committed" ? "green" : "amber"}
-                            />
-                          </td>
+                          {/* The host is the shared catalog's, not the
+                              receipt's: a run the catalog cannot attribute
+                              renders as unattributed rather than as this
+                              machine. */}
+                          <td><HostLabel mark={{ host: run.host, host_attributed: run.host_attributed }} /></td>
+                          <td><SyncBadge sync={run.sync} /></td>
                           <td>
                             <AuthorityMark authority={run.authority} />
                           </td>
@@ -180,6 +199,8 @@ function ExplorePage() {
               </div>
             )}
           </article>
+
+          <FleetRecordsCard />
 
           <article className="card cookbook-card">
             <div className="section-heading">
@@ -316,6 +337,148 @@ function ExplorePage() {
         )}
       </article>
     </section>
+  );
+}
+
+// FleetRecordsCard is what the deployment has committed, as this machine can
+// read it (issue #109 item 4).
+//
+// It lives on Explore rather than on a page of its own because it answers the
+// question the receipt strip beside it answers, one scope wider: the strip is
+// what this machine ran, and this is what every machine produced. A separate
+// page would have split one question in two.
+//
+// Its default scope is every host, unlike the frontier and the inbox. Those are
+// working surfaces whose default must stay this machine's own backlog; this card
+// exists only to show the fleet, and a fleet card defaulting to one host would
+// have nothing to say.
+function FleetRecordsCard() {
+  const fleet = useFleetHosts();
+  const [scope, setScope] = useState<HostScope>({ fleet: true, host: null });
+  const [data, setData] = useState<FleetRecordsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    // Staged output is asked for on purpose: SPEC.md §6.5 requires it to be
+    // visible, and a card that read committed records only would make a host
+    // mid-outage look idle rather than behind.
+    getFleetRecords({ pending: true })
+      .then((value) => setData(value))
+      .catch((reason) => setError(errorMessage(reason)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(load, [load]);
+
+  // Narrowed client-side, so a chip hides rows the browser already holds.
+  const items = (data?.items ?? []).filter((item) => inHostScope(item, scope));
+
+  if (data && !data.configured) {
+    return (
+      <article className="card fleet-card">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Fleet</p>
+            <h2>Committed across the deployment</h2>
+          </div>
+        </div>
+        <FleetNotice />
+      </article>
+    );
+  }
+
+  return (
+    <article className="card fleet-card">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Fleet</p>
+          <h2>Committed across the deployment</h2>
+        </div>
+        {data && (
+          <span className="count-label">
+            {data.items.length} shown
+            {data.pending > 0 && <span className="chip-pending">{data.pending} staged</span>}
+          </span>
+        )}
+      </div>
+      <p className="muted">
+        Every host's Phase B records as this machine can read them: decrypted here, with this
+        machine's own keys, and never written into its durable store. A record sealed under a key
+        this instance does not hold is listed with the reason rather than hidden.
+      </p>
+
+      <HostChips
+        hosts={data?.hosts ?? fleet.hosts}
+        scope={scope}
+        localHost={fleet.localHost}
+        onSelect={setScope}
+      />
+
+      {loading && !data && (
+        <div className="state-card"><span className="spinner" /> Reading the fleet…</div>
+      )}
+      {error && (
+        <div className="state-card error-state">
+          <strong>The fleet's records could not be read.</strong>
+          <span>{error}</span>
+          <button type="button" onClick={load}>Try again</button>
+        </div>
+      )}
+      {!loading && !error && items.length === 0 && (
+        <p className="muted">No host has committed records matching this filter.</p>
+      )}
+
+      {items.length > 0 && (
+        <div className="table-scroll">
+          <table className="frontier-table fleet-table">
+            <thead>
+              <tr>
+                <th>Record</th>
+                <th>Kind</th>
+                <th>Host</th>
+                <th>Sync</th>
+                <th>Actor</th>
+                <th>Committed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => {
+                const committed = formatTime(item.committed_at);
+                return (
+                  <tr key={item.record_id} className={syncRowClass(item)}>
+                    <td className="statement-cell">
+                      {/* A kind the retrieval surface does not hold -- a
+                          proposal, a link, a receipt -- has no summary by
+                          construction, and that absence is stated rather than
+                          left as a blank cell. */}
+                      {item.summary ? (
+                        <strong className="untrusted-inline">{item.summary}</strong>
+                      ) : (
+                        <span className="muted no-summary">no summary for a {item.kind} record</span>
+                      )}
+                      <span className="secondary mono">{item.record_id}</span>
+                      <UnopenedNote reason={item.unopened} />
+                    </td>
+                    <td><Badge label={item.kind} tone="neutral" /></td>
+                    <td><HostLabel mark={item} /></td>
+                    <td><SyncBadge sync={item.sync} /></td>
+                    <td className="mono untrusted-inline">{item.actor}</td>
+                    <td>
+                      {committed
+                        ? <span title={committed.absolute}>{committed.relative}</span>
+                        : <span className="muted">—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </article>
   );
 }
 

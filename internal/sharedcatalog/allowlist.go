@@ -93,9 +93,15 @@ var allowlist = map[string]map[string]Class{
 		"schema_version": ClassIdentifier,
 		"created_at":     ClassTimestamp,
 	},
+	// host_id says which host this instance publishes as (migrations/0007).
+	// It is the same opaque, operator-assigned value `snapshots.host_id` and
+	// `sessions.host_id` already carry, and it is what lets a Phase B fleet
+	// read attribute a committed record to the machine that produced it
+	// instead of inferring one.
 	"instances": {
 		"instance_id":   ClassOpaqueID,
 		"deployment_id": ClassOpaqueID,
+		"host_id":       ClassOpaqueID,
 		"created_at":    ClassTimestamp,
 		"last_seen_at":  ClassTimestamp,
 	},
@@ -212,6 +218,129 @@ func Allowlist() []string {
 	return lines
 }
 
+// phaseBTables names the tables that hold Phase B analysis output
+// (migrations/0003). They are singled out because they carry a different
+// weight from every other table here: a snapshot row is rebuildable from the
+// repository, while a hypothesis, finding, or receipt exists nowhere else, so
+// the question of what may sit beside it in the clear is a narrower question
+// than the one the general allowlist answers.
+var phaseBTables = map[string]bool{
+	"analysis_runs":    true,
+	"analysis_records": true,
+}
+
+// phaseBPlaintextClasses is SPEC.md 14's open item closed: which fields of a
+// Phase B record are payload rather than allowlisted plaintext.
+//
+// The answer is a class restriction rather than a column list, because a
+// column list would have to be edited by the same migration that adds the
+// column it was supposed to catch. Six of the ten classes are admitted, and
+// they are exactly the vocabulary SPEC.md 9's Phase B allowlist names:
+// structured identifiers and entity kinds (ClassIdentifier), opaque
+// identifiers including host and actor attribution and encrypted-object
+// references (ClassOpaqueID), closure ordering (ClassOrdering), ciphertext
+// sizes and record counts (ClassMeasure), sync state (ClassCommitState), and
+// timestamps (ClassTimestamp).
+//
+// The four that are refused are the point. The operator widened the Phase A
+// boundary on 2026-08-30 to admit a session's title, its workspace path, its
+// continuation grade, and a host's machine facts (migrations/0004,
+// migrations/0006), and that permission was granted for archive metadata about
+// sessions a harness had already written. It does not carry over to analysis
+// output: a Phase B record's content is a claim Babel produced about the
+// corpus, and a column of it in the clear would be readable by the managed
+// provider and by anyone holding the catalog credential, which is precisely
+// what sealing the payload into an object prevents. A future migration that
+// put a title-shaped, path-shaped, grade-shaped, or money-shaped column on a
+// Phase B table would pass the general allowlist and fails here.
+var phaseBPlaintextClasses = map[Class]bool{
+	ClassIdentifier:  true,
+	ClassOpaqueID:    true,
+	ClassOrdering:    true,
+	ClassMeasure:     true,
+	ClassCommitState: true,
+	ClassTimestamp:   true,
+}
+
+// PhaseBPlaintextClasses reports the classes a Phase B plaintext column may
+// belong to, sorted, for diagnostics and for a writer that wants to state the
+// contract it is holding itself to.
+func PhaseBPlaintextClasses() []Class {
+	out := make([]Class, 0, len(phaseBPlaintextClasses))
+	for class := range phaseBPlaintextClasses {
+		out = append(out, class)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// AssertPhaseBPlaintext is the single gate every Phase B plaintext column set
+// passes through: the writers in this package, the publisher that drives them,
+// and Verify itself.
+//
+// It answers one question - may these columns of this table hold their values
+// in the clear - and it answers it from the allowlist rather than from a second
+// list, so there is exactly one place a Phase B column's eligibility is
+// decided. A caller offering a table that holds no Phase B output is a caller
+// bug and is refused rather than passed: the gate that silently approves
+// whatever it does not recognize is not a gate.
+//
+// Every offending column is named at once, because a writer or a migration
+// review wants the whole picture rather than the first failure.
+func AssertPhaseBPlaintext(table string, columns ...string) error {
+	if !phaseBTables[table] {
+		return fmt.Errorf(
+			"table %q holds no Phase B analysis output; the Phase B plaintext gate is for %s",
+			table, strings.Join(sortedPhaseBTables(), " and "))
+	}
+	problems := phaseBProblems(table, columns)
+	if len(problems) == 0 {
+		return nil
+	}
+	sort.Strings(problems)
+	return fmt.Errorf("Phase B plaintext eligibility (SPEC.md 9, 14):\n  %s",
+		strings.Join(problems, "\n  "))
+}
+
+// phaseBProblems reports what is wrong with one table's offered columns. It is
+// separate from AssertPhaseBPlaintext so Verify can accumulate findings across
+// tables into the one error it already builds.
+func phaseBProblems(table string, columns []string) []string {
+	known := allowlist[table]
+	var problems []string
+	for _, column := range columns {
+		class, listed := known[column]
+		if !listed {
+			problems = append(problems, fmt.Sprintf(
+				"column %s.%s is not in the allowlist at all", table, column))
+			continue
+		}
+		if !phaseBPlaintextClasses[class] {
+			problems = append(problems, fmt.Sprintf(
+				"column %s.%s is classed %q, which Phase B does not admit in plaintext: a record's content is sealed into an object and only %s may travel in the clear beside the reference to it",
+				table, column, class, describeClasses(PhaseBPlaintextClasses())))
+		}
+	}
+	return problems
+}
+
+func sortedPhaseBTables() []string {
+	out := make([]string, 0, len(phaseBTables))
+	for table := range phaseBTables {
+		out = append(out, table)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func describeClasses(classes []Class) string {
+	names := make([]string, len(classes))
+	for i, class := range classes {
+		names[i] = string(class)
+	}
+	return strings.Join(names, ", ")
+}
+
 // Verify reads the live schema and reports every column that is not in the
 // allowlist, and every allowlisted column that is missing. It is the gate that
 // makes SPEC.md 9 enforceable rather than aspirational: an instance can run it
@@ -226,6 +355,13 @@ func Allowlist() []string {
 // Errors name every discrepancy at once rather than the first, because a
 // migration review wants the whole picture. An unknown table is named once
 // rather than once per column it happens to have.
+//
+// The Phase B tables are checked twice, against two different questions. The
+// loop below asks whether a column is in the allowlist at all;
+// phaseBProblems then asks the narrower question SPEC.md 14 left open -
+// whether the class it is listed under is one Phase B admits in plaintext -
+// so a column that a Phase A widening made acceptable cannot arrive on an
+// analysis table without a second, explicit decision.
 func Verify(ctx context.Context, db *sql.DB) error {
 	rows, err := db.QueryContext(ctx, `
 		SELECT table_name, column_name
@@ -276,6 +412,19 @@ func Verify(ctx context.Context, db *sql.DB) error {
 				missing = append(missing, fmt.Sprintf("column %s.%s is allowlisted but absent", table, column))
 			}
 		}
+	}
+	for table := range phaseBTables {
+		present, found := live[table]
+		if !found {
+			// A missing Phase B table is already reported as missing
+			// columns above; saying it twice would only pad the list.
+			continue
+		}
+		columns := make([]string, 0, len(present))
+		for column := range present {
+			columns = append(columns, column)
+		}
+		disallowed = append(disallowed, phaseBProblems(table, columns)...)
 	}
 
 	problems := append(disallowed, missing...)

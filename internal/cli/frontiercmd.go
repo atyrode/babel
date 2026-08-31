@@ -10,6 +10,7 @@ import (
 
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
 const hypothesesUsage = `Usage: babel hypotheses [flags]
@@ -24,10 +25,18 @@ priority: §5.4 forbids a list position from reading as strength.
 Every listing reports a total beside its page, so a script pages by
 arithmetic rather than by discovering the end when it hits it.
 
+Every row carries its sync state (SPEC.md §9): "committed" is globally
+durable and reviewable, "pending-sync" is staged and not yet either, "local"
+means nothing claims the record is going anywhere, and "unknown" means nothing
+answered the question. --fleet adds the other hosts' committed candidates,
+each attributed to the machine that produced it; without it this listing is
+this machine's alone.
+
 Flags:
   --status S    one of untriaged, queued, investigating, deferred, rejected,
                 promoted
   --leaves      show only current revisions, not superseded drafts
+  --fleet       also list the other hosts' committed candidates
   --limit N     page size (default 50, maximum 500)
   --offset N    skip this many rows
   --json        emit the listing as JSON on stdout
@@ -48,8 +57,13 @@ const findingsUsage = `Usage: babel findings [flags]
 Lists the consolidated findings (SPEC.md §4.4). A finding exists only as the
 consolidation of observations, so every row names the observations behind it.
 
+Every row carries its sync state (SPEC.md §9). --fleet adds the other hosts'
+committed findings, attributed to the machines that produced them; the columns
+this machine cannot fill for another machine's record read as absent.
+
 Flags:
   --leaves      show only current revisions, not superseded drafts
+  --fleet       also list the other hosts' committed findings
   --limit N     page size (default 50, maximum 500)
   --offset N    skip this many rows
   --json        emit the listing as JSON on stdout
@@ -75,9 +89,17 @@ type pageFlags struct {
 }
 
 func (pf *pageFlags) bind(c *cmd) {
+	pf.bindPage(c)
+	c.fs.BoolVar(&pf.leaves, "leaves", false, "show only current revisions")
+}
+
+// bindPage binds the paging knobs alone, without --leaves. It exists for an
+// enumeration with no revision chains to cut: a fleet read pages over
+// committed records and has no leaf to select, and defining a flag that
+// command would ignore is the trap `babel archive fleet` refuses for --host.
+func (pf *pageFlags) bindPage(c *cmd) {
 	c.fs.IntVar(&pf.limit, "limit", 0, "page size; zero selects the store's default")
 	c.fs.IntVar(&pf.offset, "offset", 0, "skip this many rows")
-	c.fs.BoolVar(&pf.leaves, "leaves", false, "show only current revisions")
 }
 
 func (pf *pageFlags) filter(statuses []frontier.Status) frontier.ListFilter {
@@ -206,9 +228,24 @@ type proposalRow struct {
 // arithmetic instead of by requesting until it gets nothing.
 type hypothesesResult struct {
 	Hypotheses []hypothesisRow `json:"hypotheses"`
-	Total      int             `json:"total"`
-	Limit      int             `json:"limit"`
-	Offset     int             `json:"offset"`
+	// Sync maps each listed record id to its sync state in the shared
+	// vocabulary: "committed", "pending-sync", or "local" (SPEC.md §9).
+	//
+	// It is a map beside the rows rather than a field on hypothesisRow because
+	// that row shape also serves the detail view, which resolves no sync state
+	// and would then carry the field as an unexplained blank. A listing's
+	// column belongs to the listing.
+	Sync map[string]string `json:"sync,omitempty"`
+	// Fleet carries the other hosts' committed candidates, present only when
+	// --fleet asked for them. It is a separate array rather than rows appended
+	// to Hypotheses because a remote record is not a local one: most of a
+	// hypothesisRow is derived from local state this machine does not hold for
+	// another machine's record, and merging the two shapes would fill those
+	// fields with zeroes that read as measurements.
+	Fleet  []fleetRecordRow `json:"fleet,omitempty"`
+	Total  int              `json:"total"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
 }
 
 type hypothesisResult struct {
@@ -221,9 +258,12 @@ type hypothesisResult struct {
 
 type findingsResult struct {
 	Findings []findingRow `json:"findings"`
-	Total    int          `json:"total"`
-	Limit    int          `json:"limit"`
-	Offset   int          `json:"offset"`
+	// Sync and Fleet carry what hypothesesResult's do, for the same reasons.
+	Sync   map[string]string `json:"sync,omitempty"`
+	Fleet  []fleetRecordRow  `json:"fleet,omitempty"`
+	Total  int               `json:"total"`
+	Limit  int               `json:"limit"`
+	Offset int               `json:"offset"`
 }
 
 type findingResult struct {
@@ -236,8 +276,10 @@ type findingResult struct {
 func (a *app) hypothesesCmd(ctx context.Context, args []string) error {
 	c := newCmd("hypotheses", hypothesesUsage)
 	var pf pageFlags
+	var ff fleetFlags
 	status := c.fs.String("status", "", "narrow to one lifecycle status")
 	pf.bind(c)
+	ff.bind(c)
 	asJSON := c.fs.Bool("json", false, "emit the listing as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -253,6 +295,11 @@ func (a *app) hypothesesCmd(ctx context.Context, args []string) error {
 		}
 		statuses = []frontier.Status{want}
 	}
+	reader, release, err := a.fleetListingReader(ctx, ff.fleetWide)
+	if err != nil {
+		return fleetUnavailable(err)
+	}
+	defer release()
 
 	state, err := openAnalysisState()
 	if err != nil {
@@ -265,6 +312,7 @@ func (a *app) hypothesesCmd(ctx context.Context, args []string) error {
 		return err
 	}
 	rows := make([]hypothesisRow, 0, len(records))
+	ids := make([]string, 0, len(records))
 	for _, record := range records {
 		reviewStatus, err := state.frontier.ReviewStatus(ctx,
 			frontier.Ref{Type: frontier.EntityHypothesis, ID: record.ID})
@@ -272,23 +320,62 @@ func (a *app) hypothesesCmd(ctx context.Context, args []string) error {
 			return err
 		}
 		rows = append(rows, renderHypothesis(record, reviewStatus))
+		ids = append(ids, record.ID)
+	}
+	sync, err := a.syncColumn(ctx, reader, ids)
+	if err != nil {
+		return err
 	}
 
-	res := hypothesesResult{Hypotheses: rows, Total: total, Limit: pf.limit, Offset: pf.offset}
+	res := hypothesesResult{
+		Hypotheses: rows, Sync: sync,
+		Total: total, Limit: pf.limit, Offset: pf.offset,
+	}
+	var fetched int
+	if ff.fleetWide {
+		res.Fleet, fetched, err = a.fleetListingRows(ctx, reader,
+			[]sharedcatalog.RecordKind{sharedcatalog.KindHypothesis}, ids, pf.limit)
+		if err != nil {
+			return err
+		}
+	}
 	if *asJSON {
 		return a.emitJSON(res)
 	}
-	if total == 0 {
+	if total == 0 && len(res.Fleet) == 0 {
 		fmt.Fprint(a.stdout, "no hypotheses; run \"babel explore\" to produce some\n")
 		return nil
 	}
-	table := make([][]string, 0, len(rows))
+	// The fleet columns come first, which is `babel archive fleet`'s order: the
+	// machine a row belongs to and whether the row is globally reviewable are
+	// what an operator reads a cross-host listing for, and a column at the far
+	// right of a table whose last cell is a model's own sentence is a column
+	// nobody sees.
+	header := []string{"SYNC", "ID", "STATUS", "REVIEW", "PRIORITY", "STATEMENT"}
+	table := make([][]string, 0, len(rows)+len(res.Fleet))
 	for _, row := range rows {
-		table = append(table, []string{row.ID, row.Status, row.ReviewStatus,
+		table = append(table, []string{syncCell(sync, row.ID), row.ID, row.Status, row.ReviewStatus,
 			strconv.FormatFloat(row.Priority, 'f', 2, 64), row.Statement})
 	}
-	if err := writeTable(a.stdout, []string{"ID", "STATUS", "REVIEW", "PRIORITY", "STATEMENT"}, table); err != nil {
+	if ff.fleetWide {
+		header = append([]string{"HOST"}, header...)
+		for i, row := range table {
+			table[i] = append([]string{localHostCell(reader)}, row...)
+		}
+		for _, row := range res.Fleet {
+			// A remote candidate's review status and priority live in this
+			// machine's own review log and payload derivation, neither of which
+			// holds another machine's record, so both read as absent rather
+			// than as an unreviewed candidate of priority zero.
+			table = append(table, []string{row.hostCell(), row.Sync, row.RecordID,
+				orMissing(row.Status), missingValue, missingValue, row.summaryCell()})
+		}
+	}
+	if err := writeTable(a.stdout, header, table); err != nil {
 		return err
+	}
+	if ff.fleetWide {
+		a.fleetListingNote(res.Fleet, fetched, pf.limit)
 	}
 	return a.writePageFooter(len(rows), pf.offset, total)
 }
@@ -407,7 +494,9 @@ func (a *app) hypothesisShow(ctx context.Context, args []string) error {
 func (a *app) findingsCmd(ctx context.Context, args []string) error {
 	c := newCmd("findings", findingsUsage)
 	var pf pageFlags
+	var ff fleetFlags
 	pf.bind(c)
+	ff.bind(c)
 	asJSON := c.fs.Bool("json", false, "emit the listing as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -415,6 +504,11 @@ func (a *app) findingsCmd(ctx context.Context, args []string) error {
 	if err := c.noArgs(); err != nil {
 		return err
 	}
+	reader, release, err := a.fleetListingReader(ctx, ff.fleetWide)
+	if err != nil {
+		return fleetUnavailable(err)
+	}
+	defer release()
 
 	state, err := openAnalysisState()
 	if err != nil {
@@ -427,28 +521,64 @@ func (a *app) findingsCmd(ctx context.Context, args []string) error {
 		return err
 	}
 	rows := make([]findingRow, 0, len(records))
+	ids := make([]string, 0, len(records))
 	for _, record := range records {
 		status, err := state.frontier.ReviewStatus(ctx, frontier.Ref{Type: frontier.EntityFinding, ID: record.ID})
 		if err != nil {
 			return err
 		}
 		rows = append(rows, renderFinding(record, status))
+		ids = append(ids, record.ID)
+	}
+	sync, err := a.syncColumn(ctx, reader, ids)
+	if err != nil {
+		return err
 	}
 
-	res := findingsResult{Findings: rows, Total: total, Limit: pf.limit, Offset: pf.offset}
+	res := findingsResult{
+		Findings: rows, Sync: sync,
+		Total: total, Limit: pf.limit, Offset: pf.offset,
+	}
+	var fetched int
+	if ff.fleetWide {
+		res.Fleet, fetched, err = a.fleetListingRows(ctx, reader,
+			[]sharedcatalog.RecordKind{sharedcatalog.KindFinding}, ids, pf.limit)
+		if err != nil {
+			return err
+		}
+	}
 	if *asJSON {
 		return a.emitJSON(res)
 	}
-	if total == 0 {
+	if total == 0 && len(res.Fleet) == 0 {
 		fmt.Fprint(a.stdout, "no findings; run \"babel explore\" to produce some\n")
 		return nil
 	}
-	table := make([][]string, 0, len(rows))
+	header := []string{"SYNC", "ID", "REVIEW", "OBSERVATIONS", "TITLE"}
+	table := make([][]string, 0, len(rows)+len(res.Fleet))
 	for _, row := range rows {
-		table = append(table, []string{row.ID, row.ReviewStatus, strconv.Itoa(len(row.ObservationIDs)), row.Title})
+		table = append(table, []string{syncCell(sync, row.ID), row.ID, row.ReviewStatus,
+			strconv.Itoa(len(row.ObservationIDs)), row.Title})
 	}
-	if err := writeTable(a.stdout, []string{"ID", "REVIEW", "OBSERVATIONS", "TITLE"}, table); err != nil {
+	if ff.fleetWide {
+		header = append([]string{"HOST"}, header...)
+		for i, row := range table {
+			table[i] = append([]string{localHostCell(reader)}, row...)
+		}
+		for _, row := range res.Fleet {
+			// A remote finding's review status is this machine's review log's
+			// answer about a record it does not hold, and its observation count
+			// is a local join across records the fleet read did not fetch.
+			// Neither is knowable here, so neither is stated.
+			table = append(table, []string{row.hostCell(), row.Sync, row.RecordID,
+				missingValue, missingValue, row.summaryCell()})
+		}
+	}
+	if err := writeTable(a.stdout, header, table); err != nil {
 		return err
+	}
+	if ff.fleetWide {
+		a.fleetListingNote(res.Fleet, fetched, pf.limit)
 	}
 	return a.writePageFooter(len(rows), pf.offset, total)
 }

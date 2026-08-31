@@ -206,6 +206,115 @@ export type ReviewSubjectType = "hypothesis" | "finding" | "proposal";
 // that. The UI renders them as words, never as bars or percentages.
 export type Grading = "low" | "moderate" | "high";
 
+// ---------------------------------------------------------------------------
+// Fleet attribution (issue #109 items 3 and 4).
+//
+// Every Phase B listing row carries these, and they mean exactly what the Go
+// DTOs mean. Two of them exist because one string cannot say what it has to.
+//
+// `host` is empty for a record whose origin instance registered no host, and
+// `host_attributed` is what distinguishes that from a host whose display name
+// happens to be empty. The interface renders the absence as "unattributed" and
+// never as the local machine: filing one machine's analysis under another's is
+// the failure the pair exists to prevent.
+//
+// `sync` is one of exactly three values and they are three different facts.
+// "local" means no remote row and no journal claim — nothing is going to carry
+// this record anywhere — where "pending-sync" promises something will, and
+// "unknown" means the shared catalog could not be reached so this machine did
+// not find out. A renderer must never collapse any of them into another.
+//
+// "unknown" arrives with `sync_degraded` on the listing envelope, which is what
+// makes it a state rather than a shrug: the rows still render, and the page says
+// why their global state is not known.
+// ---------------------------------------------------------------------------
+
+export type SyncState = "committed" | "pending-sync" | "local" | "unknown";
+
+// SyncNotice is the degraded marker a listing envelope carries when the shared
+// catalog could not answer. The rows still render — this machine's durable store
+// is local, and another machine's outage must not take away a local page — with
+// every unresolved row's `sync` as "unknown" and this saying why.
+export interface SyncNotice {
+  sync_degraded?: boolean;
+  // Operator-facing prose from the server. Rendered verbatim; the browser
+  // claims nothing about the cause itself.
+  sync_detail?: string;
+}
+
+export interface FleetMark {
+  // Optional only because a mock or an older server may omit them; the current
+  // server always sends them.
+  host?: string;
+  // The machine's identity, as opposed to `host`'s label. A client narrowing a
+  // merged list matches on this and never on the display name: a display name
+  // is a label for reading, two machines may carry the same one, and a filter
+  // that matched labels would silently merge them.
+  host_id?: string;
+  host_attributed?: boolean;
+  local_host?: boolean;
+  sync?: SyncState | string;
+  committed_at?: string;
+  // Why this row has no content, when it has none: a key this machine does not
+  // hold, a payload shape this build does not read. Rendered, never swallowed.
+  unopened?: string;
+}
+
+// One fleet record as GET /api/fleet/records lists it.
+export interface FleetRecord {
+  record_id: string;
+  run_id: string;
+  kind: string;
+  host: string;
+  host_id: string;
+  host_attributed: boolean;
+  local_host: boolean;
+  // The origin instance: the actor that generated the run and committed the
+  // record. Always present, which is why it has no "attributed" companion.
+  actor: string;
+  sync: SyncState | string;
+  committed_at?: string;
+  summary?: string;
+  unopened?: string;
+}
+
+// One machine in the host filter's vocabulary. `attributed: false` is the group
+// of records with no host at all, offered as an option rather than hidden: a
+// dropped group looks like records that do not exist.
+export interface FleetHost {
+  host: string;
+  host_id: string;
+  attributed: boolean;
+  records: number;
+  pending: number;
+  newest_commit?: string;
+}
+
+export interface FleetRecordsResponse {
+  // False means this machine has no shared backend, which is a fact about the
+  // deployment rather than a failure. A backend that exists and did not answer
+  // arrives as an APIError instead, and the two read differently on screen.
+  configured: boolean;
+  items: FleetRecord[];
+  hosts: FleetHost[];
+  pending: number;
+}
+
+export interface FleetHostsResponse {
+  configured: boolean;
+  // This machine's own host id, absent when it has registered none.
+  local_host?: string;
+  hosts: FleetHost[];
+}
+
+export interface FleetRecordFilter {
+  hosts?: string[];
+  kinds?: string[];
+  pending?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
 export interface RunCounts {
   tool_requests: number;
   tools_denied: number;
@@ -229,6 +338,12 @@ export interface RunSummary {
   // Why the run happened, as its receipt recorded it. Empty on a receipt
   // written before receipts carried one.
   authority: RunAuthority;
+  // Which machine produced the run, read from the shared catalog rather than
+  // from the receipt (issue #109 item 4). Both are absent on a run the catalog
+  // cannot attribute, and the receipt strip renders that as "unattributed"
+  // rather than as this machine.
+  host?: string;
+  host_attributed?: boolean;
 }
 
 export interface RecipeSummary {
@@ -249,7 +364,7 @@ export interface WorkerAvailability {
   detail: string;
 }
 
-export interface AnalysisState {
+export interface AnalysisState extends SyncNotice {
   configured: boolean;
   worker: WorkerAvailability;
   runs: RunSummary[];
@@ -272,7 +387,12 @@ export interface EvidenceRef {
   selector?: string;
 }
 
-export interface HypothesisSummary {
+// A candidate as a listing shows it. It extends FleetMark because a listing is
+// now fleet-wide: with ?fleet=1 the rows after this machine's own belong to
+// other hosts, and such a row carries no review_status and no observation count
+// at all — both are the owning host's derivations, and a zero rendered as a fact
+// would say a remote candidate rests on no evidence.
+export interface HypothesisSummary extends FleetMark {
   id: string;
   run_id: string;
   ancestor_id?: string;
@@ -286,7 +406,10 @@ export interface HypothesisSummary {
   review_status?: ReviewStatus;
 }
 
-export interface HypothesesResponse {
+// `total` is this machine's frontier count and stays that way under ?fleet=1:
+// the fleet rows are an attributed appendix, not more pages of the local
+// frontier, so a heading reading "N in the frontier" keeps one meaning.
+export interface HypothesesResponse extends SyncNotice {
   items: HypothesisSummary[];
   total: number;
 }
@@ -397,7 +520,10 @@ export interface HypothesisDetail {
   lineage: Lineage;
 }
 
-export interface FindingSummary {
+// A consolidation as a listing shows it, on HypothesisSummary's terms: a row
+// from another host carries the title and nothing this machine would have had to
+// derive.
+export interface FindingSummary extends FleetMark {
   id: string;
   run_id: string;
   created_at: string;
@@ -407,7 +533,7 @@ export interface FindingSummary {
   review_status: ReviewStatus;
 }
 
-export interface FindingsResponse {
+export interface FindingsResponse extends SyncNotice {
   items: FindingSummary[];
   total: number;
 }
@@ -483,7 +609,11 @@ export interface ReviewSubject {
   id: string;
 }
 
-export interface QueueItem {
+// One review-inbox row. A row from another host carries an empty status and
+// zero counts because this machine holds none of that host's append-only review
+// history; `local_host` is how a renderer tells the two apart and shows an
+// absence rather than a decided-nothing claim.
+export interface QueueItem extends FleetMark {
   subject: ReviewSubject;
   enrolled_at: string;
   status: ReviewStatus;
@@ -494,7 +624,7 @@ export interface QueueItem {
   excerpt: string;
 }
 
-export interface ReviewQueueResponse {
+export interface ReviewQueueResponse extends SyncNotice {
   items: QueueItem[];
   total?: number;
 }
@@ -978,20 +1108,36 @@ const established: Promise<void> = (async () => {
   }
 })();
 
-const errorListeners = new Set<(message: string | null) => void>();
-let currentError: string | null = null;
+// APIFailure is a failed request and the route that asked for it.
+//
+// The route is carried because a banner is a statement about the page the
+// operator is looking at. A request outlives the page that made it -- a listing
+// fetch is still in flight when a click navigates away -- and both halves of
+// that go wrong without this: an error published before the navigation would
+// otherwise survive into the new page, and one published after it would accuse
+// a page that loaded perfectly. Attributing the failure to the route it was
+// sent from makes both impossible rather than merely unlikely.
+export interface APIFailure {
+  message: string;
+  // The application route, as the hash router names it: "/hypotheses". Captured
+  // when the request was sent, never when it failed.
+  route: string;
+}
+
+const errorListeners = new Set<(failure: APIFailure | null) => void>();
+let currentError: APIFailure | null = null;
 
 function safeMessage(value: unknown): string {
   const message = value instanceof Error ? value.message : String(value);
   return message.replace(/[\u0000-\u001f\u007f-\u009f]/gu, "").trim() || "Request failed";
 }
 
-function publishError(value: unknown): void {
-  currentError = safeMessage(value);
+function publishError(value: unknown, route: string): void {
+  currentError = { message: safeMessage(value), route };
   for (const listener of errorListeners) listener(currentError);
 }
 
-export function subscribeAPIErrors(listener: (message: string | null) => void): () => void {
+export function subscribeAPIErrors(listener: (failure: APIFailure | null) => void): () => void {
   errorListeners.add(listener);
   listener(currentError);
   return () => errorListeners.delete(listener);
@@ -1030,6 +1176,11 @@ async function send<T>(
 ): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // The route is read here, before the first await, so it is the route that
+  // asked rather than whichever one the operator reached while waiting. The
+  // search and nested-fragment parts are dropped so it compares equal to the
+  // router's own pathname.
+  const route = window.location.hash.replace(/^#/u, "").replace(/[?#].*$/u, "");
   try {
     await established;
     const response = await fetch(path, {
@@ -1057,7 +1208,7 @@ async function send<T>(
     const failure = controller.signal.aborted
       ? new APIError(408, `${path} did not respond within ${REQUEST_TIMEOUT_MS / 1000}s`)
       : error;
-    publishError(failure);
+    publishError(failure, route);
     throw failure;
   } finally {
     window.clearTimeout(timer);
@@ -1169,13 +1320,19 @@ export function getAnalysisState(): Promise<AnalysisState> {
   return request<AnalysisState>("/api/analysis/state");
 }
 
+// getHypotheses reads this machine's frontier, and with `fleet` the other hosts'
+// committed candidates after it. The flag is opt-in on the wire for the reason
+// the server states: "what is on my frontier" and "what has the deployment
+// produced" are two questions, and a list that silently became the second would
+// make an operator's own backlog look like someone else's work.
 export function getHypotheses(
-  filter: { status?: string; limit?: number; offset?: number } = {},
+  filter: { status?: string; limit?: number; offset?: number; fleet?: boolean } = {},
 ): Promise<HypothesesResponse> {
   const values: Record<string, string | number> = {};
   if (filter.status) values.status = filter.status;
   if (filter.limit !== undefined) values.limit = filter.limit;
   if (filter.offset !== undefined) values.offset = filter.offset;
+  if (filter.fleet) values.fleet = "1";
   const suffix = Object.keys(values).length ? `?${query(values)}` : "";
   return request<HypothesesResponse>(`/api/hypotheses${suffix}`);
 }
@@ -1184,8 +1341,8 @@ export function getHypothesis(id: string): Promise<HypothesisDetail> {
   return request<HypothesisDetail>(`/api/hypothesis?${query({ id })}`);
 }
 
-export function getFindings(): Promise<FindingsResponse> {
-  return request<FindingsResponse>("/api/findings");
+export function getFindings(filter: { fleet?: boolean } = {}): Promise<FindingsResponse> {
+  return request<FindingsResponse>(`/api/findings${filter.fleet ? "?fleet=1" : ""}`);
 }
 
 export function getFinding(id: string): Promise<FindingDetail> {
@@ -1193,13 +1350,49 @@ export function getFinding(id: string): Promise<FindingDetail> {
 }
 
 export function getReviewQueue(
-  filter: { type?: string; status?: string } = {},
+  filter: { type?: string; status?: string; fleet?: boolean } = {},
 ): Promise<ReviewQueueResponse> {
   const values: Record<string, string> = {};
   if (filter.type) values.type = filter.type;
   if (filter.status) values.status = filter.status;
+  if (filter.fleet) values.fleet = "1";
   const suffix = Object.keys(values).length ? `?${query(values)}` : "";
   return request<ReviewQueueResponse>(`/api/review/queue${suffix}`);
+}
+
+// ---------------------------------------------------------------------------
+// The fleet read (issue #109 item 4).
+//
+// Only identifiers travel in these URLs -- host ids, record kinds, a page --
+// and never a word of a record. Record content in a query string would put
+// another machine's analysis into this machine's browser history and into every
+// request log between them, which is the channel the leak acceptance guards.
+// ---------------------------------------------------------------------------
+
+export function getFleetRecords(filter: FleetRecordFilter = {}): Promise<FleetRecordsResponse> {
+  const params = new URLSearchParams();
+  // Repeatable, because the server's host and kind filters are any-of. A comma
+  // list would make a host id containing a comma unaddressable.
+  for (const host of filter.hosts ?? []) params.append("host", host);
+  for (const kind of filter.kinds ?? []) params.append("kind", kind);
+  if (filter.pending) params.set("pending", "1");
+  if (filter.limit !== undefined) params.set("limit", String(filter.limit));
+  if (filter.offset !== undefined) params.set("offset", String(filter.offset));
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<FleetRecordsResponse>(`/api/fleet/records${suffix}`);
+}
+
+// getFleetHosts reads the host filter's vocabulary. It takes no host of its
+// own: a vocabulary narrowed by the current selection could not offer the
+// machines the operator is trying to reach.
+export function getFleetHosts(
+  filter: { kinds?: string[]; pending?: boolean } = {},
+): Promise<FleetHostsResponse> {
+  const params = new URLSearchParams();
+  for (const kind of filter.kinds ?? []) params.append("kind", kind);
+  if (filter.pending) params.set("pending", "1");
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return request<FleetHostsResponse>(`/api/fleet/hosts${suffix}`);
 }
 
 export function decideReview(decision: DecideRequest): Promise<DecideResult> {

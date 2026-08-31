@@ -1,0 +1,72 @@
+-- Which host an instance publishes as (SPEC.md 4.7, 6.5, 9, 14 Phase B item 3).
+--
+-- WHY THE LINK IS MISSING AND WHY IT MATTERS NOW
+--
+-- 0001_init created `instances` and `hosts` side by side and joined neither to
+-- the other, because Phase A never needed the join: every Phase A row that
+-- describes a machine is keyed by host_id already - a snapshot names its host,
+-- a session names its host, a lease fences a host - and `instances` existed
+-- only to say who was holding a lease and who published a row.
+--
+-- Phase B reverses that. 0003_phase_b_records keys an analysis run to its
+-- `origin_instance_id`, which is provenance and not authority, and to a
+-- nullable `execution_host_id`, which is a pin: it names the host that can
+-- rerun repository-dependent work and, as that migration says in as many
+-- words, "never restricts who may read the result". An unpinned run therefore
+-- has no host column at all, and most runs are unpinned.
+--
+-- SPEC.md 4.7 and 9 require globally browseable committed state to be
+-- attributed, and Phase B item 3 requires the fleet listings to show which
+-- machine produced a record. Without this column there are only two ways to
+-- render that, and both are wrong. Reading `execution_host_id` as the origin
+-- conflates a rerun constraint with authorship and is blank for every
+-- unpinned run. Guessing a host from an instance id - because the operator
+-- happens to name them alike - would be inference presented as fact, which
+-- SPEC.md 3 forbids for exactly this class of value.
+--
+-- So the honest fix is the missing edge. Register already receives the host id
+-- and the instance id in one call and writes both rows in one transaction, so
+-- the value costs no new observation, no new source, and no new decision: it
+-- records a pairing the registering process already knew.
+--
+-- WHAT THIS ADMITS TO THE PLAINTEXT BOUNDARY
+--
+-- One opaque, operator-assigned host id, in a table that already holds an
+-- opaque, operator-assigned instance id, referencing a table whose primary key
+-- is the same value. SPEC.md 9's allowlist admits host and actor attribution,
+-- and allowlist.go classes this as an opaque ID or locator alongside
+-- `snapshots.host_id` and `sessions.host_id`. Nothing derived from content
+-- arrives with it: the column answers "which machine is this instance", never
+-- anything about what that machine analysed.
+--
+-- NULL MEANS UNKNOWN
+--
+-- The column is nullable because rows written before it exist, and because a
+-- reader must be able to tell "this instance has not registered since the
+-- column existed" from a host attribution it can trust. A consumer that
+-- rendered NULL as some default host would be attributing one machine's
+-- analysis to another, which is worse than rendering it as unattributed.
+-- Absence is absence, as 0005_title_provenance put it.
+--
+-- WHY NOT ON CONFLICT DO NOTHING
+--
+-- Register updates it, newest-wins, like `hosts.display_name` (decision 8).
+-- An instance genuinely can move: the operator restores a state directory onto
+-- a new machine, or renames a host. The pairing that matters is the current
+-- one, and a stale pairing would silently misattribute every record the
+-- instance commits from now on. An instance that registers with no host id
+-- cannot happen - Register requires all three ids - so there is no
+-- coalesce-to-preserve case here.
+--
+-- SchemaVersion stays 1: additive, nullable, and EnsureCompatible refuses a
+-- database migrated past the binary, so raising it would stop every live
+-- Phase A writer against production (SPEC.md 14).
+
+ALTER TABLE instances
+    ADD COLUMN host_id text REFERENCES hosts (host_id);
+
+-- The index serves the Phase B fleet read, which resolves a committed record's
+-- origin instance to a host for every row it renders, and the reverse question
+-- an operator asks of one machine: which instances have published as this
+-- host.
+CREATE INDEX instances_host_idx ON instances (host_id) WHERE host_id IS NOT NULL;

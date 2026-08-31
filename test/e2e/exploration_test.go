@@ -336,9 +336,20 @@ type hypothesisDoc struct {
 
 type hypothesesDoc struct {
 	Hypotheses []hypothesisDoc `json:"hypotheses"`
-	Total      int             `json:"total"`
-	Limit      int             `json:"limit"`
-	Offset     int             `json:"offset"`
+	// Sync is the per-record sync state SPEC.md line 646 requires a listing
+	// to keep rendering, keyed by record id (issue #109 item 3). It rides a
+	// map beside the rows rather than a field on each row because the row
+	// shape also serves the detail views, which resolve no sync state and
+	// would carry an unexplained blank.
+	//
+	// On this machine every value is "local": the fixture runs with no shared
+	// catalog and no publication journal, so nothing claims these records are
+	// going anywhere - which is the honest answer and deliberately not
+	// "pending-sync".
+	Sync   map[string]string `json:"sync,omitempty"`
+	Total  int               `json:"total"`
+	Limit  int               `json:"limit"`
+	Offset int               `json:"offset"`
 }
 
 type evidenceDoc struct {
@@ -367,11 +378,14 @@ type findingDoc struct {
 	CounterEvidenceAbsent bool          `json:"counter_evidence_absent"`
 }
 
+// The three listings below carry the same per-record sync map for the same
+// reason hypothesesDoc does; see its comment.
 type findingsDoc struct {
-	Findings []findingDoc `json:"findings"`
-	Total    int          `json:"total"`
-	Limit    int          `json:"limit"`
-	Offset   int          `json:"offset"`
+	Findings []findingDoc      `json:"findings"`
+	Sync     map[string]string `json:"sync,omitempty"`
+	Total    int               `json:"total"`
+	Limit    int               `json:"limit"`
+	Offset   int               `json:"offset"`
 }
 
 type queueItemDoc struct {
@@ -386,7 +400,8 @@ type queueItemDoc struct {
 }
 
 type queueDoc struct {
-	Items []queueItemDoc `json:"items"`
+	Items []queueItemDoc    `json:"items"`
+	Sync  map[string]string `json:"sync,omitempty"`
 }
 
 type decisionDoc struct {
@@ -433,10 +448,11 @@ type anchorDoc struct {
 }
 
 type dispositionsDoc struct {
-	Dispositions []dispositionDoc `json:"dispositions"`
-	Total        int              `json:"total"`
-	Limit        int              `json:"limit"`
-	Offset       int              `json:"offset"`
+	Dispositions []dispositionDoc  `json:"dispositions"`
+	Sync         map[string]string `json:"sync,omitempty"`
+	Total        int               `json:"total"`
+	Limit        int               `json:"limit"`
+	Offset       int               `json:"offset"`
 }
 
 type ledgerEntryDoc struct {
@@ -706,6 +722,27 @@ func TestSyntheticExplorationRoundTrip(t *testing.T) {
 	listed := execJSON[hypothesesDoc](t, p, "hypotheses", "--json")
 	if listed.Total != 2 || len(listed.Hypotheses) != 2 {
 		t.Errorf("hypotheses = %+v, want both candidates", listed)
+	}
+	// Every listed record carries its sync state, which is what SPEC.md line
+	// 646 requires of a listing and what issue #109 item 3 keeps rendering
+	// once the fleet read path exists.
+	//
+	// On this fixture the answer is "local" for all of them, and that exact
+	// word is the point. This machine has no shared catalog and no
+	// publication journal, so nothing has observed that these records are
+	// owed anywhere; rendering them "pending-sync" would promise a sync that
+	// no process here intends to perform, which is the one thing SPEC.md 6.5's
+	// visible staging must not say.
+	for _, row := range listed.Hypotheses {
+		state, named := listed.Sync[row.ID]
+		if !named {
+			t.Errorf("candidate %s was listed with no sync state", row.ID)
+			continue
+		}
+		if state != "local" {
+			t.Errorf("candidate %s reports sync %q on a machine with no shared backend, want %q",
+				row.ID, state, "local")
+		}
 	}
 	findings := execJSON[findingsDoc](t, p, "findings", "--json")
 	if findings.Total != 1 || findings.Findings[0].ID != findingID {

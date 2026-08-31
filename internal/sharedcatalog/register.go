@@ -95,10 +95,20 @@ func Register(ctx context.Context, db *sql.DB, deploymentID, hostID, instanceID 
 	// last_seen_at is server time, like every other timestamp here: an
 	// instance with a skewed clock must not be able to claim it checked in
 	// later than it did.
+	//
+	// host_id is newest-wins rather than preserved (migrations/0007). An
+	// instance genuinely can move - a restored state directory, a renamed
+	// host - and a stale pairing would misattribute every Phase B record the
+	// instance commits from then on. There is no coalesce-to-preserve case:
+	// this function refuses a call that names no host, so the value is never
+	// absent when it is written.
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO instances (instance_id, deployment_id, last_seen_at)
-		VALUES ($1, $2, `+serverNow+`)
-		ON CONFLICT (instance_id) DO UPDATE SET last_seen_at = `+serverNow, instanceID, deploymentID); err != nil {
+		INSERT INTO instances (instance_id, deployment_id, host_id, last_seen_at)
+		VALUES ($1, $2, $3, `+serverNow+`)
+		ON CONFLICT (instance_id) DO UPDATE
+		   SET last_seen_at = `+serverNow+`,
+		       host_id      = excluded.host_id`,
+		instanceID, deploymentID, hostID); err != nil {
 		return fmt.Errorf("register instance: %w", err)
 	}
 

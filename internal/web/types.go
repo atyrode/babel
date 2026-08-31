@@ -9,6 +9,7 @@ import (
 
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/disposition"
+	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/reality"
@@ -68,6 +69,24 @@ type Options struct {
 	// so each route names the ones it needs and the rest keep answering.
 	Dispositions DispositionService
 	Reviver      FrontierReviver
+	// Fleet and SyncJournal are issue #109's read half: the shared catalog
+	// every host in the deployment commits to, and this machine's own
+	// publication journal.
+	//
+	// Both are optional and their absence is a state rather than a fault. A
+	// nil Fleet is local mode — there is no shared backend, so there are no
+	// other hosts, and the routes in fleet.go answer that plainly instead of
+	// refusing. A nil SyncJournal is a build with no publication journal
+	// wired, which internal/fleet resolves to "local" rather than guessing on
+	// its behalf.
+	//
+	// They are two fields because they are two things: the catalog is
+	// authoritative about what committed globally, and the journal is the only
+	// thing that knows what this machine staged while the catalog was
+	// unreachable. Collapsing them would lose exactly the case SPEC.md §6.5
+	// requires to stay visible.
+	Fleet       FleetReader
+	SyncJournal fleet.SyncJournal
 	// Cookbook is the loaded analysis cookbook. It is read-only by
 	// construction: a *cookbook.Set exposes lookups and nothing that
 	// changes an asset.
@@ -224,6 +243,18 @@ type RunSummary struct {
 	// one. That is an absence rather than an operator authority, and the
 	// surfaces that render it say so instead of filling the gap in.
 	Authority RunAuthority `json:"authority"`
+	// Host is the machine that produced the run, and HostAttributed says
+	// whether the shared catalog could name one at all (issue #109 item 4).
+	//
+	// They are filled in by the server rather than by the RunLister, because
+	// the answer is not in the receipt: a receipt records the run, and which
+	// host that run's origin instance registered as is the shared catalog's
+	// fact. A run the catalog cannot attribute — an instance registered before
+	// migrations/0007, or a local-mode machine with no catalog at all — leaves
+	// both at their zero value, and a listing renders that absence rather than
+	// naming the machine it happens to be running on.
+	Host           string `json:"host"`
+	HostAttributed bool   `json:"host_attributed"`
 }
 
 // RunAuthority mirrors the authority a run receipt's header carries. Kind is

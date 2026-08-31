@@ -21,6 +21,9 @@ import type {
   FactView,
   FindingDetail,
   FindingSummary,
+  FleetHost,
+  FleetMark,
+  FleetRecord,
   HypothesisDetail,
   HypothesisStatus,
   HypothesisSummary,
@@ -38,6 +41,7 @@ import type {
   RefinementView,
   SearchHit,
   StatusEvent,
+  SyncState,
 } from "../src/api";
 
 const phasebMode = Bun.env.MOCK_PHASEB ?? "rich";
@@ -59,6 +63,198 @@ export const HOSTILE_CONTROL = "\u001b]0;owned\u0007\u001b[2J\u009b31mred\u0000\
 export const HOSTILE_URL = "javascript:window.__babel_pwned=5";
 // A thousand characters with no spaces: layout must wrap it, not widen.
 export const UNBROKEN_TOKEN = "deadbeefcafef00d".repeat(63).slice(0, 1000);
+
+// ---------------------------------------------------------------------------
+// Fleet attribution (issue #109 items 3 and 4)
+//
+// MOCK_FLEET selects the shape of the shared backend:
+//
+//   rich (default)  two attributed hosts plus the group with no host at all,
+//                   with a staged record, a record this instance cannot open,
+//                   an unsummarizable kind, and hostile content in a remote
+//                   record's summary.
+//   unconfigured    a machine in local mode: `configured: false`, no hosts. It
+//                   is the day-one shape and the one the honest notice exists
+//                   for, so MOCK_PHASEB=empty selects it by default.
+//   degraded        the shared catalog did not answer: every local row's sync
+//                   state is "unknown" and the listings carry the degraded
+//                   marker. This is the state a renderer is most likely to get
+//                   wrong by falling back to "local", which would promise that
+//                   nothing is carrying these records anywhere -- a claim
+//                   nothing observed.
+// ---------------------------------------------------------------------------
+
+const fleetMode = Bun.env.MOCK_FLEET ?? (empty ? "unconfigured" : "rich");
+const fleetConfigured = fleetMode !== "unconfigured";
+const fleetDegraded = fleetMode === "degraded";
+
+// This synthetic machine's own host id. It matches GET /api/state's host_id, so
+// the interface's "this host" marks agree across pages.
+const FLEET_LOCAL_HOST = "demo-laptop";
+const FLEET_REMOTE_HOST = "build-server";
+
+const fleetHosts: FleetHost[] = fleetConfigured
+  ? [
+      {
+        host: "build-server",
+        host_id: FLEET_REMOTE_HOST,
+        attributed: true,
+        records: 4,
+        pending: 1,
+        newest_commit: "2026-08-29T06:20:00Z",
+      },
+      {
+        host: "demo-laptop",
+        host_id: FLEET_LOCAL_HOST,
+        attributed: true,
+        records: 6,
+        pending: 1,
+        newest_commit: "2026-08-29T07:40:00Z",
+      },
+      // The group whose origin instances registered before hosts were recorded.
+      // It is offered as a chip rather than hidden: an operator who cannot
+      // select it cannot reach the records it holds.
+      { host: "", host_id: "", attributed: false, records: 1, pending: 0, newest_commit: "2026-08-27T11:05:00Z" },
+    ]
+  : [];
+
+// mark builds the attribution every fleet-wide row carries. localSync is the
+// state of this machine's own rows, and the degraded variant overrides all of
+// them with "unknown", because a catalog that did not answer did not answer
+// about any of them.
+function mark(hostID: string, sync: SyncState, committedAt?: string): FleetMark {
+  const host = fleetHosts.find((candidate) => candidate.host_id === hostID);
+  const resolved = fleetDegraded ? "unknown" : sync;
+  return {
+    host: host?.attributed ? host.host : "",
+    host_id: hostID,
+    host_attributed: Boolean(host?.attributed),
+    local_host: hostID === FLEET_LOCAL_HOST,
+    sync: resolved,
+    committed_at: resolved === "committed" ? committedAt : undefined,
+  };
+}
+
+// localMark is what a row from this machine carries. In local mode this machine
+// has registered no host, so the label is absent rather than invented -- which
+// is exactly what the real server sends, and what keeps "unattributed" from
+// ever meaning "this one".
+function localMark(sync: SyncState, committedAt?: string): FleetMark {
+  if (!fleetConfigured) {
+    return { host: "", host_id: "", host_attributed: false, local_host: true, sync: fleetDegraded ? "unknown" : sync };
+  }
+  return mark(FLEET_LOCAL_HOST, sync, committedAt);
+}
+
+// The sync state of each synthetic local candidate, covering the frozen
+// vocabulary: two committed, one staged, and two held only here. A record that
+// is "local" is not awaiting anything -- nothing is going to carry it anywhere -
+// which is the distinction from "pending-sync" the interface must not blur.
+const localSync: Record<string, SyncState> = {
+  "hyp_unverified-closures": "committed",
+  "hyp_lens-overlap": "committed",
+  "hyp_promoted-pattern": "committed",
+  "hyp_hostile-content": "pending-sync",
+  "hyp_many-observations": "local",
+  "hyp_dense-token": "local",
+  "fnd_conflicting-evidence": "committed",
+  "prp_criteria-template": "pending-sync",
+};
+
+// The other hosts' committed records, as GET /api/fleet/records lists them and
+// as ?fleet=1 merges them into the local listings.
+//
+// Only committed records from other hosts appear in the merged listings: staged
+// output is not globally reviewable, so build-server's pending candidate is
+// listed by the fleet card and never merged into this machine's frontier.
+const fleetRecords: FleetRecord[] = fleetConfigured
+  ? [
+      {
+        record_id: "rec_remote-flaky-retries",
+        run_id: "run_build-11",
+        kind: "hypothesis",
+        ...mark(FLEET_REMOTE_HOST, "committed", "2026-08-29T06:20:00Z"),
+        actor: "build-server-instance-1",
+        summary: "CI reruns cluster on the same three synthetic integration suites rather than spreading evenly.",
+      } as FleetRecord,
+      {
+        record_id: "rec_remote-hostile-finding",
+        run_id: "run_build-11",
+        kind: "finding",
+        ...mark(FLEET_REMOTE_HOST, "committed", "2026-08-29T06:22:00Z"),
+        actor: "build-server-instance-1",
+        // Hostile content from a machine this one does not control. A remote
+        // record's summary is the least trusted string on the page: it was
+        // authored by another host's model and decrypted here.
+        summary: "Model suggests " + HOSTILE_HTML,
+      } as FleetRecord,
+      {
+        record_id: "rec_remote-proposal",
+        run_id: "run_build-11",
+        kind: "proposal",
+        ...mark(FLEET_REMOTE_HOST, "committed", "2026-08-29T06:24:00Z"),
+        actor: "build-server-instance-1",
+        // A proposal has no searchable summary by construction, so this row
+        // carries none and no fault either. It must still reach the review
+        // inbox: proposals are what an inbox is mostly for.
+      } as FleetRecord,
+      {
+        record_id: "rec_remote-sealed",
+        run_id: "run_build-12",
+        kind: "hypothesis",
+        ...mark(FLEET_REMOTE_HOST, "committed", "2026-08-29T06:26:00Z"),
+        actor: "build-server-instance-1",
+        unopened:
+          "record rec_remote-sealed is sealed under key pk_2026_09, which this instance does not hold",
+      } as FleetRecord,
+      {
+        record_id: "rec_remote-staged",
+        run_id: "run_build-13",
+        kind: "hypothesis",
+        ...mark(FLEET_REMOTE_HOST, "pending-sync"),
+        actor: "build-server-instance-1",
+        summary: "Staged on build-server and not yet committed, so it is not reviewable from here.",
+      } as FleetRecord,
+      {
+        record_id: "rec_unattributed-legacy",
+        run_id: "run_legacy-02",
+        kind: "hypothesis",
+        ...mark("", "committed", "2026-08-27T11:05:00Z"),
+        actor: "legacy-instance-0",
+        summary: "Recorded by an instance that registered before hosts were, so no machine is named.",
+      } as FleetRecord,
+      {
+        record_id: "rec_local-committed",
+        run_id: "run_discovery-07",
+        kind: "hypothesis",
+        ...mark(FLEET_LOCAL_HOST, "committed", "2026-08-29T07:40:00Z"),
+        actor: "demo-laptop-instance-1",
+        summary:
+          "Sessions that close without a verification step recur across the synthetic corpus.",
+      } as FleetRecord,
+    ]
+  : [];
+
+// remoteMerged is what ?fleet=1 appends to a local listing: the other hosts'
+// committed records of one kind, this machine's own excluded because the
+// listing already holds them from its durable store.
+function remoteMerged(kind: string): FleetRecord[] {
+  return fleetRecords.filter(
+    (record) => record.kind === kind && record.sync === "committed" && !record.local_host,
+  );
+}
+
+// syncEnvelope is the degraded marker a listing carries when the catalog could
+// not answer. Its detail is the server's own sentence, so the mock previews the
+// same wording rather than a paraphrase.
+function syncEnvelope(): { sync_degraded?: boolean; sync_detail?: string } {
+  if (!fleetDegraded) return {};
+  return {
+    sync_degraded: true,
+    sync_detail:
+      "the shared catalog could not be reached, so these records' global sync state and host attribution are not known",
+  };
+}
 
 function digest(seed: string): string {
   return seed.repeat(64).slice(0, 64);
@@ -120,6 +316,10 @@ const analysisState: AnalysisState = {
       // both renderings are previewable: a run the conductor started under a
       // policy, and an older receipt written before receipts recorded why.
       authority: { kind: "policy", ref: "nightly-frontier" },
+      // The host is the shared catalog's, so a machine in local mode leaves it
+      // absent rather than naming itself.
+      host: fleetConfigured ? "demo-laptop" : "",
+      host_attributed: fleetConfigured,
     },
     {
       receipt_id: "rcp_01synthetic0002",
@@ -138,6 +338,10 @@ const analysisState: AnalysisState = {
         redactions: 0,
       },
       authority: { kind: "", ref: "" },
+      // A run the catalog cannot attribute: the receipt exists, the origin
+      // instance's registration does not, and the strip says so.
+      host: "",
+      host_attributed: false,
     },
   ],
   cookbook: [
@@ -1380,7 +1584,39 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
   const { method } = request;
   const path = url.pathname;
 
-  if (method === "GET" && path === "/api/analysis/state") return json(analysisState);
+  if (method === "GET" && path === "/api/analysis/state") {
+    return json({ ...analysisState, ...syncEnvelope() });
+  }
+
+  // The fleet read. `configured: false` is a well-formed empty answer and never
+  // an error: a machine in local mode has no fleet, which is a fact about the
+  // deployment rather than a failure to load anything.
+  if (method === "GET" && path === "/api/fleet/hosts") {
+    return json({
+      configured: fleetConfigured,
+      local_host: fleetConfigured ? FLEET_LOCAL_HOST : undefined,
+      hosts: fleetHosts,
+    });
+  }
+
+  if (method === "GET" && path === "/api/fleet/records") {
+    const wanted = url.searchParams.getAll("host");
+    const kinds = url.searchParams.getAll("kind");
+    const pending = url.searchParams.get("pending") === "1";
+    const rows = fleetRecords
+      .filter((record) => wanted.length === 0 || wanted.includes(record.host_id))
+      .filter((record) => kinds.length === 0 || kinds.includes(record.kind))
+      .filter((record) => pending || record.sync === "committed");
+    const { slice } = paged(url, rows);
+    return json({
+      configured: fleetConfigured,
+      items: slice,
+      // The vocabulary is not narrowed by the host filter, so the chips beside
+      // a narrowed list still offer every machine.
+      hosts: fleetHosts,
+      pending: slice.filter((record) => record.sync !== "committed").length,
+    });
+  }
 
   if (method === "GET" && path === "/api/hypotheses") {
     const status = url.searchParams.get("status") ?? "";
@@ -1394,9 +1630,31 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
         statement: detail.hypothesis.payload.statement,
         provisional_labels: detail.hypothesis.payload.provisional_labels,
         observations: detail.observations.length,
+        ...localMark(localSync[detail.hypothesis.id] ?? "local", "2026-08-29T07:40:00Z"),
       }));
     const { slice, total } = paged(url, all);
-    return json({ items: slice, total });
+    // The fleet block is appended after the local page and the total stays this
+    // machine's, exactly as the server does it: "the frontier" is this host's,
+    // and the other hosts' candidates are an attributed appendix.
+    const fleetRows =
+      url.searchParams.get("fleet") === "1"
+        ? remoteMerged("hypothesis").map((record): HypothesisSummary => ({
+            id: record.record_id,
+            run_id: record.run_id,
+            created_at: record.committed_at ?? "",
+            status: "investigating",
+            statement: record.summary ?? "",
+            observations: 0,
+            host: record.host,
+            host_id: record.host_id,
+            host_attributed: record.host_attributed,
+            local_host: record.local_host,
+            sync: record.sync,
+            committed_at: record.committed_at,
+            unopened: record.unopened,
+          }))
+        : [];
+    return json({ items: [...slice, ...fleetRows], total, ...syncEnvelope() });
   }
 
   if (method === "GET" && path === "/api/hypothesis") {
@@ -1418,9 +1676,31 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
           const record = reviewRecords.find((candidate) => candidate.subject.id === detail.finding.id);
           return record ? derivedStatus(record) : "new";
         })(),
+        ...localMark(localSync[detail.finding.id] ?? "local", "2026-08-29T07:41:00Z"),
       }));
     const { slice, total } = paged(url, all);
-    return json({ items: slice, total });
+    const fleetRows =
+      url.searchParams.get("fleet") === "1"
+        ? remoteMerged("finding").map((record): FindingSummary => ({
+            id: record.record_id,
+            run_id: record.run_id,
+            created_at: record.committed_at ?? "",
+            title: record.summary ?? "",
+            observations: 0,
+            hypotheses: 0,
+            // Empty rather than "new": a review status is the owning host's
+            // derivation, and "new" would claim nobody there has decided.
+            review_status: "" as FindingSummary["review_status"],
+            host: record.host,
+            host_id: record.host_id,
+            host_attributed: record.host_attributed,
+            local_host: record.local_host,
+            sync: record.sync,
+            committed_at: record.committed_at,
+            unopened: record.unopened,
+          }))
+        : [];
+    return json({ items: [...slice, ...fleetRows], total, ...syncEnvelope() });
   }
 
   if (method === "GET" && path === "/api/finding") {
@@ -1447,9 +1727,33 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
         last_decided_at: record.decisions[record.decisions.length - 1]?.recorded_at,
         refinements: record.refinements.length,
         excerpt: record.excerpt,
+        ...localMark(localSync[record.subject.id] ?? "local", "2026-08-29T07:42:00Z"),
       }));
     const { slice, total } = paged(url, all);
-    return json({ items: slice, total });
+    // A remote disposition names the record it decided; a proposal is its own
+    // subject and carries no summary at all, and it must still appear.
+    const fleetRows =
+      url.searchParams.get("fleet") === "1"
+        ? fleetRecords
+            .filter((record) => !record.local_host && record.sync === "committed"
+              && (record.kind === "proposal" || record.kind === "disposition"))
+            .map((record): QueueItem => ({
+              subject: { type: record.kind as QueueItem["subject"]["type"], id: record.record_id },
+              enrolled_at: "",
+              status: "" as ReviewStatus,
+              decisions: 0,
+              refinements: 0,
+              excerpt: record.summary ?? "",
+              host: record.host,
+              host_id: record.host_id,
+              host_attributed: record.host_attributed,
+              local_host: record.local_host,
+              sync: record.sync,
+              committed_at: record.committed_at,
+              unopened: record.unopened,
+            }))
+        : [];
+    return json({ items: [...slice, ...fleetRows], total, ...syncEnvelope() });
   }
 
   if (method === "POST" && path === "/api/review/context") {
