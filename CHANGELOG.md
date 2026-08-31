@@ -83,6 +83,35 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   - Every new table carries UPDATE and DELETE triggers, matching
     `internal/frontier`: an append-only ledger whose append-only-ness depends
     on nobody writing the wrong statement is not append-only.
+- **`docs/runbook.md`: the recovery, custody, and rollback procedures, run
+  rather than written (issue #21, §14 gate).** The archive is worth exactly
+  what its recovery is worth, and every procedure in it had until now only
+  been reasoned about. Each of the gate's seven scenarios is now one section
+  with preconditions, steps, verification, and the real output it produced on
+  2026-08-31 against the production Cellar repository and managed catalog —
+  exit codes, counts, digests, and timings, read-only throughout, with the
+  live infrastructure identifiers replaced by placeholders because this
+  repository is public.
+  - **Repository recovery is proven twice, byte-identically.** `babel sessions
+    fetch` restored a session belonging to a *different* host that this
+    machine never held, and `restic restore` pulled the same subtree with no
+    catalog consulted and no Babel code involved; `diff -r` between the two
+    trees exits 0. That is the only form in which "archive recovery does not
+    depend on PostgreSQL — or on Babel" is worth asserting.
+  - **Two drills stay operator-gated, and say so with their commands.** The
+    Bitwarden unlock/retrieve/relock ceremony needs the master password
+    interactively; full restore-to-service needs a clean spare machine. Both
+    are written out with the exact invocation and what success looks like,
+    so neither is a procedure whose first real run happens during an incident.
+  - **The drill found a live defect and declined to fix it.** Two stale shared
+    locks from dead processes make `babel archive verify` exit 1 while leaving
+    restores and integrity untouched — `restic check --no-lock` confirms 44
+    snapshots, no errors. The remedy is `restic unlock`, a write verb, and a
+    read-only drill that mutates the repository to make its own check pass is
+    not a read-only drill. `archive verify`'s help now names that case and
+    points at the runbook, because the CLI printing restic's raw lock error
+    with no hint of where the remedy is documented is what made it worth
+    finding twice.
 
 ### Changed
 
