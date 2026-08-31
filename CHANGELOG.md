@@ -11,6 +11,57 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **What every session cost, recomputed from the transcript Babel already
+  holds.** OMP writes a usage block into every assistant turn it appends to a
+  session log — input, output and cache tokens, the priced cost of each, the
+  model and provider that served it — and Babel threw all of it away on every
+  describe. It is now summed at describe time and carried through the local
+  catalog into the shared one, so an operator can ask which sessions were
+  expensive, which were long, and which fought their tools, over a corpus
+  whose only other handle was an opaque digest. On the operator's own machine
+  that is 159 of 165 OMP sessions, $20,116.91 and 17.97 billion tokens across
+  86,790 assistant turns and 5,071 tool errors, at zero inference cost: the
+  numbers are arithmetic over bytes the archive already stores, so no model is
+  invoked, nothing leaves the machine, and two runs over the same log produce
+  the same document.
+  - **Recompute, do not depend.** OMP keeps the same numbers in a per-turn
+    ledger at `~/.omp/stats.db`, keyed by session file and entry id — exactly
+    the path Babel ingested and the turn ids inside it, so a free and exact
+    join was available. It was declined, because that ledger is garbage
+    collected with OMP's local session retention. Measured on the operator's
+    tree while building this: for one 90 MB session the transcript records
+    6,595 priced turns and $1,178.30, and the ledger holds 5,957 turns and
+    $996.44 — 638 turns and $181.86 it has already forgotten — while the
+    corpus's single largest session has no ledger rows at all. The transcript
+    is the durable source, and the ledger remains available as a cross-check.
+  - **An absent measure says so.** A session whose log predates per-turn usage
+    produces no aggregate and a completeness reason naming why, never an
+    aggregate of zeros: a zero cost is a session that ran for free, and the
+    six unmeasured sessions in the operator's tree are not free. The same rule
+    runs the whole way down — nullable columns in both catalogs, `null` in
+    `--json`, `-` in the table — and the shared catalog's new columns
+    (`migrations/0006`: `cost_usd`, `total_tokens`, `turns`, `tool_errors`)
+    refuse a negative value outright, because a negative measure is a broken
+    writer rather than an unmeasured session. Codex and Claude Code sessions
+    are untouched and publish NULL.
+  - **The aggregate admits its own holes.** It reports how many assistant
+    turns the log holds, how many carried usage, how many were priced, and how
+    many records the scan could not read at all, so a partial sum is visible
+    as one instead of under-reporting spend silently. A garbage line no longer
+    truncates the scan, and a log read while OMP was appending to it degrades
+    by one record rather than by everything after it.
+  - **A narrow widening of the plaintext boundary, classed as what it is.**
+    The four published columns are scalar measures of consumption and cannot
+    be inverted into a word of what a session said, so §9's exclusions survive
+    unchanged. What is new in kind is the money, and `internal/sharedcatalog`
+    gives spend its own allowlist class rather than folding it into "size or
+    count", so the contract's own listing shows a new disclosure as new.
+  - **`babel sessions list` grows a COST column only when something recorded
+    one.** A column of nothing but `-` costs every other column its width on a
+    corpus whose harnesses record no usage, and a listing that hid a cost the
+    adapter did read would send the operator to inspect sessions one at a time
+    to find the expensive ones.
+
 - **A dashboard at `#/`, and a Help page that says what Babel is.** The web
   interface opened on the session listing, which is the right page for the
   question "what did this machine record" and the wrong one for "what is Babel

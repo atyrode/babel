@@ -16,7 +16,12 @@ import (
 // schemaVersion is bumped when the cached columns change. A mismatch makes Open
 // discard and rebuild the cache, which is safe because every row is derivable
 // from live sources.
-const schemaVersion = "3"
+//
+// Version 4 added the usage columns (issue #89). The bump is what makes the
+// addition safe: a cache written by a binary that never extracted usage would
+// otherwise be read as a corpus that genuinely cost nothing, and one clean
+// rebuild recovers the numbers from files this machine already holds.
+const schemaVersion = "4"
 
 // Ref is the inexpensive identity returned by adapter discovery. Refresh stats
 // PrimaryPath to decide whether the cached description is still current.
@@ -56,7 +61,21 @@ type Row struct {
 	ArtifactCount       int
 	BlobCount           int
 	UnresolvedBlobCount int
-	RowJSON             []byte
+	// CostUSD, TotalTokens, Turns and ToolErrors are the published summary of
+	// the session's recorded usage: what the harness itself wrote down about
+	// what the session cost, summed by the adapter over the raw transcript
+	// (adapter.Usage). They are cached for the same reason the counts above
+	// are - the publish path reads them on every push, and recomputing one
+	// means re-reading a log that has not changed.
+	//
+	// All four are nil when the adapter reported no usage at all, and nil is
+	// the load-bearing state: a zero cost is a session that ran for free,
+	// while nil is a session nothing has measured.
+	CostUSD     *float64
+	TotalTokens *int64
+	Turns       *int64
+	ToolErrors  *int64
+	RowJSON     []byte
 }
 
 // Progress reports describe throughput while Refresh runs. Total counts the
@@ -170,6 +189,10 @@ CREATE TABLE IF NOT EXISTS sessions(
 	artifact_count INTEGER,
 	blob_count INTEGER,
 	unresolved_blob_count INTEGER,
+	cost_usd REAL,
+	total_tokens INTEGER,
+	turns INTEGER,
+	tool_errors INTEGER,
 	row_json TEXT
 );
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`
@@ -195,7 +218,8 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`
 	rows, err := c.db.Query(`SELECT selector, harness, source_id, primary_path,
 		primary_size, primary_mtime_unixnano, title, title_provenance, workspace,
 		created_at, modified_at, continuation_grade, artifact_count, blob_count,
-		unresolved_blob_count, row_json FROM sessions LIMIT 0`)
+		unresolved_blob_count, cost_usd, total_tokens, turns, tool_errors,
+		row_json FROM sessions LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf("validate catalog schema: %w", err)
 	}
@@ -421,8 +445,9 @@ func upsert(ctx context.Context, tx *sql.Tx, row Row) error {
 		selector, harness, source_id, primary_path, primary_size,
 		primary_mtime_unixnano, title, title_provenance, workspace, created_at,
 		modified_at, continuation_grade, artifact_count, blob_count,
-		unresolved_blob_count, row_json
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		unresolved_blob_count, cost_usd, total_tokens, turns, tool_errors,
+		row_json
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(selector) DO UPDATE SET
 		harness=excluded.harness, source_id=excluded.source_id,
 		primary_path=excluded.primary_path, primary_size=excluded.primary_size,
@@ -433,6 +458,8 @@ func upsert(ctx context.Context, tx *sql.Tx, row Row) error {
 		continuation_grade=excluded.continuation_grade,
 		artifact_count=excluded.artifact_count, blob_count=excluded.blob_count,
 		unresolved_blob_count=excluded.unresolved_blob_count,
+		cost_usd=excluded.cost_usd, total_tokens=excluded.total_tokens,
+		turns=excluded.turns, tool_errors=excluded.tool_errors,
 		row_json=excluded.row_json`
 	grade := 0
 	if row.ContinuationGrade {
@@ -443,6 +470,8 @@ func upsert(ctx context.Context, tx *sql.Tx, row Row) error {
 		nullable(row.TitleProvenance), nullable(row.Workspace), nullable(row.CreatedAt),
 		nullable(row.ModifiedAt), grade,
 		row.ArtifactCount, row.BlobCount, row.UnresolvedBlobCount,
+		nullableFloat(row.CostUSD), nullableInt(row.TotalTokens),
+		nullableInt(row.Turns), nullableInt(row.ToolErrors),
 		string(row.RowJSON))
 	if err != nil {
 		return fmt.Errorf("write catalog row %q: %w", row.Selector, err)
@@ -457,11 +486,28 @@ func nullable(value *string) any {
 	return *value
 }
 
+// nullableFloat and nullableInt keep an absent measure absent. A usage column
+// filled with zero would say the session was measured and cost nothing.
+func nullableFloat(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableInt(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
 func (c *Cache) readRows(ctx context.Context) ([]Row, error) {
 	const query = `SELECT selector, harness, source_id, primary_path, primary_size,
 		primary_mtime_unixnano, title, title_provenance, workspace, created_at,
 		modified_at, continuation_grade, artifact_count, blob_count,
-		unresolved_blob_count, row_json FROM sessions ORDER BY selector`
+		unresolved_blob_count, cost_usd, total_tokens, turns, tool_errors,
+		row_json FROM sessions ORDER BY selector`
 	rows, err := c.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -472,12 +518,15 @@ func (c *Cache) readRows(ctx context.Context) ([]Row, error) {
 	for rows.Next() {
 		var row Row
 		var title, provenance, workspace, createdAt, modifiedAt sql.NullString
+		var cost sql.NullFloat64
+		var totalTokens, turns, toolErrors sql.NullInt64
 		var grade int
 		var rowJSON string
 		if err := rows.Scan(&row.Selector, &row.Harness, &row.SourceID, &row.PrimaryPath,
 			&row.PrimarySize, &row.PrimaryMtimeUnixNano, &title, &provenance, &workspace,
 			&createdAt, &modifiedAt, &grade, &row.ArtifactCount, &row.BlobCount,
-			&row.UnresolvedBlobCount, &rowJSON); err != nil {
+			&row.UnresolvedBlobCount, &cost, &totalTokens, &turns, &toolErrors,
+			&rowJSON); err != nil {
 			return nil, err
 		}
 		row.Title = stringPtr(title)
@@ -486,6 +535,10 @@ func (c *Cache) readRows(ctx context.Context) ([]Row, error) {
 		row.CreatedAt = stringPtr(createdAt)
 		row.ModifiedAt = stringPtr(modifiedAt)
 		row.ContinuationGrade = grade != 0
+		row.CostUSD = floatPtr(cost)
+		row.TotalTokens = intPtr(totalTokens)
+		row.Turns = intPtr(turns)
+		row.ToolErrors = intPtr(toolErrors)
 		row.RowJSON = []byte(rowJSON)
 		out = append(out, row)
 	}
@@ -500,4 +553,20 @@ func stringPtr(value sql.NullString) *string {
 		return nil
 	}
 	return &value.String
+}
+
+// floatPtr and intPtr are stringPtr's counterparts for the usage columns:
+// a NULL reads back as nil, never as zero.
+func floatPtr(value sql.NullFloat64) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Float64
+}
+
+func intPtr(value sql.NullInt64) *int64 {
+	if !value.Valid {
+		return nil
+	}
+	return &value.Int64
 }

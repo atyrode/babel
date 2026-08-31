@@ -64,7 +64,14 @@ sessions discovers a selector before fetching it. Only the snapshot's file
 listing is read, so no transcript bytes are downloaded — and archive rows
 therefore carry less metadata than local ones: the selector and the primary
 log's recorded size are all a listing can know, so title, workspace,
-timestamps, and continuation grade are absent rather than guessed.
+timestamps, continuation grade, and recorded usage are absent rather than
+guessed.
+
+A COST column appears when at least one listed session records what it cost.
+That figure is the harness's own per-turn pricing, summed from the session's
+transcript; --json carries it alongside the token, turn and tool-error counts
+as "cost_usd", "total_tokens", "turns" and "tool_errors", each null for a
+session whose transcript records no usage rather than zero.
 
 Flags:
   --harness NAME       restrict to one harness: omp, codex, or claude
@@ -369,6 +376,16 @@ type sessionRow struct {
 	TitleProvenance *string `json:"title_provenance"`
 	Workspace       *string `json:"workspace"`
 	Continuous      *bool   `json:"continuation_grade"`
+	// CostUSD, TotalTokens, Turns and ToolErrors are what the harness itself
+	// recorded about this session's model spend, summed by the adapter over
+	// the raw transcript (adapter.Usage). They are null when the adapter
+	// extracted none, and null is not zero: a session that cost nothing and a
+	// session nothing measured are different answers, and only one of them is
+	// a statement about the session.
+	CostUSD     *float64 `json:"cost_usd"`
+	TotalTokens *int64   `json:"total_tokens"`
+	Turns       *int64   `json:"turns"`
+	ToolErrors  *int64   `json:"tool_errors"`
 }
 
 // sessionsResult is the machine-readable session listing.
@@ -449,9 +466,21 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 		fmt.Fprint(a.stdout, empty)
 		return nil
 	}
+	// COST appears only when at least one row carries one. A column of
+	// nothing but "-" would cost every other column its width on a corpus
+	// whose harnesses record no usage, while a listing that hides a cost the
+	// adapter did read would make the operator inspect sessions one at a time
+	// to find the expensive ones.
+	priced := false
+	for _, s := range res.Sessions {
+		if s.CostUSD != nil {
+			priced = true
+			break
+		}
+	}
 	tableRows := make([][]string, 0, len(res.Sessions))
 	for _, s := range res.Sessions {
-		tableRows = append(tableRows, []string{
+		row := []string{
 			s.Harness,
 			s.SourceID,
 			fmt.Sprint(s.Size),
@@ -459,14 +488,21 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 			derefOrMissing(s.Title),
 			derefOrMissing(s.TitleProvenance),
 			derefOrMissing(s.Workspace),
-			gradeCell(s.Continuous),
-		})
+		}
+		if priced {
+			row = append(row, costCell(s.CostUSD))
+		}
+		tableRows = append(tableRows, append(row, gradeCell(s.Continuous)))
 	}
 	// GRADE is last, where the web interface puts it too: the terminal was
 	// the only surface that could not tell a resumable session from a
 	// degraded one, and a listing that hides it makes the operator inspect
 	// each session to find out.
-	return writeTable(a.stdout, []string{"HARNESS", "SOURCE ID", "SIZE", "MODIFIED", "TITLE", "TITLE FROM", "WORKSPACE", "GRADE"}, tableRows)
+	header := []string{"HARNESS", "SOURCE ID", "SIZE", "MODIFIED", "TITLE", "TITLE FROM", "WORKSPACE"}
+	if priced {
+		header = append(header, "COST")
+	}
+	return writeTable(a.stdout, append(header, "GRADE"), tableRows)
 }
 
 type sessionDescribeFunc func(context.Context, localSession) (*adapter.Description, error)
@@ -555,6 +591,10 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 			ArtifactCount:       len(desc.Artifacts),
 			BlobCount:           len(desc.Blobs),
 			UnresolvedBlobCount: len(desc.UnresolvedBlobRefs),
+			CostUSD:             row.CostUSD,
+			TotalTokens:         row.TotalTokens,
+			Turns:               row.Turns,
+			ToolErrors:          row.ToolErrors,
 			RowJSON:             rowJSON,
 		}, true
 	}
@@ -565,11 +605,11 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 // harness-restricted or root-restricted invocation reports exactly what it
 // scanned even though the catalog holds the whole machine.
 //
-// The title and its provenance are taken from the cached columns rather than
-// from RowJSON, and then the inferred overlay is applied. Both matter. The
-// columns are what the publish path reads, so a listing that showed a
-// different value than a push would send is a listing that lies about what
-// other machines will see; and the overlay is applied here rather than at
+// The title, its provenance and the usage summary are taken from the cached
+// columns rather than from RowJSON, and then the inferred overlay is applied.
+// Both matter. The columns are what the publish path reads, so a listing that
+// showed a different value than a push would send is a listing that lies about
+// what other machines will see; and the overlay is applied here rather than at
 // describe time so a title inferred a minute ago appears immediately, without
 // waiting for the session's files to change and force a re-describe.
 func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession, overlay inferredOverlay) ([]sessionRow, error) {
@@ -586,6 +626,10 @@ func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession, overl
 		}
 		row.Title = sanitizePtr(cachedRow.Title)
 		row.TitleProvenance = sanitizePtr(cachedRow.TitleProvenance)
+		row.CostUSD = cachedRow.CostUSD
+		row.TotalTokens = cachedRow.TotalTokens
+		row.Turns = cachedRow.Turns
+		row.ToolErrors = cachedRow.ToolErrors
 		row.Title, row.TitleProvenance = overlay.apply(cachedRow.Selector, row.Title, row.TitleProvenance)
 		rows = append(rows, row)
 	}
@@ -595,9 +639,10 @@ func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession, overl
 
 // rowFromDescription states one described local session as a listing row.
 // A description has read the transcript, so the continuation grade is an
-// observation and is reported as one.
+// observation and is reported as one, and so is the usage the adapter summed
+// out of the same bytes.
 func rowFromDescription(session localSession, desc *adapter.Description) sessionRow {
-	return sessionRow{
+	row := sessionRow{
 		Harness:         Sanitize(session.src.Harness),
 		SourceID:        Sanitize(session.src.SourceID),
 		Selector:        Sanitize(session.key()),
@@ -608,6 +653,20 @@ func rowFromDescription(session localSession, desc *adapter.Description) session
 		Workspace:       sanitizePtr(desc.Meta.Workspace),
 		Continuous:      &desc.ContinuationGrade,
 	}
+	// An adapter that extracted no usage leaves all four null rather than
+	// zero. The description already carries the reason under "usage" in its
+	// completeness list, which is where `sessions inspect` shows it.
+	if u := desc.Usage; u != nil {
+		cost := u.CostUSD
+		totalTokens := u.TotalTokens
+		turns := int64(u.AssistantTurns)
+		toolErrors := int64(u.ToolErrors)
+		row.CostUSD = &cost
+		row.TotalTokens = &totalTokens
+		row.Turns = &turns
+		row.ToolErrors = &toolErrors
+	}
+	return row
 }
 
 // rowFromArchived states one archived session in the same row vocabulary a
@@ -1494,4 +1553,18 @@ func gradeCell(continuous *bool) string {
 		return missingValue
 	}
 	return yesNo(*continuous, "yes", "no")
+}
+
+// costCell renders the nullable recorded cost of one listing row.
+//
+// Two cents of precision, which is what the number is worth: it is a sum of
+// per-turn prices a harness computed against its own rate card, and rendering
+// it to six places would dress a browsing measure up as an invoice. An absent
+// cost stays absent for the same reason an absent grade does - "$0.00" would
+// report a session that ran for free.
+func costCell(cost *float64) string {
+	if cost == nil {
+		return missingValue
+	}
+	return fmt.Sprintf("$%.2f", *cost)
 }

@@ -53,8 +53,11 @@ const (
 	// discovery and description behavior.
 	adapterSchema = 1
 	// adapterMetadataSchema versions the omp-specific metadata object
-	// independently of the common description shape.
-	adapterMetadataSchema = 1
+	// independently of the common description shape. Version 2 added the
+	// `usage` document (issue #89); a consumer holding a version 1
+	// document knows the field is absent because the binary that wrote it
+	// did not extract usage, not because the session recorded none.
+	adapterMetadataSchema = 2
 
 	dataDirName    = ".omp"
 	sessionsSubdir = "sessions"
@@ -378,6 +381,20 @@ func (*Adapter) Describe(ctx context.Context, src adapter.SourceSession) (*adapt
 	head := readHeader(src.PrimaryPath)
 	meta := head.commonMeta(primaryInfo.ModTime())
 
+	// The usage aggregate is a second pass over the same bytes. Its
+	// absence is stated in the common completeness list rather than left
+	// to a nil pointer, because "OMP recorded nothing" and "this reader
+	// summed nothing" are different claims and only the adapter can tell
+	// them apart (usage.go).
+	usage, usageAbsent, err := scanUsage(ctx, src.PrimaryPath)
+	if err != nil {
+		return nil, err
+	}
+	if usageAbsent != "" {
+		meta.Completeness = append(meta.Completeness,
+			adapter.CompletenessReason{Field: "usage", Reason: usageAbsent})
+	}
+
 	rawMeta, err := adapter.MarshalCanonical(&adapterMetadata{
 		OMPSessionID:         head.sessionID,
 		SessionRecordVersion: head.recordVersion,
@@ -392,6 +409,7 @@ func (*Adapter) Describe(ctx context.Context, src adapter.SourceSession) (*adapt
 		ResolvedBlobCount:    len(blobs),
 		UnresolvedBlobCount:  len(unresolved),
 		BlobStoreFound:       blobStoreFound,
+		Usage:                usage,
 	})
 	if err != nil {
 		return nil, err
@@ -411,6 +429,7 @@ func (*Adapter) Describe(ctx context.Context, src adapter.SourceSession) (*adapt
 		DescribedAt:           time.Now().UTC(),
 		PrimarySize:           primarySize,
 		Meta:                  meta,
+		Usage:                 usage,
 		AdapterMetadataSchema: adapterMetadataSchema,
 		AdapterMetadata:       canonicalMeta,
 		Artifacts:             artifacts,
@@ -436,6 +455,11 @@ type adapterMetadata struct {
 	ResolvedBlobCount    int           `json:"resolved_blob_count"`
 	UnresolvedBlobCount  int           `json:"unresolved_blob_count"`
 	BlobStoreFound       bool          `json:"blob_store_found"`
+	// Usage is what OMP recorded about this session's model spend, summed
+	// over the log's own records. It is omitted rather than zeroed when the
+	// log carries no usage blocks: a document of zeros would read as a
+	// session that cost nothing (usage.go, issue #89).
+	Usage *adapter.Usage `json:"usage,omitempty"`
 }
 
 // collectArtifacts lists the regular files of a session's sibling

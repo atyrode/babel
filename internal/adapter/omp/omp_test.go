@@ -289,9 +289,12 @@ func TestDescribeReadsPrimaryArtifactsAndBlobs(t *testing.T) {
 		t.Errorf("DescribedAt = %v, want a UTC instant", desc.DescribedAt)
 	}
 
-	// Versioned adapter metadata, canonical and compact.
-	if desc.AdapterMetadataSchema != 1 {
-		t.Errorf("AdapterMetadataSchema = %d, want 1", desc.AdapterMetadataSchema)
+	// Versioned adapter metadata, canonical and compact. Schema 2 added the
+	// usage document; this fixture's one assistant record carries no usage
+	// block, so the field is absent here and TestDescribeExplainsAbsentUsage
+	// is what holds that absence to a stated reason.
+	if desc.AdapterMetadataSchema != 2 {
+		t.Errorf("AdapterMetadataSchema = %d, want 2", desc.AdapterMetadataSchema)
 	}
 	canonical, err := adapter.CanonicalRawMessage(desc.AdapterMetadata)
 	if err != nil {

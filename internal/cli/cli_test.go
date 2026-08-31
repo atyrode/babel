@@ -213,6 +213,10 @@ type sessionSpec struct {
 	// message overrides the synthetic user message in the primary log, so a
 	// test can plant a unique string inside transcript content.
 	message string
+	// pricedTurn appends the assistant turn and tool result OMP records with
+	// a usage block, so a test can exercise the recorded-usage path with a
+	// cost, a token count and a tool error the listing must report exactly.
+	pricedTurn bool
 }
 
 // writeSession materializes one synthetic session in the layout the OMP
@@ -255,6 +259,39 @@ func (f *fixture) writeSession(spec sessionSpec) string {
 		"timestamp": "2026-01-02T03:10:00.000Z",
 		"message":   map[string]any{"role": "user", "content": content},
 	}))
+	if spec.pricedTurn {
+		b.Write(jsonLine(f.t, map[string]any{
+			"type":      "message",
+			"id":        "f0000002",
+			"timestamp": "2026-01-02T03:11:00.000Z",
+			"message": map[string]any{
+				"role":     "assistant",
+				"model":    "synthetic-model",
+				"provider": "synthetic-provider",
+				"content": []any{
+					map[string]any{"type": "text", "text": "synthetic fixture reply"},
+					map[string]any{"type": "toolCall", "toolName": "bash", "args": map[string]any{}},
+				},
+				"usage": map[string]any{
+					"input": 200, "output": 20, "cacheRead": 80, "cacheWrite": 0,
+					"totalTokens": 300,
+					"cost": map[string]any{
+						"input": 1.0, "output": 0.25, "cacheRead": 0, "cacheWrite": 0,
+						"total": 1.25,
+					},
+				},
+			},
+		}))
+		b.Write(jsonLine(f.t, map[string]any{
+			"type":      "message",
+			"id":        "f0000003",
+			"timestamp": "2026-01-02T03:12:00.000Z",
+			"message": map[string]any{
+				"role": "toolResult", "toolName": "bash", "isError": true,
+				"content": []any{map[string]any{"type": "text", "text": "synthetic failure"}},
+			},
+		}))
+	}
 	primary := filepath.Join(dir, spec.stem+".jsonl")
 	if err := os.WriteFile(primary, b.Bytes(), 0o600); err != nil {
 		f.t.Fatal(err)
