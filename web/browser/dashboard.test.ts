@@ -455,6 +455,41 @@ test.skipIf(!chrome)("a queue row disclosure reveals the identifier without navi
   );
 });
 
+test.skipIf(!chrome)("the receipt strip is one row, and stubs that do not fit fold into Explore", async () => {
+  // The strip slices the listing to the stub widths that actually fit, so a
+  // receipt is never marooned on a ragged second line beside a void and never
+  // stretched to a banner because it wrapped alone. What the strip cannot
+  // show it counts, as a link to the page that owns the full listing.
+  await page.setViewport(NARROW);
+  await open("");
+  await page.waitForSelector(".receipt-list li", { timeout: 15_000 });
+  const narrow = await page.evaluate(() => ({
+    stubs: document.querySelectorAll(".receipt-list li").length,
+    more: document.querySelector(".receipt-more")?.textContent ?? "",
+    href: document.querySelector(".receipt-more")?.getAttribute("href") ?? "",
+  }));
+  // One stub width fits at 390px, so the mock's second receipt is folded and
+  // said out loud rather than clipped or wrapped.
+  expect(narrow.stubs).toBe(1);
+  expect(narrow.more).toContain("+1 more in Explore");
+  expect(narrow.href).toBe("#/explore");
+
+  await page.setViewport(WIDE);
+  await open("");
+  await page.waitForSelector(".receipt-list li", { timeout: 15_000 });
+  const wide = await page.evaluate(() => ({
+    stubs: document.querySelectorAll(".receipt-list li").length,
+    rows: new Set(Array.from(document.querySelectorAll(".receipt-list li"))
+      .map((li) => Math.round(li.getBoundingClientRect().top))).size,
+    more: document.querySelectorAll(".receipt-more").length,
+  }));
+  // At full width every receipt fits: both stubs share one line and no link
+  // claims a remainder that does not exist.
+  expect(wide.stubs).toBe(2);
+  expect(wide.rows).toBe(1);
+  expect(wide.more).toBe(0);
+});
+
 test.skipIf(!chrome)("neither route overflows at 390px, 900px, or 1440px", async () => {
   for (const viewport of [WIDE, MID, NARROW]) {
     await page.setViewport(viewport);

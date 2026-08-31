@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   getOverview,
@@ -361,6 +361,27 @@ function DashboardPage() {
     }
   }
 
+  // The receipt strip composes as one row, never a stub marooned on a ragged
+  // second line beside three tile-widths of void: the list measures how many
+  // stub widths fit and folds the rest into the "+N more in Explore" link.
+  // 13rem mirrors the flex-basis .receipt-list li declares in styles.css.
+  const receiptListRef = useRef<HTMLUListElement | null>(null);
+  const [receiptFit, setReceiptFit] = useState(Number.POSITIVE_INFINITY);
+  const receiptCount = data?.runs.available ? data.runs.rows.length : 0;
+  useLayoutEffect(() => {
+    const list = receiptListRef.current;
+    if (!list) return;
+    const measure = () => {
+      const gap = parseFloat(window.getComputedStyle(list).columnGap) || 0;
+      const stub = parseFloat(window.getComputedStyle(document.documentElement).fontSize) * 13 || 208;
+      setReceiptFit(Math.max(1, Math.floor((list.clientWidth + gap) / (stub + gap))));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [receiptCount]);
+
   // The spotlight is the frontier's one glimpse of a statement, and the
   // review queue is the panel that lists statements in full — so the
   // spotlight prefers the newest candidate the queue does not already show.
@@ -369,6 +390,7 @@ function DashboardPage() {
   const queued = new Set(data?.review.rows.map((row) => row.id) ?? []);
   const newest = data?.frontier.rows.find((row) => !queued.has(row.id));
   const frontierListed = (data?.frontier.rows.length ?? 0) > 0;
+  const receiptRows = data?.runs.rows.slice(0, receiptFit) ?? [];
 
   return (
     <section className="page dashboard-page">
@@ -657,6 +679,21 @@ function DashboardPage() {
             to="/review"
             linkLabel="Review"
             footer={
+              data.review.questions.available && data.review.questions.rows.length === 0 ? (
+                // A settled inbox is one line — the ledger's name, the fact,
+                // and the way in on a shared baseline. A heading over an empty
+                // band read as dead space, not as an answer.
+                <div className="panel-subsection subsection-settled">
+                  <p className="eyebrow">Reality ledger</p>
+                  <p className="quiet-line">
+                    <span className="quiet-mark" aria-hidden="true">✓</span>
+                    No open questions. Nothing is waiting on an answer.
+                  </p>
+                  <Link className="panel-link" to="/reality">
+                    Reality <span aria-hidden="true">→</span>
+                  </Link>
+                </div>
+              ) : (
               <div className="panel-subsection">
                 <div className="section-heading">
                   <div>
@@ -669,11 +706,6 @@ function DashboardPage() {
                 </div>
                 {!data.review.questions.available ? (
                   <p className="panel-note" role="status">{data.review.questions.unavailable}</p>
-                ) : data.review.questions.rows.length === 0 ? (
-                  <p className="quiet-line">
-                    <span className="quiet-mark" aria-hidden="true">✓</span>
-                    No open questions. Nothing is waiting on an answer.
-                  </p>
                 ) : (
                   <>
                     <ul className="panel-rows question-rows">
@@ -702,6 +734,7 @@ function DashboardPage() {
                   </>
                 )}
               </div>
+              )
             }
           >
             <div className="hero-strip">
@@ -764,14 +797,15 @@ function DashboardPage() {
               <div className="receipt-strip">
                 <div className="receipt-lead">
                   <Hero value={data.runs.total} label="recorded runs" />
-                  {data.runs.total > data.runs.rows.length && (
-                    <span className="panel-caption">
-                      +{data.runs.total - data.runs.rows.length} older in Explore
-                    </span>
+                  {data.runs.total > receiptRows.length && (
+                    <Link className="more-link receipt-more" to="/explore">
+                      +{data.runs.total - receiptRows.length} more in Explore{" "}
+                      <span aria-hidden="true">→</span>
+                    </Link>
                   )}
                 </div>
-                <ul className="panel-rows receipt-list">
-                  {data.runs.rows.map((row) => (
+                <ul className="panel-rows receipt-list" ref={receiptListRef}>
+                  {receiptRows.map((row) => (
                     <li key={row.receipt_id}>
                       <span className="receipt-head">
                         <span

@@ -2697,6 +2697,15 @@ a.link-target:hover {
   border-top: 1px solid var(--line-soft);
 }
 
+/* A settled question inbox is one line — the ledger's name, the fact, and
+   the way in on a shared baseline — because a heading over an empty band
+   read as dead space, not as an answer. */
+.panel-subsection.subsection-settled {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 0.75rem;
+}
+
 /* --------------------------------------------------------------------- runs
    Receipts render as stubs on a strip: the count leads, and each run is a
    dashed-edged stub whose numbers are legible without reading a sentence. */
@@ -2714,11 +2723,20 @@ a.link-target:hover {
   width: 11.5rem;
 }
 
+/* One row, always: the panel slices the listing to the stubs that fit, so a
+   stub is never marooned on a second line beside a void, and never stretched
+   to a banner because it wrapped alone. nowrap absorbs the fraction of a
+   pixel the measurement can be off by as shrink, not as a wrapped orphan. */
 .receipt-list {
   display: flex;
   flex: 1;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.7rem;
+  min-width: 0;
+}
+
+.receipt-more {
+  font-size: 0.72rem;
 }
 
 .receipt-list li {
@@ -2836,10 +2854,14 @@ a.link-target:hover {
   background: transparent;
 }
 
+/* The grid can give the panel more height than five entries need; the slack
+   opens between the entries rather than trailing under the last one, so the
+   feed's first line hangs from the header and its last line sits on the
+   card's bottom edge. */
 @media (min-width: 851px) {
   .feed-list {
     flex: 1;
-    grid-auto-rows: 1fr;
+    align-content: space-between;
   }
 }
 
