@@ -110,8 +110,9 @@ const AI_SURFACES: Array<{
     mono: false,
     answer: "only during a run",
     reason:
-      "babel sessions title infer previews exactly what would leave this machine and runs only " +
-      "on --confirm; the value is labeled inferred wherever it shows.",
+      "The model is chosen once through babel titles configure, on the operator's own terminal; " +
+      "babel sessions title infer then previews exactly what would leave this machine and runs " +
+      "only on --confirm. The value is labeled inferred wherever it shows.",
   },
 ];
 
@@ -392,9 +393,11 @@ function HelpPage() {
           Every run today is <strong>operator-started</strong>: <code>babel explore</code> and{" "}
           <code>babel sessions title infer --confirm</code> are the only doors, and both are
           terminal commands. The <strong>profile</strong> — which model, which provider — is
-          chosen only through the operator's terminal ceremony
-          (<code>babel analysis profile configure</code>); no page and no API can pick or change
-          it. A <strong>broker grant is per-run</strong>: a capability the grant never named is
+          chosen only through an operator's terminal ceremony
+          (<code>babel analysis profile configure</code> for exploration,{" "}
+          <code>babel titles configure</code> for title inference); no page and no API can pick
+          or change it, and inference refuses until that ceremony has happened. A{" "}
+          <strong>broker grant is per-run</strong>: a capability the grant never named is
           denied even where policy would allow it, and the receipt records every decision. And
           nothing Babel runs <strong>publishes or writes outside Babel's own records</strong> — no
           issue opened, no repository edited, nothing published.
