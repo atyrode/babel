@@ -14,7 +14,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - **`babel conformance` said nothing at all while it graded (issue #78).** The
   2026-08-30 readiness drill pointed the suite at `/bin/cat` and watched two
   minutes forty-five seconds of empty stdout, then all eleven result lines at
-  once. Obligations are graded one at a time — sixteen of them now — and one
+  once. Obligations are graded one at a time — eighteen of them now — and one
   that cannot reach the worker spends its whole 15-second handshake budget
   before its verdict exists, so the report was collected and printed after the
   last of them. The command's own help promised "one obligation per line",
@@ -109,6 +109,57 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
     context. Each recipe states the dispositions it may emit and the ones that
     belong to the other dimension.
 
+- **The job document is staged: containment is declared before the run's
+  credentials are sent (issue #71, SPEC.md §14).** Decision 53 and §14 claimed
+  Babel "refuses a declaration short of the run's requirement before any job
+  material reaches it". The 2026-08-30 audit measured that claim and found it
+  false: the complete job — source selectors, capability grant and the
+  run-scoped broker token — was written to the worker's stdin immediately after
+  the handshake, and the containment check ran when the worker's first event
+  arrived. A worker that under-declared executed no analysis, but already held
+  the run's credential and knew which sessions had been selected, and nothing
+  stopped it from copying its stdin before declaring anything. The exposure was
+  bounded, not closed.
+  - **Two stages, with the declaration between them.** Babel now writes a
+    `job-preamble` carrying the run's identity, the profile to resolve and the
+    run's parameters — what a worker needs to resolve itself and to know which
+    kind of run this is, and nothing it could read, retrieve or authenticate
+    with. The worker answers with its resolved configuration, containment
+    declaration included. Only then does Babel write the `job` message: the
+    recipes, the grant, the sources and the broker token. A worker whose
+    declaration falls short is answered with the handshake's refusal message
+    instead, naming the properties that fell short, so it exits rather than
+    blocking on a read for material that is not coming.
+  - **Measured on the worker's stdin, not on Babel's intentions.** The
+    fake-worker fixture records every byte written to it, and the test asserts
+    that a refused run's capture holds the preamble and the refusal and neither
+    the credential nor a source selector — for a weak declaration, an absent
+    one, and one that provides nothing. Two more fixtures cover the ways a
+    worker can break the ordering from its own side: one that writes progress
+    or a result where its declaration belongs, which is refused there, and one
+    that will not declare until it has been given the material, which is the
+    version 1 worker and now stalls with the credential unwritten.
+  - **Protocol version 2, and no compatibility path.** The ordering is the
+    whole of what the declaration buys, so a build that could still accept the
+    old ordering would keep the exposure reachable. Version 1 and version 2
+    disagree about who writes next, and a mismatched pair is refused in both
+    directions with an error naming both version sets — verified by running
+    this build against the previous Code and the previous Babel against the new
+    one. Both repositories move together; the fleet has one operator and one
+    deployment path, so there is nothing to stage a migration for.
+  - **The suite went from sixteen obligations to eighteen.**
+    `run/declares-from-the-preamble` fails a worker that cannot declare until
+    it holds the material, and says so in those words instead of as a timeout,
+    because "your worker is waiting for a write that is conditional on the
+    event it is not sending" is not something an operator infers from
+    "stalled". `run/refused-before-credentials` grades the refusal path through
+    a new `under-declare` directive — the second directive that asks a worker
+    to misbehave deliberately, because a worker that always declares enough is
+    never refused and the path that decides whether the credential travels
+    would otherwise be graded by nothing. Both are proven discriminating by
+    fixtures that fail them, and `run/forward-compatible-job` now plants an
+    unknown field in each stage rather than one in the job, since tolerating
+    one message's unknown fields is not tolerating the other's.
 - **The conductor: an attributable autonomous runtime (operator direction
   2026-08-31, issue #96).** Babel ran only when summoned. That is a strange
   default for an instrument whose subject matter accumulates whether or not

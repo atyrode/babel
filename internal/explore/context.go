@@ -33,10 +33,13 @@ import (
 //
 // It travels as a top-level field through worker.Job's Extra rather than as a
 // job parameter, because a parameter map is strings and this is a list of
-// records with summaries. A worker that does not know the field ignores it, per
-// the protocol's rule that unknown fields are never fatal in either direction,
-// and a worker that does know it reads a versioned document rather than parsing
-// prose out of a parameter value.
+// records with summaries. Extra is the material stage's forward-compatible map,
+// which is where this belongs: prior candidates are the run's material, so they
+// travel with the sources and the grant, after the worker has declared the
+// boundary it will read them behind. A worker that does not know the field
+// ignores it, per the protocol's rule that unknown fields are never fatal in
+// either direction, and a worker that does know it reads a versioned document
+// rather than parsing prose out of a parameter value.
 const (
 	RelatedContextField  = "related_outputs"
 	RelatedContextSchema = "babel.related-outputs/1"

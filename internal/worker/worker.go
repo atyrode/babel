@@ -487,7 +487,7 @@ func (c *Client) Run(ctx context.Context, job Job) (*Receipt, error) {
 	return r.receipt, err
 }
 
-// execute performs the handshake, writes the job, and supervises the stream.
+// execute performs the handshake, stages the job, and supervises the stream.
 // Teardown always runs; whether it kills the tree depends on whether anything
 // in it is still alive when the stream ends.
 func (r *runner) execute(ctx context.Context) error {
@@ -501,10 +501,7 @@ func (r *runner) execute(ctx context.Context) error {
 	r.receipt.Worker = hello.Worker
 	r.receipt.ProtocolVersion = version
 
-	// Job material is written only after the handshake succeeded, so a worker
-	// Babel refuses never sees the broker credential, the source selectors,
-	// or the grant.
-	if err := s.writeMessage(r.job); err != nil {
+	if err := r.stage(ctx); err != nil {
 		s.teardown(true)
 		return err
 	}
@@ -512,6 +509,78 @@ func (r *runner) execute(ctx context.Context) error {
 	fatal := r.loop(ctx)
 	s.teardown(fatal != nil || !r.readerDone)
 	return r.finalize(fatal)
+}
+
+// stage writes the job document in its two stages, with the worker's
+// containment declaration between them.
+//
+// The order is the property (SPEC.md §14, atyrode/babel#71). The preamble
+// carries the run's identity, the profile to resolve and the parameters that
+// say what kind of run this is; the material carries the recipes, the grant,
+// the sources and the run-scoped broker credential. Between them Babel waits
+// for the declaration and validates it, so a worker whose sandbox falls short
+// of what the run demands is refused holding a profile reference and nothing
+// else. Before this the whole document went out immediately after the
+// handshake and the declaration was checked when the first event arrived: the
+// under-declaring worker executed no analysis but already held the credential
+// and knew the selected corpus, which is a bound on the exposure rather than
+// an absence of it.
+//
+// A worker that answers with its own error event instead of a declaration has
+// nothing to be sent: the run is over, no material is written, and the stream
+// is left to the ordinary loop, which sees the terminal event already recorded
+// and reaps the process.
+func (r *runner) stage(ctx context.Context) error {
+	s := r.session
+
+	preamble, err := r.job.encodePreamble()
+	if err != nil {
+		return fmt.Errorf("worker: encoding the job preamble: %w", err)
+	}
+	if err := s.writeLine(preamble); err != nil {
+		return err
+	}
+
+	if err := r.awaitDeclaration(ctx); err != nil {
+		return err
+	}
+	if !r.sawConfig {
+		// The worker reported it could not run. Nothing is owed to a run that
+		// is already over, and the credential is what is not owed.
+		return nil
+	}
+
+	material, err := r.job.encodeMaterial()
+	if err != nil {
+		return fmt.Errorf("worker: encoding the job material: %w", err)
+	}
+	return s.writeLine(material)
+}
+
+// awaitDeclaration reads the worker's answer to the preamble and applies it
+// through the same validation every event goes through, so the ordering,
+// sequence, budget and profile rules have one implementation rather than a
+// second one for the first event.
+//
+// A rejected answer is refused on the wire before it is returned. The worker is
+// blocked reading stdin for material that is not coming, and killing it without
+// a word would leave a real counterpart unable to distinguish a boundary it
+// must fix from a supervisor that died — the same reason the handshake writes
+// its refusals rather than merely returning them.
+func (r *runner) awaitDeclaration(ctx context.Context) error {
+	s := r.session
+
+	in, err := s.next(ctx, r.limits.IdleTimeout)
+	if err != nil {
+		return s.wrapWait(err)
+	}
+	if in.err != nil {
+		return s.classifyStreamError(in.err)
+	}
+	if err := r.handle(ctx, in); err != nil {
+		return errors.Join(err, s.refuse(r.scrub.clean(err.Error()), nil))
+	}
+	return nil
 }
 
 // runner holds the per-run supervision state. It is single-goroutine: only
@@ -698,6 +767,15 @@ func (r *runner) handle(ctx context.Context, in inbound) error {
 		}
 		return r.handleToolRequest(ctx, ev, at)
 	case MessageResult:
+		if !r.sawConfig {
+			// A result before the declaration is a run that produced output
+			// without ever stating the boundary it produced it behind, and it
+			// cannot have read the job's material because Babel has not sent
+			// any. Recording it would put a finding of unknown provenance in
+			// the receipt; an error event is how a worker that cannot run
+			// says so.
+			return fmt.Errorf("%w: result before the resolved configuration", ErrEventOrder)
+		}
 		return r.handleResult(ev, at)
 	case MessageError:
 		return r.handleWorkerError(ev, at)
@@ -708,7 +786,8 @@ func (r *runner) handle(ctx context.Context, in inbound) error {
 
 // handleConfiguration records the profile the worker actually resolved. The
 // receipt needs it (SPEC.md §6.5), so it is required, must come first, and
-// must name the profile the job named.
+// must name the profile the preamble named. It is also the worker's answer to
+// the preamble, so returning an error here is what withholds stage two.
 func (r *runner) handleConfiguration(ev event) error {
 	if r.sawConfig {
 		return fmt.Errorf("%w: a second configuration event", ErrEventOrder)
@@ -723,11 +802,13 @@ func (r *runner) handleConfiguration(ev event) error {
 		return fmt.Errorf("%w: job named %s, worker resolved %s",
 			ErrProfileMismatch, r.job.Profile, ev.Profile)
 	}
-	// The containment check happens here, at the worker's first event, because
-	// this is the earliest moment Babel knows what boundary the worker claims
-	// and the last moment before the worker begins executing anything. Babel
-	// does not implement the sandbox (decision 53), so refusing an
-	// insufficient declaration is the whole of its leverage.
+	// The containment check happens here because this event is the answer to
+	// the preamble: it is the earliest moment Babel knows what boundary the
+	// worker claims, and it is before the recipes, the grant, the sources and
+	// the run's broker credential have been written. Babel does not implement
+	// the sandbox (decision 53), so refusing an insufficient declaration —
+	// while the worker still holds nothing but a profile reference — is the
+	// whole of its leverage.
 	if err := ev.Containment.Satisfies(r.requirement); err != nil {
 		return err
 	}

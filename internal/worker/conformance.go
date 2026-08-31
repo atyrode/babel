@@ -131,6 +131,26 @@ const (
 	// grading only the receipt certifies Babel's scrubbing, not the
 	// counterpart's discipline.
 	ConformanceEchoToken = "echo-token"
+
+	// ConformanceUnderDeclare asks the worker to declare containment it knows
+	// is insufficient: a named backend and a stated escape assumption, as
+	// every declaration must carry, and none of the four properties a
+	// sandboxed run requires. It must then wait to be sent the run's
+	// material, read the refusal Babel writes instead, and exit.
+	//
+	// It is the second directive that asks for something a worker would never
+	// do on its own, and it is asked for the same reason the first one is: the
+	// behaviour cannot be graded otherwise. A worker that always declares
+	// enough is never refused, so the refusal path — the one that decides
+	// whether the run's credential travels — would be exercised by nothing.
+	//
+	// What is graded is what happens after the refusal, because that is the
+	// worker's half: it produces no result, it emits nothing further, and it
+	// exits rather than blocking forever on a read for material Babel has
+	// already decided not to write. Babel's half — that the material and the
+	// credential were never written — is a property of Babel's own code and
+	// is tested there, against a fake worker whose stdin is captured.
+	ConformanceUnderDeclare = "under-declare"
 )
 
 // conformanceToken is the synthetic run-scoped broker credential the suite
@@ -193,28 +213,35 @@ type conformanceObligation struct {
 //
 // Each obligation name is the contract item:
 //
-//	handshake/accept              hello first, then a configuration, then exit
-//	handshake/refuse              a refused worker exits without a job
-//	run/well-behaved              configuration, progress, a readable result, exit 0
-//	run/declares-containment      the worker states the sandbox it ran in
-//	run/declares-profile          the resolved configuration carries the
-//	                              metadata, capabilities and cost Babel reads
-//	run/decodes-the-job           the worker reports back the recipes and
-//	                              sources it was actually given
-//	run/forward-compatible-job    unknown job fields are ignored, not fatal
-//	run/tool-allow                a tool request blocks for its decision
-//	run/published-tool-names      every tool name requested is one the job
-//	                              published for that capability
-//	run/consumes-served-evidence  the evidence a decision carried reaches the
-//	                              worker's own reading of it
-//	run/tool-denial-continues     a denial does not end the run
-//	run/grant-boundary            an ungranted capability is denied
-//	run/reports-resources         self-reported resource use is honest about
-//	                              what the run demonstrably did
-//	run/error-is-terminal         no result may follow an error
-//	run/cancellation              cancellation ends the run promptly
-//	run/no-credential-leak        a worker asked for the broker token back
-//	                              finishes the job and writes it nowhere
+//	handshake/accept                hello first, then a configuration, then exit
+//	handshake/refuse                a refused worker exits without a job
+//	run/well-behaved                configuration, progress, a readable result,
+//	                                exit 0
+//	run/declares-from-the-preamble  the containment declaration is produced
+//	                                from the preamble alone, before the
+//	                                material and the credential are written
+//	run/refused-before-credentials  a worker whose declaration is refused
+//	                                produces nothing and exits
+//	run/declares-containment        the worker states the sandbox it ran in
+//	run/declares-profile            the resolved configuration carries the
+//	                                metadata, capabilities and cost Babel reads
+//	run/decodes-the-job             the worker reports back the recipes and
+//	                                sources it was actually given
+//	run/forward-compatible-job      unknown fields in either job stage are
+//	                                ignored, not fatal
+//	run/tool-allow                  a tool request blocks for its decision
+//	run/published-tool-names        every tool name requested is one the job
+//	                                published for that capability
+//	run/consumes-served-evidence    the evidence a decision carried reaches the
+//	                                worker's own reading of it
+//	run/tool-denial-continues       a denial does not end the run
+//	run/grant-boundary              an ungranted capability is denied
+//	run/reports-resources           self-reported resource use is honest about
+//	                                what the run demonstrably did
+//	run/error-is-terminal           no result may follow an error
+//	run/cancellation                cancellation ends the run promptly
+//	run/no-credential-leak          a worker asked for the broker token back
+//	                                finishes the job and writes it nowhere
 //
 // It requires no network, no credential and no transcript.
 func Conformance(t *testing.T, workerPath string, args ...string) {
@@ -333,6 +360,98 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 		}
 		if receipt.Failure != nil {
 			t.Errorf("a successful run recorded a failure: %+v", receipt.Failure)
+		}
+	})
+
+	add("run/declares-from-the-preamble", func(t conformanceT) {
+		// The job document arrives in two stages and this worker's own
+		// declaration is what separates them. Stage one carries the run's
+		// identity, the profile to resolve and the run's parameters; the
+		// recipes, the grant, the sources and the run-scoped broker
+		// credential are stage two, and Babel writes them only after the
+		// declaration has satisfied the run's requirement.
+		//
+		// So a worker must be able to resolve and declare from the preamble
+		// alone. One that waits for material first — which is what every
+		// version 1 worker did, because version 1 sent all of it at once —
+		// waits for a write Babel is not going to make, and the run dies in
+		// the idle timeout with nothing said about why. That failure is
+		// indistinguishable from a hung analysis unless an obligation names
+		// it, which is what this one is for.
+		receipt, err := conformanceRun(t, target, ConformanceWellBehaved, AllowWithinGrant())
+		if err != nil {
+			if errors.Is(err, ErrWorkerStalled) || errors.Is(err, ErrNoResult) {
+				t.Fatalf("the worker produced no configuration from the job preamble: %v. Babel writes the job in two stages — a preamble carrying the run's identity, the profile and the parameters, then the recipes, grant, sources and broker token — and it writes the second only after this worker's containment declaration has been accepted. A worker waiting for sources, a grant or a credential before it declares is waiting for a write that will never come; version %d is that change",
+					err, ProtocolVersion)
+			}
+			t.Fatalf("Run: %v", err)
+		}
+		if receipt.ProtocolVersion != ProtocolVersion {
+			t.Errorf("negotiated version = %d, want %d; the staged job document is what that version is",
+				receipt.ProtocolVersion, ProtocolVersion)
+		}
+		if receipt.Containment.Backend == "" {
+			t.Error("the run completed with no containment declaration recorded, so nothing was ever declared for the material to be conditional on")
+		}
+		if receipt.Result == nil {
+			t.Fatal("the run produced no result, so nothing shows the worker went on to use material that arrived after its declaration")
+		}
+	})
+
+	add("run/refused-before-credentials", func(t conformanceT) {
+		// The refusal path, which is the whole point of staging the document:
+		// a declaration short of the run's requirement is answered with a
+		// refusal instead of the material, and the run's broker credential is
+		// never written. Babel's half of that is a property of Babel's own
+		// code and is tested there, against a fake worker whose stdin is
+		// captured. This grades the worker's half, which is what it does when
+		// it is refused: it produces no result, asks for nothing, and exits
+		// instead of blocking forever on a read.
+		//
+		// The declaration is refused because the directive asks the worker to
+		// under-declare on purpose. Nothing else could produce a refusal
+		// reliably: a worker that declares honestly is refused only on a
+		// platform §10 has not qualified, and grading a path that exists only
+		// on some machines would be grading the machine.
+		//
+		// The requirement is the strict one whatever the grading was relaxed
+		// to. --unsandboxed exists so a worker with no sandbox can still be
+		// told which parts of the protocol it implements, and under a relaxed
+		// requirement the declaration this directive asks for would be
+		// accepted — leaving nothing refused and this obligation passing
+		// while grading nothing at all.
+		strict := SandboxedRun()
+		client := conformanceClient(t, target, func(cfg *Config) {
+			cfg.Authorizer = AllowWithinGrant()
+			cfg.Requirement = &strict
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		started := time.Now()
+		receipt, err := client.Run(ctx, conformanceJob(ConformanceUnderDeclare))
+		elapsed := time.Since(started)
+
+		if !errors.Is(err, ErrContainment) {
+			t.Fatalf("Run under the under-declare directive = %v, want a containment refusal. The directive asks the worker to declare a named backend, a stated escape assumption, and none of the four properties a sandboxed run requires; a run that was not refused means the worker declared something else",
+				err)
+		}
+		if errors.Is(err, ErrWorkerLingered) {
+			t.Error("the refused worker did not exit. Babel wrote it a refusal instead of the job material, so nothing more is coming: a worker still blocked on that read has to be killed, and its own teardown never runs")
+		}
+		if elapsed > 30*time.Second {
+			t.Errorf("the refusal took %s; a worker that has been refused exits promptly", elapsed)
+		}
+		if receipt == nil {
+			t.Fatal("no receipt after a refused declaration; a refused run still has an audit record")
+		}
+		if receipt.Result != nil {
+			t.Errorf("the refused run produced a result: %+v. There was no material to analyse — no sources, no grant, no broker credential — so a result here is a claim about nothing",
+				receipt.Result)
+		}
+		if len(receipt.ToolRequests) != 0 {
+			t.Errorf("the refused worker made %d tool request(s) after being refused; the run was over and its grant was never sent",
+				len(receipt.ToolRequests))
 		}
 	})
 
@@ -493,14 +612,25 @@ func conformanceObligations(target conformanceTarget) []conformanceObligation {
 	add("run/forward-compatible-job", func(t conformanceT) {
 		// A newer Babel adds a field; an older worker must ignore it rather
 		// than fail. Nothing else about the run changes.
+		//
+		// One unknown field per stage, because the job is two messages and a
+		// worker that tolerates one is not thereby tolerating the other. The
+		// preamble is the more likely of the two to grow: it is the message
+		// the policy surface lives in, and it is the one a worker parses
+		// before it has declared anything, so a build that hard-failed on an
+		// unrecognized field there would refuse the run at the earliest
+		// possible moment for the least possible reason.
 		receipt, err := conformanceRun(t, target, ConformanceWellBehaved, AllowWithinGrant(),
 			func(job *Job) {
+				job.PreambleExtra = map[string]json.RawMessage{
+					"x-babel-future-preamble": json.RawMessage(`{"unknown":"to this worker"}`),
+				}
 				job.Extra = map[string]json.RawMessage{
 					"x-babel-future": json.RawMessage(`{"unknown":"to this worker"}`),
 				}
 			})
 		if err != nil {
-			t.Fatalf("Run with an unknown job field: %v", err)
+			t.Fatalf("Run with an unknown field in each job stage: %v", err)
 		}
 		if receipt.Result == nil {
 			t.Fatal("an unknown job field prevented a result")
