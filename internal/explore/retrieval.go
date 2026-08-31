@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/preflight"
 	"github.com/atyrode/babel/internal/run"
@@ -77,6 +78,16 @@ const (
 // quietly reduced result set would look like an answer about the scope the
 // worker asked for.
 type SearchRequest struct {
+	// Scope names the surface to search. Empty and ScopeCorpus are the
+	// corpus; ScopeFrontier is Babel's own prior output (#87 item 4).
+	//
+	// It is an argument of the one search operation rather than a second
+	// tool name, because the capability says which facility and the tool
+	// says which operation inside it — and "search" is one operation over
+	// two surfaces, both brokered by Babel, both bounded by the same
+	// retrieval budget, both receipted. A second published tool name would
+	// have been a second thing a separately developed worker can get wrong.
+	Scope          string     `json:"scope,omitempty"`
 	Query          string     `json:"query,omitempty"`
 	Harnesses      []string   `json:"harnesses,omitempty"`
 	SourceIDs      []string   `json:"source_ids,omitempty"`
@@ -90,7 +101,21 @@ type SearchRequest struct {
 	Order          string     `json:"order,omitempty"`
 	Limit          int        `json:"limit,omitempty"`
 	Offset         int        `json:"offset,omitempty"`
+
+	// Statuses filters candidate lifecycle state on a frontier search, and
+	// is meaningless on a corpus one. It is here rather than in a separate
+	// request type because the worker sends one arguments document for one
+	// tool: two shapes behind one name would be a wire the far side has to
+	// guess at.
+	Statuses []string `json:"statuses,omitempty"`
 }
+
+// The search scopes. They are wire values, so they are named here beside the
+// request that carries them rather than derived from anything.
+const (
+	ScopeCorpus   = "corpus"
+	ScopeFrontier = "frontier"
+)
 
 // SearchResultsSchema names the shape a served corpus search travels in. It is
 // versioned for the same reason worker.ResultSchema is: the payload is written
@@ -185,6 +210,13 @@ type Retrieval struct {
 	// clipped to the served bound — not the index's page. The two used to be
 	// the same thing because nothing left the process.
 	Hits []index.Hit
+
+	// FrontierHits is what a frontier-scope search served, redacted and
+	// clipped the same way. It is a separate field rather than a widened
+	// Hits because the two are different things — a corpus record with a
+	// locator, and one of Babel's own records with an id — and Step.Scope
+	// says which of them this retrieval was.
+	FrontierHits []index.FrontierHit
 
 	// Served is the payload the worker received, byte for byte. It is kept
 	// verbatim so the §9 boundary is checkable rather than asserted: what
@@ -284,6 +316,19 @@ func (r *retrieval) serveSearch(ctx context.Context, req worker.ToolRequest) wor
 		if err := json.Unmarshal(req.Arguments, &args); err != nil {
 			return deny("the search arguments are not a search request")
 		}
+	}
+	// The scope decides which surface answers, and an unknown one is denied
+	// rather than defaulted to the corpus. A worker that asked for a surface
+	// this build does not have must learn that; served corpus hits under a
+	// name it did not ask for would look to it like an answer about the
+	// frontier, which is the failure mode the published tool-name discipline
+	// exists to prevent one level up.
+	switch args.Scope {
+	case "", ScopeCorpus:
+	case ScopeFrontier:
+		return r.serveFrontier(ctx, args)
+	default:
+		return deny(fmt.Sprintf("search scope %q is not a surface this build serves", args.Scope))
 	}
 	query, err := r.query(args)
 	if err != nil {
@@ -460,14 +505,200 @@ func (r *retrieval) serve(query string, limit int, hits []index.Hit) (json.RawMe
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	step := run.RetrievalStep{
-		Index:   len(r.steps) + 1,
-		Tool:    string(worker.CapabilityCorpusSearch),
-		Query:   query,
-		At:      r.now(),
+		Index: len(r.steps) + 1,
+		Tool:  string(worker.CapabilityCorpusSearch),
+		Query: query,
+		At:    r.now(),
+		// Scope stays empty for a corpus search. Empty already means the
+		// corpus in every receipt written before the frontier surface
+		// existed, so writing the word would change the stored bytes of the
+		// one case that never needed clarifying.
 		Results: results,
 	}
 	r.steps = append(r.steps, step)
 	r.served = append(r.served, Retrieval{Step: step, Hits: served, Served: encoded})
+	return encoded, nil
+}
+
+// FrontierResultsSchema names the shape a served frontier search travels in.
+// It is a different schema from SearchResultsSchema rather than a variant of
+// it: a corpus hit carries a locator that recovers bytes from the archive and
+// a frontier hit carries a record id, and a worker that read one shape as the
+// other would either cite a locator that does not exist or discard the only
+// address the record has.
+const FrontierResultsSchema = "babel.frontier-search/1"
+
+// FrontierResults is the payload one served frontier search carries.
+//
+// Note repeats the refine-first framing the job document opened with, and it
+// is not decoration. A search happens in the middle of a run, possibly long
+// after the job was read, and the whole risk of serving Babel's own output to
+// a model is that the model treats it as established. The sentence that says
+// otherwise travels with every page of it, from the same constant the job
+// document uses, so the two cannot drift apart.
+type FrontierResults struct {
+	Schema string              `json:"schema"`
+	Query  string              `json:"query"`
+	Limit  int                 `json:"limit"`
+	Note   string              `json:"note"`
+	Hits   []FrontierSearchHit `json:"hits"`
+}
+
+// FrontierSearchHit is one prior output as the worker receives it.
+//
+// ID is what makes the whole facility useful: it is the handle a refinement,
+// a revival or an amendment names, so a run that finds its idea already
+// recorded has something to point at instead of a reason to restate it. Root
+// distinguishes two wordings of one candidate from two candidates, and Status
+// is why #87 removed the idea of a terminal status — a rejected candidate a
+// run rediscovers is a candidate to argue about, not a record to re-mint.
+//
+// There is no locator and no evidence. A prior output's support is the
+// observations under it, which a reader reaches through the record; putting a
+// borrowed locator here would let a claim be cited as if the citation were
+// this hit's own.
+type FrontierSearchHit struct {
+	Kind    string `json:"kind"`
+	ID      string `json:"id"`
+	Root    string `json:"root,omitempty"`
+	Status  string `json:"status,omitempty"`
+	RunID   string `json:"run_id,omitempty"`
+	Subject string `json:"subject,omitempty"`
+	// Summary is the record in one line and Text is what was matched, both
+	// redacted under the run's disclosure class. Babel's own output quotes
+	// the corpus, so it is redacted on the way out exactly as a transcript
+	// excerpt is: an evidence note carrying a credential is a credential.
+	Summary   string `json:"summary"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// serveFrontier answers one frontier-scope search out of the same index the
+// corpus search is served from, and records what it disclosed.
+//
+// It is budgeted, denied, and receipted exactly like a corpus search, because
+// it is the same kind of act: Babel deciding what a provider gets to see. The
+// receipt records the record identifiers rather than evidence, since a
+// frontier record is addressed by id — see run.RetrievalStep.Records.
+func (r *retrieval) serveFrontier(ctx context.Context, args SearchRequest) worker.Decision {
+	query := index.FrontierQuery{
+		Match:  args.Query,
+		Order:  index.Order(args.Order),
+		Limit:  args.Limit,
+		Offset: args.Offset,
+	}
+	for _, kind := range args.Kinds {
+		query.Kinds = append(query.Kinds, frontier.OutputKind(kind))
+	}
+	for _, status := range args.Statuses {
+		query.Statuses = append(query.Statuses, frontier.Status(status))
+	}
+	if query.Order == "" {
+		if query.Match != "" {
+			query.Order = index.OrderRelevance
+		} else {
+			query.Order = index.OrderNewest
+		}
+	}
+	if query.Limit < 0 || query.Limit > index.MaxLimit {
+		return deny(fmt.Sprintf("a page of %d is outside the retrieval ceiling of %d",
+			query.Limit, index.MaxLimit))
+	}
+	// The served page is bounded by the same number a corpus page is, and
+	// the applied bound travels in the payload, so a short page reads as
+	// "the frontier is exhausted" rather than as "this is all Babel would
+	// show you".
+	if query.Limit == 0 || query.Limit > maxServedHits {
+		query.Limit = maxServedHits
+	}
+	hits, err := r.index.FrontierSearch(ctx, query)
+	switch {
+	case errors.Is(err, index.ErrNoSearchableTerm), errors.Is(err, index.ErrMatchTooLong):
+		// Served with zero hits, on the same reasoning a corpus search is:
+		// the worker learns the frontier holds nothing for that wording,
+		// and the receipt shows the retrieval it spent.
+		hits = nil
+	case err != nil:
+		return deny(fmt.Sprintf("frontier retrieval failed: %v", err))
+	}
+	results, err := r.serveFrontierHits(args.Query, query.Limit, hits)
+	if err != nil {
+		return deny(fmt.Sprintf("the retrieval trace could not be recorded: %v", err))
+	}
+	if len(hits) == 0 {
+		return worker.Decision{
+			Allow:   true,
+			Reason:  "the frontier holds no prior output matching that query",
+			Results: results,
+		}
+	}
+	return worker.Decision{
+		Allow: true,
+		Reason: fmt.Sprintf("served %d prior Babel outputs; they are candidate ideas, not evidence",
+			len(hits)),
+		Results: results,
+	}
+}
+
+// serveFrontierHits builds the payload and the trace step of one frontier
+// search, in one function for the reason serve is one function: there is
+// exactly one path from a stored record to bytes a provider could see, and it
+// runs through the redactor here.
+func (r *retrieval) serveFrontierHits(query string, limit int, hits []index.FrontierHit) (json.RawMessage, error) {
+	served := make([]index.FrontierHit, len(hits))
+	records := make([]string, 0, len(hits))
+	payload := FrontierResults{
+		Schema: FrontierResultsSchema,
+		Query:  query,
+		Limit:  limit,
+		Note:   FramingRefine,
+		Hits:   make([]FrontierSearchHit, 0, len(hits)),
+	}
+	for i, hit := range hits {
+		served[i] = hit
+		summary, text := hit.Summary, hit.Text
+		if r.redact {
+			redactedSummary, err := preflight.RedactWith(summary, r.thresholds)
+			if err != nil {
+				return nil, err
+			}
+			redactedText, err := preflight.RedactWith(text, r.thresholds)
+			if err != nil {
+				return nil, err
+			}
+			summary, text = redactedSummary, redactedText
+		}
+		excerpt, truncated := clip(text)
+		served[i].Summary, served[i].Text = summary, excerpt
+		payload.Hits = append(payload.Hits, FrontierSearchHit{
+			Kind:      string(hit.Kind),
+			ID:        hit.ID,
+			Root:      hit.RootID,
+			Status:    string(hit.Status),
+			RunID:     hit.RunID,
+			Subject:   hit.Subject.ID,
+			Summary:   summary,
+			Text:      excerpt,
+			Truncated: truncated || hit.Truncated,
+		})
+		records = append(records, hit.ID)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	step := run.RetrievalStep{
+		Index:   len(r.steps) + 1,
+		Tool:    string(worker.CapabilityCorpusSearch),
+		Scope:   ScopeFrontier,
+		Query:   query,
+		At:      r.now(),
+		Records: records,
+	}
+	r.steps = append(r.steps, step)
+	r.served = append(r.served, Retrieval{Step: step, FrontierHits: served, Served: encoded})
 	return encoded, nil
 }
 

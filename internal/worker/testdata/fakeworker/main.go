@@ -98,6 +98,13 @@ func main() {
 		requestCapability = flag.String("request-capability", "", "comma-separated capabilities to request once each, continuing after every decision")
 		searchQuery       = flag.String("search-query", "synthetic", "the query value placed in tool-request arguments")
 
+		// The search scope this fixture asks for. Empty sends no scope key
+		// at all, which is the request every worker made before the frontier
+		// surface existed and must keep meaning "the corpus"; a value is
+		// placed in the arguments verbatim, so an unserved scope can be
+		// exercised as well as a served one.
+		searchScope = flag.String("search-scope", "", "the scope value placed in tool-request arguments")
+
 		// The tool name this fixture puts on the wire. Empty means the
 		// conforming behaviour: read grant.tools out of the job and use the
 		// name Babel published for the capability. A value overrides it,
@@ -128,6 +135,7 @@ func main() {
 		badSeq:             *badSeq,
 		argumentMarker:     *argumentMarker,
 		searchQuery:        *searchQuery,
+		searchScope:        *searchScope,
 		toolName:           *toolName,
 		schema:             *resultSchema,
 		renameMetadata:     *renameMetadata,
@@ -356,6 +364,10 @@ type fake struct {
 	badSeq         bool
 	argumentMarker string
 	searchQuery    string
+	// searchScope is the surface this fixture asks its search to read. Empty
+	// omits the key, which is what a worker that predates the frontier
+	// surface sends.
+	searchScope string
 
 	// toolName overrides the tool name this fixture requests. Empty is the
 	// conforming behaviour — the name the job published for the capability —
@@ -610,6 +622,9 @@ func (f *fake) result(status string, payload map[string]any, leak string) map[st
 func (f *fake) runTool(job map[string]any, capability worker.Capability, token string, echo bool) {
 	requestID := fmt.Sprintf("t-%d", len(f.decisions)+1)
 	arguments := map[string]any{"query": f.searchQuery}
+	if f.searchScope != "" {
+		arguments["scope"] = f.searchScope
+	}
 	if f.argumentMarker != "" {
 		arguments["marker"] = f.argumentMarker
 	}

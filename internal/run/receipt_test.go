@@ -603,7 +603,7 @@ func TestRejectionErrorsCarryNoValues(t *testing.T) {
 	// The same rule for a preparation whose entries are invalid.
 	selection := testSelection()
 	selection[0].SourceID = credentialSentinel + "/../escape"
-	if _, err := NewPreparation(preparedAt, selection); err == nil {
+	if _, err := NewPreparation(preparedAt, selection, PreparationContext{}); err == nil {
 		t.Error("accepted an invalid source id")
 	} else if strings.Contains(err.Error(), credentialSentinel) {
 		t.Errorf("the rejection error echoed the selector: %v", err)

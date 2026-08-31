@@ -229,7 +229,7 @@ func (h *harness) receipt(query, failure string) run.Receipt {
 		CaptureDigest: digest.Bytes([]byte("capture")),
 		SourceDigest:  digest.Bytes([]byte("source")),
 		Adapter:       run.AdapterRef{Schema: 1, Version: "1.0.0"},
-	}})
+	}}, run.PreparationContext{})
 	if err != nil {
 		h.t.Fatalf("NewPreparation: %v", err)
 	}

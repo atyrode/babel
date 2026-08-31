@@ -483,6 +483,12 @@ type Hypothesis struct {
 	CreatedAt     time.Time
 	Status        Status
 	Payload       HypothesisPayload
+	// Duplicates are Babel's recorded suspicions that this candidate says
+	// what an existing record already said (#87 item 4), strongest overlap
+	// first. They are read on every path that reads a candidate, because a
+	// listing that hid them would be the tidy version of the frontier
+	// rather than the true one.
+	Duplicates []DuplicateWarning
 }
 
 // HypothesisPayload is the §9 encryption-bound part of a candidate. It holds
@@ -764,6 +770,63 @@ type Link struct {
 // relationship was asserted is investigator prose about the corpus.
 type LinkPayload struct {
 	Note string `json:"note,omitempty"`
+}
+
+// NearDuplicate names one existing head a newly emitted candidate resembles,
+// with the term overlap that says how much (#87 item 4).
+//
+// It is the input side of a duplicate warning: a caller that ran the heuristic
+// hands the store what it found, and the store records it beside the candidate
+// it wrote. Overlap is stated rather than recomputed here because the measure
+// belongs to whoever searched — internal/index owns the tokenizer and
+// internal/explore owns the threshold — and a second implementation of it in
+// this package would be a second answer to one question.
+type NearDuplicate struct {
+	// HypothesisID is the existing candidate the new one resembles. It is a
+	// head at the time the heuristic ran; nothing keeps it one afterwards,
+	// which is why the warning records what was true when it was written
+	// rather than claiming to stay current.
+	HypothesisID string
+	// Overlap is the fraction of the shorter statement's vocabulary the two
+	// share, in (0,1]. It is a similarity of words and nothing more: two
+	// statements sharing their vocabulary may assert opposite things, so
+	// §5.4's rule that retrieval rank is not evidence strength applies to
+	// this number too.
+	Overlap float64
+}
+
+// DuplicateWarning is Babel's own recorded suspicion that one candidate says
+// what another already said.
+//
+// It is never a decision. §5.2 requires every emitted candidate to be
+// persisted, so a warned candidate is stored exactly like an unwarned one and
+// keeps its wording, its status history and its place on the frontier; what
+// the warning adds is that a reader — an operator on the record page, or the
+// next run reading the frontier — is told which existing record to compare it
+// against. Honesty over tidiness: a duplicate recorded with a warning can be
+// merged by a revision later, and a duplicate silently dropped cannot be
+// recovered at all.
+type DuplicateWarning struct {
+	ID string
+	// HypothesisID is the candidate carrying the warning.
+	HypothesisID string
+	// DuplicateOf is the record it resembles.
+	DuplicateOf string
+	// Overlap is read out of the payload; see DuplicateWarningPayload.
+	Overlap    float64
+	RecordedAt time.Time
+}
+
+// DuplicateWarningPayload is the §9 encryption-bound part of a warning.
+//
+// It holds one number, and the reason it is here rather than in a column is
+// the reason novelty and priority are: §9's plaintext allowlist admits
+// identifiers, counts, lifecycle state and timestamps, and not scores derived
+// from content. A fraction of two statements' shared vocabulary is derived
+// from those statements, so it travels sealed while the two record ids beside
+// it — relationship identifiers — travel in the clear.
+type DuplicateWarningPayload struct {
+	Overlap float64 `json:"overlap"`
 }
 
 // Revision is one entry in a record's append-only revision chain (#87).

@@ -250,8 +250,24 @@ type prepareDoc struct {
 	Host          string              `json:"host"`
 	Sessions      []prepareSessionRow `json:"sessions"`
 	IndexedEvents int                 `json:"indexed_events"`
-	Database      string              `json:"database"`
-	Index         string              `json:"index"`
+	// FrontierRecords, SalientTerms and Related are #87's mechanical
+	// injection: how much of Babel's own output the index holds, the terms
+	// the scope produced, and the prior records those terms found. A first
+	// preparation on a fresh machine finds none of the last, which is a real
+	// answer and the one this round trip observes.
+	FrontierRecords int                 `json:"frontier_records"`
+	SalientTerms    []string            `json:"salient_terms"`
+	Related         []prepareRelatedRow `json:"related"`
+	Serendipitous   bool                `json:"serendipitous"`
+	Database        string              `json:"database"`
+	Index           string              `json:"index"`
+}
+
+type prepareRelatedRow struct {
+	Kind    string `json:"kind"`
+	ID      string `json:"id"`
+	Summary string `json:"summary"`
+	Status  string `json:"status"`
 }
 
 type preflightDoc struct {
@@ -273,27 +289,34 @@ type failureDoc struct {
 }
 
 type exploreDoc struct {
-	RunID              string        `json:"run_id"`
-	PreparationID      string        `json:"preparation_id"`
-	ReceiptID          string        `json:"receipt_id"`
-	ChallengeReceiptID string        `json:"challenge_receipt_id,omitempty"`
-	SynthesisReceiptID string        `json:"synthesis_receipt_id,omitempty"`
-	Profile            string        `json:"profile"`
-	Recipes            []string      `json:"recipes"`
-	Hypotheses         []string      `json:"hypotheses"`
-	Observations       []string      `json:"observations"`
-	Findings           []string      `json:"findings"`
-	Proposals          []string      `json:"proposals"`
-	Promoted           []string      `json:"promoted"`
-	Deferred           []string      `json:"deferred"`
-	Rejected           []string      `json:"rejected"`
-	Objections         []string      `json:"objections"`
-	Reused             int           `json:"reused"`
-	Retrievals         int           `json:"retrievals"`
-	Enrolled           int           `json:"enrolled_for_review"`
-	Cancelled          bool          `json:"cancelled"`
-	Preflight          *preflightDoc `json:"preflight,omitempty"`
-	Failures           []failureDoc  `json:"failures,omitempty"`
+	RunID              string         `json:"run_id"`
+	PreparationID      string         `json:"preparation_id"`
+	ReceiptID          string         `json:"receipt_id"`
+	ChallengeReceiptID string         `json:"challenge_receipt_id,omitempty"`
+	SynthesisReceiptID string         `json:"synthesis_receipt_id,omitempty"`
+	Profile            string         `json:"profile"`
+	Recipes            []string       `json:"recipes"`
+	Hypotheses         []string       `json:"hypotheses"`
+	Observations       []string       `json:"observations"`
+	Findings           []string       `json:"findings"`
+	Proposals          []string       `json:"proposals"`
+	Promoted           []string       `json:"promoted"`
+	Deferred           []string       `json:"deferred"`
+	Rejected           []string       `json:"rejected"`
+	Objections         []string       `json:"objections"`
+	Reused             int            `json:"reused"`
+	Retrievals         int            `json:"retrievals"`
+	Enrolled           int            `json:"enrolled_for_review"`
+	Cancelled          bool           `json:"cancelled"`
+	Preflight          *preflightDoc  `json:"preflight,omitempty"`
+	Failures           []failureDoc   `json:"failures,omitempty"`
+	Duplicates         []duplicateDoc `json:"duplicates,omitempty"`
+}
+
+type duplicateDoc struct {
+	Hypothesis  string  `json:"hypothesis"`
+	DuplicateOf string  `json:"duplicate_of"`
+	Overlap     float64 `json:"overlap"`
 }
 
 type hypothesisDoc struct {
@@ -579,6 +602,13 @@ func TestSyntheticExplorationRoundTrip(t *testing.T) {
 		"--worker", fakeWorker(t),
 		"--worker-arg", "-result-payload-selector", "--worker-arg", explore.ParamStage,
 		"--worker-arg", "-result-payload", "--worker-arg", string(explore.StageExplore)+"="+payload,
+		// #87 item 4: the synthetic worker asks corpus-search for the
+		// frontier scope. The frontier is empty at this point in the round
+		// trip, so what this exercises is the whole path — served, bounded,
+		// receipted with its scope — answering honestly that Babel has said
+		// nothing yet, which is a different fact from not having looked.
+		"--worker-arg", "-request-capability", "--worker-arg", "corpus-search",
+		"--worker-arg", "-search-scope", "--worker-arg", explore.ScopeFrontier,
 		"--profile", exploreProfile,
 		"--json")
 	if len(run.Failures) != 0 {
@@ -612,6 +642,10 @@ func TestSyntheticExplorationRoundTrip(t *testing.T) {
 	}
 	proposalID := run.Proposals[0]
 	findingID := run.Findings[0]
+	if run.Retrievals != 1 {
+		t.Errorf("the run served %d retrievals, want the frontier search the worker asked for",
+			run.Retrievals)
+	}
 
 	// Durable: the receipt is stored and names the preparation, and the
 	// frontier holds the records the run reported.
@@ -896,7 +930,7 @@ func writeDiscoveryPayload(t *testing.T, p *phaseB) string {
 				},
 				Observations: []explore.Observation{{
 					Ref:    "o-1",
-					Recipe: worker.RecipeRef{ID: "outcome-integrity", Version: 1},
+					Recipe: worker.RecipeRef{ID: "outcome-integrity", Version: 2},
 					Claim: frontier.ObservationPayload{
 						Claim:                 "the first record of this session states the shape",
 						Category:              "outcome",

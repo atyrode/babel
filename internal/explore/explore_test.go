@@ -55,7 +55,7 @@ func TestMain(m *testing.M) {
 
 // testRecipe is the recipe every synthetic claim cites. It declares all three
 // stages, so one identity serves discovery, critique and synthesis.
-var testRecipe = worker.RecipeRef{ID: "outcome-integrity", Version: 1}
+var testRecipe = worker.RecipeRef{ID: "outcome-integrity", Version: 2}
 
 // testAuthority is why every run in these tests happened: an operator command,
 // which is what a hand-typed `babel explore` records. A run with no authority
@@ -144,7 +144,7 @@ func newHarness(t *testing.T) *harness {
 		})
 	}
 
-	h.prep, err = run.NewPreparation(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC), selection)
+	h.prep, err = run.NewPreparation(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC), selection, run.PreparationContext{})
 	if err != nil {
 		t.Fatalf("new preparation: %v", err)
 	}
@@ -810,12 +810,12 @@ func TestChallengerRecordsObjectionsByWhatBacksThem(t *testing.T) {
 	challengePayload := h.writeRaw("challenge.json", `{
 	  "objections": [
 	    {"ref": "obj-grounded", "hypothesis": "${paramitem:`+explore.ParamBriefHypotheses+`:0}",
-	     "grounds": "evidence", "recipe": {"id": "outcome-integrity", "version": 1},
+	     "grounds": "evidence", "recipe": {"id": "outcome-integrity", "version": 2},
 	     "claim": {"claim": "the cited record says otherwise", "confidence": "moderate",
 	               "impact": "moderate", "counter_evidence_absent": true,
 	               "evidence": [`+string(grounded)+`]}},
 	    {"ref": "obj-ungrounded", "hypothesis": "${paramitem:`+explore.ParamBriefHypotheses+`:0}",
-	     "grounds": "missing-check", "recipe": {"id": "outcome-integrity", "version": 1},
+	     "grounds": "missing-check", "recipe": {"id": "outcome-integrity", "version": 2},
 	     "claim": {"claim": "nothing verified the claim", "confidence": "low", "impact": "low",
 	               "counter_evidence_absent": true}}
 	  ]
@@ -1180,7 +1180,7 @@ func (h *harness) plantSecret() {
 			selection[i].SourceDigest = sum
 		}
 	}
-	h.prep, err = run.NewPreparation(h.prep.PreparedAt, selection)
+	h.prep, err = run.NewPreparation(h.prep.PreparedAt, selection, run.PreparationContext{})
 	if err != nil {
 		h.t.Fatalf("re-derive the preparation: %v", err)
 	}

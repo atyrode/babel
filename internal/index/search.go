@@ -47,6 +47,11 @@ var (
 	ErrOffset                = errors.New("index: negative offset")
 	ErrOrder                 = errors.New("index: unknown order")
 	ErrRelevanceWithoutMatch = errors.New("index: relevance order requires a match expression")
+	// ErrFrontierKind reports a self-retrieval filter naming a surface this
+	// build does not index. It is refused rather than dropped: a filter
+	// silently ignored would answer a question about all of Babel's output
+	// while looking like an answer about one part of it.
+	ErrFrontierKind = errors.New("index: unknown frontier record kind")
 )
 
 // Query is one retrieval request: §5.4's full-text search, structured
@@ -166,7 +171,7 @@ const hitColumns = `s.harness, s.adapter_schema, s.source_id, s.path,
 // not an error, and neither is a page shorter than Limit — that is how a
 // caller learns it has reached the end.
 func (x *Index) Search(ctx context.Context, q Query) ([]Hit, error) {
-	limit, err := pageSize(q)
+	limit, err := pageSize(q.Limit, q.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -288,16 +293,19 @@ func (x *Index) attachPaths(ctx context.Context, hits []Hit, ids []any, byID map
 	return nil
 }
 
-func pageSize(q Query) (int, error) {
+// pageSize bounds one page. It takes the two numbers rather than a Query
+// because the frontier surface asks the same question about the same bounds,
+// and a second copy of the ceiling is a second ceiling.
+func pageSize(limit, offset int) (int, error) {
 	switch {
-	case q.Offset < 0:
-		return 0, fmt.Errorf("%w: %d", ErrOffset, q.Offset)
-	case q.Limit < 0 || q.Limit > MaxLimit:
-		return 0, fmt.Errorf("%w: %d, limit %d", ErrLimit, q.Limit, MaxLimit)
-	case q.Limit == 0:
+	case offset < 0:
+		return 0, fmt.Errorf("%w: %d", ErrOffset, offset)
+	case limit < 0 || limit > MaxLimit:
+		return 0, fmt.Errorf("%w: %d, limit %d", ErrLimit, limit, MaxLimit)
+	case limit == 0:
 		return DefaultLimit, nil
 	}
-	return q.Limit, nil
+	return limit, nil
 }
 
 // orderClause resolves the ORDER BY. Every ordering ends in the session and

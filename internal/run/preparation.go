@@ -149,7 +149,72 @@ type Preparation struct {
 	// Selection is the corpus, in canonical order. NewPreparation sorts it, so
 	// the order a caller discovered sessions in cannot leak into the identity.
 	Selection []Selected `json:"selection"`
+	// Related are the prior Babel outputs that looked related to this scope
+	// when it was fixed (#87 item 4), in canonical order.
+	//
+	// They are part of the identity for the same reason PreparedAt is. A
+	// preparation is the record of an act, and the act now includes one
+	// mechanical question asked of the frontier — "what have we already said
+	// about material like this" — so two preparations over identical
+	// sessions that found different prior work are two different statements
+	// of scope. Recording the answer is what makes the injection auditable
+	// afterwards instead of being a thing that happened inside a run.
+	Related []RelatedOutput `json:"related,omitempty"`
+	// Serendipitous marks a scope drawn for exploration rather than assembled
+	// to answer something (#87 item 4).
+	//
+	// It exists because the same injected records mean two different things.
+	// A directed run receives prior outputs as the work already done on its
+	// question; a serendipity draw receives them as inspiration and is
+	// explicitly not confined to them, and a run that treated them as a
+	// scope would have had its serendipity taken away by the very mechanism
+	// meant to stop it duplicating work. The marker travels with the scope
+	// because that is where the decision was made.
+	Serendipitous bool `json:"serendipitous,omitempty"`
 }
+
+// RelatedOutput is one prior Babel output a preparation names.
+//
+// It is identifiers and nothing else. The summary a job document shows is
+// derived from the record when the job is built, so this record cannot hold a
+// stale copy of somebody's wording, and §9's plaintext allowlist admits a kind
+// and an id where it does not admit the prose behind them.
+type RelatedOutput struct {
+	// Kind is a frontier.OutputKind. It is a string here rather than that
+	// type because a preparation is a §7 provenance record and must decode
+	// on a build whose frontier vocabulary has moved on; the consumer
+	// validates it against the kinds it can actually resolve.
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
+// key is the identity a preparation may not name twice, and the sort key.
+func (r RelatedOutput) key() [2]string { return [2]string{r.Kind, r.ID} }
+
+// PreparationContext is what #87 adds to a fixed scope: the prior outputs the
+// frontier held that looked related to it, and whether the scope was drawn for
+// serendipity.
+//
+// It is one struct rather than two parameters because both answer the same
+// question — what does a run receive besides the sessions — and because the
+// zero value is the honest name for "nothing was asked of the frontier",
+// which is what every preparation made before #87 recorded.
+type PreparationContext struct {
+	Related       []RelatedOutput
+	Serendipitous bool
+}
+
+// MaxRelatedOutputs bounds how many prior outputs one preparation names.
+//
+// The bound is on the record because it is a bound on what a run receives
+// unasked. A job document listing forty prior ideas would spend a low-thinking
+// budget reading Babel's own back catalogue instead of the corpus, and would
+// make the injection read as a scope rather than as context. Twelve is about
+// what fits in a page a model reads before starting work, and the on-demand
+// frontier search is what the run uses when twelve is not enough — which is
+// the right split: bounded context by default, more of it only when the
+// investigator asked and the retrieval budget allowed.
+const MaxRelatedOutputs = 12
 
 // NewPreparation fixes a corpus scope and derives its identity.
 //
@@ -158,7 +223,14 @@ type Preparation struct {
 // the returned record means. An empty selection is refused: an exploration
 // over nothing is a mistake, and accepting it would make a broken selection
 // indistinguishable from a deliberate one.
-func NewPreparation(preparedAt time.Time, selection []Selected) (Preparation, error) {
+//
+// The context's related outputs are ordered and deduplicated on the same
+// reasoning, and the order is canonical rather than the order retrieval
+// returned them in. That is deliberate: the retrieval that found them ranked
+// them, §5.4 forbids retrieval rank from becoming evidence strength, and a
+// stored record whose order was a ranking would be handing a run exactly that
+// signal under the name of a scope.
+func NewPreparation(preparedAt time.Time, selection []Selected, context PreparationContext) (Preparation, error) {
 	if preparedAt.IsZero() {
 		return Preparation{}, fmt.Errorf("preparation: prepared_at is required")
 	}
@@ -186,9 +258,59 @@ func NewPreparation(preparedAt time.Time, selection []Selected) (Preparation, er
 			return Preparation{}, fmt.Errorf("preparation: selection holds the same session twice")
 		}
 	}
-	p := Preparation{Schema: PreparationSchema, PreparedAt: preparedAt.UTC(), Selection: canonical}
+	related, err := canonicalRelated(context.Related)
+	if err != nil {
+		return Preparation{}, err
+	}
+	p := Preparation{
+		Schema:        PreparationSchema,
+		PreparedAt:    preparedAt.UTC(),
+		Selection:     canonical,
+		Related:       related,
+		Serendipitous: context.Serendipitous,
+	}
 	p.ID = p.derive()
 	return p, nil
+}
+
+// canonicalRelated orders and deduplicates the related outputs, refusing one
+// that names nothing. A reference with no kind or no id could not be resolved
+// by the run that received it, so accepting it would put an unresolvable
+// pointer inside an immutable record.
+func canonicalRelated(related []RelatedOutput) ([]RelatedOutput, error) {
+	if len(related) == 0 {
+		return nil, nil
+	}
+	canonical := make([]RelatedOutput, len(related))
+	copy(canonical, related)
+	for i, r := range canonical {
+		if r.Kind == "" || r.ID == "" {
+			return nil, fmt.Errorf("preparation: related output %d names no record", i)
+		}
+	}
+	sort.Slice(canonical, func(i, j int) bool {
+		a, b := canonical[i].key(), canonical[j].key()
+		for k := range a {
+			if a[k] != b[k] {
+				return a[k] < b[k]
+			}
+		}
+		return false
+	})
+	out := canonical[:0]
+	for i, r := range canonical {
+		if i > 0 && r.key() == canonical[i-1].key() {
+			continue
+		}
+		out = append(out, r)
+	}
+	// The bound is checked after deduplication, so a caller that offered the
+	// same record twice is not refused for a length it does not have.
+	if len(out) > MaxRelatedOutputs {
+		return nil, fmt.Errorf("preparation: %d related outputs is past the ceiling of %d",
+			len(out), MaxRelatedOutputs)
+	}
+	return out, nil
 }
 
 // canonicalize validates one entry and puts its completeness report in a fixed
@@ -279,6 +401,21 @@ func slicesCompactFunc(reasons []adapter.CompletenessReason) []adapter.Completen
 // The time is encoded as RFC3339 with nanoseconds in UTC, the same rendering
 // the stored JSON uses, so the derivation and the record agree byte for byte
 // about what instant means.
+//
+// #87's context is appended, and only when there is any:
+//
+//	if len(Related) > 0 || Serendipitous:
+//	    u32(len(Related)) || per entry, in canonical order: lp(Kind) || lp(ID)
+//	    || u32(Serendipitous ? 1 : 0)
+//
+// The condition is what keeps every preparation recorded before #87 verifying
+// against its own stored id, which matters because those records are durable,
+// pending remote sync, and named on the command line by an operator resuming a
+// scope. Appending four zero bytes unconditionally would have made every one of
+// them fail Verify and taken "explore that scope again" away permanently. The
+// encoding stays injective: nothing follows, so "no bytes" and "a count of at
+// least zero followed by a flag" are distinguishable, and a preparation with an
+// empty context is exactly the record a pre-#87 Babel would have written.
 func (p Preparation) derive() PreparationID {
 	h := sha256.New()
 	h.Write([]byte(preparationDomain))
@@ -299,6 +436,18 @@ func (p Preparation) derive() PreparationID {
 			writeLP(h, r.Field)
 			writeLP(h, r.Reason)
 		}
+	}
+	if len(p.Related) > 0 || p.Serendipitous {
+		writeU32(h, uint32(len(p.Related)))
+		for _, r := range p.Related {
+			writeLP(h, r.Kind)
+			writeLP(h, r.ID)
+		}
+		var serendipity uint32
+		if p.Serendipitous {
+			serendipity = 1
+		}
+		writeU32(h, serendipity)
 	}
 	var sum [sha256.Size]byte
 	h.Sum(sum[:0])

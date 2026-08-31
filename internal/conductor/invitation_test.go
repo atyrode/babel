@@ -93,7 +93,7 @@ func (s *stores) plantReceipt(t *testing.T, runID string, at time.Time,
 			Adapter:       runstore.AdapterRef{Schema: 1, Version: "test", Completeness: []adapter.CompletenessReason{}},
 		})
 	}
-	prep, err := runstore.NewPreparation(at.Add(-time.Minute), selection)
+	prep, err := runstore.NewPreparation(at.Add(-time.Minute), selection, runstore.PreparationContext{})
 	if err != nil {
 		t.Fatalf("NewPreparation: %v", err)
 	}

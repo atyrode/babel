@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -313,6 +314,49 @@ SELECT 'rev_' || lower(hex(randomblob(16))), 'proposal', c.entity_id, c.root_id,
 
 ALTER TABLE frontier_status_event ADD COLUMN actor_kind TEXT NOT NULL DEFAULT '';
 ALTER TABLE frontier_status_event ADD COLUMN actor_id TEXT NOT NULL DEFAULT '';
+`,
+	// Migration 4 gives a candidate somewhere to carry Babel's own warning
+	// that it looks like a near-duplicate of an existing head (#87 item 4).
+	//
+	// The warning is a row rather than a field of the candidate's payload,
+	// and rather than a `same-concept` link, and both choices are the same
+	// decision made twice. A payload holds the model's own wording, which
+	// this is not: it is Babel's mechanical reading of that wording, and
+	// putting it there would also move the analysis-result schema shared
+	// with a worker that never emits it. A link would be worse: a link is an
+	// assertion that two ideas relate, and a reader could not tell an
+	// investigator's judgement that two candidates are one concept from a
+	// term-overlap heuristic's guess that they might be. Those are different
+	// claims with different authority and they get different tables.
+	//
+	// Nothing here suppresses anything. The candidate is inserted whatever
+	// the overlap says, in the same transaction, because §5.2 requires every
+	// emitted candidate to be persisted and a duplicate silently dropped
+	// would be a candidate the frontier cannot show anybody. The row records
+	// the suspicion; the operator and the next run decide what it means.
+	//
+	// The overlap sits in payload_json rather than in a column of its own,
+	// which is the same call §9 already forced on novelty and priority: the
+	// plaintext allowlist admits identifiers, counts and timestamps but not
+	// scores derived from content, and a fraction of two statements' shared
+	// vocabulary is derived from those statements. The two record ids beside
+	// it are relationship identifiers and travel in the clear.
+	`
+CREATE TABLE frontier_duplicate_warning(
+	id            TEXT PRIMARY KEY,
+	hypothesis_id TEXT NOT NULL REFERENCES frontier_hypothesis(id),
+	duplicate_of  TEXT NOT NULL REFERENCES frontier_hypothesis(id),
+	recorded_at   TEXT NOT NULL,
+	payload_json  TEXT NOT NULL,
+	UNIQUE(hypothesis_id, duplicate_of),
+	CHECK(hypothesis_id <> duplicate_of)
+);
+CREATE INDEX frontier_duplicate_warning_of ON frontier_duplicate_warning(duplicate_of);
+
+CREATE TRIGGER frontier_duplicate_warning_immutable BEFORE UPDATE ON frontier_duplicate_warning
+BEGIN SELECT RAISE(ABORT, 'a duplicate warning is immutable; it records what the heuristic said when the candidate was written'); END;
+CREATE TRIGGER frontier_duplicate_warning_kept BEFORE DELETE ON frontier_duplicate_warning
+BEGIN SELECT RAISE(ABORT, 'duplicate warnings are never deleted; a warning that can be removed is one nobody has to answer'); END;
 `}
 
 // Store is the durable hypothesis frontier. It exposes no operation that
@@ -475,6 +519,12 @@ type HypothesisInput struct {
 	// prevent, one where the current state is visible and the argument for
 	// it is not.
 	Reason string
+	// NearDuplicates are the existing candidates a caller's dedup heuristic
+	// found this one resembling (#87 item 4). They are recorded as warnings
+	// in the same transaction as the candidate: the write is never refused
+	// or reduced because of them, so a run that emits a duplicate still
+	// gets a durable record, and the record says what it is suspected of.
+	NearDuplicates []NearDuplicate
 }
 
 // CreateHypothesis persists a candidate and opens its append-only status
@@ -537,12 +587,16 @@ func (s *Store) CreateHypothesis(ctx context.Context, in HypothesisInput) (Hypot
 		}); err != nil {
 			return err
 		}
-		_, err := s.appendStatus(ctx, tx, statusWrite{
+		if _, err := s.appendStatus(ctx, tx, statusWrite{
 			hypothesisID: id,
 			status:       status,
 			runID:        in.RunID,
 			actor:        actor,
-		})
+		}); err != nil {
+			return err
+		}
+		warnings, err := appendDuplicateWarnings(ctx, tx, id, in.NearDuplicates, created)
+		record.Duplicates = warnings
 		return err
 	})
 	if err != nil {
@@ -562,7 +616,10 @@ func (s *Store) Hypothesis(ctx context.Context, id string) (Hypothesis, error) {
 }
 
 const hypothesisSelect = `SELECT h.id, h.ancestor_id, h.run_id, h.schema_version, h.created_at, h.payload_json,
-	(SELECT e.status FROM frontier_status_event e WHERE e.hypothesis_id = h.id ORDER BY e.seq DESC LIMIT 1)
+	(SELECT e.status FROM frontier_status_event e WHERE e.hypothesis_id = h.id ORDER BY e.seq DESC LIMIT 1),
+	(SELECT json_group_array(json_object('id', w.id, 'duplicate_of', w.duplicate_of,
+		'overlap', json_extract(w.payload_json, '$.overlap'), 'recorded_at', w.recorded_at))
+		FROM frontier_duplicate_warning w WHERE w.hypothesis_id = h.id)
 	FROM frontier_hypothesis h`
 
 func scanHypothesis(row interface{ Scan(...any) error }) (Hypothesis, error) {
@@ -572,8 +629,10 @@ func scanHypothesis(row interface{ Scan(...any) error }) (Hypothesis, error) {
 		created  string
 		payload  []byte
 		status   string
+		warnings []byte
 	)
-	if err := row.Scan(&record.ID, &ancestor, &record.RunID, &record.SchemaVersion, &created, &payload, &status); err != nil {
+	if err := row.Scan(&record.ID, &ancestor, &record.RunID, &record.SchemaVersion, &created,
+		&payload, &status, &warnings); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Hypothesis{}, err
 		}
@@ -589,7 +648,121 @@ func scanHypothesis(row interface{ Scan(...any) error }) (Hypothesis, error) {
 	if err := json.Unmarshal(payload, &record.Payload); err != nil {
 		return Hypothesis{}, fmt.Errorf("decode hypothesis %s payload: %w", record.ID, err)
 	}
+	record.Duplicates, err = decodeDuplicateWarnings(record.ID, warnings)
+	if err != nil {
+		return Hypothesis{}, err
+	}
 	return record, nil
+}
+
+// appendDuplicateWarnings records what a caller's dedup heuristic found about
+// one candidate, inside the transaction that wrote it.
+//
+// A warning naming a candidate that is not there, or naming the candidate
+// itself, is a caller bug and fails the write: a warning pointing at nothing
+// is worse than no warning, because a reader would read it as "compare this
+// against a record you cannot open". Everything else about the input is
+// tolerated — the same target twice collapses to one row, and a heuristic that
+// found nothing writes nothing.
+func appendDuplicateWarnings(ctx context.Context, tx *sql.Tx, hypothesisID string,
+	found []NearDuplicate, at time.Time) ([]DuplicateWarning, error) {
+	if len(found) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(found))
+	out := make([]DuplicateWarning, 0, len(found))
+	for _, near := range found {
+		if near.HypothesisID == hypothesisID {
+			return nil, fmt.Errorf("%w: a candidate cannot be a near-duplicate of itself", ErrInvalidValue)
+		}
+		if near.Overlap <= 0 || near.Overlap > 1 {
+			return nil, fmt.Errorf("%w: near-duplicate overlap %v is outside (0,1]",
+				ErrInvalidValue, near.Overlap)
+		}
+		if _, dup := seen[near.HypothesisID]; dup {
+			continue
+		}
+		seen[near.HypothesisID] = struct{}{}
+		if err := requireRow(ctx, tx, "frontier_hypothesis", near.HypothesisID); err != nil {
+			return nil, fmt.Errorf("near-duplicate target: %w", err)
+		}
+		id, err := newID("dup")
+		if err != nil {
+			return nil, err
+		}
+		payload, err := marshalPayload(DuplicateWarningPayload{Overlap: near.Overlap})
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_duplicate_warning(
+			id, hypothesis_id, duplicate_of, recorded_at, payload_json)
+			VALUES(?, ?, ?, ?, ?)`,
+			id, hypothesisID, near.HypothesisID, formatTime(at), payload); err != nil {
+			return nil, fmt.Errorf("record duplicate warning: %w", err)
+		}
+		out = append(out, DuplicateWarning{
+			ID:           id,
+			HypothesisID: hypothesisID,
+			DuplicateOf:  near.HypothesisID,
+			Overlap:      near.Overlap,
+			RecordedAt:   at,
+		})
+	}
+	sortDuplicateWarnings(out)
+	return out, nil
+}
+
+// duplicateWire is the shape json_group_array produces for one warning. The
+// aggregate is used rather than a second query so that every path reading a
+// candidate reads its warnings, in one statement: a listing that quietly
+// dropped them would show a frontier with no duplicates in it.
+type duplicateWire struct {
+	ID          string  `json:"id"`
+	DuplicateOf string  `json:"duplicate_of"`
+	Overlap     float64 `json:"overlap"`
+	RecordedAt  string  `json:"recorded_at"`
+}
+
+func decodeDuplicateWarnings(hypothesisID string, encoded []byte) ([]DuplicateWarning, error) {
+	if len(encoded) == 0 {
+		return nil, nil
+	}
+	var wire []duplicateWire
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		return nil, fmt.Errorf("decode duplicate warnings of %s: %w", hypothesisID, err)
+	}
+	if len(wire) == 0 {
+		return nil, nil
+	}
+	out := make([]DuplicateWarning, 0, len(wire))
+	for _, w := range wire {
+		at, err := parseTime(w.RecordedAt)
+		if err != nil {
+			return nil, fmt.Errorf("duplicate warning %s: %w", w.ID, err)
+		}
+		out = append(out, DuplicateWarning{
+			ID:           w.ID,
+			HypothesisID: hypothesisID,
+			DuplicateOf:  w.DuplicateOf,
+			Overlap:      w.Overlap,
+			RecordedAt:   at,
+		})
+	}
+	sortDuplicateWarnings(out)
+	return out, nil
+}
+
+// sortDuplicateWarnings puts the strongest resemblance first and breaks ties on
+// the record it names, so the order is total and the same on every read. It is
+// presentation order: §5.4's rule that rank is not strength holds here too, and
+// a warning is a prompt to compare rather than a verdict about either record.
+func sortDuplicateWarnings(warnings []DuplicateWarning) {
+	sort.Slice(warnings, func(i, j int) bool {
+		if warnings[i].Overlap != warnings[j].Overlap {
+			return warnings[i].Overlap > warnings[j].Overlap
+		}
+		return warnings[i].DuplicateOf < warnings[j].DuplicateOf
+	})
 }
 
 // StatusInput appends one lifecycle transition to a candidate's history.

@@ -137,6 +137,14 @@ const (
 	FailureDisposition     = "disposition"
 	FailureStorage         = "storage"
 	FailureCancelled       = "cancelled"
+	// FailureFrontierIndex reports that the frontier's own retrieval surface
+	// could not be brought up to date. It degrades dedup warnings and the
+	// frontier scope of corpus search and nothing else, so it is recorded
+	// rather than fatal.
+	FailureFrontierIndex = "frontier-index"
+	// FailureRelatedContext reports a prior output the preparation named that
+	// could not be resolved into the job's refine-first context (#87).
+	FailureRelatedContext = "related-context"
 )
 
 // ErrRedactionRequired reports a run refused before launch because §6.4's
@@ -478,6 +486,13 @@ type Outcome struct {
 	// not work.
 	Reused int
 
+	// Duplicates are the near-duplicate warnings this attempt recorded
+	// against the candidates it wrote (#87 item 4). They are reported
+	// because a warning nobody surfaces is a warning nobody answers: the
+	// candidates themselves were all persisted, and this is the list of the
+	// ones an operator should compare against something that already exists.
+	Duplicates []frontier.DuplicateWarning
+
 	// Retrieval is what the run's corpus search served, in service order.
 	Retrieval []Retrieval
 
@@ -632,6 +647,12 @@ func (c *Controller) Explore(ctx context.Context, opt Options) (*Outcome, error)
 		st.out.Failures = st.allFailures()
 		return st.out, err
 	}
+
+	// The frontier's own retrieval surface is brought up to date once, after
+	// preflight has cleared the run and before any job reads it, so the
+	// refine-first context, the dedup warnings and the frontier scope of
+	// corpus search all answer questions about the same frontier (#87).
+	c.refreshFrontier(st)
 
 	exploration := c.runStage(st, StageExplore, opt.RunID, nil)
 	if exploration != nil && exploration.result != nil {
