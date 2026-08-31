@@ -918,12 +918,20 @@ func (c *Controller) runFailures(st *state) []run.Failure {
 // failure to publish it can never also be inside it. It is attributed to
 // StageExplore on the same reasoning writeReceipt's storage failures are —
 // this control plane degraded, not a worker boundary.
+//
+// It is recorded with warn rather than fail because §6.5 keeps publication out
+// of the run's verdict: a run that produced everything it was asked for did not
+// fail because a catalog was unreachable. Explore's returned error is
+// snapshotted before this call either way, so the distinction was invisible
+// until #118 read the run's verdict again afterwards to finalize its presence
+// row - and a fleet row reading "failed" for a complete run would be worse than
+// no row at all.
 func (c *Controller) publishRun(st *state) {
 	if c.cfg.Sync == nil {
 		return
 	}
 	if err := c.cfg.Sync.CommitInline(st.commit, sync.Closure{RunID: st.opt.RunID}); err != nil {
-		st.fail(StageExplore, FailureSyncPublish, c.now(),
+		st.warn(StageExplore, FailureSyncPublish, c.now(),
 			fmt.Errorf("explore: declare the shared-catalog closure for run %s: %w", st.opt.RunID, err))
 	}
 }
