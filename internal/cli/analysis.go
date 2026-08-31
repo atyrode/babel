@@ -39,8 +39,9 @@ func (d dirs) indexDir() string { return d.cache }
 // analysisSchema versions the analysis settings document this package owns.
 const analysisSchema = 1
 
-// analysisFile is where the Code profile reference is kept. It sits beside
-// storage.json rather than in the data directory because it is
+// analysisFile is where the references the configuration ceremonies produce
+// are kept, the analysis profile's and the title inference profile's both. It
+// sits beside storage.json rather than in the data directory because it is
 // configuration: nothing rebuilds it, and `sessions prune --local` must
 // never be able to reach it.
 const analysisFile = "analysis.json"
@@ -50,11 +51,16 @@ const analysisFile = "analysis.json"
 // is bounded on the way in rather than truncated on the way out.
 const maxOperatorIDLen = 128
 
-// analysisSettings is everything Babel keeps about analysis execution, and
-// it is deliberately almost nothing. §2.6 and decision 18 put the provider,
-// the model, the credential and the sandbox inside Code; Babel stores the
-// profile reference Code returned plus the non-secret metadata it reported
-// alongside it, and where the worker executable is.
+// analysisSettings is everything Babel keeps about the models it can invoke,
+// and it is deliberately almost nothing. §2.6 and decision 18 put the
+// provider, the model, the credential and the sandbox inside Code; Babel
+// stores the profile reference Code returned plus the non-secret metadata it
+// reported alongside it, and where the worker executable is.
+//
+// There are two such references, because there are two things Babel can pay a
+// provider for: an exploration and a session title. They are separate blocks
+// of one document rather than one block used twice, since each is a separate
+// intentional setup (issue #86).
 type analysisSettings struct {
 	Schema int `json:"schema"`
 	// Worker and WorkerArgs are how this machine launches the Code
@@ -66,6 +72,11 @@ type analysisSettings struct {
 	// pointer so "never configured" and "configured with empty values" are
 	// different documents.
 	Profile *profileRecord `json:"profile,omitempty"`
+	// Titles is the reference `babel titles configure` stored, and the whole
+	// of what stands between an invocation and a model that writes session
+	// titles. Nil is the normal state of a machine that has never configured
+	// one, and `sessions title infer --confirm` refuses on it.
+	Titles *titlesRecord `json:"titles,omitempty"`
 }
 
 // profileRecord is the Code profile reference plus the metadata §2.6 lets
@@ -237,19 +248,30 @@ func (wf *workerFlags) bind(fs *flag.FlagSet) {
 }
 
 // resolve fixes the worker launch template from flags, the environment, and
-// the stored settings, in that order.
+// the stored analysis launch, in that order.
+func (wf *workerFlags) resolve(s analysisSettings) (worker.Config, bool) {
+	return wf.resolveFrom(s.Worker, s.WorkerArgs)
+}
+
+// resolveFrom is that resolution against one stored launch template.
+//
+// The template is a parameter because each ceremony stores its own. A machine
+// that configured analysis against one Code build and titles against another
+// must keep launching each with the executable whose interface the operator
+// actually confirmed: a reference means nothing without it, since two builds
+// can both hold a profile named "p-3".
 //
 // Stored arguments travel with the stored binary and nothing else: a
 // `--worker` override names a different executable, and handing it another
 // executable's arguments would launch it in a mode nobody asked for.
-func (wf *workerFlags) resolve(s analysisSettings) (worker.Config, bool) {
-	binary := firstNonEmpty(wf.binary, os.Getenv("BABEL_ANALYSIS_WORKER"), s.Worker)
+func (wf *workerFlags) resolveFrom(stored string, storedArgs []string) (worker.Config, bool) {
+	binary := firstNonEmpty(wf.binary, os.Getenv("BABEL_ANALYSIS_WORKER"), stored)
 	if binary == "" {
 		return worker.Config{}, false
 	}
 	args := []string(wf.args)
-	if len(args) == 0 && binary == s.Worker {
-		args = slices.Clone(s.WorkerArgs)
+	if len(args) == 0 && binary == stored {
+		args = slices.Clone(storedArgs)
 	}
 	return worker.Config{Binary: binary, Args: args}, true
 }
@@ -501,7 +523,7 @@ func (a *app) analysisProfileConfigure(ctx context.Context, args []string) error
 		return err
 	}
 
-	ref, err := a.runConfigureCeremony(ctx, wcfg.Binary, wcfg.Args, tty)
+	ref, err := a.runConfigureCeremony(ctx, wcfg.Binary, wcfg.Args, tty, analysisCeremony)
 	if err != nil {
 		return err
 	}
@@ -577,6 +599,25 @@ const (
 	resultFileFlag = "--result-file"
 )
 
+// ceremonyTarget names the configuration one ceremony launch belongs to, so
+// that the reports it writes name that command's own remedy.
+//
+// Two configurations go through this launch now — the analysis profile and the
+// profile that writes session titles (issue #86) — and an operator who has
+// just abandoned one must be pointed at the configuration that survived it,
+// which is the one he was replacing and never the other.
+type ceremonyTarget struct {
+	// show is the command that prints the configuration this ceremony would
+	// have replaced.
+	show string
+}
+
+// The two configurations the launch serves.
+var (
+	analysisCeremony = ceremonyTarget{show: "babel analysis profile show"}
+	titlesCeremony   = ceremonyTarget{show: "babel titles show"}
+)
+
 // runConfigureCeremony launches the worker on the operator's terminal and
 // returns the reference it wrote.
 //
@@ -585,7 +626,7 @@ const (
 // long as it lasts, so it must stay in Babel's group for job control to reach
 // it — Ctrl-C has to interrupt the configuration the operator is looking at.
 func (a *app) runConfigureCeremony(ctx context.Context, binary string, args []string,
-	tty operatorTerminal) (worker.ProfileRef, error) {
+	tty operatorTerminal, target ceremonyTarget) (worker.ProfileRef, error) {
 	dir, err := os.MkdirTemp("", "babel-configure-")
 	if err != nil {
 		return worker.ProfileRef{}, fmt.Errorf("create the configuration result directory: %w", err)
@@ -608,7 +649,7 @@ func (a *app) runConfigureCeremony(ctx context.Context, binary string, args []st
 	argv = append(argv, args...)
 	argv = append(argv, configureFlag, resultFileFlag, resultPath)
 	proc := exec.CommandContext(ctx, binary, argv...)
-	env, dropped := ceremonyEnv()
+	env, dropped := modelEnv()
 	proc.Env = env
 	// Every stream is the terminal, including stderr: the worker is drawing
 	// an interface, and a redirected stderr would send half of it to a file
@@ -628,31 +669,36 @@ func (a *app) runConfigureCeremony(ctx context.Context, binary string, args []st
 		// The worker ran and declined to produce a profile, which is what an
 		// operator who backs out of Code's interface looks like from here.
 		// It is not a malfunction, so it is not reported as one.
-		return worker.ProfileRef{}, a.reportConfigurationUnchanged(
+		return worker.ProfileRef{}, a.reportConfigurationUnchanged(target,
 			fmt.Sprintf("%s exited %d without confirming a profile", Sanitize(binary), exit.ExitCode()))
 	case runErr != nil:
 		// The process never ran: a missing or unusable executable is a
 		// worker problem with a worker remedy.
-		return worker.ProfileRef{}, a.reportWorkerFailure(binary, runErr)
+		return worker.ProfileRef{}, a.reportCeremonyUnlaunchable(binary, runErr, target)
 	}
 
 	ref, err := readConfigureResult(resultPath)
 	if err != nil {
-		return worker.ProfileRef{}, a.reportConfigurationUnchanged(err.Error())
+		return worker.ProfileRef{}, a.reportConfigurationUnchanged(target, err.Error())
 	}
 	return ref, nil
 }
 
-// ceremonyEnv is the operator's own environment minus the one variable that
-// could pre-answer the ceremony, and reports whether it was there.
+// modelEnv is the operator's own environment minus the one variable that could
+// decide which model runs, and reports whether it was there.
+//
+// Both launches that can reach a provider use it. In the configuration
+// ceremony a pre-set selection would answer the question the operator was
+// handed the terminal to answer; in the titler it would override the profile
+// he already confirmed. Neither is intent (issue #86).
 //
 // The rest is inherited whole, which is the opposite of the strict allowlist a
-// supervised worker run gets (internal/worker). The two children are doing
-// opposite things: that one is a contained process reading a corpus, this one
-// is an interface on the operator's terminal that needs $TERM, the locale, and
-// wherever its own configuration lives. What it must not inherit is a
-// selection.
-func ceremonyEnv() (env []string, dropped bool) {
+// supervised worker run gets (internal/worker). Those children are doing
+// something else: a contained process reading a corpus. These two draw an
+// interface on the operator's terminal or answer Babel on stdin, and need
+// $TERM, the locale, and wherever their own configuration lives. What they
+// must not inherit is a selection.
+func modelEnv() (env []string, dropped bool) {
 	all := os.Environ()
 	env = make([]string, 0, len(all))
 	for _, entry := range all {
@@ -689,7 +735,7 @@ func refuseDials(c *cmd, args []string, stored bool) error {
 }
 
 // dialArg reports whether one worker argument is a configuration override or
-// one of the two flags the ceremony itself owns.
+// one of the flags Babel's own launches append.
 func dialArg(arg string) bool {
 	name := strings.TrimLeft(arg, "-")
 	if name == arg {
@@ -698,9 +744,22 @@ func dialArg(arg string) bool {
 		return false
 	}
 	name, _, _ = strings.Cut(name, "=")
-	return name == "set" || strings.HasPrefix(name, "set-") ||
-		name == strings.TrimLeft(configureFlag, "-") ||
-		name == strings.TrimLeft(resultFileFlag, "-")
+	if name == "set" || strings.HasPrefix(name, "set-") {
+		return true
+	}
+	return slices.Contains(babelOwnedFlags, name)
+}
+
+// babelOwnedFlags are the flags Babel appends itself, without their dashes. A
+// supplied or stored worker argument may not carry one: the two ceremony flags
+// are how an operator would hand Babel a reference nobody confirmed, and the
+// two titler flags are how a worker argument would name a profile other than
+// the one inference was configured with.
+var babelOwnedFlags = []string{
+	strings.TrimLeft(configureFlag, "-"),
+	strings.TrimLeft(resultFileFlag, "-"),
+	strings.TrimLeft(titlesModeFlag, "-"),
+	strings.TrimLeft(profileFlag, "-"),
 }
 
 // configureResult is the file the worker writes when the operator confirms:
@@ -759,9 +818,28 @@ func readConfigureResult(path string) (worker.ProfileRef, error) {
 // confuse are "the profile you confirmed is stored" and "the profile you had
 // is still stored". So it says which one happened, names the command that
 // prints the surviving configuration, and exits nonzero.
-func (a *app) reportConfigurationUnchanged(reason string) error {
+func (a *app) reportConfigurationUnchanged(target ceremonyTarget, reason string) error {
 	fmt.Fprintf(a.stderr, "configuration unchanged: %s\n", Sanitize(reason))
-	fmt.Fprint(a.stderr, "nothing was stored; \"babel analysis profile show\" prints the profile this machine still has\n")
+	fmt.Fprintf(a.stderr, "nothing was stored; %q prints the configuration this machine still has\n", target.show)
+	return errReported
+}
+
+// reportCeremonyUnlaunchable explains an executable that never started, in the
+// ceremony's own terms.
+//
+// reportWorkerFailure is the report for a worker that failed a run, and its
+// account — nothing published, no source repository touched, re-run with the
+// same --run-id — describes an exploration a configuration ceremony never
+// attempted. What happened here is that the operator asked for an interface
+// and did not get one.
+func (a *app) reportCeremonyUnlaunchable(binary string, err error, target ceremonyTarget) error {
+	fmt.Fprintf(a.stderr, `babel: the Code executable could not be launched, so no configuration was made.
+
+  worker: %s
+  reason: %s
+
+Nothing was stored; %q prints the configuration this machine still has.
+`, Sanitize(binary), Sanitize(err.Error()), target.show)
 	return errReported
 }
 

@@ -119,6 +119,9 @@ Commands:
   cookbook check              check recipe versions against their bodies
   analysis profile configure  hand this terminal to Code's configuration
   analysis profile show       show the stored Code profile reference
+  titles configure            hand this terminal to Code and store the
+                              reference title inference uses
+  titles show                 show the stored title-inference reference
   conformance WORKER          run the analysis-worker contract suite
 
 A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one. It may
@@ -220,6 +223,8 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.explore(ctx, args[1:])
 	case "analysis":
 		return a.analysis(ctx, args[1:])
+	case "titles":
+		return a.titlesCmd(ctx, args[1:])
 	case "hypotheses":
 		return a.hypothesesCmd(ctx, args[1:])
 	case "hypothesis":

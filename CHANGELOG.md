@@ -211,6 +211,63 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   that has never been configured by an operator now fails that obligation —
   which is the honest reading of it.
 
+- **Title inference goes through the same ceremony, and refuses until it has
+  (issue #86, decision 2).** `babel sessions title infer` took the titler as a
+  flag, and the reasoning written beside it was that a stored titler is one
+  cron entry away from being automatic, so the spend should be chosen at every
+  invocation. That answered a different question than the one the operator's
+  principle asks. Typing a command on a command line is not a person deciding
+  which model reads his sessions — an agent types flags, and nothing in the
+  record afterwards can tell the two apart. What an agent cannot do is sit at a
+  terminal. So the model that writes titles is now chosen exactly the way the
+  analysis profile is, once, in Code's own interface.
+  - **`babel titles configure` is that ceremony, reusing the launch #91
+    introduced.** `WORKER [ARG]... --configure --result-file PATH` with the
+    operator's terminal on all three streams, the same terminal requirement and
+    one-line refusal, the same dial refusals, the same
+    `$CODE_SELECTION_STATE` removal, and the same rule that an abandoned
+    ceremony leaves the document byte-for-byte as it was. It stores the
+    reference in the settings document's own `titles` block, beside the
+    analysis profile and never inside it: two intentional setups, so
+    configuring one may not decide the other, and each keeps the executable
+    whose interface its operator actually confirmed — a reference means nothing
+    without it, since two Code builds can both hold a profile named `p-3`.
+    `babel titles show` prints the reference, when it was configured, and the
+    launch it implies.
+  - **Unconfigured, `--confirm` refuses before reading a single session.** The
+    refusal names `babel titles configure`, says what that command does, and
+    states that nothing was sent. Scanning the corpus first would spend the
+    operator's time to reach a conclusion the settings document already held.
+  - **Configured, inference uses exactly the stored reference.** The launch is
+    `WORKER [ARG]... --titles --profile ID@REVISION` — the stored executable,
+    the stored arguments, the confirmed profile — and no flag on the invocation
+    contributes to it. `--titler` and `--titler-arg` are gone with the
+    substitution they allowed. The disclosure preview now names the profile the
+    material would go to alongside the launch, because that is the fact that
+    decides whether sending it is acceptable, and each stored title records the
+    launch that produced it, executable and reference together, so attribution
+    survives a later reconfiguration of a document that is meant to be
+    reconfigurable.
+  - **The gate is on new spend, not on what was already paid for.** The five
+    titles the operator's machine already holds keep their value and their
+    honest `inferred` provenance, `sessions title clear` still withdraws them,
+    and the preview — which reads local files and sends nothing — still runs on
+    an unconfigured machine, because the operator deciding whether to configure
+    this at all is exactly the person who needs to see what it would send.
+  - `$CODE_SELECTION_STATE` is dropped from the titler's environment too, with
+    a line saying so: a dial that overrode the profile an operator confirmed
+    would defeat the ceremony from the other end.
+
+  Verified against a real pty and a stub worker answering both launches: the
+  terminal refusal on captured buffers, a pipe, and `/dev/null`; the handover
+  storing the reference while leaving the analysis block untouched, and the
+  analysis ceremony leaving the titles block untouched; five abandoned-ceremony
+  paths, each naming `babel titles show` rather than the other configuration;
+  the unconfigured refusal recording nothing while a previously inferred title
+  keeps displaying as `inferred`; and a configured end-to-end run whose
+  recorded argv is the stored launch, whose response is stored with the
+  launch's own attribution, and whose title reaches `sessions list`.
+
 ### Added
 
 - **What every session cost, recomputed from the transcript Babel already

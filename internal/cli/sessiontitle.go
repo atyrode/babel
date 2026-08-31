@@ -42,11 +42,9 @@ import (
 // first credential and open a second egress path with no disclosure surface.
 //
 // What is left is the smallest thing that keeps every one of those
-// disciplines: the operator names an external command, Babel shows him exactly
-// what would be sent, and only on --confirm does it hand that material over.
-// The titler is a flag and not a stored setting on purpose. A stored titler is
-// one cron entry away from being automatic, and the entire point of this path
-// is that the spend is chosen each time it happens.
+// disciplines: the operator configures one profile in Code's own interface
+// (titlescmd.go), Babel shows him exactly what would be sent, and only on
+// --confirm does it hand that material to the launch he confirmed.
 
 const sessionsTitleUsage = `Usage: babel sessions title <command> [flags]
 
@@ -65,22 +63,27 @@ Run "babel sessions title <command> -h" for a command's flags.
 
 const sessionsTitleInferUsage = `Usage: babel sessions title infer [flags] [SELECTOR...]
 
-Sends a bounded excerpt of selected sessions to an external command that
-returns a title for each, and records the results as "inferred".
+Sends a bounded excerpt of selected sessions to the model an operator
+configured for titles, and records the results as "inferred".
 
 This is the only path in babel that pays a provider for session metadata, and
 nothing triggers it but this command: it is never part of a scan, a describe,
-"archive push", or the hourly timer. Two gates stand in front of it.
+"archive push", or the hourly timer. Two gates stand in front of it, and they
+ask different questions.
 
-First, disclosure. Without --confirm nothing is launched and nothing leaves the
-machine: the command prints the titler it would run, how many sessions it would
-send, how many bytes of session text that is, and the excerpt of each one, then
-exits. Read it, then decide.
+First, configuration. The profile that writes titles is chosen once, in Code's
+own interface, by an operator holding the terminal:
 
-Second, the titler is named here rather than configured. Babel stores no titler
-command, no provider, no model and no credential - the same boundary the
-analysis worker keeps (SPEC.md 2.6) - so a spend cannot be arranged once and
-then happen unattended.
+  babel titles configure
+
+Until that has happened --confirm refuses. Afterwards inference uses exactly
+the stored reference - no flag here names a model, a provider or a command -
+and changing it means running that ceremony again (issue #86).
+
+Second, disclosure. Without --confirm nothing is launched and nothing leaves
+the machine: the command prints the launch it would run, the profile it would
+run under, how many sessions it would send, how many bytes of session text
+that is, and the excerpt of each one, then exits. Read it, then decide.
 
 The titler protocol is one JSON object per line in each direction. Babel writes
 {"selector","harness","workspace","excerpt"} on stdin and reads
@@ -93,8 +96,6 @@ the harness itself recorded is never replaced, because babel's guess does not
 outrank the session's own record.
 
 Flags:
-  --titler CMD         command to run (required with --confirm)
-  --titler-arg ARG     one argument for the titler; repeat for more
   --harness NAME       restrict to one harness: omp, codex, or claude
   --roots DIR[,DIR]    scan these roots instead of the adapters' defaults
   --limit N            send at most N sessions (default 20, 0 for no bound)
@@ -106,7 +107,8 @@ Flags:
 
 Inferred titles are durable: they live in the durable database beside the
 analysis records, not in the rebuildable session catalog, because a title a
-model wrote is the one value here that a rescan cannot recover.
+model wrote is the one value here that a rescan cannot recover. They survive
+every reconfiguration of the profile that wrote them.
 `
 
 const sessionsTitleClearUsage = `Usage: babel sessions title clear (--all | SELECTOR...) --yes
@@ -190,7 +192,12 @@ type inferCandidate struct {
 // inferPlan is what a --json invocation without --confirm returns: exactly the
 // material that would be sent, and nothing has been sent.
 type inferPlan struct {
+	// Titler is the argv that would run, and Profile the reference it would
+	// run under. Both are empty exactly when no operator has configured
+	// title inference on this machine, which is the state in which --confirm
+	// refuses.
 	Titler       []string         `json:"titler,omitempty"`
+	Profile      string           `json:"profile,omitempty"`
 	Confirmed    bool             `json:"confirmed"`
 	Sessions     []inferCandidate `json:"sessions"`
 	TotalBytes   int              `json:"total_bytes"`
@@ -214,9 +221,6 @@ func (a *app) sessionsTitleInfer(ctx context.Context, args []string) error {
 	var sf scanFlags
 	sf.bindHarness(c)
 	sf.bindRoots(c)
-	titler := c.fs.String("titler", "", "command that writes titles")
-	var titlerArgs stringList
-	c.fs.Var(&titlerArgs, "titler-arg", "one argument for the titler; repeat for more")
 	limit := c.fs.Int("limit", defaultInferLimit, "send at most this many sessions")
 	untitledOnly := c.fs.Bool("untitled-only", false, "offer only sessions with no title")
 	excerptRunes := c.fs.Int("excerpt-runes", defaultExcerptRunes, "bound each excerpt")
@@ -232,8 +236,23 @@ func (a *app) sessionsTitleInfer(ctx context.Context, args []string) error {
 	if *excerptRunes <= 0 {
 		return c.usagef("--excerpt-runes must be positive")
 	}
-	if *confirm && strings.TrimSpace(*titler) == "" {
-		return c.usagef("--confirm needs --titler: babel has no titler of its own and stores none")
+
+	settings, err := loadAnalysisSettings()
+	if err != nil {
+		return err
+	}
+	titler := settings.Titles
+	// An unconfigured machine is refused before a single session is read.
+	// Scanning the corpus first would spend the operator's time to reach a
+	// conclusion the settings document already had, and the refusal is the
+	// same either way: no model has been chosen for this.
+	//
+	// The refusal is on --confirm alone. A plan is a local reading of local
+	// files that sends nothing, and an operator deciding whether this feature
+	// is worth configuring is exactly the person who should be able to see
+	// what it would send.
+	if titler == nil && *confirm {
+		return a.reportTitlesUnconfigured()
 	}
 
 	d, err := babelDirs()
@@ -258,8 +277,9 @@ func (a *app) sessionsTitleInfer(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(*titler) != "" {
-		plan.Titler = append([]string{*titler}, titlerArgs...)
+	if titler != nil {
+		plan.Titler = sanitizeAll(titler.command())
+		plan.Profile = Sanitize(titler.ref().String())
 	}
 	plan.Confirmed = *confirm
 
@@ -277,7 +297,7 @@ func (a *app) sessionsTitleInfer(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	results, err := a.runTitler(ctx, plan, *titler, titlerArgs, *timeout, d.durableDir())
+	results, err := a.runTitler(ctx, plan, titler, *timeout, d.durableDir())
 	plan.Results = results
 	for _, r := range results {
 		if r.Error == "" {
@@ -416,8 +436,13 @@ func truncateRunes(s string, n int) string {
 	return string([]rune(s)[:n])
 }
 
-// runTitler launches the titler, streams the plan to it, and records the
-// titles it returns.
+// runTitler launches the configured titler, streams the plan to it, and
+// records the titles it returns.
+//
+// The launch is the stored one, whole: the executable an operator confirmed a
+// profile in, that profile's reference, and nothing this invocation chose. The
+// one variable that could override the reference is dropped from the child's
+// environment for the same reason the ceremony drops it (modelEnv).
 //
 // Every response is checked against what was actually sent. A titler is an
 // external command whose output is untrusted in the same way a session log is,
@@ -427,8 +452,7 @@ func truncateRunes(s string, n int) string {
 func (a *app) runTitler(
 	ctx context.Context,
 	plan inferPlan,
-	titler string,
-	titlerArgs []string,
+	titler *titlesRecord,
 	timeout time.Duration,
 	durableDir string,
 ) ([]inferResult, error) {
@@ -443,7 +467,13 @@ func (a *app) runTitler(
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, titler, titlerArgs...)
+	cmd := exec.CommandContext(ctx, titler.Worker, titler.launch()...)
+	env, dropped := modelEnv()
+	cmd.Env = env
+	if dropped {
+		a.diagf("ignoring $%s: titles run under the profile %s, which the operator configured\n",
+			selectionStateEnv, Sanitize(titler.ref().String()))
+	}
 	cmd.Stderr = a.stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -453,8 +483,14 @@ func (a *app) runTitler(
 	if err != nil {
 		return nil, fmt.Errorf("titler stdout: %w", err)
 	}
+	// The attribution stored with each title is the launch that produced it,
+	// executable and reference together. The settings document is
+	// reconfigurable and the row is not: a title has to keep saying what wrote
+	// it after the operator has chosen something else.
+	attribution := titler.Worker + " " + titler.ref().String()
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start titler %s: %w", Sanitize(titler), err)
+		return nil, fmt.Errorf("start the configured titler %s: %w (\"babel titles show\" prints the stored launch, \"babel titles configure\" replaces it)",
+			Sanitize(titler.Worker), err)
 	}
 
 	offered := make(map[string]struct{}, len(plan.Sessions))
@@ -492,7 +528,7 @@ func (a *app) runTitler(
 			results = append(results, inferResult{Error: "titler wrote a line that is not a response object"})
 			continue
 		}
-		results = append(results, a.recordInferred(ctx, store, offered, resp, titler))
+		results = append(results, a.recordInferred(ctx, store, offered, resp, attribution))
 	}
 	scanErr := scanner.Err()
 	waitErr := cmd.Wait()
@@ -505,7 +541,7 @@ func (a *app) runTitler(
 		return results, fmt.Errorf("read titler output: %w", scanErr)
 	}
 	if waitErr != nil {
-		return results, fmt.Errorf("titler %s failed: %w", Sanitize(titler), waitErr)
+		return results, fmt.Errorf("titler %s failed: %w", Sanitize(attribution), waitErr)
 	}
 	return results, nil
 }
@@ -555,6 +591,7 @@ func (a *app) recordInferred(
 func (a *app) printInferPlan(plan inferPlan) error {
 	rows := [][2]string{
 		{"titler", orMissing(Sanitize(strings.Join(plan.Titler, " ")))},
+		{"profile", orMissing(plan.Profile)},
 		{"sessions to send", fmt.Sprint(len(plan.Sessions))},
 		{"session text to send", fmt.Sprintf("%d bytes", plan.TotalBytes)},
 		{"skipped, harness recorded a title", fmt.Sprint(plan.Skipped)},
@@ -575,6 +612,14 @@ func (a *app) printInferPlan(plan inferPlan) error {
 		for line := range strings.SplitSeq(s.Excerpt, "\n") {
 			fmt.Fprintf(a.stdout, "  | %s\n", Sanitize(line))
 		}
+	}
+	// The closing line is the operator's next move, so it names the gate that
+	// is actually in his way: the ceremony when nothing is configured, and
+	// --confirm once something is.
+	if plan.Profile == "" {
+		fmt.Fprint(a.stdout, "\nnothing has been sent, and --confirm would refuse: no title-inference profile is configured.\n")
+		fmt.Fprint(a.stdout, "run \"babel titles configure\" to choose one in Code's own interface, then re-run with --confirm.\n")
+		return nil
 	}
 	fmt.Fprint(a.stdout, "\nnothing has been sent. re-run with --confirm to send it.\n")
 	return nil
