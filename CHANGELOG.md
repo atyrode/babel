@@ -38,6 +38,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Three draft lenses: where the memory, the tests, and the time actually go
+  (operator direction 2026-08-31).** The cookbook gains `document-ceremony`,
+  `test-economics`, and `time-and-spend`, each shipped `default: false` under
+  §5.5's draft discipline — runnable by name, promotable once corpus
+  evaluation sharpens their overlap with the five default lenses.
+  - `document-ceremony` follows durable memory through its whole observable
+    lifecycle — promise, write, fetch, abidance, update, rot — and prices
+    ceremony against the fetches that actually happened. Its costliest class
+    is `stale-followed`: a document that was trusted and wrong.
+  - `test-economics` reads tests as purchases: what an assertion defends,
+    which failures redirected source and which only ever edited expected
+    values, what suites measurably cost against their recorded payouts. The
+    hindsight-prosecution guard is explicit: after any bug, "a test was
+    missing" is always true and never useful.
+  - `time-and-spend` decomposes recorded wall time and token spend into
+    named, measured sinks — recurring waits, context reconstruction, retry
+    loops, serialized independence — with the hard boundary that thinking is
+    never priced, and every rate carries its window and arithmetic. It leans
+    on the usage-metadata join (#89/#92) for the token half.
 - **Every Babel record can now cite every other, and the citation is a record
   (operator direction 2026-08-31, issue #113).** Babel had three ad-hoc ways to
   say that one thing rests on another: an evidence locator inside an

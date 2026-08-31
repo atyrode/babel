@@ -22,6 +22,11 @@
       "digest": "sha256:9b236e44f01b437022e5206a971e9bce7bb56b6e2daace3565a8ba69f0fa940f"
     },
     {
+      "id": "document-ceremony",
+      "version": 1,
+      "digest": "sha256:2c9f1a03238646ae4b3067632a6253f2cdd2c0404578b0d740485328dae5bc24"
+    },
+    {
       "id": "durable-operator-model",
       "version": 1,
       "digest": "sha256:11f61bac4ae174c8cf8cfc20836a430b5f2f1cde49ad9a552ae4834c26f550db"
@@ -55,6 +60,16 @@
       "id": "security-trust-boundaries",
       "version": 2,
       "digest": "sha256:36e01f32420d4cfeed8d058de71f00d3305d9b9c6cd3954f38c0a65a133c09b3"
+    },
+    {
+      "id": "test-economics",
+      "version": 1,
+      "digest": "sha256:5b676eda9588bb5b48b0acda2cc29f913769149bdc2c30606553eeefb778c885"
+    },
+    {
+      "id": "time-and-spend",
+      "version": 1,
+      "digest": "sha256:6ae7c854326e3a175ca67dd5ec71139fd0e283bab2119e50483d664d9896865a"
     }
   ]
 }

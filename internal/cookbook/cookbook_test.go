@@ -27,6 +27,7 @@ var shipped = []struct {
 	{id: "babel-tunes-itself", kind: KindMeta, enabled: false, minScope: 2},
 	{id: "code-health-comprehensibility", kind: KindLens, enabled: true, minScope: 3},
 	{id: "decision-quality-operational-risk", kind: KindLens, enabled: false, minScope: 3},
+	{id: "document-ceremony", kind: KindLens, enabled: false, minScope: 3},
 	{id: "durable-operator-model", kind: KindLens, enabled: false, minScope: 2},
 	{id: "effective-patterns", kind: KindLens, enabled: true, minScope: 3},
 	{id: "human-agent-coordination", kind: KindLens, enabled: true, minScope: 2},
@@ -34,6 +35,8 @@ var shipped = []struct {
 	{id: "outcome-integrity", kind: KindLens, enabled: true, minScope: 3},
 	{id: "reusable-practice-capability-leverage", kind: KindLens, enabled: false, minScope: 3},
 	{id: "security-trust-boundaries", kind: KindLens, enabled: true, minScope: 3},
+	{id: "test-economics", kind: KindLens, enabled: false, minScope: 3},
+	{id: "time-and-spend", kind: KindLens, enabled: false, minScope: 2},
 }
 
 // defaultLenses is §5.5's list of the five lenses Phase B fully authors and
