@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
@@ -397,6 +398,79 @@ func TestAStoreWithNoResolversAcceptsNothing(t *testing.T) {
 	if !errors.Is(err, ErrUnknownNamespace) {
 		t.Fatalf("append against an unwired store: %v, want ErrUnknownNamespace", err)
 	}
+}
+
+// TestPlaintextColumnsMatchAllowlist pins the §9 split locally, the way
+// internal/frontier's and internal/disposition's own tests pin theirs: this
+// package's table carries exactly one payload_json column holding everything
+// publication seals, and its remaining columns are only what §9's plaintext
+// allowlist admits - identifiers, kinds, a schema version, an actor and a
+// timestamp.
+//
+// It is pointed at the live schema rather than at the migration's text, so a
+// column added later fails here before it can reach migrations/0008's
+// plaintext row. The note is the case that matters: it is content, it lives in
+// the payload, and a column of it would pass every other test in this file.
+func TestPlaintextColumnsMatchAllowlist(t *testing.T) {
+	f := newLocalFixture(t)
+	want := map[string][]string{
+		"reference_edge": {
+			"id", "edge_kind", "from_kind", "from_id", "to_kind", "to_id",
+			"actor_kind", "actor_ref", "schema_version", "created_at",
+		},
+	}
+
+	tables := queryStrings(t, f.store, `SELECT name FROM sqlite_master
+		WHERE type = 'table' AND name LIKE 'reference_%' ORDER BY name`)
+	if len(tables) != len(want) {
+		t.Fatalf("this package holds tables %v, want %d described here", tables, len(want))
+	}
+	for _, table := range tables {
+		expected, described := want[table]
+		if !described {
+			t.Fatalf("table %s is not described in the plaintext allowlist", table)
+		}
+		var plaintext []string
+		payloads := 0
+		for _, column := range queryStrings(t, f.store,
+			`SELECT name FROM pragma_table_info(?)`, table) {
+			if column == "payload_json" {
+				payloads++
+				continue
+			}
+			plaintext = append(plaintext, column)
+		}
+		if payloads != 1 {
+			t.Fatalf("%s has %d payload columns, want exactly 1", table, payloads)
+		}
+		slices.Sort(plaintext)
+		wantSorted := slices.Clone(expected)
+		slices.Sort(wantSorted)
+		if !slices.Equal(plaintext, wantSorted) {
+			t.Fatalf("%s plaintext columns = %v, want %v", table, plaintext, wantSorted)
+		}
+	}
+}
+
+func queryStrings(t *testing.T, store *Store, query string, args ...any) []string {
+	t.Helper()
+	rows, err := store.db.QueryContext(t.Context(), query, args...)
+	if err != nil {
+		t.Fatalf("query %s: %v", query, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			t.Fatalf("scan %s: %v", query, err)
+		}
+		out = append(out, value)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("query %s: %v", query, err)
+	}
+	return out
 }
 
 // Nil injection is the documented degrade: a surface wired without an edge
