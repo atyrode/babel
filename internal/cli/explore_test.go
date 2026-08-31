@@ -8,6 +8,7 @@ import (
 
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/explore"
+	"github.com/atyrode/babel/internal/research"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
 )
@@ -183,4 +184,55 @@ func TestExplicitlyNamedDraftRecipeRuns(t *testing.T) {
 	}
 	assertIDs(t, "recipes briefed to the worker", briefedIDs(set), []string{draft})
 	assertIDs(t, "recipes the receipt attests", receiptRecipes(set), refsOf(t, full, draft))
+}
+
+// TestPublicResearchIsGrantedOnlyWhenSourcesAreFixed covers the flag's whole
+// contract (#75): no URLs is no grant, a URL grants the capability with the
+// facility version the receipt attests, and a URL this facility will not fetch
+// fails the command before anything is launched.
+func TestPublicResearchIsGrantedOnlyWhenSourcesAreFixed(t *testing.T) {
+	base := func() explore.Config {
+		return explore.Config{
+			Grant: worker.Grant{
+				Capabilities: []worker.Capability{worker.CapabilityCorpusSearch},
+				Disclosure:   worker.DisclosureLocal,
+			},
+			Capabilities: runstore.CapabilityVersions{Tool: "babel/test"},
+		}
+	}
+
+	cfg := base()
+	if err := grantResearch(&cfg, nil); err != nil {
+		t.Fatalf("grantResearch with no sources: %v", err)
+	}
+	if cfg.Research != nil || cfg.Capabilities.PublicResearch != "" ||
+		cfg.Grant.Allows(worker.CapabilityPublicResearch) {
+		t.Errorf("a run with no fixed sources was granted public research: %+v", cfg.Grant)
+	}
+
+	cfg = base()
+	if err := grantResearch(&cfg, []string{"https://example.com/spec"}); err != nil {
+		t.Fatalf("grantResearch: %v", err)
+	}
+	if !cfg.Grant.Allows(worker.CapabilityPublicResearch) {
+		t.Error("fixing a source did not grant the capability")
+	}
+	if cfg.Capabilities.PublicResearch != research.Version {
+		t.Errorf("facility version = %q, want %q", cfg.Capabilities.PublicResearch, research.Version)
+	}
+	if cfg.Research == nil {
+		t.Error("the capability was granted with no broker behind it")
+	}
+
+	cfg = base()
+	err := grantResearch(&cfg, []string{"https://user:secret@example.com/spec"})
+	if err == nil {
+		t.Fatal("a credentialed source URL was accepted")
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Errorf("the refusal quoted the credential it refused: %v", err)
+	}
+	if cfg.Grant.Allows(worker.CapabilityPublicResearch) {
+		t.Error("a refused source still widened the grant")
+	}
 }

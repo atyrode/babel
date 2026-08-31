@@ -19,6 +19,7 @@ import (
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/preflight"
 	"github.com/atyrode/babel/internal/presence"
+	"github.com/atyrode/babel/internal/research"
 	"github.com/atyrode/babel/internal/review"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
@@ -43,6 +44,14 @@ duplicating it.
 Nothing here publishes: no issue is opened, no source repository is written,
 and no proposal is applied (SPEC.md §4.6, decision 13).
 
+Public research is off unless granted. Passing --public-research URL grants
+the run brokered egress to exactly the URLs named and nothing else: the
+broker builds every request from the operator's own URL, refuses userinfo,
+fragments, non-public destinations and unsafe redirects, and records each
+fetch in the receipt with its URL, time, redirect chain and content digest
+(SPEC.md §2.6). A worker addresses a source by the opaque id Babel minted
+for it, never by a URL of its own.
+
 Flags:
   --preparation ID     required: the corpus scope to explore
   --recipe ID          cookbook recipe to run; repeatable. Naming one runs
@@ -56,6 +65,10 @@ Flags:
   --run-id ID          resume this run instead of starting a new one
   --develop N          cap the candidates developed in this pass
   --retrievals N       cap the corpus searches served
+  --public-research URL
+                       grant brokered public research and fix this source;
+                       repeatable. Without it the capability is not granted
+  --fetches N          cap the public documents fetched (default 8)
   --profile REF        Code profile reference "ID" or "ID@REVISION"
                        (default: the one "analysis profile configure" stored)
   --worker PATH        Code executable speaking babel.analysis-worker
@@ -132,7 +145,7 @@ type duplicateRow struct {
 func (a *app) explore(ctx context.Context, args []string) error {
 	c := newCmd("explore", exploreUsage)
 	var wf workerFlags
-	var recipes, roots repeatedFlag
+	var recipes, roots, sources repeatedFlag
 	var sf scanFlags
 	wf.bind(c.fs)
 	preparation := c.fs.String("preparation", "", "the corpus scope to explore")
@@ -144,6 +157,8 @@ func (a *app) explore(ctx context.Context, args []string) error {
 	runID := c.fs.String("run-id", "", "resume this run instead of starting a new one")
 	develop := c.fs.Int("develop", 0, "cap the candidates developed in this pass")
 	retrievals := c.fs.Int("retrievals", 0, "cap the corpus searches served")
+	c.fs.Var(&sources, "public-research", "grant brokered public research and fix this source URL; repeatable")
+	fetches := c.fs.Int("fetches", 0, "cap the public documents fetched")
 	profile := c.fs.String("profile", "", `Code profile reference "ID" or "ID@REVISION"`)
 	asJSON := c.fs.Bool("json", false, "emit the outcome as JSON")
 	if err := c.parse(a, args); err != nil {
@@ -223,7 +238,8 @@ func (a *app) explore(ctx context.Context, args []string) error {
 		scanRoots:  sf.rootList(),
 		challenge:  *challenge,
 		synthesize: *synthesize,
-		budget:     explore.Budget{Develop: *develop, Retrievals: *retrievals},
+		budget:     explore.Budget{Develop: *develop, Retrievals: *retrievals, Fetches: *fetches},
+		research:   sources,
 		presence:   announcer,
 	})
 	if outcome == nil {
@@ -266,6 +282,13 @@ type explorePlan struct {
 	challenge  bool
 	synthesize bool
 	budget     explore.Budget
+	// research are the public source URLs the operator fixed for this run
+	// (#75). Empty is the default and means the run is not granted public
+	// research at all: the capability follows the sources rather than being a
+	// separate switch, because a grant with nothing fixed under it would
+	// authorize egress to nowhere and read in a receipt as if it had
+	// authorized egress.
+	research []string
 	// presence announces this run to the fleet, nil when this machine has no
 	// shared catalog to announce into (#118). It travels on the plan rather
 	// than being opened here because a conductor loop opens one store for its
@@ -306,18 +329,20 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 
 	wcfg := p.worker
 	wcfg.Diagnostics = &sanitizingWriter{w: a.stderr, prefix: "worker: "}
-	controller, err := explore.New(explore.Config{
+	cfg := explore.Config{
 		Preparation: p.prep,
 		Recipes:     p.recipes,
-		// Corpus search is the one facility this build brokers: §14 defers
-		// the evidence-tool and public-research broker protocols, and a
-		// sandbox or repository grant would name a facility with no version
-		// to record. Granting only what Babel can actually serve is what
-		// keeps the receipt's containment answer true.
+		// Corpus search is granted unconditionally; public research is
+		// added below when the operator fixed sources for it. §14 still
+		// defers the repository materialization protocol, and a sandbox or
+		// repository grant would name a facility with no version to record.
+		// Granting only what Babel can actually serve is what keeps the
+		// receipt's containment answer true.
 		Grant: worker.Grant{
 			Capabilities: []worker.Capability{worker.CapabilityCorpusSearch},
 			Disclosure:   worker.DisclosureLocal,
 		},
+		Capabilities: runstore.CapabilityVersions{Tool: "babel/" + readBuildIdentity().Version},
 		Profile:      p.profile,
 		Worker:       wcfg,
 		Frontier:     state.frontier,
@@ -339,14 +364,16 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		// in. It is on the same terms as the two above: a presence write can
 		// never fail or delay this run, so an absent announcer changes nothing
 		// except who can see the run happening.
-		Presence:     p.presence,
-		Inputs:       inputs,
-		Capabilities: runstore.CapabilityVersions{Tool: "babel/" + readBuildIdentity().Version},
-	})
+		Presence: p.presence,
+		Inputs:   inputs,
+	}
+	if err := grantResearch(&cfg, p.research); err != nil {
+		return exploreResult{}, nil, err
+	}
+	controller, err := explore.New(cfg)
 	if err != nil {
 		return exploreResult{}, nil, err
 	}
-
 	a.diagf("exploring %s over %d %s as run %s (%s)...\n",
 		Sanitize(string(p.prep.ID)), len(p.prep.Selection),
 		plural(len(p.prep.Selection), "session", "sessions"), Sanitize(p.runID),
@@ -373,6 +400,32 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 	// exactly what a reviewer has to look at.
 	enrolled := a.enrol(ctx, state.review, outcome)
 	return exploreOutcome(p.prep, p.profile, p.recipes, outcome, enrolled), outcome, runErr
+}
+
+// grantResearch turns the operator's --public-research URLs into the run's
+// research grant: the capability, the facility version the receipt attests,
+// and the broker behind it (#75). No URLs is no grant at all, which is why
+// there is no separate switch — a grant with nothing fixed under it would
+// authorize egress to nowhere and read in a receipt as if it had authorized
+// egress.
+//
+// The broker is built here rather than inside internal/explore because a
+// mistyped URL must fail the command before a worker is launched. The whole
+// assignment lives inside the branch so a nil broker can never reach the
+// interface field: a nil pointer in an interface is not a nil interface, and
+// internal/explore would read one as a facility that is present.
+func grantResearch(cfg *explore.Config, urls []string) error {
+	if len(urls) == 0 {
+		return nil
+	}
+	broker, err := research.New(research.Config{URLs: urls})
+	if err != nil {
+		return err
+	}
+	cfg.Grant.Capabilities = append(cfg.Grant.Capabilities, worker.CapabilityPublicResearch)
+	cfg.Capabilities.PublicResearch = research.Version
+	cfg.Research = broker
+	return nil
 }
 
 // idList renders a set of record identifiers for a document whose consumer

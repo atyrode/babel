@@ -74,6 +74,7 @@ import (
 	"github.com/atyrode/babel/internal/preflight"
 	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/reference"
+	"github.com/atyrode/babel/internal/research"
 	"github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/sync"
 	"github.com/atyrode/babel/internal/worker"
@@ -122,6 +123,14 @@ const (
 	RedactionPolicyVersion  = "babel.redaction/1"
 	DisclosurePolicyVersion = "babel.disclosure/1"
 )
+
+// DefaultFetches is the public-research ceiling a run gets when its operator
+// named none. Eight documents is enough for an investigator to read a
+// specification section, two upstream changelogs and a handful of references
+// while staying a number an operator can review in a receipt; a run that needs
+// more says so, per run, which is the same shape §2.6 gives every other
+// boundary.
+const DefaultFetches = 8
 
 // Failure codes this control plane records in a receipt. §6.5 requires the
 // receipt to record failures, and a code is what makes one actionable: an
@@ -248,6 +257,26 @@ type Config struct {
 	// rather than answered with nothing.
 	Index *index.Index
 
+	// Research is the public-research broker: the facility behind
+	// worker.CapabilityPublicResearch and the only path from a run to the
+	// network (#75, §2.6).
+	//
+	// It is required exactly when the grant carries that capability and
+	// forbidden when it does not, and New enforces both directions. A
+	// granted capability with no broker would deny every fetch after the
+	// operator authorized egress, and a broker with no grant would sit there
+	// unreachable while the operator believed research was in scope — both
+	// are the run silently doing something other than what was authorized,
+	// which is the failure mode a capability gate exists to prevent.
+	//
+	// It is an interface so this package can be tested against a stand-in:
+	// SPEC.md §10 requires broker tests to need no network, and the real
+	// broker's refusals are proven against real sockets in internal/research.
+	// Assign only a non-nil implementation — a nil *research.Broker stored in
+	// this field is not a nil interface, and the check below would read it as
+	// a facility that is present.
+	Research ResearchBroker
+
 	// References mints the typed reference graph's edges for the two link
 	// forms only a run knows about: which session a claim's evidence came
 	// from, and which injected prior outputs a record grew up beside (#113).
@@ -355,6 +384,9 @@ func New(cfg Config) (*Controller, error) {
 	if err := validateFacilities(cfg.Grant, cfg.Capabilities); err != nil {
 		return nil, err
 	}
+	if err := validateResearchGrant(cfg.Grant, cfg.Research); err != nil {
+		return nil, err
+	}
 	if err := validateSelection(cfg.Preparation, cfg.Inputs); err != nil {
 		return nil, err
 	}
@@ -398,6 +430,35 @@ func validateFacilities(grant worker.Grant, versions run.CapabilityVersions) err
 		if version == "" {
 			return fmt.Errorf("explore: capability %q granted without its facility version", c)
 		}
+	}
+	return nil
+}
+
+// ResearchBroker is the public-research facility as this package uses it: the
+// run's fixed source set, and one fetch by opaque identifier.
+//
+// It is declared here rather than in internal/research because it is the
+// consumer's view. Everything that makes the facility safe — the refusals, the
+// address policy, the redirect ceiling — belongs to the implementation and is
+// not this package's to restate; what this package needs is the two calls it
+// makes and the provenance it records.
+type ResearchBroker interface {
+	// Catalog is what this run may reach.
+	Catalog() research.Catalog
+	// Fetch reads one fixed source by the identifier the catalog gave it.
+	Fetch(ctx context.Context, id string) (research.Document, error)
+}
+
+// validateResearchGrant refuses a run whose research grant and research broker
+// disagree in either direction. See Config.Research for why both are refusals
+// rather than one being a tolerable default.
+func validateResearchGrant(grant worker.Grant, broker ResearchBroker) error {
+	granted := grant.Allows(worker.CapabilityPublicResearch)
+	switch {
+	case granted && broker == nil:
+		return fmt.Errorf("explore: public research is granted with no broker behind it")
+	case !granted && broker != nil:
+		return fmt.Errorf("explore: a public-research broker was supplied for a run that does not grant it")
 	}
 	return nil
 }
@@ -458,6 +519,13 @@ type Budget struct {
 	// Retrievals caps the corpus searches the run serves. Zero is unbounded
 	// within the worker's own tool-request limit.
 	Retrievals int
+	// Fetches caps the public documents the run's research broker fetches.
+	// Zero is DefaultFetches rather than unbounded, which is the one place
+	// this type treats absence as a number: a corpus search reads a local
+	// index, and every fetch is an observable external effect against
+	// someone else's host (§1), so a run whose operator named no ceiling
+	// gets the conservative one instead of none.
+	Fetches int
 }
 
 // RecordEvent reports one durable record as it is written, so an operator's
@@ -871,6 +939,22 @@ func (c *Controller) thresholds() preflight.Thresholds {
 		return *c.cfg.Thresholds
 	}
 	return preflight.DefaultThresholds()
+}
+
+// fetchBudget is the public-research ceiling one stage runs under. Absence is
+// DefaultFetches rather than "unbounded" — see Budget.Fetches — and it is
+// resolved here rather than in the broker so that the number the stage
+// enforced is the number this package documents.
+//
+// It is per stage, deliberately. The challenger and the synthesizer are
+// logically separate jobs (§5.4), and a challenger that could not check a
+// source because the exploration had spent the last fetch would be criticizing
+// a conclusion it was denied the evidence to test.
+func (c *Controller) fetchBudget(st *state) int {
+	if st.opt.Budget.Fetches > 0 {
+		return st.opt.Budget.Fetches
+	}
+	return DefaultFetches
 }
 
 // runFailures are the failures the exploration's receipt records: its own,

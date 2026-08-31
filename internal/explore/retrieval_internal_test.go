@@ -63,15 +63,42 @@ func TestUnservedCapabilityDeniesEveryToolName(t *testing.T) {
 	for _, capability := range []worker.Capability{
 		worker.CapabilityRepoRead,
 		worker.CapabilitySandboxExec,
-		worker.CapabilityPublicResearch,
 	} {
-		if worker.ServesTool(capability, worker.ToolSearch) {
-			t.Errorf("%s serves %q, but nothing in this build brokers %s", capability, worker.ToolSearch, capability)
+		for _, tool := range []string{worker.ToolSearch, worker.ToolSources, worker.ToolFetch} {
+			if worker.ServesTool(capability, tool) {
+				t.Errorf("%s serves %q, but nothing in this build brokers %s", capability, tool, capability)
+			}
+			decision := worker.AllowWithinGrant().Authorize(context.Background(),
+				worker.ToolRequest{Capability: capability, Tool: tool})
+			if decision.Allow {
+				t.Errorf("%s allowed tool %q although no facility in this build serves the capability",
+					capability, tool)
+			}
 		}
-		decision := worker.AllowWithinGrant().Authorize(context.Background(),
-			worker.ToolRequest{Capability: capability, Tool: worker.ToolSearch})
-		if decision.Allow {
-			t.Errorf("%s allowed tool %q although no facility in this build serves the capability", capability, worker.ToolSearch)
+	}
+}
+
+// TestPublicResearchServesItsTwoOperationsAndNoOthers is the same discipline
+// from the other side, and it is the assertion that has to change when a
+// facility ships: public-research left the unserved list when internal/research
+// arrived (#75), so what pins it now is the exact pair of names, not their
+// absence.
+func TestPublicResearchServesItsTwoOperationsAndNoOthers(t *testing.T) {
+	for _, tool := range []string{worker.ToolSources, worker.ToolFetch} {
+		if !worker.ServesTool(worker.CapabilityPublicResearch, tool) {
+			t.Errorf("public-research does not serve %q, so the facility behind it is unreachable", tool)
+		}
+	}
+	for _, tool := range []string{worker.ToolSearch, "get", "SOURCES", "fetch ", ""} {
+		if worker.ServesTool(worker.CapabilityPublicResearch, tool) {
+			t.Errorf("public-research serves %q, which no operation of it is named", tool)
+		}
+		decision := (&retrieval{}).Authorize(context.Background(),
+			worker.ToolRequest{Capability: worker.CapabilityPublicResearch, Tool: tool})
+		want := worker.DenyUnservedTool(worker.CapabilityPublicResearch, tool)
+		if decision.Allow || decision.Reason != want.Reason {
+			t.Errorf("tool %q: production said %+v, want the published-name denial %q",
+				tool, decision, want.Reason)
 		}
 	}
 }

@@ -122,6 +122,16 @@ func main() {
 		// built — "-tool-name babel_corpus_search" is, verbatim, the name a
 		// real worker chose for itself while passing every other obligation.
 		toolName = flag.String("tool-name", "", "request this tool name instead of the one the job published for the capability")
+
+		// The public-research path (#75). It is a directive rather than a
+		// capability name in -request-capability because the facility takes
+		// two requests and the second's argument comes out of the first's
+		// answer: a fixture that fetched a source id of its own composing
+		// would be exercising the refusal, not the facility.
+		researchFetch = flag.Bool("research", false,
+			"read the public-research catalog and fetch the first source it names")
+		researchExtra = flag.String("research-extra", "",
+			"add KEY=VALUE to the fetch arguments, modelling a worker that puts its own field in a brokered request")
 	)
 	flag.Var(&resultPayload, "result-payload",
 		"PATH or SELECTOR=PATH; emit that file as the result payload, expanding ${param:KEY}, ${paramitem:KEY:N} and ${paramlist:KEY} from the job's params")
@@ -365,6 +375,9 @@ func main() {
 		// which is the obligation a control plane's authorization tests need
 		// to be able to observe.
 		w.runTool(job, worker.Capability(capability), token, *echoToken)
+	}
+	if *researchFetch {
+		w.runResearch(job, *researchExtra)
 	}
 
 	// Well-behaved paths, selected by the conformance directive the job
@@ -757,7 +770,6 @@ func (f *fake) result(status string, payload map[string]any, leak string) map[st
 // which is exactly how a real worker's invented name survived fourteen of
 // them.
 func (f *fake) runTool(job map[string]any, capability worker.Capability, token string, echo bool) {
-	requestID := fmt.Sprintf("t-%d", len(f.decisions)+1)
 	arguments := map[string]any{"query": f.searchQuery}
 	if f.searchScope != "" {
 		arguments["scope"] = f.searchScope
@@ -768,13 +780,29 @@ func (f *fake) runTool(job map[string]any, capability worker.Capability, token s
 	if echo {
 		arguments["credential"] = token
 	}
+	decision := f.request(capability, f.toolFor(job, capability), arguments)
+	// The evidence the decision carried, if it carried any. A conforming
+	// worker reads it here: the payload is the only thing that tells it what
+	// the corpus holds, and a worker that discards it has been served
+	// evidence and learned nothing.
+	if results, ok := decision["results"].(map[string]any); ok {
+		f.served = results
+	}
+}
+
+// request emits one tool-request, waits for the decision that answers it, and
+// records the verdict. It is the plumbing every requesting path shares so that
+// no path can forget to block for its answer, which is the obligation
+// run/tool-allow grades.
+func (f *fake) request(capability worker.Capability, tool string, arguments map[string]any) map[string]any {
+	requestID := fmt.Sprintf("t-%d", len(f.decisions)+1)
 	f.emit(map[string]any{
 		"type":       worker.MessageToolRequest,
 		"seq":        f.nextSeq(),
 		"time":       time.Now().UTC().Format(time.RFC3339Nano),
 		"request_id": requestID,
 		"capability": string(capability),
-		"tool":       f.toolFor(job, capability),
+		"tool":       tool,
 		"arguments":  arguments,
 		"reason":     "synthetic evidence request",
 	})
@@ -791,14 +819,70 @@ func (f *fake) runTool(job map[string]any, capability worker.Capability, token s
 	verdict, _ := decision["decision"].(string)
 	code, _ := decision["code"].(string)
 	f.decisions = append(f.decisions, strings.TrimSuffix(verdict+":"+code, ":"))
-	// The evidence the decision carried, if it carried any. A conforming
-	// worker reads it here: the payload is the only thing that tells it what
-	// the corpus holds, and a worker that discards it has been served
-	// evidence and learned nothing.
+	f.emit(f.progress("investigate", "continuing after decision "+verdict, nil))
+	return decision
+}
+
+// runResearch exercises the public-research broker the way the facility
+// requires: read the catalog Babel serves, then fetch a source by the opaque
+// identifier that catalog gave it.
+//
+// The identifier is never composed here, and that is the point of the fixture.
+// A URL or an id of the worker's own making is exactly what the broker
+// refuses, so a fixture that invented one would exercise the refusal and prove
+// nothing about the facility. Both tool names come out of the job's published
+// mapping for the same reason runTool's does.
+func (f *fake) runResearch(job map[string]any, extra string) {
+	published := publishedToolNames(job, worker.CapabilityPublicResearch)
+	if len(published) == 0 {
+		f.emit(f.progress("investigate", "public research published no operations", nil))
+		return
+	}
+	sources, fetch := publishedName(published, worker.ToolSources), publishedName(published, worker.ToolFetch)
+	if sources == "" || fetch == "" {
+		f.emit(f.progress("investigate", "public research published no catalog or no fetch", nil))
+		return
+	}
+	decision := f.request(worker.CapabilityPublicResearch, sources, map[string]any{})
+	id := firstResearchSource(decision)
+	if id == "" {
+		f.emit(f.progress("investigate", "the research catalog named no source", nil))
+		return
+	}
+	arguments := map[string]any{"source": id}
+	if key, value, ok := strings.Cut(extra, "="); ok {
+		arguments[key] = value
+	}
+	decision = f.request(worker.CapabilityPublicResearch, fetch, arguments)
 	if results, ok := decision["results"].(map[string]any); ok {
 		f.served = results
 	}
-	f.emit(f.progress("investigate", "continuing after decision "+verdict, nil))
+}
+
+// publishedName returns want when the job published it, and "" otherwise.
+func publishedName(published []string, want string) string {
+	for _, name := range published {
+		if name == want {
+			return name
+		}
+	}
+	return ""
+}
+
+// firstResearchSource reads the identifier of the first source out of a served
+// catalog. It reads the generic map the wire produced rather than a struct
+// Babel defines, for the reason echoJob does: the answer has to be evidence
+// that the served bytes were parsed.
+func firstResearchSource(decision map[string]any) string {
+	results, _ := decision["results"].(map[string]any)
+	sources, _ := results["sources"].([]any)
+	for _, entry := range sources {
+		source, _ := entry.(map[string]any)
+		if id, ok := source["id"].(string); ok && id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 // toolFor picks the tool name to request for capability: the override when the

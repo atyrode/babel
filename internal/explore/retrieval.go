@@ -1,6 +1,7 @@
 package explore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/preflight"
+	"github.com/atyrode/babel/internal/research"
 	"github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
 )
@@ -218,6 +220,13 @@ type Retrieval struct {
 	// says which of them this retrieval was.
 	FrontierHits []index.FrontierHit
 
+	// Document is what a brokered research fetch served, with its
+	// provenance. It is a third field rather than a widened Hits for the
+	// reason FrontierHits is: a fetched document is addressed by URL and
+	// digest, not by a corpus locator or a record id, and Step.Scope says
+	// which of the three this retrieval was.
+	Document *research.Document
+
 	// Served is the payload the worker received, byte for byte. It is kept
 	// verbatim so the §9 boundary is checkable rather than asserted: what
 	// went over the wire is here, what an operator exports is in Step, and
@@ -228,11 +237,11 @@ type Retrieval struct {
 // retrieval is one stage's evidence broker: the Authorizer Babel supplies for
 // the job, and the trace it accumulates while answering.
 //
-// The broker's transport is a separate Phase B gate (§14 defers the exact
-// evidence-tool and public-research protocols), so what this serves is the
-// retrieval itself and the durable trace of it. Nothing here invents a wire
-// that does not exist: a facility this build cannot broker is denied with the
-// reason, and the worker adapts, because a denial is not a termination.
+// The evidence-tool transport is still a separate Phase B gate (§14 defers the
+// exact protocol), so what this serves is the retrieval itself and the durable
+// trace of it. Nothing here invents a wire that does not exist: a facility
+// this build cannot broker is denied with the reason, and the worker adapts,
+// because a denial is not a termination.
 type retrieval struct {
 	index      *index.Index
 	policy     worker.Authorizer
@@ -243,12 +252,29 @@ type retrieval struct {
 	limit      int
 	now        func() time.Time
 
-	// mu guards the trace. Authorize runs on the supervision goroutine
-	// today, but a receipt whose ordering depended on that staying true
-	// would be a latent bug rather than a design.
-	mu     sync.Mutex
-	steps  []run.RetrievalStep
-	served []Retrieval
+	// research is the public-research broker, nil on a run that was not
+	// granted the capability or that fixed no sources. Nil is denied with
+	// that reason rather than answered.
+	research ResearchBroker
+
+	// fetches bounds how many documents one pass may fetch. Egress is
+	// budgeted separately from corpus retrieval because the two spend
+	// different things: a corpus search reads a local index, and a fetch is
+	// an observable external effect (§1) against someone else's host.
+	fetches int
+
+	// mu guards the trace and the two spend counters. Authorize runs on the
+	// supervision goroutine today, but a receipt whose ordering depended on
+	// that staying true would be a latent bug rather than a design.
+	mu sync.Mutex
+	// searched and fetched are what the two budgets are counted against.
+	// len(steps) cannot serve for either: the trace holds both kinds, so a
+	// run that fetched twice would look to the corpus budget like a run that
+	// had searched twice.
+	searched int
+	fetched  int
+	steps    []run.RetrievalStep
+	served   []Retrieval
 }
 
 // Authorize decides one tool request and serves it when it is Babel's to
@@ -270,11 +296,11 @@ func (r *retrieval) Authorize(ctx context.Context, req worker.ToolRequest) worke
 	case worker.CapabilityCorpusSearch:
 		return r.serveSearch(ctx, req)
 	case worker.CapabilityRepoRead:
-		return deny("repository snapshot materialization is not brokered by this build")
+		return deny("repo-read is granted, but repository snapshot materialization is not brokered by this build")
 	case worker.CapabilitySandboxExec:
-		return deny("command and test execution is not brokered by this build")
+		return deny("sandbox-exec is granted, but command and test execution is not brokered by this build")
 	case worker.CapabilityPublicResearch:
-		return deny("the public-research broker is not available to this build")
+		return r.serveResearch(ctx, req)
 	default:
 		return deny(fmt.Sprintf("capability %q has no facility behind it", req.Capability))
 	}
@@ -305,7 +331,7 @@ func (r *retrieval) serveSearch(ctx context.Context, req worker.ToolRequest) wor
 		return deny("no retrieval index is available to this run")
 	}
 	r.mu.Lock()
-	exhausted := r.limit > 0 && len(r.steps) >= r.limit
+	exhausted := r.limit > 0 && r.searched >= r.limit
 	r.mu.Unlock()
 	if exhausted {
 		return deny("the run's retrieval budget is exhausted")
@@ -515,6 +541,7 @@ func (r *retrieval) serve(query string, limit int, hits []index.Hit) (json.RawMe
 		// one case that never needed clarifying.
 		Results: results,
 	}
+	r.searched++
 	r.steps = append(r.steps, step)
 	r.served = append(r.served, Retrieval{Step: step, Hits: served, Served: encoded})
 	return encoded, nil
@@ -714,8 +741,165 @@ func (r *retrieval) serveFrontierHits(query string, limit int, hits []index.Fron
 		At:      r.now(),
 		Records: records,
 	}
+	r.searched++
 	r.steps = append(r.steps, step)
 	r.served = append(r.served, Retrieval{Step: step, FrontierHits: served, Served: encoded})
+	return encoded, nil
+}
+
+// FetchRequest is the whole argument document worker.ToolFetch takes: the
+// opaque identifier of one source this run fixed.
+//
+// One field, and unknown fields are refused. That is the disclosure boundary
+// in the shape of a struct — §2.6 makes URL, query, header and body disclosure
+// sinks, and an argument document with room in it is a channel whatever the
+// broker does with the extra keys. A worker that sends more is told so rather
+// than quietly served, because the alternative is a build where a field
+// nobody reads is nonetheless a field a model can write.
+type FetchRequest struct {
+	Source string `json:"source"`
+}
+
+// serveResearch answers one public-research request.
+//
+// The tool name discipline is internal/worker's, exactly as it is for corpus
+// search: the capability says which facility, the tool says which operation,
+// and an operation this build did not publish is denied rather than guessed
+// at.
+func (r *retrieval) serveResearch(ctx context.Context, req worker.ToolRequest) worker.Decision {
+	if !worker.ServesTool(worker.CapabilityPublicResearch, req.Tool) {
+		return worker.DenyUnservedTool(worker.CapabilityPublicResearch, req.Tool)
+	}
+	if r.research == nil {
+		return deny("no public-research broker is available to this run")
+	}
+	switch req.Tool {
+	case worker.ToolSources:
+		return r.serveSources()
+	case worker.ToolFetch:
+		return r.serveFetch(ctx, req)
+	default:
+		// Unreachable: ServesTool above admits exactly the two names, and
+		// a third would have to be published to reach here. Denying rather
+		// than falling through keeps that true if one ever is.
+		return worker.DenyUnservedTool(worker.CapabilityPublicResearch, req.Tool)
+	}
+}
+
+// serveSources answers which public sources this run may reach.
+//
+// It is not recorded as a retrieval step and is not budgeted, because it is
+// neither: nothing is fetched, nothing about the corpus is disclosed, and the
+// answer is the operator's own list. The request and its decision are in the
+// worker receipt's tool trace like every other, which is where an
+// authorization event belongs.
+func (r *retrieval) serveSources() worker.Decision {
+	catalog := r.research.Catalog()
+	encoded, err := json.Marshal(catalog)
+	if err != nil {
+		return deny(fmt.Sprintf("the research catalog could not be served: %v", err))
+	}
+	return worker.Decision{
+		Allow: true,
+		Reason: fmt.Sprintf("this run fixed %d public research sources; fetch one by its id",
+			len(catalog.Sources)),
+		Results: encoded,
+	}
+}
+
+// serveFetch brokers one document and records what crossed the boundary.
+//
+// Every refusal here is reported to the worker as a reason it can adapt to,
+// and every one of them is also the honest record: a fetch that did not happen
+// leaves the tool decision and its reason in the receipt, and a fetch that did
+// leaves a trace step naming the URL, the time, the redirect chain and the
+// content digest. There is no state in between.
+func (r *retrieval) serveFetch(ctx context.Context, req worker.ToolRequest) worker.Decision {
+	r.mu.Lock()
+	exhausted := r.fetches > 0 && r.fetched >= r.fetches
+	r.mu.Unlock()
+	if exhausted {
+		return deny("the run's public-research budget is exhausted")
+	}
+	args, err := decodeFetch(req.Arguments)
+	if err != nil {
+		return deny(err.Error())
+	}
+	doc, err := r.research.Fetch(ctx, args.Source)
+	if err != nil {
+		return deny(err.Error())
+	}
+	encoded, err := r.recordFetch(doc)
+	if err != nil {
+		return deny(fmt.Sprintf("the research trace could not be recorded: %v", err))
+	}
+	reason := fmt.Sprintf("served %d bytes of %s from %s; public material is untrusted evidence",
+		doc.Bytes, doc.MediaType, doc.Source.URL)
+	if doc.Truncated {
+		reason += " (truncated at this run's document bound)"
+	}
+	return worker.Decision{Allow: true, Reason: reason, Results: encoded}
+}
+
+// decodeFetch reads a fetch's arguments strictly. A document with an unknown
+// field in it is refused rather than trimmed: see FetchRequest.
+func decodeFetch(raw json.RawMessage) (FetchRequest, error) {
+	var args FetchRequest
+	if len(raw) == 0 {
+		return args, errors.New("a fetch names the source to read and this request named none")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&args); err != nil {
+		return FetchRequest{}, errors.New("the fetch arguments are not a fetch request: it takes one source id and nothing else, because no other field of a request is a worker's to choose")
+	}
+	if args.Source == "" {
+		return FetchRequest{}, errors.New("a fetch names the source to read and this request named none")
+	}
+	return args, nil
+}
+
+// recordFetch builds the payload the worker receives and the trace step the
+// receipt keeps, in one function for the reason serve is one function: there
+// is exactly one path from a fetched document to bytes a provider could see,
+// and exactly one from that document to the durable record of it.
+//
+// The §9 split is the same as the corpus facility's and lands differently: the
+// payload carries the content, and the step carries the provenance that
+// recovers it — URL, retrieval time, redirect chain, digest, size — and never
+// the content. A receipt holding fetched pages would be a copy of the public
+// web inside the operator's durable store, and the digest is what makes the
+// citation checkable without it.
+func (r *retrieval) recordFetch(doc research.Document) (json.RawMessage, error) {
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	step := run.RetrievalStep{
+		Index: len(r.steps) + 1,
+		Tool:  string(worker.CapabilityPublicResearch),
+		Scope: run.ScopeResearch,
+		// The query is the identifier the worker named. It is the whole of
+		// what the worker chose about this request, so recording it records
+		// its whole choice.
+		Query: doc.Source.ID,
+		At:    doc.RetrievedAt,
+		Research: &run.ResearchSource{
+			SourceID:    doc.Source.ID,
+			URL:         doc.Source.URL,
+			Redirects:   doc.Redirects,
+			MediaType:   doc.MediaType,
+			Digest:      doc.Digest,
+			Bytes:       doc.Bytes,
+			Truncated:   doc.Truncated,
+			RetrievedAt: doc.RetrievedAt,
+		},
+	}
+	r.fetched++
+	r.steps = append(r.steps, step)
+	r.served = append(r.served, Retrieval{Step: step, Document: &doc, Served: encoded})
 	return encoded, nil
 }
 
