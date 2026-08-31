@@ -48,6 +48,7 @@ import (
 	"github.com/atyrode/babel/internal/catalog"
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/fleet"
+	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/restic"
 )
 
@@ -218,6 +219,13 @@ type app struct {
 	// means this build has no journal wired, which internal/fleet's resolution
 	// reports as "local" rather than guessing on its behalf.
 	journal syncJournal
+	// presenceRead is the fleet presence read surface (#118), injected for
+	// fleetRead's reason and one more: presence's interesting states are a
+	// stale heartbeat and a lost one, which a healthy deployment cannot
+	// produce on demand, so the only way the rendering of them is reachable at
+	// all is by handing the command a reader. Nil means unresolved rather than
+	// absent, and presenceReader opens one or reports why there is no fleet.
+	presenceRead presence.Reader
 }
 
 // dispatch routes "babel <noun> <verb>".

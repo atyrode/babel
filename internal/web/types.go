@@ -88,6 +88,24 @@ type Options struct {
 	// requires to stay visible.
 	Fleet       FleetReader
 	SyncJournal fleet.SyncJournal
+	// Presence is issue #118's fleet-presence read: what every machine in the
+	// deployment says it is running right now.
+	//
+	// It is separate from Fleet even though both read the shared catalog,
+	// because they read different things under different rules. Fleet reads
+	// committed records, which are durable truth with an object-store leg;
+	// presence reads announcements, which live only in PostgreSQL because they
+	// are ephemeral status. A deployment can hold either without the other — a
+	// catalog whose presence table a migration has not reached still answers
+	// every record read — so each route names the one it needs.
+	//
+	// Nil is a state rather than a fault, on Fleet's terms: a machine in local
+	// mode has no presence table, and internal/web/presence.go answers that
+	// with a well-formed empty body and a sentence rather than refusing. It is
+	// also the honest shape of the guarantee internal/presence makes on the
+	// write side — a presence failure never fails a run — carried onto the read
+	// side, where a presence failure never fails a page.
+	Presence PresenceReader
 	// References is issue #113's typed reference graph, read-only: the
 	// outgoing citations and backlinks a record surface renders beside the
 	// record itself.

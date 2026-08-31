@@ -315,6 +315,87 @@ export interface FleetRecordFilter {
   offset?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Fleet presence (issue #118).
+//
+// The one read on this surface whose subject is neither durable nor local: what
+// every machine in the deployment says it is running right now. Three rules from
+// the issue live in these shapes rather than only in the page that renders them.
+//
+// A row is a claim, not an observation. `state` is what the run last said about
+// itself, and it says nothing about now — so `freshness` and
+// `heartbeat_age_seconds` travel beside it, and a renderer must use both. The
+// classification alone cannot produce "last seen 4m ago", and the age alone
+// cannot say which threshold was crossed.
+//
+// The classification is the server's. `freshness` is internal/presence's own
+// word, and the thresholds it was decided by are on the envelope, so nothing
+// here recomputes it: a page that compared `heartbeat_age_seconds` against a
+// constant of its own would eventually contradict the badge beside it.
+//
+// A row identity is `id`, never `run_id`. One conductor cycle announces twice —
+// the loop's own row and the run inside it, both under the same run id — and
+// they are two facts, because the loop can be alive while the run it started is
+// not. Keying a list on `run_id` would hide exactly that.
+// ---------------------------------------------------------------------------
+
+export type PresenceKind = "conductor" | "explore";
+
+export type PresenceState = "running" | "finished" | "failed" | "cancelled";
+
+// The four classifications, and none of them is a claim about a process.
+// "lost" means nothing has been heard for a long time; it deliberately does not
+// mean dead, and the interface never renders it as one.
+export type PresenceFreshness = "fresh" | "stale" | "lost" | "finished";
+
+export interface PresenceRow {
+  id: string;
+  // The machine's opaque host id, the same value the archive and the shared
+  // catalog use. It is not a display name: presence stores no second copy of
+  // host identity, so a label comes from joining the host vocabulary
+  // GET /api/fleet/hosts already serves.
+  host: string;
+  local_host: boolean;
+  kind: PresenceKind;
+  run_id: string;
+  // Absent when the run announced none. A conductor cycle that has not
+  // resolved an assignment has no recipe, and rendering an empty string as a
+  // value would invent one.
+  recipe?: string;
+  preparation_id?: string;
+  authority: RunAuthority;
+  state: PresenceState;
+  started_at?: string;
+  heartbeat_at?: string;
+  // Absent exactly while the run is still running.
+  finished_at?: string;
+  heartbeat_age_seconds: number;
+  freshness: PresenceFreshness;
+  // The record the run committed when it finalized, absent until then.
+  receipt_record_id?: string;
+}
+
+export interface PresenceResponse {
+  // False whenever the rows are not what the fleet announced. `configured`
+  // then separates the reasons: local mode has no presence table at all, and a
+  // configured machine whose catalog could not be read has one it cannot see.
+  // `unavailable` is the server's own sentence for whichever happened.
+  available: boolean;
+  configured: boolean;
+  unavailable?: string;
+  rows: PresenceRow[];
+  // The number of rows whose own state is "running". A count of claims, never
+  // of live processes, and the caption says so.
+  running: number;
+  // The thresholds the server classified by, so the page's prose and the
+  // server's badge cannot disagree.
+  stale_after_seconds: number;
+  lost_after_seconds: number;
+  // How far back the read reaches. Without it an empty list is ambiguous
+  // between an idle deployment and a window that ended.
+  retention_seconds: number;
+}
+
 export interface RunCounts {
   tool_requests: number;
   tools_denied: number;
@@ -1398,6 +1479,17 @@ export function getFleetHosts(
   if (filter.pending) params.set("pending", "1");
   const suffix = params.size ? `?${params.toString()}` : "";
   return request<FleetHostsResponse>(`/api/fleet/hosts${suffix}`);
+}
+
+// getPresence reads what the deployment says it is running.
+//
+// It takes no filter at all, and the absence is the point rather than an
+// omission. The whole answer is bounded already — internal/presence returns only
+// rows inside its retention window, capped — and the question "what is happening
+// on my fleet" has no narrowing that would not risk hiding the row the operator
+// opened the page for. The host chips narrow what is already in the browser.
+export function getPresence(): Promise<PresenceResponse> {
+  return request<PresenceResponse>("/api/fleet/presence");
 }
 
 export function decideReview(decision: DecideRequest): Promise<DecideResult> {
