@@ -151,9 +151,8 @@ func LoadPayloadKeys() (PayloadKeys, bool, error) {
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return PayloadKeys{}, false, fmt.Errorf("decode payload key document %s: more than one JSON value", path)
 	}
-	if keys.KeySchema > payloadKeySchema {
-		return PayloadKeys{}, false, fmt.Errorf(
-			"payload key document schema %d is newer than supported schema %d", keys.KeySchema, payloadKeySchema)
+	if err := checkPayloadKeySchema(keys.KeySchema); err != nil {
+		return PayloadKeys{}, false, err
 	}
 	if err := ValidatePayloadKeys(keys); err != nil {
 		return PayloadKeys{}, false, err
@@ -175,6 +174,21 @@ func redactKeyMaterial(err error) error {
 		return fmt.Errorf("field %q is not a %s", typeErr.Field, typeErr.Type)
 	}
 	return errors.New("document is not a payload key document")
+}
+
+// checkPayloadKeySchema refuses a document written by a newer build.
+//
+// One rule, two callers: the loader, and the ceremony document that delivers a
+// ring to a machine. A document this build cannot fully understand is refused
+// rather than partially honoured, because the part it would silently drop is
+// key material - and a host that quietly ignored half a ring would seal
+// records nothing else can open.
+func checkPayloadKeySchema(schema int) error {
+	if schema > payloadKeySchema {
+		return fmt.Errorf(
+			"payload key document schema %d is newer than supported schema %d", schema, payloadKeySchema)
+	}
+	return nil
 }
 
 // ValidatePayloadKeys checks a document is usable before anything seals with

@@ -351,11 +351,32 @@ func TestNoKeyMaterialEscapes(t *testing.T) {
 	_, _, err = LoadPayloadKeys()
 	record(err)
 
-	if len(subjects) != 6 {
-		t.Fatalf("collected %d error strings, want 6", len(subjects))
+	// InstallPayloadKeys: a ceremony delivering different material under an id
+	// this host already holds. Both sides of the comparison are real keys, and
+	// the refusal may name the id and the path but never the bytes. The valid
+	// document is restored first, because the refusal under test is the
+	// conflict and not the malformed document left above.
+	if err := writePayloadKeys(PayloadKeysPath(), PayloadKeys{
+		ActiveKeyID: "k1", Keys: []PayloadKey{{KeyID: "k1", Key: sentinelB64}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = InstallPayloadKeys(PayloadKeys{
+		ActiveKeyID: "k1",
+		Keys:        []PayloadKey{{KeyID: "k1", Key: base64.StdEncoding.EncodeToString(rotatedMaterial)}},
+	})
+	record(err)
+
+	if len(subjects) != 7 {
+		t.Fatalf("collected %d error strings, want 7", len(subjects))
 	}
 
-	encodings := map[string]string{"raw": sentinelRaw, "base64": sentinelB64}
+	encodings := map[string]string{
+		"raw":            sentinelRaw,
+		"base64":         sentinelB64,
+		"rotated raw":    string(rotatedMaterial),
+		"rotated base64": base64.StdEncoding.EncodeToString(rotatedMaterial),
+	}
 	for _, s := range subjects {
 		for name, enc := range encodings {
 			if strings.Contains(s, enc) {

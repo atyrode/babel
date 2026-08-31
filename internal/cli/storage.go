@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/atyrode/babel/internal/config"
 )
@@ -44,9 +45,21 @@ newer Babel stays readable — which also means a misspelled name is dropped
 silently rather than refused. Read back what was actually installed with
 "babel storage status".
 
+The document may also carry payload_keys: this deployment's whole append-only
+payload key ring, as {"active_key_id": ID, "keys": [{"key_id": ID, "key":
+BASE64}]}. It is installed into the mode-0600 payload key document beside
+storage.json — storage.json itself never holds key material — and the install
+is a union. A key this machine already holds is never dropped because the
+document omitted it, a delivered key id whose material differs from the one
+held here is refused outright, and a document carrying no payload_keys at all
+leaves this machine's keys exactly as they are. That makes rotation a
+re-provision: add the new key to the ring in custody, name it active there,
+and every host seals under it while every host keeps opening what it already
+had.
+
 Flags:
   --from-json FILE|-          complete JSON configuration to install (required)
-  --json                      emit {path, repository, host_id} as JSON
+  --json                      emit {path, repository, host_id, payload_keys} as JSON
 `
 
 const storageStatusUsage = `Usage: babel storage status [--json]
@@ -87,11 +100,27 @@ func (a *app) storage(ctx context.Context, args []string) error {
 }
 
 type storageConfigureResult struct {
-	Path       string          `json:"path"`
-	Repository string          `json:"repository"`
-	HostID     string          `json:"host_id"`
-	Mode       string          `json:"mode"`
-	Catalog    *catalogChecked `json:"catalog,omitempty"`
+	Path        string                `json:"path"`
+	Repository  string                `json:"repository"`
+	HostID      string                `json:"host_id"`
+	Mode        string                `json:"mode"`
+	Catalog     *catalogChecked       `json:"catalog,omitempty"`
+	PayloadKeys *payloadKeysInstalled `json:"payload_keys,omitempty"`
+}
+
+// payloadKeysInstalled is what this ceremony did to the machine's payload key
+// ring: key ids and one path, and nothing else it could possibly carry.
+//
+// SPEC.md §9 admits a key id in plaintext beside every ciphertext it selects,
+// so ids are reportable; key material is the one value in Babel that reaches no
+// report, no diagnostic and no error. A result type that cannot hold material
+// is how that stays true of this command as it grows.
+type payloadKeysInstalled struct {
+	Path               string   `json:"path"`
+	Added              []string `json:"added"`
+	AbsentFromDocument []string `json:"absent_from_document"`
+	ActiveKeyID        string   `json:"active_key_id"`
+	Changed            bool     `json:"changed"`
 }
 
 func (a *app) storageConfigure(ctx context.Context, args []string) error {
@@ -108,13 +137,14 @@ func (a *app) storageConfigure(ctx context.Context, args []string) error {
 		return c.usagef("storage configure requires --from-json FILE|-")
 	}
 
-	cfg, err := a.decodeConfigDocument(*fromJSON)
+	doc, err := a.decodeConfigDocument(*fromJSON)
 	if err != nil {
 		return err
 	}
-	if err := config.Validate(cfg); err != nil {
+	if err := doc.Validate(); err != nil {
 		return err
 	}
+	cfg := doc.Config
 	// Setup is when an unsafe password file is cheapest to fix, so configure
 	// says what `storage status` would say later — through the same check, so
 	// the two commands can never disagree about whether a file is safe.
@@ -144,22 +174,100 @@ func (a *app) storageConfigure(ctx context.Context, args []string) error {
 		}
 		checked = &got
 	}
+	// The ring is installed before the configuration is replaced, because the
+	// one refusal this can produce must not cost the machine a configuration
+	// that works: a delivered key id whose material differs from the one held
+	// here is a fork of the deployment's key space and is refused rather than
+	// resolved. Everything else the install does is monotone — it adds keys and
+	// never drops one — so a host that gains keys and then fails to gain a
+	// configuration has lost nothing.
+	installed, err := a.installPayloadKeys(doc)
+	if err != nil {
+		return err
+	}
 	if err := config.Save(cfg); err != nil {
 		return err
 	}
 
 	res := storageConfigureResult{
-		Path:       Sanitize(config.Path()),
-		Repository: Sanitize(cfg.Repository),
-		HostID:     Sanitize(cfg.HostID),
-		Mode:       storageMode(cfg),
-		Catalog:    checked,
+		Path:        Sanitize(config.Path()),
+		Repository:  Sanitize(cfg.Repository),
+		HostID:      Sanitize(cfg.HostID),
+		Mode:        storageMode(cfg),
+		Catalog:     checked,
+		PayloadKeys: installed,
 	}
 	if *asJSON {
 		return a.emitJSON(res)
 	}
 	fmt.Fprintf(a.stdout, "storage configuration written to %s\n", res.Path)
+	if installed != nil {
+		switch {
+		case !installed.Changed:
+			fmt.Fprintf(a.stdout, "payload key ring at %s already carries every key the document delivers\n",
+				installed.Path)
+		case len(installed.Added) > 0:
+			fmt.Fprintf(a.stdout, "payload key ring at %s gained %s; new records seal under %s\n",
+				installed.Path, strings.Join(installed.Added, ", "), installed.ActiveKeyID)
+		default:
+			fmt.Fprintf(a.stdout, "payload key ring at %s now seals new records under %s\n",
+				installed.Path, installed.ActiveKeyID)
+		}
+	}
 	return nil
+}
+
+// installPayloadKeys installs the ring the document delivered, and reports
+// nothing whatsoever when it carried none.
+//
+// Silence on the empty case is deliberate. Every document written before this
+// field existed carries no ring, as does every deployment that keeps its keys
+// somewhere this ceremony does not reach, and a `storage configure` that
+// learned to warn about an unchanged machine would train an operator to ignore
+// its diagnostics.
+func (a *app) installPayloadKeys(doc config.ConfigureDocument) (*payloadKeysInstalled, error) {
+	if doc.PayloadKeys == nil {
+		return nil, nil
+	}
+	got, err := config.InstallPayloadKeys(*doc.PayloadKeys)
+	if err != nil {
+		return nil, err
+	}
+	res := &payloadKeysInstalled{
+		Path:               Sanitize(got.Path),
+		Added:              sanitizeAll(got.Added),
+		AbsentFromDocument: sanitizeAll(got.AbsentFromDocument),
+		ActiveKeyID:        Sanitize(got.ActiveKeyID),
+		Changed:            got.Changed,
+	}
+	// Empty rather than absent, on the same terms as `storage migrate`'s applied
+	// list: a provisioning script branches on these, and "no keys were added" is
+	// an answer it should be able to iterate over rather than a null it has to
+	// special-case.
+	if res.Added == nil {
+		res.Added = []string{}
+	}
+	if res.AbsentFromDocument == nil {
+		res.AbsentFromDocument = []string{}
+	}
+	// The one thing this command can observe that the operator has to act on:
+	// keys held here that no document carries. They are kept — dropping one
+	// orphans every object sealed under it forever — but as far as anything
+	// here knows they exist on this disk alone.
+	//
+	// Babel stays vault-agnostic (SPEC.md decisions 38, 50, 51): it never
+	// learns what a vault is, so this names the document field and the file to
+	// copy from, and leaves naming the custodian to whatever runs the ceremony.
+	// It names the file rather than printing the ring, because the material
+	// reaches no stream.
+	if len(res.AbsentFromDocument) > 0 {
+		a.diagf("warning: this host holds payload key(s) %s that the delivered document does not carry; "+
+			"they are kept, and as far as this document knows they exist on this disk alone — "+
+			"copy the ring from %s into the document's \"payload_keys\" field, or every record sealed "+
+			"under them stays unreadable on every other host and unrecoverable if this one is lost\n",
+			strings.Join(res.AbsentFromDocument, ", "), res.Path)
+	}
+	return res, nil
 }
 
 // storageStatusResult stays an offline report: it describes the configuration

@@ -378,6 +378,22 @@ func (a *app) generatePayloadKey(c *cmd, id string, asJSON bool) error {
 	}
 	fmt.Fprintf(a.stdout, "payload key %s written to %s\n", res.KeyID, res.Path)
 	a.diagf("note: back up that document; every object sealed under a key it holds is unreadable without it\n")
+	// The second note is the step this key is not finished without, and it is
+	// on stderr because it is an instruction rather than the result.
+	//
+	// A key that exists on one disk is one disk failure away from every record
+	// sealed under it being unreadable, and until the ring reaches the rest of
+	// the fleet no other host can open those records at all — proven in #111,
+	// where a host without the ring reads every plaintext row and no content.
+	// Babel stays vault-agnostic (SPEC.md decisions 38, 50 and 51): it never
+	// learns what a vault is, so this names the document field and the command
+	// that install a ring on a machine and leaves naming the custodian to
+	// whatever runs the ceremony. It names the file to copy from rather than
+	// printing the ring, because the material reaches no stream, ever.
+	a.diagf("note: this host is the only place %s exists; put the ring from %s into the deployment's "+
+		"custody document as its \"payload_keys\" field, then re-provision the fleet — "+
+		"`babel storage configure --from-json` is what installs it on every other host\n",
+		res.KeyID, res.Path)
 	return nil
 }
 
