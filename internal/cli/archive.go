@@ -232,7 +232,9 @@ Flags:
   --deep                      also read and re-hash all pack data
   --json                      emit the outcome as JSON on stdout
 
-Exits 1 on any integrity failure; restic's detail goes to stderr.
+Exits 1 on any integrity failure; restic's detail goes to stderr. A stale lock
+from an interrupted run fails this check while leaving restores unaffected;
+docs/runbook.md records that case and its operator remedy.
 `
 
 // archive routes `babel archive <verb>`.
