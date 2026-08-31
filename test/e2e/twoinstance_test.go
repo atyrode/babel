@@ -22,9 +22,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +65,27 @@ const (
 	twoInstanceRepoPassword = "synthetic-two-instance-password\n"
 )
 
+// acceptURIEnv points the shared half of every scenario in this package at a
+// PostgreSQL an operator provisioned, instead of a throwaway cluster this
+// process starts. It is how the §14 gates are run against the provider a
+// deployment will actually use (#20): the drill does not change, only the
+// server does.
+//
+// Its value is a credential - it carries the catalog password - so it is read
+// from the environment and never logged, never quoted in a failure, and never
+// written anywhere but the mode-0600 document Babel itself writes.
+const acceptURIEnv = "BABEL_ACCEPT_PG_URI"
+
+// acceptMaxConns is the pool ceiling each instance's document states against a
+// real server.
+//
+// A managed plan caps connections per role rather than per pool: Clever
+// Cloud's DEV PostgreSQL allows five in total (measured 2026-08-31, #20), so
+// two instances at Babel's default of four cannot both be up. Two per instance
+// plus one for this test's own assertion handle is exactly five, which is why
+// the number is two.
+const acceptMaxConns = 2
+
 // Instance B's own session, distinct from every fixture instance A writes so a
 // cross-host fetch cannot be satisfied by accident from local files.
 const (
@@ -71,16 +95,62 @@ const (
 	workspaceB  = "/synthetic/workspace/second-instance"
 )
 
-// deployment is the shared half: one throwaway PostgreSQL and one local-path
+// deployment is the shared half: one PostgreSQL catalog and one local-path
 // restic repository, both addressed by every instance.
+//
+// Its connection parameters are fields rather than a cluster handle, because
+// the catalog is either a throwaway cluster this process started or a real one
+// an operator provisioned (acceptURIEnv). Nothing below that line branches on
+// which, so the drill cannot quietly prove less against the real server than it
+// does locally.
 type deployment struct {
-	cluster      *pgtest.Cluster
-	database     string
+	// cluster is nil in real-DSN mode, where nothing local is started and the
+	// server's log belongs to the provider.
+	cluster *pgtest.Cluster
+
+	host     string
+	port     int
+	user     string
+	password string
+	database string
+
+	// maxConns is the ceiling each instance's document states and probeConns
+	// the one this test's own handle uses. Zero is Babel's default, which is
+	// what a local cluster with no meaningful connection limit wants.
+	maxConns   int
+	probeConns int
+
+	// db is the assertion handle, opened at most once per deployment.
+	db *sql.DB
+
 	repoDir      string
 	passwordFile string
 }
 
 func newDeployment(t *testing.T) *deployment {
+	t.Helper()
+	// A real server replaces the local one entirely: nothing is provisioned,
+	// and pgtest is not even consulted, so the drill runs on a machine without
+	// initdb as long as the operator supplied an endpoint.
+	var d *deployment
+	if uri := os.Getenv(acceptURIEnv); uri != "" {
+		d = realDeployment(t, uri)
+	} else {
+		d = localDeployment(t)
+	}
+
+	root := t.TempDir()
+	d.repoDir = filepath.Join(root, "repository")
+	d.passwordFile = filepath.Join(root, "repository-password")
+	if err := os.WriteFile(d.passwordFile, []byte(twoInstanceRepoPassword), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// localDeployment starts a throwaway cluster and gives this run its own
+// database inside it.
+func localDeployment(t *testing.T) *deployment {
 	t.Helper()
 	pgtest.SkipOrFail(t)
 	// TLS because the CLI builds its DSN from storage.json, and that document
@@ -93,6 +163,10 @@ func newDeployment(t *testing.T) *deployment {
 
 	d := &deployment{
 		cluster:  cluster,
+		host:     cluster.Host,
+		port:     cluster.Port,
+		user:     cluster.User,
+		password: catalogPassword,
 		database: "babel_two_instance",
 	}
 
@@ -105,30 +179,102 @@ func newDeployment(t *testing.T) *deployment {
 		t.Fatalf("create catalog database: %v", err)
 	}
 	admin.Close()
+	return d
+}
 
-	root := t.TempDir()
-	d.repoDir = filepath.Join(root, "repository")
-	d.passwordFile = filepath.Join(root, "repository-password")
-	if err := os.WriteFile(d.passwordFile, []byte(twoInstanceRepoPassword), 0o600); err != nil {
-		t.Fatal(err)
+// realDeployment addresses the operator's own PostgreSQL, and isolates this
+// suite inside it.
+//
+// A managed add-on hands out one database whose owner may not add another:
+// `CREATE DATABASE` is refused on Clever Cloud's DEV plan and `pg_database` is
+// not even readable (both measured against the real add-on, 2026-08-31, #20),
+// so the per-run database localDeployment creates has no counterpart here.
+// What Babel does own on that server is one schema - sharedcatalog.Schema -
+// and that schema is the whole catalog: every table, ledger row and lease
+// lives in it, by construction (see the package comment on Schema). So the
+// drill drops it on arrival and again on the way out. Each run therefore
+// starts from an unmigrated catalog, exactly as a local one does, and leaves
+// the add-on as it was found.
+func realDeployment(t *testing.T, uri string) *deployment {
+	t.Helper()
+	// Every failure below names the variable and never the value: the URI is a
+	// credential, and a parser's echo of it would put the password in the test
+	// log.
+	u, err := url.Parse(uri)
+	if err != nil {
+		t.Fatalf("%s is not a valid URL", acceptURIEnv)
 	}
+	if u.Scheme != "postgres" && u.Scheme != "postgresql" {
+		t.Fatalf("%s must be a postgres:// or postgresql:// URL", acceptURIEnv)
+	}
+	password, ok := u.User.Password()
+	if u.User.Username() == "" || !ok {
+		t.Fatalf("%s must carry a user and a password", acceptURIEnv)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port < 1 {
+		t.Fatalf("%s must name a port", acceptURIEnv)
+	}
+	database := strings.TrimPrefix(u.Path, "/")
+	if database == "" {
+		t.Fatalf("%s must name a database", acceptURIEnv)
+	}
+
+	d := &deployment{
+		host:     u.Hostname(),
+		port:     port,
+		user:     u.User.Username(),
+		password: password,
+		database: database,
+		// The instances state a ceiling because the provider enforces one;
+		// this test's own handle takes a single connection so the two
+		// instances plus the assertion fit inside the role's five.
+		maxConns:   acceptMaxConns,
+		probeConns: 1,
+	}
+
+	reset := func() {
+		db, err := sharedcatalog.Open(context.Background(), d.dsn(), sharedcatalog.WithMaxConnections(1))
+		if err != nil {
+			t.Fatalf("reach the acceptance catalog named by %s: %v", acceptURIEnv, err)
+		}
+		defer db.Close()
+		if _, err := db.Exec("DROP SCHEMA IF EXISTS " + sharedcatalog.Schema + " CASCADE"); err != nil {
+			t.Fatalf("drop the %s schema: %v", sharedcatalog.Schema, err)
+		}
+	}
+	reset()
+	t.Cleanup(reset)
 	return d
 }
 
 // dsn addresses the shared catalog as the test itself, for the assertions that
-// are only answerable in SQL and for holding a lease no instance owns.
-func (d *deployment) dsn() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=require",
-		d.cluster.User, catalogPassword, d.cluster.Host, d.cluster.Port, d.database)
-}
+// are only answerable in SQL and for holding a lease no instance owns. It is
+// the document's own connection, so an assertion cannot pass against a server
+// the instances are not using.
+func (d *deployment) dsn() string { return d.catalogDoc().dsn() }
 
+// open returns the deployment's assertion handle, opening it once.
+//
+// One handle, shared: against a real server the role's whole connection budget
+// is five (Clever Cloud DEV, measured 2026-08-31, #20), and a per-assertion
+// pool would compete for it with the two instances that are the actual subject
+// of the drill.
 func (d *deployment) open(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sharedcatalog.Open(context.Background(), d.dsn())
+	if d.db != nil {
+		return d.db
+	}
+	db, err := sharedcatalog.Open(context.Background(), d.dsn(),
+		sharedcatalog.WithMaxConnections(d.probeConns))
 	if err != nil {
 		t.Fatalf("open shared catalog: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	d.db = db
+	t.Cleanup(func() {
+		db.Close()
+		d.db = nil
+	})
 	return db
 }
 
@@ -216,12 +362,61 @@ func instJSON[T any](t *testing.T, i *instance, args ...string) T {
 	return okJSON[T](t, i.env, args...)
 }
 
-// configure installs this instance's shared-mode configuration through the
-// shipped command, which validates identity, TLS, credential privileges, and
-// schema compatibility before writing the mode-0600 file.
-func (i *instance) configure(t *testing.T) {
-	t.Helper()
-	doc := fmt.Sprintf(`{
+// catalogDoc is the catalog half of one instance's document. A scenario varies
+// exactly one connection parameter - the TLS mode, the credential, the
+// endpoint - and leaves the rest a working deployment's, which is what makes
+// the failure it then asserts attributable.
+type catalogDoc struct {
+	host     string
+	port     int
+	user     string
+	password string
+	database string
+	tlsMode  string
+	maxConns int
+}
+
+// dsn is the connection string this catalog describes, assembled the way the
+// CLI assembles its own (config.Catalog.DSN) - through net/url, because a real
+// credential may carry bytes that are reserved in a URL.
+//
+// The result is a credential: it may be handed to a driver and to nothing
+// else.
+func (c catalogDoc) dsn() string {
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(c.user, c.password),
+		Host:     net.JoinHostPort(c.host, strconv.Itoa(c.port)),
+		Path:     "/" + c.database,
+		RawQuery: "sslmode=" + c.tlsMode,
+	}
+	return u.String()
+}
+
+// catalogDoc returns the document that describes this deployment truthfully.
+func (d *deployment) catalogDoc() catalogDoc {
+	return catalogDoc{
+		host:     d.host,
+		port:     d.port,
+		user:     d.user,
+		password: d.password,
+		database: d.database,
+		tlsMode:  "require",
+		maxConns: d.maxConns,
+	}
+}
+
+// document renders this instance's whole storage configuration.
+//
+// max_connections is emitted only when the deployment states one, so the local
+// drill keeps exercising the omitted-field default and the real one exercises
+// the ceiling its provider requires.
+func (i *instance) document(cat catalogDoc) string {
+	pool := ""
+	if cat.maxConns > 0 {
+		pool = fmt.Sprintf(",\n    \"max_connections\": %d", cat.maxConns)
+	}
+	return fmt.Sprintf(`{
   "config_schema": 2,
   "mode": "shared",
   "repository": %q,
@@ -235,18 +430,42 @@ func (i *instance) configure(t *testing.T) {
     "database": %q,
     "user": %q,
     "password": %q,
-    "tls_mode": "require"
+    "tls_mode": %q%s
   }
 }`, i.dep.repoDir, i.dep.passwordFile, i.hostID, twoInstanceDeployment, i.instanceID,
-		i.dep.cluster.Host, i.dep.cluster.Port, i.dep.database, i.dep.cluster.User, catalogPassword)
+		cat.host, cat.port, cat.database, cat.user, cat.password, cat.tlsMode, pool)
+}
 
+// configureFrom installs a catalog document through the shipped command, which
+// validates identity, TLS, credential privileges, and schema compatibility
+// before writing the mode-0600 file - so a document that cannot work never
+// displaces one that does.
+//
+// The rendered file is removed either way: it holds the credential in
+// cleartext, and only storage.json may keep it. The outcome is returned rather
+// than asserted, because scenarios exist whose subject is the refusal.
+func (i *instance) configureFrom(t *testing.T, cat catalogDoc) (stdout, stderr string, code int) {
+	t.Helper()
 	path := filepath.Join(i.root, "storage-configure.json")
-	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(i.document(cat)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	i.ok(t, "storage", "configure", "--from-json", path)
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
+	defer func() {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	return i.run(t, "storage", "configure", "--from-json", path)
+}
+
+// configure installs this instance's real configuration and requires it to be
+// accepted.
+func (i *instance) configure(t *testing.T) {
+	t.Helper()
+	stdout, stderr, code := i.configureFrom(t, i.dep.catalogDoc())
+	if code != exitOK {
+		t.Fatalf("%s: storage configure exited %d\nstdout:\n%s\nstderr:\n%s",
+			i.label, code, stdout, stderr)
 	}
 }
 
@@ -629,7 +848,7 @@ func assertNoCatalogCredential(t *testing.T, instances ...*instance) {
 			{"storage", "verify"},
 		} {
 			stdout, stderr := i.ok(t, args...)
-			if strings.Contains(stdout, catalogPassword) || strings.Contains(stderr, catalogPassword) {
+			if strings.Contains(stdout, i.dep.password) || strings.Contains(stderr, i.dep.password) {
 				t.Fatalf("%s: babel %s emitted the catalog password",
 					i.label, strings.Join(args, " "))
 			}

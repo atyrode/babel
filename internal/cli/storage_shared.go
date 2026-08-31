@@ -130,7 +130,7 @@ func (a *app) checkCatalog(ctx context.Context, cfg config.Config) (catalogCheck
 		TLSMode:  cfg.Catalog.TLSMode,
 	}
 
-	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
+	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN(), sharedcatalog.WithMaxConnections(cfg.Catalog.MaxConnections))
 	if err != nil {
 		return catalogChecked{}, err
 	}
@@ -150,7 +150,7 @@ func (a *app) checkCatalog(ctx context.Context, cfg config.Config) (catalogCheck
 	// Its privileges are observed on its own connection, never inferred from
 	// the fact that it was supplied.
 	if dsn, ok := cfg.Catalog.MigrationDSN(); ok {
-		mdb, err := sharedcatalog.Open(ctx, dsn)
+		mdb, err := sharedcatalog.Open(ctx, dsn, sharedcatalog.WithMaxConnections(cfg.Catalog.MaxConnections))
 		if err != nil {
 			return catalogChecked{}, fmt.Errorf("migration credential: %w", err)
 		}
@@ -283,6 +283,9 @@ func (a *app) storageMigrate(ctx context.Context, args []string) error {
 	// 2.3 keeps a migration credential off the machine's persistent state.
 	dsn := cfg.Catalog.DSN()
 	credential := "configured"
+	// The pool ceiling describes the server, not the credential, so the
+	// configured document's stands unless the ephemeral one states its own.
+	maxConns := cfg.Catalog.MaxConnections
 	if *fromJSON != "" {
 		ephemeral, err := a.decodeConfigDocument(*fromJSON)
 		if err != nil {
@@ -299,9 +302,12 @@ func (a *app) storageMigrate(ctx context.Context, args []string) error {
 		} else {
 			dsn, credential = ephemeral.Catalog.DSN(), "ephemeral credential"
 		}
+		if ephemeral.Catalog.MaxConnections > 0 {
+			maxConns = ephemeral.Catalog.MaxConnections
+		}
 	}
 
-	db, err := sharedcatalog.Open(ctx, dsn)
+	db, err := sharedcatalog.Open(ctx, dsn, sharedcatalog.WithMaxConnections(maxConns))
 	if err != nil {
 		return err
 	}
@@ -484,7 +490,7 @@ func (a *app) storageRebuild(ctx context.Context, args []string) error {
 	// attributed to another host, and one repository holds every machine's.
 	rows := hostSnapshots(listing, rf.host)
 
-	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
+	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN(), sharedcatalog.WithMaxConnections(cfg.Catalog.MaxConnections))
 	if err != nil {
 		return fmt.Errorf("reach the shared catalog: %w", err)
 	}

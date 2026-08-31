@@ -261,7 +261,7 @@ func (a *app) openPublisher(ctx context.Context, d dirs) (*babelsync.Publisher, 
 	// Returned unwrapped: sharedcatalog.Open's own error already names what it
 	// was doing and whether the endpoint was unreachable, and prefixing it
 	// again would put the same clause in the operator's line twice.
-	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
+	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN(), sharedcatalog.WithMaxConnections(cfg.Catalog.MaxConnections))
 	if err != nil {
 		return nil, cleanup, err
 	}

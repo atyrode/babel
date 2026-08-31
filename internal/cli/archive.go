@@ -718,7 +718,7 @@ func (a *app) catalogLag(ctx context.Context, snapshots []restic.Snapshot) *cata
 		return nil
 	}
 
-	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
+	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN(), sharedcatalog.WithMaxConnections(cfg.Catalog.MaxConnections))
 	if err != nil {
 		// Status must stay useful during an outage, so this is reported rather
 		// than fatal. An error that is not an outage is still only a report:

@@ -217,6 +217,85 @@ func TestOpenErrorsRedactTheDSN(t *testing.T) {
 	}
 }
 
+// The pool ceiling is a deployment fact rather than a Babel constant, because a
+// managed provider caps connections per role: Clever Cloud's DEV PostgreSQL
+// allows one role five in total (measured against the real add-on, 2026-08-31,
+// issue #20), so two instances at the default four cannot both be up.
+//
+// It is asserted behaviourally and not by reading a setter back, because what a
+// provider enforces is how many connections actually exist: the test holds the
+// ceiling's worth and requires the pool to wait rather than dial past it.
+func TestOpenHonoursAConfiguredConnectionCeiling(t *testing.T) {
+	ctx := context.Background()
+	db, err := sharedcatalog.Open(ctx, baseDSN(), sharedcatalog.WithMaxConnections(2))
+	if err != nil {
+		t.Fatalf("open with a ceiling of two: %v", err)
+	}
+	defer db.Close()
+	if got := db.Stats().MaxOpenConnections; got != 2 {
+		t.Fatalf("pool ceiling = %d, want 2", got)
+	}
+
+	held := make([]*sql.Conn, 0, 2)
+	for range 2 {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("hold a connection inside the ceiling: %v", err)
+		}
+		held = append(held, c)
+	}
+
+	// The third caller waits for a slot instead of opening a connection the
+	// server would refuse, so a bounded context expires. That expiry is the
+	// evidence: a pool that ignored the ceiling would hand back a connection.
+	waiting, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	if c, err := db.Conn(waiting); err == nil {
+		c.Close()
+		t.Fatal("a third connection was opened past a ceiling of two")
+	} else if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a blocked third connection failed for the wrong reason: %v", err)
+	}
+
+	// Returning one frees the slot: the ceiling bounds concurrency and does not
+	// wedge the instance.
+	if err := held[0].Close(); err != nil {
+		t.Fatalf("release a held connection: %v", err)
+	}
+	c, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("reuse a released slot: %v", err)
+	}
+	c.Close()
+	held[1].Close()
+}
+
+// An omitted ceiling is the default, which is what an absent document field
+// means, and a nonsensical one must not reach database/sql - where a
+// non-positive limit means an unlimited pool, the opposite of every reason to
+// write a number there.
+func TestOpenDefaultsTheConnectionCeiling(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []sharedcatalog.Option
+	}{
+		{"no option", nil},
+		{"unset", []sharedcatalog.Option{sharedcatalog.WithMaxConnections(0)}},
+		{"negative", []sharedcatalog.Option{sharedcatalog.WithMaxConnections(-1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := sharedcatalog.Open(context.Background(), baseDSN(), tc.opts...)
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			defer db.Close()
+			if got := db.Stats().MaxOpenConnections; got != sharedcatalog.DefaultMaxConnections {
+				t.Fatalf("pool ceiling = %d, want the default %d", got, sharedcatalog.DefaultMaxConnections)
+			}
+		})
+	}
+}
+
 // A fetch locator must stay out of the catalog, and so must transcript content
 // and infrastructure identity.
 //

@@ -50,7 +50,7 @@ func Open(ctx context.Context, cfg config.Config, localHostID string, diag func(
 		return nil, fmt.Errorf("%w: this machine's own host identity is unresolved", ErrNotConfigured)
 	}
 
-	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN())
+	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN(), sharedcatalog.WithMaxConnections(cfg.Catalog.MaxConnections))
 	if err != nil {
 		// Returned as it arrived rather than flattened into ErrNotConfigured:
 		// a configured deployment whose PostgreSQL is down is not a
