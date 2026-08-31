@@ -13,11 +13,11 @@ import (
 const conformanceUsage = `Usage: babel conformance WORKER [--worker-arg ARG]... [flags]
 
 Runs the babel.analysis-worker contract suite against the executable at
-WORKER: the handshake, the resolved configuration, the grant boundary, tool
-decisions, terminal events, cancellation, and the worker's own discipline
-with the run-scoped broker credential. One obligation per line, printed the
-moment that obligation settles; the exit code is 0 only when every
-obligation held.
+WORKER: the handshake, the staged job document, the resolved configuration and
+the containment it declares, the grant boundary, tool decisions, terminal
+events, cancellation, and the worker's own discipline with the run-scoped
+broker credential. One obligation per line, printed the moment that obligation
+settles; the exit code is 0 only when every obligation held.
 
 Obligations are graded one at a time, and one that cannot reach the worker
 spends its whole handshake budget — 15 seconds — before its verdict is
@@ -32,6 +32,20 @@ told to echo its broker token, and it holds only if the run still reached a
 terminal result, the token appears in nothing the worker wrote, and the
 token appears nowhere in the receipt. All three, because a worker that
 emits no bytes at all would otherwise pass a test for an absence.
+
+Two obligations grade the staged job document, which is what protocol version
+2 is: Babel writes a preamble carrying the run's identity, the profile and the
+parameters, the worker answers with its containment declaration, and only then
+does Babel write the recipes, the grant, the sources and the broker token. A
+worker must therefore declare from the preamble alone — one that waits for the
+material first waits forever — and a worker whose declaration is refused must
+produce nothing and exit rather than block on a read. The second of those is
+reached by telling the worker to under-declare on purpose, for the reason the
+credential obligation tells it to leak: a worker that always declares enough is
+never refused, so the path that decides whether the credential travels would be
+graded by nothing. That obligation grades against the strict requirement even
+under --unsandboxed, because a relaxed requirement would accept the very
+declaration it asks for.
 
 The same suite is what Babel's own tests run against their fake worker, so
 an implementation that passes here is one Babel can supervise. It is a

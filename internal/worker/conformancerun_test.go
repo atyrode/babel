@@ -63,6 +63,74 @@ func TestRunConformanceFailsANonWorker(t *testing.T) {
 	}
 }
 
+// TestStagingObligationsAreDiscriminating proves the two obligations the staged
+// job document added can actually fail, and fail for their own reason. An
+// obligation every candidate passes grades nothing, which is how a worker that
+// invented its own tool name once reached 14 of 14.
+//
+// Each fixture breaks exactly one thing:
+//
+//   - -await-material is the version 1 worker: it will not declare anything
+//     until it has been given the job material, which this Babel writes second.
+//     It must fail run/declares-from-the-preamble with the diagnosis rather
+//     than with a bare timeout, because "your worker is waiting for a write
+//     that is conditional on the event it is not sending" is not something an
+//     operator infers from "stalled".
+//   - -ignore-under-declare answers the under-declare directive with its usual
+//     boundary, which is what a worker that never implemented the directive
+//     does. Nothing refuses it, so the refusal path is never exercised, and
+//     that is the whole of what run/refused-before-credentials grades.
+func TestStagingObligationsAreDiscriminating(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		obligation string
+		wantText   string
+	}{
+		{
+			name:       "a worker that waits for the material before declaring",
+			args:       []string{"-await-material"},
+			obligation: "run/declares-from-the-preamble",
+			wantText:   "two stages",
+		},
+		{
+			name:       "a worker that ignores the under-declare directive",
+			args:       []string{"-ignore-under-declare"},
+			obligation: "run/refused-before-credentials",
+			wantText:   "containment refusal",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := gradeObligation(t, test.obligation, test.args...)
+			if result.Passed {
+				t.Fatalf("%s passed against a worker that breaks it; the obligation grades nothing", test.obligation)
+			}
+			if !slices.ContainsFunc(result.Failures, func(msg string) bool {
+				return strings.Contains(msg, test.wantText)
+			}) {
+				t.Errorf("%s failed without naming what to fix (%q): %q",
+					test.obligation, test.wantText, result.Failures)
+			}
+		})
+	}
+
+	// Non-vacuity for the second fixture: it breaks one obligation and leaves
+	// the rest of the contract intact. Without this, a fixture that broke the
+	// handshake would satisfy the assertions above while proving nothing about
+	// the obligation under test.
+	t.Run("ignoring the directive costs exactly one obligation", func(t *testing.T) {
+		for _, result := range RunConformanceWith(context.Background(), ConformanceOptions{
+			Worker: fakeWorkerPath,
+			Args:   []string{"-ignore-under-declare"},
+		}) {
+			if want := result.Name == "run/refused-before-credentials"; result.Passed == want {
+				t.Errorf("obligation %s passed=%v, want %v: %q", result.Name, result.Passed, !want, result.Failures)
+			}
+		}
+	})
+}
+
 // gradeConcurrently grades every obligation against one target at the same
 // time. RunConformance is deliberately serial — an operator reads a report in
 // order, and one worker process per obligation at once would distort the timing

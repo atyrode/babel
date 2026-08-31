@@ -24,27 +24,29 @@
 // The job document travels on stdin and nowhere else. It carries the
 // run-scoped evidence-broker credential, so it must not reach argv or the
 // child's environment where a process listing would expose it — the same rule
-// internal/restic follows for the repository password.
+// internal/restic follows for the repository password. It also travels in two
+// stages rather than one, and the credential is in the second: see "Worker
+// mode" below for what that buys and what it cost to get.
 //
 // # Handshake
 //
 // The worker speaks first, before reading anything, so Babel can refuse an
 // incompatible counterpart before any job material is written to it:
 //
-//	{"type":"hello","protocol":"babel.analysis-worker","versions":[1],
+//	{"type":"hello","protocol":"babel.analysis-worker","versions":[2],
 //	 "modes":["configure","worker"],
 //	 "worker":{"name":"code","version":"1.2.3"}}
 //
 // Babel replies with exactly one of:
 //
-//	{"type":"accept","protocol":"babel.analysis-worker","version":1,
+//	{"type":"accept","protocol":"babel.analysis-worker","version":2,
 //	 "mode":"worker",
 //	 "limits":{"max_line_bytes":1048576,"max_events":100000,
 //	           "max_tool_requests":1024,"idle_seconds":120,
 //	           "exit_grace_seconds":5}}
 //
 //	{"type":"refuse","protocol":"babel.analysis-worker",
-//	 "reason":"no mutually supported protocol version","supported":[1]}
+//	 "reason":"no mutually supported protocol version","supported":[2]}
 //
 // Version negotiation rule: Babel selects the highest version present in both
 // its own supported set and the worker's "versions" array. An empty
@@ -79,18 +81,62 @@
 //
 // # Worker mode
 //
-// Babel writes one job document after accept:
+// The job document is staged, and the staging is the boundary. Babel writes
+// only what the worker needs to resolve and declare itself, holds the run's
+// material and its credential back until that declaration has been accepted,
+// and writes the rest afterwards. A worker whose sandbox falls short of the
+// run's requirement is therefore refused having seen a profile reference and
+// nothing else: not the corpus selection, not the capability grant, not the
+// run-scoped broker token.
 //
-//	{"type":"job","job_id":"j-1","run_id":"r-1",
+// Stage one is written immediately after accept:
+//
+//	{"type":"job-preamble","protocol":"babel.analysis-worker",
+//	 "job_id":"j-1","run_id":"r-1",
 //	 "profile":{"id":"p-1","revision":4},
+//	 "params":{"…":"…"}}
+//
+// The parameters travel here because they are how Babel tells a worker which
+// kind of run this is — the stage it is running, the conformance obligation
+// being exercised — and a worker resolves a profile differently for a
+// conformance probe than for an analysis. They carry no credential and no
+// archive content; the material is in stage two.
+//
+// The worker answers with the resolved configuration described below, which
+// carries its containment declaration, and Babel writes nothing further until
+// it arrives. An accepted declaration is answered with stage two:
+//
+//	{"type":"job","protocol":"babel.analysis-worker",
+//	 "job_id":"j-1","run_id":"r-1",
 //	 "recipes":[{"id":"outcome-integrity","version":1}],
 //	 "grant":{"capabilities":["corpus-search"],"disclosure":"local",
 //	          "tools":{"corpus-search":["search"]},
 //	          "expires":"2026-08-29T12:00:00Z"},
 //	 "sources":[{"kind":"session","selector":"omp/…","digest":"sha256:…",
 //	             "snapshot":"…"}],
-//	 "broker":{"endpoint":"http://127.0.0.1:0","token":"…"},
-//	 "params":{"…":"…"}}
+//	 "broker":{"endpoint":"http://127.0.0.1:0","token":"…"}}
+//
+// Both stages carry the same job_id and run_id. Each line is self-identifying
+// for it, so a worker can refuse a pairing that does not belong to one run
+// instead of analysing one run's material under another's identity.
+//
+// A declaration Babel does not accept is answered with the handshake's own
+// refusal message instead, and for the handshake's reason: the worker is
+// blocked on a read, and killing it without a word would leave it unable to
+// tell a boundary it must fix from a supervisor that crashed.
+//
+//	{"type":"refuse","protocol":"babel.analysis-worker",
+//	 "reason":"declared containment falls short of this run's requirement"}
+//
+// This is what version 2 is. Version 1 wrote the whole document — sources,
+// grant and broker token — immediately after the handshake and checked the
+// declaration when the first event arrived, so a worker that under-declared
+// executed no analysis but already held the run's credential and knew the
+// selected corpus. The two shapes are not compatible in either direction: a
+// version 1 worker waits for a document this Babel no longer sends, and a
+// version 2 worker waits for material a version 1 Babel has already sent. An
+// empty version intersection is refused, naming the version Babel requires,
+// rather than bridged by a shim that would keep the old ordering reachable.
 //
 // The grant's "tools" object is the operation vocabulary Babel will answer:
 // for each granted capability, the tool names some facility in this build
@@ -116,13 +162,16 @@
 // stream is detectable rather than merely wrong. The first event must be a
 // "configuration" reporting the profile the worker actually resolved — Babel
 // requires it because §6.5 makes resolved provider metadata part of the
-// receipt, and it must name the profile the job named (ErrProfileMismatch).
+// receipt, and it must name the profile the preamble named
+// (ErrProfileMismatch). It is also the answer to the preamble, so it is the
+// one event Babel waits for synchronously.
 //
 // In worker mode that configuration must also declare the sandbox the worker
 // provides. Babel does not implement one — Code owns the disposable sandbox and
 // credential isolation (SPEC.md §2.6, decision 53) — so the declaration is what
-// Babel holds the worker to before anything executes, and a declaration short
-// of the run's requirement is refused (ErrContainment):
+// Babel holds the worker to, and it is what stage two is conditional on: a
+// declaration short of the run's requirement is refused (ErrContainment) with
+// the credential still unwritten.
 //
 //	{"type":"configuration","seq":1,"time":"…",
 //	 "profile":{"id":"p-1","revision":4},
@@ -136,6 +185,15 @@
 // claims no residual risk has not been examined, and §10 requires uncertainty to
 // stay visible rather than be rounded to zero. Babel records the declaration in
 // the receipt so a reviewer sees which boundary the evidence came from.
+//
+// An "error" event is the one other thing a worker may send before it has
+// declared anything: a worker that cannot resolve the profile the preamble
+// named has no configuration to report and says so. That ends the run, and it
+// ends it with stage two unwritten. Anything else before the declaration —
+// progress, a tool request, a result — is an ordering violation
+// (ErrEventOrder), and it is refused the same way an insufficient declaration
+// is, because a worker producing output before it has stated its boundary is
+// exactly the worker the staging exists to stop.
 //
 //	{"type":"progress","seq":2,"time":"…","stage":"discover",
 //	 "message":"…","fraction":0.25,
@@ -243,15 +301,22 @@ const ProtocolName = "babel.analysis-worker"
 // ProtocolVersion is the protocol revision this package implements. Semantic
 // changes to any message increment it; adding an optional field does not,
 // because unknown fields are ignored by contract in both directions.
-const ProtocolVersion = 1
+//
+// Version 2 staged the job document: the preamble, the worker's containment
+// declaration, and only then the material and the run's broker credential.
+// Version 1 wrote all of it at once. The ordering is the whole of what the
+// declaration buys, so the two are not interchangeable and no shim bridges
+// them — an empty version intersection is refused, naming this version.
+const ProtocolVersion = 2
 
-// Message types on the wire. Babel writes accept, refuse, job and
-// tool-decision; the worker writes hello, configuration, progress,
+// Message types on the wire. Babel writes accept, refuse, job-preamble, job
+// and tool-decision; the worker writes hello, configuration, progress,
 // tool-request, result and error.
 const (
 	MessageHello         = "hello"
 	MessageAccept        = "accept"
 	MessageRefuse        = "refuse"
+	MessageJobPreamble   = "job-preamble"
 	MessageJob           = "job"
 	MessageToolDecision  = "tool-decision"
 	MessageConfiguration = "configuration"
@@ -304,7 +369,7 @@ const ToolSearch = "search"
 
 // capabilityTools is the single authority on which tool names Babel serves for
 // each capability, and every consumer reads it rather than restating it: the
-// job document publishes it to the worker (Job.MarshalJSON), the facility
+// job document publishes it to the worker (Job.encodeMaterial), the facility
 // behind corpus-search enforces it (internal/explore's authorizer), and the
 // conformance suite grades a candidate against it (AllowWithinGrant and the
 // run/published-tool-names obligation). Adding a name here is what makes it
@@ -452,18 +517,40 @@ type Broker struct {
 	Token    string
 }
 
-// Job is one analysis job. Extra carries forward-compatible top-level fields
-// a newer Babel may add; they are merged into the encoded document.
+// Job is one analysis job. It is one Go value and two wire messages: the
+// preamble Babel writes before the worker has declared anything, and the
+// material it writes only once that declaration has been accepted. Which
+// field travels in which stage is the boundary this type exists to draw, so
+// it is stated per field below rather than left to the encoders.
+//
+// PreambleExtra and Extra carry forward-compatible top-level fields a newer
+// Babel may add, merged into their own stage's document. They are two maps
+// because the stages are two promises: a field a newer Babel adds to the
+// material must not be smuggled into the preamble, which is the message Babel
+// promises carries nothing the worker has not yet earned.
 type Job struct {
-	JobID   string
-	RunID   string
+	// JobID and RunID identify the run. They travel in both stages, so
+	// either line is self-identifying and a worker can refuse a pairing
+	// that does not belong to one run.
+	JobID string
+	RunID string
+
+	// Profile and Params travel in the preamble: they are what a worker
+	// needs to resolve itself and to know which kind of run this is.
 	Profile ProfileRef
+	Params  map[string]string
+
+	// Recipes, Grant, Sources and Broker travel in the material stage. They
+	// are the run's boundary and its content — what may be asked for, what
+	// may be read, and the credential that opens the evidence API — and a
+	// worker that has not declared an acceptable sandbox never sees them.
 	Recipes []RecipeRef
 	Grant   Grant
 	Sources []Source
 	Broker  Broker
-	Params  map[string]string
-	Extra   map[string]json.RawMessage
+
+	PreambleExtra map[string]json.RawMessage
+	Extra         map[string]json.RawMessage
 }
 
 // secrets lists the values in j that must never appear in a receipt, an error
@@ -475,20 +562,30 @@ func (j Job) secrets() []string {
 	return []string{j.Broker.Token}
 }
 
-// jobWire is the encoded form of a Job. It exists separately so the exported
-// type can hold Go values (time.Time, Capability) while the wire stays the
-// documented JSON shape.
-type jobWire struct {
+// preambleWire is the encoded form of stage one: the run's identity, the
+// profile to resolve, and the parameters that say what kind of run this is.
+// Nothing else, and the omission is the feature.
+type preambleWire struct {
 	Type     string            `json:"type"`
 	JobID    string            `json:"job_id"`
 	RunID    string            `json:"run_id"`
 	Profile  ProfileRef        `json:"profile"`
-	Recipes  []RecipeRef       `json:"recipes,omitempty"`
-	Grant    grantWire         `json:"grant"`
-	Sources  []Source          `json:"sources,omitempty"`
-	Broker   *brokerWire       `json:"broker,omitempty"`
 	Params   map[string]string `json:"params,omitempty"`
 	Protocol string            `json:"protocol"`
+}
+
+// jobWire is the encoded form of stage two. It exists separately from Job so
+// the exported type can hold Go values (time.Time, Capability) while the wire
+// stays the documented JSON shape.
+type jobWire struct {
+	Type     string      `json:"type"`
+	JobID    string      `json:"job_id"`
+	RunID    string      `json:"run_id"`
+	Recipes  []RecipeRef `json:"recipes,omitempty"`
+	Grant    grantWire   `json:"grant"`
+	Sources  []Source    `json:"sources,omitempty"`
+	Broker   *brokerWire `json:"broker,omitempty"`
+	Protocol string      `json:"protocol"`
 }
 
 // grantWire carries the boundary and the operation vocabulary inside it. Tools
@@ -507,17 +604,30 @@ type brokerWire struct {
 	Token    string `json:"token"`
 }
 
-// MarshalJSON encodes the job document, merging Extra's unknown-to-this-build
-// fields at the top level. A collision with a documented field is an error
-// rather than a silent overwrite: a caller redefining "grant" through Extra
-// would be quietly rewriting the capability boundary.
-func (j Job) MarshalJSON() ([]byte, error) {
+// encodePreamble encodes stage one. It is a method rather than a MarshalJSON
+// so that no caller can encode "a job" by accident: a Job has two encodings
+// and one of them must not travel yet, so the choice is made by name at every
+// call site.
+func (j Job) encodePreamble() ([]byte, error) {
+	return mergeExtra(preambleWire{
+		Type:     MessageJobPreamble,
+		Protocol: ProtocolName,
+		JobID:    j.JobID,
+		RunID:    j.RunID,
+		Profile:  j.Profile,
+		Params:   j.Params,
+	}, j.PreambleExtra, MessageJobPreamble)
+}
+
+// encodeMaterial encodes stage two: the recipes, the grant, the sources and
+// the broker credential. It is only ever called after a containment
+// declaration has satisfied the run's requirement.
+func (j Job) encodeMaterial() ([]byte, error) {
 	w := jobWire{
 		Type:     MessageJob,
 		Protocol: ProtocolName,
 		JobID:    j.JobID,
 		RunID:    j.RunID,
-		Profile:  j.Profile,
 		Recipes:  j.Recipes,
 		Grant: grantWire{
 			Capabilities: j.Grant.Capabilities,
@@ -525,7 +635,6 @@ func (j Job) MarshalJSON() ([]byte, error) {
 			Tools:        publishedTools(j.Grant),
 		},
 		Sources: j.Sources,
-		Params:  j.Params,
 	}
 	if w.Grant.Capabilities == nil {
 		w.Grant.Capabilities = []Capability{}
@@ -537,22 +646,31 @@ func (j Job) MarshalJSON() ([]byte, error) {
 	if j.Broker.Endpoint != "" || j.Broker.Token != "" {
 		w.Broker = &brokerWire{Endpoint: j.Broker.Endpoint, Token: j.Broker.Token}
 	}
-	encoded, err := json.Marshal(w)
+	return mergeExtra(w, j.Extra, MessageJob)
+}
+
+// mergeExtra encodes one stage and merges its forward-compatible fields at the
+// top level. A collision with a documented field is an error rather than a
+// silent overwrite: a caller redefining "grant" through Extra would be quietly
+// rewriting the capability boundary, and one redefining "profile" through
+// PreambleExtra would be quietly changing what the worker declares against.
+func mergeExtra(stage any, extra map[string]json.RawMessage, name string) ([]byte, error) {
+	encoded, err := json.Marshal(stage)
 	if err != nil {
 		return nil, err
 	}
-	if len(j.Extra) == 0 {
+	if len(extra) == 0 {
 		return encoded, nil
 	}
 	var merged map[string]json.RawMessage
 	if err := json.Unmarshal(encoded, &merged); err != nil {
 		return nil, err
 	}
-	for name, value := range j.Extra {
-		if _, taken := merged[name]; taken {
-			return nil, fmt.Errorf("job: extra field %q collides with a documented field", name)
+	for field, value := range extra {
+		if _, taken := merged[field]; taken {
+			return nil, fmt.Errorf("job: extra field %q collides with a documented field of the %s message", field, name)
 		}
-		merged[name] = value
+		merged[field] = value
 	}
 	return json.Marshal(merged)
 }
@@ -592,12 +710,18 @@ type limitsOnWire struct {
 }
 
 // refuseMessage tells a rejected worker why, so it exits instead of waiting
-// for a job that will never arrive.
+// for material that will never arrive. Two moments write it: the handshake,
+// and a containment declaration that did not satisfy the run.
+//
+// Supported is omitted rather than empty for the second of those. The version
+// list is the remedy for a version refusal and nothing else, and a worker told
+// "supported":[2] while being refused for its sandbox would be sent to fix the
+// one thing that was not wrong.
 type refuseMessage struct {
 	Type      string `json:"type"`
 	Protocol  string `json:"protocol"`
 	Reason    string `json:"reason"`
-	Supported []int  `json:"supported"`
+	Supported []int  `json:"supported,omitempty"`
 }
 
 // decisionMessage is Babel's answer to one tool-request.
@@ -760,8 +884,11 @@ type Containment struct {
 	Escape string `json:"escape"`
 }
 
-// Requirement is the containment a run demands. Babel refuses to launch a
-// worker that declares less, before any job material reaches it.
+// Requirement is the containment a run demands. Babel refuses a worker that
+// declares less before the run's recipes, grant, sources or broker credential
+// reach it: the declaration answers a preamble that carries a profile
+// reference and the run's parameters, so what a refused worker has seen is
+// which profile it was asked to be and nothing about what it would have read.
 type Requirement struct {
 	FilesystemIsolation bool
 	NetworkDefaultDeny  bool
@@ -936,7 +1063,8 @@ var (
 
 	// ErrVersionMismatch reports an empty intersection between Babel's
 	// supported versions and the worker's. The worker is refused on the wire
-	// before any job material is written.
+	// before any job material is written, and the refusal names the versions
+	// Babel supports so the counterpart learns which one to speak.
 	ErrVersionMismatch = errors.New("worker: no mutually supported protocol version")
 
 	// ErrModeUnsupported reports a worker that does not offer the mode this
@@ -968,8 +1096,9 @@ var (
 	// ErrContainment reports a worker whose declared sandbox falls short of
 	// the run's requirement, or that declared none. Babel does not implement
 	// the sandbox (decision 53), so an undeclared or insufficient boundary is
-	// refused before any job material reaches the worker rather than
-	// discovered from its behaviour afterwards.
+	// refused with the run's material and its credential still unwritten: the
+	// declaration answers the preamble, and stage two is what accepting it
+	// buys. The worker is told, in the refusal, which properties fell short.
 	ErrContainment = errors.New("worker: insufficient containment")
 
 	// ErrPlatformUnqualified reports SPEC.md §10's gate: the platform Babel is
@@ -983,7 +1112,12 @@ var (
 	ErrPlatformUnqualified = errors.New("worker: platform has no qualified sandbox backend")
 
 	// ErrEventOrder reports the resolved-configuration rule: exactly one
-	// configuration event, first, before any other event.
+	// configuration event, first, before any other event. Before the
+	// declaration the rule is also the staging rule — a worker that writes
+	// progress, a tool request or a result in place of the declaration it
+	// owes is refused there, holding the credential back — so this is the
+	// error a worker that tries to be paid before it states its boundary
+	// gets.
 	ErrEventOrder = errors.New("worker: event out of order")
 
 	// ErrProfileMismatch reports a worker that resolved a different profile

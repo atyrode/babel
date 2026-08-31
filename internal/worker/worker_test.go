@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -178,9 +179,62 @@ func TestHandshakeFailures(t *testing.T) {
 	}
 }
 
+// workerStdin is everything Babel wrote to one worker's stdin, captured by the
+// fixture itself rather than reconstructed from Babel's own intentions. The
+// message types are what the ordering assertions read; the raw text is what a
+// credential search reads, because a token can appear in a field no assertion
+// here names.
+type workerStdin struct {
+	types []string
+	raw   string
+}
+
+func readWorkerStdin(t *testing.T, path string) workerStdin {
+	t.Helper()
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading what the worker was sent: %v", err)
+	}
+	captured := workerStdin{raw: string(written)}
+	for line := range strings.SplitSeq(strings.TrimSpace(captured.raw), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var msg struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			t.Fatalf("Babel wrote a line the worker could not decode: %q: %v", line, err)
+		}
+		captured.types = append(captured.types, msg.Type)
+	}
+	return captured
+}
+
+// line returns the one captured message of the given type, or fails: every
+// assertion about a stage's contents is about a message that must exist
+// exactly once.
+func (w workerStdin) line(t *testing.T, kind string) string {
+	t.Helper()
+	var found string
+	for line := range strings.SplitSeq(strings.TrimSpace(w.raw), "\n") {
+		if strings.Contains(line, `"type":"`+kind+`"`) {
+			if found != "" {
+				t.Fatalf("Babel wrote more than one %s message:\n%s", kind, w.raw)
+			}
+			found = line
+		}
+	}
+	if found == "" {
+		t.Fatalf("Babel never wrote a %s message:\n%s", kind, w.raw)
+	}
+	return found
+}
+
 // TestRefusalPrecedesAnyJobMaterial is the reason the worker speaks first. A
 // counterpart Babel cannot supervise must never see the job: not the broker
-// credential, not the source selectors, not the capability grant.
+// credential, not the source selectors, not the capability grant, and not the
+// preamble either — a refused worker is refused before the staging begins.
 func TestRefusalPrecedesAnyJobMaterial(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "stdin.jsonl")
 	f := newFixture(ConformanceWellBehaved)
@@ -191,25 +245,199 @@ func TestRefusalPrecedesAnyJobMaterial(t *testing.T) {
 		t.Fatalf("Run error = %v, want ErrVersionMismatch", err)
 	}
 
-	written, readErr := os.ReadFile(record)
-	if readErr != nil {
-		t.Fatalf("reading what the worker was sent: %v", readErr)
-	}
-	got := string(written)
+	stdin := readWorkerStdin(t, record)
 	// Non-vacuity: the worker must have been told why, or this file would be
 	// empty for the wrong reason.
-	if !strings.Contains(got, `"type":"`+MessageRefuse+`"`) {
-		t.Fatalf("the refused worker was never told why:\n%s", got)
+	if !slices.Contains(stdin.types, MessageRefuse) {
+		t.Fatalf("the refused worker was never told why:\n%s", stdin.raw)
+	}
+	// The refusal names the version Babel requires, because "unsupported" on
+	// its own tells a counterpart nothing about what to build. This is the
+	// clean-cutover half of the version bump: the old worker is refused, and
+	// the refusal is the migration note.
+	refusal := stdin.line(t, MessageRefuse)
+	if !strings.Contains(refusal, fmt.Sprintf(`"supported":[%d]`, ProtocolVersion)) {
+		t.Errorf("the refusal does not name the version Babel requires: %s", refusal)
+	}
+	for _, unwanted := range []string{MessageJobPreamble, MessageJob} {
+		if slices.Contains(stdin.types, unwanted) {
+			t.Errorf("a refused worker received a %s message:\n%s", unwanted, stdin.raw)
+		}
 	}
 	for _, forbidden := range []string{
-		`"type":"` + MessageJob + `"`,
 		testToken,
 		"omp/synthetic-session",
 		string(CapabilityCorpusSearch),
+		"synthetic-profile",
 	} {
-		if strings.Contains(got, forbidden) {
-			t.Errorf("a refused worker received %q:\n%s", forbidden, got)
+		if strings.Contains(stdin.raw, forbidden) {
+			t.Errorf("a refused worker received %q:\n%s", forbidden, stdin.raw)
 		}
+	}
+}
+
+// TestStagedJobOrdersTheCredentialAfterTheDeclaration is the property
+// atyrode/babel#71 asked for, read off the worker's own stdin rather than off
+// Babel's intentions: the preamble goes out first and carries no material, the
+// worker's declaration answers it, and the recipes, grant, sources and broker
+// credential travel only afterwards.
+func TestStagedJobOrdersTheCredentialAfterTheDeclaration(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "stdin.jsonl")
+	f := newFixture(ConformanceWellBehaved)
+	f.args = []string{"-record", record}
+
+	receipt, err := f.run(t)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if receipt.Result == nil || receipt.Containment.Backend == "" {
+		t.Fatalf("the run did not complete behind a declared boundary: %+v", receipt)
+	}
+
+	stdin := readWorkerStdin(t, record)
+	want := []string{MessageAccept, MessageJobPreamble, MessageJob}
+	if !slices.Equal(stdin.types, want) {
+		t.Fatalf("Babel wrote %v, want %v:\n%s", stdin.types, want, stdin.raw)
+	}
+
+	preamble := stdin.line(t, MessageJobPreamble)
+	if !strings.Contains(preamble, "synthetic-profile") {
+		t.Errorf("the preamble names no profile, so the worker had nothing to resolve: %s", preamble)
+	}
+	for _, forbidden := range []string{
+		testToken,
+		"omp/synthetic-session",
+		string(CapabilityCorpusSearch),
+		"outcome-integrity",
+		"broker",
+	} {
+		if strings.Contains(preamble, forbidden) {
+			t.Errorf("the preamble carries %q, which belongs in the stage after the declaration: %s",
+				forbidden, preamble)
+		}
+	}
+
+	material := stdin.line(t, MessageJob)
+	for _, wanted := range []string{testToken, "omp/synthetic-session", string(CapabilityCorpusSearch)} {
+		if !strings.Contains(material, wanted) {
+			t.Errorf("the job material is missing %q, so the run could not have been performed: %s",
+				wanted, material)
+		}
+	}
+}
+
+// TestRefusedDeclarationWithholdsTheCredential is the closure of the gap
+// atyrode/babel#71 recorded. A worker that declares a boundary short of the
+// run's requirement is refused, and the assertion is on the bytes it was
+// actually sent: the run-scoped credential, the corpus selection and the grant
+// were never written to it at all, which is the difference between a bounded
+// exposure and none.
+func TestRefusedDeclarationWithholdsTheCredential(t *testing.T) {
+	for _, containment := range []string{"weak", "none", "insufficient"} {
+		t.Run(containment, func(t *testing.T) {
+			record := filepath.Join(t.TempDir(), "stdin.jsonl")
+			f := newFixture(ConformanceWellBehaved)
+			f.args = []string{"-containment", containment, "-record", record}
+
+			receipt, err := f.run(t)
+			if !errors.Is(err, ErrContainment) {
+				t.Fatalf("Run error = %v, want ErrContainment", err)
+			}
+			if receipt.Result != nil {
+				t.Errorf("a refused run produced a result: %+v", receipt.Result)
+			}
+
+			stdin := readWorkerStdin(t, record)
+			want := []string{MessageAccept, MessageJobPreamble, MessageRefuse}
+			if !slices.Equal(stdin.types, want) {
+				t.Fatalf("Babel wrote %v, want %v: the material must not follow a refused declaration\n%s",
+					stdin.types, want, stdin.raw)
+			}
+			if refusal := stdin.line(t, MessageRefuse); !strings.Contains(refusal, "containment") {
+				t.Errorf("the refusal does not tell the worker what was wrong: %s", refusal)
+			}
+			for _, forbidden := range []string{
+				testToken,
+				"omp/synthetic-session",
+				string(CapabilityCorpusSearch),
+				"outcome-integrity",
+			} {
+				if strings.Contains(stdin.raw, forbidden) {
+					t.Errorf("a worker whose containment was refused received %q:\n%s", forbidden, stdin.raw)
+				}
+			}
+		})
+	}
+}
+
+// TestDeclarationMustAnswerThePreamble covers the two ways a worker can break
+// the staging from its own side: writing something else where its declaration
+// belongs, and refusing to declare until it has been given the material. Both
+// end the run with the credential unwritten, and each has its own error because
+// they need different fixes — one is a worker emitting events too early, the
+// other is a worker built against version 1's ordering.
+func TestDeclarationMustAnswerThePreamble(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		limits   func(*Limits)
+		wantErr  error
+		wantText string
+		wantSent []string
+	}{
+		{
+			name:     "progress in place of the declaration",
+			args:     []string{"-declare-late", MessageProgress},
+			wantErr:  ErrEventOrder,
+			wantText: "progress before the resolved configuration",
+			wantSent: []string{MessageAccept, MessageJobPreamble, MessageRefuse},
+		},
+		{
+			name:     "a result before anything was declared",
+			args:     []string{"-declare-late", MessageResult},
+			wantErr:  ErrEventOrder,
+			wantText: "result before the resolved configuration",
+			wantSent: []string{MessageAccept, MessageJobPreamble, MessageRefuse},
+		},
+		{
+			name:     "waits for the material before declaring",
+			args:     []string{"-await-material"},
+			limits:   func(l *Limits) { l.IdleTimeout = 1500 * time.Millisecond },
+			wantErr:  ErrWorkerStalled,
+			wantText: "no event for",
+			// No refusal: nothing was declared to refuse, and the worker is
+			// not listening for an answer to a message it never sent.
+			wantSent: []string{MessageAccept, MessageJobPreamble},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := filepath.Join(t.TempDir(), "stdin.jsonl")
+			f := newFixture(ConformanceWellBehaved)
+			f.args = append(test.args, "-record", record)
+			if test.limits != nil {
+				test.limits(&f.limits)
+			}
+
+			receipt, err := f.run(t)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("Run error = %v, want %v", err, test.wantErr)
+			}
+			if !strings.Contains(err.Error(), test.wantText) {
+				t.Errorf("error %q does not say what was out of order", err)
+			}
+			if receipt.Result != nil {
+				t.Errorf("a run that never declared containment produced a result: %+v", receipt.Result)
+			}
+
+			stdin := readWorkerStdin(t, record)
+			if !slices.Equal(stdin.types, test.wantSent) {
+				t.Fatalf("Babel wrote %v, want %v:\n%s", stdin.types, test.wantSent, stdin.raw)
+			}
+			if strings.Contains(stdin.raw, testToken) {
+				t.Errorf("the run's credential reached a worker that declared nothing:\n%s", stdin.raw)
+			}
+		})
 	}
 }
 
@@ -1259,9 +1487,12 @@ func TestValidateMetadataNamesEverySecretShapedKey(t *testing.T) {
 	}
 }
 
-// TestJobEncodingIsTheDocumentedShape pins the wire format of the one message
-// Babel authors that carries the run's whole boundary. Code reads these exact
-// names, so a rename here is a break there.
+// TestJobEncodingIsTheDocumentedShape pins the wire format of the two messages
+// Babel authors that carry the run's whole boundary. Code reads these exact
+// names, so a rename here is a break there — and which name is in which stage
+// is not a detail either: the preamble is the message Babel writes before the
+// worker has declared anything, so a field that moved into it would be
+// material sent to a worker that has not earned it yet.
 func TestJobEncodingIsTheDocumentedShape(t *testing.T) {
 	expires := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	job := Job{
@@ -1278,24 +1509,52 @@ func TestJobEncodingIsTheDocumentedShape(t *testing.T) {
 		Broker:  Broker{Endpoint: "http://127.0.0.1:1", Token: testToken},
 		Params:  map[string]string{"k": "v"},
 	}
-	encoded, err := json.Marshal(job)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
+
+	preamble := decodeStage(t, job.encodePreamble)
+	if preamble["type"] != MessageJobPreamble || preamble["protocol"] != ProtocolName {
+		t.Errorf("preamble header = %v/%v", preamble["type"], preamble["protocol"])
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	for _, name := range []string{
-		"type", "protocol", "job_id", "run_id", "profile", "recipes",
-		"grant", "sources", "broker", "params",
-	} {
-		if _, ok := decoded[name]; !ok {
-			t.Errorf("encoded job has no %q field: %s", name, encoded)
+	// The whole preamble, named exhaustively rather than as a subset: a field
+	// that appears here without this test being changed is material that
+	// started travelling before the declaration, which is the defect the
+	// staging exists to prevent and the one a "contains at least" assertion
+	// would never see.
+	wantPreamble := []string{"type", "protocol", "job_id", "run_id", "profile", "params"}
+	for _, name := range wantPreamble {
+		if _, ok := preamble[name]; !ok {
+			t.Errorf("the preamble has no %q field: %v", name, preamble)
 		}
 	}
+	for name := range preamble {
+		if !slices.Contains(wantPreamble, name) {
+			t.Errorf("the preamble carries %q, which belongs in the material stage: a worker that has declared nothing yet must not be sent it", name)
+		}
+	}
+	if profile, _ := preamble["profile"].(map[string]any); profile["id"] != "p-1" {
+		t.Errorf("preamble profile = %v, want the profile the run named", preamble["profile"])
+	}
+
+	decoded := decodeStage(t, job.encodeMaterial)
 	if decoded["type"] != MessageJob || decoded["protocol"] != ProtocolName {
-		t.Errorf("job header = %v/%v", decoded["type"], decoded["protocol"])
+		t.Errorf("material header = %v/%v", decoded["type"], decoded["protocol"])
+	}
+	for _, name := range []string{
+		"type", "protocol", "job_id", "run_id", "recipes", "grant", "sources", "broker",
+	} {
+		if _, ok := decoded[name]; !ok {
+			t.Errorf("the job material has no %q field: %v", name, decoded)
+		}
+	}
+	// The run's identity travels in both stages so each line is
+	// self-identifying; nothing else is sent twice.
+	if decoded["job_id"] != preamble["job_id"] || decoded["run_id"] != preamble["run_id"] {
+		t.Errorf("the two stages name different runs: %v/%v then %v/%v",
+			preamble["job_id"], preamble["run_id"], decoded["job_id"], decoded["run_id"])
+	}
+	for _, name := range []string{"profile", "params"} {
+		if _, present := decoded[name]; present {
+			t.Errorf("the job material repeats %q from the preamble; one field, one stage", name)
+		}
 	}
 	grant, _ := decoded["grant"].(map[string]any)
 	if grant["disclosure"] != DisclosureLocal {
@@ -1319,9 +1578,9 @@ func TestJobEncodingIsTheDocumentedShape(t *testing.T) {
 	t.Run("an unserved capability gets no key", func(t *testing.T) {
 		unserved := job
 		unserved.Grant.Capabilities = []Capability{CapabilityCorpusSearch, CapabilityRepoRead}
-		encoded, err := json.Marshal(unserved)
+		encoded, err := unserved.encodeMaterial()
 		if err != nil {
-			t.Fatalf("Marshal: %v", err)
+			t.Fatalf("encodeMaterial: %v", err)
 		}
 		var decoded struct {
 			Grant struct {
@@ -1343,32 +1602,75 @@ func TestJobEncodingIsTheDocumentedShape(t *testing.T) {
 	t.Run("a grant reaching nothing served publishes no object", func(t *testing.T) {
 		none := job
 		none.Grant.Capabilities = []Capability{CapabilitySandboxExec}
-		encoded, err := json.Marshal(none)
+		encoded, err := none.encodeMaterial()
 		if err != nil {
-			t.Fatalf("Marshal: %v", err)
+			t.Fatalf("encodeMaterial: %v", err)
 		}
 		if strings.Contains(string(encoded), `"tools"`) {
 			t.Errorf("a grant whose capabilities are all unserved still published a tools object: %s", encoded)
 		}
 	})
 
-	t.Run("extra fields merge", func(t *testing.T) {
-		job.Extra = map[string]json.RawMessage{"x-future": json.RawMessage(`1`)}
-		encoded, err := json.Marshal(job)
+	// Each stage merges its own forward-compatible fields, and only its own.
+	// One map for both would mean a field a newer Babel adds to the material
+	// also travelling in the preamble, which is the one thing the preamble
+	// promises about itself.
+	t.Run("extra fields merge into their own stage", func(t *testing.T) {
+		staged := job
+		staged.PreambleExtra = map[string]json.RawMessage{"x-future-preamble": json.RawMessage(`1`)}
+		staged.Extra = map[string]json.RawMessage{"x-future": json.RawMessage(`2`)}
+
+		preamble, err := staged.encodePreamble()
 		if err != nil {
-			t.Fatalf("Marshal: %v", err)
+			t.Fatalf("encodePreamble: %v", err)
 		}
-		if !strings.Contains(string(encoded), `"x-future":1`) {
-			t.Errorf("extra field was not merged: %s", encoded)
+		if !strings.Contains(string(preamble), `"x-future-preamble":1`) {
+			t.Errorf("the preamble's extra field was not merged: %s", preamble)
+		}
+		if strings.Contains(string(preamble), `"x-future":2`) {
+			t.Errorf("a material extra field travelled in the preamble: %s", preamble)
+		}
+
+		material, err := staged.encodeMaterial()
+		if err != nil {
+			t.Fatalf("encodeMaterial: %v", err)
+		}
+		if !strings.Contains(string(material), `"x-future":2`) {
+			t.Errorf("the material's extra field was not merged: %s", material)
+		}
+		if strings.Contains(string(material), `"x-future-preamble":1`) {
+			t.Errorf("a preamble extra field travelled in the material: %s", material)
 		}
 	})
 
 	t.Run("extra fields may not shadow the contract", func(t *testing.T) {
-		job.Extra = map[string]json.RawMessage{"grant": json.RawMessage(`{}`)}
-		if _, err := json.Marshal(job); err == nil {
+		shadowed := job
+		shadowed.Extra = map[string]json.RawMessage{"grant": json.RawMessage(`{}`)}
+		if _, err := shadowed.encodeMaterial(); err == nil {
 			t.Error("an Extra field silently replaced the capability grant")
 		}
+		shadowed = job
+		shadowed.PreambleExtra = map[string]json.RawMessage{"profile": json.RawMessage(`{}`)}
+		if _, err := shadowed.encodePreamble(); err == nil {
+			t.Error("a PreambleExtra field silently replaced the profile the worker declares against")
+		}
 	})
+}
+
+// decodeStage runs one stage's encoder and decodes it into the generic object a
+// worker sees, failing the test on an encoder error so every caller reads as
+// one expression.
+func decodeStage(t *testing.T, encode func() ([]byte, error)) map[string]any {
+	t.Helper()
+	encoded, err := encode()
+	if err != nil {
+		t.Fatalf("encoding a job stage: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decoding %s: %v", encoded, err)
+	}
+	return decoded
 }
 
 // TestExpiredGrantDeniesEveryRequest: the grant carries its own expiry, so a

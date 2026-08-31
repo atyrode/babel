@@ -34,11 +34,20 @@ import (
 
 func main() {
 	var (
-		protocol       = flag.String("protocol", worker.ProtocolName, "protocol name to declare")
-		versions       = flag.String("versions", strconv.Itoa(worker.ProtocolVersion), "comma-separated protocol versions to declare")
-		modes          = flag.String("modes", worker.ModeConfigure+","+worker.ModeWorker, "comma-separated modes to declare")
-		record         = flag.String("record", "", "append every line read from stdin to this file")
-		containment    = flag.String("containment", "full", "containment to declare: full, weak, no-escape, none")
+		protocol    = flag.String("protocol", worker.ProtocolName, "protocol name to declare")
+		versions    = flag.String("versions", strconv.Itoa(worker.ProtocolVersion), "comma-separated protocol versions to declare")
+		modes       = flag.String("modes", worker.ModeConfigure+","+worker.ModeWorker, "comma-separated modes to declare")
+		record      = flag.String("record", "", "append every line read from stdin to this file")
+		containment = flag.String("containment", "full", "containment to declare: full, weak, no-escape, insufficient, none")
+
+		// The staging fixtures. The job document arrives in two stages with
+		// the containment declaration between them, so the two ways a worker
+		// can break that ordering each need a fixture: one that will not
+		// declare until it has been given the material (the version 1
+		// worker), and one that writes an event where its declaration
+		// belongs.
+		awaitMaterial  = flag.Bool("await-material", false, "read stdin for the job material before declaring anything")
+		declareLate    = flag.String("declare-late", "", "emit this event type (progress, result) in place of the declaration")
 		noHello        = flag.Bool("no-hello", false, "never send hello")
 		malformed      = flag.Bool("malformed", false, "emit a line that is not JSON")
 		unknownEvent   = flag.Bool("unknown-event", false, "emit an event with an undefined type")
@@ -67,15 +76,16 @@ func main() {
 		// flag breaks exactly one of them while leaving the rest of the run
 		// well behaved, which is what makes the matching obligation
 		// discriminating rather than merely present.
-		wrongJob        = flag.Bool("wrong-job", false, "answer the echo-job directive from the published fixture instead of the job that arrived")
-		wrongEvidence   = flag.Bool("wrong-evidence", false, "answer the echo-evidence directive from a constant instead of the evidence the decision carried")
-		ignoreEvidence  = flag.Bool("ignore-evidence", false, "answer the echo-evidence directive from the request it made instead of the answer it got")
-		renameMetadata  = flag.Bool("rename-metadata", false, "report the resolved model under a key Babel does not read")
-		driftCapability = flag.Bool("drift-capability", false, "declare an unexercised capability under a name Babel does not define")
-		hideCapability  = flag.Bool("hide-capability", false, "omit from the resolved profile the capability this run then exercises")
-		unusableCost    = flag.Bool("unusable-cost", false, "report a cost Babel cannot use: a negative rate quoted in no currency")
-		noResources     = flag.Bool("no-resources", false, "never report resource use, whatever containment was declared")
-		untrackedRes    = flag.Bool("untracked-resources", false, "report the figures a worker with no accounting invents: -1 for unknown and no tool calls")
+		wrongJob           = flag.Bool("wrong-job", false, "answer the echo-job directive from the published fixture instead of the job that arrived")
+		wrongEvidence      = flag.Bool("wrong-evidence", false, "answer the echo-evidence directive from a constant instead of the evidence the decision carried")
+		ignoreEvidence     = flag.Bool("ignore-evidence", false, "answer the echo-evidence directive from the request it made instead of the answer it got")
+		renameMetadata     = flag.Bool("rename-metadata", false, "report the resolved model under a key Babel does not read")
+		driftCapability    = flag.Bool("drift-capability", false, "declare an unexercised capability under a name Babel does not define")
+		hideCapability     = flag.Bool("hide-capability", false, "omit from the resolved profile the capability this run then exercises")
+		unusableCost       = flag.Bool("unusable-cost", false, "report a cost Babel cannot use: a negative rate quoted in no currency")
+		noResources        = flag.Bool("no-resources", false, "never report resource use, whatever containment was declared")
+		untrackedRes       = flag.Bool("untracked-resources", false, "report the figures a worker with no accounting invents: -1 for unknown and no tool calls")
+		ignoreUnderDeclare = flag.Bool("ignore-under-declare", false, "declare the containment -containment names even when the under-declare directive asks for less")
 
 		// The analysis-result shapes. Babel's exploration control plane
 		// requires results shaped like hypotheses, observations, findings
@@ -191,16 +201,92 @@ func main() {
 		fail("unexpected mode %q", mode)
 	}
 
-	job, err := w.next()
+	// The job arrives in two stages (worker.MessageJobPreamble, then
+	// worker.MessageJob) with this fixture's containment declaration between
+	// them. The preamble carries the profile to resolve and the run's
+	// parameters; the material — recipes, grant, sources and the broker
+	// credential — arrives only once Babel has accepted the declaration.
+	preamble, err := w.next()
 	if err != nil {
-		fail("reading job: %v", err)
+		fail("reading the job preamble: %v", err)
 	}
-	profile := profileOf(job)
+	if got, _ := preamble["type"].(string); got != worker.MessageJobPreamble {
+		fail("expected a %s, got %q", worker.MessageJobPreamble, got)
+	}
+	profile := profileOf(preamble)
 	if *wrongProfile {
 		profile.Revision++
 	}
+	requested := directive(preamble)
+
+	// -await-material is the version 1 worker: it will not declare anything
+	// until it holds the whole job, which is the ordering version 2 removed.
+	// Babel writes nothing more until the declaration arrives, so this read
+	// never returns and the run ends in the idle timeout. The fixture exists
+	// so run/declares-from-the-preamble can be shown to fail for exactly that
+	// reason rather than being an obligation nothing can flunk.
+	if *awaitMaterial {
+		if _, err := w.next(); err != nil {
+			fail("reading the job material before declaring: %v", err)
+		}
+		fail("Babel sent the job material to a worker that had declared nothing")
+	}
+
+	// -declare-late writes something in place of the declaration it owes, and
+	// nothing else: Babel refuses it there, with the material and the
+	// credential unwritten. Reading that refusal before leaving is what makes
+	// the refusal observable — a fixture that exited first would leave Babel's
+	// half of the exchange untested.
+	switch *declareLate {
+	case "":
+	case worker.MessageProgress:
+		w.emit(w.progress("discover", "working before declaring anything", nil))
+		awaitRefusal(w)
+		return
+	case worker.MessageResult:
+		w.emit(w.result(worker.StatusOK, map[string]any{"analysis": "produced before declaring anything"}, ""))
+		awaitRefusal(w)
+		return
+	default:
+		fail("unknown -declare-late event %q", *declareLate)
+	}
+
+	// The under-declare directive asks for a declaration Babel must refuse:
+	// a named backend, a stated escape assumption, and none of the properties
+	// a sandboxed run requires. Honouring it is the conforming behaviour —
+	// the refusal path cannot be graded against a worker that always declares
+	// enough — and what is graded afterwards is that this process reads the
+	// refusal and exits instead of waiting for material it will never be sent.
+	//
+	// -ignore-under-declare is the fixture that must fail that obligation: it
+	// declares its usual boundary and is never refused, which is exactly what
+	// a worker that never implemented the directive looks like.
+	declaring := *containment
+	if requested == worker.ConformanceUnderDeclare && !*ignoreUnderDeclare {
+		declaring = "insufficient"
+	}
+	w.emit(w.configuration(profile, *secretMeta, declaring))
+
+	material, err := w.next()
+	if err != nil {
+		fail("reading the job material: %v", err)
+	}
+	switch got, _ := material["type"].(string); got {
+	case worker.MessageJob:
+	case worker.MessageRefuse:
+		// Babel refused the declaration. The material was never written, and
+		// a refused worker exits rather than waiting for it.
+		fmt.Fprintf(os.Stderr, "fakeworker: declaration refused: %v\n", material["reason"])
+		return
+	default:
+		fail("expected a %s or a %s, got %q", worker.MessageJob, worker.MessageRefuse, got)
+	}
+
+	// One document from here on: the two stages are halves of one job, and
+	// everything below reads it as such — the token, the published tool names,
+	// the recipes and sources the echo-job directive asks about.
+	job := merge(preamble, material)
 	token := brokerToken(job)
-	requested := directive(job)
 
 	// echoing is how this fixture answers worker.ConformanceEchoToken: it
 	// reports the credential where the directive asks for it — the terminal
@@ -218,8 +304,6 @@ func main() {
 	if *echoToken {
 		fmt.Fprintf(os.Stderr, "fakeworker: broker token is %s\n", token)
 	}
-
-	w.emit(w.configuration(profile, *secretMeta, *containment))
 
 	switch {
 	case *malformed:
@@ -464,6 +548,46 @@ func (f *fake) next() (map[string]any, error) {
 	return msg, nil
 }
 
+// merge assembles the two job stages into the one document the rest of this
+// fixture reads. The stages share job_id and run_id and define no other field
+// twice, so the later stage's identity simply confirms the earlier one; a
+// mismatch is a pairing from two different runs and is refused rather than
+// merged, because analysing one run's material under another's identity is the
+// one confusion two messages can create that one could not.
+func merge(preamble, material map[string]any) map[string]any {
+	for _, key := range []string{"job_id", "run_id"} {
+		if stringOf(material[key]) != stringOf(preamble[key]) {
+			fail("the job material names %s %q, the preamble named %q",
+				key, stringOf(material[key]), stringOf(preamble[key]))
+		}
+	}
+	job := make(map[string]any, len(preamble)+len(material))
+	for key, value := range preamble {
+		job[key] = value
+	}
+	for key, value := range material {
+		job[key] = value
+	}
+	// The assembled document is the material message's type: it is the one
+	// that arrived last, and nothing downstream reads the field anyway.
+	job["type"] = worker.MessageJob
+	return job
+}
+
+// awaitRefusal reads the refusal Babel writes to a worker whose declaration it
+// would not accept, and reports anything else. A worker that is refused exits;
+// this fixture returns to main, which flushes and leaves.
+func awaitRefusal(f *fake) {
+	msg, err := f.next()
+	if err != nil {
+		fail("waiting for the refusal: %v", err)
+	}
+	if got, _ := msg["type"].(string); got != worker.MessageRefuse {
+		fail("expected a %s after an unacceptable declaration, got %q", worker.MessageRefuse, got)
+	}
+	fmt.Fprintf(os.Stderr, "fakeworker: declaration refused: %v\n", msg["reason"])
+}
+
 // configuration is the resolved-profile message both modes emit.
 func (f *fake) configuration(profile worker.ProfileRef, secretMeta bool, containment string) map[string]any {
 	metadata := map[string]any{
@@ -513,9 +637,22 @@ func (f *fake) configuration(profile worker.ProfileRef, secretMeta bool, contain
 	// A correct worker declares the boundary it provides. The misbehaviours
 	// are separate flags so a test can distinguish "claims nothing" from
 	// "claims something insufficient" from "claims containment but no escape
-	// assumption" — three different operator situations.
+	// assumption" — four different operator situations.
 	switch containment {
 	case "none":
+	case "insufficient":
+		// Everything a declaration must state and none of what a sandboxed
+		// run requires: this is the shape the under-declare directive asks
+		// for, so the refusal it is graded on is about the properties rather
+		// than about a missing backend or a missing escape assumption.
+		message["containment"] = map[string]any{
+			"backend":              "synthetic-none",
+			"filesystem_isolation": false,
+			"network_default_deny": false,
+			"resource_ceilings":    false,
+			"disposable":           false,
+			"escape":               "synthetic: this fixture contains nothing at all, by request",
+		}
 	case "weak":
 		message["containment"] = map[string]any{
 			"backend":              "synthetic-weak",
