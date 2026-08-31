@@ -38,6 +38,85 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Every Babel record can now cite every other, and the citation is a record
+  (operator direction 2026-08-31, issue #113).** Babel had three ad-hoc ways to
+  say that one thing rests on another: an evidence locator inside an
+  observation, a revision chain's `supersedes` column (#87), and a
+  preparation's free-text "related" refs. None of them could be queried
+  together, none carried provenance, and the free-text one could name a record
+  that does not exist. They are replaced by one model: typed, append-only edge
+  records with an actor, validated at write time, published to the fleet.
+  - **`internal/reference`, the graph.** The frozen contract - six relation
+    kinds (`evidence`, `supersedes`, `refines`, `addresses`, `inspired_by`,
+    `duplicates`), a `RecordRef` of namespace plus durable id, and the
+    `Appender`/`Lister` halves - is now backed by a durable store in the same
+    `durable.db` every Phase B component shares, under the component key
+    `reference`. An edge is immutable and never deleted, enforced by triggers
+    rather than by the package's own SQL: a wrong link is answered by a later
+    edge, which is §4.7's rule that rejection never deletes, applied to
+    citations. A UNIQUE over the relation and both endpoints makes a re-append
+    return the edge that already exists - the same id, the same timestamp -
+    because emitters retry and two rows asserting one citation would make "how
+    many times was this asserted" a question the graph answers wrongly.
+  - **A hallucinated target is a write error.** Every endpoint is resolved
+    against the store that owns its namespace before anything is staged:
+    hypotheses, observations, findings and proposals against the frontier, runs,
+    receipts and preparations against the run store, dispositions and Reality
+    facts and entities against theirs, sessions against the local session
+    catalog. This is the draft-issue anchoring rule turned on the corpus
+    itself, and it fails closed - an unregistered namespace is refused rather
+    than admitted unvalidated, so a store nobody opened cannot be cited, and a
+    namespace #113 anticipates but Babel has not built (a complaint, #114/#115)
+    is refused by name rather than wired to a resolver that always says no. A
+    resolver's own failure is reported as itself: an unreadable durable file
+    must not look like a fabricated citation.
+  - **A session is addressed by its durable session key, never its selector.**
+    The key is the `sessions.session_uid` digest over deployment, host, harness
+    and adapter source id. That is not a preference: an edge's endpoints
+    publish as plaintext PostgreSQL columns, and a selector embeds the source
+    id, which embeds a workspace-derived project slug that Babel deliberately
+    keeps out of the shared catalog. A selector endpoint therefore fails
+    resolution instead of leaking a path, and the same derivation an emission
+    site uses to mint a session endpoint is the one that resolves it.
+  - **Edges publish as Phase B records, shape in the clear and note sealed
+    (SPEC.md §763).** `migrations/0008_reference_edges` adds `analysis_edges`:
+    the edge's record id, its relation kind in a closed CHECK, and both
+    endpoints as namespace-plus-id. Nothing else. The note - the only prose an
+    edge carries - travels in the envelope-encrypted object like every other
+    Phase B payload, and there is no column for it. So the fleet-wide graph of
+    what cites what is navigable on a host holding only the catalog credential
+    and no payload key (#112): a sealed record still shows where it sits in the
+    web of citations, and says nothing about what it claims. The addition is
+    argued in the migration and enforced by the existing gate - the columns are
+    allowlisted, the table is a Phase B table, and `AssertPhaseBPlaintext`
+    refuses a title-, path-, grade- or money-shaped column on it. `SchemaVersion`
+    stays 1: additive, and `EnsureCompatible` already refuses a database
+    migrated past the binary.
+  - **The endpoints survive a crash, because they are staged rather than
+    re-derived.** An edge stages inside the transaction that makes it durable,
+    with its plaintext endpoints beside its sealed payload (journal schema
+    version 2, upgraded in place), and publishes immediately afterwards. Killed
+    between the commit and the publication, `babel sync` converges: exactly one
+    record row and exactly one citation row, whatever the retry count, since
+    nothing could reconstruct those columns from a sealed object. The two rows
+    are written in one PostgreSQL transaction for the same reason - a sync
+    never revisits a record the catalog already holds, so a crash between them
+    would leave a citation invisible forever. An edge a run asserted joins that
+    run's closure and publishes when the run ends; an operator's edge is its own
+    closure of one, declared in the writer's transaction, because nobody
+    resumes an operator's act.
+  - **Emission is by injection, and absence degrades.** Revision minting,
+    evidence absorption and preparation injection receive `reference.Appender`;
+    the CLI and web surfaces receive `reference.Lister`. Nil injection is a
+    supported deployment: reads return no links and the surface renders a record
+    with no citation section rather than an error, and a write path that forgot
+    its nil check reports a condition instead of taking the process down.
+  - **Both surfaces render outgoing links and backlinks.** They are the same
+    table read from two sides rather than a backlink index that can fall out of
+    step with the edges, bounded by default so a heavily cited record cannot
+    arrive whole, and rendered through the existing sanitizer - a note is
+    untrusted text, and the hostile-content rules are unchanged.
+
 - **Phase B records now reach the shared catalog (operator direction
   2026-08-31, issue #109 items 1-2).** SPEC.md §6.5 and §9 have always promised
   globally durable, object-first/PostgreSQL-last Phase B records with visibly

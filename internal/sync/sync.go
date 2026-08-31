@@ -118,6 +118,21 @@ type Record struct {
 	// stop.
 	Schema  int
 	Payload []byte
+	// Edge is the plaintext graph shape of a reference edge (issue #113), and
+	// nil for every record that is not one.
+	//
+	// It travels beside the payload rather than inside it because it is the
+	// half of an edge SPEC.md §763 admits in the clear: the relation kind and
+	// both endpoint references are identifier metadata, so the fleet-wide
+	// citation graph stays navigable on a host with no payload key, while the
+	// edge's note - the only content an edge carries - stays sealed in the
+	// object. internal/sharedcatalog writes it into migrations/0008's columns
+	// in the same transaction as the record row.
+	//
+	// The bytes in Payload are still the whole record. This is a projection of
+	// them for a reader that cannot open them, never the authority: a host
+	// holding the key reads the object and needs none of these columns.
+	Edge *sharedcatalog.RecordEdge
 }
 
 // validate refuses at stage time what the remote protocol would refuse at
@@ -141,6 +156,11 @@ func (r Record) validate() error {
 	if len(r.Payload) > maxPayloadBytes {
 		return fmt.Errorf("sync: record %s payload is %d bytes, over the %d-byte bound",
 			r.EntityID, len(r.Payload), maxPayloadBytes)
+	}
+	if r.Edge != nil {
+		if err := r.Edge.Validate(); err != nil {
+			return fmt.Errorf("sync: record %s: %w", r.EntityID, err)
+		}
 	}
 	return nil
 }

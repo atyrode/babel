@@ -203,6 +203,29 @@ var allowlist = map[string]map[string]Class{
 		"object_digest":   ClassOpaqueID,
 		"created_at":      ClassTimestamp,
 	},
+	// The typed reference graph's plaintext shape (migrations/0008). It is the
+	// one Phase B table whose columns say something structural about a record
+	// rather than only identifying it, and the widening is exactly as narrow as
+	// SPEC.md 763 admits: a relation kind, two record namespaces, two durable
+	// identifiers. The edge's note is content and is in the sealed object with
+	// every other Phase B payload; there is no column for it here, and a
+	// future one would fail the Phase B class gate below.
+	//
+	// A namespace is classed as an identifier on 0001_init's own terms for
+	// `harness`: it ranges over the compile-time record kinds
+	// internal/reference's resolver registry is keyed by, and names which
+	// store an id belongs to rather than anything about the record. An
+	// endpoint id is an opaque, client-generated identifier - for a session,
+	// the same `session_uid` digest `sessions` is keyed by.
+	"analysis_edges": {
+		"record_id":  ClassOpaqueID,
+		"edge_kind":  ClassIdentifier,
+		"from_kind":  ClassIdentifier,
+		"from_id":    ClassOpaqueID,
+		"to_kind":    ClassIdentifier,
+		"to_id":      ClassOpaqueID,
+		"created_at": ClassTimestamp,
+	},
 }
 
 // Allowlist returns the contract as a sorted, flattened listing of
@@ -219,14 +242,15 @@ func Allowlist() []string {
 }
 
 // phaseBTables names the tables that hold Phase B analysis output
-// (migrations/0003). They are singled out because they carry a different
-// weight from every other table here: a snapshot row is rebuildable from the
-// repository, while a hypothesis, finding, or receipt exists nowhere else, so
-// the question of what may sit beside it in the clear is a narrower question
-// than the one the general allowlist answers.
+// (migrations/0003, migrations/0008). They are singled out because they carry a
+// different weight from every other table here: a snapshot row is rebuildable
+// from the repository, while a hypothesis, finding, receipt, or citation exists
+// nowhere else, so the question of what may sit beside it in the clear is a
+// narrower question than the one the general allowlist answers.
 var phaseBTables = map[string]bool{
 	"analysis_runs":    true,
 	"analysis_records": true,
+	"analysis_edges":   true,
 }
 
 // phaseBPlaintextClasses is SPEC.md 14's open item closed: which fields of a
