@@ -474,6 +474,19 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFleetHosts(w, r)
+	// Issue #118's fleet presence read. It sits with #109's fleet routes
+	// because it is the same question one tense earlier — those two report
+	// what the deployment committed, this reports what it says it is doing —
+	// and it is a GET reaching no writer for the stronger reason: a presence
+	// row is announced by the run it describes, and internal/web holds no
+	// Announcer at all. internal/web/presence.go states why an absent or
+	// unreachable presence table answers 200 with `available: false` rather
+	// than refusing.
+	case "/api/fleet/presence":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFleetPresence(w, r)
 	case "/api/search":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return

@@ -14,6 +14,7 @@ import DashboardPage from "./pages/DashboardPage";
 import ExplorePage from "./pages/ExplorePage";
 import FindingPage from "./pages/FindingPage";
 import FindingsPage from "./pages/FindingsPage";
+import FleetPage from "./pages/FleetPage";
 import HelpPage from "./pages/HelpPage";
 import HypothesesPage from "./pages/HypothesesPage";
 import HypothesisPage from "./pages/HypothesisPage";
@@ -163,6 +164,13 @@ function App() {
             <NavLink to="/review" className={({ isActive }) => isActive ? "active" : undefined}>
               Review
             </NavLink>
+            {/* Fleet is last of the destinations because it is the only one
+                whose subject is not this machine. The row reads "this machine,
+                then everywhere", and an entry placed among the local surfaces
+                would quietly suggest the pages beside it were fleet-wide too. */}
+            <NavLink to="/fleet" className={({ isActive }) => isActive ? "active" : undefined}>
+              Fleet
+            </NavLink>
             {/* Help is a destination, not a mode: one persistent character, at
                 the end of the row, reachable from every page including the
                 ones that could not load their data. */}
@@ -207,6 +215,7 @@ function App() {
           <Route path="/sessions/:selector" element={<SessionPage />} />
           <Route path="/archive" element={<ArchivePage />} />
           <Route path="/explore" element={<ExplorePage />} />
+          <Route path="/fleet" element={<FleetPage />} />
           <Route path="/hypotheses" element={<HypothesesPage />} />
           <Route path="/hypotheses/:id" element={<HypothesisPage />} />
           <Route path="/findings" element={<FindingsPage />} />

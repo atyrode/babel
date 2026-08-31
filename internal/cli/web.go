@@ -19,6 +19,7 @@ import (
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/index"
+	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/reference"
 	runstore "github.com/atyrode/babel/internal/run"
@@ -287,6 +288,25 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	} else if !fleet.NotConfigured(err) {
 		a.diagf("warning: the fleet read surface is unavailable: %s\n", Sanitize(err.Error()))
 	}
+	// The fleet presence read surface, on exactly the same terms (#118). It is
+	// a second Open rather than a field of the fleet reader because the two
+	// hold different authority: internal/fleet needs the object store and this
+	// machine's payload keys to open a record, and presence needs neither —
+	// #112 makes a presence row metadata-only, so this succeeds on a machine
+	// whose keys are not placed and the Fleet view still answers there.
+	//
+	// Its diagnostic sink is this process's stderr, which is where the store
+	// reports a read it could not perform. Nothing about that reaches the
+	// browser: internal/web answers with a sentence naming the catalog, never
+	// the error.
+	if store, err := presence.Open(context.Background(), cfg, hostID, func(e error) {
+		a.diagf("warning: fleet presence: %s\n", Sanitize(e.Error()))
+	}); err == nil {
+		opts.Presence = store
+		services.presence = store
+	} else if !presence.NotConfigured(err) {
+		a.diagf("warning: the fleet presence surface is unavailable: %s\n", Sanitize(err.Error()))
+	}
 	// Options.SyncJournal is deliberately left nil here. The publication
 	// journal is the only thing that can tell a record staged while
 	// PostgreSQL was unreachable from one that was never staged at all, and
@@ -330,6 +350,11 @@ type webServices struct {
 	// session that ends, both have to release it or it leaks for the
 	// process's life.
 	fleet *fleet.Reader
+	// presence is the fleet presence reader, nil on a machine with no
+	// deployment. It is held here for fleet's reason and no other: it owns a
+	// PostgreSQL pool of its own, so a launch that fails after opening it and
+	// a served session that ends both have to release it.
+	presence *presence.Store
 	// sessions resolves the durable session keys #113's edges record, nil on a
 	// machine with no deployment identity. It holds no handle of its own: it
 	// reads the scan coordinator's listing, which is the same listing the
@@ -478,6 +503,14 @@ func (s *webServices) Close() error {
 	// local SQLite handles cost only this process a file lock.
 	if s.fleet != nil {
 		err = s.fleet.Close()
+	}
+	// The presence store is the second remote handle, closed beside the first
+	// for the same reason: it owns its own PostgreSQL pool, so leaving it open
+	// holds connections a managed provider counts.
+	if s.presence != nil {
+		if e := s.presence.Close(); err == nil {
+			err = e
+		}
 	}
 	if s.index != nil {
 		if e := s.index.Close(); err == nil {

@@ -144,6 +144,12 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		// out would exercise the merged surfaces only in the tests that
 		// remembered to ask for them. fleet_test.go describes the fixture.
 		Fleet: fleetFixture(text),
+		// Issue #118's fleet presence, wired by default for the same reason:
+		// a recipe id and an authority reference on another machine's row are
+		// strings that machine chose, so the escaping sweep has to see one
+		// without a test remembering to ask. presence_test.go describes the
+		// fixture.
+		Presence: presenceFixture(text),
 		Runs: runLister{{
 			ReceiptID:     "rcp-1 " + text,
 			RunID:         "run-1 " + text,
@@ -596,6 +602,13 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{name: "fleet hypotheses", method: http.MethodGet, path: "/api/hypotheses?fleet=1"},
 		{name: "fleet findings", method: http.MethodGet, path: "/api/findings?fleet=1"},
 		{name: "fleet review queue", method: http.MethodGet, path: "/api/review/queue?status=all&fleet=1"},
+		// Issue #118's fleet presence. It is the most exposed read on this
+		// surface: every field on a remote row — the recipe, the preparation
+		// id, the authority reference — is a string another machine's operator
+		// typed, and unlike a record none of it passed through a payload
+		// schema on the way in. Enrolled here for the session, origin,
+		// no-store, read-only and escaping coverage the rest get.
+		{name: "fleet presence", method: http.MethodGet, path: "/api/fleet/presence"},
 		{
 			name: "review decide", method: http.MethodPost, path: "/api/review/decide", mutating: true,
 			body: `{"subject":{"type":"proposal","id":"` + h.proposal.ID + `"},"disposition":"defer"}`,

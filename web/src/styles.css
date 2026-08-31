@@ -3235,6 +3235,148 @@ a.link-target:hover {
   font-style: italic;
 }
 
+/* ------------------------------------------------------------ fleet presence
+   Issue #118's Fleet page. The rule the whole section is built around: no
+   colour on this page asserts that a process is alive. Freshness badges grade
+   the age of the evidence and say so in words beside them, and there is
+   deliberately no liveness dot — the pulse-dot vocabulary the dashboard uses
+   for this machine's own activity would be a claim about another machine that
+   nothing here observed. */
+
+.presence-legend {
+  margin-bottom: 1rem;
+}
+
+.presence-legend-list {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.7rem 0 0.9rem;
+  padding: 0;
+  list-style: none;
+}
+
+.presence-legend-list li {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.6rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.presence-host-card {
+  margin-bottom: 1rem;
+  padding: 1.3rem;
+}
+
+/* This machine reads as one of the machines, marked but not privileged: the
+   page's empty state promises that a local run announces here too, and a host
+   card that looked like a different kind of object would undercut it. */
+.local-host-card {
+  border-color: rgba(157, 140, 255, 0.32);
+}
+
+.presence-this-host {
+  display: inline;
+  margin-left: 0.5rem;
+  color: var(--accent-bright);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.presence-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.presence-table th,
+.presence-table td {
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  vertical-align: top;
+  font-size: 0.82rem;
+}
+
+/* Every string in this table was written by a machine this one does not
+   control, so no cell is allowed to size itself from its content without a
+   bound: a hostile recipe or a kilocharacter authority ref would otherwise
+   take the row's width and squeeze the run id into a column too narrow to
+   read. The cap wraps such a value instead, which is what .untrusted-inline
+   already does inside the cell. */
+.presence-table td {
+  max-width: 20rem;
+}
+
+.presence-table th {
+  color: var(--subtle);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.presence-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* A doubted row is marked on its edge rather than tinted: the frontier table
+   marks a pending-sync row the same way, and an inset rule reads as "look
+   here" where a filled background reads as a verdict. Fresh and finished rows
+   carry no mark at all, because there is nothing to point at. */
+.presence-table tbody tr.freshness-stale {
+  box-shadow: inset 0.2rem 0 0 var(--amber);
+}
+
+.presence-table tbody tr.freshness-lost {
+  box-shadow: inset 0.2rem 0 0 var(--accent);
+}
+
+.presence-recipe {
+  min-width: 12rem;
+}
+
+.presence-freshness {
+  display: block;
+  margin-top: 0.3rem;
+}
+
+.presence-seen {
+  display: block;
+  min-width: 9rem;
+}
+
+.presence-age {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/* The sentence that must survive every future restyle. It is small and muted
+   because it is a caveat rather than an alarm, and it is never abbreviated to
+   an icon: an icon would have to be decoded, and the whole point is that the
+   uncertainty is stated in words. */
+.presence-doubt {
+  display: block;
+  margin-top: 0.2rem;
+  max-width: 18rem;
+  color: var(--amber);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.presence-receipt {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.76rem;
+}
+
+.presence-notice,
+.presence-empty {
+  margin-bottom: 1rem;
+}
+
 /* Help */
 
 .help-page .card {
@@ -3470,7 +3612,7 @@ a.link-target:hover {
   color: var(--amber);
 }
 
-/* Seven destinations, the help link and the stop control no longer fit one row
+/* Eight destinations, the help link and the stop control no longer fit one row
    on narrow screens; the topbar wraps rather than clipping the newest areas. */
 .topbar {
   flex-wrap: wrap;
