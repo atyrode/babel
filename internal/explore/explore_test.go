@@ -663,14 +663,18 @@ func TestResultSkippingTheDevelopmentPathIsRefused(t *testing.T) {
 // TestDeniedCapabilityDoesNotEndTheRun covers the boundary §6.5 draws: Babel
 // authorizes every request, a facility it cannot broker is denied cleanly
 // rather than answered with fabricated evidence, and the worker keeps working.
+//
+// The capability under test is repo-read because it is one this build still
+// does not broker: §14's repository materialization protocol is open, while
+// public research left this list when internal/research shipped (#75).
 func TestDeniedCapabilityDoesNotEndTheRun(t *testing.T) {
 	h := newHarness(t)
 	payload := h.writeResult("discovery.json", h.discovery())
 	args := append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
-		"-request-capability", "public-research")
+		"-request-capability", "repo-read")
 	controller := h.controller(args, func(cfg *explore.Config) {
-		cfg.Grant.Capabilities = append(cfg.Grant.Capabilities, worker.CapabilityPublicResearch)
-		cfg.Capabilities.PublicResearch = "unavailable"
+		cfg.Grant.Capabilities = append(cfg.Grant.Capabilities, worker.CapabilityRepoRead)
+		cfg.Capabilities.Repository = "unavailable"
 	})
 
 	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-denied"})
@@ -690,7 +694,7 @@ func TestDeniedCapabilityDoesNotEndTheRun(t *testing.T) {
 	if requests[0].DenyCode != worker.DenyPolicy {
 		t.Errorf("denial code = %q, want a policy denial", requests[0].DenyCode)
 	}
-	if !strings.Contains(requests[0].Reason, "public-research") {
+	if !strings.Contains(requests[0].Reason, "repo-read") {
 		t.Errorf("the denial reason does not name the facility: %q", requests[0].Reason)
 	}
 }

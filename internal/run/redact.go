@@ -157,6 +157,19 @@ func redactBody(b Body) (Body, int) {
 			results[j] = hit
 		}
 		step.Results = results
+		// The research record is copied through the pointer rather than
+		// past it, so a caller that keeps its Document cannot edit a
+		// stored receipt afterwards. Its strings are deliberately not
+		// redacted: the URL and its redirect chain are Babel's own record
+		// of an operator-fixed source that was refused at configuration
+		// time if it carried userinfo, so there is no credential shape to
+		// find and rewriting one would corrupt the locator a reviewer
+		// re-fetches.
+		if step.Research != nil {
+			source := *step.Research
+			source.Redirects = append([]string(nil), source.Redirects...)
+			step.Research = &source
+		}
 		out.Retrieval[i] = step
 	}
 	if len(out.Retrieval) == 0 {

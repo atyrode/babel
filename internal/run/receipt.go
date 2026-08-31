@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atyrode/babel/internal/digest"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/worker"
 )
@@ -306,6 +307,61 @@ type RetrievalStep struct {
 	// pointer than the id it wrapped. §9's plaintext allowlist admits
 	// structured identifiers, which is why they can be recorded here at all.
 	Records []string `json:"records,omitempty"`
+	// Research is the public source a brokered research fetch read, present
+	// exactly on the steps whose Scope is research. It is a third
+	// representation beside Results and Records for the same reason those
+	// two are separate: a fetched document is recovered by URL and content
+	// digest, and neither an event locator nor a database id is that
+	// address.
+	//
+	// SPEC.md §2.6 fixes what a brokered fetch must return and §6.5 makes
+	// the research source part of the receipt, so these are the fields
+	// rather than a summary of them. The content is deliberately absent: the
+	// digest is what makes a citation checkable, and a receipt carrying
+	// fetched pages would put a copy of the public web inside the operator's
+	// durable store.
+	Research *ResearchSource `json:"research,omitempty"`
+}
+
+// ScopeResearch is the retrieval scope of a brokered public fetch. It lives
+// here rather than beside the facility that serves it because this package
+// validates the pairing: a step in this scope must carry a ResearchSource and
+// a step in any other must not, and an invariant checked here cannot be
+// enforced against a constant defined somewhere else.
+const ScopeResearch = "research"
+
+// ResearchSource is one brokered public fetch as the receipt records it
+// (SPEC.md §2.6: source URL, retrieval time, redirect chain, content digest).
+//
+// The redirect chain is recorded rather than collapsed because a document
+// served from somewhere other than the URL the operator fixed is a different
+// fact about provenance, and a reviewer re-fetching the source months later
+// needs to see the hop that was followed to know whether they are looking at
+// the same thing.
+type ResearchSource struct {
+	// SourceID is the opaque identifier the run's fixed source set minted,
+	// which is also the only thing the worker got to choose about the
+	// request.
+	SourceID string `json:"source_id"`
+	// URL is the source as the operator fixed it, validated to carry no
+	// userinfo before the run started.
+	URL string `json:"url"`
+	// RetrievedAt is when the fetch completed.
+	RetrievedAt time.Time `json:"retrieved_at"`
+	// Redirects is the chain actually followed, in order. Empty means the
+	// source answered directly.
+	Redirects []string `json:"redirects,omitempty"`
+	// MediaType is what the source said it served, without parameters.
+	MediaType string `json:"media_type"`
+	// Digest covers exactly the bytes served to the worker, so a citation
+	// can be checked against a re-fetch.
+	Digest digest.Digest `json:"digest"`
+	// Bytes is how many bytes were served, which for a truncated document is
+	// the run's bound rather than the source's length.
+	Bytes int64 `json:"bytes"`
+	// Truncated reports that the source's document is longer than what was
+	// served.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // Candidate is one hypothesis a finite run surfaced but did not develop:
@@ -716,6 +772,52 @@ func validateTrace(b Body) error {
 			if !validIdentifier(id) {
 				return fmt.Errorf("receipt: retrieval step %d record %d has no identity", i, j)
 			}
+		}
+		if err := validateResearch(step); err != nil {
+			return fmt.Errorf("receipt: retrieval step %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// validateResearch enforces the pairing between a step's scope and its
+// research record, and refuses a record that cannot recover what it claims.
+//
+// Both directions are checked. A research step with no source would record
+// that a run reached the public internet while making it impossible to say
+// where; a source recorded under another scope would attribute a fetch to a
+// corpus search. §2.6 fixes the four fields a brokered fetch must return, so
+// each is required here: a fetch with no digest is a citation nobody can
+// check, and one with no time cannot be correlated with the run's other
+// disclosures.
+func validateResearch(step RetrievalStep) error {
+	if step.Scope != ScopeResearch {
+		if step.Research != nil {
+			return fmt.Errorf("a %q retrieval carries a research source", step.Scope)
+		}
+		return nil
+	}
+	src := step.Research
+	if src == nil {
+		return fmt.Errorf("a research retrieval names no source")
+	}
+	switch {
+	case !validIdentifier(src.SourceID):
+		return fmt.Errorf("the research source has no identity")
+	case !validIdentifier(src.URL):
+		return fmt.Errorf("research source %s has no usable URL", src.SourceID)
+	case src.RetrievedAt.IsZero():
+		return fmt.Errorf("research source %s has no retrieval time", src.SourceID)
+	case src.MediaType == "":
+		return fmt.Errorf("research source %s names no media type", src.SourceID)
+	case !src.Digest.Valid():
+		return fmt.Errorf("research source %s has no content digest", src.SourceID)
+	case src.Bytes < 0:
+		return fmt.Errorf("research source %s reports a negative size", src.SourceID)
+	}
+	for i, hop := range src.Redirects {
+		if !validIdentifier(hop) {
+			return fmt.Errorf("research source %s redirect %d is not a usable URL", src.SourceID, i)
 		}
 	}
 	return nil

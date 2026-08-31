@@ -229,6 +229,7 @@ func writeRun(b *strings.Builder, r run.Receipt) {
 			b.WriteString("Query:\n\n")
 			quote(b, step.Query)
 			b.WriteString("\n")
+			writeResearch(b, step.Research)
 			for _, hit := range step.Results {
 				fmt.Fprintf(b, "Result, rank %d:\n\n", hit.Rank)
 				writeLocator(b, hit.Evidence.Locator())
@@ -252,6 +253,29 @@ func writeRun(b *strings.Builder, r run.Receipt) {
 	if r.Body.AmendmentReason != "" {
 		writeQuoted(b, "Amendment reason", r.Body.AmendmentReason)
 	}
+}
+
+// writeResearch renders one brokered public fetch. The four fields SPEC.md
+// §2.6 requires a fetch to return are the four rendered here, because a raw
+// export whose retrieval trace said only "public-research" would lose the only
+// record of what crossed the boundary.
+func writeResearch(b *strings.Builder, src *run.ResearchSource) {
+	if src == nil {
+		return
+	}
+	fmt.Fprintf(b, "Brokered public source %s, retrieved %s:\n\n", mdCode(src.SourceID),
+		src.RetrievedAt.UTC().Format(timeLayout))
+	fmt.Fprintf(b, "- URL: %s\n", mdCode(src.URL))
+	fmt.Fprintf(b, "- Media type: %s\n", mdCode(src.MediaType))
+	served := fmt.Sprintf("%d bytes", src.Bytes)
+	if src.Truncated {
+		served += ", truncated at the run's document bound"
+	}
+	fmt.Fprintf(b, "- Digest: %s (%s)\n", mdCode(string(src.Digest)), served)
+	for _, hop := range src.Redirects {
+		fmt.Fprintf(b, "- Redirect followed: %s\n", mdCode(hop))
+	}
+	b.WriteString("\n")
 }
 
 func writeCandidates(b *strings.Builder, title string, in []run.Candidate) {

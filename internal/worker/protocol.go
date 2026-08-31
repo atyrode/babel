@@ -367,6 +367,19 @@ const ResultSchema = "babel.analysis-result/1"
 // and an unrecognized operation is denied rather than guessed at.
 const ToolSearch = "search"
 
+// The public-research broker's two operations (SPEC.md §2.6). They live here
+// for the reason ToolSearch does — one repository writes the name, another
+// reads it — and they are two rather than one because they are two different
+// acts. ToolSources discloses nothing and reaches nothing: it answers which
+// sources this run fixed, which is what makes the opaque identifier usable
+// without the worker guessing. ToolFetch is the act that crosses the boundary,
+// and it takes an identifier out of that answer and nothing else, because a
+// URL a model composed would be the disclosure sink §2.6 forbids.
+const (
+	ToolSources = "sources"
+	ToolFetch   = "fetch"
+)
+
 // capabilityTools is the single authority on which tool names Babel serves for
 // each capability, and every consumer reads it rather than restating it: the
 // job document publishes it to the worker (Job.encodeMaterial), the facility
@@ -379,11 +392,12 @@ const ToolSearch = "search"
 // than mapped to an empty list. See the "tools" paragraph in this package's
 // documentation for why absence is the representation; the short form is that
 // an empty list cannot distinguish "serves no operations" from "was never
-// published", and only one of those is ever true. repo-read, sandbox-exec and
-// public-research are all in that position today, which internal/explore
-// denies in those words.
+// published", and only one of those is ever true. repo-read and sandbox-exec
+// are both in that position today, which internal/explore denies in those
+// words. public-research left it when internal/research shipped (#75).
 var capabilityTools = map[Capability][]string{
-	CapabilityCorpusSearch: {ToolSearch},
+	CapabilityCorpusSearch:   {ToolSearch},
+	CapabilityPublicResearch: {ToolSources, ToolFetch},
 }
 
 // ServesTool reports whether tool is a name Babel published for c. It is

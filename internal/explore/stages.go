@@ -82,6 +82,8 @@ func (c *Controller) runStage(st *state, stage Stage, runID string, params map[s
 		redact:     c.cfg.Redact,
 		thresholds: c.thresholds(),
 		limit:      st.opt.Budget.Retrievals,
+		research:   c.cfg.Research,
+		fetches:    c.fetchBudget(st),
 		now:        c.now,
 	}
 	cfg := c.cfg.Worker
