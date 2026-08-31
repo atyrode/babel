@@ -139,6 +139,15 @@ func (t Duties) authorizes(d Duty) bool {
 // ran an hour before a restart must still be a duty that ran today, and a
 // scheduler that forgot its duties on restart would run them once per process
 // rather than once per day.
+//
+// The journal is capped, so the cadence is exact only while a duty's last draw
+// is still in it. A loop that ran past JournalCap cycles inside one cadence
+// window would lose the record and draw that duty a second time; at the
+// default interval that is over a week of history, and the failure mode is one
+// extra duty cycle rather than a lost or duplicated piece of operator work.
+// Keeping a second, uncapped record of duty draws to close that gap would be a
+// scheduling state that could disagree with the journal, which is the trade
+// this design refuses everywhere else.
 type History interface {
 	Reverse() []Cycle
 }
