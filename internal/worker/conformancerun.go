@@ -55,24 +55,61 @@ func RunConformance(ctx context.Context, workerPath string, args ...string) []Ob
 }
 
 // RunConformanceWith is RunConformance with the examination's options stated
-// explicitly.
+// explicitly. It returns the whole report at once; a caller that wants each
+// verdict as it is decided uses StreamConformance.
 func RunConformanceWith(ctx context.Context, opts ConformanceOptions) []ObligationResult {
+	return StreamConformance(ctx, opts, nil)
+}
+
+// StreamConformance is RunConformanceWith with every verdict handed to settled
+// the moment it is decided, before the next obligation is attempted. It returns
+// the same report RunConformanceWith would.
+//
+// It exists because the report is the only sign of life a grading run gives. An
+// obligation that cannot reach the worker spends its whole handshake budget
+// before it fails, so a suite that speaks only at the end leaves an operator
+// with no way to tell a slow grader from a hung one — and no way to name the
+// obligation that is stuck, which is the one thing the report could have said.
+//
+// settled is called on the calling goroutine, in obligation order, exactly once
+// per obligation, including the ones reported unrun after ctx is done: the
+// stream and the returned slice are the same verdicts in the same order, so a
+// caller may write to an unsynchronized destination. It must not block for
+// long, because nothing is graded while it runs. A nil settled grades
+// identically and says nothing.
+func StreamConformance(ctx context.Context, opts ConformanceOptions, settled func(ObligationResult)) []ObligationResult {
 	target := conformanceTarget{binary: opts.Worker, args: opts.Args}
 	if opts.Unsandboxed {
 		relaxed := Unsandboxed()
 		target.requirement = &relaxed
 	}
-	obligations := conformanceObligations(target)
+	return streamObligations(ctx, conformanceObligations(target), settled)
+}
+
+// streamObligations grades obligations in order and delivers each verdict as it
+// settles.
+//
+// It takes the obligations rather than building them from a target so that the
+// delivery discipline — one verdict out before the next obligation starts — can
+// be graded against obligations whose settling a test controls. The timing that
+// matters in a real run is the worker's, and a test cannot make a real worker
+// hang on cue without paying the handshake budget to watch it.
+func streamObligations(ctx context.Context, obligations []conformanceObligation, settled func(ObligationResult)) []ObligationResult {
 	results := make([]ObligationResult, 0, len(obligations))
 	for _, obligation := range obligations {
+		var result ObligationResult
 		if err := ctx.Err(); err != nil {
-			results = append(results, ObligationResult{
+			result = ObligationResult{
 				Name:     obligation.name,
 				Failures: []string{"not run: " + err.Error()},
-			})
-			continue
+			}
+		} else {
+			result = runObligation(obligation)
 		}
-		results = append(results, runObligation(obligation))
+		results = append(results, result)
+		if settled != nil {
+			settled(result)
+		}
 	}
 	return results
 }

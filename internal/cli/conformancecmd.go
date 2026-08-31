@@ -15,8 +15,17 @@ const conformanceUsage = `Usage: babel conformance WORKER [--worker-arg ARG]... 
 Runs the babel.analysis-worker contract suite against the executable at
 WORKER: the handshake, the resolved configuration, the grant boundary, tool
 decisions, terminal events, cancellation, and the worker's own discipline
-with the run-scoped broker credential. One obligation per line; the exit
-code is 0 only when every obligation held.
+with the run-scoped broker credential. One obligation per line, printed the
+moment that obligation settles; the exit code is 0 only when every
+obligation held.
+
+Obligations are graded one at a time, and one that cannot reach the worker
+spends its whole handshake budget — 15 seconds — before its verdict is
+known, so grading a program that is not a worker takes that long per
+obligation. The line for the last obligation to settle is therefore also
+the name of the obligation being graded now: a suite that appears to have
+stopped has stopped somewhere legible. --json is exempt: a machine-readable
+report is one document, written after the last obligation.
 
 The credential obligation deliberately instructs the worker to leak: it is
 told to echo its broker token, and it holds only if the run still reached a
@@ -95,43 +104,65 @@ func (a *app) conformanceCmd(ctx context.Context, args []string) error {
 		return err
 	}
 
-	results := worker.RunConformanceWith(ctx, worker.ConformanceOptions{
-		Worker:      binary,
-		Args:        workerArgs,
-		Unsandboxed: *unsandboxed,
-	})
 	res := conformanceResult{
 		Worker:      Sanitize(binary),
 		WorkerArgs:  sanitizeAll(workerArgs),
 		Unsandboxed: *unsandboxed,
-		Total:       len(results),
-		Obligations: make([]obligationRow, 0, len(results)),
 	}
+	grade := func(settled func(worker.ObligationResult)) []worker.ObligationResult {
+		return worker.StreamConformance(ctx, worker.ConformanceOptions{
+			Worker:      binary,
+			Args:        workerArgs,
+			Unsandboxed: *unsandboxed,
+		}, settled)
+	}
+	return a.reportConformance(res, *asJSON, grade)
+}
+
+// reportConformance grades a worker through grade and reports the verdicts,
+// with res already carrying what is known about the examination before it
+// starts.
+//
+// The human report is written as the run proceeds: an obligation's line goes
+// out the moment that obligation settles, so the last line on the terminal
+// names the last thing decided and, by omission, the obligation the suite is
+// working on now. It matters because an obligation that cannot reach the worker
+// spends its whole handshake budget before failing, and a suite of those in a
+// row is minutes during which a report held back until the end is
+// indistinguishable from a hung command.
+//
+// JSON is one document written once at the end, because that is what a --json
+// invocation promises: a stream of partial documents would not be parseable,
+// and the progress this gives a human is not what a program consuming the
+// report needs.
+//
+// grade receives the per-verdict callback rather than handing this function a
+// finished report, so the streaming path is the one a test can drive with
+// obligations whose settling it controls.
+func (a *app) reportConformance(res conformanceResult, asJSON bool, grade func(settled func(worker.ObligationResult)) []worker.ObligationResult) error {
+	var settled func(worker.ObligationResult)
+	if !asJSON {
+		settled = func(result worker.ObligationResult) { a.printObligation(obligationRowOf(result)) }
+	}
+	results := grade(settled)
+
+	res.Total = len(results)
+	res.Obligations = make([]obligationRow, 0, len(results))
 	for _, r := range results {
 		if r.Passed {
 			res.Passed++
 		} else {
 			res.Failed++
 		}
-		res.Obligations = append(res.Obligations, obligationRow{
-			Name:     Sanitize(r.Name),
-			Passed:   r.Passed,
-			Failures: sanitizeAll(r.Failures),
-		})
+		res.Obligations = append(res.Obligations, obligationRowOf(r))
 	}
 	res.OK = res.Failed == 0
 
-	if *asJSON {
+	if asJSON {
 		if err := a.emitJSON(res); err != nil {
 			return err
 		}
 	} else {
-		for _, row := range res.Obligations {
-			fmt.Fprintf(a.stdout, "%-6s%s\n", yesNo(row.Passed, "ok", "FAIL"), row.Name)
-			for _, failure := range row.Failures {
-				fmt.Fprintf(a.stdout, "        %s\n", failure)
-			}
-		}
 		fmt.Fprintf(a.stdout, "\n%d %s, %d passed, %d failed\n",
 			res.Total, plural(res.Total, "obligation", "obligations"), res.Passed, res.Failed)
 		if res.Unsandboxed {
@@ -147,6 +178,26 @@ func (a *app) conformanceCmd(ctx context.Context, args []string) error {
 	a.diagf("%d of %d %s failed; the worker does not yet implement the babel.analysis-worker contract\n",
 		res.Failed, res.Total, plural(res.Total, "obligation", "obligations"))
 	return errReported
+}
+
+// obligationRowOf renders one verdict for output. Every string a worker
+// influenced reaches a terminal through Sanitize: an obligation's name is
+// Babel's own, but its failure messages quote what the worker said.
+func obligationRowOf(result worker.ObligationResult) obligationRow {
+	return obligationRow{
+		Name:     Sanitize(result.Name),
+		Passed:   result.Passed,
+		Failures: sanitizeAll(result.Failures),
+	}
+}
+
+// printObligation writes one obligation's verdict and, if it failed, the
+// messages that decided it.
+func (a *app) printObligation(row obligationRow) {
+	fmt.Fprintf(a.stdout, "%-6s%s\n", yesNo(row.Passed, "ok", "FAIL"), row.Name)
+	for _, failure := range row.Failures {
+		fmt.Fprintf(a.stdout, "        %s\n", failure)
+	}
 }
 
 // resolveWorkerBinary fixes which executable the suite will launch, before it
