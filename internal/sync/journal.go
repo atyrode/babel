@@ -26,7 +26,13 @@ const component = "sync"
 // component of this file refuses one: a staged payload that has not reached the
 // shared catalog exists nowhere else, so discarding the file to make the shape
 // fit would discard analysis.
-const journalVersion = 1
+//
+// Version 2 added sync_record_edge for the typed reference graph's plaintext
+// endpoints (issue #113). The bump is what makes the addition safe in the one
+// direction that matters: a newer file opened by an older binary keeps its
+// version, and this build refuses a version it does not know rather than
+// publishing a record whose plaintext half it cannot see.
+const journalVersion = 2
 
 // DatabaseName is the durable database this journal shares with every other
 // Phase B writer. It is named here rather than imported from one of them
@@ -80,6 +86,17 @@ var (
 // it could be cleared. A separate table is released by deleting a row, which
 // needs no exception to immutability: sync_payload holds a row exactly while
 // that record's publication is pending.
+//
+// sync_record_edge is the same arrangement for the same reason. A reference
+// edge publishes its relation kind and both endpoints as plaintext columns
+// (migrations/0008), and those columns have to survive the crash window
+// between the transaction that made the edge durable and the sync that
+// publishes it - so they are staged here rather than re-derived, which nothing
+// could do from a sealed payload. They are a copy of internal/reference's own
+// row, so they are released with the payload when the record commits: the edge
+// store holds the plaintext and the shared catalog holds the published columns,
+// and a third copy that lived forever would grow this file by every edge Babel
+// has ever published.
 const journalSchema = `
 CREATE TABLE IF NOT EXISTS sync_run(
 	run_id            TEXT PRIMARY KEY,
@@ -111,6 +128,15 @@ CREATE TABLE IF NOT EXISTS sync_payload(
 	payload   BLOB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sync_record_edge(
+	record_id TEXT PRIMARY KEY REFERENCES sync_record(record_id),
+	edge_kind TEXT NOT NULL,
+	from_kind TEXT NOT NULL,
+	from_id   TEXT NOT NULL,
+	to_kind   TEXT NOT NULL,
+	to_id     TEXT NOT NULL
+);
+
 CREATE TRIGGER IF NOT EXISTS sync_record_immutable
 BEFORE UPDATE OF record_id, run_id, kind, record_schema, ordinal, staged_at ON sync_record
 BEGIN SELECT RAISE(ABORT, 'a staged record is fixed at stage time; only its sync state moves'); END;
@@ -129,7 +155,11 @@ BEGIN SELECT RAISE(ABORT, 'the sync journal is append-only'); END;
 
 CREATE TRIGGER IF NOT EXISTS sync_payload_immutable
 BEFORE UPDATE OF payload ON sync_payload
-BEGIN SELECT RAISE(ABORT, 'a staged payload is the bytes that were sealed; it is released, never rewritten'); END;`
+BEGIN SELECT RAISE(ABORT, 'a staged payload is the bytes that were sealed; it is released, never rewritten'); END;
+
+CREATE TRIGGER IF NOT EXISTS sync_record_edge_immutable
+BEFORE UPDATE ON sync_record_edge
+BEGIN SELECT RAISE(ABORT, 'a staged edge names the endpoints that were validated at write time; it is released, never rewritten'); END;`
 
 // Journal is the local record of what has been staged for the shared catalog
 // and what has reached it.
@@ -220,6 +250,17 @@ func (j *Journal) migrate() error {
 		return fmt.Errorf("sync: read journal schema version: %w", err)
 	case version > journalVersion:
 		return fmt.Errorf("sync: journal schema version %d is not supported by this build", version)
+	case version < journalVersion:
+		// Every statement in journalSchema is IF NOT EXISTS, so bringing an
+		// older file forward is running the same schema again: what it already
+		// has is left exactly as it is and what version 2 added arrives. That
+		// is only true because the additions are new tables and new triggers -
+		// an upgrade that had to alter an existing table would need its own
+		// statement here and a version of its own, and could not be folded
+		// into this one.
+		if err := upgradeSchema(j.db, version); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -240,8 +281,39 @@ func EnsureSchema(db *sql.DB) error {
 		version   INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("sync: create migration ledger: %w", err)
 	}
+	return recordSchemaVersion(db)
+}
+
+// upgradeSchema brings a file written by an older build up to journalVersion.
+//
+// It runs the same journalSchema an empty file gets, which is what makes the
+// upgrade one statement rather than a list: every statement there is IF NOT
+// EXISTS, so the tables and triggers a version-1 file already has are
+// untouched and version 2's are created beside them. from is named in the
+// error rather than used to choose statements, because there is exactly one
+// upgrade and a second one will need its own case.
+func upgradeSchema(db *sql.DB, from int) error {
+	if _, err := db.Exec(journalSchema); err != nil {
+		return fmt.Errorf("sync: upgrade journal schema from version %d: %w", from, err)
+	}
+	return recordSchemaVersion(db)
+}
+
+// recordSchemaVersion records journalVersion without ever lowering what the
+// file already claims.
+//
+// The guard is what keeps EnsureSchema safe on a file a newer build has
+// migrated. A writer calls it on its own handle with no version check of its
+// own - it wants the tables, not a verdict - and an unguarded write would let
+// an old binary relabel a version-3 file as version 2, after which every
+// build would read a shape the label does not describe. Lowering is refused
+// silently rather than reported: the newer version is the correct value, so
+// there is nothing for the writer to do about it.
+func recordSchemaVersion(db *sql.DB) error {
 	if _, err := db.Exec(`INSERT INTO schema_migration(component, version) VALUES(?, ?)
-		ON CONFLICT(component) DO NOTHING`, component, journalVersion); err != nil {
+		ON CONFLICT(component) DO UPDATE SET version = excluded.version
+		WHERE schema_migration.version < excluded.version`,
+		component, journalVersion); err != nil {
 		return fmt.Errorf("sync: record journal schema version: %w", err)
 	}
 	return nil
@@ -329,6 +401,16 @@ func (j *Journal) stage(ctx context.Context, tx *sql.Tx, rec Record) error {
 		`INSERT INTO sync_payload(record_id, payload) VALUES(?, ?)`,
 		rec.EntityID, rec.Payload); err != nil {
 		return fmt.Errorf("sync: stage payload for %s: %w", rec.EntityID, err)
+	}
+	if rec.Edge != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sync_record_edge(
+			record_id, edge_kind, from_kind, from_id, to_kind, to_id)
+			VALUES(?, ?, ?, ?, ?, ?)`,
+			rec.EntityID, string(rec.Edge.Kind),
+			rec.Edge.FromKind, rec.Edge.FromID,
+			rec.Edge.ToKind, rec.Edge.ToID); err != nil {
+			return fmt.Errorf("sync: stage edge endpoints for %s: %w", rec.EntityID, err)
+		}
 	}
 	return nil
 }
@@ -480,8 +562,11 @@ func (j *Journal) run(ctx context.Context, runID string) (stagedRun, error) {
 // already been released, so offering it again would be offering nothing.
 func (j *Journal) pendingRecords(ctx context.Context, runID string) ([]sharedcatalog.StagedRecord, error) {
 	rows, err := j.db.QueryContext(ctx, `
-		SELECT r.record_id, r.kind, r.record_schema, r.ordinal, p.payload
-		  FROM sync_record r JOIN sync_payload p ON p.record_id = r.record_id
+		SELECT r.record_id, r.kind, r.record_schema, r.ordinal, p.payload,
+		       e.edge_kind, e.from_kind, e.from_id, e.to_kind, e.to_id
+		  FROM sync_record r
+		  JOIN sync_payload p ON p.record_id = r.record_id
+		  LEFT JOIN sync_record_edge e ON e.record_id = r.record_id
 		 WHERE r.run_id = ? AND r.sync_state = ?
 		 ORDER BY r.ordinal`, runID, sharedcatalog.SyncPending)
 	if err != nil {
@@ -492,10 +577,23 @@ func (j *Journal) pendingRecords(ctx context.Context, runID string) ([]sharedcat
 	for rows.Next() {
 		var rec sharedcatalog.StagedRecord
 		var kind string
-		if err := rows.Scan(&rec.RecordID, &kind, &rec.Schema, &rec.Ordinal, &rec.Payload); err != nil {
+		// The join is LEFT because almost no record is an edge, so all five
+		// endpoint columns are absent for almost every row.
+		var edgeKind, fromKind, fromID, toKind, toID sql.NullString
+		if err := rows.Scan(&rec.RecordID, &kind, &rec.Schema, &rec.Ordinal, &rec.Payload,
+			&edgeKind, &fromKind, &fromID, &toKind, &toID); err != nil {
 			return nil, fmt.Errorf("sync: read staged record: %w", err)
 		}
 		rec.Kind = sharedcatalog.RecordKind(kind)
+		if edgeKind.Valid {
+			rec.Edge = &sharedcatalog.RecordEdge{
+				Kind:     sharedcatalog.EdgeKind(edgeKind.String),
+				FromKind: fromKind.String,
+				FromID:   fromID.String,
+				ToKind:   toKind.String,
+				ToID:     toID.String,
+			}
+		}
 		out = append(out, rec)
 	}
 	if err := rows.Err(); err != nil {
@@ -516,7 +614,9 @@ func (j *Journal) pendingRecords(ctx context.Context, runID string) ([]sharedcat
 // The payloads are deleted in the same transaction as the flip. A committed
 // record's payload copy has no remaining reader - the record's own component
 // holds the plaintext and Cellar holds the sealed object - and leaving it would
-// grow the durable file by every byte Babel has ever published.
+// grow the durable file by every byte Babel has ever published. A staged edge's
+// endpoint columns are released with it, and for the same reason: the shared
+// catalog now holds them and internal/reference never stopped holding them.
 func (j *Journal) commit(ctx context.Context, runID string) error {
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -527,6 +627,11 @@ func (j *Journal) commit(ctx context.Context, runID string) error {
 		`DELETE FROM sync_payload WHERE record_id IN (SELECT record_id FROM sync_record WHERE run_id = ?)`,
 		runID); err != nil {
 		return fmt.Errorf("sync: release staged payloads for run %s: %w", runID, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sync_record_edge WHERE record_id IN (SELECT record_id FROM sync_record WHERE run_id = ?)`,
+		runID); err != nil {
+		return fmt.Errorf("sync: release staged edge endpoints for run %s: %w", runID, err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sync_record SET sync_state = ? WHERE run_id = ? AND sync_state <> ?`,

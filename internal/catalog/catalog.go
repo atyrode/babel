@@ -238,6 +238,52 @@ func (c *Cache) Close() error { return c.db.Close() }
 // Path reports the cache database path.
 func (c *Cache) Path() string { return c.path }
 
+// SessionIdentity is one cached session's identity, and nothing else about it:
+// the selector this machine fetches it by, the harness that wrote it, and the
+// adapter's source id.
+//
+// It exists for the typed reference graph (issue #113). A reference to a
+// session is addressed by its durable session key - the
+// `sharedcatalog.SessionUID` digest over deployment, host, harness and source
+// id - and nothing stores that digest locally, so resolving one means deriving
+// it from the sessions this machine holds. These three fields are the whole
+// input to that derivation, which is why this is its own shape rather than a
+// Row: reading a Row per session would pull every cached title, path and
+// row_json blob through the resolver to answer a question about identity.
+type SessionIdentity struct {
+	Selector string
+	Harness  string
+	SourceID string
+}
+
+// SessionIdentities reports the identity of every cached session.
+//
+// It is the whole corpus rather than a lookup because a durable session key is
+// a one-way digest: a caller holding one cannot ask the cache for it, only
+// derive the keys of what it has and compare. The projection is three short
+// columns, so that comparison costs a scan of identities rather than of
+// descriptions.
+func (c *Cache) SessionIdentities(ctx context.Context) ([]SessionIdentity, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT selector, COALESCE(harness, ''), COALESCE(source_id, '') FROM sessions`)
+	if err != nil {
+		return nil, fmt.Errorf("read session identities: %w", err)
+	}
+	defer rows.Close()
+	var out []SessionIdentity
+	for rows.Next() {
+		var id SessionIdentity
+		if err := rows.Scan(&id.Selector, &id.Harness, &id.SourceID); err != nil {
+			return nil, fmt.Errorf("scan session identity: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read session identities: %w", err)
+	}
+	return out, nil
+}
+
 type liveRef struct {
 	ref       Ref
 	size      int64

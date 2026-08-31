@@ -103,6 +103,12 @@ type StagedRecord struct {
 	// output in the order it was produced without trusting timestamps.
 	Ordinal int64
 	Payload []byte
+	// Edge is the record's plaintext citation shape, and nil for every record
+	// that is not a reference edge (issue #113, migrations/0008). When it is
+	// set, its row is written in the same transaction as the record row: the
+	// two are one fact, and a record row whose edge row is missing would be a
+	// citation no reader can see and no retry will supply.
+	Edge *RecordEdge
 }
 
 // RunClosure is one analysis run and the records it must commit.
@@ -269,6 +275,20 @@ func (c RunClosure) validate() error {
 		if len(rec.Payload) == 0 {
 			return fmt.Errorf("record %s has an empty payload", rec.RecordID)
 		}
+		if rec.Edge != nil {
+			if err := rec.Edge.Validate(); err != nil {
+				return fmt.Errorf("record %s: %w", rec.RecordID, err)
+			}
+			// An edge publishes as a link. The pairing is checked here rather
+			// than assumed because the two halves are supplied separately: a
+			// hypothesis offered with endpoint columns would put a citation
+			// row on a record that is not one, and analysis_edges has no
+			// column that says so.
+			if rec.Kind != KindLink {
+				return fmt.Errorf("record %s carries edge endpoints but is a %s, not a %s",
+					rec.RecordID, rec.Kind, KindLink)
+			}
+		}
 	}
 	return nil
 }
@@ -372,7 +392,17 @@ func commitRecord(
 	// committed the same record between the presence check and here; its
 	// object stands and ours becomes an orphan, which costs storage rather
 	// than correctness.
-	res, err := db.ExecContext(ctx, `
+	//
+	// The insert is a transaction rather than a statement because an edge
+	// record writes two rows - its identity and its plaintext citation - and
+	// SyncRun never revisits a record the catalog already holds, so a crash
+	// between them would leave the citation invisible forever.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("record analysis record %s: begin: %w", rec.RecordID, err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `
 		INSERT INTO analysis_records (record_id, run_id, kind, record_schema, ordinal,
 		                              object_key, key_id, ciphertext_size, object_digest)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -384,6 +414,12 @@ func commitRecord(
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
+		return false, fmt.Errorf("record analysis record %s: %w", rec.RecordID, err)
+	}
+	if err := commitEdge(ctx, tx, rec.RecordID, rec.Edge); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("record analysis record %s: %w", rec.RecordID, err)
 	}
 	return n == 1, nil

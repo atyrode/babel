@@ -91,8 +91,9 @@ func TestFrozenAllowlistShape(t *testing.T) {
 		// Phase A, frozen 2026-08-29.
 		"deployments", "hosts", "host_leases", "idempotency_keys",
 		"instances", "schema_migrations", "sessions", "snapshots",
-		// Phase B analysis output.
-		"analysis_records", "analysis_runs",
+		// Phase B analysis output, and the citation graph over it
+		// (migrations/0008).
+		"analysis_edges", "analysis_records", "analysis_runs",
 	}
 	var got []string
 	for table := range tables {
@@ -128,6 +129,7 @@ func TestMigrationLedgerIsExactlyThese(t *testing.T) {
 		"0005_title_provenance",
 		"0006_usage_metadata",
 		"0007_instance_host",
+		"0008_reference_edges",
 	}
 
 	entries, err := migrations()
@@ -174,6 +176,7 @@ func TestAppliedMigrationBodiesAreFrozen(t *testing.T) {
 		"0005_title_provenance": "16252f11ec1e69ce0eda55f247b7199320f1b36ecd7c790e4e929b99587b36cf",
 		"0006_usage_metadata":   "d44410ff6885b93b2a964eee95a838a64e9e6a8ba6d3af79c6a51f845b68f66d",
 		"0007_instance_host":    "613485056617e5e7b0a2a8210e4699ec3b7e281f779190e1ad4758d58853da64",
+		"0008_reference_edges":  "f99bdd8f847118c30693fa7c3d5f8e66a4025ce61fb4ab3114276e9ccd24d6ba",
 	}
 
 	const remedy = "Two changes are legitimate here, and they are not the same " +
