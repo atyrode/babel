@@ -2911,6 +2911,9 @@ a.link-target:hover {
 
 .help-page .card {
   margin-top: 1rem;
+  /* The in-page cross-links scroll to a card; without this the sticky topbar
+     would sit on the heading they scrolled to. */
+  scroll-margin-top: 4.5rem;
 }
 
 .help-card {
@@ -3000,6 +3003,143 @@ a.link-target:hover {
 
 .help-page table {
   font-size: 0.78rem;
+}
+
+/* The runtime model: two loops, drawn rather than described. Each diagram
+   scales with its column but stops growing at a width where its type matches
+   the card's own, so it reads as part of the page rather than a poster. */
+.runtime-loops {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  gap: 1.4rem 2rem;
+  align-items: start;
+  margin-top: 1.1rem;
+}
+
+.runtime-loop {
+  min-width: 0;
+  margin: 0;
+}
+
+.runtime-loop figcaption {
+  display: grid;
+  gap: 0.15rem;
+  justify-items: start;
+}
+
+.runtime-loop figcaption .badge {
+  margin-bottom: 0.35rem;
+}
+
+.runtime-loop figcaption strong {
+  font-size: 0.95rem;
+}
+
+.runtime-loop-sub {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.runtime-diagram {
+  display: block;
+  width: 100%;
+  max-width: 30rem;
+  height: auto;
+  margin-top: 0.9rem;
+}
+
+.runtime-diagram .rt-box {
+  fill: var(--surface-inset);
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.runtime-diagram .rt-box--records { stroke: rgba(103, 211, 145, 0.4); }
+.runtime-diagram .rt-box--worker { stroke: rgba(157, 140, 255, 0.5); }
+
+.runtime-diagram .rt-title {
+  fill: var(--text);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.runtime-diagram .rt-mono {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+}
+
+.runtime-diagram .rt-sub {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-diagram .rt-label {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.runtime-diagram .rt-flow {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.2;
+}
+
+.runtime-diagram .rt-flow--again {
+  stroke-dasharray: 4 4;
+}
+
+.runtime-diagram .rt-flow--exchange {
+  stroke: var(--accent);
+}
+
+.runtime-diagram .rt-exchange-label {
+  fill: var(--accent-bright);
+  font-size: 9.5px;
+}
+
+/* The AI boundary is the diagram's one loud element on purpose: it is the
+   answer to "where does a model run", and everything else is furniture. */
+.runtime-diagram .rt-boundary {
+  fill: rgba(157, 140, 255, 0.05);
+  stroke: var(--accent);
+  stroke-width: 1.2;
+  stroke-dasharray: 6 5;
+}
+
+.runtime-diagram .rt-boundary-label {
+  fill: var(--accent-bright);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.runtime-diagram .rt-endbar {
+  fill: none;
+  stroke: var(--line-soft);
+  stroke-dasharray: 4 4;
+}
+
+.runtime-diagram .rt-end-strong {
+  fill: var(--text);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.runtime-arrowhead { fill: var(--muted); }
+.runtime-arrowhead--exchange { fill: var(--accent); }
+
+/* The forward note is visually a plan, not a feature: dashed, amber-marked,
+   and linking nothing. */
+.help-planned {
+  max-width: 62rem;
+  margin-top: 0.9rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px dashed rgba(227, 175, 93, 0.4);
+  border-radius: 0.55rem;
+}
+
+.help-planned strong {
+  color: var(--amber);
 }
 
 /* Seven destinations, the help link and the stop control no longer fit one row
