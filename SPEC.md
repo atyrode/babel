@@ -20,6 +20,8 @@ The project closes a creative feedback loop:
 
 > conversations and reality produce hypotheses; exploration connects and challenges them; human review decides what becomes useful; the resulting feedback can improve systems, future interactions, and Babel itself.
 
+Among everything Babel can be, its axiomatic center is friction (operator decision, 2026-08-31): it strives, ever so slightly and continuously, to reduce the friction between the operator and their agents. Babel exists to understand what an agent didn't understand, how communication failed to produce success, and where error arose only from poor systems, poor communication, missing tools, or missing context. Its posture is a zen advisor, never a magic solution-finder: it helps problems emerge and puts words on them, suggests remedies as separate addressable proposals, and welcomes the operator's open-ended complaints to see whether anything actionable can be made of them. Friction with Babel itself is inside this scope.
+
 Babel does not promise reliable, exhaustive, or objectively correct analytical output. Its hard guarantees concern archive integrity, containment, provenance, reproducibility, and no mutating or publishing external effects. Brokered reads are observable external effects and are recorded. Hypotheses, findings, and proposals remain creative, fallible, incomplete interpretations for human review.
 
 ## 2. Product boundary
