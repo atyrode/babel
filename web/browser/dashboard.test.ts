@@ -343,7 +343,7 @@ test.skipIf(!chrome)("the Help guide explains the lifecycle and maps the command
   expect(state.badges).toContain("rejected");
   expect(state.badges).toContain("refine-requested");
   for (const href of state.links) {
-    expect(href).toMatch(/^#\/(|help|sessions|archive|explore|hypotheses|findings|reality|review)$/u);
+    expect(href).toMatch(/^#\/(|help|sessions|archive|explore|fleet|hypotheses|findings|reality|review)$/u);
   }
 
   // The guide is a page, not a request: nothing on it reads the API, so it
