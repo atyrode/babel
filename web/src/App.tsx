@@ -6,6 +6,7 @@ import {
   getVersion,
   lockServer,
   subscribeAPIErrors,
+  type APIFailure,
   type VersionInfo,
 } from "./api";
 import ArchivePage from "./pages/ArchivePage";
@@ -30,23 +31,35 @@ const LOCK_PROMPT =
 function App() {
   const location = useLocation();
   const [version, setVersion] = useState<VersionInfo | null>(null);
-  const [apiError, setAPIError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<APIFailure | null>(null);
   const [stopping, setStopping] = useState(false);
   const [stopped, setStopped] = useState(false);
 
-  useEffect(() => subscribeAPIErrors(setAPIError), []);
+  useEffect(() => subscribeAPIErrors(setFailure), []);
   // The banner reports the failure of a request, and a request belongs to the
   // route that made it. `currentError` lives at module scope in ./api and is
-  // replayed to every new subscriber, so without this a 409 from a service
-  // this build did not wire — the frontier on a machine with no analysis
-  // state — would keep accusing every page the operator visited afterwards,
-  // including the ones that loaded perfectly. Clearing on navigation scopes
-  // the banner to the view it describes; a request that fails after the
-  // route settles still publishes normally, because this runs on the
-  // transition rather than on every render.
+  // replayed to every new subscriber, so without this a 409 from a service this
+  // build did not wire — the frontier on a machine with no analysis state —
+  // would keep accusing every page the operator visited afterwards, including
+  // the ones that loaded perfectly.
+  //
+  // Whether the banner belongs here is decided during render, from the route
+  // the failure was published against. It used to be decided by an effect that
+  // cleared the banner when the path changed, and that was one frame too late:
+  // effects run after the commit, so the new page painted once carrying the old
+  // page's refusal before a second render removed it. A page that renders
+  // perfectly and accuses another page of failing is the exact falsehood this
+  // rule exists to prevent, so it must not be reachable in any frame — and a
+  // one-frame version of it is a race that only shows up when something else
+  // on the page happens to be slow.
+  //
+  // The module-level state is still released, in an effect, because that is a
+  // side effect rather than a rendering decision. It is now timing-insensitive:
+  // the banner is already gone by the time this runs.
+  const stale = failure !== null && failure.route !== location.pathname;
   useEffect(() => {
-    dismissAPIError();
-  }, [location.pathname]);
+    if (stale) dismissAPIError();
+  }, [stale]);
   useEffect(() => {
     let live = true;
     getVersion()
@@ -177,9 +190,9 @@ function App() {
         </div>
       </header>
 
-      {apiError && (
+      {failure && !stale && (
         <div className="error-banner" role="alert">
-          <span>{apiError}</span>
+          <span>{failure.message}</span>
           <button type="button" className="icon-button" onClick={dismissAPIError} aria-label="Dismiss error">
             ×
           </button>

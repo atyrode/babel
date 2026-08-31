@@ -47,6 +47,7 @@ import (
 	"github.com/atyrode/babel/internal/adapter/omp"
 	"github.com/atyrode/babel/internal/catalog"
 	"github.com/atyrode/babel/internal/config"
+	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/restic"
 )
 
@@ -85,6 +86,8 @@ Commands:
   archive fleet               report whether every host has published recently
   archive verify              check repository integrity
   sync                        publish this host's durable records to the fleet
+  fleet records               list every host's committed analysis
+  fleet ingest                index every host's committed analysis locally
   sessions list               list this host's local sessions
   sessions inspect SELECTOR   show one local session in full
   sessions title infer        have a model write titles for untitled sessions
@@ -195,11 +198,26 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return exitFailure
 }
 
-// app carries one invocation's input and output streams.
+// app carries one invocation's input and output streams, and the two shared-mode
+// dependencies a fleet read needs.
 type app struct {
 	stdin  io.Reader
 	stdout io.Writer
 	stderr io.Writer
+
+	// fleetRead is the shared-catalog read surface. It is injected rather than
+	// constructed at every call site so that exactly one function resolves it
+	// (fleetReader) and everything above that takes it as an argument, which is
+	// what lets the fleet rendering be exercised without a PostgreSQL server.
+	// Nil means unresolved, not absent: a command that needs one asks
+	// fleetReader, which opens one or reports why there is no fleet.
+	fleetRead *fleet.Reader
+	// journal is this machine's publication journal, the only thing that can
+	// answer "is this staged" about a record with no remote row at all — the
+	// visibly pending outage staging SPEC.md §9 requires. Nil is legitimate and
+	// means this build has no journal wired, which internal/fleet's resolution
+	// reports as "local" rather than guessing on its behalf.
+	journal syncJournal
 }
 
 // dispatch routes "babel <noun> <verb>".
@@ -219,6 +237,8 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.archive(ctx, args[1:])
 	case "sync":
 		return a.syncCmd(ctx, args[1:])
+	case "fleet":
+		return a.fleetCmd(ctx, args[1:])
 	case "sessions":
 		return a.sessions(ctx, args[1:])
 	case "web":
@@ -593,9 +613,9 @@ func (rf *repoFlags) open(c *cmd, d dirs, diagnostics io.Writer) (*restic.Repo, 
 }
 
 // hostID resolves this host's stable archive identity (SPEC.md §6.1): the
-// --host flag, else $BABEL_HOST_ID, else storage.json, else the system
-// hostname lowercased and sanitized. It becomes the restic snapshot host,
-// which is how status groups an archive shared by several machines.
+// --host flag, else the flagless resolution localHostID performs. It becomes
+// the restic snapshot host, which is how status groups an archive shared by
+// several machines.
 func (rf *repoFlags) hostID(c *cmd) (string, error) {
 	if rf.host != "" {
 		if !validHostID(rf.host) {
@@ -603,6 +623,19 @@ func (rf *repoFlags) hostID(c *cmd) (string, error) {
 		}
 		return rf.host, nil
 	}
+	return localHostID()
+}
+
+// localHostID resolves this machine's identity from everything except a flag:
+// $BABEL_HOST_ID, else storage.json, else the system hostname lowercased and
+// sanitized.
+//
+// It is separate from repoFlags.hostID because a command with no --host flag of
+// its own still needs the identity — `babel fleet records` labels this
+// machine's own rows with it, and on that command --host is a filter rather
+// than an identity — and two resolution orders would be two answers to "which
+// machine is this".
+func localHostID() (string, error) {
 	if v := os.Getenv("BABEL_HOST_ID"); v != "" {
 		if !validHostID(v) {
 			return "", fmt.Errorf("BABEL_HOST_ID %q is not a valid host id", v)

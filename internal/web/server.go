@@ -450,6 +450,21 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleReviveRecord(w, r)
+	// Issue #109's fleet read. Both are GETs and neither reaches a writer:
+	// internal/fleet holds no publisher and this surface holds no ingest, so
+	// the browser can see what every host committed and can change none of
+	// it. internal/web/fleet.go states why an unconfigured fleet answers 200
+	// with `configured: false` rather than refusing.
+	case "/api/fleet/records":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFleetRecords(w, r)
+	case "/api/fleet/hosts":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFleetHosts(w, r)
 	case "/api/search":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return

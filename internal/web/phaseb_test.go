@@ -138,6 +138,12 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		Cookbook:     recipes,
 		Dispositions: actions,
 		Reviver:      front,
+		// The fleet reader every server here reads through. It is wired by
+		// default rather than per test because issue #109 makes attribution
+		// and sync state part of every listing's shape: a harness that left it
+		// out would exercise the merged surfaces only in the tests that
+		// remembered to ask for them. fleet_test.go describes the fixture.
+		Fleet: fleetFixture(text),
 		Runs: runLister{{
 			ReceiptID:     "rcp-1 " + text,
 			RunID:         "run-1 " + text,
@@ -567,6 +573,19 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 			path: "/api/record/revisions?type=hypothesis&id=" + h.original.ID},
 		{name: "record dispositions", method: http.MethodGet,
 			path: "/api/record/dispositions?type=hypothesis&id=" + h.hypothesis.ID},
+		// Issue #109's fleet read. Both carry another host's records, which
+		// means every string in them arrived from a machine this one does not
+		// control: hostile content is the normal case here rather than the
+		// exceptional one, so both are enrolled in the escaping sweep.
+		//
+		// The merged listings are enrolled as their own entries rather than by
+		// widening the local ones, because ?fleet=1 is what makes a response
+		// carry a remote host's display name and a remote record's wording.
+		{name: "fleet records", method: http.MethodGet, path: "/api/fleet/records?pending=1"},
+		{name: "fleet hosts", method: http.MethodGet, path: "/api/fleet/hosts?pending=1"},
+		{name: "fleet hypotheses", method: http.MethodGet, path: "/api/hypotheses?fleet=1"},
+		{name: "fleet findings", method: http.MethodGet, path: "/api/findings?fleet=1"},
+		{name: "fleet review queue", method: http.MethodGet, path: "/api/review/queue?status=all&fleet=1"},
 		{
 			name: "review decide", method: http.MethodPost, path: "/api/review/decide", mutating: true,
 			body: `{"subject":{"type":"proposal","id":"` + h.proposal.ID + `"},"disposition":"defer"}`,

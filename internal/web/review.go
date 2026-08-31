@@ -15,13 +15,21 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/review"
+	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
 // QueueItem is one row of the review queue, with an excerpt of the subject so
 // the queue is readable without opening every record.
+//
+// The embedded fleetMark is issue #109 item 4: a row says which machine
+// produced it and whether it is globally reviewable yet, so an inbox that spans
+// the deployment cannot present another host's staged output as though it were
+// this machine's decided work.
 type QueueItem struct {
+	fleetMark
 	Subject       refView `json:"subject"`
 	EnrolledAt    string  `json:"enrolled_at"`
 	Status        string  `json:"status"`
@@ -32,6 +40,7 @@ type QueueItem struct {
 }
 
 type queueResult struct {
+	syncNotice
 	Items []QueueItem `json:"items"`
 	Total int         `json:"total"`
 }
@@ -42,11 +51,23 @@ type queueResult struct {
 // and priority to ordering and forbids them from gating whether a candidate
 // exists, and a queue that reordered itself by a model-produced score would
 // quietly do the triage the reviewer is there to do.
+//
+// ?fleet=1 appends the other hosts' committed review records after the local
+// page. Local first, and the two blocks are not interleaved: this machine's
+// rows carry a derived review status, a decision count and a refinement count
+// that a remote row cannot, and sorting the two together by time would put rows
+// that answer different questions in one sequence. Total stays the local
+// queue's length for the same reason — the fleet block is an attributed
+// appendix, not more pages of this machine's backlog.
 func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireService(w, s.opts.Review != nil && s.opts.Frontier != nil, "the review service") {
 		return
 	}
 	pg, ok := s.requirePage(w, r)
+	if !ok {
+		return
+	}
+	fleetWide, ok := s.fleetRequested(w, r)
 	if !ok {
 		return
 	}
@@ -80,13 +101,28 @@ func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	result := queueResult{Items: []QueueItem{}, Total: len(items)}
 	start, end := pg.window(len(items))
-	for _, item := range items[start:end] {
+	local := items[start:end]
+	ids := make([]string, 0, len(local))
+	for _, item := range local {
+		ids = append(ids, item.Subject.ID)
+	}
+	// One resolution for the whole page, from internal/fleet. A per-row
+	// derivation would be one query per row and a second answer to a question
+	// SPEC.md §9 has exactly one. A catalog that could not answer degrades the
+	// column to fleet.SyncUnknown and says so, rather than refusing this
+	// machine's own inbox over another machine's outage.
+	states, degraded := s.syncStates(r.Context(), r, ids)
+	if degraded {
+		result.syncNotice = degradedNotice()
+	}
+	for _, item := range local {
 		excerpt, err := s.excerpt(r.Context(), item.Subject)
 		if err != nil {
 			s.serviceError(w, r, err)
 			return
 		}
 		result.Items = append(result.Items, QueueItem{
+			fleetMark:     s.localMark(states[item.Subject.ID]),
 			Subject:       viewRef(item.Subject),
 			EnrolledAt:    timeText(item.EnrolledAt),
 			Status:        string(item.Status),
@@ -96,7 +132,47 @@ func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 			Excerpt:       excerpt,
 		})
 	}
+	if fleetWide {
+		records, err := s.otherHosts(r.Context(), pg.limit,
+			sharedcatalog.KindDisposition, sharedcatalog.KindProposal)
+		if err != nil {
+			s.fleetError(w, r, err)
+			return
+		}
+		host := s.opts.Fleet.LocalHost()
+		for _, record := range records {
+			result.Items = append(result.Items, fleetQueueItem(record, host))
+		}
+	}
 	s.writeJSON(w, http.StatusOK, result)
+}
+
+// fleetQueueItem renders another host's committed review record as a queue row.
+//
+// Four fields stay at their zero value and the emptiness is the content: a
+// review status, a decision count, a last-decided time and a refinement count
+// are derived from the owning host's own append-only history, which this
+// machine does not hold. Reporting zeroes as facts would say the other host has
+// decided nothing about a record it may have rejected twice, so a client tells
+// the two apart by local_host and renders an absence for a row that is not its
+// own.
+func fleetQueueItem(record fleet.Record, localHost string) QueueItem {
+	mark, summary := markFleetRecord(record, localHost)
+	return QueueItem{fleetMark: mark, Subject: fleetQueueSubject(record), Excerpt: summary}
+}
+
+// fleetQueueSubject names the record a fleet queue row is about.
+//
+// A committed disposition names the record it decided, which is the row a
+// reviewer wants to see; a proposal is its own subject. A record this instance
+// could not open can only name itself under its catalog kind, which is the
+// honest answer: this machine knows the row exists and cannot yet say what it
+// says about anything else.
+func fleetQueueSubject(record fleet.Record) refView {
+	if record.Published != nil && record.Published.Subject.ID != "" {
+		return viewRef(record.Published.Subject)
+	}
+	return refView{Type: string(record.Record.Kind), ID: record.Record.RecordID}
 }
 
 // reviewStatus resolves a ?status= filter against internal/frontier's derived

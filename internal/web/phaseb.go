@@ -20,6 +20,7 @@ import (
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/review"
 	"github.com/atyrode/babel/internal/run"
+	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
 const (
@@ -192,6 +193,8 @@ func classifyService(err error) (int, string) {
 	case errors.Is(err, index.ErrLimit), errors.Is(err, index.ErrOffset),
 		errors.Is(err, index.ErrOrder), errors.Is(err, index.ErrRelevanceWithoutMatch):
 		return http.StatusBadRequest, "the search request is outside what retrieval accepts"
+	case errors.Is(err, sharedcatalog.ErrRecordFilter):
+		return http.StatusBadRequest, "the fleet read filter is outside what the shared catalog accepts"
 	default:
 		return http.StatusInternalServerError, "the request could not be completed"
 	}

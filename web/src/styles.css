@@ -1634,6 +1634,98 @@ select:focus {
   background: rgba(157, 140, 255, 0.055);
 }
 
+/* Fleet attribution (issue #109 item 4).
+
+   A pending-sync row is marked on the row and not only in its badge. SPEC.md
+   §6.5 requires staged output to be visibly pending, and a reviewer scanning
+   twenty rows reads rows rather than badge text: the left edge is what makes
+   "not reviewable from anywhere else yet" legible at a glance. The unknown
+   marker is a different colour for a different claim -- this machine could not
+   find out -- and a remote row is dimmed at its edge because it is not this
+   machine's work and cannot be decided here. */
+.frontier-table tbody tr.row-pending-sync {
+  box-shadow: inset 0.2rem 0 0 var(--amber);
+}
+
+.frontier-table tbody tr.row-pending-sync td:first-child {
+  padding-left: 0.85rem;
+}
+
+.frontier-table tbody tr.row-sync-unknown {
+  box-shadow: inset 0.2rem 0 0 rgba(157, 140, 255, 0.75);
+}
+
+.frontier-table tbody tr.row-sync-unknown td:first-child {
+  padding-left: 0.85rem;
+}
+
+/* A row from another host is not navigable: the detail routes read this
+   machine's durable store. The cursor says so rather than inviting a click
+   that does nothing. */
+.frontier-table tbody tr.row-remote-host {
+  cursor: default;
+  background: rgba(255, 255, 255, 0.016);
+}
+
+.host-label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  max-width: 16rem;
+}
+
+.host-label .mono {
+  overflow-wrap: anywhere;
+}
+
+.host-label .secondary {
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+/* The absence is styled as an absence: muted and italic, so it never reads as
+   a machine called "unattributed". */
+.unattributed-host {
+  font-style: italic;
+}
+
+.sync-mark {
+  display: inline-flex;
+}
+
+.unopened-note,
+.no-summary {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.chip-pending {
+  margin-left: 0.35rem;
+  font-size: 0.7rem;
+  color: var(--amber);
+  white-space: nowrap;
+}
+
+.host-chips {
+  margin-top: 0.4rem;
+}
+
+.fleet-count {
+  white-space: nowrap;
+}
+
+.fleet-card .filter-chips {
+  margin-bottom: 0.6rem;
+}
+
+.fleet-table .statement-cell {
+  min-width: 16rem;
+}
+
 .statement-cell {
   min-width: 18rem;
 }

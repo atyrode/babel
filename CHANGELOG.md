@@ -110,6 +110,60 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
     doing so would orphan every sealed object written under the keys it held and
     Babel deletes no remote object. See docs/runbook.md §8 for custody.
 
+- **Committed Phase B state is readable from every host (issue #109, items
+  3-5).** Analysis was globally durable and locally readable, which is a
+  contradiction: `SPEC.md` §520 and §645-646 promise globally browseable
+  committed state, and every listing still answered out of one machine's
+  `durable.db`. Tonight's hypotheses were bound to the workstation that
+  produced them, and two conductors on two machines could explore the same
+  candidate without either being able to find out. The read half now exists.
+  - **`sharedcatalog.Records`** lists committed Phase B records fleet-wide with
+    plaintext metadata and a reference to the sealed object, filtered by host,
+    instance, kind, run, record id or commit window. Content is decrypted
+    client-side by the caller; there is still no payload column and no API here
+    that returns plaintext from PostgreSQL. `RecordHosts` reports the machines
+    that have committed something, which is what a host filter offers, and
+    `RecordSyncStates` answers per-record sync state from the store that is
+    authoritative about it.
+  - **Host attribution is read rather than inferred.** `migrations/0007` adds
+    `instances.host_id` — the pairing `Register` already received in one call
+    and dropped on the floor. Without it a committed record could only be
+    attributed by reading `execution_host_id`, which `migrations/0003` defines
+    as a rerun pin and leaves NULL for every unpinned run, so the alternative
+    was conflating authorship with a rerun constraint or guessing from an
+    instance id. An instance that has not registered since the column existed
+    renders as `unattributed`, and Babel refuses to substitute a host: a record
+    filed under the wrong machine is invisible where a gap is not.
+  - **The frontier answers across hosts.** `babel fleet ingest` fetches every
+    host's committed records, decrypts them locally and indexes them into the
+    rebuildable retrieval cache, per host, so self-retrieval and dedup reach the
+    whole deployment. Nothing remote is ever written to a durable store — which
+    is what keeps §763's local-only-indexing decision true, and what stops an
+    ingested record from being republished forever by the machine that read it.
+    A worker's self-retrieval hits now carry the machine each idea came from,
+    because telling a conductor "this already exists" while withholding whose
+    analysis it is would be inference presented as fact.
+  - **`babel fleet records`**, plus a `SYNC` column and a `--fleet` flag on
+    `hypotheses`, `findings`, `review queue` and `dispositions`; the web review
+    inbox, frontier and receipts render fleet-wide behind a host filter chip
+    with pending-sync rows visibly marked. A listing without `--fleet` still
+    answers with PostgreSQL down, because the local durable store is local and
+    a shared-catalog outage must not cost an operator their own analysis.
+  - **Sync state is four values, not three.** `committed`, `pending-sync`,
+    `local` and `unknown`, resolved in one place. `local` is deliberately not
+    `pending-sync`: pending is a promise that something will carry the record,
+    and for a record no journal is holding on a machine in local mode nothing
+    will. `unknown` is what a row reports when the authority was unreachable,
+    because each of the other three would be a specific false statement.
+  - **Plaintext eligibility is settled and enforced (§763's open item).** A
+    Phase B plaintext column may belong only to the six classes §9's Phase B
+    vocabulary names; `AssertPhaseBPlaintext` is called by `Verify` and
+    therefore by every `Migrate`, so a future migration putting a title-shaped,
+    path-shaped, grade-shaped or money-shaped column on an analysis table
+    passes the general allowlist and fails this gate. The operator's 2026-08-30
+    widening was granted for archive metadata about sessions a harness had
+    already written, and it does not carry over to claims Babel produced about
+    the corpus.
 - **Self-improvement duties, behind operator toggles (operator direction
   2026-08-31, issues #88 and #94).** Babel's charter has always included "and
   Babel itself", and until now that meant an operator typing a command. The

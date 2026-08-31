@@ -17,6 +17,7 @@ import (
 
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/cookbook"
+	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/reality"
 	runstore "github.com/atyrode/babel/internal/run"
@@ -251,6 +252,29 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	opts.Reviver = services.reviver()
 	opts.Cookbook = services.cookbook
 
+	// The fleet read surface, when this machine has one. A launch on a
+	// machine in local mode, or one whose payload keys are not placed, leaves
+	// it nil and every fleet view reports that honestly rather than failing:
+	// the local pages are what a single machine has always served, and a
+	// missing shared backend must not cost an operator their own analysis
+	// (issue #109 item 3).
+	//
+	// Any other failure is reported and also leaves it nil. That is
+	// deliberate: a launch is not the moment to refuse over a shared backend,
+	// and a warning naming the reason is what an operator can act on.
+	if reader, err := fleet.OpenReader(context.Background(), cfg, hostID); err == nil {
+		opts.Fleet = reader
+		services.fleet = reader
+	} else if !fleet.NotConfigured(err) {
+		a.diagf("warning: the fleet read surface is unavailable: %s\n", Sanitize(err.Error()))
+	}
+	// Options.SyncJournal is deliberately left nil here. The publication
+	// journal is the only thing that can tell a record staged while
+	// PostgreSQL was unreachable from one that was never staged at all, and
+	// a build with no journal must say so rather than guess: fleet's
+	// resolution reads a nil journal as "nothing here claims this record is
+	// going anywhere", which is exactly what is true.
+
 	srv, err := web.New(opts)
 	if err != nil {
 		// Nothing will ever call Serve, so the handles this launch opened
@@ -281,6 +305,12 @@ type webServices struct {
 	reality  *reality.Store
 	index    *index.Index
 	cookbook *cookbook.Set
+	// fleet is the shared-catalog reader, nil on a machine with no fleet.
+	// It is held here rather than only on Options because it owns a
+	// PostgreSQL pool: a launch that fails after opening it, and a served
+	// session that ends, both have to release it or it leaks for the
+	// process's life.
+	fleet *fleet.Reader
 }
 
 // openWebServices opens what this machine has, reporting what it does not.
@@ -391,8 +421,17 @@ func (s *webServices) Close() error {
 		return nil
 	}
 	var err error
+	// The fleet reader closes first because it is the only handle reaching a
+	// remote service: a launch that ends with a PostgreSQL pool still open
+	// holds server-side connections a managed provider counts, where the
+	// local SQLite handles cost only this process a file lock.
+	if s.fleet != nil {
+		err = s.fleet.Close()
+	}
 	if s.index != nil {
-		err = s.index.Close()
+		if e := s.index.Close(); err == nil {
+			err = e
+		}
 	}
 	if s.reality != nil {
 		if e := s.reality.Close(); err == nil {

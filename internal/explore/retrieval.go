@@ -558,9 +558,25 @@ type FrontierResults struct {
 // borrowed locator here would let a claim be cited as if the citation were
 // this hit's own.
 type FrontierSearchHit struct {
-	Kind    string `json:"kind"`
-	ID      string `json:"id"`
-	Root    string `json:"root,omitempty"`
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+	Root string `json:"root,omitempty"`
+	// Origin is the machine whose analysis this is, empty for this one
+	// (#109 item 4).
+	//
+	// It travels because withholding it would be inference presented as fact.
+	// The whole reason the frontier now answers across hosts is that two
+	// conductors on two machines must not silently duplicate one another - and
+	// the conductor is the party being told. A worker handed "this idea already
+	// exists" with no attribution would reasonably read it as this machine's
+	// own prior work, which changes what it should do: its own superseded
+	// wording is a revision to make, and another host's committed candidate is
+	// a record to argue with or defer to.
+	//
+	// It is a host id and nothing else - an opaque, operator-assigned
+	// identifier §9 admits in plaintext. No display name, no machine facts, and
+	// nothing about that host's configuration reaches a provider through it.
+	Origin  string `json:"origin,omitempty"`
 	Status  string `json:"status,omitempty"`
 	RunID   string `json:"run_id,omitempty"`
 	Subject string `json:"subject,omitempty"`
@@ -674,6 +690,7 @@ func (r *retrieval) serveFrontierHits(query string, limit int, hits []index.Fron
 			Kind:      string(hit.Kind),
 			ID:        hit.ID,
 			Root:      hit.RootID,
+			Origin:    hit.Origin,
 			Status:    string(hit.Status),
 			RunID:     hit.RunID,
 			Subject:   hit.Subject.ID,
