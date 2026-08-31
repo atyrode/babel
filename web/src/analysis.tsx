@@ -16,7 +16,7 @@ import { formatTime } from "./format";
 //     and operator answers render inside a visibly quoted frame, distinct from
 //     Babel's own chrome, and are never interpreted as markup.
 
-export type Tone = "neutral" | "cyan" | "green" | "amber" | "red" | "violet";
+export type Tone = "neutral" | "cyan" | "green" | "amber" | "red" | "violet" | "blue";
 
 // statusTone maps the §4.2 exploration lifecycle onto the interface's color
 // vocabulary. Rejected is red because it must be visible, not hidden: §5.2

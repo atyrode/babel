@@ -73,6 +73,7 @@ let browser: Browser | null = null;
 let page: Page;
 
 const WIDE = { width: 1440, height: 1100 };
+const MID = { width: 900, height: 1200 };
 const NARROW = { width: 390, height: 844 };
 
 async function open(route: string, base = rich?.base): Promise<void> {
@@ -133,7 +134,15 @@ test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel ans
     hash: window.location.hash,
     panels: Array.from(document.querySelectorAll(".panel h2")).map((h) => h.textContent),
     notes: document.querySelectorAll(".panel-note").length,
-    rows: document.querySelectorAll(".panel-rows li").length,
+    hosts: document.querySelectorAll(".host-list li").length,
+    queue: document.querySelectorAll(".queue-list li").length,
+    questions: document.querySelectorAll(".question-rows li").length,
+    receipts: document.querySelectorAll(".receipt-list li").length,
+    feed: document.querySelectorAll(".feed-list li").length,
+    corpusSegments: document.querySelectorAll(".panel--corpus .dist-seg").length,
+    frontierSegments: document.querySelectorAll(".panel--frontier .dist-seg").length,
+    frontierRows: document.querySelectorAll(".panel--frontier .panel-rows li").length,
+    spotlight: document.querySelectorAll(".panel--frontier .spotlight .panel-row-link").length,
   }));
   // The dashboard is home: the empty hash resolves here rather than redirecting.
   expect(state.hash === "" || state.hash === "#/").toBe(true);
@@ -147,20 +156,35 @@ test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel ans
   ]);
   // Every service answered, so no panel is explaining an absence.
   expect(state.notes).toBe(0);
-  // Non-vacuity: the panels are showing records, not empty frames.
-  expect(state.rows).toBeGreaterThanOrEqual(15);
+  // Non-vacuity, list by list: the panels are showing records, not empty
+  // frames, and each list is the shape its panel owns.
+  expect(state.hosts).toBe(2);
+  expect(state.queue).toBe(4);
+  expect(state.questions).toBe(3);
+  expect(state.receipts).toBe(2);
+  expect(state.feed).toBe(5);
+  // The frontier is a distribution plus one spotlight, never a listing: the
+  // records a human must act on render in the review queue, and the full
+  // frontier belongs to the Hypotheses page. Repeating the same statements in
+  // two adjacent panels was hierarchy-free duplication.
+  expect(state.frontierRows).toBe(0);
+  expect(state.spotlight).toBe(1);
+  // The proportions render as filled segments — one per populated harness,
+  // one per populated status.
+  expect(state.corpusSegments).toBe(3);
+  expect(state.frontierSegments).toBe(6);
 
-  // The at-a-glance numbers are the owning services' own, so they read as
-  // facts rather than as decoration.
-  const facts = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".panel-facts div")).map((entry) => ({
-      label: entry.querySelector("dt")?.textContent ?? "",
-      value: entry.querySelector("dd")?.textContent ?? "",
+  // The at-a-glance numbers are the owning services' own, rendered at hero
+  // size with their labels beneath — facts that lead, not decoration.
+  const heroes = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".stat-hero")).map((entry) => ({
+      label: entry.querySelector(".stat-label")?.textContent ?? "",
+      value: entry.querySelector(".stat-value")?.textContent ?? "",
     })));
-  expect(facts).toContainEqual({ label: "Snapshots", value: "12" });
-  expect(facts).toContainEqual({ label: "Sessions", value: "18" });
-  expect(facts).toContainEqual({ label: "Candidates", value: "6" });
-  expect(facts).toContainEqual({ label: "Awaiting a decision", value: "4" });
+  expect(heroes).toContainEqual({ label: "snapshots", value: "12" });
+  expect(heroes).toContainEqual({ label: "sessions", value: "18" });
+  expect(heroes).toContainEqual({ label: "candidates", value: "6" });
+  expect(heroes).toContainEqual({ label: "awaiting a decision", value: "4" });
 
   // The whole exploration lifecycle is described, zeros included, so a
   // frontier with nothing rejected still shows that rejection is a state.
@@ -181,12 +205,9 @@ test.skipIf(!chrome)("the frontier panel's total agrees with the page that owns 
   // A panel that disagreed with its own listing would be a second source of
   // truth, which is the one thing an aggregate read must not become.
   await open("");
-  await page.waitForSelector(".panel-chip", { timeout: 15_000 });
-  const panelTotal = await page.evaluate(() => {
-    const facts = Array.from(document.querySelectorAll(".panel-facts div"));
-    const entry = facts.find((item) => item.querySelector("dt")?.textContent === "Candidates");
-    return Number(entry?.querySelector("dd")?.textContent ?? "-1");
-  });
+  await page.waitForSelector(".panel--frontier .stat-value", { timeout: 15_000 });
+  const panelTotal = await page.evaluate(() =>
+    Number(document.querySelector(".panel--frontier .stat-value")?.textContent ?? "-1"));
 
   await open("hypotheses");
   await page.waitForSelector(".frontier-table tbody tr", { timeout: 15_000 });
@@ -226,9 +247,9 @@ test.skipIf(!chrome)("every panel jump link lands where it says", async () => {
 
 test.skipIf(!chrome)("panel rows deep link to the records they show", async () => {
   for (const [selector, prefix] of [
-    [".panel-grid > .panel:nth-child(3) .panel-row-link", "#/hypotheses/hyp_"],
-    [".panel-grid > .panel:nth-child(4) .panel-rows .panel-row-link", "#/review/"],
-    [".panel-grid > .panel:nth-child(6) .panel-row-link", "#/sessions/"],
+    [".panel--frontier .spotlight .panel-row-link", "#/hypotheses/hyp_"],
+    [".panel--review .queue-list .panel-row-link", "#/review/"],
+    [".panel--activity .feed-list .panel-row-link", "#/sessions/"],
   ] as const) {
     await open("");
     await page.waitForSelector(selector, { timeout: 15_000 });
@@ -255,12 +276,14 @@ test.skipIf(!chrome)("a launch with no services explains itself panel by panel",
     // Nothing claims a number it could not read, so no panel renders a
     // glance row at all.
     facts: document.querySelectorAll(".panel-facts div").length,
+    heroes: document.querySelectorAll(".stat-hero").length,
   }));
   // Six panels and seven notes: the review tile carries two sections, because
   // the review log and the Reality ledger are different stores.
   expect(state.panels).toBe(6);
   expect(state.notes).toHaveLength(7);
   expect(state.rows).toBe(0);
+  expect(state.heroes).toBe(0);
   // The notes are the server's own wording, naming what to do about it.
   expect(state.notes.join(" ")).toContain("babel storage configure");
   expect(state.notes.join(" ")).toContain("not available in this session");
@@ -385,8 +408,55 @@ test.skipIf(!chrome)("a hostile candidate statement renders inert in a panel", a
   expect(state.literal).toBe(true);
 });
 
-test.skipIf(!chrome)("neither route overflows at 390px or 1440px", async () => {
-  for (const viewport of [WIDE, NARROW]) {
+test.skipIf(!chrome)("a full candidate statement renders once, in the queue that owns it", async () => {
+  // The frontier and the review inbox used to list the same statements side
+  // by side. The hierarchy now: the review queue is the one panel that lists
+  // analytical records in full, and the frontier renders the distribution
+  // plus its newest candidate. The hostile candidate awaits review, so its
+  // statement must appear exactly once on the page — in the queue.
+  await open("");
+  await page.waitForSelector(".queue-list li", { timeout: 15_000 });
+  const text = await page.evaluate(() => document.body.innerText);
+  const first = text.indexOf(HOSTILE_HTML);
+  expect(first).toBeGreaterThan(-1);
+  expect(text.indexOf(HOSTILE_HTML, first + 1)).toBe(-1);
+});
+
+test.skipIf(!chrome)("a queue row disclosure reveals the identifier without navigating", async () => {
+  // The glance shows two clamped lines and no identifier; the chevron
+  // discloses the rest in place. Disclosure must never hijack the click that
+  // means "open this record" — the title link does that.
+  await open("");
+  await page.waitForSelector(".queue-list li .disclose-button", { timeout: 15_000 });
+  const before = await page.evaluate(() => ({
+    hash: window.location.hash,
+    ids: document.querySelectorAll(".queue-list li .secondary.mono").length,
+  }));
+  expect(before.ids).toBe(0);
+
+  await page.click(".queue-list li:first-child .disclose-button");
+  await page.waitForSelector(".queue-list li.expanded", { timeout: 15_000 });
+  const after = await page.evaluate(() => ({
+    hash: window.location.hash,
+    expanded: document.querySelectorAll(".queue-list li.expanded").length,
+    id: document.querySelector(".queue-list li.expanded .secondary.mono")?.textContent ?? "",
+    aria: document.querySelector(".queue-list li:first-child .disclose-button")?.getAttribute("aria-expanded"),
+  }));
+  expect(after.hash).toBe(before.hash);
+  expect(after.expanded).toBe(1);
+  expect(after.id).toMatch(/^hyp_/u);
+  expect(after.aria).toBe("true");
+
+  // Collapse restores the glance row.
+  await page.click(".queue-list li:first-child .disclose-button");
+  await page.waitForFunction(
+    () => document.querySelectorAll(".queue-list li.expanded").length === 0,
+    { timeout: 15_000 },
+  );
+});
+
+test.skipIf(!chrome)("neither route overflows at 390px, 900px, or 1440px", async () => {
+  for (const viewport of [WIDE, MID, NARROW]) {
     await page.setViewport(viewport);
     for (const route of ["", "help"]) {
       await open(route);

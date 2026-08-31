@@ -22,6 +22,8 @@
   --amber: #e3af5d;
   --red: #f17881;
   --red-soft: rgba(241, 120, 129, 0.11);
+  --blue: #7fa7f5;
+  --blue-soft: rgba(127, 167, 245, 0.1);
   --shadow: 0 18px 45px rgba(0, 0, 0, 0.23);
 }
 
@@ -1299,6 +1301,12 @@ select:focus {
   background: var(--accent-soft);
 }
 
+.badge.tone-blue {
+  border-color: rgba(127, 167, 245, 0.3);
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
 /* The mark that says a title is not the harness's own record. It sits inline
    with the title text because it qualifies that text, and it is deliberately
    smaller and shorter than the surrounding badges: it must be legible at a
@@ -2072,32 +2080,108 @@ a.link-target:hover {
   color: var(--accent-bright);
 }
 
-/* Panels are equal citizens: an auto-fit grid so the row count follows the
-   viewport rather than a breakpoint per panel, and a minimum wide enough that
-   a statement and its metadata still read as two lines rather than a column of
-   single words. */
+/* The grid is a composition, not a queue of equal tiles. One column by
+   default; at two columns and above, named areas place each panel where its
+   content composes — the three stat panels across the top, the review queue
+   beside the activity feed, and the receipt strip as a full-width ledger
+   line at the bottom. Rows stretch, so a row's cards share a bottom edge
+   instead of leaving ragged gutters of background. */
 .panel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 1rem;
-  align-items: start;
 }
 
+@media (min-width: 851px) {
+  .panel-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "archive corpus"
+      "frontier review"
+      "activity review"
+      "runs runs";
+  }
+
+  .panel--archive { grid-area: archive; }
+  .panel--corpus { grid-area: corpus; }
+  .panel--frontier { grid-area: frontier; }
+  .panel--review { grid-area: review; }
+  .panel--runs { grid-area: runs; }
+  .panel--activity { grid-area: activity; }
+}
+
+@media (min-width: 1161px) {
+  .panel-grid {
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    grid-template-areas:
+      "archive archive archive archive corpus corpus corpus corpus frontier frontier frontier frontier"
+      "review review review review review review review activity activity activity activity activity"
+      "runs runs runs runs runs runs runs runs runs runs runs runs";
+  }
+}
+
+/* Each panel owns one accent: the hairline at its top edge, its eyebrow, and
+   its glyph. The accent names the panel, and the data inside uses the status
+   and harness vocabularies — identity and semantics never share a channel. */
 .panel {
-  display: grid;
-  gap: 0.7rem;
+  --panel-accent: var(--accent);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
   min-width: 0;
   padding: 1.3rem;
-  align-content: start;
+  overflow: hidden;
 }
+
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--panel-accent) 0%, transparent 72%);
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+.panel--archive { --panel-accent: var(--green); }
+.panel--corpus { --panel-accent: var(--cyan); }
+.panel--frontier { --panel-accent: var(--accent); }
+.panel--review { --panel-accent: var(--amber); }
+.panel--runs { --panel-accent: var(--blue); }
+.panel--activity { --panel-accent: #8fa0b8; }
 
 .panel > * {
   min-width: 0;
 }
 
+/* The pinned footer: whatever stretch left over collects above it, so equal-
+   height cards read as composed rather than padded. */
+.panel .panel-bottom {
+  margin-top: auto;
+}
+
 .panel .section-heading {
   align-items: baseline;
   margin-bottom: 0;
+}
+
+.panel .eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--panel-accent);
+}
+
+.panel .eyebrow svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .panel h2 {
@@ -2135,6 +2219,77 @@ a.link-target:hover {
   font-size: 0.8rem;
 }
 
+/* ------------------------------------------------------------------ numbers
+   The hero strip is where numbers lead. Labels sit beneath in micro-caps;
+   the numeral carries the weight the old label-sized figures never had. */
+.hero-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: last baseline;
+  gap: 0.5rem 1.7rem;
+}
+
+.stat-hero {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.stat-hero .stat-value {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  color: var(--text);
+  font-size: 2.1rem;
+  font-weight: 750;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-hero.small .stat-value {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.stat-hero.tone-amber .stat-value {
+  color: var(--amber);
+}
+
+.stat-hero .stat-label {
+  color: var(--subtle);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* A freshness dot grades only a timestamp's age. Green breathes because
+   "fresh" is the good state worth a pulse; the animation is removed with
+   reduced motion below. */
+.pulse-dot {
+  flex: none;
+  align-self: center;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--subtle);
+}
+
+.pulse-dot.tone-green {
+  background: var(--green);
+  box-shadow: 0 0 0 0 rgba(103, 211, 145, 0.45);
+  animation: pulse-fade 2.6s ease-out infinite;
+}
+
+.pulse-dot.tone-amber { background: var(--amber); }
+.pulse-dot.tone-red { background: var(--red); }
+
+@keyframes pulse-fade {
+  70% { box-shadow: 0 0 0 7px rgba(103, 211, 145, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(103, 211, 145, 0); }
+}
+
 .panel-facts {
   display: flex;
   flex-wrap: wrap;
@@ -2157,7 +2312,7 @@ a.link-target:hover {
 .panel-facts dd {
   margin: 0.15rem 0 0;
   color: var(--text);
-  font-size: 1.25rem;
+  font-size: 1.1rem;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
 }
@@ -2187,6 +2342,129 @@ a.link-target:hover {
   gap: 0.5rem;
 }
 
+/* ---------------------------------------------------------------- proportion
+   Filled proportions of counts the captions also state in words. These render
+   facts (session counts, titled counts) — never a grading, which §10 keeps
+   as words. */
+.dist-bar {
+  display: flex;
+  gap: 2px;
+  height: 0.6rem;
+  border-radius: 0.3rem;
+  overflow: hidden;
+}
+
+.dist-bar.empty {
+  border: 1px dashed var(--line);
+  background: var(--surface-inset);
+}
+
+.dist-seg {
+  min-width: 4px;
+  border-radius: 2px;
+}
+
+.dist-seg.tone-neutral { background: #55617a; }
+.dist-seg.tone-cyan { background: var(--cyan); }
+.dist-seg.tone-green { background: var(--green); }
+.dist-seg.tone-amber { background: var(--amber); }
+.dist-seg.tone-red { background: var(--red); }
+.dist-seg.tone-violet { background: var(--accent); }
+.dist-seg.tone-blue { background: var(--blue); }
+
+.meter {
+  display: inline-block;
+  flex: none;
+  width: 5.5rem;
+  height: 0.4rem;
+  border-radius: 0.2rem;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.meter-fill.tone-neutral { background: #55617a; }
+.meter-fill.tone-cyan { background: var(--cyan); }
+.meter-fill.tone-green { background: var(--green); }
+.meter-fill.tone-amber { background: var(--amber); }
+.meter-fill.tone-red { background: var(--red); }
+.meter-fill.tone-violet { background: var(--accent); }
+.meter-fill.tone-blue { background: var(--blue); }
+
+.coverage-line {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.coverage-line .meter {
+  flex: 1;
+  width: auto;
+}
+
+.coverage-label {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.corpus-legend {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.corpus-legend li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.swatch {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 2px;
+}
+
+.swatch.tone-neutral { background: #55617a; }
+.swatch.tone-cyan { background: var(--cyan); }
+.swatch.tone-green { background: var(--green); }
+.swatch.tone-amber { background: var(--amber); }
+.swatch.tone-red { background: var(--red); }
+.swatch.tone-violet { background: var(--accent); }
+.swatch.tone-blue { background: var(--blue); }
+
+.legend-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend-count {
+  color: var(--subtle);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------- rows
+   The shared row skeleton. Each list restyles it into its own shape below:
+   hosts carry freshness dots, the queue carries glyphs and disclosure, the
+   feed drops the boxes entirely. */
 .panel-rows {
   display: grid;
   gap: 0.4rem;
@@ -2208,7 +2486,7 @@ a.link-target:hover {
 
 .panel-row-main {
   display: grid;
-  gap: 0.1rem;
+  gap: 0.15rem;
   min-width: 0;
 }
 
@@ -2220,7 +2498,7 @@ a.link-target:hover {
 /* A panel row is a glance, and a model's statement can be a kilocharacter
    long. The clamp is visual only: the whole wording stays in the document —
    selectable, searchable, and one click from the record that owns it — but
-   three lines is what a tile can show without one candidate deciding the
+   two lines is what a tile can show without one candidate deciding the
    height of the whole grid row. Truncating the text itself would edit the
    model's wording, which §5.2 forbids. */
 .panel-row-link,
@@ -2228,7 +2506,7 @@ a.link-target:hover {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   color: var(--text);
   text-decoration: none;
   font-weight: 650;
@@ -2262,11 +2540,349 @@ a.link-target:hover {
   font-size: 0.74rem;
 }
 
+/* The legend's badges are smaller than a page badge: six of them share a
+   panel with a hero numeral and a spotlight, so they defer. */
+.panel-chip .badge {
+  min-height: 1.3rem;
+  padding: 0.08rem 0.38rem;
+  font-size: 0.62rem;
+}
+
+/* A zero is still listed — rejection being a state is the point — but it
+   recedes so the populated statuses carry the glance. */
+.panel-chip.zero {
+  opacity: 0.45;
+}
+
+/* ------------------------------------------------------------------ archive */
+.host-list li {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 0.55rem;
+}
+
+.host-list .pulse-dot {
+  align-self: auto;
+  margin-top: 0.3rem;
+}
+
+/* ----------------------------------------------------------------- frontier */
+.spotlight {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 0.55rem;
+  background: rgba(9, 12, 18, 0.62);
+  font-size: 0.8rem;
+}
+
+.spotlight-eyebrow {
+  margin: 0;
+  color: var(--accent);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.spotlight .panel-row-link {
+  -webkit-line-clamp: 2;
+}
+
+/* ------------------------------------------------------------------- review */
+.queue-list li {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: 0.6rem;
+}
+
+.subject-glyph {
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-top: 0.1rem;
+  border-radius: 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.subject-glyph.tone-violet { color: var(--accent-bright); background: var(--accent-soft); }
+.subject-glyph.tone-cyan { color: var(--cyan); background: rgba(104, 217, 208, 0.12); }
+.subject-glyph.tone-green { color: var(--green); background: rgba(103, 211, 145, 0.12); }
+.subject-glyph.tone-neutral { color: var(--muted); background: rgba(255, 255, 255, 0.06); }
+
+.row-kind {
+  color: var(--subtle);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.disclose-button {
+  display: grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--subtle);
+  box-shadow: none;
+}
+
+.disclose-button:hover:not(:disabled) {
+  border: 0;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.disclose-button svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.15s ease-out;
+}
+
+.disclose-button[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.queue-list li.expanded .panel-row-link {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: none;
+}
+
+/* The quiet state: a settled fact in one line, not a tall apology. */
+.quiet-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.quiet-mark {
+  color: var(--green);
+  font-weight: 700;
+}
+
+.more-link {
+  color: var(--accent-bright);
+  text-decoration: none;
+  font-weight: 650;
+}
+
+.more-link:hover {
+  text-decoration: underline;
+}
+
 .panel-subsection {
   display: grid;
   gap: 0.6rem;
+  margin-top: auto;
   padding-top: 0.8rem;
   border-top: 1px solid var(--line-soft);
+}
+
+/* --------------------------------------------------------------------- runs
+   Receipts render as stubs on a strip: the count leads, and each run is a
+   dashed-edged stub whose numbers are legible without reading a sentence. */
+.receipt-strip {
+  display: flex;
+  gap: 1.1rem;
+  align-items: stretch;
+}
+
+.receipt-lead {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 11.5rem;
+}
+
+.receipt-list {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+
+.receipt-list li {
+  display: grid;
+  flex: 1 1 13rem;
+  align-content: start;
+  gap: 0.3rem;
+  min-width: 0;
+  border-left: 3px dashed var(--line);
+}
+
+.receipt-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.sync-dot {
+  flex: none;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+}
+
+.sync-dot.tone-green { background: var(--green); }
+.sync-dot.tone-amber { background: var(--amber); }
+
+.receipt-sync {
+  color: var(--subtle);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.receipt-time {
+  margin-left: auto;
+  color: var(--subtle);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.receipt-id {
+  color: var(--text);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.receipt-recipe {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.receipt-counts {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.15rem;
+}
+
+.count-cell {
+  display: grid;
+  gap: 0.05rem;
+}
+
+.count-cell strong {
+  color: var(--text);
+  font-size: 1.05rem;
+  font-weight: 750;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.count-cell small {
+  color: var(--subtle);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.count-cell.tone-red strong { color: var(--red); }
+.count-cell.tone-amber strong { color: var(--amber); }
+
+/* ----------------------------------------------------------------- activity
+   A feed, not a stack of cards: a rail of harness-colored dots, so "what
+   happened, from which harness, when" reads down the line. */
+.feed-list {
+  position: relative;
+  gap: 0;
+}
+
+/* One continuous rail behind every dot, so the feed still reads as a line
+   when the grid gives the panel more height than five entries need and the
+   entries distribute through it. */
+.feed-list::before {
+  content: "";
+  position: absolute;
+  top: 1rem;
+  bottom: 1rem;
+  left: 4px;
+  width: 1px;
+  background: var(--line-soft);
+}
+
+.feed-list li {
+  position: relative;
+  align-content: start;
+  padding: 0.45rem 0 0.45rem 1.25rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+@media (min-width: 851px) {
+  .feed-list {
+    flex: 1;
+    grid-auto-rows: 1fr;
+  }
+}
+
+.feed-dot {
+  position: absolute;
+  top: 0.75rem;
+  left: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.feed-dot.tone-neutral { background: #55617a; }
+.feed-dot.tone-cyan { background: var(--cyan); }
+.feed-dot.tone-green { background: var(--green); }
+.feed-dot.tone-amber { background: var(--amber); }
+.feed-dot.tone-red { background: var(--red); }
+.feed-dot.tone-violet { background: var(--accent); }
+.feed-dot.tone-blue { background: var(--blue); }
+
+.feed-list .panel-row-link {
+  -webkit-line-clamp: 1;
+  font-size: 0.8rem;
+}
+
+.harness-name {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.harness-name.tone-neutral { color: var(--muted); }
+.harness-name.tone-cyan { color: var(--cyan); }
+.harness-name.tone-green { color: var(--green); }
+.harness-name.tone-amber { color: var(--amber); }
+.harness-name.tone-red { color: var(--red); }
+.harness-name.tone-violet { color: var(--accent-bright); }
+.harness-name.tone-blue { color: var(--blue); }
+
+.provenance {
+  color: var(--subtle);
+  font-size: 0.68rem;
+  font-style: italic;
 }
 
 /* Help */
@@ -2386,10 +3002,14 @@ a.link-target:hover {
     padding-top: 2.3rem;
   }
 
-  /* One column below the two-panel threshold: a 24rem minimum would
-     otherwise overflow a 390px viewport rather than wrap. */
-  .panel-grid {
-    grid-template-columns: 1fr;
+  /* The receipt strip stacks below the two-column threshold: the lead count
+     above the stubs, and each stub full width. */
+  .receipt-strip {
+    flex-direction: column;
+  }
+
+  .receipt-lead {
+    width: auto;
   }
 
   .help-badge-list li {
