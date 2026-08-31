@@ -428,6 +428,7 @@ func (w webRuns) Runs(ctx context.Context, limit, offset int) ([]web.RunSummary,
 			Revision:      h.Revision,
 			RecordedAt:    formatTime(h.RecordedAt),
 			Sync:          h.Sync,
+			Authority:     web.RunAuthority{Kind: string(h.Authority.Kind), Ref: h.Authority.Ref},
 			Counts: web.RunCounts{
 				ToolRequests: h.Counts.ToolRequests,
 				ToolsDenied:  h.Counts.ToolsDenied,
