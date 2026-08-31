@@ -439,6 +439,11 @@ type phaseBRoute struct {
 // with no session, origin, no-store, or escaping coverage.
 func phaseBRoutes(h *phaseB) []phaseBRoute {
 	return []phaseBRoute{
+		// The dashboard's aggregate read is enrolled here rather than
+		// covered separately, because it renders records from every
+		// service these routes reach: it needs the same session, origin,
+		// no-store, read-only and escaping coverage they do.
+		{name: "overview", method: http.MethodGet, path: "/api/overview"},
 		{name: "analysis state", method: http.MethodGet, path: "/api/analysis/state"},
 		{name: "hypotheses", method: http.MethodGet, path: "/api/hypotheses"},
 		{name: "hypothesis", method: http.MethodGet, path: "/api/hypothesis?id=" + h.hypothesis.ID},

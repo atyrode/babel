@@ -705,6 +705,156 @@ export interface SearchResponse {
   hits: SearchHit[];
 }
 
+// ---------------------------------------------------------------------------
+// The dashboard's aggregate read (GET /api/overview).
+//
+// One document, one request, six independently degrading sections: a panel
+// whose service could not be read carries `available: false` and the server's
+// own note, and the rest of the page still renders. Nothing here is a new
+// source of truth — every number is the owning page's number, so a panel and
+// the page it links to cannot disagree.
+// ---------------------------------------------------------------------------
+
+export interface OverviewSection {
+  available: boolean;
+  unavailable?: string;
+}
+
+export interface OverviewArchiveHost {
+  host: string;
+  snapshots: number;
+  latest_time: string;
+  latest_short_id: string;
+}
+
+export interface OverviewArchive extends OverviewSection {
+  configured: boolean;
+  repository: string;
+  host_id: string;
+  snapshots: number;
+  latest_time: string;
+  hosts: OverviewArchiveHost[];
+  hosts_total: number;
+  // Null means unknown, never zero: a local deployment has no shared catalog
+  // to be behind, and an unreachable one has not been read.
+  uncatalogued: number | null;
+  pending: number | null;
+  catalog_reachable: boolean | null;
+}
+
+export interface OverviewHarness {
+  harness: string;
+  sessions: number;
+  titled: number;
+}
+
+export interface OverviewCorpus extends OverviewSection {
+  sessions: number;
+  titled: number;
+  harnesses: OverviewHarness[];
+  recorded: number;
+  derived: number;
+  inferred: number;
+  refreshed_at: string;
+  scan: ScanState;
+  pending: number;
+}
+
+export interface OverviewStatusCount {
+  status: string;
+  count: number;
+}
+
+export interface OverviewHypothesis {
+  id: string;
+  run_id: string;
+  status: HypothesisStatus | string;
+  created_at: string;
+  statement: string;
+}
+
+export interface OverviewFrontier extends OverviewSection {
+  hypotheses: number;
+  statuses: OverviewStatusCount[];
+  truncated: boolean;
+  rows: OverviewHypothesis[];
+}
+
+export interface OverviewReviewRow {
+  type: string;
+  id: string;
+  status: ReviewStatus | string;
+  enrolled_at: string;
+  excerpt: string;
+}
+
+export interface OverviewQuestionRow {
+  id: string;
+  state: string;
+  class: string;
+  score: number;
+  prompt: string;
+}
+
+export interface OverviewQuestions extends OverviewSection {
+  open: number;
+  rows: OverviewQuestionRow[];
+}
+
+export interface OverviewReview extends OverviewSection {
+  awaiting: number;
+  rows: OverviewReviewRow[];
+  questions: OverviewQuestions;
+}
+
+export interface OverviewRecipe {
+  id: string;
+  version: number;
+}
+
+export interface OverviewRunRow {
+  receipt_id: string;
+  run_id: string;
+  preparation_id: string;
+  recorded_at: string;
+  sync: string;
+  retrievals: number;
+  deferred: number;
+  failures: number;
+  redactions: number;
+  hypotheses: number;
+  recipes: OverviewRecipe[];
+}
+
+export interface OverviewRuns extends OverviewSection {
+  total: number;
+  rows: OverviewRunRow[];
+}
+
+// The nullability is SessionRow's, kept: a session the catalog has not
+// described yet has no title and no modification time, and a row that could
+// not say so would render an unread session as an untitled one.
+export interface OverviewActivityRow {
+  harness: string;
+  selector: string;
+  title: string | null;
+  title_provenance: string | null;
+  modified: string | null;
+}
+
+export interface OverviewActivity extends OverviewSection {
+  rows: OverviewActivityRow[];
+}
+
+export interface Overview {
+  archive: OverviewArchive;
+  corpus: OverviewCorpus;
+  frontier: OverviewFrontier;
+  review: OverviewReview;
+  runs: OverviewRuns;
+  activity: OverviewActivity;
+}
+
 const TOKEN_KEY = "babel.web.token";
 
 // The launch token arrives in the URL fragment, which the browser never sends
@@ -714,7 +864,7 @@ const TOKEN_KEY = "babel.web.token";
 //
 // Honest accounting of that erasure: there are two independent mechanisms, and
 // this replaceState is only one of them. "#token=…" matches no route, so it
-// falls through to App.tsx's catch-all, which is <Navigate to="/sessions"
+// falls through to App.tsx's catch-all, which is <Navigate to="/"
 // replace /> — a replacing redirect that drops the token-bearing entry on its
 // own. Measured rather than assumed, by disabling each in turn and running the
 // browser acceptance: scrub off with the redirect replacing passes; scrub on
@@ -730,7 +880,7 @@ const TOKEN_KEY = "babel.web.token";
 // mounts. ES module evaluation guarantees that: main.tsx imports App, which
 // imports this module, so this function runs during import and therefore
 // before createRoot().render(). Lazy-loading this module would let the router
-// rewrite the fragment to "#/sessions" first and silently break
+// rewrite the fragment away from "#token=" first and silently break
 // authentication. The nonce-to-cookie exchange in SPEC.md §146 would remove
 // this coupling by using the fragment exactly once.
 function bootstrapToken(): string {
@@ -1029,4 +1179,11 @@ export function searchCorpus(
   if (params.kind) values.kind = params.kind;
   if (params.limit !== undefined) values.limit = params.limit;
   return request<SearchResponse>(`/api/search?${query(values)}`);
+}
+
+// getOverview reads the dashboard's whole snapshot in one request. It takes no
+// paging: a panel shows a fixed few rows and links to the page that lists the
+// rest, so the window belongs to the server rather than to the caller.
+export function getOverview(): Promise<Overview> {
+  return request<Overview>("/api/overview");
 }

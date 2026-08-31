@@ -12,7 +12,7 @@ import type {
   VersionInfo,
 } from "../src/api";
 
-import { phasebResponse } from "./phaseb";
+import { OVERVIEW_ROWS, overviewPhaseB, phasebResponse } from "./phaseb";
 
 const distRoot = resolve(import.meta.dir, "..", "dist");
 const port = Number(Bun.env.PORT ?? 4174);
@@ -413,12 +413,131 @@ function unwiredResponse(url: URL): Response | null {
   return null;
 }
 
+// MOCK_OVERVIEW=degraded takes the dashboard's two Phase A panels away: the
+// repository the archive panel reads and the catalog the corpus and activity
+// panels read. Combined with MOCK_UNWIRED it previews the state the real
+// server reaches on a machine that has neither storage configured nor an
+// analysis store — which is the state a first launch is in, and the one the
+// landing page most has to render as an explanation rather than as a failure.
+const overviewMode = Bun.env.MOCK_OVERVIEW ?? "healthy";
+
+// overviewResponse is the dashboard's single aggregate read. The Phase A half
+// is assembled here from this file's own fixtures; the analysis half comes from
+// ./phaseb, so neither file grows the other's data.
+function overviewResponse(): Response {
+  const degraded = overviewMode === "degraded";
+  const rows = catalog.slice(0, simulation.described);
+  const byHarness: Record<string, { harness: string; sessions: number; titled: number }> = {};
+  let titled = 0;
+  const provenance: Record<string, number> = { recorded: 0, derived: 0, inferred: 0 };
+  for (const row of rows) {
+    const counts = byHarness[row.harness] ?? { harness: row.harness, sessions: 0, titled: 0 };
+    counts.sessions += 1;
+    if (row.title !== null) {
+      counts.titled += 1;
+      titled += 1;
+      if (row.title_provenance !== null) provenance[row.title_provenance] += 1;
+    }
+    byHarness[row.harness] = counts;
+  }
+  // Newest modification first, and a session the scan has not described sorts
+  // last: it has no modification time, and sorting it first would report an
+  // unread session as the latest activity.
+  const activity = [...rows].sort((left, right) => {
+    if ((left.modified === null) !== (right.modified === null)) return left.modified === null ? 1 : -1;
+    if (left.modified !== null && right.modified !== null) return right.modified.localeCompare(left.modified);
+    return left.selector.localeCompare(right.selector);
+  });
+  const hosts = [...archiveStatus.hosts].sort((left, right) =>
+    right.latest_time.localeCompare(left.latest_time));
+  const analysis = overviewPhaseB(unwired);
+  return json({
+    archive: degraded
+      ? {
+          available: false,
+          unavailable:
+            "No repository is configured, so there are no snapshots to report. " +
+            "Run `babel storage configure` to connect one.",
+          configured: false,
+          repository: "",
+          host_id: "demo-laptop",
+          snapshots: 0,
+          latest_time: "",
+          hosts: [],
+          hosts_total: 0,
+          uncatalogued: null,
+          pending: null,
+          catalog_reachable: null,
+        }
+      : {
+          available: true,
+          configured: true,
+          repository: archiveStatus.repository,
+          host_id: "demo-laptop",
+          snapshots: archiveStatus.snapshots,
+          latest_time: hosts[0]?.latest_time ?? "",
+          hosts: hosts.slice(0, OVERVIEW_ROWS).map((host) => ({
+            host: host.host,
+            snapshots: host.snapshots,
+            latest_time: host.latest_time,
+            latest_short_id: host.latest_short_id,
+          })),
+          hosts_total: archiveStatus.hosts.length,
+          // A synthetic outage: two snapshots the catalog has a row for
+          // without session detail, and one it has never seen.
+          uncatalogued: 1,
+          pending: 2,
+          catalog_reachable: true,
+        },
+    corpus: degraded
+      ? {
+          available: false,
+          unavailable: "The session catalog could not be read. The Sessions page reports why.",
+          sessions: 0, titled: 0, harnesses: [], recorded: 0, derived: 0, inferred: 0,
+          refreshed_at: "", scan: simulation.state, pending: 0,
+        }
+      : {
+          available: true,
+          sessions: rows.length,
+          titled,
+          harnesses: Object.values(byHarness).sort((left, right) =>
+            right.sessions - left.sessions || left.harness.localeCompare(right.harness)),
+          recorded: provenance.recorded,
+          derived: provenance.derived,
+          inferred: provenance.inferred,
+          refreshed_at: simulation.refreshedAt,
+          scan: simulation.state,
+          pending: Math.max(0, simulation.state.total - simulation.state.described),
+        },
+    frontier: analysis.frontier,
+    review: analysis.review,
+    runs: analysis.runs,
+    activity: degraded
+      ? {
+          available: false,
+          unavailable: "The session catalog could not be read. The Sessions page reports why.",
+          rows: [],
+        }
+      : {
+          available: true,
+          rows: activity.slice(0, OVERVIEW_ROWS).map((row) => ({
+            harness: row.harness,
+            selector: row.selector,
+            title: row.title,
+            title_provenance: row.title_provenance,
+            modified: row.modified,
+          })),
+        },
+  });
+}
+
 function apiResponse(request: Request, url: URL): Response | null {
   if (!url.pathname.startsWith("/api/")) return null;
   if (request.method === "GET" && url.pathname === "/api/version") return json(version);
   if (request.method === "GET" && url.pathname === "/api/state") {
     return json({ configured: true, repository: archiveStatus.repository, host_id: "demo-laptop" });
   }
+  if (request.method === "GET" && url.pathname === "/api/overview") return overviewResponse();
   if (request.method === "GET" && url.pathname === "/api/sessions") {
     return json({
       sessions: catalog.slice(0, simulation.described),
@@ -559,3 +678,4 @@ console.log(`Scan simulation: MOCK_SCAN=${scanMode} (running | error | idle | em
 console.log(
   `Unwired services: MOCK_UNWIRED=${unwired.size === 0 ? "<none>" : [...unwired].join(",")} (frontier | review | reality | search)`,
 );
+console.log(`Dashboard: MOCK_OVERVIEW=${overviewMode} (healthy | degraded)`);

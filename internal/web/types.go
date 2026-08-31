@@ -349,6 +349,26 @@ type StatusResult struct {
 	Repository string          `json:"repository"`
 	Snapshots  int             `json:"snapshots"`
 	Hosts      []StatusHostRow `json:"hosts"`
+	// Catalog is absent in local mode, exactly as the CLI reports it:
+	// there is no shared catalog to be behind.
+	Catalog *CatalogStatus `json:"catalog,omitempty"`
+}
+
+// CatalogStatus mirrors the scalar half of internal/cli catalogStatus: whether
+// the shared catalog answered, and how far behind the repository it is.
+//
+// The counts are pointers for the reason the CLI's are: an unreachable catalog
+// does not make them zero, it makes them unknown, and reporting no
+// uncatalogued snapshots is a claim this surface did not observe.
+//
+// The CLI's per-host catalog rows are deliberately not mirrored. The archive
+// surface shows the repository's own host rows, which are what a snapshot
+// listing observed; a second per-host table from the catalog would put two
+// almost-identical host lists on one page with different meanings.
+type CatalogStatus struct {
+	Reachable    bool `json:"reachable"`
+	Uncatalogued *int `json:"uncatalogued,omitempty"`
+	Pending      *int `json:"pending,omitempty"`
 }
 
 // VerifyResult mirrors internal/cli verifyResult field-for-field.

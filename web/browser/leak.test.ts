@@ -171,15 +171,31 @@ afterAll(async () => {
 
 test.skipIf(!chrome)("the fragment token authenticates and leaves the address bar", async () => {
   await page.goto(launchURL, { waitUntil: "networkidle2" });
+  // The scrubbed launch URL carries no hash, so it lands on the dashboard.
+  // Waiting for its own authorized read is the non-vacuity check: the panel
+  // heading below only appears once GET /api/overview answered 200, which it
+  // cannot do without the token this test is about.
+  await page.waitForFunction(
+    () => document.body.innerText.includes("Archive health"),
+    { timeout: 30_000 },
+  );
+  await show(page);
+
+  expect(page.url()).not.toContain(token);
+  expect(await page.evaluate(() => Object.keys(sessionStorage))).toContain("babel.web.token");
+
+  // The rest of this suite browses the session and its transcript, which is
+  // where the §548 channels are, so it starts from the listing. The hash
+  // navigation is a real history entry, exactly as clicking the nav is.
+  await page.evaluate(() => {
+    window.location.hash = "#/sessions";
+  });
   await page.waitForFunction(
     (title: string) => document.body.innerText.includes(title),
     { timeout: 30_000 },
     SESSION_TITLE,
   );
   await show(page);
-
-  expect(page.url()).not.toContain(token);
-  expect(await page.evaluate(() => Object.keys(sessionStorage))).toContain("babel.web.token");
 });
 
 test.skipIf(!chrome)("a session's transcript renders without its content entering the URL", async () => {
@@ -332,9 +348,9 @@ test.skipIf(!chrome)("a context without the token is refused", async () => {
 // The property that matters is not "we call replaceState" but "no history entry
 // the operator can navigate to holds the token". Two mechanisms independently
 // satisfy it today — the bootstrap's scrub, and App.tsx's catch-all
-// <Navigate to="/sessions" replace />, which the unmatched "#token=…" fragment
-// falls through to — so removing either alone is not observable here. Removing
-// both is: the walk fails and names the retained entry.
+// <Navigate to="/" replace />, which the unmatched "#token=…" fragment falls
+// through to — so removing either alone is not observable here. Removing both
+// is: the walk fails and names the retained entry.
 //
 // The walk is bounded by the stack the browser reports, and completion is
 // proven by landing on the context's initial blank entry rather than by the
@@ -347,12 +363,15 @@ test.skipIf(!chrome)("no reachable history entry retains the token", async () =>
     const trail = await walker.newPage();
     await trail.goto(launchURL, { waitUntil: "networkidle2" });
     await trail.waitForFunction(
-      (title: string) => document.body.innerText.includes(title),
+      () => document.body.innerText.includes("Archive health"),
       { timeout: 30_000 },
-      SESSION_TITLE,
     );
 
-    // Visit a second route so the stack has somewhere to walk back from.
+    // Visit two more routes so the stack has somewhere to walk back from, and
+    // so the walk crosses the landing entry the token arrived on.
+    await trail.evaluate(() => {
+      window.location.hash = "#/sessions";
+    });
     const row = await trail.waitForSelector(`text/${SESSION_TITLE}`, { timeout: 30_000 });
     await row?.click();
     await trail.waitForFunction(() => location.hash.startsWith("#/sessions/"), { timeout: 30_000 });
