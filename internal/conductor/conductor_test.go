@@ -114,8 +114,8 @@ func (c *clock) Now() time.Time {
 
 // The ladder is ordered, and the operator outranks the loop. Rung one is the
 // operator's invitations; a rung is reached only when everything above it is
-// empty; and an unimplemented rung contributes nothing rather than swallowing a
-// cycle.
+// empty; and a rung with nothing to draw contributes nothing rather than
+// swallowing a cycle.
 func TestLadderIsConsultedInPrecedenceOrder(t *testing.T) {
 	ctx := context.Background()
 	invitations := &stubRung{name: conductor.RungInvitation, work: &conductor.Assignment{
@@ -130,11 +130,12 @@ func TestLadderIsConsultedInPrecedenceOrder(t *testing.T) {
 	clk := &clock{now: day}
 	loop, err := conductor.New(conductor.Config{
 		Ceilings: testCeilings,
-		Ladder:   []conductor.Rung{invitations, conductor.PolicyRung(), floor},
-		Runner:   runner,
-		Ledger:   fakeLedger{},
-		Journal:  testJournal(t),
-		Now:      clk.Now,
+		Ladder: []conductor.Rung{invitations,
+			conductor.NewDutyRung(conductor.Duties{}, testJournal(t), clk.Now, 0), floor},
+		Runner:  runner,
+		Ledger:  fakeLedger{},
+		Journal: testJournal(t),
+		Now:     clk.Now,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -157,8 +158,8 @@ func TestLadderIsConsultedInPrecedenceOrder(t *testing.T) {
 	}
 
 	// Empty the operator's queue and the floor is where the cycle lands. The
-	// absent policy rung between them changes nothing, which is the point of
-	// declaring it.
+	// duty rung between them has no authorized duty, so it contributes nothing,
+	// which is the point of consulting it anyway.
 	invitations.work = nil
 	cycle, err = loop.Once(ctx)
 	if err != nil {
@@ -186,12 +187,13 @@ func TestLadderIsConsultedInPrecedenceOrder(t *testing.T) {
 }
 
 // An unimplemented rung reports its absence rather than a queue depth of zero.
-// "No policy is waiting" and "this build has no policies" are different answers
+// "Nothing is waiting" and "this build has no such rung" are different answers
 // to why the loop is doing what it is doing.
 func TestAbsentRungIsVisibleRatherThanEmpty(t *testing.T) {
+	const reason = "no fleet policy is implemented in this build"
 	rungs, err := conductor.Describe(context.Background(), []conductor.Rung{
 		&stubRung{name: conductor.RungInvitation},
-		conductor.PolicyRung(),
+		conductor.NewAbsentRung("fleet", reason),
 	})
 	if err != nil {
 		t.Fatalf("Describe: %v", err)
@@ -202,13 +204,12 @@ func TestAbsentRungIsVisibleRatherThanEmpty(t *testing.T) {
 	if !rungs[0].Depth.Implemented {
 		t.Error("the invitation rung reported itself unimplemented")
 	}
-	policy := rungs[1]
-	if policy.Name != conductor.RungPolicy || policy.Depth.Implemented {
-		t.Errorf("policy rung = %+v, want a declared absence", policy)
+	absent := rungs[1]
+	if absent.Name != "fleet" || absent.Depth.Implemented || absent.Depth.Note != reason {
+		t.Errorf("absent rung = %+v, want a declared absence", absent)
 	}
-	if !strings.Contains(policy.Depth.Note, "not implemented") &&
-		!strings.Contains(policy.String(), "not implemented") {
-		t.Errorf("policy rung renders as %q, which does not say it is absent", policy.String())
+	if !strings.Contains(absent.String(), "not implemented") {
+		t.Errorf("absent rung renders as %q, which does not say it is absent", absent.String())
 	}
 }
 
@@ -231,11 +232,12 @@ func TestSerendipityFloorHoldsItsRatioAgainstAFullQueue(t *testing.T) {
 			loop, err := conductor.New(conductor.Config{
 				Ceilings: conductor.Ceilings{Currency: "USD", PerCycle: 0.01, PerDay: 1000},
 				Floor:    conductor.Floor{OneIn: oneIn},
-				Ladder:   []conductor.Rung{invitations, conductor.PolicyRung(), floor},
-				Runner:   &fakeRunner{},
-				Ledger:   fakeLedger{},
-				Journal:  journal,
-				Now:      clk.Now,
+				Ladder: []conductor.Rung{invitations,
+					conductor.NewDutyRung(conductor.Duties{}, journal, clk.Now, 0), floor},
+				Runner:  &fakeRunner{},
+				Ledger:  fakeLedger{},
+				Journal: journal,
+				Now:     clk.Now,
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -303,11 +305,12 @@ func TestFloorSurvivesARestart(t *testing.T) {
 		loop, err := conductor.New(conductor.Config{
 			Ceilings: testCeilings,
 			Floor:    conductor.Floor{OneIn: 3},
-			Ladder:   []conductor.Rung{invitations, conductor.PolicyRung(), floor},
-			Runner:   &fakeRunner{},
-			Ledger:   fakeLedger{},
-			Journal:  journal,
-			Now:      clk.Now,
+			Ladder: []conductor.Rung{invitations,
+				conductor.NewDutyRung(conductor.Duties{}, journal, clk.Now, 0), floor},
+			Runner:  &fakeRunner{},
+			Ledger:  fakeLedger{},
+			Journal: journal,
+			Now:     clk.Now,
 		})
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -429,8 +432,9 @@ func TestBudgetParksBeforeDrawingWork(t *testing.T) {
 	journal := testJournal(t)
 	loop, err := conductor.New(conductor.Config{
 		Ceilings: conductor.Ceilings{Currency: "USD", PerCycle: 1.00, PerDay: 4.00},
-		Ladder:   []conductor.Rung{invitations, conductor.PolicyRung()},
-		Runner:   runner,
+		Ladder: []conductor.Rung{invitations,
+			conductor.NewDutyRung(conductor.Duties{}, journal, nil, 0)},
+		Runner: runner,
 		// Today has already estimated 3.50 of a 4.00 ceiling, which leaves
 		// less than the 1.00 a cycle may cost.
 		Ledger:  fakeLedger{spend: conductor.Spend{Amount: 3.50, Runs: 7}},

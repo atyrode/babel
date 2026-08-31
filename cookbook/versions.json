@@ -2,6 +2,16 @@
   "manifest_schema": 1,
   "recipes": [
     {
+      "id": "babel-improves-babel",
+      "version": 1,
+      "digest": "sha256:de3ad1e6ae7a86b5888bfec2114f1211fff33f7df0a12f1d91f9e6853b24bdd9"
+    },
+    {
+      "id": "babel-tunes-itself",
+      "version": 1,
+      "digest": "sha256:28122909e57c25715aa18d4bc775129f585f02e3ee872e6dcc8a75d6cc5b9b19"
+    },
+    {
       "id": "code-health-comprehensibility",
       "version": 2,
       "digest": "sha256:0719cca84f9a9bdc3dcded1e83d3c3ffbcd47a88512f063c08d8fd8e79248b86"
@@ -25,6 +35,11 @@
       "id": "human-agent-coordination",
       "version": 2,
       "digest": "sha256:98f20537dfed182333c93c3dd1315dc172ed6d54fbb04e1407c63ac00b118032"
+    },
+    {
+      "id": "mechanization-audit",
+      "version": 1,
+      "digest": "sha256:bde651cf76ba3db0a25cea2e497d734a93659fa940a9ec939f390b76e7e46763"
     },
     {
       "id": "outcome-integrity",

@@ -211,8 +211,9 @@ func TestConductorStatusReportsPlantedStateTruthfully(t *testing.T) {
 		t.Errorf("the park reason was lost: %q", status.Cycles[1].Reason)
 	}
 
-	// The ladder is the ladder #96 describes, with the rung this build does not
-	// implement declared rather than omitted.
+	// The ladder is the ladder #96 describes, and rung two is implemented now:
+	// it holds the standing duties of #88 and #94, none of them authorized on
+	// this machine, which is a depth of zero rather than an absence.
 	if len(status.Rungs) != 3 {
 		t.Fatalf("ladder = %+v", status.Rungs)
 	}
@@ -222,11 +223,27 @@ func TestConductorStatusReportsPlantedStateTruthfully(t *testing.T) {
 			t.Errorf("rung %d = %q, want %q", i, status.Rungs[i].Name, name)
 		}
 	}
-	if status.Rungs[1].Implemented {
-		t.Error("the policy rung claims an implementation this build does not have")
+	policy := status.Rungs[1]
+	if !policy.Implemented || policy.Waiting != 0 {
+		t.Errorf("policy rung = %+v, want an implemented rung with nothing due", policy)
 	}
-	if status.Rungs[1].Note == "" {
-		t.Error("the absent rung gives no reason")
+	if !strings.Contains(policy.Note, "attention policy") {
+		t.Errorf("the policy rung's note %q does not say what rung two still lacks", policy.Note)
+	}
+
+	// Every duty is reported with its own state, including the ones nobody
+	// authorized: an unauthorized duty and a duty this build does not have must
+	// not read the same.
+	if len(status.Duties) != 3 {
+		t.Fatalf("duties = %+v, want the three this build knows", status.Duties)
+	}
+	for _, duty := range status.Duties {
+		if duty.Enabled || duty.Due {
+			t.Errorf("duty %+v is live on a machine that authorized none", duty)
+		}
+		if duty.Recipe == "" || duty.Dimension == "" || duty.Note == "" {
+			t.Errorf("duty row = %+v, incompletely described", duty)
+		}
 	}
 
 	// Spend is read from the receipts, not from the journal — so a journal
@@ -251,7 +268,11 @@ func TestConductorStatusReportsPlantedStateTruthfully(t *testing.T) {
 	// The terminal rendering carries the same answers, because legibility is
 	// not a --json-only feature.
 	stdout, _ = f.ok("conductor", "status", "--cycles", "2")
-	for _, want := range []string{"interrupted", "serendipity draw:", "not implemented", "0.50 per cycle"} {
+	for _, want := range []string{
+		"interrupted", "serendipity draw:", "0.50 per cycle",
+		"duties", conductor.DutyImprovesBabel, conductor.DutyMechanizationAudit,
+		conductor.DutyTunesItself, "--babel-improves-babel",
+	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("conductor status does not render %q:\n%s", want, stdout)
 		}
@@ -259,6 +280,160 @@ func TestConductorStatusReportsPlantedStateTruthfully(t *testing.T) {
 	// --cycles bounds the table without changing the state above it.
 	if strings.Count(stdout, "invitation:inv-1") != 0 {
 		t.Errorf("--cycles 2 showed a third cycle:\n%s", stdout)
+	}
+}
+
+// The duty toggles are stored, withdrawn, and left alone by an unrelated
+// change. They are the operator's authorization for #88's and #94's standing
+// duties, and a toggle a later invocation silently flipped would schedule
+// autonomous analysis nobody asked for — or stop the analysis they did.
+func TestConductorConfigureStoresTheDutyToggles(t *testing.T) {
+	f := newFixture(t)
+
+	// Ceilings alone: both duties off, which is the documented default and the
+	// state the settings document says nothing about.
+	stdout, _ := f.ok("conductor", "configure", "--per-cycle", "0.50", "--per-day", "5.00", "--json")
+	stored := decodeJSON[conductorConfigResult](t, stdout)
+	if stored.BabelImprovesBabel || stored.BabelTunesItself {
+		t.Fatalf("a machine that authorized nothing reports %+v", stored)
+	}
+
+	// One toggle on, and the other stays off: one switch per dimension.
+	stdout, _ = f.ok("conductor", "configure", "--babel-improves-babel", "--json")
+	stored = decodeJSON[conductorConfigResult](t, stdout)
+	if !stored.BabelImprovesBabel || stored.BabelTunesItself {
+		t.Fatalf("after --babel-improves-babel: %+v", stored)
+	}
+	if stored.PerCycle != 0.50 || stored.PerDay != 5.00 {
+		t.Errorf("authorizing a duty changed the ceilings: %+v", stored)
+	}
+
+	// An unrelated dial does not withdraw it: configure is incremental.
+	stdout, _ = f.ok("conductor", "configure", "--floor", "3", "--json")
+	stored = decodeJSON[conductorConfigResult](t, stdout)
+	if !stored.BabelImprovesBabel {
+		t.Errorf("adjusting the floor withdrew a duty: %+v", stored)
+	}
+
+	// The explicit --no- form is how off is said, because a bare boolean flag
+	// cannot say it.
+	stdout, _ = f.ok("conductor", "configure", "--no-babel-improves-babel",
+		"--babel-tunes-itself", "--json")
+	stored = decodeJSON[conductorConfigResult](t, stdout)
+	if stored.BabelImprovesBabel || !stored.BabelTunesItself {
+		t.Fatalf("after withdrawing one and authorizing the other: %+v", stored)
+	}
+
+	// Naming both forms is a contradiction rather than a precedence question:
+	// one of the two answers schedules autonomous runs.
+	_, stderr := f.mustExit(exitUsage, "conductor", "configure",
+		"--babel-tunes-itself", "--no-babel-tunes-itself")
+	if !strings.Contains(stderr, "contradict") {
+		t.Errorf("contradictory toggles were not refused clearly:\n%s", stderr)
+	}
+	after, err := loadConductorSettings()
+	if err != nil {
+		t.Fatalf("loadConductorSettings: %v", err)
+	}
+	if !after.BabelTunesItself || after.BabelImprovesBabel {
+		t.Errorf("a refused invocation changed the stored authorization: %+v", after)
+	}
+
+	// Every duty this build knows resolves to a recipe the embedded cookbook
+	// holds. A duty naming a recipe that is not here would schedule a cycle
+	// that silently fell back to the defaults.
+	set := embeddedCookbook(t)
+	for _, duty := range conductor.StandingDuties() {
+		recipe, ok := set.ByID(duty.Recipe)
+		if !ok {
+			t.Errorf("duty %q names recipe %q, which this build's cookbook does not hold",
+				duty.Name, duty.Recipe)
+			continue
+		}
+		if recipe.Default {
+			t.Errorf("duty recipe %q is default-enabled; it would run without its toggle", recipe.ID)
+		}
+	}
+
+	// And the status view reports the authorization it stored, per duty.
+	stdout, _ = f.ok("conductor", "status", "--json")
+	status := decodeJSON[conductorStatusResult](t, stdout)
+	want := map[string]bool{
+		conductor.DutyImprovesBabel:      false,
+		conductor.DutyMechanizationAudit: false,
+		conductor.DutyTunesItself:        true,
+	}
+	if len(status.Duties) != len(want) {
+		t.Fatalf("status reports %d duties, want %d", len(status.Duties), len(want))
+	}
+	for _, duty := range status.Duties {
+		enabled, known := want[duty.Name]
+		if !known {
+			t.Errorf("status reports unknown duty %q", duty.Name)
+			continue
+		}
+		if duty.Enabled != enabled {
+			t.Errorf("duty %q enabled = %t, want %t", duty.Name, duty.Enabled, enabled)
+		}
+		// An authorized duty nobody has drawn yet is due; an unauthorized one
+		// never is.
+		if duty.Due != enabled {
+			t.Errorf("duty %q due = %t, want %t", duty.Name, duty.Due, enabled)
+		}
+		if duty.LastDrawn != "" {
+			t.Errorf("duty %q claims a draw on a machine that never ran one", duty.Name)
+		}
+	}
+
+	// The cadence half of the state comes from the journal rather than from the
+	// settings, so a drawn duty reads back as drawn: this is what stops a
+	// restarted conductor handing its duties a fresh day.
+	journal, err := conductor.OpenJournal(f.dataDir)
+	if err != nil {
+		t.Fatalf("OpenJournal: %v", err)
+	}
+	drawnAt := time.Now().UTC().Add(-time.Hour)
+	if err := journal.Record(conductor.Cycle{
+		Seq: 1, StartedAt: drawnAt, FinishedAt: drawnAt.Add(time.Minute),
+		Outcome: conductor.OutcomeRan, Rung: conductor.RungPolicy,
+		Authority: runstore.Authority{
+			Kind: runstore.AuthorityPolicy,
+			Ref:  conductor.DutyRef(conductor.DutyTunesItself),
+		},
+		RunID: "run-cyc-duty", ReceiptID: "rcpt-duty",
+		Recipes: []string{conductor.DutyTunesItself},
+		Note:    "standing duty babel-tunes-itself over this host's whole corpus",
+		PID:     os.Getpid(),
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	stdout, _ = f.ok("conductor", "status", "--json")
+	status = decodeJSON[conductorStatusResult](t, stdout)
+	tunes := status.Duties[len(status.Duties)-1]
+	if tunes.Name != conductor.DutyTunesItself {
+		t.Fatalf("duties are out of draw order: %+v", status.Duties)
+	}
+	if !tunes.Enabled || tunes.Due || tunes.LastDrawn == "" {
+		t.Errorf("duty after a journalled draw = %+v, want it on, not due, and dated", tunes)
+	}
+	if !strings.Contains(tunes.Note, "next draw after") {
+		t.Errorf("duty note %q does not say when it comes back", tunes.Note)
+	}
+
+	// The terminal rendering says the same, and names the standing duty in the
+	// cycle's authority column: that column is the answer to "why did the loop
+	// do this", and a duty cycle has to answer it as specifically as an
+	// invitation does.
+	stdout, _ = f.ok("conductor", "status")
+	for _, want := range []string{
+		"policy duty:" + conductor.DutyTunesItself,
+		"babel-tunes-itself", "next draw after",
+		"off; authorize with", "--babel-improves-babel",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("conductor status does not render %q:\n%s", want, stdout)
+		}
 	}
 }
 

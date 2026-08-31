@@ -19,14 +19,16 @@ import (
 // these tests a contract test of the documents the CLI emits.
 
 type conductorConfigDoc struct {
-	Currency        string  `json:"currency"`
-	PerCycle        float64 `json:"per_cycle"`
-	PerDay          float64 `json:"per_day"`
-	Floor           int     `json:"serendipity_floor"`
-	IntervalSeconds int     `json:"interval_seconds"`
-	SliceSessions   int     `json:"slice_sessions"`
-	ConfiguredAt    string  `json:"configured_at"`
-	Path            string  `json:"path"`
+	Currency           string  `json:"currency"`
+	PerCycle           float64 `json:"per_cycle"`
+	PerDay             float64 `json:"per_day"`
+	Floor              int     `json:"serendipity_floor"`
+	IntervalSeconds    int     `json:"interval_seconds"`
+	SliceSessions      int     `json:"slice_sessions"`
+	BabelImprovesBabel bool    `json:"babel_improves_babel"`
+	BabelTunesItself   bool    `json:"babel_tunes_itself"`
+	ConfiguredAt       string  `json:"configured_at"`
+	Path               string  `json:"path"`
 }
 
 type conductorCycleDoc struct {
@@ -63,6 +65,16 @@ type conductorRungDoc struct {
 	Note        string `json:"note"`
 }
 
+type conductorDutyDoc struct {
+	Name      string `json:"name"`
+	Recipe    string `json:"recipe"`
+	Dimension string `json:"dimension"`
+	Enabled   bool   `json:"enabled"`
+	Due       bool   `json:"due"`
+	LastDrawn string `json:"last_drawn"`
+	Note      string `json:"note"`
+}
+
 type conductorSpendDoc struct {
 	Currency   string  `json:"currency"`
 	Spent      float64 `json:"spent"`
@@ -80,6 +92,7 @@ type conductorStatusDoc struct {
 	Config     *conductorConfigDoc `json:"config"`
 	Current    *conductorCycleDoc  `json:"current"`
 	Rungs      []conductorRungDoc  `json:"rungs"`
+	Duties     []conductorDutyDoc  `json:"duties"`
 	Spend      *conductorSpendDoc  `json:"spend"`
 	Cycles     []conductorCycleDoc `json:"cycles"`
 	Journal    string              `json:"journal"`
@@ -278,7 +291,7 @@ func TestConductorCyclesAreAttributableRuns(t *testing.T) {
 	// The terminal rendering names the authority too: the loop's legibility is
 	// not a --json-only feature.
 	stdout, _ := p.okExec(t, "conductor", "status")
-	for _, want := range []string{"serendipity", "invitation", "not implemented", "ladder"} {
+	for _, want := range []string{"serendipity", "invitation", "ladder", "duties"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("conductor status does not mention %q:\n%s", want, stdout)
 		}
@@ -329,6 +342,186 @@ func TestConductorParksOnTheDailyCeiling(t *testing.T) {
 	}
 	if status.Spend == nil || status.Spend.Runs != 1 || status.Spend.Spent != 1.00 {
 		t.Errorf("spend after a park = %+v", status.Spend)
+	}
+}
+
+// A standing duty, driven end to end through the shipped executable: the
+// operator authorizes a dimension, the loop draws the duty it authorizes, and
+// the durable receipt records {policy, duty:<name>} as the reason it happened.
+//
+// This is the scenario issues #88 and #94 are answered by, and what it defends
+// is the authorization rather than the analysis. A duty cycle that ran without
+// the toggle, ran under an authority nobody could read, or ran the wrong recipe
+// would each be autonomy the operator did not grant — and the receipt is where
+// that claim survives the process that made it.
+func TestConductorDrawsAnAuthorizedDuty(t *testing.T) {
+	p := newPhaseB(t)
+	worker := fakeWorker(t)
+	payload := writeCandidatePayload(t, p)
+	workerArgs := []string{
+		"--worker", worker,
+		"--worker-arg", "-result-payload-selector", "--worker-arg", explore.ParamStage,
+		"--worker-arg", "-result-payload", "--worker-arg", string(explore.StageExplore) + "=" + payload,
+	}
+	plantProfile(t, p, "synthetic-profile", 1)
+
+	// Ceilings alone: the duties exist, and none of them is authorized. A wide
+	// serendipity floor keeps the chaotic share out of a two-cycle scenario
+	// without disabling it — the floor is a protected fraction, not a switch.
+	configured := execJSON[conductorConfigDoc](t, p, "conductor", "configure",
+		"--per-cycle", "0.50", "--per-day", "5.00", "--interval", "0s", "--floor", "50", "--json")
+	if configured.BabelImprovesBabel || configured.BabelTunesItself {
+		t.Fatalf("configuring ceilings authorized a duty: %+v", configured)
+	}
+
+	// Unauthorized: the loop has nothing on rung two, and the status view says
+	// so per duty rather than by omission.
+	cold := execJSON[conductorStatusDoc](t, p, "conductor", "status", "--json")
+	assertLadderShape(t, cold.Rungs)
+	if depth := rungDepth(t, cold.Rungs, "policy"); depth != 0 {
+		t.Fatalf("policy rung depth = %d with no duty authorized", depth)
+	}
+	if len(cold.Duties) != 3 {
+		t.Fatalf("status reports %d duties, want the three this build knows: %+v",
+			len(cold.Duties), cold.Duties)
+	}
+	for _, duty := range cold.Duties {
+		if duty.Enabled || duty.Due || duty.LastDrawn != "" {
+			t.Errorf("duty %+v is live before anyone authorized it", duty)
+		}
+		if duty.Recipe == "" || duty.Dimension == "" {
+			t.Errorf("duty %+v does not say what it would run", duty)
+		}
+	}
+
+	// The operator authorizes the product dimension. Nothing else changes: same
+	// ceilings, same stored profile, no new capability, no new grant.
+	authorized := execJSON[conductorConfigDoc](t, p, "conductor", "configure",
+		"--babel-improves-babel", "--json")
+	if !authorized.BabelImprovesBabel || authorized.BabelTunesItself {
+		t.Fatalf("authorization = %+v, want the product dimension only", authorized)
+	}
+	if authorized.PerCycle != 0.50 || authorized.PerDay != 5.00 {
+		t.Fatalf("authorizing a duty changed the ceilings: %+v", authorized)
+	}
+
+	queued := execJSON[conductorStatusDoc](t, p, "conductor", "status", "--json")
+	if depth := rungDepth(t, queued.Rungs, "policy"); depth != 2 {
+		t.Fatalf("policy rung depth = %d, want the two duties of the authorized dimension", depth)
+	}
+	if duty := dutyState(t, queued.Duties, "babel-tunes-itself"); duty.Enabled {
+		t.Errorf("authorizing one dimension authorized the other: %+v", duty)
+	}
+
+	// Cycle one: the duty, run as an ordinary run over this host's corpus.
+	first := execJSON[conductorRunDoc](t, p,
+		append([]string{"conductor", "run", "--once", "--json"}, workerArgs...)...)
+	if len(first.Cycles) != 1 {
+		t.Fatalf("--once ran %d cycles: %+v", len(first.Cycles), first.Cycles)
+	}
+	cycle := first.Cycles[0]
+	if cycle.Outcome != "ran" || cycle.Rung != "policy" {
+		t.Fatalf("duty cycle = %+v, want a completed policy cycle", cycle)
+	}
+	if cycle.AuthorityKind != "policy" || cycle.AuthorityRef != "duty:babel-improves-babel" {
+		t.Fatalf("duty authority = %s/%s, want policy/duty:babel-improves-babel",
+			cycle.AuthorityKind, cycle.AuthorityRef)
+	}
+	if len(cycle.Recipes) != 1 || cycle.Recipes[0] != "babel-improves-babel" {
+		t.Errorf("duty cycle ran %v, want the duty's own recipe", cycle.Recipes)
+	}
+	if cycle.Invitation != "" {
+		t.Errorf("a duty cycle consumed invitation %q", cycle.Invitation)
+	}
+	if cycle.ReceiptID == "" || cycle.PreparationID == "" {
+		t.Fatalf("a duty cycle produced no ordinary run: %+v", cycle)
+	}
+	// A duty names no corpus slice, which is how "every session this host can
+	// see" is expressed, so the cycle row's session count is zero and the note
+	// is what states the scope. A number that said 0 with no explanation would
+	// read as an analysis of nothing.
+	if cycle.Sessions != 0 {
+		t.Errorf("duty cycle named %d sessions; a duty draws no slice", cycle.Sessions)
+	}
+	if !strings.Contains(cycle.Note, "whole corpus") {
+		t.Errorf("duty cycle note = %q, want it to state the scope", cycle.Note)
+	}
+	// The durable half of the claim: months from now the receipt is what says
+	// which standing duty spent this budget.
+	assertReceiptAuthority(t, p, cycle.ReceiptID, "policy", "duty:babel-improves-babel")
+
+	// Cycle two is the other duty of the same dimension, not the same one
+	// again: one toggle, two duties, each on its own daily cadence.
+	second := execJSON[conductorRunDoc](t, p,
+		append([]string{"conductor", "run", "--once", "--json"}, workerArgs...)...)
+	if len(second.Cycles) != 1 {
+		t.Fatalf("--once ran %d cycles: %+v", len(second.Cycles), second.Cycles)
+	}
+	audit := second.Cycles[0]
+	if audit.AuthorityRef != "duty:mechanization-audit" {
+		t.Fatalf("second cycle authority = %s/%s, want the audit duty",
+			audit.AuthorityKind, audit.AuthorityRef)
+	}
+	assertReceiptAuthority(t, p, audit.ReceiptID, "policy", "duty:mechanization-audit")
+	if audit.RunID == cycle.RunID {
+		t.Error("two duty cycles shared one run identity")
+	}
+
+	// Both authorized duties have now run today, so the cadence closes rung two
+	// and the loop falls to its floor rather than repeating a duty.
+	third := execJSON[conductorRunDoc](t, p,
+		append([]string{"conductor", "run", "--once", "--json"}, workerArgs...)...)
+	if len(third.Cycles) != 1 {
+		t.Fatalf("--once ran %d cycles: %+v", len(third.Cycles), third.Cycles)
+	}
+	if rung := third.Cycles[0].Rung; rung == "policy" {
+		t.Fatalf("a duty was drawn twice within its cadence: %+v", third.Cycles[0])
+	}
+
+	// And the status view agrees with the journal: the duties that ran say when,
+	// the one nobody authorized still says how to authorize it.
+	final := execJSON[conductorStatusDoc](t, p, "conductor", "status", "--json", "--cycles", "5")
+	improves := dutyState(t, final.Duties, "babel-improves-babel")
+	if !improves.Enabled || improves.Due || improves.LastDrawn == "" {
+		t.Errorf("improves-babel duty after its draw = %+v", improves)
+	}
+	if !strings.Contains(improves.Note, "next draw after") {
+		t.Errorf("duty note %q does not say when it comes back", improves.Note)
+	}
+	tunes := dutyState(t, final.Duties, "babel-tunes-itself")
+	if tunes.Enabled || tunes.Due || tunes.LastDrawn != "" {
+		t.Errorf("unauthorized duty = %+v", tunes)
+	}
+	if !strings.Contains(tunes.Note, "--babel-tunes-itself") {
+		t.Errorf("an off duty's note %q does not name the flag that authorizes it", tunes.Note)
+	}
+	if depth := rungDepth(t, final.Rungs, "policy"); depth != 0 {
+		t.Errorf("policy rung depth = %d after both duties ran today", depth)
+	}
+
+	// Withdrawing the dimension takes both duties off the ladder again, which is
+	// the property that makes the toggle a real authorization rather than a
+	// one-way door.
+	withdrawn := execJSON[conductorConfigDoc](t, p, "conductor", "configure",
+		"--no-babel-improves-babel", "--json")
+	if withdrawn.BabelImprovesBabel {
+		t.Fatalf("withdrawal left the dimension authorized: %+v", withdrawn)
+	}
+	after := execJSON[conductorStatusDoc](t, p, "conductor", "status", "--json")
+	for _, duty := range after.Duties {
+		if duty.Enabled {
+			t.Errorf("duty %+v survived the withdrawal", duty)
+		}
+	}
+
+	// The terminal rendering names the duties too: legibility is not a
+	// --json-only feature.
+	stdout, _ := p.okExec(t, "conductor", "status")
+	for _, want := range []string{"duties", "babel-improves-babel", "mechanization-audit",
+		"babel-tunes-itself", "policy"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("conductor status does not mention %q:\n%s", want, stdout)
+		}
 	}
 }
 
@@ -437,8 +630,8 @@ func plantSpentDay(t *testing.T, p *phaseB, cost float64) {
 }
 
 // assertLadderShape checks that the ladder a status view reports is the ladder
-// #96 describes: the operator's invitations, then a policy rung this build
-// declares and does not implement, then the serendipity floor.
+// #96 describes: the operator's invitations, then the policy rung holding #88's
+// and #94's standing duties, then the serendipity floor.
 func assertLadderShape(t *testing.T, rungs []conductorRungDoc) {
 	t.Helper()
 	want := []string{"invitation", "policy", "serendipity"}
@@ -450,18 +643,30 @@ func assertLadderShape(t *testing.T, rungs []conductorRungDoc) {
 			t.Errorf("rung %d = %q, want %q", i, rungs[i].Name, name)
 		}
 	}
-	policy := rungs[1]
-	if policy.Implemented {
-		t.Error("the policy rung claims to be implemented")
+	for _, rung := range rungs {
+		if !rung.Implemented {
+			t.Errorf("rung %+v reported itself absent; every rung of this ladder is built", rung)
+		}
 	}
-	// The flag is the machine-readable absence; the note is the reason a person
-	// reads beside it, and it has to name what is missing rather than be blank.
-	if !strings.Contains(policy.Note, "implemented") || !strings.Contains(policy.Note, "policy") {
-		t.Errorf("the policy rung's note %q does not say what is absent", policy.Note)
+	// Rung two is implemented and still incomplete: the standing duties are
+	// here, the spec's attention policy is not, and the note is where a person
+	// reads the difference.
+	if note := rungs[1].Note; !strings.Contains(note, "duties") ||
+		!strings.Contains(note, "attention policy") {
+		t.Errorf("the policy rung's note %q does not say what it holds and what it lacks", note)
 	}
-	if !rungs[0].Implemented || !rungs[2].Implemented {
-		t.Errorf("an implemented rung reported itself absent: %+v", rungs)
+}
+
+// dutyState finds one duty in a status view.
+func dutyState(t *testing.T, duties []conductorDutyDoc, name string) conductorDutyDoc {
+	t.Helper()
+	for _, duty := range duties {
+		if duty.Name == name {
+			return duty
+		}
 	}
+	t.Fatalf("no %q duty in %+v", name, duties)
+	return conductorDutyDoc{}
 }
 
 func rungDepth(t *testing.T, rungs []conductorRungDoc, name string) int {

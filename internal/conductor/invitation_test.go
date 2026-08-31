@@ -158,10 +158,13 @@ func TestInvitationIsConsumedOnceAcrossACrash(t *testing.T) {
 	invitation := s.plantInvitation(t, ref, "operator-alex")
 
 	journalDir := t.TempDir()
-	ladder := func() []conductor.Rung {
+	ladder := func(journal *conductor.Journal) []conductor.Rung {
 		return conductor.DefaultLadder(
 			conductor.NewInvitationRung(s.dispositions,
 				conductor.NewRecordOrigins(s.frontier, s.runs)),
+			// No duty is authorized, so rung two contributes nothing: this
+			// scenario is about the operator's own queue.
+			conductor.NewDutyRung(conductor.Duties{}, journal, nil, 0),
 			conductor.NewSerendipityRung(fixedCorpus{"omp/session-a", "omp/session-b"},
 				fixedRecipes{"effective-patterns"}, newTestRand(), 2),
 		)
@@ -177,7 +180,7 @@ func TestInvitationIsConsumedOnceAcrossACrash(t *testing.T) {
 			// A wide floor, so the first cycle is the operator's invitation
 			// rather than a chaotic draw.
 			Floor:   conductor.Floor{OneIn: 100},
-			Ladder:  ladder(),
+			Ladder:  ladder(journal),
 			Runner:  runner,
 			Ledger:  fakeLedger{},
 			Journal: journal,

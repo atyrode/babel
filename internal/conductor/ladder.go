@@ -21,11 +21,11 @@ const (
 	// RungInvitation is the operator's own process-further queue (#87). It is
 	// rung one because the operator always outranks the loop.
 	RungInvitation = "invitation"
-	// RungPolicy is the attention policy of the spec's context system:
-	// lifecycle, focus and fleet directing expensive investigation. This build
-	// implements no policy, and the rung is present and visibly absent rather
-	// than omitted — a ladder that silently lacked a rung would make the
-	// serendipity floor look like the second-highest authority Babel has.
+	// RungPolicy is rung two: the standing self-improvement duties (#88, #94)
+	// and, when a build implements it, the attention policy of the spec's
+	// context system — lifecycle, focus and fleet directing expensive
+	// investigation. DutyRung is this build's implementation of the first
+	// half, and it says so about the second.
 	RungPolicy = "policy"
 	// RungSerendipity is the protected chaotic fraction: a random corpus slice
 	// crossed with a random default-enabled recipe, with no aim.
@@ -220,10 +220,14 @@ func rootsFor(ref frontier.Ref) []string {
 //
 // It exists so the ladder's shape is the ladder #96 describes rather than the
 // subset that happens to be built. `conductor status` prints it with its reason,
-// so an operator reading "why did the loop do this" sees that the rung between
+// so an operator reading "why did the loop do this" sees that a rung between
 // their invitations and the chaos is missing rather than merely quiet — and a
 // build that implements it replaces this value with a real rung and changes
 // nothing else about the loop.
+//
+// Rung two used to be one of these. It is a DutyRung now (#88, #94); what that
+// rung still lacks is the other half of the spec's attention policy, which it
+// states in its own note, because a rung that draws duty cycles is not absent.
 type AbsentRung struct {
 	name   string
 	reason string
@@ -232,16 +236,6 @@ type AbsentRung struct {
 // NewAbsentRung declares an unimplemented rung and the reason it is absent.
 func NewAbsentRung(name, reason string) *AbsentRung {
 	return &AbsentRung{name: name, reason: reason}
-}
-
-// PolicyRung is rung two as this build has it: declared, unimplemented, and
-// saying so. The spec's attention policy — lifecycle, focus, fleet — has no
-// implementation yet, and the standing duties above the floor (#88's
-// self-evaluation, #94's mechanization audit) have no recipes to run, so there
-// is nothing here to draw from and nothing is pretended.
-func PolicyRung() *AbsentRung {
-	return NewAbsentRung(RungPolicy,
-		"no attention policy or standing duty is implemented in this build (#96 rung two)")
 }
 
 // Name reports this rung's stable name.
@@ -421,13 +415,13 @@ func newDrawID(at time.Time, rng *rand.Rand) string {
 }
 
 // DefaultLadder assembles the ladder this build has: the operator's invitations,
-// the declared-but-absent policy rung, and the serendipity floor.
+// the standing duties, and the serendipity floor.
 //
 // The order is the precedence, and the last rung is the floor. Callers assemble
 // their own only to plant one in a test; a build that adds a rung adds it here,
 // which is also where its absence would otherwise have to be explained twice.
-func DefaultLadder(invitations *InvitationRung, floor *SerendipityRung) []Rung {
-	return []Rung{invitations, PolicyRung(), floor}
+func DefaultLadder(invitations *InvitationRung, duties *DutyRung, floor *SerendipityRung) []Rung {
+	return []Rung{invitations, duties, floor}
 }
 
 // Floor is the protected fraction of cycles the serendipity rung is guaranteed.
