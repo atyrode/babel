@@ -6,6 +6,7 @@ import (
 
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
+	"github.com/atyrode/babel/internal/reference"
 )
 
 // This file is #87 item 4's refine-first context: what a run is told about
@@ -142,6 +143,13 @@ func (c *Controller) relatedContext(st *state) *RelatedContext {
 			ID:      output.ID,
 			Summary: output.Summary,
 		})
+		// Recorded here, where the injection is decided, rather than read
+		// back off the preparation: this is the set that reached a worker,
+		// and the inspired-by edges of #113 may only name records a run was
+		// actually shown.
+		if namespace, addressable := graphNamespace(output.Kind); addressable {
+			st.inject(reference.RecordRef{Kind: namespace, ID: output.ID})
+		}
 	}
 	return doc
 }

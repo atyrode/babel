@@ -127,7 +127,7 @@ func (c *Controller) runStage(st *state, stage Stage, runID string, params map[s
 // untouched, which is §6.5's rule that a failed independent exploration does
 // not erase successful work.
 func (c *Controller) runSeparateJob(st *state, stage Stage) *run.Receipt {
-	runID := st.opt.RunID + "/" + string(stage)
+	runID := stageRunID(st.opt.RunID, stage)
 	sr := c.runStage(st, stage, runID, c.brief(st, stage))
 	if sr == nil {
 		return nil
@@ -276,7 +276,7 @@ func (c *Controller) persist(st *state, stage Stage, runID string, res *Result) 
 		st.hypotheses[cand.Ref] = id
 		st.note(id)
 		st.out.Hypotheses = append(st.out.Hypotheses, id)
-		st.record(RecordEvent{Stage: stage, Type: frontier.EntityHypothesis, Ref: cand.Ref, ID: id, Reused: reused})
+		c.record(st, RecordEvent{Stage: stage, Type: frontier.EntityHypothesis, Ref: cand.Ref, ID: id, Reused: reused})
 		c.putDispositions(st, stage, runID, frontier.Ref{Type: frontier.EntityHypothesis, ID: id}, cand.Dispositions)
 	}
 
@@ -341,7 +341,7 @@ func (c *Controller) develop(st *state, stage Stage, runID string, committed map
 			}
 			st.observations[obs.Ref] = id
 			st.out.Observations = append(st.out.Observations, id)
-			st.record(RecordEvent{Stage: stage, Type: frontier.EntityObservation, Ref: obs.Ref, ID: id, Reused: reused})
+			c.record(st, RecordEvent{Stage: stage, Type: frontier.EntityObservation, Ref: obs.Ref, ID: id, Reused: reused})
 		}
 	}
 }
@@ -395,7 +395,7 @@ func (c *Controller) object(st *state, stage Stage, runID string, committed map[
 			st.out.Hypotheses = append(st.out.Hypotheses, id)
 			st.note(id)
 		}
-		st.record(RecordEvent{Stage: stage, Type: kind, Ref: obj.Ref, ID: id, Reused: reused})
+		c.record(st, RecordEvent{Stage: stage, Type: kind, Ref: obj.Ref, ID: id, Reused: reused})
 	}
 }
 
@@ -439,7 +439,7 @@ func (c *Controller) consolidate(st *state, stage Stage, runID string, committed
 			continue
 		}
 		st.out.Findings = append(st.out.Findings, finding.ID)
-		st.record(RecordEvent{Stage: stage, Type: frontier.EntityFinding, Ref: con.Ref, ID: finding.ID, Reused: reused})
+		c.record(st, RecordEvent{Stage: stage, Type: frontier.EntityFinding, Ref: con.Ref, ID: finding.ID, Reused: reused})
 
 		// A consolidation's actions attach to the proposal when it
 		// suggested one and to the finding when it did not: §4.5 makes
@@ -454,7 +454,7 @@ func (c *Controller) consolidate(st *state, stage Stage, runID string, committed
 					fmt.Errorf("explore: persist proposal for %q: %w", con.Ref, err))
 			} else {
 				st.out.Proposals = append(st.out.Proposals, id)
-				st.record(RecordEvent{Stage: stage, Type: frontier.EntityProposal, Ref: con.Ref + "/proposal", ID: id, Reused: reusedProposal})
+				c.record(st, RecordEvent{Stage: stage, Type: frontier.EntityProposal, Ref: con.Ref + "/proposal", ID: id, Reused: reusedProposal})
 				bearer = frontier.Ref{Type: frontier.EntityProposal, ID: id}
 			}
 		}
