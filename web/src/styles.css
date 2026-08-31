@@ -3300,6 +3300,16 @@ a.link-target:hover {
   font-size: 0.82rem;
 }
 
+/* Every string in this table was written by a machine this one does not
+   control, so no cell is allowed to size itself from its content without a
+   bound: a hostile recipe or a kilocharacter authority ref would otherwise
+   take the row's width and squeeze the run id into a column too narrow to
+   read. The cap wraps such a value instead, which is what .untrusted-inline
+   already does inside the cell. */
+.presence-table td {
+  max-width: 20rem;
+}
+
 .presence-table th {
   color: var(--subtle);
   font-size: 0.68rem;
