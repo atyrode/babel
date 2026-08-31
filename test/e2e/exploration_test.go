@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/explore"
 	"github.com/atyrode/babel/internal/frontier"
@@ -384,6 +385,118 @@ type decideDoc struct {
 	Status   string      `json:"status"`
 }
 
+// The issue #87 surface, as a script reads it: the proposed next actions a
+// run attached to its records, the ledger of what the operator decided, the
+// process-further queue, and the revision chain a record moves along.
+type dispositionDoc struct {
+	ID         string     `json:"id"`
+	Type       string     `json:"type"`
+	RecordID   string     `json:"record_id"`
+	Kind       string     `json:"kind"`
+	Status     string     `json:"status"`
+	ProposedBy string     `json:"proposed_by"`
+	Ref        string     `json:"ref,omitempty"`
+	CreatedAt  string     `json:"created_at"`
+	Summary    string     `json:"summary"`
+	Rationale  string     `json:"rationale,omitempty"`
+	Anchor     *anchorDoc `json:"anchor,omitempty"`
+}
+
+type anchorDoc struct {
+	Workspace string `json:"workspace"`
+	Remote    string `json:"remote"`
+	URL       string `json:"url"`
+	Branch    string `json:"branch,omitempty"`
+}
+
+type dispositionsDoc struct {
+	Dispositions []dispositionDoc `json:"dispositions"`
+	Total        int              `json:"total"`
+	Limit        int              `json:"limit"`
+	Offset       int              `json:"offset"`
+}
+
+type ledgerEntryDoc struct {
+	ID         string `json:"id"`
+	Sequence   int64  `json:"sequence"`
+	Ruling     string `json:"ruling"`
+	By         string `json:"by"`
+	RecordedAt string `json:"recorded_at"`
+	Note       string `json:"note,omitempty"`
+}
+
+type dispositionDetailDoc struct {
+	Disposition dispositionDoc   `json:"disposition"`
+	Ledger      []ledgerEntryDoc `json:"ledger"`
+	Draft       string           `json:"draft,omitempty"`
+}
+
+type decideDispositionDoc struct {
+	Entry     ledgerEntryDoc `json:"entry"`
+	Status    string         `json:"status"`
+	Published string         `json:"published"`
+}
+
+type invitationDoc struct {
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	RecordID   string `json:"record_id"`
+	By         string `json:"by"`
+	CreatedAt  string `json:"created_at"`
+	ConsumedBy string `json:"consumed_by,omitempty"`
+	ConsumedAt string `json:"consumed_at,omitempty"`
+	Open       bool   `json:"open"`
+}
+
+type inviteDoc struct {
+	Invitation invitationDoc `json:"invitation"`
+}
+
+type invitationsDoc struct {
+	Invitations []invitationDoc `json:"invitations"`
+}
+
+type revisionDoc struct {
+	ID           string `json:"id"`
+	Type         string `json:"type"`
+	RecordID     string `json:"record_id"`
+	RootID       string `json:"root_id"`
+	SupersedesID string `json:"supersedes_id,omitempty"`
+	Sequence     int64  `json:"sequence"`
+	Actor        string `json:"actor"`
+	RecordedAt   string `json:"recorded_at"`
+	Reason       string `json:"reason,omitempty"`
+	Head         bool   `json:"head"`
+}
+
+type revisionsDoc struct {
+	Type      string        `json:"type"`
+	ID        string        `json:"id"`
+	HeadID    string        `json:"head_id"`
+	Revisions []revisionDoc `json:"revisions"`
+}
+
+type statusDoc struct {
+	Sequence   int64  `json:"sequence"`
+	Status     string `json:"status"`
+	RunID      string `json:"run_id,omitempty"`
+	Actor      string `json:"actor"`
+	RecordedAt string `json:"recorded_at"`
+	Note       string `json:"note,omitempty"`
+}
+
+type reviveDoc struct {
+	Type   string    `json:"type"`
+	ID     string    `json:"id"`
+	Status statusDoc `json:"status"`
+}
+
+type reviseDocument struct {
+	Revision   revisionDoc `json:"revision"`
+	Supersedes string      `json:"supersedes"`
+	Statement  string      `json:"statement"`
+}
+
 // TestSyntheticExplorationRoundTrip is the whole Phase B path from a real
 // binary invocation, asserting durable state after every step.
 func TestSyntheticExplorationRoundTrip(t *testing.T) {
@@ -569,6 +682,83 @@ func TestSyntheticExplorationRoundTrip(t *testing.T) {
 			len(findings.Findings[0].ObservationIDs))
 	}
 
+	// --- the actionable outputs of #87 ----------------------------------
+	// What the run proposed, what the operator decided about it, what the
+	// operator invited, and what the revision chain records. Every step is a
+	// real binary invocation against the same durable file.
+	actions := execJSON[dispositionsDoc](t, p, "dispositions", "--json")
+	if actions.Total != 1 || len(actions.Dispositions) != 1 {
+		t.Fatalf("dispositions = %+v, want the one the run proposed", actions.Dispositions)
+	}
+	action := actions.Dispositions[0]
+	if action.RecordID != proposalID {
+		t.Errorf("the action is attached to %q, want the proposal %q", action.RecordID, proposalID)
+	}
+	if action.Kind != "develop-further" || action.Status != "proposed" {
+		t.Errorf("action = %+v, want an undecided develop-further", action)
+	}
+	if action.Ref != "d-1" {
+		t.Errorf("the action does not carry the run's own ref: %+v", action)
+	}
+	if !strings.HasPrefix(action.ProposedBy, "run ") {
+		t.Errorf("the action is attributed to %q, want the run", action.ProposedBy)
+	}
+
+	accepted := execJSON[decideDispositionDoc](t, p, "disposition", "accept", action.ID,
+		"--operator", explorationOperator, "--note", "worth another pass", "--json")
+	if accepted.Status != "accepted" || accepted.Entry.By != explorationOperator {
+		t.Fatalf("acceptance = %+v, want an accepted entry attributed to the operator", accepted)
+	}
+	if !strings.Contains(accepted.Published, "nothing") {
+		t.Errorf("the acceptance does not state that nothing was published: %q", accepted.Published)
+	}
+	detail := execJSON[dispositionDetailDoc](t, p, "disposition", "show", action.ID, "--json")
+	if len(detail.Ledger) != 1 || detail.Ledger[0].Ruling != "accepted" {
+		t.Fatalf("ledger = %+v, want the one recorded decision", detail.Ledger)
+	}
+
+	// An invitation is instruction-free and queued until a run takes it.
+	invited := execJSON[inviteDoc](t, p, "invite", run.Deferred[0],
+		"--operator", explorationOperator, "--json")
+	if !invited.Invitation.Open || invited.Invitation.RecordID != run.Deferred[0] {
+		t.Fatalf("invitation = %+v, want an open invitation against the deferred candidate", invited.Invitation)
+	}
+	invitationQueue := execJSON[invitationsDoc](t, p, "invitations", "--json")
+	if len(invitationQueue.Invitations) != 1 || invitationQueue.Invitations[0].ID != invited.Invitation.ID {
+		t.Fatalf("queue = %+v, want the invitation just recorded", invitationQueue.Invitations)
+	}
+
+	// Nothing closes: the deferred candidate is at rest, and reviving it is
+	// an attributed transition that leaves the deferral in the history.
+	revived := execJSON[reviveDoc](t, p, "revive", run.Deferred[0],
+		"--reason", "the operator invited another pass", "--operator", explorationOperator, "--json")
+	if revived.Status.Status != "queued" {
+		t.Fatalf("revive left the candidate %q, want queued", revived.Status.Status)
+	}
+	if revived.Status.Actor != "operator "+explorationOperator {
+		t.Errorf("the revive is attributed to %q", revived.Status.Actor)
+	}
+
+	// The revision chain is readable, and an operator revision joins it
+	// without touching the wording it supersedes.
+	reworded := execJSON[reviseDocument](t, p, "revise", run.Deferred[0],
+		"--statement", "a second candidate, restated after the invitation",
+		"--reason", "the original wording was too broad to investigate",
+		"--operator", explorationOperator, "--json")
+	chain := execJSON[revisionsDoc](t, p, "revisions", run.Deferred[0], "--json")
+	if len(chain.Revisions) != 2 {
+		t.Fatalf("chain = %+v, want the original and the operator's revision", chain.Revisions)
+	}
+	if chain.HeadID != reworded.Revision.RecordID {
+		t.Errorf("head = %q, want the new revision %q", chain.HeadID, reworded.Revision.RecordID)
+	}
+	if chain.Revisions[0].Actor == chain.Revisions[1].Actor {
+		t.Errorf("the run's revision and the operator's are indistinguishable: %+v", chain.Revisions)
+	}
+	if chain.Revisions[1].SupersedesID != run.Deferred[0] {
+		t.Errorf("the revision supersedes %q, want %q", chain.Revisions[1].SupersedesID, run.Deferred[0])
+	}
+
 	// --- review the proposal --------------------------------------------
 	queue := execJSON[queueDoc](t, p, "review", "queue", "--json")
 	var queued *queueItemDoc
@@ -745,6 +935,15 @@ func writeDiscoveryPayload(t *testing.T, p *phaseB) string {
 				// which is what the export then collects.
 				Supporting: []frontier.Evidence{evidence},
 			},
+			// #87: the run proposes a next action alongside what it wrote.
+			// It attaches to the proposal rather than the finding, because
+			// the proposal is what §4.5 makes reviewable.
+			Dispositions: []explore.ProposedAction{{
+				Ref:       "d-1",
+				Kind:      disposition.KindDevelopFurther,
+				Summary:   "look for the same shape in the other harnesses",
+				Rationale: "the generated corpus only covers one",
+			}},
 		}},
 		Deferred: []explore.Disposal{{
 			Hypothesis: "c-2",

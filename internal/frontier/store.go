@@ -213,6 +213,106 @@ CREATE TRIGGER frontier_refinement_request_immutable BEFORE UPDATE ON frontier_r
 BEGIN SELECT RAISE(ABORT, 'a refinement request is immutable; reject and refine again for a new one'); END;
 CREATE TRIGGER frontier_refinement_request_kept BEFORE DELETE ON frontier_refinement_request
 BEGIN SELECT RAISE(ABORT, 'refinement requests are never deleted; each carries the authority for a descendant run'); END;
+`,
+	// Migration 3 gives the records that were already revisions of each
+	// other an editorial history: who revised, and why (#87).
+	//
+	// The ancestor links were always there, so the chain existed; what did
+	// not exist was any way to ask it a question. "Show me this candidate's
+	// history" meant walking ancestor pointers one query at a time, "is this
+	// the current wording" had no answer at all, and "who reworded it" had
+	// none either, because a record's run_id names the run that wrote it and
+	// says nothing about an operator who edited it afterwards. One row per
+	// record fixes all three: the chain identity is written once at insert,
+	// the reason lives beside the record instead of inside the model's own
+	// wording of it, and the actor distinguishes inference from its owner.
+	//
+	// The backfill reconstructs the chains that already exist rather than
+	// starting the history at this migration. A candidate revised last month
+	// would otherwise show as an original with a descendant that came from
+	// nowhere. Every backfilled revision is attributed to the run that wrote
+	// the record — which is the truth: before this migration no operator
+	// could revise anything — and carries no reason, because inventing one
+	// would be this migration putting words in a run's mouth.
+	//
+	// frontier_status_event gains its actor as two defaulted columns and no
+	// UPDATE. The immutability trigger would abort a backfill, and rightly:
+	// a migration that drops the guard protecting an append-only history in
+	// order to rewrite that history is the exact move the guard exists to
+	// stop. An empty actor_kind on an old row is not missing data — it means
+	// "the run in run_id", which is what every row written before #87 was —
+	// and the read path says so in one place.
+	`
+CREATE TABLE frontier_revision(
+	id            TEXT PRIMARY KEY,
+	entity_type   TEXT NOT NULL,
+	entity_id     TEXT NOT NULL UNIQUE,
+	root_id       TEXT NOT NULL,
+	supersedes_id TEXT NOT NULL,
+	seq           INTEGER NOT NULL,
+	actor_kind    TEXT NOT NULL,
+	actor_id      TEXT NOT NULL,
+	recorded_at   TEXT NOT NULL,
+	payload_json  TEXT NOT NULL
+);
+CREATE INDEX frontier_revision_chain ON frontier_revision(root_id, seq);
+CREATE INDEX frontier_revision_supersedes ON frontier_revision(supersedes_id);
+
+CREATE TRIGGER frontier_revision_immutable BEFORE UPDATE ON frontier_revision
+BEGIN SELECT RAISE(ABORT, 'a revision is immutable; the next revision supersedes this one'); END;
+CREATE TRIGGER frontier_revision_kept BEFORE DELETE ON frontier_revision
+BEGIN SELECT RAISE(ABORT, 'revision chains are never deleted; a record whose history vanished could not be audited'); END;
+
+INSERT INTO frontier_revision(id, entity_type, entity_id, root_id, supersedes_id, seq,
+	actor_kind, actor_id, recorded_at, payload_json)
+WITH RECURSIVE chain(entity_id, root_id, supersedes_id, seq) AS (
+	SELECT id, id, '', 1 FROM frontier_hypothesis WHERE ancestor_id IS NULL
+	UNION ALL
+	SELECT r.id, c.root_id, c.entity_id, c.seq + 1
+		FROM frontier_hypothesis r JOIN chain c ON r.ancestor_id = c.entity_id
+)
+SELECT 'rev_' || lower(hex(randomblob(16))), 'hypothesis', c.entity_id, c.root_id, c.supersedes_id,
+	c.seq, 'run', r.run_id, r.created_at, '{}'
+	FROM chain c JOIN frontier_hypothesis r ON r.id = c.entity_id;
+
+INSERT INTO frontier_revision(id, entity_type, entity_id, root_id, supersedes_id, seq,
+	actor_kind, actor_id, recorded_at, payload_json)
+WITH RECURSIVE chain(entity_id, root_id, supersedes_id, seq) AS (
+	SELECT id, id, '', 1 FROM frontier_observation WHERE ancestor_id IS NULL
+	UNION ALL
+	SELECT r.id, c.root_id, c.entity_id, c.seq + 1
+		FROM frontier_observation r JOIN chain c ON r.ancestor_id = c.entity_id
+)
+SELECT 'rev_' || lower(hex(randomblob(16))), 'observation', c.entity_id, c.root_id, c.supersedes_id,
+	c.seq, 'run', r.run_id, r.created_at, '{}'
+	FROM chain c JOIN frontier_observation r ON r.id = c.entity_id;
+
+INSERT INTO frontier_revision(id, entity_type, entity_id, root_id, supersedes_id, seq,
+	actor_kind, actor_id, recorded_at, payload_json)
+WITH RECURSIVE chain(entity_id, root_id, supersedes_id, seq) AS (
+	SELECT id, id, '', 1 FROM frontier_finding WHERE ancestor_id IS NULL
+	UNION ALL
+	SELECT r.id, c.root_id, c.entity_id, c.seq + 1
+		FROM frontier_finding r JOIN chain c ON r.ancestor_id = c.entity_id
+)
+SELECT 'rev_' || lower(hex(randomblob(16))), 'finding', c.entity_id, c.root_id, c.supersedes_id,
+	c.seq, 'run', r.run_id, r.created_at, '{}'
+	FROM chain c JOIN frontier_finding r ON r.id = c.entity_id;
+
+INSERT INTO frontier_revision(id, entity_type, entity_id, root_id, supersedes_id, seq,
+	actor_kind, actor_id, recorded_at, payload_json)
+WITH RECURSIVE chain(entity_id, root_id, supersedes_id, seq) AS (
+	SELECT id, id, '', 1 FROM frontier_proposal WHERE ancestor_id IS NULL
+	UNION ALL
+	SELECT r.id, c.root_id, c.entity_id, c.seq + 1
+		FROM frontier_proposal r JOIN chain c ON r.ancestor_id = c.entity_id
+)
+SELECT 'rev_' || lower(hex(randomblob(16))), 'proposal', c.entity_id, c.root_id, c.supersedes_id,
+	c.seq, 'run', r.run_id, r.created_at, '{}'
+	FROM chain c JOIN frontier_proposal r ON r.id = c.entity_id;
+
+ALTER TABLE frontier_status_event ADD COLUMN actor_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE frontier_status_event ADD COLUMN actor_id TEXT NOT NULL DEFAULT '';
 `}
 
 // Store is the durable hypothesis frontier. It exposes no operation that
@@ -363,6 +463,18 @@ type HypothesisInput struct {
 	// implies for a freshly emitted candidate.
 	Status  Status
 	Payload HypothesisPayload
+	// Actor attributes the revision this write appends to the candidate's
+	// chain (#87). The zero value means the run in RunID, which is what a
+	// worker's own output is; a command an operator typed passes
+	// Operator(id) so the chain records the person rather than the run
+	// identity the command happened to borrow.
+	Actor Actor
+	// Reason is why this revision supersedes its ancestor. It is required
+	// of a descendant and meaningless on an original: replacing an existing
+	// wording without saying why produces exactly the history #87 exists to
+	// prevent, one where the current state is visible and the argument for
+	// it is not.
+	Reason string
 }
 
 // CreateHypothesis persists a candidate and opens its append-only status
@@ -381,6 +493,10 @@ func (s *Store) CreateHypothesis(ctx context.Context, in HypothesisInput) (Hypot
 	}
 	if !status.valid() {
 		return Hypothesis{}, fmt.Errorf("%w: status %q", ErrInvalidValue, status)
+	}
+	actor, err := revisionActor(in.Actor, in.RunID, in.AncestorID, in.Reason)
+	if err != nil {
+		return Hypothesis{}, err
 	}
 	payload, err := marshalPayload(in.Payload)
 	if err != nil {
@@ -412,7 +528,21 @@ func (s *Store) CreateHypothesis(ctx context.Context, in HypothesisInput) (Hypot
 			id, nullableID(in.AncestorID), in.RunID, RecordSchema, formatTime(created), payload); err != nil {
 			return fmt.Errorf("insert hypothesis: %w", err)
 		}
-		_, err := s.appendStatus(ctx, tx, id, status, in.RunID, "")
+		if _, err := s.appendRevision(ctx, tx, revisionWrite{
+			entity:     Ref{Type: EntityHypothesis, ID: id},
+			supersedes: in.AncestorID,
+			actor:      actor,
+			reason:     in.Reason,
+			recordedAt: created,
+		}); err != nil {
+			return err
+		}
+		_, err := s.appendStatus(ctx, tx, statusWrite{
+			hypothesisID: id,
+			status:       status,
+			runID:        in.RunID,
+			actor:        actor,
+		})
 		return err
 	})
 	if err != nil {
@@ -468,6 +598,11 @@ type StatusInput struct {
 	Status       Status
 	RunID        string
 	Note         string
+	// Actor is who caused the transition. The zero value means the run in
+	// RunID; an operator-driven transition names the person, because #87
+	// makes a resting candidate revivable by hand and such a transition
+	// belongs to no run.
+	Actor Actor
 }
 
 // SetStatus appends a lifecycle transition. It appends rather than updates so
@@ -478,12 +613,22 @@ func (s *Store) SetStatus(ctx context.Context, in StatusInput) (StatusEvent, err
 	if !in.Status.valid() {
 		return StatusEvent{}, fmt.Errorf("%w: status %q", ErrInvalidValue, in.Status)
 	}
+	actor, err := statusActor(in.Actor, in.RunID)
+	if err != nil {
+		return StatusEvent{}, err
+	}
 	var recorded StatusEvent
-	err := s.transact(ctx, func(tx *sql.Tx) error {
+	err = s.transact(ctx, func(tx *sql.Tx) error {
 		if err := requireRow(ctx, tx, "frontier_hypothesis", in.HypothesisID); err != nil {
 			return fmt.Errorf("status subject: %w", err)
 		}
-		event, err := s.appendStatus(ctx, tx, in.HypothesisID, in.Status, in.RunID, in.Note)
+		event, err := s.appendStatus(ctx, tx, statusWrite{
+			hypothesisID: in.HypothesisID,
+			status:       in.Status,
+			runID:        in.RunID,
+			actor:        actor,
+			note:         in.Note,
+		})
 		recorded = event
 		return err
 	})
@@ -493,12 +638,24 @@ func (s *Store) SetStatus(ctx context.Context, in StatusInput) (StatusEvent, err
 	return recorded, nil
 }
 
-func (s *Store) appendStatus(ctx context.Context, tx *sql.Tx, hypothesisID string, status Status, runID, note string) (StatusEvent, error) {
+// statusWrite is one lifecycle transition about to be appended. It is a
+// struct rather than a parameter list because the actor made it the sixth
+// argument, and six positional strings at four call sites is where a status
+// silently lands under the wrong run identity.
+type statusWrite struct {
+	hypothesisID string
+	status       Status
+	runID        string
+	actor        Actor
+	note         string
+}
+
+func (s *Store) appendStatus(ctx context.Context, tx *sql.Tx, in statusWrite) (StatusEvent, error) {
 	id, err := newID("sta")
 	if err != nil {
 		return StatusEvent{}, err
 	}
-	payload := StatusPayload{Note: note}
+	payload := StatusPayload{Note: in.note}
 	encoded, err := marshalPayload(payload)
 	if err != nil {
 		return StatusEvent{}, err
@@ -506,22 +663,24 @@ func (s *Store) appendStatus(ctx context.Context, tx *sql.Tx, hypothesisID strin
 	var seq int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(seq), 0) + 1 FROM frontier_status_event WHERE hypothesis_id = ?`,
-		hypothesisID).Scan(&seq); err != nil {
+		in.hypothesisID).Scan(&seq); err != nil {
 		return StatusEvent{}, fmt.Errorf("next status sequence: %w", err)
 	}
 	recorded := s.now()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_status_event(
-		id, hypothesis_id, seq, status, run_id, recorded_at, payload_json)
-		VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		id, hypothesisID, seq, string(status), runID, formatTime(recorded), encoded); err != nil {
+		id, hypothesis_id, seq, status, run_id, actor_kind, actor_id, recorded_at, payload_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, in.hypothesisID, seq, string(in.status), in.runID,
+		string(in.actor.Kind), in.actor.ID, formatTime(recorded), encoded); err != nil {
 		return StatusEvent{}, fmt.Errorf("append status event: %w", err)
 	}
 	return StatusEvent{
 		ID:           id,
-		HypothesisID: hypothesisID,
+		HypothesisID: in.hypothesisID,
 		Sequence:     seq,
-		Status:       status,
-		RunID:        runID,
+		Status:       in.status,
+		RunID:        in.runID,
+		Actor:        in.actor,
 		RecordedAt:   recorded,
 		Payload:      payload,
 	}, nil
@@ -529,7 +688,8 @@ func (s *Store) appendStatus(ctx context.Context, tx *sql.Tx, hypothesisID strin
 
 // StatusHistory reads a candidate's lifecycle history in order.
 func (s *Store) StatusHistory(ctx context.Context, hypothesisID string) ([]StatusEvent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, hypothesis_id, seq, status, run_id, recorded_at, payload_json
+	rows, err := s.db.QueryContext(ctx, `SELECT id, hypothesis_id, seq, status, run_id,
+		actor_kind, actor_id, recorded_at, payload_json
 		FROM frontier_status_event WHERE hypothesis_id = ? ORDER BY seq`, hypothesisID)
 	if err != nil {
 		return nil, fmt.Errorf("read status history: %w", err)
@@ -538,15 +698,19 @@ func (s *Store) StatusHistory(ctx context.Context, hypothesisID string) ([]Statu
 	var history []StatusEvent
 	for rows.Next() {
 		var (
-			record   StatusEvent
-			status   string
-			recorded string
-			payload  []byte
+			record    StatusEvent
+			status    string
+			actorKind string
+			actorID   string
+			recorded  string
+			payload   []byte
 		)
-		if err := rows.Scan(&record.ID, &record.HypothesisID, &record.Sequence, &status, &record.RunID, &recorded, &payload); err != nil {
+		if err := rows.Scan(&record.ID, &record.HypothesisID, &record.Sequence, &status, &record.RunID,
+			&actorKind, &actorID, &recorded, &payload); err != nil {
 			return nil, fmt.Errorf("read status history: %w", err)
 		}
 		record.Status = Status(status)
+		record.Actor = storedActor(actorKind, actorID, record.RunID)
 		if record.RecordedAt, err = parseTime(recorded); err != nil {
 			return nil, fmt.Errorf("status event %s: %w", record.ID, err)
 		}
@@ -614,14 +778,24 @@ func (s *Store) Unexplored(ctx context.Context, limit int) ([]Hypothesis, error)
 // unexplored. §5.2: finite runs defer the unexplored frontier, they do not
 // erase it. One transaction, so a run's checkpoint is all or nothing.
 func (s *Store) DeferFrontier(ctx context.Context, runID string, ids []string, note string) ([]StatusEvent, error) {
+	actor, err := statusActor(Actor{}, runID)
+	if err != nil {
+		return nil, err
+	}
 	var deferred []StatusEvent
-	err := s.transact(ctx, func(tx *sql.Tx) error {
+	err = s.transact(ctx, func(tx *sql.Tx) error {
 		deferred = deferred[:0]
 		for _, id := range ids {
 			if err := requireRow(ctx, tx, "frontier_hypothesis", id); err != nil {
 				return fmt.Errorf("defer subject: %w", err)
 			}
-			event, err := s.appendStatus(ctx, tx, id, StatusDeferred, runID, note)
+			event, err := s.appendStatus(ctx, tx, statusWrite{
+				hypothesisID: id,
+				status:       StatusDeferred,
+				runID:        runID,
+				actor:        actor,
+				note:         note,
+			})
 			if err != nil {
 				return err
 			}
@@ -735,6 +909,10 @@ type ObservationInput struct {
 	RecipeID      string
 	RecipeVersion int
 	Payload       ObservationPayload
+	// Actor and Reason carry the revision chain entry this write appends,
+	// on the same terms as HypothesisInput's.
+	Actor  Actor
+	Reason string
 }
 
 // CreateObservation persists a §4.3 claim. It refuses an observation with no
@@ -752,6 +930,10 @@ func (s *Store) CreateObservation(ctx context.Context, in ObservationInput) (Obs
 		return Observation{}, fmt.Errorf("%w: observation recipe id is empty", ErrInvalidValue)
 	}
 	if err := in.Payload.validate(); err != nil {
+		return Observation{}, err
+	}
+	actor, err := revisionActor(in.Actor, in.RunID, in.AncestorID, in.Reason)
+	if err != nil {
 		return Observation{}, err
 	}
 	payload, err := marshalPayload(in.Payload)
@@ -792,7 +974,14 @@ func (s *Store) CreateObservation(ctx context.Context, in ObservationInput) (Obs
 			RecordSchema, record.EvidenceCount, formatTime(created), payload); err != nil {
 			return fmt.Errorf("insert observation: %w", err)
 		}
-		return nil
+		_, err := s.appendRevision(ctx, tx, revisionWrite{
+			entity:     Ref{Type: EntityObservation, ID: id},
+			supersedes: in.AncestorID,
+			actor:      actor,
+			reason:     in.Reason,
+			recordedAt: created,
+		})
+		return err
 	})
 	if err != nil {
 		return Observation{}, err
@@ -864,6 +1053,10 @@ type FindingInput struct {
 	AncestorID     string
 	ObservationIDs []string
 	Payload        FindingPayload
+	// Actor and Reason carry the revision chain entry this write appends,
+	// on the same terms as HypothesisInput's.
+	Actor  Actor
+	Reason string
 }
 
 // CreateFinding consolidates §4.4 observations. A finding with no supporting
@@ -878,6 +1071,10 @@ func (s *Store) CreateFinding(ctx context.Context, in FindingInput) (Finding, er
 		return Finding{}, ErrNoObservations
 	}
 	if err := in.Payload.validate(); err != nil {
+		return Finding{}, err
+	}
+	actor, err := revisionActor(in.Actor, in.RunID, in.AncestorID, in.Reason)
+	if err != nil {
 		return Finding{}, err
 	}
 	payload, err := marshalPayload(in.Payload)
@@ -917,6 +1114,15 @@ func (s *Store) CreateFinding(ctx context.Context, in FindingInput) (Finding, er
 				finding_id, observation_id, position) VALUES(?, ?, ?)`, id, observationID, position); err != nil {
 				return fmt.Errorf("link finding observation: %w", err)
 			}
+		}
+		if _, err := s.appendRevision(ctx, tx, revisionWrite{
+			entity:     Ref{Type: EntityFinding, ID: id},
+			supersedes: in.AncestorID,
+			actor:      actor,
+			reason:     in.Reason,
+			recordedAt: created,
+		}); err != nil {
+			return err
 		}
 		hypotheses, err := findingHypotheses(ctx, tx, id)
 		if err != nil {
@@ -981,6 +1187,10 @@ type ProposalInput struct {
 	AncestorID string
 	FindingIDs []string
 	Payload    ProposalPayload
+	// Actor and Reason carry the revision chain entry this write appends,
+	// on the same terms as HypothesisInput's.
+	Actor  Actor
+	Reason string
 }
 
 // CreateProposal persists a §4.5 review artifact. A proposal with no finding
@@ -995,6 +1205,10 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 		return Proposal{}, ErrNoFindings
 	}
 	if err := in.Payload.validate(); err != nil {
+		return Proposal{}, err
+	}
+	actor, err := revisionActor(in.Actor, in.RunID, in.AncestorID, in.Reason)
+	if err != nil {
 		return Proposal{}, err
 	}
 	payload, err := marshalPayload(in.Payload)
@@ -1035,6 +1249,15 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 				proposal_id, finding_id, position) VALUES(?, ?, ?)`, id, findingID, position); err != nil {
 				return fmt.Errorf("link proposal finding: %w", err)
 			}
+		}
+		if _, err := s.appendRevision(ctx, tx, revisionWrite{
+			entity:     Ref{Type: EntityProposal, ID: id},
+			supersedes: in.AncestorID,
+			actor:      actor,
+			reason:     in.Reason,
+			recordedAt: created,
+		}); err != nil {
+			return err
 		}
 		hypotheses, err := proposalHypotheses(ctx, tx, id)
 		if err != nil {

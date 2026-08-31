@@ -145,9 +145,14 @@ type linkRow struct {
 }
 
 type statusRow struct {
-	Sequence   int64  `json:"sequence"`
-	Status     string `json:"status"`
-	RunID      string `json:"run_id,omitempty"`
+	Sequence int64  `json:"sequence"`
+	Status   string `json:"status"`
+	RunID    string `json:"run_id,omitempty"`
+	// Actor is who caused the transition. It is separate from RunID because
+	// #87's revive belongs to an operator and to no run, so a history that
+	// only named runs would show the most consequential transitions as
+	// having no author at all.
+	Actor      string `json:"actor"`
 	RecordedAt string `json:"recorded_at"`
 	Note       string `json:"note,omitempty"`
 }
@@ -376,9 +381,11 @@ func (a *app) hypothesisShow(ctx context.Context, args []string) error {
 	fmt.Fprint(a.stdout, "\nstatus history\n")
 	statusTable := make([][]string, 0, len(res.StatusHistory))
 	for _, e := range res.StatusHistory {
-		statusTable = append(statusTable, []string{strconv.FormatInt(e.Sequence, 10), e.Status, e.RecordedAt, orMissing(e.Note)})
+		statusTable = append(statusTable, []string{
+			strconv.FormatInt(e.Sequence, 10), e.Status, e.Actor, e.RecordedAt, orMissing(e.Note),
+		})
 	}
-	if err := writeTable(a.stdout, []string{"SEQ", "STATUS", "RECORDED", "NOTE"}, statusTable); err != nil {
+	if err := writeTable(a.stdout, []string{"SEQ", "STATUS", "ACTOR", "RECORDED", "NOTE"}, statusTable); err != nil {
 		return err
 	}
 	fmt.Fprint(a.stdout, "\nobservations\n")
@@ -647,11 +654,22 @@ func renderStatusHistory(events []frontier.StatusEvent) []statusRow {
 			Sequence:   e.Sequence,
 			Status:     Sanitize(string(e.Status)),
 			RunID:      Sanitize(e.RunID),
+			Actor:      renderActor(e.Actor),
 			RecordedAt: formatTime(e.RecordedAt),
 			Note:       Sanitize(e.Payload.Note),
 		})
 	}
 	return out
+}
+
+// renderActor writes an attributable author as one terminal-safe cell. The
+// kind is kept in front of the identity because "operator alex" and "run alex"
+// are different claims and an identity alone would not distinguish them.
+func renderActor(a frontier.Actor) string {
+	if a.ID == "" {
+		return ""
+	}
+	return Sanitize(string(a.Kind)) + " " + Sanitize(a.ID)
 }
 
 func renderObservations(records []frontier.Observation) []observationRow {

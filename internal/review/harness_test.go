@@ -144,9 +144,16 @@ func (h *harness) finding(observationIDs []string, title string) frontier.Findin
 
 func (h *harness) proposal(findingIDs []string, ancestorID, title string) frontier.Proposal {
 	h.t.Helper()
+	// A descendant states why it supersedes its ancestor and an original has
+	// nothing to supersede, so the reason follows the ancestor.
+	reason := ""
+	if ancestorID != "" {
+		reason = "a refinement run reworked the rejected proposal"
+	}
 	record, err := h.front.CreateProposal(h.ctx, frontier.ProposalInput{
 		RunID:      "run-1",
 		AncestorID: ancestorID,
+		Reason:     reason,
 		FindingIDs: findingIDs,
 		Payload: frontier.ProposalPayload{
 			Title:          title,

@@ -271,6 +271,7 @@ func (c *Controller) persist(st *state, stage Stage, runID string, res *Result) 
 		st.note(id)
 		st.out.Hypotheses = append(st.out.Hypotheses, id)
 		st.record(RecordEvent{Stage: stage, Type: frontier.EntityHypothesis, Ref: cand.Ref, ID: id, Reused: reused})
+		c.putDispositions(st, stage, runID, frontier.Ref{Type: frontier.EntityHypothesis, ID: id}, cand.Dispositions)
 	}
 
 	c.develop(st, stage, runID, committed, auth, res)
@@ -434,6 +435,12 @@ func (c *Controller) consolidate(st *state, stage Stage, runID string, committed
 		st.out.Findings = append(st.out.Findings, finding.ID)
 		st.record(RecordEvent{Stage: stage, Type: frontier.EntityFinding, Ref: con.Ref, ID: finding.ID, Reused: reused})
 
+		// A consolidation's actions attach to the proposal when it
+		// suggested one and to the finding when it did not: §4.5 makes
+		// the proposal the artifact an operator reviews, so a draft-issue
+		// hung off the finding underneath it would point past the record
+		// the operator is actually looking at.
+		bearer := frontier.Ref{Type: frontier.EntityFinding, ID: finding.ID}
 		if con.Proposal != nil {
 			id, reusedProposal, err := c.putProposal(st, stage, runID, committed, con, finding.ID)
 			if err != nil {
@@ -442,8 +449,10 @@ func (c *Controller) consolidate(st *state, stage Stage, runID string, committed
 			} else {
 				st.out.Proposals = append(st.out.Proposals, id)
 				st.record(RecordEvent{Stage: stage, Type: frontier.EntityProposal, Ref: con.Ref + "/proposal", ID: id, Reused: reusedProposal})
+				bearer = frontier.Ref{Type: frontier.EntityProposal, ID: id}
 			}
 		}
+		c.putDispositions(st, stage, runID, bearer, con.Dispositions)
 
 		for _, hypothesisID := range finding.HypothesisIDs {
 			if st.promoted[hypothesisID] {

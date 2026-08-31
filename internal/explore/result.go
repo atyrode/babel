@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/worker"
 )
@@ -61,6 +62,11 @@ type Candidate struct {
 	// is valid: §4.2 preserves a speculative candidate, and a finite run may
 	// leave it for a later pass.
 	Observations []Observation `json:"observations,omitempty"`
+	// Dispositions are the next actions the job proposes for the candidate
+	// (#87). They are proposals about what an operator could do with the
+	// record and never actions: persisting one renders a button, not an
+	// issue, a fact, or a memory.
+	Dispositions []ProposedAction `json:"dispositions,omitempty"`
 }
 
 // Observation is one provenance-bearing claim a job developed.
@@ -91,6 +97,11 @@ type Consolidation struct {
 	Finding      frontier.FindingPayload `json:"finding"`
 	// Proposal is §4.5's review artifact, when the job suggests one.
 	Proposal *frontier.ProposalPayload `json:"proposal,omitempty"`
+	// Dispositions are the next actions the job proposes for what this
+	// consolidation produced (#87): the proposal when it suggested one,
+	// because §4.5 makes the proposal the reviewable artifact, and the
+	// finding when it did not.
+	Dispositions []ProposedAction `json:"dispositions,omitempty"`
 }
 
 // Grounds is what a challenger's criticism rests on. §5.4 requires an
@@ -145,6 +156,33 @@ type Disposal struct {
 	// Hypothesis names the candidate, by result ref or durable identifier.
 	Hypothesis string `json:"hypothesis"`
 	Reason     string `json:"reason"`
+}
+
+// ProposedAction is one next action a job proposes against the record it is
+// attached to (#87). It is the schema field that lets a run propose a
+// disposition, and it is deliberately additive: a worker that emits none is a
+// worker that proposed none, and the result schema does not move for a field
+// both sides may ignore, which is the same rule worker.ProtocolVersion states
+// for optional message fields.
+//
+// Babel refuses a kind it does not implement rather than storing it as an
+// opaque string. The five kinds are five surfaces a click feeds; a sixth would
+// be a button wired to nothing.
+type ProposedAction struct {
+	// Ref is the worker's own reference for this action, unique within the
+	// result. It is the resume key: a re-run replaying its result finds the
+	// action it already proposed instead of proposing a second copy.
+	Ref  string           `json:"ref"`
+	Kind disposition.Kind `json:"kind"`
+	// Summary and Rationale are the action in the model's own words.
+	Summary   string `json:"summary"`
+	Rationale string `json:"rationale,omitempty"`
+	// Workspace is the local checkout a draft-issue binds to, and is
+	// required of that kind alone. Babel verifies it against the checkout's
+	// own git configuration (#88) rather than trusting the repository the
+	// worker names, so an unverifiable workspace is a refused action, never
+	// a draft aimed at a repository nobody confirmed exists.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // Errors a structured result can produce. They are sentinels because the
@@ -231,6 +269,11 @@ func parseResult(rec *worker.ResultRecord) (*Result, error) {
 				return nil, err
 			}
 		}
+		for _, act := range cand.Dispositions {
+			if err := claim("disposition", act.Ref); err != nil {
+				return nil, err
+			}
+		}
 	}
 	for _, con := range res.Consolidations {
 		if err := claim("consolidation", con.Ref); err != nil {
@@ -238,6 +281,11 @@ func parseResult(rec *worker.ResultRecord) (*Result, error) {
 		}
 		if len(con.Observations) == 0 {
 			return nil, fmt.Errorf("%w: consolidation %q names no observation", ErrDevelopmentPath, con.Ref)
+		}
+		for _, act := range con.Dispositions {
+			if err := claim("disposition", act.Ref); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, obj := range res.Objections {

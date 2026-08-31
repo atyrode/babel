@@ -76,6 +76,12 @@ var (
 	ErrInvalidValue = errors.New("invalid value")
 	// ErrImmutable reports an attempt to change a stored record in place.
 	ErrImmutable = errors.New("records are immutable revisions")
+	// ErrNotResting reports a revive aimed at a candidate that never
+	// stopped. #87 turns every terminal status into a resting state, and
+	// the transition out of one only means something when the candidate was
+	// in one: reviving a candidate a run is still investigating would
+	// silently rewrite that run's lifecycle underneath it.
+	ErrNotResting = errors.New("hypothesis is not in a resting status")
 )
 
 // Status is a candidate hypothesis's exploration lifecycle from §4.2. It is
@@ -98,6 +104,24 @@ const (
 func (s Status) valid() bool {
 	switch s {
 	case StatusUntriaged, StatusQueued, StatusInvestigating, StatusDeferred, StatusRejected, StatusPromoted:
+		return true
+	}
+	return false
+}
+
+// resting reports whether a candidate's lifecycle has come to a stop in this
+// status. §4.7 already refuses to delete anything; #87 goes one step further
+// and refuses to let a status be an ending, so the three states a run leaves
+// behind when it stops working on a candidate are resting places rather than
+// terminals, and Revive is the transition out of each of them.
+//
+// `investigating` is deliberately not among them even though it can outlive
+// the run that set it: a candidate a run abandoned mid-investigation is
+// resumed by the run, not revived by an operator, and treating a crashed run's
+// leftovers as a resting state would hide the crash.
+func (s Status) resting() bool {
+	switch s {
+	case StatusDeferred, StatusRejected, StatusPromoted:
 		return true
 	}
 	return false
@@ -202,6 +226,61 @@ type Ref struct {
 	Type EntityType
 	ID   string
 }
+
+// ActorKind names who authored a durable change. Babel's records are written
+// by exactly two kinds of author — a run, which is a model invocation Babel
+// launched and receipted, and an operator, who is a person — and #87 makes the
+// distinction load-bearing: a revision chain that cannot say whether a
+// candidate was reworded by inference or by its owner is a history nobody can
+// audit.
+type ActorKind string
+
+// The authors a durable change can have.
+const (
+	// ActorRun attributes a change to a run, identified by its receipt.
+	ActorRun ActorKind = "run"
+	// ActorOperator attributes a change to a person, identified the same way
+	// §4.7's reviewer identity is.
+	ActorOperator ActorKind = "operator"
+)
+
+func (a ActorKind) valid() bool {
+	switch a {
+	case ActorRun, ActorOperator:
+		return true
+	}
+	return false
+}
+
+// Actor is one attributable author. Both fields are plaintext-eligible: §9's
+// allowlist admits structured identifiers, and internal/review already keeps
+// reviewer identities in the clear for the reason that decides it here too —
+// a change nobody can attribute is not attributable later either.
+type Actor struct {
+	Kind ActorKind
+	ID   string
+}
+
+// validate refuses an author who cannot be named. An empty identity is the
+// case worth naming separately: it is what an unset --operator or a run that
+// forgot its own id produces, and recording it would leave a change signed by
+// nobody.
+func (a Actor) validate() error {
+	if !a.Kind.valid() {
+		return fmt.Errorf("%w: actor kind %q", ErrInvalidValue, a.Kind)
+	}
+	if a.ID == "" {
+		return fmt.Errorf("%w: %s actor has no identity", ErrInvalidValue, a.Kind)
+	}
+	return nil
+}
+
+// Operator builds an operator actor, which is what every command that records
+// an operator's act passes.
+func Operator(id string) Actor { return Actor{Kind: ActorOperator, ID: id} }
+
+// Run builds a run actor from a run identity.
+func Run(id string) Actor { return Actor{Kind: ActorRun, ID: id} }
 
 // Confidence and Impact are coarse model-supplied gradings. They are three
 // valued rather than numeric because §10 warns that confidence never
@@ -687,6 +766,50 @@ type LinkPayload struct {
 	Note string `json:"note,omitempty"`
 }
 
+// Revision is one entry in a record's append-only revision chain (#87).
+//
+// The chain is not a second copy of anything. Every record kind in this
+// package is already an immutable revision that names its ancestor, so the
+// records themselves are the chain's nodes and this row is what the ancestor
+// link could never carry: who made the revision and why. Storing that beside
+// the record rather than inside its payload is what lets the whole history of
+// one candidate be read in one query — and what keeps the reason out of the
+// four payload shapes, which are the model's words about the corpus and not
+// the editorial record of who changed them.
+//
+// RootID is denormalized on purpose. Walking ancestor links to find the head
+// of a chain is a recursive query per read; a chain identity written once at
+// insert makes head and history a single indexed lookup, and the value cannot
+// drift because no row here is ever updated.
+type Revision struct {
+	ID string
+	// Entity is the record this revision produced. There is exactly one
+	// revision row per record, which is what makes "current state = head"
+	// a fact about the table rather than a convention.
+	Entity Ref
+	// RootID is the first record of the chain, and equals Entity.ID for it.
+	RootID string
+	// SupersedesID is the record this one revises, empty for a chain's
+	// first revision. It mirrors the record's own ancestor link.
+	SupersedesID string
+	// Sequence is 1 for the original and strictly increasing along the
+	// chain, so history has a total order even inside one timestamp.
+	Sequence   int64
+	Actor      Actor
+	RecordedAt time.Time
+	Payload    RevisionPayload
+}
+
+// RevisionPayload is the §9 encryption-bound part of a revision: a reason is
+// prose about a record's content, which §9 keeps out of PostgreSQL in the
+// clear even though the actor identity beside it travels plaintext.
+type RevisionPayload struct {
+	// Reason is why this revision was made. It is empty for the records a
+	// run emits fresh — there is no prior wording to justify replacing —
+	// and required of anything that supersedes an existing record.
+	Reason string `json:"reason,omitempty"`
+}
+
 // StatusEvent is one entry in a hypothesis's append-only lifecycle history.
 // Storing the history rather than a mutable column is what makes §5.2's
 // "sorting never deletes" checkable: a candidate that left the active
@@ -696,9 +819,15 @@ type StatusEvent struct {
 	HypothesisID string
 	// Sequence is per-hypothesis and strictly increasing, so history has a
 	// total order even when two events share a timestamp.
-	Sequence   int64
-	Status     Status
-	RunID      string
+	Sequence int64
+	Status   Status
+	RunID    string
+	// Actor is who caused the transition. It is not derivable from RunID:
+	// #87 makes every resting status revivable by an operator, and such a
+	// transition belongs to no run at all. A run's own transition carries
+	// ActorRun with the same identity RunID holds, so the two never
+	// disagree.
+	Actor      Actor
 	RecordedAt time.Time
 	Payload    StatusPayload
 }

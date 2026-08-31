@@ -212,6 +212,7 @@ func (a *app) explore(ctx context.Context, args []string) error {
 		Frontier:     state.frontier,
 		Runs:         state.runs,
 		Ledger:       ledger,
+		Dispositions: state.dispositions,
 		Index:        idx,
 		Inputs:       inputs,
 		Capabilities: runstore.CapabilityVersions{Tool: "babel/" + readBuildIdentity().Version},
