@@ -9,6 +9,33 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **`babel conformance` said nothing at all while it graded (issue #78).** The
+  2026-08-30 readiness drill pointed the suite at `/bin/cat` and watched two
+  minutes forty-five seconds of empty stdout, then all eleven result lines at
+  once. Obligations are graded one at a time — sixteen of them now — and one
+  that cannot reach the worker spends its whole 15-second handshake budget
+  before its verdict exists, so the report was collected and printed after the
+  last of them. The command's own help promised "one obligation per line",
+  which reads as streaming, and an operator watching an empty terminal had no
+  way to tell a slow grader from a hung one or to see which obligation was
+  stuck. Each verdict is now written the moment that obligation settles: the
+  last line on the terminal names the last thing decided and, by omission, what
+  is being graded now. Measured against `/bin/cat`, the same 50 seconds that
+  produced no bytes before now produces three named failures, at 15, 30 and 45
+  seconds. Nothing about any obligation's semantics changed — the same
+  assertions decide the same verdicts in the same order — and the 15-second
+  budget is still the budget, which the help text now states, because a line
+  that takes 15 seconds to appear is worth predicting.
+  - **`--json` is exempt, and unchanged.** A machine-readable report is one
+    parseable document, so a `--json` invocation subscribes to no stream and
+    emits the same document, with the same fields, after the last obligation.
+  - `worker.RunConformanceWith` still returns the whole report; the streaming
+    caller uses `worker.StreamConformance`, which delivers every verdict —
+    including the ones reported unrun after a cancelled context — on the
+    calling goroutine, in obligation order, and returns the identical report.
+
 ### Added
 
 - **Actionable outputs: dispositions, revision chains, invitations, and

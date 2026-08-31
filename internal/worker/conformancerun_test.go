@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -247,5 +249,152 @@ func TestUnsandboxedGradingIsolatesTheContainmentFinding(t *testing.T) {
 		if !strict[name] || !relaxed[name] {
 			t.Errorf("%s should not depend on the containment requirement (strict=%v relaxed=%v)", name, strict[name], relaxed[name])
 		}
+	}
+}
+
+// TestStreamConformanceDeliversEachVerdictBeforeTheNextObligation is the whole
+// point of streaming: a verdict that arrives only once the suite is finished
+// tells an operator nothing while the suite is running, which is the situation
+// this exists to fix (issue #78).
+//
+// The obligations are synthetic because what is being graded is the loop's
+// delivery discipline, not the worker's: a real candidate's timing is its own,
+// and the cheapest one that stalls costs a 15-second handshake budget per
+// obligation to watch. Each obligation announces that it started, so the
+// recorded sequence proves delivery happened between obligations rather than
+// after all of them.
+func TestStreamConformanceDeliversEachVerdictBeforeTheNextObligation(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	note := func(event string) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, event)
+	}
+
+	obligations := []conformanceObligation{
+		{name: "first", run: func(conformanceT) { note("start first") }},
+		{name: "second", run: func(t conformanceT) { note("start second"); t.Error("no hello") }},
+		{name: "third", run: func(conformanceT) { note("start third") }},
+	}
+
+	var streamed []ObligationResult
+	results := streamObligations(context.Background(), obligations, func(result ObligationResult) {
+		note("settled " + result.Name)
+		streamed = append(streamed, result)
+	})
+
+	want := []string{
+		"start first", "settled first",
+		"start second", "settled second",
+		"start third", "settled third",
+	}
+	if !slices.Equal(events, want) {
+		t.Errorf("sequence = %q, want %q", events, want)
+	}
+	// The stream and the report must be the same verdicts: a caller that
+	// prints the stream and then summarizes the slice would otherwise
+	// contradict itself.
+	if !reflect.DeepEqual(streamed, results) {
+		t.Errorf("streamed %+v, returned %+v", streamed, results)
+	}
+	if len(results) != 3 || results[1].Passed || !results[0].Passed || !results[2].Passed {
+		t.Errorf("verdicts = %+v, want the second one failed and the others passed", results)
+	}
+}
+
+// TestStreamConformanceReportsEverySettledObligationBeforeOneThatStalls is the
+// operator's question during those 165 seconds: which obligation is stuck?
+//
+// The stalling obligation is held open until the test has read every earlier
+// verdict, so the assertion is not a race won by a fast machine: the verdicts
+// are observed while the suite is provably still inside the obligation that has
+// not returned. Its own failure — the suite's existing path for a candidate
+// that never answers — then arrives last.
+func TestStreamConformanceReportsEverySettledObligationBeforeOneThatStalls(t *testing.T) {
+	release := make(chan struct{})
+	settled := make(chan ObligationResult)
+
+	obligations := []conformanceObligation{
+		{name: "first", run: func(conformanceT) {}},
+		{name: "second", run: func(conformanceT) {}},
+		{name: "stalls", run: func(ct conformanceT) {
+			<-release
+			ct.Fatal("worker: handshake timed out: no hello within 15s")
+		}},
+	}
+
+	report := make(chan []ObligationResult, 1)
+	go func() {
+		report <- streamObligations(context.Background(), obligations, func(result ObligationResult) {
+			settled <- result
+		})
+	}()
+
+	// Everything decided before the stall must already have been reported,
+	// while the suite is still blocked inside the obligation that stalls.
+	for _, name := range []string{"first", "second"} {
+		result := <-settled
+		if result.Name != name {
+			t.Fatalf("streamed %q, want %q", result.Name, name)
+		}
+		if !result.Passed {
+			t.Errorf("obligation %s failed: %q", result.Name, result.Failures)
+		}
+	}
+	select {
+	case result := <-settled:
+		t.Fatalf("obligation %s was reported settled while it had not returned", result.Name)
+	default:
+	}
+
+	close(release)
+	last := <-settled
+	if last.Name != "stalls" || last.Passed {
+		t.Errorf("last verdict = %+v, want the stalled obligation failed", last)
+	}
+	if len(last.Failures) == 0 || !strings.Contains(last.Failures[0], "handshake timed out") {
+		t.Errorf("the stalled obligation reported %q, want the reason it stalled", last.Failures)
+	}
+	if got := <-report; len(got) != 3 {
+		t.Errorf("report covered %d obligations, want the whole list", len(got))
+	}
+}
+
+// TestStreamConformanceStreamsObligationsItDoesNotRun covers the exported
+// entry point and the one case where no worker is launched at all: a context
+// that is already done. Every obligation is still accounted for, in the stream
+// as well as the report, because a report that silently omitted what it skipped
+// would read as a shorter contract.
+func TestStreamConformanceStreamsObligationsItDoesNotRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var streamed []string
+	results := StreamConformance(ctx, ConformanceOptions{Worker: fakeWorkerPath}, func(result ObligationResult) {
+		streamed = append(streamed, result.Name)
+		if result.Passed {
+			t.Errorf("obligation %s passed without being run", result.Name)
+		}
+		if len(result.Failures) != 1 || !strings.HasPrefix(result.Failures[0], "not run: ") {
+			t.Errorf("obligation %s reported %q, want it was not run", result.Name, result.Failures)
+		}
+	})
+
+	whole := conformanceObligations(conformanceTarget{})
+	if len(results) != len(whole) || len(streamed) != len(whole) {
+		t.Fatalf("streamed %d and reported %d obligations, want the whole suite of %d", len(streamed), len(results), len(whole))
+	}
+	for i, obligation := range whole {
+		if streamed[i] != obligation.name {
+			t.Errorf("streamed[%d] = %q, want %q", i, streamed[i], obligation.name)
+		}
+	}
+
+	// RunConformanceWith is the same grading with nothing listening: the
+	// callers that predate streaming must be unaffected by it.
+	batched := RunConformanceWith(ctx, ConformanceOptions{Worker: fakeWorkerPath})
+	if !reflect.DeepEqual(batched, results) {
+		t.Errorf("RunConformanceWith reported %+v, want the same report as the stream", batched)
 	}
 }
