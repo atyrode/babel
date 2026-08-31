@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atyrode/babel/internal/reference"
 	babelsync "github.com/atyrode/babel/internal/sync"
 
 	_ "modernc.org/sqlite"
@@ -384,6 +385,13 @@ type Store struct {
 	// transaction that writes it. It is nil in local-only mode, which is the
 	// default and a supported deployment; see publish.go.
 	sync babelsync.Hook
+
+	// refs mints the typed reference graph's shadow of every link this store
+	// writes, and refsDiag receives an emission failure. Both are nil unless
+	// WithReferences was passed, which is the default and leaves every write
+	// path behaving exactly as it did before #113; see reference.go.
+	refs     reference.Appender
+	refsDiag func(error)
 }
 
 // Open opens the durable database in dir, creating the directory and applying
@@ -639,6 +647,12 @@ func (s *Store) CreateHypothesis(ctx context.Context, in HypothesisInput) (Hypot
 	if err := s.commit(ctx, pub); err != nil {
 		return Hypothesis{}, err
 	}
+	// The record and its authoritative rows are durable at this point, so
+	// the graph shadow is minted here and its failure is a warning: an edge
+	// that could not be written is one this write is missing, never a
+	// candidate the frontier does not have (#113, reference.go).
+	s.mintSupersedes(ctx, EntityHypothesis, id, in.AncestorID, actor)
+	s.mintDuplicates(ctx, id, record.Duplicates, actor)
 	return record, nil
 }
 
@@ -1221,6 +1235,7 @@ func (s *Store) CreateObservation(ctx context.Context, in ObservationInput) (Obs
 	if err := s.commit(ctx, pub); err != nil {
 		return Observation{}, err
 	}
+	s.mintSupersedes(ctx, EntityObservation, id, in.AncestorID, actor)
 	return record, nil
 }
 
@@ -1379,6 +1394,7 @@ func (s *Store) CreateFinding(ctx context.Context, in FindingInput) (Finding, er
 	if err := s.commit(ctx, pub); err != nil {
 		return Finding{}, err
 	}
+	s.mintSupersedes(ctx, EntityFinding, id, in.AncestorID, actor)
 	return record, nil
 }
 
@@ -1524,6 +1540,7 @@ func (s *Store) CreateProposal(ctx context.Context, in ProposalInput) (Proposal,
 	if err := s.commit(ctx, pub); err != nil {
 		return Proposal{}, err
 	}
+	s.mintSupersedes(ctx, EntityProposal, id, in.AncestorID, actor)
 	return record, nil
 }
 

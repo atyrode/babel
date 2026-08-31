@@ -72,6 +72,7 @@ import (
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/preflight"
+	"github.com/atyrode/babel/internal/reference"
 	"github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/sync"
 	"github.com/atyrode/babel/internal/worker"
@@ -246,6 +247,30 @@ type Config struct {
 	// rather than answered with nothing.
 	Index *index.Index
 
+	// References mints the typed reference graph's edges for the two link
+	// forms only a run knows about: which session a claim's evidence came
+	// from, and which injected prior outputs a record grew up beside (#113).
+	//
+	// Nil is the feature quietly absent, which is a supported deployment on
+	// the same terms Sync's absence is: nothing is minted, no write path
+	// behaves differently, and no run is refused. The graph is navigation
+	// over records that are durable either way, so it is never a
+	// precondition for exploring. See reference.go.
+	References reference.Appender
+
+	// SessionKey derives the durable session key of one local session, which
+	// is what an evidence edge's session endpoint carries (#113). It is
+	// injected rather than computed here because the key is deployment- and
+	// host-scoped, and the shared catalog's identity algebra is not something
+	// a run controller should hold a second copy of.
+	//
+	// It is a total function on purpose: an emitter must not acquire a second
+	// failure mode. An empty result means this build cannot name the session,
+	// and the edge is not minted - the observation's locator still recovers
+	// the bytes either way. Nil is the same answer, and is what a caller that
+	// wired References and nothing else gets.
+	SessionKey func(harness, sourceID string) string
+
 	// Inputs are the sessions preflight checks, one per preparation entry.
 	Inputs []preflight.Input
 
@@ -284,6 +309,12 @@ type Controller struct {
 	cfg    Config
 	assets []run.CookbookAsset
 	now    func() time.Time
+
+	// sessions resolves an evidence locator's path to the identity of the
+	// session it points into, which the locator itself does not carry. It is
+	// derived once because the scope is fixed for the controller's whole life
+	// (§2.6); see reference.go.
+	sessions map[string]sessionSource
 }
 
 // New validates cfg and returns a controller. It performs no I/O and launches
@@ -322,7 +353,12 @@ func New(cfg Config) (*Controller, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Controller{cfg: cfg, assets: assets, now: func() time.Time { return now().UTC() }}, nil
+	return &Controller{
+		cfg:      cfg,
+		assets:   assets,
+		now:      func() time.Time { return now().UTC() },
+		sessions: sessionSources(cfg.Inputs),
+	}, nil
 }
 
 // validateFacilities refuses a grant whose facilities carry no version. The
@@ -572,6 +608,15 @@ type state struct {
 	// records them instead.
 	written map[Stage]bool
 
+	// injected names the prior outputs the refine-first context actually
+	// carried into this attempt's jobs, deduplicated, in resolution order
+	// (#87 item 4). It is what the inspired-by edges of #113 point at, and
+	// it holds what was injected rather than what the preparation named: a
+	// reference that no longer resolves reaches no worker, so recording an
+	// edge to it would assert an injection that did not happen.
+	injected     []reference.RecordRef
+	injectedSeen map[string]bool
+
 	// failures are partitioned by stage, because each stage writes its own
 	// receipt and a challenger's failure recorded in the exploration's
 	// receipt would misattribute which boundary degraded.
@@ -600,6 +645,37 @@ func (s *state) fail(stage Stage, code string, at time.Time, err error) {
 	}
 }
 
+// warn records one degradation that is not the run's verdict.
+//
+// It is fail without the memory: the failure reaches the receipt and the
+// outcome, and st.err is left alone, so the run's own success or failure is
+// decided by the analysis rather than by a facility beside it. §6.5 already
+// draws that line for publication - a closure that failed to publish is a
+// recorded failure and never the run's outcome - and #113's edges sit on the
+// same side of it: a shadow of a durable record.
+func (s *state) warn(stage Stage, code string, at time.Time, err error) {
+	s.failures[stage] = append(s.failures[stage], run.Failure{
+		Stage:   string(stage),
+		Code:    code,
+		Message: err.Error(),
+		At:      at,
+	})
+}
+
+// inject records one prior output the refine-first context resolved, so the
+// same record injected into two stages is one endpoint rather than two.
+func (s *state) inject(ref reference.RecordRef) {
+	key := ref.String()
+	if s.injectedSeen[key] {
+		return
+	}
+	if s.injectedSeen == nil {
+		s.injectedSeen = map[string]bool{}
+	}
+	s.injectedSeen[key] = true
+	s.injected = append(s.injected, ref)
+}
+
 // failuresFor collects the failures the named stages recorded, in stage order.
 func (s *state) failuresFor(stages ...Stage) []run.Failure {
 	var out []run.Failure
@@ -614,12 +690,20 @@ func (s *state) allFailures() []run.Failure {
 	return s.failuresFor(StagePreflight, StageExplore, StageChallenge, StageSynthesize)
 }
 
-func (s *state) record(e RecordEvent) {
+// record accounts for one durable record this attempt reached, whether it was
+// written now or recognized from a prior attempt.
+//
+// It is the controller's rather than the state's because it is the one funnel
+// every record kind passes through, which makes it the place the inspired-by
+// edges of #113 belong: a new emission site for a new record kind would
+// otherwise be a site that forgets them.
+func (c *Controller) record(st *state, e RecordEvent) {
 	if e.Reused {
-		s.out.Reused++
+		st.out.Reused++
 	}
-	if s.opt.OnRecord != nil {
-		s.opt.OnRecord(e)
+	c.mintInspiredBy(st, e.Stage, e.Type, e.ID)
+	if st.opt.OnRecord != nil {
+		st.opt.OnRecord(e)
 	}
 }
 

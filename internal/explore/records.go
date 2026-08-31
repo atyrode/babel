@@ -57,8 +57,17 @@ func (c *Controller) putHypothesis(st *state, stage Stage, runID string, committ
 }
 
 func (c *Controller) putObservation(st *state, stage Stage, runID string, committed map[string]Commit, hypothesisID string, obs Observation) (string, bool, error) {
-	if id, reused, err := reuse(committed, obs.Ref, frontier.EntityObservation); reused || err != nil {
-		return id, reused, err
+	id, reused, err := reuse(committed, obs.Ref, frontier.EntityObservation)
+	if err != nil {
+		return "", false, err
+	}
+	if reused {
+		// Re-emitted on the resume path too. The claim's locators are the
+		// worker's own, so they are the same on the attempt that wrote the
+		// record and on the one that recognized it, and an interruption
+		// between the write and its edges is repaired rather than permanent.
+		c.mintEvidence(st, stage, runID, frontier.EntityObservation, id, obs.Claim.Evidence)
+		return id, true, nil
 	}
 	record, err := c.cfg.Frontier.CreateObservation(st.commit, frontier.ObservationInput{
 		HypothesisID:  hypothesisID,
@@ -70,6 +79,7 @@ func (c *Controller) putObservation(st *state, stage Stage, runID string, commit
 	if err != nil {
 		return "", false, err
 	}
+	c.mintEvidence(st, stage, runID, frontier.EntityObservation, record.ID, obs.Claim.Evidence)
 	return record.ID, false, c.bind(st, stage, obs.Ref, frontier.EntityObservation, record.ID)
 }
 
@@ -82,6 +92,12 @@ func (c *Controller) putObservation(st *state, stage Stage, runID string, commit
 // than a claim that has been established by being asserted.
 func (c *Controller) putObjection(st *state, stage Stage, runID string, committed map[string]Commit, target string, obj Objection) (string, frontier.EntityType, bool, error) {
 	if prior, ok := committed[obj.Ref]; ok {
+		// A criticism recognized from a prior attempt gets its evidence
+		// edges re-emitted for the same reason putObservation's does; the
+		// branch below chose the kind then, and the ledger remembers it.
+		if prior.Type == frontier.EntityObservation {
+			c.mintEvidence(st, stage, runID, prior.Type, prior.ID, obj.Claim.Evidence)
+		}
 		return prior.ID, prior.Type, true, nil
 	}
 	if len(obj.Claim.Evidence) > 0 {
@@ -95,6 +111,7 @@ func (c *Controller) putObjection(st *state, stage Stage, runID string, committe
 		if err != nil {
 			return "", "", false, err
 		}
+		c.mintEvidence(st, stage, runID, frontier.EntityObservation, record.ID, obj.Claim.Evidence)
 		return record.ID, frontier.EntityObservation, false,
 			c.bind(st, stage, obj.Ref, frontier.EntityObservation, record.ID)
 	}
