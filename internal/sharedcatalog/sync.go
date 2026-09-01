@@ -32,9 +32,12 @@ const (
 type RecordKind string
 
 // The kinds Phase B commits. The first six are internal/frontier's records and
-// their append-only review material, the last two internal/run's; Context is
+// their append-only review material, then internal/run's two; Context is
 // attributed operator guidance (SPEC.md 4.7), which is a durable record of its
-// own even though it can never satisfy an evidence requirement.
+// own even though it can never satisfy an evidence requirement. Complaint is
+// internal/complaint's, and it is the only kind here the operator authored
+// unprompted (issue #115) - which is why it is not folded into Context: guidance
+// answers something Babel asked, and steering answers nothing.
 const (
 	KindHypothesis  RecordKind = "hypothesis"
 	KindObservation RecordKind = "observation"
@@ -45,12 +48,14 @@ const (
 	KindContext     RecordKind = "context"
 	KindPreparation RecordKind = "preparation"
 	KindReceipt     RecordKind = "receipt"
+	KindComplaint   RecordKind = "complaint"
 )
 
 func (k RecordKind) valid() bool {
 	switch k {
 	case KindHypothesis, KindObservation, KindFinding, KindProposal,
-		KindLink, KindDisposition, KindContext, KindPreparation, KindReceipt:
+		KindLink, KindDisposition, KindContext, KindPreparation, KindReceipt,
+		KindComplaint:
 		return true
 	}
 	return false

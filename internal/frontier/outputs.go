@@ -36,7 +36,7 @@ import (
 // answers neither.
 const maxSummaryBytes = 240
 
-// OutputKind names one searchable surface of Babel's own analysis output.
+// OutputKind names one searchable surface of what this deployment has said.
 //
 // The first three are EntityType values and are spelled the same, because they
 // are the same records. OutputReviewAnswer is not: an operator's §4.7 decision
@@ -44,6 +44,13 @@ const maxSummaryBytes = 240
 // not an entity kind — but they are the operator's own words about a record,
 // and a run that is about to re-propose something a person already declined
 // needs to be able to find that out.
+//
+// OutputComplaint is not this package's record at all: internal/complaint
+// stores it, flattens it, and hands it to the same index (issue #115). It is
+// named here because this type is the index's kind vocabulary rather than the
+// frontier's inventory — every consumer validates a requested filter against
+// ValidOutputKind, so a kind absent from it is a kind no caller can ask for,
+// whichever store produced it.
 type OutputKind string
 
 // The searchable kinds.
@@ -52,15 +59,19 @@ const (
 	OutputObservation  OutputKind = "observation"
 	OutputFinding      OutputKind = "finding"
 	OutputReviewAnswer OutputKind = "review-answer"
+	OutputComplaint    OutputKind = "complaint"
 )
 
 // OutputKinds lists every searchable kind, which a caller validating a
 // requested filter needs and which nothing else should restate.
 func OutputKinds() []OutputKind {
-	return []OutputKind{OutputHypothesis, OutputObservation, OutputFinding, OutputReviewAnswer}
+	return []OutputKind{
+		OutputHypothesis, OutputObservation, OutputFinding,
+		OutputReviewAnswer, OutputComplaint,
+	}
 }
 
-// ValidOutputKind reports whether kind is one this package produces.
+// ValidOutputKind reports whether kind is one the retrieval index carries.
 func ValidOutputKind(kind OutputKind) bool {
 	for _, known := range OutputKinds() {
 		if kind == known {
