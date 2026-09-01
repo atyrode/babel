@@ -60,6 +60,9 @@ const ROUTES: Record<string, (id: string) => string> = {
   hypothesis: (id) => `/hypotheses/${encodeURIComponent(id)}`,
   finding: (id) => `/findings/${encodeURIComponent(id)}`,
   proposal: (id) => `/review/proposal/${encodeURIComponent(id)}`,
+  // #115's record pages exist now, so a complaint endpoint is followable
+  // rather than inert.
+  complaint: (id) => `/complaints/${encodeURIComponent(id)}`,
 };
 
 // RecordLinks is the panel. `record` names the subject in the same vocabulary

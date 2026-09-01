@@ -18,6 +18,7 @@ import {
   type HostScope,
 } from "../analysis";
 import { CitationCount } from "../references";
+import { SteeringSection } from "../steering";
 
 const TYPES = ["hypothesis", "finding", "proposal"];
 const STATUSES = ["accepted", "rejected", "deferred", "duplicate", "refine-requested"];
@@ -86,6 +87,12 @@ function ReviewPage() {
           </div>
         )}
       </div>
+
+      {/* #115's capture box rides the review surface by operator decision
+          (2026-08-31), and it sits above the queue rather than below it: the
+          operator who came to review is the operator with something to say,
+          and the box must not be buried under the rows it steers. */}
+      <SteeringSection />
 
       <div className="toolbar card review-toolbar">
         <div className="filter-chips" aria-label="Filter by record type">

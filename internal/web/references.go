@@ -33,6 +33,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reference"
 )
@@ -48,6 +49,13 @@ const (
 	namespaceObservation = "observation"
 	namespaceFinding     = "finding"
 	namespaceProposal    = "proposal"
+	// namespaceComplaint is #115's operator steering, and its value is
+	// complaint.Namespace: internal/complaint mints the edges a complaint
+	// endpoint appears in, so the namespace is that package's spelling and a
+	// second literal here would be a second answer to what a complaint is
+	// called. resolve.NamespaceComplaint states the same fact for the
+	// resolver registry, and for the same reason.
+	namespaceComplaint = complaint.Namespace
 )
 
 // referenceRefView is one endpoint of an edge on the wire: the namespace and
@@ -297,23 +305,33 @@ type citationCounts struct {
 	CitedBy int `json:"cited_by"`
 }
 
+// frontierSubject names a frontier record in the citation graph. A frontier
+// entity type and a graph namespace are spelled the same, and this is the one
+// place that fact is written down, so a caller holding a frontier.Ref does not
+// have to restate it at every listing that counts citations.
+func frontierSubject(ref frontier.Ref) reference.RecordRef {
+	return reference.RecordRef{Kind: string(ref.Type), ID: ref.ID}
+}
+
 // citationCounts counts one record's typed references for a listing row.
 //
 // A listing pays two indexed reads per row for this, which is the same order of
 // cost the fleet listing pays to open one summary per row, and it buys the
 // question an inbox is actually read for: which of these records is load-bearing
-// for others. The subject is a frontier.Ref because that is what the review
-// queue holds, and its type is the namespace an edge records.
+// for others. The subject is a reference.RecordRef because the subject of a
+// count is a graph namespace and not a frontier entity type: #115's complaints
+// are counted in the same column of the same shape of listing, and they are not
+// the frontier's records — a caller holding a frontier.Ref converts it at the
+// call site, which is the one line that already knew which namespace it meant.
 //
 // Nothing here can fail a page. No graph means no counts, and a graph that
 // refused means no counts for that row and a line in the diagnostics: an inbox
 // that would not render because a citation index was locked would cost an
 // operator their whole backlog over a column.
-func (s *Server) citationCounts(ctx context.Context, subject frontier.Ref) *citationCounts {
+func (s *Server) citationCounts(ctx context.Context, ref reference.RecordRef) *citationCounts {
 	if s.opts.References == nil {
 		return nil
 	}
-	ref := reference.RecordRef{Kind: string(subject.Type), ID: subject.ID}
 	cites, err := s.opts.References.From(ctx, ref)
 	if err != nil {
 		s.logf("citation counts for %s refused", ref)
@@ -480,6 +498,8 @@ func (r *referenceResolver) resolve(ref reference.RecordRef) referenceRefView {
 		return r.session(view)
 	case namespaceHypothesis, namespaceObservation, namespaceFinding, namespaceProposal:
 		return r.frontierRecord(view)
+	case namespaceComplaint:
+		return r.complaintRecord(view)
 	default:
 		// A namespace this build has no page for. The row is still a row:
 		// #113 makes an edge's shape plaintext-eligible so a host can see
@@ -527,6 +547,32 @@ func (r *referenceResolver) frontierRecord(view referenceRefView) referenceRefVi
 		// checked" is a truthful answer about a graph and a refused page is
 		// not.
 		return inert(view, "this host could not check whether that "+view.Kind+" exists, so the reference is left unfollowed")
+	}
+}
+
+// complaintRecord checks one operator complaint against the local store (#115).
+//
+// It is separate from frontierRecord rather than folded into it because it
+// reads a different store: a complaint is not a frontier record, it is the one
+// thing in the corpus the operator wrote first, and internal/complaint is its
+// own component of the durable file with its own nil case. The three answers
+// are frontierRecord's three, for the same reasons — the read costs one indexed
+// lookup, an absent record is the expected case on a fleet whose edges outlive
+// any one host's storage, and a store that failed is reported in the row rather
+// than as the page's failure.
+func (r *referenceResolver) complaintRecord(view referenceRefView) referenceRefView {
+	complaints := r.server.opts.Complaints
+	if complaints == nil {
+		return inert(view, "operator complaints are not available in this session, so this reference cannot be resolved here")
+	}
+	_, err := complaints.Complaint(r.ctx, view.ID)
+	switch {
+	case err == nil:
+		return view
+	case errors.Is(err, complaint.ErrUnknownComplaint):
+		return inert(view, "this host holds no complaint with that identifier: the edge's shape is visible here, the record it names is not")
+	default:
+		return inert(view, "this host could not check whether that complaint exists, so the reference is left unfollowed")
 	}
 }
 

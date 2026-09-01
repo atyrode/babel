@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/event"
@@ -35,20 +36,39 @@ import (
 // attribution assertable rather than assumed.
 const operatorID = "operator-under-test"
 
+// hostUnderTest is the machine identity the harness's state provider reports.
+// A real launch always resolves one, and two surfaces depend on it being here:
+// a citation listing attributes its graph to the host that answered, and #115's
+// capture records the machine a complaint was told on as provenance it refuses
+// to invent.
+const hostUnderTest = "host-under-test"
+
+// withoutHost is the launch that cannot name its own machine. It is a mutation
+// rather than the default because it is the rarer state and the one with its
+// own assertions: a page that cannot say whose graph it is showing leaves the
+// field out, and a capture that cannot say where a sentence was said refuses.
+func withoutHost(opts *Options) { opts.State = nil }
+
 // phaseB is one throwaway deployment behind one server: the durable database
 // with the frontier, run and review components open on it, a Reality ledger, a
 // retrieval index, and the fixture records the routes read.
 type phaseB struct {
-	t          *testing.T
-	ctx        context.Context
-	server     *Server
-	http       *httptest.Server
-	front      *frontier.Store
-	runs       *run.Store
-	review     *review.Service
-	actions    *disposition.Store
-	reality    *reality.Store
-	index      *index.Index
+	t       *testing.T
+	ctx     context.Context
+	server  *Server
+	http    *httptest.Server
+	front   *frontier.Store
+	runs    *run.Store
+	review  *review.Service
+	actions *disposition.Store
+	reality *reality.Store
+	index   *index.Index
+	// complaints is #115's component of the same durable database the
+	// frontier, run and review stores are opened on. It is wired by default
+	// rather than per test for referencesFixture's reason: a complaint body
+	// is the operator's own prose, so the hostile-content sweep has to see
+	// one without a test remembering to ask for it.
+	complaints *complaint.Store
 	authority  review.Authority
 	hypothesis frontier.Hypothesis
 	finding    frontier.Finding
@@ -72,6 +92,14 @@ type phaseB struct {
 	question reality.Question
 	answer   reality.Answer
 	plan     reality.Plan
+	// complaint is one plain thing the operator said, and amended is the
+	// head of a two-wording chain whose first wording superseded is. The
+	// chain exists so the revision panel and the head/superseded
+	// distinction have real fixtures rather than a single-entry list that
+	// makes every entry the head.
+	complaint  complaint.Complaint
+	superseded complaint.Complaint
+	amended    complaint.Complaint
 }
 
 // newPhaseB opens the services, writes one whole §4.2 development path plus one
@@ -103,6 +131,15 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		t.Fatalf("disposition.Open: %v", err)
 	}
 	t.Cleanup(func() { actions.Close() })
+	// #115's complaints are a component of the same durable database dir,
+	// not a store of their own: a complaint is the one record of a sentence
+	// somebody said once, so it belongs with the analysis rather than in a
+	// rebuildable cache.
+	complaints, err := complaint.Open(dir)
+	if err != nil {
+		t.Fatalf("complaint.Open: %v", err)
+	}
+	t.Cleanup(func() { complaints.Close() })
 	ledger, err := reality.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("reality.Open: %v", err)
@@ -118,19 +155,28 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		t.Fatalf("review.NewAuthority: %v", err)
 	}
 	h.front, h.runs, h.review, h.reality, h.index, h.authority = front, runs, service, ledger, retrieval, authority
-	h.actions = actions
+	h.actions, h.complaints = actions, complaints
 
 	h.writeFrontier(text)
 	h.writeActions(text)
 	h.writeReality(text)
 	h.indexSession(text)
+	h.writeComplaints(text)
 	recipes, err := cookbook.Embedded()
 	if err != nil {
 		t.Fatalf("cookbook.Embedded: %v", err)
 	}
 
 	opts := Options{
-		Operator:     operatorID,
+		Operator: operatorID,
+		// The storage state a real launch always resolves. It is here
+		// rather than per test because two surfaces need the machine's own
+		// identity to answer at all: #113's citation listing attributes its
+		// graph to the host that produced it, and #115's capture records
+		// the host a complaint was told on rather than inventing one.
+		State: StateProviderFunc(func(context.Context) (State, error) {
+			return State{Configured: true, HostID: hostUnderTest}, nil
+		}),
 		Review:       service,
 		Frontier:     front,
 		Reality:      ledger,
@@ -138,6 +184,11 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		Cookbook:     recipes,
 		Dispositions: actions,
 		Reviver:      front,
+		// Issue #115's operator steering, wired by default: a complaint is
+		// prose a person typed at the moment they were annoyed, which makes
+		// it the most obviously untrusted content on this surface, and the
+		// escaping sweep has to see one without a test asking for it.
+		Complaints: complaints,
 		// The fleet reader every server here reads through. It is wired by
 		// default rather than per test because issue #109 makes attribution
 		// and sync state part of every listing's shape: a harness that left it
@@ -467,6 +518,55 @@ func (h *phaseB) writeReality(text string) {
 	h.plan = plan
 }
 
+// writeComplaints records what the operator told Babel: one plain complaint,
+// and one the operator said better later.
+//
+// The two-wording chain is the fixture the record page needs. A store holding
+// only originals makes every wording its own chain's head, which would let a
+// handler that never distinguished the two pass every assertion about them —
+// the head listing, the head_id, and the superseded wording that is still
+// readable at its own id all need a chain that actually has a superseded
+// wording in it.
+//
+// text is woven into every body, so the hostile-content sweep sees prose an
+// operator typed without a test asking for one.
+func (h *phaseB) writeComplaints(text string) {
+	h.t.Helper()
+	// The same host the launch's state provider names, so a fixture written
+	// here and a capture written through the route are attributed alike.
+	host := hostUnderTest
+	told, err := h.complaints.Tell(h.ctx, complaint.TellInput{
+		Text: "the repository rules keep getting ignored " + text,
+		By:   operatorID,
+		Host: host,
+	})
+	if err != nil {
+		h.t.Fatalf("Tell: %v", err)
+	}
+	h.complaint = told
+
+	first, err := h.complaints.Tell(h.ctx, complaint.TellInput{
+		Text: "verification is reported rather than performed " + text,
+		By:   operatorID,
+		Host: host,
+	})
+	if err != nil {
+		h.t.Fatalf("Tell: %v", err)
+	}
+	h.superseded = first
+	amended, err := h.complaints.Amend(h.ctx, complaint.AmendInput{
+		ComplaintID: first.ID,
+		Text: "verification is reported rather than performed, and the report is what " +
+			"gets believed " + text,
+		By:   operatorID,
+		Host: host,
+	})
+	if err != nil {
+		h.t.Fatalf("Amend: %v", err)
+	}
+	h.amended = amended
+}
+
 func (h *phaseB) evidence(name string, line int, note string) frontier.Evidence {
 	h.t.Helper()
 	sum := sha256.Sum256([]byte(name + fmt.Sprint(line)))
@@ -609,6 +709,15 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		// schema on the way in. Enrolled here for the session, origin,
 		// no-store, read-only and escaping coverage the rest get.
 		{name: "fleet presence", method: http.MethodGet, path: "/api/fleet/presence"},
+		// Issue #115's operator steering. These three are the only routes on
+		// this surface whose content the operator typed themselves rather
+		// than a run producing it, and the capture is the only mutation
+		// here that mints a record instead of answering one — so they are
+		// what brings an unprompted operator sentence, and a POST with no
+		// seen-head confirmation, into the session, origin, no-store and
+		// escaping coverage the rest of the surface gets.
+		{name: "complaints", method: http.MethodGet, path: "/api/complaints"},
+		{name: "complaint", method: http.MethodGet, path: "/api/complaint?id=" + h.complaint.ID},
 		{
 			name: "review decide", method: http.MethodPost, path: "/api/review/decide", mutating: true,
 			body: `{"subject":{"type":"proposal","id":"` + h.proposal.ID + `"},"disposition":"defer"}`,
@@ -642,6 +751,14 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 			name: "record revive", method: http.MethodPost, path: "/api/record/revive", mutating: true,
 			body: `{"record":{"type":"hypothesis","id":"` + h.resting.ID + `"},` +
 				`"reason":"a second session shows the same first failure","headId":"` + h.resting.ID + `"}`,
+		},
+		// The capture. It is the one mutation on this surface with no
+		// record it is about and no head to have moved, so it is also the
+		// one whose refusals are entirely the store's and the launch
+		// identity's.
+		{
+			name: "complaint tell", method: http.MethodPost, path: "/api/complaint/tell", mutating: true,
+			body: `{"text":"the repository rules keep getting ignored"}`,
 		},
 	}
 }
@@ -964,6 +1081,9 @@ func TestPhaseBRoutesAnswerHonestlyWithoutServices(t *testing.T) {
 		{http.MethodPost, "/api/record/disposition/decide", `{"dispositionId":"dsp-1","ruling":"accepted","headId":"hyp-1"}`},
 		{http.MethodPost, "/api/record/invite", `{"record":{"type":"hypothesis","id":"hyp-1"},"headId":"hyp-1"}`},
 		{http.MethodPost, "/api/record/revive", `{"record":{"type":"hypothesis","id":"hyp-1"},"reason":"x","headId":"hyp-1"}`},
+		{http.MethodGet, "/api/complaints", ""},
+		{http.MethodGet, "/api/complaint?id=cmp-1", ""},
+		{http.MethodPost, "/api/complaint/tell", `{"text":"x"}`},
 	} {
 		var reader io.Reader
 		if route.body != "" {
@@ -1097,6 +1217,24 @@ func (h *phaseB) snapshot() string {
 	for _, fact := range facts {
 		fmt.Fprintf(&out, "fact %s %s=%v status=%s authority=%s/%s\n",
 			fact.ID, fact.Predicate, fact.Value.Enum, fact.Status, fact.Authority.Kind, fact.Authority.ID)
+	}
+	// #115's complaints. The component joined this snapshot with the capture
+	// route: a complaint is the only record a GET on this surface could mint
+	// without touching any of the stores above, so a snapshot that did not
+	// describe it would let a read that captured pass
+	// TestPhaseBGetsLeaveDurableStateUnchanged, and would make a refused
+	// capture indistinguishable from a successful one.
+	heads, err := h.complaints.Heads(h.ctx)
+	if err != nil {
+		h.t.Fatalf("Heads: %v", err)
+	}
+	for _, head := range heads {
+		chain, err := h.complaints.Revisions(h.ctx, head.ID)
+		if err != nil {
+			h.t.Fatalf("Revisions: %v", err)
+		}
+		fmt.Fprintf(&out, "complaint %s seq=%d by=%s host=%s wordings=%d\n",
+			head.ID, head.Sequence, head.By, head.Host, len(chain))
 	}
 	return out.String()
 }

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/frontier"
@@ -318,7 +317,7 @@ func (a *app) tellAdjacency(ctx context.Context, dir string, state *analysisStat
 	// below, and asking for exactly the ceiling would let a self-match cost the
 	// operator one real neighbour.
 	hits, err := idx.FrontierSearch(ctx, index.FrontierQuery{
-		Match: adjacencyMatch(told.Text),
+		Match: index.MatchExpression(told.Text),
 		Order: index.OrderRelevance,
 		Limit: maxTellAdjacency + 1,
 	})
@@ -347,29 +346,6 @@ func (a *app) tellAdjacency(ctx context.Context, dir string, state *analysisStat
 		})
 	}
 	return rows, ""
-}
-
-// adjacencyMatch reduces a complaint to a match expression the FTS grammar
-// accepts.
-//
-// Only the byte bound is applied here, because buildMatch already answers a
-// query on its first MaxMatchTerms rather than refusing it - a truncated answer
-// is still an answer - while a byte count over MaxMatchBytes is refused
-// outright. The cut is on a word boundary so the last term is a term the
-// operator wrote rather than a fragment of one, and it never splits a rune.
-func adjacencyMatch(text string) string {
-	if len(text) <= index.MaxMatchBytes {
-		return text
-	}
-	cut := index.MaxMatchBytes
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	clipped := text[:cut]
-	if space := strings.LastIndexAny(clipped, " \t\n"); space > 0 {
-		clipped = clipped[:space]
-	}
-	return clipped
 }
 
 // writeTell renders one capture for a terminal.

@@ -10,6 +10,7 @@ import {
   type VersionInfo,
 } from "./api";
 import ArchivePage from "./pages/ArchivePage";
+import ComplaintPage from "./pages/ComplaintPage";
 import DashboardPage from "./pages/DashboardPage";
 import ExplorePage from "./pages/ExplorePage";
 import FindingPage from "./pages/FindingPage";
@@ -224,6 +225,11 @@ function App() {
           <Route path="/reality/entities/:id" element={<RealityEntityPage />} />
           <Route path="/review" element={<ReviewPage />} />
           <Route path="/review/:type/:id" element={<ReviewRecordPage />} />
+          {/* #115's capture rides the review surface, so a complaint's record
+              page sits beside the review routes and the nav row deliberately
+              gains no seventh destination: the listing that reaches this page
+              lives on /review, above the queue. */}
+          <Route path="/complaints/:id" element={<ComplaintPage />} />
           {/* `replace` is load-bearing, not styling: the launch URL's
               "#nonce=…" fragment matches no route and lands here, so a
               replacing redirect drops that entry instead of leaving it

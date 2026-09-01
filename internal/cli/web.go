@@ -255,6 +255,7 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	opts.Reviver = services.reviver()
 	opts.Cookbook = services.cookbook
 	opts.References = services.references()
+	opts.Complaints = services.complaints()
 
 	// The two identities one session has, for the citation surfaces. A machine
 	// with no deployment identity leaves this nil, and internal/web renders
@@ -475,6 +476,18 @@ func (s *webServices) references() reference.Lister {
 		return nil
 	}
 	return s.analysis.references
+}
+
+// complaints is #115's operator steering. The nil test reaches inside the
+// analysis state as well as at it, on references' reasoning: a launch whose
+// durable file opened but whose complaint component did not would otherwise
+// hand internal/web an interface holding a nil *complaint.Store, which passes
+// the option's nil test and then answers from nothing.
+func (s *webServices) complaints() web.ComplaintService {
+	if s.analysis == nil || s.analysis.complaints == nil {
+		return nil
+	}
+	return s.analysis.complaints
 }
 
 func (s *webServices) sessionKeys() web.SessionKeyResolver {

@@ -7,9 +7,10 @@
 // and unbroken kilocharacter tokens — because the interface has to render
 // them inert and intact before it can be trusted with an archive (§3, §10).
 //
-// Mutations are stateful in-memory so the answer, decide, and accept flows
-// are exercisable end to end. MOCK_PHASEB=empty presents the day-one state:
-// an empty frontier, queue, and inbox.
+// Mutations are stateful in-memory so the answer, decide, accept, and tell
+// flows are exercisable end to end. MOCK_PHASEB=empty presents the day-one
+// state: an empty frontier, queue, and inbox, and an operator who has told
+// Babel nothing yet.
 
 import type {
   AnalysisState,
@@ -1408,7 +1409,434 @@ const references: Record<string, ReferenceGraph> = {
     cites: { edges: [], counts: [], total: 0, limit: 50, offset: 0 },
     cited_by: { edges: [], counts: [], total: 0, limit: 50, offset: 0 },
   },
+  // #115's complaint chain, and the one record whose citation panel answers a
+  // question the operator actually asks. A complaint has no status and no
+  // resolved marker, so "was this addressed?" is the cited_by direction and
+  // nothing else -- which is only checkable when both halves are non-empty,
+  // and only honest when the incoming half carries both render cases.
+  //
+  // The followable backlink is a candidate this host holds, so a reader can
+  // walk from the complaint to the work claiming to answer it. The inert one
+  // is a finding this host never held, which is the routine case rather than
+  // the exotic one: #113 keeps an edge readable on a machine that holds
+  // neither the record nor the key to it, and a complaint told on a laptop is
+  // exactly the record a fleet's runs cite from elsewhere. If that row were
+  // dropped, the page would under-report what addressed a complaint and the
+  // operator would read the absence as nobody having answered him.
+  //
+  // The edges hang on the chain's head rather than on each wording, because a
+  // reference names the wording it was recorded against and the head is what
+  // a run cites; cmp_rules_1's own page therefore renders an empty graph,
+  // which is a fact about that wording and not a lost citation.
+  cmp_rules: {
+    record: { kind: "complaint", id: "cmp_rules" },
+    host: REFERENCES_HOST,
+    cites: {
+      edges: [
+        {
+          id: "rle_rules-addresses-hyp", kind: "addresses",
+          other: { kind: "hypothesis", id: "hyp_promoted-pattern" },
+          actor: { kind: "operator", id: "operator" },
+          note: "The operator's own aim: this candidate is what he is complaining about.",
+          created_at: "2026-09-01T07:02:00Z",
+        },
+      ],
+      counts: [{ kind: "addresses", count: 1 }],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    },
+    cited_by: {
+      edges: [
+        {
+          id: "rle_hyp-addresses-rules", kind: "addresses",
+          other: { kind: "hypothesis", id: "hyp_unverified-closures" },
+          actor: { kind: "run", id: "run_challenge-08" },
+          note: "Reads the complaint as evidence that the pattern is not only in the corpus.",
+          created_at: "2026-09-01T08:20:00Z",
+        },
+        {
+          id: "rle_absent-finding-addresses-rules", kind: "addresses",
+          other: {
+            kind: "finding", id: "fnd_absent-on-this-host", inert: true,
+            reason: "this host holds no finding with that identifier: the edge's shape is visible here, the record it names is not",
+          },
+          actor: { kind: "run", id: "run_synthesize-09" },
+          created_at: "2026-08-31T23:40:00Z",
+        },
+      ],
+      counts: [{ kind: "addresses", count: 2 }],
+      total: 2,
+      limit: 50,
+      offset: 0,
+    },
+  },
 };
+
+// ---------------------------------------------------------------------------
+// Operator steering: complaints (issue #115)
+//
+// What the operator has told Babel, as GET /api/complaints lists it, GET
+// /api/complaint opens it, and POST /api/complaint/tell appends to it.
+//
+// A complaint is steering pressure and never a ticket, so nothing in this
+// section carries a status, a closure, an assignee, a priority, a due date or
+// an acknowledgement, and nothing ever will: a fixture that grew a "resolved"
+// flag would preview a product Babel is not, and the interface would grow a
+// control for it within a week. Whether a complaint was ever addressed is the
+// cited_by direction of the citation fixtures above.
+//
+// Three chains, because three cases are worth being able to look at:
+//
+//   cmp_rules    two wordings of one complaint, so the append-only revision
+//                chain is previewable, with the head running to several
+//                paragraphs of real newlines. The body is rendered verbatim,
+//                so a renderer that collapsed the operator's own paragraphs
+//                into one line has to be visible as such -- and the summary
+//                column has to cut a text this long without pretending to be
+//                it.
+//   cmp_hostile  a complaint whose text carries the markup and terminal
+//                fixtures above. The operator types whatever he likes,
+//                including the model output he is complaining about, so the
+//                one field on these surfaces that is entirely his is also the
+//                one most likely to carry an injection (§2.7).
+//   cmp_quiet    a short single-wording complaint already redacted, so the
+//                sentence saying Babel replaced secret-shaped material --
+//                rather than that the operator typed a placeholder himself --
+//                has a page to appear on.
+//
+// MOCK_PHASEB=empty holds no complaints at all. Day one is an operator who has
+// not said anything yet, and the empty state is the first thing this surface
+// ever renders; capture still works there, because the day he installs Babel is
+// the day he has the most to say about the last tool.
+// ---------------------------------------------------------------------------
+
+// ComplaintRecord is one wording as the store holds it. The mock states this
+// shape itself rather than importing the client's model, the way the reference
+// fixtures above do: these fixtures are the server's half of the contract, and
+// a fixture typed by the reader's own types could never disagree with the
+// reader -- which is the only disagreement a preview exists to surface.
+interface ComplaintRecord {
+  id: string;
+  // root_id is the chain's first wording, and a complaint's durable identity:
+  // amending appends, so the id an operator quoted last week keeps resolving
+  // and the chain it belongs to stays findable from it.
+  root_id: string;
+  supersedes?: string;
+  sequence: number;
+  by: string;
+  host: string;
+  text: string;
+  redacted: boolean;
+  at: string;
+}
+
+// A listing row is the bounded summary and never the text, so a listing cannot
+// become a place where an operator's four paragraphs are silently reflowed
+// into a table cell. The citation counts are optional for the reason the
+// review queue's are: absent means nobody counted, which is not the claim a
+// zero makes.
+interface ComplaintRow {
+  id: string;
+  root_id: string;
+  supersedes?: string;
+  sequence: number;
+  by: string;
+  host: string;
+  summary: string;
+  redacted: boolean;
+  at: string;
+  citations?: { cites: number; cited_by: number };
+}
+
+// A revision entry carries the summary of a wording, never its text: the full
+// words of an earlier wording are read by opening that wording's own id, which
+// is what keeps a chain of five wordings from serving five full complaints to
+// render one.
+interface ComplaintRevision {
+  id: string;
+  supersedes?: string;
+  sequence: number;
+  by: string;
+  host: string;
+  summary: string;
+  redacted: boolean;
+  at: string;
+  head: boolean;
+}
+
+// AdjacentRow is one thing Babel already holds whose wording overlaps what was
+// just told to it. There is no score field and no similarity number, by
+// construction rather than by omission: capture-time adjacency is a prompt to
+// compare, and a number beside it would read as Babel having judged that these
+// two records are the same complaint.
+interface AdjacentRow {
+  kind: string;
+  id: string;
+  summary: string;
+}
+
+// COMPLAINT_HOST is the machine that captured these. It is FLEET_LOCAL_HOST
+// rather than REFERENCES_HOST because it answers a different question: a
+// complaint's host is where the operator was sitting when he said it, and it
+// has to agree with GET /api/state's host_id or the interface's "this host"
+// marks disagree across two pages reading one record.
+const COMPLAINT_HOST = FLEET_LOCAL_HOST;
+
+// The attributed operator (SPEC.md §4.7), resolved from the launch session by
+// the real server and never invented. It is the same synthetic identity every
+// other attributed mutation in this file records, so one preview does not show
+// two operators on one machine.
+const COMPLAINT_BY = "operator";
+
+// COMPLAINT_MAX_TEXT_BYTES mirrors internal/complaint.MaxTextBytes, so the
+// refusal an operator can actually provoke here is the one the real store
+// gives rather than a bound the mock invented.
+const COMPLAINT_MAX_TEXT_BYTES = 16 << 10;
+
+// The chains in store order: newest first, which is the order the listing
+// shows and therefore the order the fixture carries rather than one the route
+// re-derives. Within a chain the wordings are oldest first, matching the
+// revision chains above and the order GET /api/complaint answers in.
+const complaintChains: ComplaintRecord[][] = empty
+  ? []
+  : [
+      [
+        {
+          id: "cmp_rules_1",
+          root_id: "cmp_rules_1",
+          sequence: 1,
+          by: COMPLAINT_BY,
+          host: COMPLAINT_HOST,
+          text:
+            "Babel keeps ignoring the repository rules I wrote down. I have said this three " +
+            "times in three sessions and nothing about how the runs behave has changed.",
+          redacted: false,
+          at: "2026-08-31T20:12:07.000000000Z",
+        },
+        {
+          id: "cmp_rules",
+          root_id: "cmp_rules_1",
+          supersedes: "cmp_rules_1",
+          sequence: 2,
+          by: COMPLAINT_BY,
+          host: COMPLAINT_HOST,
+          // Paragraphs, with the blank lines the operator typed. This is the
+          // fixture the verbatim renderer is measured against: prose is how a
+          // person complains, and a surface that reflows it is editing him.
+          text:
+            "I am having a hard time enforcing my repository rules. Every run reads them, " +
+            "agrees with them, and then writes code that ignores half of them anyway.\n\n" +
+            "The worst of it is the comment discipline. My rules say a doc comment explains " +
+            "why a rule exists and what failure it prevents, and what comes back is the " +
+            "function's own name in a sentence.\n\n" +
+            "I do not want a report about this. I want the runs to stop doing it.",
+          redacted: false,
+          at: "2026-09-01T06:59:43.000000000Z",
+        },
+      ],
+      [
+        {
+          id: "cmp_hostile",
+          root_id: "cmp_hostile",
+          sequence: 1,
+          by: COMPLAINT_BY,
+          host: COMPLAINT_HOST,
+          text:
+            "The web UI keeps eating my words when they contain markup. I told Babel about a " +
+            `session where the model printed ${HOSTILE_HTML} and the record page swallowed ` +
+            "it, so I still cannot see what the model actually said.\n\n" +
+            `Here is the terminal noise from the same run: ${HOSTILE_CONTROL}`,
+          redacted: false,
+          at: "2026-08-30T13:02:11.000000000Z",
+        },
+      ],
+      [
+        {
+          id: "cmp_quiet",
+          root_id: "cmp_quiet",
+          sequence: 1,
+          by: COMPLAINT_BY,
+          host: COMPLAINT_HOST,
+          // The placeholder is internal/run's own, so the page previews what a
+          // reader will actually see and not a paraphrase of a redaction.
+          text:
+            "The nightly run failed again and all I got in the log was " +
+            "AWS_SECRET_ACCESS_KEY=[redacted]. Tell me what broke.",
+          redacted: true,
+          at: "2026-08-28T09:14:52.000000000Z",
+        },
+      ],
+    ];
+
+// complaintCounter names the wordings captured through the route. It starts at
+// zero rather than at the fixture count because a told complaint is a new
+// chain and never an amendment of one of these.
+let complaintCounter = 0;
+
+// The head of a chain is its last wording, stated once here because three
+// callers depend on that being the same wording: the listing, the record page,
+// and the adjacency corpus. A chain whose head were derived differently in one
+// of them would show the operator a listing row whose text no page holds.
+function complaintHead(chain: ComplaintRecord[]): ComplaintRecord {
+  return chain[chain.length - 1];
+}
+
+// summarizeComplaint mirrors internal/complaint's own summarizer, cut
+// included. A newline becomes a space rather than a truncation point, because
+// a complaint whose first line is "the rules" and whose second carries the
+// verb would otherwise be summarized into something that says nothing; and the
+// cut never splits a rune, because half a rune is invalid UTF-8 and would
+// reach the page as a substitution character in the middle of the operator's
+// own words. Nothing is appended: an ellipsis the store does not store would
+// be the mock inventing a byte of the operator's text.
+const COMPLAINT_SUMMARY_BYTES = 240;
+
+function summarizeComplaint(text: string): string {
+  const line = text.split(/\s+/u).filter((word) => word !== "").join(" ");
+  const bytes = new TextEncoder().encode(line);
+  if (bytes.length <= COMPLAINT_SUMMARY_BYTES) return line;
+  let cut = COMPLAINT_SUMMARY_BYTES;
+  // 0b10xxxxxx is a continuation byte: back up to the start of the rune the
+  // bound landed inside, which is what utf8.RuneStart tests for.
+  while (cut > 0 && (bytes[cut] & 0xc0) === 0x80) cut -= 1;
+  return new TextDecoder().decode(bytes.slice(0, cut)).replace(/ +$/u, "");
+}
+
+// complaintRow and complaintRevision are the two projections of a wording that
+// omit the text. They are written out field by field rather than spread from
+// the record, so adding a field to the store cannot leak it into a listing by
+// default -- the text is the field that must never arrive by accident.
+function complaintRow(wording: ComplaintRecord): ComplaintRow {
+  return {
+    id: wording.id,
+    root_id: wording.root_id,
+    ...(wording.supersedes ? { supersedes: wording.supersedes } : {}),
+    sequence: wording.sequence,
+    by: wording.by,
+    host: wording.host,
+    summary: summarizeComplaint(wording.text),
+    redacted: wording.redacted,
+    at: wording.at,
+    // Counted from the same citation fixtures the record page's panel reads,
+    // so a row's "addressed by" and the panel a click opens cannot disagree.
+    // Omitted entirely on a launch with no reference graph: nobody counted.
+    ...(linksUnwired
+      ? {}
+      : {
+          citations: {
+            cites: references[wording.id]?.cites.total ?? 0,
+            cited_by: references[wording.id]?.cited_by.total ?? 0,
+          },
+        }),
+  };
+}
+
+function complaintRevision(wording: ComplaintRecord, headID: string): ComplaintRevision {
+  return {
+    id: wording.id,
+    ...(wording.supersedes ? { supersedes: wording.supersedes } : {}),
+    sequence: wording.sequence,
+    by: wording.by,
+    host: wording.host,
+    summary: summarizeComplaint(wording.text),
+    redacted: wording.redacted,
+    at: wording.at,
+    head: wording.id === headID,
+  };
+}
+
+// Capture-time adjacency. The real pass reads the retrieval index, which holds
+// complaints beside the frontier's own outputs; the mock stands in for it with
+// naive term overlap, and says so, because a preview that pretended to rank by
+// relevance would teach an operator to trust an ordering this file made up.
+//
+// There is no stemming and no synonym list: "rules" matches "rules". That is a
+// weaker pass than the index's, which is the safe direction for a fixture --
+// it under-reports adjacency rather than manufacturing it.
+const ADJACENCY_MIN_TERM = 4;
+const ADJACENCY_CAP = 8;
+
+// Words too common to mean anything in an overlap count. Without them, every
+// complaint in English is adjacent to every hypothesis in English, and the
+// panel becomes noise an operator learns to skip.
+const ADJACENCY_STOPWORDS: Record<string, true> = {
+  about: true, also: true, because: true, been: true, could: true, does: true, from: true,
+  have: true, here: true, into: true, just: true, like: true, more: true, most: true,
+  much: true, only: true, over: true, same: true, should: true, some: true, still: true,
+  such: true, than: true, that: true, their: true, them: true, then: true, there: true,
+  these: true, they: true, this: true, very: true, what: true, when: true, which: true,
+  will: true, with: true, would: true,
+};
+
+function adjacencyTerms(text: string): Set<string> {
+  const terms = new Set<string>();
+  for (const word of text.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    if (word.length < ADJACENCY_MIN_TERM) continue;
+    if (ADJACENCY_STOPWORDS[word]) continue;
+    terms.add(word);
+  }
+  return terms;
+}
+
+// ADJACENCY_UNAVAILABLE_NOTE is what the answer says when the pass could not
+// run at all, as against having run and matched nothing. The two are different
+// claims and the interface must not merge them: "nothing Babel holds touches
+// this" is a finding, and "Babel could not look" is a caveat. It carries none
+// of the failure's own text (§9).
+const ADJACENCY_UNAVAILABLE_NOTE =
+  "Babel could not read what it already holds in this session, so this is not a report that nothing touches your words.";
+
+// The fixed sentence every capture answers with. It is the whole point of the
+// route: the operator has just been given a text box on an analysis tool, and
+// the honest thing to tell him is that pressing the button opened nothing,
+// assigned nothing to anybody, and scheduled no work.
+const COMPLAINT_STEERING =
+  "nothing; a complaint is steering pressure, and Babel opened, assigned and scheduled none of it";
+
+// adjacentTo ranks what Babel already holds against the words just told to it.
+// The new complaint's own chain is excluded: a record is not adjacent to
+// itself, and a row naming the id printed two lines above would read as Babel
+// having found a duplicate.
+//
+// Ties keep corpus order -- complaints newest first, then candidates, then
+// findings -- because sort is stable, so equal overlap resolves to recency
+// rather than to an ordering nobody chose.
+function adjacentTo(text: string, exclude: Set<string>): AdjacentRow[] {
+  const wanted = adjacencyTerms(text);
+  if (wanted.size === 0) return [];
+  const corpus: AdjacentRow[] = empty
+    ? []
+    : [
+        ...complaintChains
+          .map(complaintHead)
+          .filter((head) => !exclude.has(head.id))
+          .map((head): AdjacentRow => ({
+            kind: "complaint",
+            id: head.id,
+            summary: summarizeComplaint(head.text),
+          })),
+        ...Object.values(hypotheses).map((detail): AdjacentRow => ({
+          kind: "hypothesis",
+          id: detail.hypothesis.id,
+          summary: detail.hypothesis.payload.statement,
+        })),
+        ...Object.values(findings).map((detail): AdjacentRow => ({
+          kind: "finding",
+          id: detail.finding.id,
+          summary: detail.finding.payload.title,
+        })),
+      ];
+  return corpus
+    .map((row) => ({
+      row,
+      shared: [...adjacencyTerms(row.summary)].filter((term) => wanted.has(term)).length,
+    }))
+    .filter((candidate) => candidate.shared > 0)
+    .sort((left, right) => right.shared - left.shared)
+    .slice(0, ADJACENCY_CAP)
+    .map((candidate) => candidate.row);
+}
 
 // ---------------------------------------------------------------------------
 // Review: queue, dispositions, contexts, exports
@@ -2010,6 +2438,24 @@ const linksUnwired = (Bun.env.MOCK_UNWIRED ?? "")
   .map((name) => name.trim())
   .includes("frontier");
 
+// complaintsUnwired and adjacencyUnwired gate the #115 routes for the reason
+// linksUnwired exists: serve.ts's routeServices table does not list them, and
+// a launch that could not open a store must refuse rather than answer from
+// fixtures it could not have.
+//
+// They are two gates because the routes read two stores. The complaint store
+// has its own requireService refusal, so MOCK_UNWIRED=complaint takes the
+// steering surface away entirely -- and MOCK_UNWIRED=frontier must not, since
+// a machine whose frontier is closed still has an operator with something to
+// say. What that machine loses is the comparison: the adjacency pass reads the
+// frontier's own outputs, so capture succeeds, the answer carries no rows, and
+// it says why rather than reporting that nothing Babel holds touches this.
+const complaintsUnwired = (Bun.env.MOCK_UNWIRED ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .includes("complaint");
+const adjacencyUnwired = linksUnwired;
+
 export async function phasebResponse(request: Request, url: URL): Promise<Response | null> {
   const { method } = request;
   const path = url.pathname;
@@ -2297,6 +2743,103 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
       notice: EXPORT_NOTICE,
       redaction: { policy: "internal/preflight", redactions: 0 },
       [type]: record,
+    });
+  }
+
+  // #115's three steering routes. They sit beside the review routes because
+  // web capture rides the review surfaces, and they refuse together: a launch
+  // with no complaint store has no listing, no record page and no capture, so
+  // one gate covers all three rather than each route deciding again.
+  if (complaintsUnwired && path.startsWith("/api/complaint")) {
+    return json({ error: "the complaint service is not available in this session" }, 409);
+  }
+
+  // Heads only. The listing is what the operator has told Babel, and a chain
+  // is one complaint however many times he reworded it -- listing every
+  // wording would report him as having complained five times about one thing.
+  if (method === "GET" && path === "/api/complaints") {
+    const heads = complaintChains.map(complaintHead).map(complaintRow);
+    const { slice, total } = paged(url, heads);
+    return json({ items: slice, total });
+  }
+
+  // Any wording id resolves, and the answer names the chain's head so a page
+  // rendering a superseded wording can say so and point at the current one. A
+  // superseded wording is not an error and not a redirect: it is what the
+  // operator said at the time, and #115's chain is append-only.
+  if (method === "GET" && path === "/api/complaint") {
+    const id = url.searchParams.get("id") ?? "";
+    // Any wording id resolves to its whole chain, which is what keeps an id
+    // the operator quoted months ago openable after two amendments: the head
+    // is not the only address a complaint answers at.
+    const chain = complaintChains.find((candidate) =>
+      candidate.some((wording) => wording.id === id));
+    const wording = chain?.find((candidate) => candidate.id === id);
+    if (!chain || !wording) return json({ error: `synthetic complaint not found: ${id}` }, 404);
+    const head = complaintHead(chain);
+    return json({
+      complaint: { ...wording, head: wording.id === head.id },
+      head_id: head.id,
+      revisions: chain.map((entry) => complaintRevision(entry, head.id)),
+    });
+  }
+
+  if (method === "POST" && path === "/api/complaint/tell") {
+    const parsed: unknown = await request.json();
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return json({ error: "request body is not the JSON object this route accepts" }, 400);
+    }
+    // The route accepts one field and nothing else. A complaint carries no
+    // status, no label and no target, so a body that smuggled one in is
+    // refused rather than accepted with the extra field quietly dropped --
+    // which is the same discipline /api/record/invite applies, for the same
+    // reason: an operator who sent a field must not be left believing it was
+    // stored.
+    for (const key of Object.keys(parsed)) {
+      if (key !== "text") {
+        return json({ error: `request body is not the JSON object this route accepts: ${key}` }, 400);
+      }
+    }
+    // Narrowed rather than cast: the body is outside-controlled input, and a
+    // route that asserted its shape would report a number or a null as an
+    // empty complaint instead of refusing it.
+    if (!("text" in parsed) || typeof parsed.text !== "string") {
+      return json({ error: "a complaint with no words in it says nothing" }, 400);
+    }
+    const text = parsed.text.trim();
+    if (text === "") {
+      return json({ error: "a complaint with no words in it says nothing" }, 400);
+    }
+    const size = new TextEncoder().encode(text).length;
+    if (size > COMPLAINT_MAX_TEXT_BYTES) {
+      return json({
+        error: `complaint text is ${size} bytes, over the ${COMPLAINT_MAX_TEXT_BYTES}-byte bound`,
+      }, 400);
+    }
+    complaintCounter += 1;
+    const id = `cmp_told_${String(complaintCounter).padStart(3, "0")}`;
+    const wording: ComplaintRecord = {
+      id,
+      root_id: id,
+      sequence: 1,
+      by: COMPLAINT_BY,
+      host: COMPLAINT_HOST,
+      text,
+      // Capture does not simulate redaction. cmp_quiet already previews the
+      // sentence, and a mock guessing at which typed words look secret-shaped
+      // would preview a rule the real redactor does not have.
+      redacted: false,
+      at: new Date().toISOString(),
+    };
+    // Prepended, so the listing the page reloads shows it first and the record
+    // page it links to opens: a capture that answered with an id no other
+    // route would resolve is the one flow a preview must not fake.
+    complaintChains.unshift([wording]);
+    return json({
+      complaint: { ...wording, head: true },
+      adjacent: adjacencyUnwired ? [] : adjacentTo(text, new Set([id])),
+      ...(adjacencyUnwired ? { adjacency_note: ADJACENCY_UNAVAILABLE_NOTE } : {}),
+      steering: COMPLAINT_STEERING,
     });
   }
 

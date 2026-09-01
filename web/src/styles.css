@@ -2367,6 +2367,122 @@ a.link-target:hover {
   margin-top: 0.6rem;
 }
 
+/* Operator steering (issue #115). The capture box and the complaint listing
+   ride the review surface, above the queue: the operator who came to review
+   is the operator with something to say. Nothing in this block styles a
+   status, a priority, or a closure control, because the record deliberately
+   has none — a complaint is steering pressure, never a ticket. */
+
+/* minmax(0, 1fr) rather than the default auto track, on .panel-grid's terms: a
+   grid item's auto minimum is its min-content width, and the complaint table's
+   is wider than a phone. Left auto, the card would grow past the viewport and
+   take the whole page with it instead of letting .table-scroll scroll. */
+.steering-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.capture-card,
+.steering-list-card {
+  padding: 1.3rem;
+}
+
+.capture-input {
+  min-height: 5.5rem;
+  margin-top: 0.4rem;
+  font-size: 0.92rem;
+}
+
+.capture-submit {
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+/* The outcome of one capture, separated from the form above it because it is
+   a report about what was recorded, not part of composing the next one. */
+.capture-result {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+.capture-recorded {
+  margin-bottom: 0;
+  font-weight: 650;
+}
+
+.capture-result h3 {
+  margin-top: 1.1rem;
+}
+
+.capture-adjacency-note {
+  margin-bottom: 0.6rem;
+}
+
+.capture-adjacent {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.45rem;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.capture-adjacent li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.55rem;
+  background: var(--surface-inset);
+  font-size: 0.8rem;
+}
+
+.capture-steering {
+  margin: 0.9rem 0 0;
+  font-size: 0.8rem;
+}
+
+.steering-list-card .table-scroll {
+  margin: 0 -1.3rem -1.3rem;
+}
+
+/* The empty listing is a statement inside a card that already has its own
+   heading, so it opts out of .state-card's page-level centered 13rem shape,
+   the same way the scope notice does. */
+.steering-list-card .state-card {
+  min-height: 0;
+  margin-top: 0.9rem;
+  box-shadow: none;
+}
+
+.steering-table .statement-cell {
+  min-width: 16rem;
+}
+
+/* The complaint record page (#115). It reuses the record pages' card
+   vocabulary wholesale; what is its own is the attribution line under the
+   heading and the closing no-status sentence, which is prose rather than a
+   panel because it states the absence of a feature. */
+.complaint-page .page-heading {
+  margin-bottom: 1rem;
+}
+
+.complaint-attribution {
+  margin: 0 0 1rem;
+  font-size: 0.8rem;
+}
+
+.complaint-no-status {
+  max-width: 48rem;
+  margin: 1.2rem 0 0;
+  font-size: 0.85rem;
+}
+
 /* Dashboard */
 
 /* The first-visit pointer to Help. It is a note, not an alert: one line, one

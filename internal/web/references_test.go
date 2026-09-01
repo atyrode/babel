@@ -86,8 +86,14 @@ func referencesFixture(h *phaseB, text string) *fakeReferences {
 					reference.RecordRef{Kind: namespaceFinding, ID: h.finding.ID}, 10, "run", "run-1 "+text),
 				edge("ref-3", reference.KindDuplicates, subject,
 					reference.RecordRef{Kind: namespaceHypothesis, ID: "hyp-on-another-host"}, 20, "operator", operatorID),
+				// A namespace this build opens no page for. It was
+				// "complaint" until #115 gave complaints their own
+				// record page, which made that namespace resolvable
+				// and this case vacuous; "disposition" is the
+				// nearest namespace an edge can name and no page in
+				// this build opens on its own.
 				edge("ref-4", reference.KindAddresses, subject,
-					reference.RecordRef{Kind: "complaint " + text, ID: "cmp-1 " + text}, 30, "system", ""),
+					reference.RecordRef{Kind: "disposition " + text, ID: "dsp-1 " + text}, 30, "system", ""),
 			},
 		},
 		to: map[reference.RecordRef][]reference.Edge{
@@ -210,24 +216,11 @@ func (h *phaseB) subjectQuery() string {
 	return "type=hypothesis&id=" + h.hypothesis.ID
 }
 
-// hostUnderTest is the machine identity the harness's state provider reports,
-// so a listing that attributes one host's graph to that host is assertable.
-const hostUnderTest = "host-under-test"
-
-// withHost wires the state provider a real launch always has. It is per test
-// rather than in the harness because one of the facts asserted below is what a
-// build with no host identity reports, which is an absence and not a name.
-func withHost(opts *Options) {
-	opts.State = StateProviderFunc(func(context.Context) (State, error) {
-		return State{Configured: true, HostID: hostUnderTest}, nil
-	})
-}
-
 // TestRecordLinksRenderBothDirections is the route's shape: what the record
 // cites, what cites it, in the store's order, attributed to the actor that
 // asserted each edge and to the host whose catalog answered.
 func TestRecordLinksRenderBothDirections(t *testing.T) {
-	h := newPhaseB(t, "plain", withHost)
+	h := newPhaseB(t, "plain", nil)
 	got := h.links(t, h.subjectQuery())
 
 	if got.Record.Kind != namespaceHypothesis || got.Record.ID != h.hypothesis.ID {
@@ -292,9 +285,63 @@ func TestRecordLinksRenderBothDirections(t *testing.T) {
 // because a page that filled it in with the host it happens to be running on
 // would attribute one machine's citations to another.
 func TestRecordLinksReportAnAbsentHostIdentity(t *testing.T) {
-	h := newPhaseB(t, "plain", nil)
+	h := newPhaseB(t, "plain", withoutHost)
 	if got := h.links(t, h.subjectQuery()).Host; got != "" {
 		t.Errorf("host = %q, want an absence reported as an absence", got)
+	}
+}
+
+// TestRecordLinksFollowComplaintEndpoints is #115's half of the citation graph.
+//
+// A complaint endpoint is what answers "was this ever addressed?" from the
+// other direction, so it has to be followable exactly when this host can open
+// the record — and inert with its own reason otherwise, on frontierRecord's
+// three terms rather than on a generic refusal an operator could not act on.
+func TestRecordLinksFollowComplaintEndpoints(t *testing.T) {
+	h := newPhaseB(t, "plain", nil)
+	subject := reference.RecordRef{Kind: namespaceHypothesis, ID: h.hypothesis.ID}
+	graph := &fakeReferences{from: map[reference.RecordRef][]reference.Edge{
+		subject: {
+			{
+				ID: "ref-c1", Kind: reference.KindAddresses, From: subject,
+				To:        reference.RecordRef{Kind: namespaceComplaint, ID: h.complaint.ID},
+				ActorKind: "run", ActorRef: "run-1", CreatedAt: referenceEpoch,
+			},
+			{
+				ID: "ref-c2", Kind: reference.KindAddresses, From: subject,
+				To:        reference.RecordRef{Kind: namespaceComplaint, ID: "cmp-on-another-host"},
+				ActorKind: "run", ActorRef: "run-1", CreatedAt: referenceEpoch.Add(-time.Minute),
+			},
+		},
+	}}
+	serve := func(complaints ComplaintService) {
+		h.server, h.http = testServer(t, Options{
+			Operator: operatorID, Frontier: h.front, Complaints: complaints, References: graph,
+		})
+	}
+
+	serve(h.complaints)
+	edges := h.links(t, h.subjectQuery()).Cites.Edges
+	if len(edges) != 2 {
+		t.Fatalf("edges = %d, want the two complaint endpoints", len(edges))
+	}
+	if held := edges[0].Other; held.Inert || held.Reason != "" || held.ID != h.complaint.ID {
+		t.Errorf("endpoint %+v: a complaint this host holds must be followable", held)
+	}
+	// A complaint another machine's operator told. #112 makes the edge
+	// readable here even though the record never will be.
+	absent := edges[1].Other
+	if !absent.Inert || !strings.Contains(absent.Reason, "holds no complaint") {
+		t.Errorf("endpoint %+v, reason %q: want inert, naming the record this host does not hold",
+			absent, absent.Reason)
+	}
+
+	// A build whose complaint component did not open. The row says which of
+	// the two absences it is: the service, not the record.
+	serve(nil)
+	unwired := h.links(t, h.subjectQuery()).Cites.Edges[0].Other
+	if !unwired.Inert || !strings.Contains(unwired.Reason, "operator complaints are not available") {
+		t.Errorf("endpoint %+v, reason %q: want inert, naming the missing service", unwired, unwired.Reason)
 	}
 }
 
@@ -340,7 +387,7 @@ func TestRecordLinksMarkUnreachableEndpointsInert(t *testing.T) {
 	if !unknown.Inert || !strings.Contains(unknown.Reason, "opens no page") {
 		t.Errorf("endpoint %+v, reason %q: want an inert row naming the unknown namespace", unknown, unknown.Reason)
 	}
-	if !strings.Contains(unknown.Reason, "complaint") {
+	if !strings.Contains(unknown.Reason, "disposition") {
 		t.Errorf("reason = %q, want the namespace quoted in it", unknown.Reason)
 	}
 

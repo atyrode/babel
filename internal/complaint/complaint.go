@@ -125,6 +125,21 @@ type Complaint struct {
 	CreatedAt time.Time
 }
 
+// Summary is the bounded single line a listing, a search hit and a revision
+// chain show instead of the whole text.
+//
+// It is derived on read rather than stored because the rows are the only
+// source of truth about what the operator said: a stored summary is a cache,
+// and a cache of somebody's own words is a second version of them that can
+// disagree with the first after a migration, a re-encode or a bug in whichever
+// surface wrote it.
+//
+// It is this package's rather than each surface's for the reason Outputs gives
+// about its own derivations: internal/web's listing and internal/index's hit
+// describe the same complaint, and two summarizers would let them disagree
+// about it in the same browser window.
+func (c Complaint) Summary() string { return summarize(c.Text) }
+
 // payload is the §9 encryption-bound half of a complaint row: the operator's
 // words and nothing else. Everything beside it in the table is identifier or
 // attribution metadata the plaintext allowlist admits.
