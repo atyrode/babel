@@ -413,6 +413,17 @@ test.skipIf(!chrome)("plan acceptance is explicit and flips proposed to applied"
 
   await page.click(".accept-panel button");
   await visible("Plan accepted and applied atomically");
+  // The confirmation message and the card's badge are separate renders, so
+  // waiting for the message does not order the badge's update: on a loaded CI
+  // runner the badge was still "proposed - nothing applied yet" when read here.
+  // Await the flip this test is about. A badge that never flips still fails,
+  // by timeout naming the condition, rather than by being read mid-render -
+  // and the applied count below stays a real assertion, because it belongs to
+  // the same render and a lag between them would be a product inconsistency.
+  await page.waitForFunction(
+    () => document.querySelector(".plan-card .badge")?.textContent === "accepted",
+    { timeout: 15_000 },
+  );
   const after = await page.evaluate(() => ({
     badge: document.querySelector(".plan-card .badge")?.textContent,
     applied: Array.from(document.querySelectorAll(".action-heading .badge"))
