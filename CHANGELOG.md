@@ -48,6 +48,41 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The cookbook opens with a statement of what it is for (issue #120).**
+  `cookbook/preamble.md` carries SPEC.md §1's charter into the asset tree:
+  Babel's axiomatic center is the friction between an operator and their
+  agents, and the cookbook's own evolution is measured against it. It is
+  explicit that this weights and curates rather than narrows — the serendipity
+  floor, effective patterns, and open discovery stay chartered — and it states
+  what a recipe diff must answer: what friction it makes visible, for whom,
+  and why an existing lens does not already reveal it. The statement is
+  versioned and digested under §5.1's rule like a recipe, recorded in
+  `versions.json` (now `manifest_schema: 2`), reported by `babel cookbook
+  check`, and named by `babel cookbook list`.
+- **The conductor's duty rung draws friction lenses first (issue #120).** A
+  standing duty now declares whether its subject is operator-agent friction,
+  and #94's `mechanization-audit` — where inference substituted for retrieval
+  because tooling or context was missing — leads the product dimension instead
+  of trailing it. The ladder is unchanged: duties still wait behind the
+  operator's invitations, and the serendipity floor's protected fraction is
+  untouched, so friction-primacy cannot become friction-exclusivity.
+- **`babel archive unlock` clears the stale restic locks an interrupted
+  command leaves behind (issue #108),** with Babel's own repository,
+  password-file, and object-store plumbing. It lists every lock with the
+  staleness judgement it reached and the reason for it before removing
+  anything, removes only locks that are both stale and shared, and removes a
+  held or exclusive lock only when the invocation names its id. A run that
+  removes nothing exits 0 and says so, and no timer, conductor duty, or other
+  autonomous path can invoke it.
+  - The restic port grew three lock verbs — `list locks`, `cat lock`,
+    `unlock` — and the invariant behind it sharpened: no verb can delete or
+    rewrite archived data, and the one verb that removes anything reaches only
+    restic's own lock files. `forget`, `prune`, and `repair` stay outside
+    Babel.
+  - `docs/runbook.md` §2.4's OPERATOR STEP is one command instead of a
+    hand-assembled restic environment, and it records what the drill got wrong
+    about restic: plain `restic unlock` removes a stale exclusive lock too, so
+    `--remove-all` is what a lock that is *not* stale needs.
 - **Proposals are first-class records, joined to the hypotheses they answer by
   `addresses` edges (issue #114, operator direction 2026-08-31: new outputs
   only).** A candidate that carries a suggested change now emits two records
