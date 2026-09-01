@@ -353,13 +353,14 @@ real  0m2.235s   exit 0
 >
 > A lock that is not both stale and shared is removed only when the run names
 > it: `babel archive unlock --remove LOCKID`, with an id from that listing. An
-> exclusive lock is always in that category, and `restic unlock` cannot spare
-> one while clearing its shared neighbours, so Babel refuses the whole run and
-> names the lock instead of removing it quietly. That granularity is restic's:
-> measured against restic 0.19.1, plain `restic unlock` **does** remove a stale
-> exclusive lock, so the earlier note here — that `--remove-all` is what an
-> exclusive lock needs — was wrong about restic. `--remove-all` is what a lock
-> that is not *stale* needs, and it removes every lock in the repository.
+> exclusive lock is always in that category, and restic's stale removal takes
+> every stale lock at once and cannot exclude one, so Babel refuses the whole
+> run and names the lock rather than removing it quietly. That granularity is
+> restic's: measured against restic 0.19.1, plain `restic unlock` **does**
+> remove a stale exclusive lock, so the earlier note here — that `--remove-all`
+> is what an exclusive lock needs — was wrong about restic. `--remove-all` is
+> what a lock that is not *stale* needs, and it removes every lock in the
+> repository.
 >
 > The four-line `jq` block that opens §2.3 remains the prerequisite for every
 > **direct** `restic` command in this runbook, including a bare `restic unlock`.
