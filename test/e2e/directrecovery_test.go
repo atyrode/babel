@@ -20,9 +20,19 @@ import (
 // recovery path, which is the whole point: a helper of Babel's could pass while
 // the property failed. The only Babel involvement is the push that created the
 // snapshot, and the roots it reported.
+//
+// Against an object store the sentence gains exactly one word, because restic
+// accepts an object-store credential in one place only: the restic binary, the
+// repository password, and the two AWS_ variables that are the credential's
+// only form (config.RepositoryStore). Nothing else — no document, no catalog,
+// no host identity — reaches the recovery below, which is why this is the
+// strongest form of the bullet: an operator holding a password file and a key
+// pair gets every source tree back out of the bucket.
 func TestArchiveRestoresWithResticAlone(t *testing.T) {
 	e := newEnv(t)
 	e.writeSources(t)
+	repo := acceptRepository(t, e.repository)
+	e.useRepository(t, repo)
 
 	e.bootstrapRepo(t)
 	push := okJSON[pushResult](t, e, e.with("archive", "push", "--json")...)
@@ -33,17 +43,19 @@ func TestArchiveRestoresWithResticAlone(t *testing.T) {
 		t.Fatalf("push reported no backup roots: %+v", push)
 	}
 
-	// Everything restic needs: the repository locator and the password file.
+	// Everything restic needs: the repository locator, the password file, and
+	// the store credential when the repository is one that authenticates.
 	// Notably absent: any Babel configuration, any catalog, any host identity.
 	target := t.TempDir()
 	cmd := exec.Command(resticBinary(t),
-		"-r", e.repoDir,
+		"-r", e.repository,
 		"--password-file", e.passwordFile,
 		"restore", push.SnapshotID,
 		"--target", target,
 	)
 	// A cache directory inside the test's own tree keeps the run hermetic.
 	cmd.Env = append(os.Environ(), "RESTIC_CACHE_DIR="+filepath.Join(e.cacheHome, "restic-direct"))
+	cmd.Env = append(cmd.Env, repo.resticEnv()...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("restic restore: %v\n%s", err, out)
 	}

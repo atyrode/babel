@@ -74,6 +74,10 @@ const (
 // Its value is a credential - it carries the catalog password - so it is read
 // from the environment and never logged, never quoted in a failure, and never
 // written anywhere but the mode-0600 document Babel itself writes.
+//
+// acceptRepoEnv is its counterpart for the archive half, with the same
+// discipline; the two are independent, so a drill may address a real catalog, a
+// real object store, either, or neither.
 const acceptURIEnv = "BABEL_ACCEPT_PG_URI"
 
 // acceptMaxConns is the pool ceiling each instance's document states against a
@@ -95,14 +99,15 @@ const (
 	workspaceB  = "/synthetic/workspace/second-instance"
 )
 
-// deployment is the shared half: one PostgreSQL catalog and one local-path
-// restic repository, both addressed by every instance.
+// deployment is the shared half: one PostgreSQL catalog and one restic
+// repository, both addressed by every instance.
 //
-// Its connection parameters are fields rather than a cluster handle, because
-// the catalog is either a throwaway cluster this process started or a real one
-// an operator provisioned (acceptURIEnv). Nothing below that line branches on
-// which, so the drill cannot quietly prove less against the real server than it
-// does locally.
+// Neither half is necessarily local. The catalog is a throwaway cluster this
+// process started or a real one an operator provisioned (acceptURIEnv), and the
+// repository is a directory this process creates or a prefix in an operator's
+// object store (acceptRepoEnv). Nothing below those two lines branches on
+// which, so the drill cannot quietly prove less against the real services than
+// it does locally.
 type deployment struct {
 	// cluster is nil in real-DSN mode, where nothing local is started and the
 	// server's log belongs to the provider.
@@ -123,7 +128,11 @@ type deployment struct {
 	// db is the assertion handle, opened at most once per deployment.
 	db *sql.DB
 
-	repoDir      string
+	// repo is the archive half: a local path this process creates, or a prefix
+	// inside the object store an operator named (acceptRepoEnv). Scenarios
+	// address it through its locator and never learn which it is, except where
+	// one of them must move it (repository.moveAway).
+	repo         repository
 	passwordFile string
 }
 
@@ -140,7 +149,7 @@ func newDeployment(t *testing.T) *deployment {
 	}
 
 	root := t.TempDir()
-	d.repoDir = filepath.Join(root, "repository")
+	d.repo = acceptRepository(t, filepath.Join(root, "repository"))
 	d.passwordFile = filepath.Join(root, "repository-password")
 	if err := os.WriteFile(d.passwordFile, []byte(twoInstanceRepoPassword), 0o600); err != nil {
 		t.Fatal(err)
@@ -294,7 +303,7 @@ func (d *deployment) newInstance(t *testing.T, label, hostID, instanceID string)
 	e := &env{
 		root:         root,
 		home:         filepath.Join(root, "home"),
-		repoDir:      d.repoDir,
+		repository:   d.repo.locator,
 		passwordFile: d.passwordFile,
 		dataHome:     filepath.Join(root, "data"),
 		cacheHome:    filepath.Join(root, "cache"),
@@ -410,7 +419,10 @@ func (d *deployment) catalogDoc() catalogDoc {
 //
 // max_connections is emitted only when the deployment states one, so the local
 // drill keeps exercising the omitted-field default and the real one exercises
-// the ceiling its provider requires.
+// the ceiling its provider requires. repository_store is emitted only when the
+// repository is an object store, for the stronger reason that config refuses
+// the document otherwise, in either direction: an s3 locator without the
+// credential, and the credential without a store to spend it on.
 func (i *instance) document(cat catalogDoc) string {
 	pool := ""
 	if cat.maxConns > 0 {
@@ -423,7 +435,7 @@ func (i *instance) document(cat catalogDoc) string {
   "password_file": %q,
   "host_id": %q,
   "deployment_id": %q,
-  "instance_id": %q,
+  "instance_id": %q%s,
   "catalog": {
     "host": %q,
     "port": %d,
@@ -432,7 +444,8 @@ func (i *instance) document(cat catalogDoc) string {
     "password": %q,
     "tls_mode": %q%s
   }
-}`, i.dep.repoDir, i.dep.passwordFile, i.hostID, twoInstanceDeployment, i.instanceID,
+}`, i.dep.repo.locator, i.dep.passwordFile, i.hostID, twoInstanceDeployment, i.instanceID,
+		i.dep.repo.documentStore(),
 		cat.host, cat.port, cat.database, cat.user, cat.password, cat.tlsMode, pool)
 }
 

@@ -123,7 +123,7 @@ const (
 type env struct {
 	root         string
 	home         string
-	repoDir      string
+	repository   string
 	passwordFile string
 	dataHome     string
 	cacheHome    string
@@ -141,7 +141,7 @@ func newEnv(t *testing.T) *env {
 	e := &env{
 		root:         root,
 		home:         filepath.Join(root, "home"),
-		repoDir:      filepath.Join(t.TempDir(), "repo"),
+		repository:   filepath.Join(t.TempDir(), "repo"),
 		passwordFile: filepath.Join(root, "password"),
 		dataHome:     filepath.Join(root, "data"),
 		cacheHome:    filepath.Join(root, "cache"),
@@ -195,7 +195,7 @@ func resticBinary(t *testing.T) string {
 
 // with appends this environment's repository selection to a command.
 func (e *env) with(args ...string) []string {
-	return append(args, "--repo", e.repoDir, "--password-file", e.passwordFile)
+	return append(args, "--repo", e.repository, "--password-file", e.passwordFile)
 }
 
 // run drives one invocation exactly as cmd/babel does.
@@ -646,7 +646,7 @@ func TestPhaseALoopEndToEnd(t *testing.T) {
 		t.Fatalf("verify of a healthy repository = %+v", v)
 	}
 
-	pack := largestPack(t, filepath.Join(e.repoDir, "data"))
+	pack := largestPack(t, filepath.Join(e.repository, "data"))
 	original, mode := readFileMode(t, pack)
 	writePack(t, pack, flipOneByte(original))
 	e.dropResticCache(t)

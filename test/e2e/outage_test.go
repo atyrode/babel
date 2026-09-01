@@ -1,8 +1,9 @@
 // The §14 outage and TLS acceptance gates (issue #20, third bullet), run
-// against whatever PostgreSQL the deployment harness addresses: a throwaway
-// local cluster, or the operator's own add-on when BABEL_ACCEPT_PG_URI names
-// one. The scenarios do not branch on which, so a verdict recorded against the
-// real service is the verdict this code actually produces there.
+// against whatever the deployment harness addresses: a throwaway local cluster
+// or the operator's own add-on when BABEL_ACCEPT_PG_URI names one, and a local
+// path or the operator's own object store when BABEL_ACCEPT_REPO names one. The
+// scenarios do not branch on which, so a verdict recorded against the real
+// services is the verdict this code actually produces there.
 //
 // Two of the three bullets can only be simulated, and each simulation is chosen
 // to be indistinguishable from the real event at the boundary Babel observes:
@@ -17,8 +18,11 @@
 //     saying no - the case that must never be reported as an outage, because an
 //     outage claims to resolve itself and a rejected credential does not.
 //
-// The repository outage is not simulated: the repository is a local path this
-// suite owns, and it is moved out from under a running push.
+// The repository outage is not simulated either way: the repository is one this
+// suite owns, and it is moved out from under the push that names it. What
+// "moved" means is the one thing the store decides - a directory renamed to a
+// sibling, or every object copied to a sibling prefix and deleted from this one,
+// because an object store has no directory to rename (repository.moveAway).
 
 package e2e_test
 
@@ -300,12 +304,9 @@ func TestRepositoryOutageFailsThePushAndLeavesTheCatalogUntouched(t *testing.T) 
 		t.Fatalf("the first push did not publish: %+v", first)
 	}
 
-	// A moved directory is what a lost mount, an unreachable object store, or a
-	// deleted bucket looks like from restic's side.
-	away := dep.repoDir + "-away"
-	if err := os.Rename(dep.repoDir, away); err != nil {
-		t.Fatal(err)
-	}
+	// The repository goes away under the locator that names it: a lost mount, a
+	// deleted bucket and a revoked prefix all look like this from restic's side.
+	back := dep.repo.moveAway(t)
 
 	stdout, stderr, code := a.run(t, a.with("archive", "push", "--json")...)
 	if code == exitOK {
@@ -314,7 +315,7 @@ func TestRepositoryOutageFailsThePushAndLeavesTheCatalogUntouched(t *testing.T) 
 	assertNoPassword(t, dep, stdout, stderr)
 	// It must read as a repository failure. An operator sent to PostgreSQL by
 	// this message loses an afternoon.
-	if !strings.Contains(stderr, dep.repoDir) && !strings.Contains(strings.ToLower(stderr), "repository") {
+	if !strings.Contains(stderr, dep.repo.locator) && !strings.Contains(strings.ToLower(stderr), "repository") {
 		t.Fatalf("a repository outage did not name the repository: %s", stderr)
 	}
 
@@ -323,12 +324,10 @@ func TestRepositoryOutageFailsThePushAndLeavesTheCatalogUntouched(t *testing.T) 
 
 	// The repository comes back and the next push is ordinary. Nothing had to
 	// be repaired, which is the recovery property.
-	if err := os.Rename(away, dep.repoDir); err != nil {
-		t.Fatal(err)
-	}
-	back := instJSON[pushResult](t, a, a.with("archive", "push", "--json")...)
-	if back.Catalog != "committed" {
-		t.Fatalf("the push after the repository returned did not publish: %+v", back)
+	back()
+	resumed := instJSON[pushResult](t, a, a.with("archive", "push", "--json")...)
+	if resumed.Catalog != "committed" {
+		t.Fatalf("the push after the repository returned did not publish: %+v", resumed)
 	}
 	after := instJSON[sharedStatusResult](t, a, a.with("archive", "status", "--json")...)
 	if after.Catalog.Uncatalogued == nil || *after.Catalog.Uncatalogued != 0 {
