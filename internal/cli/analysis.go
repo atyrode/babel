@@ -26,6 +26,7 @@ import (
 	"github.com/atyrode/babel/internal/reference/resolve"
 	"github.com/atyrode/babel/internal/review"
 	runstore "github.com/atyrode/babel/internal/run"
+	babelsync "github.com/atyrode/babel/internal/sync"
 	"github.com/atyrode/babel/internal/worker"
 )
 
@@ -985,6 +986,12 @@ type analysisState struct {
 	// identity a session endpoint carries. Nil on a machine with no
 	// deployment identity, because there is then no key to derive.
 	sessions *resolve.Sessions
+	// sync is the Phase B publication hook every store in this state was
+	// opened with, and the value an exploration's config carries (#137). It is
+	// an interface rather than a *babelsync.Stager so that local mode is a nil
+	// hook and never a typed nil pointer: each store tests it for nil to decide
+	// whether it stages at all.
+	sync babelsync.Hook
 	// diag is where a failed edge emission lands. It is a settable field
 	// rather than a parameter because openAnalysisState is called from every
 	// analysis command and none of them has a sink to offer at that point,
@@ -1006,6 +1013,18 @@ func openAnalysisState() (*analysisState, error) {
 		return nil, err
 	}
 	dir := d.durableDir()
+	// Every store this package opens is opened with the deployment's
+	// publication hook, without exception (#137). The rule has no read-only
+	// carve-out, and that is deliberate: a hook is attached for the life of the
+	// handle, so a call site reasoning "this one only reads" hands the next
+	// caller a store that publishes nothing and says so nowhere - which is the
+	// shape of the silence this closes. In local mode the hook is nil and each
+	// WithSync is exactly the option nobody passed before, down to the journal
+	// tables the stores then do not create.
+	hook, err := stagingHook()
+	if err != nil {
+		return nil, err
+	}
 	// The two stores below are mutually constructed, and the cycle is real
 	// rather than accidental: internal/frontier takes the edge appender at
 	// Open so that minting a revision also mints its supersedes edge (#113),
@@ -1015,11 +1034,12 @@ func openAnalysisState() (*analysisState, error) {
 	// there is one.
 	state := &analysisState{dir: dir}
 	appender := &deferredAppender{}
-	front, err := frontier.Open(dir, frontier.WithReferences(appender, state.reportEdgeFailure))
+	front, err := frontier.Open(dir, frontier.WithSync(hook),
+		frontier.WithReferences(appender, state.reportEdgeFailure))
 	if err != nil {
 		return nil, err
 	}
-	runs, err := runstore.Open(dir)
+	runs, err := runstore.Open(dir, runstore.WithSync(hook))
 	if err != nil {
 		front.Close()
 		return nil, err
@@ -1030,14 +1050,15 @@ func openAnalysisState() (*analysisState, error) {
 		front.Close()
 		return nil, err
 	}
-	actions, err := disposition.Open(dir, front)
+	actions, err := disposition.Open(dir, front, disposition.WithSync(hook))
 	if err != nil {
 		svc.Close()
 		runs.Close()
 		front.Close()
 		return nil, err
 	}
-	told, err := complaint.Open(dir, complaint.WithReferences(appender, state.reportEdgeFailure))
+	told, err := complaint.Open(dir, complaint.WithSync(hook),
+		complaint.WithReferences(appender, state.reportEdgeFailure))
 	if err != nil {
 		actions.Close()
 		svc.Close()
@@ -1054,7 +1075,7 @@ func openAnalysisState() (*analysisState, error) {
 	// listing the namespaces this machine can vouch for, which is the honest
 	// answer from a state that never opened the ledger.
 	sessions, cache, note := openSessionResolver(d)
-	var opts []reference.Option
+	opts := []reference.Option{reference.WithSync(hook)}
 	registry, err := resolve.Registry(resolve.Stores{
 		Frontier:     front,
 		Runs:         runs,
@@ -1089,6 +1110,7 @@ func openAnalysisState() (*analysisState, error) {
 	state.complaints = told
 	state.references, state.sessionCatalog, state.resolverNote = edges, cache, note
 	state.sessions = sessions
+	state.sync = hook
 	return state, nil
 }
 
@@ -1210,12 +1232,22 @@ func (s *analysisState) Close() error {
 // same durable file rather than part of analysisState because no command
 // needs both: keeping them apart means a Reality command never opens the
 // frontier and an analysis command never opens the ledger.
+//
+// It opens with the same publication hook the analysis state does (#137), and
+// resolving it here rather than taking it as a parameter is what keeps the two
+// openers independent: a Reality command must not have to know that a hook
+// exists in order to get one, which is how every caller of this function came
+// to publish nothing.
 func openReality() (*reality.Store, error) {
 	d, err := babelDirs()
 	if err != nil {
 		return nil, err
 	}
-	return reality.Open(d.durableDir())
+	hook, err := stagingHook()
+	if err != nil {
+		return nil, err
+	}
+	return reality.Open(d.durableDir(), reality.WithSync(hook))
 }
 
 // recordKinds maps the identifier prefixes internal/frontier mints onto the

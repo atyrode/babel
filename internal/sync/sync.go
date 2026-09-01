@@ -51,6 +51,14 @@
 // then insert the row that names the object, and flip the run to committed
 // conditional on the catalog holding the whole declared closure. The local
 // flip follows the PostgreSQL commit and never precedes it.
+//
+// The halves are separately attachable, and that is what a deployment's wiring
+// turns on. Staging is transaction-local and needs no handle at all, so a
+// Stager is what every durable writer holds: a command that writes locally
+// stages what it owes without opening PostgreSQL, an object store or a payload
+// keyring. A Publisher - the half that does hold all three - belongs to the
+// commands whose job is publication, `babel sync` and the reconcile step after
+// an archive push.
 package sync
 
 import (
@@ -59,6 +67,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/envelope"
@@ -226,9 +235,12 @@ type Closure struct {
 
 // Hook is the publication surface a durable writer holds.
 //
-// A nil *Publisher satisfies it and every method is a silent no-op, which is
-// what local-only mode is: nothing is staged, nothing is published, and no
-// writer needs a branch for it beyond the nil check it would write anyway.
+// Two types satisfy it and the difference between them is what a deployment
+// decides: a *Stager records what is owed and lets a later command carry it, a
+// *Publisher also carries it. A nil Hook is local-only mode - nothing is
+// staged, nothing is published - and a nil *Publisher satisfies it too with
+// every method a silent no-op, so a caller that already holds one needs no
+// branch beyond the nil check it would write anyway.
 type Hook interface {
 	// Append stages rec inside tx and reports the closure to publish once tx
 	// has committed, resolving which closure the record belongs to.
@@ -243,6 +255,182 @@ type Hook interface {
 	// after the transaction that declared it committed.
 	CommitInline(ctx context.Context, c Closure) error
 }
+
+// Both halves are asserted here rather than left to the wiring site, because
+// the wiring site is in another package: a method signature that drifted would
+// otherwise be a compile failure in internal/cli, reported against a store's
+// option rather than against the surface that changed.
+var (
+	_ Hook = (*Stager)(nil)
+	_ Hook = (*Publisher)(nil)
+)
+
+// Stager is the staging half of publication: the Hook a durable writer holds
+// on a machine that records what it owes the fleet and leaves the carrying to
+// `babel sync`.
+//
+// It owns no handle, and that absence is the whole reason it exists as a type.
+// Staging is transaction-local - every row it writes goes into the writer's own
+// transaction on the writer's own connection, and the tables are already there
+// because a store opened with a hook calls EnsureSchema on that connection - so
+// the staging half needs neither this machine's durable handle nor the shared
+// backend's. That is what lets every durable writer be given one
+// unconditionally in shared mode: `babel tell` records what it owes without
+// opening PostgreSQL, an object store or a payload keyring, and a deployment
+// whose payload keys have not arrived yet still mints visibly pending-sync
+// records instead of silently local ones, which is what SPEC.md §9 requires of
+// it.
+//
+// A Publisher stages through this same code rather than beside it, because
+// choosing a record's closure is a rule and a rule restated in two places is a
+// rule that eventually differs in one of them.
+type Stager struct {
+	// now supplies staging and declaration timestamps. It is a field so a test
+	// can make ordering deterministic without sleeping; production never
+	// replaces it.
+	now func() time.Time
+}
+
+// NewStager returns the staging hook a durable writer holds in shared mode.
+//
+// It takes no arguments deliberately. Nothing staging reads is a deployment
+// value - the writer chooses what to stage, its own transaction carries the
+// rows, and its own Open created the tables - so a constructor that asked for a
+// durable directory, a catalog or a keyring would be asking for what it never
+// touches, and a caller holding none of the three would conclude, wrongly, that
+// this machine cannot stage.
+func NewStager() *Stager {
+	return &Stager{now: func() time.Time { return time.Now().UTC() }}
+}
+
+// StageTx stages rec into the run rec names, inside tx.
+//
+// It is the Hook method; journal.go holds the rows it writes. A writer that
+// knows its record's closure - a run staging its own output as it goes - uses
+// it directly, and everything else uses Append, which chooses.
+func (s *Stager) StageTx(ctx context.Context, tx *sql.Tx, rec Record) error {
+	return s.stage(ctx, tx, rec)
+}
+
+// Append stages rec inside tx and reports the closure to publish once tx has
+// committed.
+//
+// It is the one call a durable writer needs, and it exists because choosing a
+// record's publication closure is a rule rather than a judgement, and a rule
+// restated at every write site is a rule that eventually differs at one of
+// them.
+//
+// producedBy names the run that produced the record, and is empty for a record
+// no run produced - an operator's decision, a Reality fact an operator
+// answered for, a preparation. Two outcomes:
+//
+//   - The producing run's closure is still open. The record joins it and
+//     nothing publishes yet, because a run's closure may not be declared while
+//     it can still grow. The run declares itself when it ends, which for an
+//     exploration is when its receipt is written.
+//   - There is no producing run, or its closure is already declared. The
+//     record becomes its own closure of one, declared inside this same
+//     transaction so no crash can leave it staged with nobody to declare it,
+//     and linked to the run it came after so lineage survives. This is what an
+//     operator's later decision about an old finding is, and what an amended
+//     receipt is: not part of a closed run's output, but attached to it.
+//
+// The record's own entity id is the run id of a closure of one. Run ids and
+// record ids live in different tables, so there is no collision, and using the
+// record's own id says exactly what the row means: this commit is this record.
+//
+// producedBy is reduced to the run whose closure it belongs to; see
+// publicationRun.
+func (s *Stager) Append(ctx context.Context, tx *sql.Tx, producedBy string,
+	rec Record) (Closure, bool, error) {
+	producedBy = publicationRun(producedBy)
+	if producedBy != "" {
+		open, err := s.closureOpen(ctx, tx, producedBy)
+		if err != nil {
+			return Closure{}, false, err
+		}
+		if open {
+			rec.RunID = producedBy
+			if err := s.stage(ctx, tx, rec); err != nil {
+				return Closure{}, false, err
+			}
+			return Closure{}, false, nil
+		}
+	}
+	rec.RunID = rec.EntityID
+	if err := s.stage(ctx, tx, rec); err != nil {
+		return Closure{}, false, err
+	}
+	c := Closure{RunID: rec.EntityID, ContinuesRunID: producedBy}
+	if _, err := s.declareTx(ctx, tx, c); err != nil {
+		return Closure{}, false, err
+	}
+	return c, true, nil
+}
+
+// publicationRun reduces a producing job's local run identity to the run whose
+// closure it belongs to: everything before the first separator.
+//
+// SPEC.md §5.4 makes the challenger and the synthesizer logically separate jobs
+// with their own run identity and their own receipt, and internal/explore spells
+// those identities `<run>/<stage>`. Two things follow, and both need this
+// reduction rather than tolerating the compound id.
+//
+// It could not be a publication run id. The shared catalog holds run ids to the
+// same bare-identifier shape it holds record ids to, and a value with a path
+// separator is refused - so a challenger's records would fail to stage rather
+// than publish.
+//
+// And it should not be one even if it could. A stage is a job within a run, not
+// a run: SPEC.md §6.5 makes a run reviewable once its whole closure has
+// committed, and an exploration's closure is its own records plus the records
+// and receipts of the separate jobs it launched. Splitting them into three
+// closures would make one exploration become globally reviewable in three
+// unrelated pieces, and a reader asking what a run concluded would have to know
+// to look for two more.
+//
+// The reduction is collision-free because the parent is itself a valid
+// identifier and the separator is the one internal/explore introduced: no bare
+// run id can contain it.
+func publicationRun(runID string) string {
+	for i := range len(runID) {
+		if runID[i] == '/' {
+			return runID[:i]
+		}
+	}
+	return runID
+}
+
+// DeclareTx closes a run's closure inside tx, at the records staged for it so
+// far including any staged in this same transaction.
+//
+// A writer whose whole output is one record - an operator's decision, a Reality
+// fact, a run receipt - declares in the same transaction that stages it,
+// because the alternative leaves a window in which a crash produces a staged
+// record whose closure nothing will ever declare: nobody resumes an operator's
+// decision, so that record would stay pending forever with no remedy. An
+// exploration declares in the transaction that writes its receipt, which is the
+// act that ends the run.
+func (s *Stager) DeclareTx(ctx context.Context, tx *sql.Tx, c Closure) error {
+	if _, err := s.declareTx(ctx, tx, c); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CommitInline is where the two halves differ: a Stager publishes nothing and
+// says so by succeeding.
+//
+// The closure it is handed is already declared, already durable, and every
+// record in it is visibly pending-sync, so what remains is the shared backend's
+// work and this half holds no way to reach it. `babel sync` and the reconcile
+// step after an archive push are what carry it, which is the division SPEC.md
+// §6.5 draws anyway: publication is a step that may be completed later and
+// never one a local write depends on. It returns nil rather than
+// ErrNotConfigured because a write path reads an error from this method as a
+// caller bug (see Publisher.CommitInline), and a record staged with nobody to
+// publish it yet is not one.
+func (s *Stager) CommitInline(context.Context, Closure) error { return nil }
 
 // Publisher commits declared closures to the shared backend.
 //
@@ -341,117 +529,28 @@ func (p *Publisher) StageTx(ctx context.Context, tx *sql.Tx, rec Record) error {
 	if p == nil {
 		return nil
 	}
-	return p.journal.stage(ctx, tx, rec)
+	return p.journal.stager.StageTx(ctx, tx, rec)
 }
 
 // Append stages rec inside tx and reports the closure to publish once tx has
-// committed.
-//
-// It is the one call a durable writer needs, and it exists because choosing a
-// record's publication closure is a rule rather than a judgement, and a rule
-// restated at every write site is a rule that eventually differs at one of
-// them.
-//
-// producedBy names the run that produced the record, and is empty for a record
-// no run produced - an operator's decision, a Reality fact an operator
-// answered for, a preparation. Two outcomes:
-//
-//   - The producing run's closure is still open. The record joins it and
-//     nothing publishes yet, because a run's closure may not be declared while
-//     it can still grow. The run declares itself when it ends, which for an
-//     exploration is when its receipt is written.
-//   - There is no producing run, or its closure is already declared. The
-//     record becomes its own closure of one, declared inside this same
-//     transaction so no crash can leave it staged with nobody to declare it,
-//     and linked to the run it came after so lineage survives. This is what an
-//     operator's later decision about an old finding is, and what an amended
-//     receipt is: not part of a closed run's output, but attached to it.
-//
-// The record's own entity id is the run id of a closure of one. Run ids and
-// record ids live in different tables, so there is no collision, and using the
-// record's own id says exactly what the row means: this commit is this record.
-//
-// producedBy is reduced to the run whose closure it belongs to; see
-// publicationRun.
-func (p *Publisher) Append(ctx context.Context, tx *sql.Tx, producedBy string, rec Record) (Closure, bool, error) {
+// committed. See Stager.Append, which holds the whole of the rule: a publisher
+// stages through its journal's staging half, so the two halves cannot come to
+// different conclusions about which closure a record belongs to.
+func (p *Publisher) Append(ctx context.Context, tx *sql.Tx, producedBy string,
+	rec Record) (Closure, bool, error) {
 	if p == nil {
 		return Closure{}, false, nil
 	}
-	producedBy = publicationRun(producedBy)
-	if producedBy != "" {
-		open, err := p.journal.closureOpen(ctx, tx, producedBy)
-		if err != nil {
-			return Closure{}, false, err
-		}
-		if open {
-			rec.RunID = producedBy
-			if err := p.journal.stage(ctx, tx, rec); err != nil {
-				return Closure{}, false, err
-			}
-			return Closure{}, false, nil
-		}
-	}
-	rec.RunID = rec.EntityID
-	if err := p.journal.stage(ctx, tx, rec); err != nil {
-		return Closure{}, false, err
-	}
-	c := Closure{RunID: rec.EntityID, ContinuesRunID: producedBy}
-	if _, err := p.journal.declareTx(ctx, tx, c); err != nil {
-		return Closure{}, false, err
-	}
-	return c, true, nil
+	return p.journal.stager.Append(ctx, tx, producedBy, rec)
 }
 
-// publicationRun reduces a producing job's local run identity to the run whose
-// closure it belongs to: everything before the first separator.
-//
-// SPEC.md §5.4 makes the challenger and the synthesizer logically separate jobs
-// with their own run identity and their own receipt, and internal/explore spells
-// those identities `<run>/<stage>`. Two things follow, and both need this
-// reduction rather than tolerating the compound id.
-//
-// It could not be a publication run id. The shared catalog holds run ids to the
-// same bare-identifier shape it holds record ids to, and a value with a path
-// separator is refused - so a challenger's records would fail to stage rather
-// than publish.
-//
-// And it should not be one even if it could. A stage is a job within a run, not
-// a run: SPEC.md §6.5 makes a run reviewable once its whole closure has
-// committed, and an exploration's closure is its own records plus the records
-// and receipts of the separate jobs it launched. Splitting them into three
-// closures would make one exploration become globally reviewable in three
-// unrelated pieces, and a reader asking what a run concluded would have to know
-// to look for two more.
-//
-// The reduction is collision-free because the parent is itself a valid
-// identifier and the separator is the one internal/explore introduced: no bare
-// run id can contain it.
-func publicationRun(runID string) string {
-	for i := range len(runID) {
-		if runID[i] == '/' {
-			return runID[:i]
-		}
-	}
-	return runID
-}
-
-// DeclareTx closes a run's closure inside tx.
-//
-// A writer whose whole output is one record - an operator's decision, a
-// Reality fact, a run receipt - declares in the same transaction that stages
-// it, because the alternative leaves a window in which a crash produces a
-// staged record whose closure nothing will ever declare: nobody resumes an
-// operator's decision, so that record would stay pending forever with no
-// remedy. An exploration declares in the transaction that writes its receipt,
-// which is the act that ends the run.
+// DeclareTx closes a run's closure inside tx. See Stager.DeclareTx for why a
+// writer declares inside the transaction that staged.
 func (p *Publisher) DeclareTx(ctx context.Context, tx *sql.Tx, c Closure) error {
 	if p == nil {
 		return nil
 	}
-	if _, err := p.journal.declareTx(ctx, tx, c); err != nil {
-		return err
-	}
-	return nil
+	return p.journal.stager.DeclareTx(ctx, tx, c)
 }
 
 // CommitInline attempts to publish one closure now.

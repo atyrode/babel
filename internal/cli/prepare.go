@@ -137,7 +137,17 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	runs, err := runstore.Open(d.durableDir())
+	// `babel prepare` writes one durable record - the preparation itself - and
+	// it is owed to the fleet like any other (#137). The hook is resolved here
+	// rather than passed in because this command opens the store it writes
+	// through: a preparation staged nowhere is a run whose scope no other host
+	// can ever see, and the closure of one it publishes under is the same shape
+	// an operator's decision publishes under.
+	hook, err := stagingHook()
+	if err != nil {
+		return err
+	}
+	runs, err := runstore.Open(d.durableDir(), runstore.WithSync(hook))
 	if err != nil {
 		return err
 	}
@@ -292,7 +302,17 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 	// outputs a preparation records have to be the ones the frontier held
 	// when it was fixed, not the ones it held whenever some earlier command
 	// last looked.
-	front, err := frontier.Open(d.durableDir())
+	//
+	// Both stores below open with the deployment's publication hook even though
+	// this pass only reads them (#137). That is the rule and not an oversight:
+	// a store opened without one publishes nothing for the whole life of the
+	// handle, so "this call site only reads today" is exactly the reasoning
+	// that has to stop being made at a store's Open.
+	hook, err := stagingHook()
+	if err != nil {
+		return scopedCorpus{}, err
+	}
+	front, err := frontier.Open(d.durableDir(), frontier.WithSync(hook))
 	if err != nil {
 		return scopedCorpus{}, err
 	}
@@ -302,7 +322,7 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 	// that surfaced Babel's own prior output and not the operator's standing
 	// annoyances would relate this scope to everything except the thing a
 	// person actually said about it.
-	told, err := complaint.Open(d.durableDir())
+	told, err := complaint.Open(d.durableDir(), complaint.WithSync(hook))
 	if err != nil {
 		return scopedCorpus{}, err
 	}

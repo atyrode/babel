@@ -12,6 +12,7 @@ import (
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/sharedcatalog"
+	babelsync "github.com/atyrode/babel/internal/sync"
 )
 
 // This file is the terminal's half of the fleet read path (SPEC.md §9, §14;
@@ -141,6 +142,53 @@ const (
 // and Go's structural typing makes the seam free.
 type syncJournal interface {
 	SyncState(ctx context.Context, entityID string) (string, error)
+}
+
+// syncJournalRead opens this machine's publication journal for a listing's
+// SYNC column, and reports the absence of one rather than failing.
+//
+// It exists because staging made the journal load-bearing for a read (#137).
+// While no production writer staged anything the file was always empty, so a
+// listing that resolved every local record as "local" was telling the truth on
+// every deployment. Now a shared host's records are staged the moment they are
+// durable, and a listing with no journal would call them "local" - which
+// runbook §9.1 names as the one lie the visible-staging requirement must not
+// tell, because "local" promises that nothing is going to carry the record.
+//
+// An injected journal is returned as it is, which is what lets every state in
+// the column's vocabulary be rendered in a test with no durable file.
+//
+// Local mode opens nothing and needs nothing: there, "local" is what its
+// records are. A journal that will not open is a warning rather than a refusal,
+// on fleetListingReader's judgement about the catalog: the listing's subject is
+// the operator's own records, and a sync column that could fail the command
+// would cost more than it tells.
+//
+// The returned release is never nil, is safe to defer immediately, and closes
+// only what this call opened.
+func (a *app) syncJournalRead() (syncJournal, func()) {
+	if a.journal != nil {
+		return a.journal, func() {}
+	}
+	cfg, found, err := config.Load()
+	if err != nil || stagingUnavailable(cfg, found) != "" {
+		return nil, func() {}
+	}
+	d, err := babelDirs()
+	if err != nil {
+		return nil, func() {}
+	}
+	journal, err := babelsync.OpenJournal(d.durableDir())
+	if err != nil {
+		a.diagf("warning: no record can be reported as staged, because the publication journal "+
+			"would not open: %s\n", Sanitize(err.Error()))
+		return nil, func() {}
+	}
+	return journal, func() {
+		if err := journal.Close(); err != nil {
+			a.diagf("warning: release the sync journal: %s\n", Sanitize(err.Error()))
+		}
+	}
 }
 
 // fleetReader resolves the shared-catalog read surface, or reports why there
@@ -532,7 +580,9 @@ func (a *app) fleetRecords(ctx context.Context, args []string) error {
 		return err
 	}
 	ids := recordIDs(records)
-	states, err := reader.SyncStates(ctx, a.journal, ids)
+	journal, releaseJournal := a.syncJournalRead()
+	defer releaseJournal()
+	states, err := reader.SyncStates(ctx, journal, ids)
 	if err != nil {
 		return err
 	}
@@ -902,16 +952,19 @@ func (a *app) fleetListingReader(ctx context.Context, fleetWide bool) (*fleet.Re
 // (SPEC.md §9), keyed by the sanitized record id the listing prints so that
 // the column and the rows agree on one identity.
 //
-// With no reader the answer is the journal's alone, which is what local mode
-// can honestly say: a record nothing claims is going anywhere is "local", and
-// never "pending-sync", because nothing is going to carry it.
+// With no reader the answer is the journal's alone, and it is a real answer
+// rather than a shrug: a record this machine has staged is "pending-sync"
+// because the journal says something will carry it, and a record it has not is
+// "local" because nothing will.
 func (a *app) syncColumn(ctx context.Context, reader *fleet.Reader, ids []string) (map[string]string, error) {
+	journal, release := a.syncJournalRead()
+	defer release()
 	var states map[string]string
 	var err error
 	if reader == nil {
-		states, err = fleet.LocalSyncStates(ctx, a.journal, ids)
+		states, err = fleet.LocalSyncStates(ctx, journal, ids)
 	} else {
-		states, err = reader.SyncStates(ctx, a.journal, ids)
+		states, err = reader.SyncStates(ctx, journal, ids)
 	}
 	if err != nil {
 		return nil, err
@@ -970,7 +1023,14 @@ func (a *app) fleetListingRows(ctx context.Context, reader *fleet.Reader,
 		}
 		keep = append(keep, rec)
 	}
-	states, err := reader.SyncStates(ctx, a.journal, recordIDs(keep))
+	// Every row here is another host's, so the journal can only answer about
+	// records this machine also holds - which the caller already excluded. It
+	// is still passed rather than dropped: the resolution's rule is one rule,
+	// and a call site that decided for itself that the journal cannot matter
+	// is how the journal stopped being consulted anywhere.
+	journal, release := a.syncJournalRead()
+	defer release()
+	states, err := reader.SyncStates(ctx, journal, recordIDs(keep))
 	if err != nil {
 		return nil, 0, err
 	}

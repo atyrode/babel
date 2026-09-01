@@ -221,9 +221,10 @@ type app struct {
 	fleetRead *fleet.Reader
 	// journal is this machine's publication journal, the only thing that can
 	// answer "is this staged" about a record with no remote row at all — the
-	// visibly pending outage staging SPEC.md §9 requires. Nil is legitimate and
-	// means this build has no journal wired, which internal/fleet's resolution
-	// reports as "local" rather than guessing on its behalf.
+	// visibly pending outage staging SPEC.md §9 requires. Nil means unresolved
+	// rather than absent, on fleetRead's terms: a listing that renders the sync
+	// column asks syncJournalRead, which opens one in shared mode and reports
+	// nothing in local mode, where "local" is what the records are.
 	journal syncJournal
 	// presenceRead is the fleet presence read surface (#118), injected for
 	// fleetRead's reason and one more: presence's interesting states are a
