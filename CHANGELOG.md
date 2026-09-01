@@ -11,6 +11,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A requested stop no longer exits 1 because a browser opened a connection
+  it never used (issue #130).** Chrome's speculative preconnects are accepted
+  and silent, `http.Server.Shutdown` deliberately never closes a connection
+  that has not delivered a request (golang/go#22682), and the drain deadline
+  is shorter than the header timeout that would eventually reap one — so a
+  preconnect opened within five seconds of the lock held the drain to its
+  deadline and turned "server stopped as told" into a failure, five CI hits
+  in one day. `babel web` now closes connections that never sent a request
+  the moment shutdown begins; genuine drain failures still report as errors,
+  and a regression test plants the silent connection and bounds the drain.
 - **`babel conformance` said nothing at all while it graded (issue #78).** The
   2026-08-30 readiness drill pointed the suite at `/bin/cat` and watched two
   minutes forty-five seconds of empty stdout, then all eleven result lines at
