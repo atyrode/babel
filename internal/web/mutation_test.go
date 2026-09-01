@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
@@ -62,15 +63,16 @@ func (r *recordingReality) AcceptPlan(ctx context.Context, in reality.Acceptance
 	return r.RealityService.AcceptPlan(ctx, in)
 }
 
-// TestMutationsCallTheServiceWithTheSessionsAttribution drives all four
+// TestMutationsCallTheServiceWithTheSessionsAttribution drives all five
 // mutations through HTTP and then reads the durable records back through the
 // services.
 //
 // This is the gate's behavioural half. Each assertion pairs what the handler
 // handed the service with what the store now holds: a decision whose reviewer is
 // the session's operator, guidance attributed to the same identity, an answer
-// retained verbatim under that author, and a fact made authoritative on the
-// accepting operator's authority rather than on the interpretation's.
+// retained verbatim under that author, a fact made authoritative on the
+// accepting operator's authority rather than on the interpretation's, and
+// #115's capture recorded against that operator and this machine's host.
 func TestMutationsCallTheServiceWithTheSessionsAttribution(t *testing.T) {
 	h := newPhaseB(t, "plain", nil)
 	reviewSpy := &recordingReview{ReviewService: h.review}
@@ -80,6 +82,16 @@ func TestMutationsCallTheServiceWithTheSessionsAttribution(t *testing.T) {
 		Review:   reviewSpy,
 		Frontier: h.front,
 		Reality:  realitySpy,
+		// The capture takes no recording decorator. The other two services
+		// are wrapped because what the handler passed them is otherwise
+		// unobservable — an authority value and an actor id disappear into a
+		// derived state — while a complaint's whole content is its own
+		// durable row, so reading the row back through the real store proves
+		// both halves at once with nothing standing between them.
+		Complaints: h.complaints,
+		State: StateProviderFunc(func(context.Context) (State, error) {
+			return State{Configured: true, HostID: hostUnderTest}, nil
+		}),
 	})
 
 	var guidance contextResult
@@ -172,6 +184,33 @@ func TestMutationsCallTheServiceWithTheSessionsAttribution(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusConflict {
 		t.Fatalf("second acceptance status = %d, want 409", response.StatusCode)
+	}
+
+	// #115's capture. It is the one mutation here whose record did not exist
+	// before the request, so the durable read is by the identifier the
+	// response returned: a handler that had answered without writing would
+	// have nothing to find.
+	const told = "the repository rules keep getting ignored and I keep re-explaining them"
+	var captured captureResult
+	decodeResponse(t, h.post("/api/complaint/tell", `{"text":`+mustJSON(t, told)+`}`), &captured)
+	if captured.Complaint.ID == "" || !captured.Complaint.Head {
+		t.Fatalf("capture = %+v", captured)
+	}
+	if captured.Steering != captureOpenedNothing {
+		t.Errorf("steering = %q, want the fixed sentence", captured.Steering)
+	}
+	durable, err := h.complaints.Complaint(h.ctx, captured.Complaint.ID)
+	if err != nil {
+		t.Fatalf("Complaint: %v", err)
+	}
+	if durable.By != operatorID {
+		t.Errorf("durable complaint is attributed to %q, want %q", durable.By, operatorID)
+	}
+	if durable.Host != hostUnderTest {
+		t.Errorf("durable complaint host = %q, want the machine the launch named", durable.Host)
+	}
+	if durable.Text != told {
+		t.Errorf("durable complaint text = %q, want what was posted", durable.Text)
 	}
 }
 
@@ -322,11 +361,34 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 				"SetQuestionState", "BeginInterpretation", "ExpireStale", "CaptureSnapshot", "Close"},
 		},
 		{
+			name:      "complaints",
+			surface:   reflect.TypeOf((*ComplaintService)(nil)).Elem(),
+			concrete:  reflect.TypeOf((*complaint.Store)(nil)),
+			permitted: []string{"Complaint", "Heads", "Revisions", "Tell"},
+			// Amend is the operator restating a complaint, and it belongs
+			// to `babel tell --amend` where they can see the wording they
+			// are replacing: a browser box that could reach it would be
+			// able to silently rewrite the text the page was showing.
+			// Outputs and Output flatten complaints for the retrieval
+			// index, which is preparation's job and never a page view's,
+			// and Close would let a request shut the durable component
+			// every other route on this server reads.
+			forbidden: []string{"Amend", "Output", "Outputs", "Close"},
+		},
+		{
 			name:      "search",
 			surface:   reflect.TypeOf((*SearchIndex)(nil)).Elem(),
 			concrete:  reflect.TypeOf((*index.Index)(nil)),
-			permitted: []string{"Search"},
-			forbidden: []string{"IndexSession", "Close"},
+			permitted: []string{"FrontierSearch", "Search"},
+			// The two writers are forbidden together because they are one
+			// authority in two partitions: IndexSession rebuilds the corpus
+			// side and IndexFrontier the self-retrieval side, both are
+			// reconciled by preparation and by `babel tell`, and a browser
+			// request that rebuilt either would be a shared cache written
+			// by a page view. #115's capture searches this index and
+			// deliberately does not reconcile it, which is only a rule the
+			// handler can keep if the surface cannot break it.
+			forbidden: []string{"IndexSession", "IndexFrontier", "Close"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -521,6 +583,13 @@ func (failingServices) AcceptPlan(context.Context, reality.AcceptanceInput) (rea
 }
 
 func (failingServices) Search(context.Context, index.Query) ([]index.Hit, error) {
+	return nil, leakyError
+}
+
+// FrontierSearch fails the same way, so #115's capture-time adjacency pass is
+// exercised against a retrieval surface whose error carries exactly what must
+// not reach a browser.
+func (failingServices) FrontierSearch(context.Context, index.FrontierQuery) ([]index.FrontierHit, error) {
 	return nil, leakyError
 }
 

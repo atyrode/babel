@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/reality"
@@ -162,6 +163,7 @@ func classifyService(err error) (int, string) {
 	case errors.Is(err, review.ErrUnknownRecord),
 		errors.Is(err, reality.ErrUnknownRecord),
 		errors.Is(err, frontier.ErrUnknownEntity),
+		errors.Is(err, complaint.ErrUnknownComplaint),
 		errors.Is(err, run.ErrNotFound):
 		return http.StatusNotFound, "no record with that identifier"
 	case errors.Is(err, review.ErrNotReviewable), errors.Is(err, frontier.ErrNotReviewable):
@@ -184,6 +186,7 @@ func classifyService(err error) (int, string) {
 		return http.StatusConflict, "this record has already been superseded or reversed"
 	case errors.Is(err, review.ErrInvalidValue),
 		errors.Is(err, reality.ErrInvalidValue),
+		errors.Is(err, complaint.ErrInvalidValue),
 		errors.Is(err, frontier.ErrInvalidValue):
 		return http.StatusBadRequest, "a value in the request is outside what this record accepts"
 	case errors.Is(err, index.ErrMatchTooLong):

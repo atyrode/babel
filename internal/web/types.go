@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/fleet"
@@ -69,7 +70,17 @@ type Options struct {
 	// disposition component would not open still renders revision chains —
 	// so each route names the ones it needs and the rest keep answering.
 	Dispositions DispositionService
-	Reviver      FrontierReviver
+	// Complaints is issue #115's operator steering: the capture box and the
+	// complaint record pages.
+	//
+	// It is its own field on Dispositions' terms, because it is its own
+	// component of the durable file: a build whose complaint component
+	// would not open still renders every record page it already served.
+	// Nil is therefore a state rather than a fault — the three complaint
+	// routes report that this build holds no complaints, and every other
+	// page keeps answering.
+	Complaints ComplaintService
+	Reviver    FrontierReviver
 	// Fleet and SyncJournal are issue #109's read half: the shared catalog
 	// every host in the deployment commits to, and this machine's own
 	// publication journal.
@@ -252,11 +263,54 @@ type RealityService interface {
 	AcceptPlan(context.Context, reality.AcceptanceInput) (reality.Acceptance, reality.Application, error)
 }
 
-// SearchIndex is the retrieval surface behind GET /api/search, satisfied by
-// *index.Index. Indexing is not listed: the index is rebuilt by preparation,
-// never by a browser asking to search.
+// ComplaintService is issue #115's operator-steering surface the web API may
+// reach, satisfied by *complaint.Store.
+//
+// One write is listed, and it is the one thing this surface exists to do: take
+// an operator's own unprompted sentence about what is going badly and make it a
+// record. It needs no authorization step of its own — a complaint is authored
+// by the operator, so it is authorized at birth as steering under #86's
+// intentionality principle — but it does need the identity §4.7 requires of
+// every attributed write, which is why the route resolves an operator and a
+// host before calling this at all.
+//
+// Amend is deliberately absent. No record page on this surface edits a
+// record's wording: a hypothesis page cannot revise a hypothesis either, and
+// restating a complaint is `babel tell --amend`, where the operator can see
+// the wording they are replacing. A browser box that silently replaced the
+// text the page was showing would be a different feature from the one #115's
+// web half asks for, and it would be reachable by anyone who could reach the
+// capture box.
+//
+// Outputs and Output are absent for a different reason: they flatten
+// complaints for the retrieval index, which is preparation's job and `babel
+// tell`'s, never a page view's. A GET that reconciled a shared cache would be
+// the writer §14's gate keeps off this surface.
+type ComplaintService interface {
+	Tell(context.Context, complaint.TellInput) (complaint.Complaint, error)
+	Complaint(context.Context, string) (complaint.Complaint, error)
+	Revisions(context.Context, string) ([]complaint.Complaint, error)
+	Heads(context.Context) ([]complaint.Complaint, error)
+}
+
+// SearchIndex is the retrieval surface behind GET /api/search and behind
+// #115's capture-time adjacency pass, satisfied by *index.Index.
+//
+// It answers two questions because the deployment holds two corpora: Search
+// reads the sessions Babel archived, and FrontierSearch reads what Babel
+// itself has said about them — a hypothesis, a finding, a review answer, an
+// operator's earlier complaint. A capture asks the second one, because "what
+// does Babel already have touching this" is a question about Babel's own
+// output rather than about the transcripts underneath it.
+//
+// Neither writer is listed. IndexSession and IndexFrontier are reconciled by
+// preparation and by `babel tell`, never by a browser request, so a capture
+// searches the partition as it stands rather than rebuilding it: a shared
+// rebuildable cache written by a page view is exactly the writer §14's gate
+// keeps off this surface.
 type SearchIndex interface {
 	Search(context.Context, index.Query) ([]index.Hit, error)
+	FrontierSearch(context.Context, index.FrontierQuery) ([]index.FrontierHit, error)
 }
 
 // RunLister supplies the run receipts GET /api/analysis/state lists, newest
@@ -338,6 +392,7 @@ var (
 	_ FrontierReviver    = (*frontier.Store)(nil)
 	_ RealityService     = (*reality.Store)(nil)
 	_ DispositionService = (*disposition.Store)(nil)
+	_ ComplaintService   = (*complaint.Store)(nil)
 	_ SearchIndex        = (*index.Index)(nil)
 )
 

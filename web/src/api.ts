@@ -1779,3 +1779,130 @@ export function reviveRecord(
 ): Promise<ReviveResult> {
   return postJSON<ReviveResult>("/api/record/revive", { record, reason, status, headId });
 }
+
+// ---------------------------------------------------------------------------
+// Operator steering (issue #115).
+//
+// A complaint is steering pressure, never a ticket. These shapes carry no
+// status, no closure marker, no assignee, and no priority — not as an
+// omission but as the product rule: a complaint that acquired any of them
+// would make Babel a work tracker, and GitHub already is one. "Was this
+// addressed?" is answered by the `cited_by` direction of #113's reference
+// graph and by nothing in these types.
+// ---------------------------------------------------------------------------
+
+// One head-of-chain row as GET /api/complaints lists it, newest first.
+// `summary` is the bounded one-liner, never the full text: the operator's
+// whole wording is read by opening the record, where it renders inside a
+// quoted frame (§3).
+export interface ComplaintSummary {
+  id: string;
+  root_id: string;
+  // Absent for a chain's first wording, which supersedes nothing.
+  supersedes?: string;
+  sequence: number;
+  by: string;
+  host: string;
+  summary: string;
+  redacted: boolean;
+  at: string;
+  // Absent entirely on a build with no reference graph. Absent means nobody
+  // counted, which is a different claim from a counted zero — the rule
+  // CitationCount already renders by — so a listing shows an em dash there,
+  // never a 0.
+  citations?: { cites: number; cited_by: number };
+}
+
+export interface ComplaintsResponse {
+  items: ComplaintSummary[];
+  total: number;
+}
+
+// One wording of a complaint, whole. `text` is the operator's own verbatim
+// bytes, newlines preserved: untrusted content, rendered as text inside a
+// quoted frame, never markup and never a link destination.
+export interface ComplaintWording {
+  id: string;
+  root_id: string;
+  supersedes?: string;
+  sequence: number;
+  by: string;
+  host: string;
+  text: string;
+  redacted: boolean;
+  at: string;
+  head: boolean;
+}
+
+// One entry of a chain's revision listing. It carries the bounded `summary`
+// and never the full text: the full text of any wording is read by opening
+// that wording's own id, where it is a whole record rather than a row.
+export interface ComplaintRevision {
+  id: string;
+  supersedes?: string;
+  sequence: number;
+  by: string;
+  host: string;
+  summary: string;
+  redacted: boolean;
+  at: string;
+  head: boolean;
+}
+
+export interface ComplaintDetail {
+  complaint: ComplaintWording;
+  head_id: string;
+  // The whole chain, oldest first, unfiltered: amending appends, and an
+  // earlier wording stays readable at its own identifier (§4.7).
+  revisions: ComplaintRevision[];
+}
+
+// One record capture-time adjacency reports. It deliberately carries no
+// score, rank, or relevance field: §5.4's rule is that retrieval rank never
+// becomes evidence strength, and a number here would grade "compare these"
+// into "these are the same". The list is a prompt to compare, never a claim
+// of sameness.
+export interface AdjacentOutput {
+  kind: string;
+  id: string;
+  summary: string;
+}
+
+// What POST /api/complaint/tell answers. There is no acknowledgement, status,
+// or "filed" field to read out of this, because capturing did none of that:
+// the capture opened nothing, assigned nothing and scheduled nothing, and a
+// field that implied otherwise would be the response promising work Babel
+// never took on. The one sentence about what happens next is `steering`, the
+// server's fixed wording, rendered verbatim rather than paraphrased.
+export interface CaptureResult {
+  complaint: ComplaintWording;
+  // Always an array, never null, max 8 rows.
+  adjacent: AdjacentOutput[];
+  // Present only when the adjacency pass could not run; a pass that simply
+  // matched nothing says nothing. Never an error's own text (§9).
+  adjacency_note?: string;
+  steering: string;
+}
+
+export function getComplaints(
+  page: { limit?: number; offset?: number } = {},
+): Promise<ComplaintsResponse> {
+  const values: Record<string, string | number> = {};
+  if (page.limit !== undefined) values.limit = page.limit;
+  if (page.offset !== undefined) values.offset = page.offset;
+  const suffix = Object.keys(values).length ? `?${query(values)}` : "";
+  return request<ComplaintsResponse>(`/api/complaints${suffix}`);
+}
+
+// getComplaint accepts any wording's id and answers that wording with its
+// whole chain, so a superseded wording is as openable as the head.
+export function getComplaint(id: string): Promise<ComplaintDetail> {
+  return request<ComplaintDetail>(`/api/complaint?${query({ id })}`);
+}
+
+// tellComplaint sends the operator's text exactly as typed: the record is the
+// verbatim wording, and a client-side trim or rewrite would already be an
+// edit. The route refuses unknown fields, so nothing else can ride along.
+export function tellComplaint(text: string): Promise<CaptureResult> {
+  return postJSON<CaptureResult>("/api/complaint/tell", { text });
+}

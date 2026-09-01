@@ -141,7 +141,7 @@ func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 			LastDecidedAt: timeText(item.LastDecidedAt),
 			Refinements:   item.Refinements,
 			Excerpt:       excerpt,
-			Citations:     s.citationCounts(r.Context(), item.Subject),
+			Citations:     s.citationCounts(r.Context(), frontierSubject(item.Subject)),
 		})
 	}
 	if fleetWide {

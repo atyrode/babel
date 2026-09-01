@@ -459,6 +459,30 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleReviveRecord(w, r)
+	// Issue #115's web half: the operator's own steering. The two GETs are
+	// the listing and one complaint's record page, and the POST is an
+	// attributed operator capture rather than a ticket being filed — it
+	// opens nothing, assigns nothing and schedules nothing, and there is
+	// deliberately no fourth route that could end one.
+	//
+	// They sit after #113's citation read because that is what answers the
+	// only question a complaint page asks about state: whether anything
+	// Babel produced cites it.
+	case "/api/complaints":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleComplaints(w, r)
+	case "/api/complaint":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleComplaint(w, r)
+	case "/api/complaint/tell":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleTellComplaint(w, r)
 	// Issue #109's fleet read. Both are GETs and neither reaches a writer:
 	// internal/fleet holds no publisher and this surface holds no ingest, so
 	// the browser can see what every host committed and can change none of

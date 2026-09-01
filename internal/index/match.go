@@ -34,6 +34,36 @@ var (
 	ErrNoSearchableTerm = errors.New("index: match expression contains no searchable term")
 )
 
+// MatchExpression reduces a document's prose to an expression this package's
+// match grammar accepts.
+//
+// It lives here rather than at each caller because both bounds it has to
+// respect are this package's. MaxMatchBytes is refused outright, so a caller
+// handing over a whole document would have its query fail on length rather
+// than answer; MaxMatchTerms is not, because buildMatch answers a query on its
+// first MaxMatchTerms rather than refusing it, and a truncated answer is still
+// an answer. Two callers reducing the same text with two copies of this rule
+// would give `babel tell` and the browser different neighbours for the same
+// sentence, which is the drift a shared function prevents.
+//
+// The cut is on a word boundary so the last term is a term the author wrote
+// rather than a fragment of one, and it never splits a rune: half a rune is
+// invalid UTF-8, which SQLite's TEXT storage and FTS5's tokenizer both refuse.
+func MatchExpression(text string) string {
+	if len(text) <= MaxMatchBytes {
+		return text
+	}
+	cut := MaxMatchBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	clipped := text[:cut]
+	if space := strings.LastIndexAny(clipped, " \t\n"); space > 0 {
+		clipped = clipped[:space]
+	}
+	return clipped
+}
+
 // matchTerm is one parsed term of a caller's expression.
 type matchTerm struct {
 	text    string
