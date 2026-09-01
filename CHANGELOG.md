@@ -11,6 +11,54 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A shared-mode deployment stages the records it writes, so `babel sync` has
+  something to publish (issue #137).** Every record store shipped a `WithSync`
+  option, `explore.Config` a `Sync` field, and `*sync.Publisher` the hook that
+  fills them — the whole chain covered by package tests, and not one production
+  caller attached any of it. The first payload-key ceremony found the
+  consequence on 2026-09-01: `babel tell` on a fully configured host wrote a
+  durable complaint, `babel sync` answered `published 0 records in 0 runs; 0
+  still pending`, and `babel fleet records` showed nothing. Runbook §9.1's
+  `local` — "the record was never staged" — was the permanent state of every
+  real deployment, and every record it held was owed to the fleet by nobody.
+  - **Writers stage; `babel sync` publishes.** internal/sync's two halves are
+    now separately attachable, which is what makes the wiring possible at all:
+    staging is transaction-local, so a `sync.Stager` holds no handle of its own
+    and every store internal/cli opens is handed one in shared mode. The full
+    `*sync.Publisher` — the half that holds the catalog, the object store and
+    the payload keyring — stays exactly where it was, in `babel sync` and the
+    reconcile step after an archive push. So `babel tell` dials nothing: it
+    records what it owes inside the transaction that makes the complaint
+    durable, and the journal is the handoff. That ordering is SPEC.md §6.5's,
+    and it is the reason a publication outage still cannot fail a local write.
+  - **A deployment with no payload keys stages anyway.** The gate on the hook
+    is storage mode and nothing else, split out of `syncUnavailable` so that
+    staging and publishing keep one answer where they agree: a shared host that
+    cannot yet seal a record must still record that it owes one, because
+    SPEC.md §9 requires staged output to be visibly pending rather than
+    quietly local.
+  - **Every store internal/cli opens gets the hook, with no read-only
+    exemption.** A hook is attached for the life of the handle, so "this call
+    site only reads today" is a judgement the next caller inherits without
+    knowing it was made — which is how the frontier and the complaints
+    `babel prepare` reconciles came to be opened without one. `babel explore`'s
+    config carries the same hook the state's stores were opened with, so a
+    run's records and the receipt that ends it publish under one closure.
+  - **The surfaces that report staging can see it.** `babel web`'s record pages
+    and every local listing's SYNC column now resolve against this machine's
+    publication journal in shared mode. Before, an empty journal made `local`
+    true on every deployment; with writers staging it would have been the one
+    lie runbook §9.1 says the visible-staging requirement must not tell.
+  - **Local mode is unchanged, down to the table list.** With no shared
+    configuration the hook is a nil interface, each `WithSync` is exactly the
+    option nobody passed before, and a local-mode `babel tell` still creates no
+    journal tables at all — which a new test asserts, beside a shared-mode
+    drill that tells with no keys placed, checks the journal, generates a key,
+    syncs, and reads the record back out of PostgreSQL as committed. A
+    source-reading guard fails the suite if any store in internal/cli is opened
+    without the hook again, or any `explore.Config` built without one, because
+    a detached hook compiles, runs, writes durable records and publishes
+    nothing, silently, which is the failure this entry describes.
 - **An exploration on a machine configured before #86 no longer dies as
   "exited without a result".** The stored worker arguments on such a machine
   carry `--set`, which Code refuses on its own terms — a dial is turned in the
