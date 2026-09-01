@@ -11,6 +11,15 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **An exploration on a machine configured before #86 no longer dies as
+  "exited without a result".** The stored worker arguments on such a machine
+  carry `--set`, which Code refuses on its own terms — a dial is turned in the
+  configuration ceremony and nowhere else. The ceremony and the titler already
+  refused a stored dial; exploration did not, so it launched the worker, and
+  the run's verdict named neither the cause nor the remedy. It is now refused
+  before launch, by the check that already existed, at the one call site that
+  lacked it. Measured on the workstation: 146 seconds to the opaque message,
+  immediate to the named one.
 - **A requested stop no longer exits 1 because a browser opened a connection
   it never used (issue #130).** Chrome's speculative preconnects are accepted
   and silent, `http.Server.Shutdown` deliberately never closes a connection
