@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/atyrode/babel/internal/catalog"
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
@@ -953,6 +954,11 @@ type analysisState struct {
 	runs         *runstore.Store
 	review       *review.Service
 	dispositions *disposition.Store
+	// complaints is the operator's own steering input (#115). It opens with
+	// the rest because `babel tell` is an analysis command like any other, and
+	// because the resolver registry below needs it: an edge naming a complaint
+	// may only bind when this machine can vouch for that complaint.
+	complaints *complaint.Store
 	// references is #113's append-only edge store. It opens last because its
 	// resolver registry is built over the stores above it: an edge may only
 	// bind to a record that demonstrably exists, and the things that can
@@ -1031,6 +1037,14 @@ func openAnalysisState() (*analysisState, error) {
 		front.Close()
 		return nil, err
 	}
+	told, err := complaint.Open(dir, complaint.WithReferences(appender, state.reportEdgeFailure))
+	if err != nil {
+		actions.Close()
+		svc.Close()
+		runs.Close()
+		front.Close()
+		return nil, err
+	}
 
 	// The Reality Ledger is deliberately absent from the registry below. It
 	// is a separate handle by design (see openReality), and opening it here
@@ -1045,6 +1059,7 @@ func openAnalysisState() (*analysisState, error) {
 		Frontier:     front,
 		Runs:         runs,
 		Dispositions: actions,
+		Complaints:   told,
 		Sessions:     sessions,
 	})
 	if err != nil {
@@ -1058,6 +1073,7 @@ func openAnalysisState() (*analysisState, error) {
 		if cache != nil {
 			cache.Close()
 		}
+		told.Close()
 		actions.Close()
 		svc.Close()
 		runs.Close()
@@ -1070,6 +1086,7 @@ func openAnalysisState() (*analysisState, error) {
 	// the frontier owns reaches the store the registry gated.
 	appender.store = edges
 	state.frontier, state.runs, state.review, state.dispositions = front, runs, svc, actions
+	state.complaints = told
 	state.references, state.sessionCatalog, state.resolverNote = edges, cache, note
 	state.sessions = sessions
 	return state, nil
@@ -1170,6 +1187,9 @@ func (s *analysisState) Close() error {
 		if e := s.sessionCatalog.Close(); err == nil {
 			err = e
 		}
+	}
+	if e := s.complaints.Close(); err == nil {
+		err = e
 	}
 	if e := s.dispositions.Close(); err == nil {
 		err = e

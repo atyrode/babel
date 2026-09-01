@@ -108,6 +108,7 @@ Commands:
   revise ID                   append an attributed revision to a candidate
   revive ID                   return a resting candidate to the frontier
   invite ID                   invite the next run to process a record further
+  tell [TEXT]                 tell Babel something it did not ask about
   invitations                 list the open process-further queue
   dispositions                list the proposed next actions on records
   disposition show ID         show one proposed action with its ledger
@@ -273,6 +274,8 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.reviseCmd(ctx, args[1:])
 	case "revive":
 		return a.reviveCmd(ctx, args[1:])
+	case "tell":
+		return a.tellCmd(ctx, args[1:])
 	case "invite":
 		return a.inviteCmd(ctx, args[1:])
 	case "invitations":
