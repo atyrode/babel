@@ -13,9 +13,13 @@
 //     source paths;
 //   - status, verify, list, inspect, and fetch never write to the
 //     repository, and local prune never even constructs a restic.Repo, so
-//     it cannot reach the repository by construction (SPEC.md §8). Babel
-//     never runs `restic forget` or `restic prune`: never-delete is
-//     policy, so no command exposes them;
+//     it cannot reach the repository by construction (SPEC.md §8). Exactly
+//     one command removes anything from the repository: `archive unlock`
+//     clears restic's own stale lock files - coordination state, never
+//     archived data - and only when an operator types it, since no timer or
+//     conductor duty can reach a CLI verb. Babel never runs `restic
+//     forget`, `restic prune` or `restic repair`: never-delete is policy,
+//     so no command exposes them;
 //   - exit codes are 0 for success, 1 for failure, and 2 for a rejected
 //     invocation;
 //   - bare `babel` prints a fast offline status overview; the web
@@ -86,6 +90,7 @@ Commands:
   archive status              report snapshots per host
   archive fleet               report whether every host has published recently
   archive verify              check repository integrity
+  archive unlock              remove stale repository locks, one operator step
   sync                        publish this host's durable records to the fleet
   fleet records               list every host's committed analysis
   fleet ingest                index every host's committed analysis locally

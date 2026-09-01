@@ -1,7 +1,9 @@
 // Package restic wraps the restic command-line interface, which owns
 // Babel's archival storage: deduplicating snapshots, integrity checks, and
 // restores. Babel never reimplements repository formats and never deletes
-// history — no forget, no prune — because never-delete is policy.
+// history — no forget, no prune, no repair — because never-delete is policy.
+// Unlock is the one operation here that removes anything, and what it removes
+// is a lock file: the coordination record restic writes while a command runs.
 //
 // The wrapper is a thin, contract-bearing shell over the `restic` binary:
 //
