@@ -245,7 +245,7 @@ func TestSeparateJobsJoinTheRunsOneClosure(t *testing.T) {
 	challengePayload := h.writeRaw("challenge.json", `{
 	  "objections": [
 	    {"ref": "obj-grounded", "hypothesis": "${paramitem:`+explore.ParamBriefHypotheses+`:0}",
-	     "grounds": "evidence", "recipe": {"id": "outcome-integrity", "version": 2},
+	     "grounds": "evidence", "recipe": {"id": "outcome-integrity", "version": 3},
 	     "claim": {"claim": "the cited record says otherwise", "confidence": "moderate",
 	               "impact": "moderate", "counter_evidence_absent": true,
 	               "evidence": [`+string(grounded)+`]}}

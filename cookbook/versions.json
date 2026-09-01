@@ -13,8 +13,8 @@
     },
     {
       "id": "code-health-comprehensibility",
-      "version": 2,
-      "digest": "sha256:0719cca84f9a9bdc3dcded1e83d3c3ffbcd47a88512f063c08d8fd8e79248b86"
+      "version": 3,
+      "digest": "sha256:7a78c4a3fb856159b164d06df19f4a207c9937f5ce357ab77393fe67cd6420a0"
     },
     {
       "id": "decision-quality-operational-risk",
@@ -33,13 +33,13 @@
     },
     {
       "id": "effective-patterns",
-      "version": 2,
-      "digest": "sha256:2742a1ec44500e0a1c758069210f4cfbb7fae1ddf5cdf25f5b83a723ca638a57"
+      "version": 3,
+      "digest": "sha256:9b20ae1bc668c0497a79ecec2802361c444e342fef0c3fd3c9fe9da442c05b77"
     },
     {
       "id": "human-agent-coordination",
-      "version": 2,
-      "digest": "sha256:98f20537dfed182333c93c3dd1315dc172ed6d54fbb04e1407c63ac00b118032"
+      "version": 3,
+      "digest": "sha256:9d345318d105732aafb8fac590b1a7ec1b2e2c8d123f72d38026e09902b960df"
     },
     {
       "id": "mechanization-audit",
@@ -48,8 +48,8 @@
     },
     {
       "id": "outcome-integrity",
-      "version": 2,
-      "digest": "sha256:c3da30aed623f8ecee797f43ad1e97ac6cfe1664dc236d4f83f17849ead04406"
+      "version": 3,
+      "digest": "sha256:a39d93439ad4de714069b9a92358b7881ffecc32887f7f9798450467c487892c"
     },
     {
       "id": "reusable-practice-capability-leverage",
@@ -58,8 +58,8 @@
     },
     {
       "id": "security-trust-boundaries",
-      "version": 2,
-      "digest": "sha256:36e01f32420d4cfeed8d058de71f00d3305d9b9c6cd3954f38c0a65a133c09b3"
+      "version": 3,
+      "digest": "sha256:775a132f115511c9548a0de6ddb6f063aa4b234716ef4eb0c88525e2ff0cd103"
     },
     {
       "id": "test-economics",

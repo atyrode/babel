@@ -267,13 +267,20 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			surface:  reflect.TypeOf((*FrontierReader)(nil)).Elem(),
 			concrete: reflect.TypeOf((*frontier.Store)(nil)),
 			permitted: []string{"Finding", "Head", "Hypothesis", "LinksFrom", "LinksTo", "Observation",
-				"ObservationsFor", "Proposal", "ReviewStatus", "Revisions", "StatusHistory", "Unexplored"},
+				"ObservationsFor", "Proposal", "ProposalsAddressing", "ReviewStatus", "Revisions",
+				"StatusHistory", "Unexplored"},
 			// Every frontier write, including its own Decide and the
 			// revive transition #87 added: one disposition log exists and
 			// internal/review is the only way this surface may append to
 			// it, and a revive is reachable only through FrontierReviver.
+			//
+			// CreateCandidateProposal is #114's second proposal
+			// constructor and is forbidden on exactly the terms
+			// CreateProposal is: a browser GET that could mint a remedy
+			// would be a durable record written by a page view.
 			forbidden: []string{"CreateHypothesis", "CreateObservation", "CreateFinding", "CreateProposal",
-				"Decide", "RejectAndRefine", "SetStatus", "Link", "DeferFrontier", "Revive", "Close"},
+				"CreateCandidateProposal", "Decide", "RejectAndRefine", "SetStatus", "Link",
+				"DeferFrontier", "Revive", "Close"},
 		},
 		{
 			name:      "frontier reviver",

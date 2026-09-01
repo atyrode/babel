@@ -62,11 +62,40 @@ type Candidate struct {
 	// is valid: §4.2 preserves a speculative candidate, and a finite run may
 	// leave it for a later pass.
 	Observations []Observation `json:"observations,omitempty"`
+	// Remedy is the suggested change this candidate carries, when it carries
+	// one (#114).
+	//
+	// It is a pointer because its absence is a statement and the commonest
+	// one: a candidate that says only what is the case emits a hypothesis
+	// alone, which is the honest default. A candidate that also says what
+	// should change emits both records and the `addresses` edge joining
+	// them, so an operator can accept the claim and reject the remedy, or
+	// the reverse, and neither decision drags the other with it.
+	Remedy *Remedy `json:"remedy,omitempty"`
 	// Dispositions are the next actions the job proposes for the candidate
 	// (#87). They are proposals about what an operator could do with the
 	// record and never actions: persisting one renders a button, not an
 	// issue, a fact, or a memory.
 	Dispositions []ProposedAction `json:"dispositions,omitempty"`
+}
+
+// Remedy is the value-claim half of a candidate: the change a job suggests in
+// answer to the claim beside it (#114).
+//
+// It carries its own Ref rather than riding on the candidate's, because the two
+// become two durable records and the resume ledger binds one reference to one
+// record. Sharing a reference would make a resumed run unable to say which of
+// the pair it had already written.
+//
+// The payload is frontier.ProposalPayload verbatim, on the same reasoning the
+// rest of this file gives for reusing the store's payload types: the fields a
+// worker proposes and the fields Babel stores are the same information. What is
+// not the same is the authority - a candidate remedy rests on the claim it
+// addresses and on no finding, so it is stored as a candidate proposal and
+// rendered as a want rather than as §4.5's consolidated artifact.
+type Remedy struct {
+	Ref      string                   `json:"ref"`
+	Proposal frontier.ProposalPayload `json:"proposal"`
 }
 
 // Observation is one provenance-bearing claim a job developed.
@@ -266,6 +295,11 @@ func parseResult(rec *worker.ResultRecord) (*Result, error) {
 		}
 		for _, obs := range cand.Observations {
 			if err := claim("observation", obs.Ref); err != nil {
+				return nil, err
+			}
+		}
+		if cand.Remedy != nil {
+			if err := claim("remedy", cand.Remedy.Ref); err != nil {
 				return nil, err
 			}
 		}

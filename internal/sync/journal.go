@@ -32,7 +32,16 @@ const component = "sync"
 // direction that matters: a newer file opened by an older binary keeps its
 // version, and this build refuses a version it does not know rather than
 // publishing a record whose plaintext half it cannot see.
-const journalVersion = 2
+//
+// Version 3 added sync_record_subject for what a proposal rests on or addresses
+// (issue #114). The bump does the same work in the same direction, and the
+// consequence of skipping it would be sharper: an older binary that published a
+// version-3 file's proposals would carry the records and drop the rows saying
+// which of them rest on findings, so a candidate proposal - an unbacked want -
+// and a consolidated one would reach the fleet indistinguishable. Refusing a
+// version it does not know is what makes the addition safe rather than a
+// silently narrower publication.
+const journalVersion = 3
 
 // DatabaseName is the durable database this journal shares with every other
 // Phase B writer. It is named here rather than imported from one of them
@@ -97,6 +106,15 @@ var (
 // store holds the plaintext and the shared catalog holds the published columns,
 // and a third copy that lived forever would grow this file by every edge Babel
 // has ever published.
+//
+// sync_record_subject is the same arrangement once more, for a proposal's
+// provenance (migrations/0010, issue #114). It differs from sync_record_edge in
+// one respect that shows in the schema: a proposal has many subjects, so the key
+// is the record and a position rather than the record alone, and the position is
+// what preserves the order the producer asserted them in. The reason for staging
+// is the same and the cost of not staging is higher - nothing can re-derive
+// these ids from a sealed payload, and a proposal published without them is a
+// want a fleet host would render with the authority of a verified conclusion.
 const journalSchema = `
 CREATE TABLE IF NOT EXISTS sync_run(
 	run_id            TEXT PRIMARY KEY,
@@ -137,6 +155,14 @@ CREATE TABLE IF NOT EXISTS sync_record_edge(
 	to_id     TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sync_record_subject(
+	record_id    TEXT REFERENCES sync_record(record_id),
+	position     INTEGER NOT NULL CHECK (position >= 0),
+	subject_kind TEXT NOT NULL,
+	subject_id   TEXT NOT NULL,
+	PRIMARY KEY(record_id, position)
+);
+
 CREATE TRIGGER IF NOT EXISTS sync_record_immutable
 BEFORE UPDATE OF record_id, run_id, kind, record_schema, ordinal, staged_at ON sync_record
 BEGIN SELECT RAISE(ABORT, 'a staged record is fixed at stage time; only its sync state moves'); END;
@@ -159,7 +185,11 @@ BEGIN SELECT RAISE(ABORT, 'a staged payload is the bytes that were sealed; it is
 
 CREATE TRIGGER IF NOT EXISTS sync_record_edge_immutable
 BEFORE UPDATE ON sync_record_edge
-BEGIN SELECT RAISE(ABORT, 'a staged edge names the endpoints that were validated at write time; it is released, never rewritten'); END;`
+BEGIN SELECT RAISE(ABORT, 'a staged edge names the endpoints that were validated at write time; it is released, never rewritten'); END;
+
+CREATE TRIGGER IF NOT EXISTS sync_record_subject_immutable
+BEFORE UPDATE ON sync_record_subject
+BEGIN SELECT RAISE(ABORT, 'a staged proposal subject was validated at write time; it is released, never rewritten'); END;`
 
 // Journal is the local record of what has been staged for the shared catalog
 // and what has reached it.
@@ -253,11 +283,11 @@ func (j *Journal) migrate() error {
 	case version < journalVersion:
 		// Every statement in journalSchema is IF NOT EXISTS, so bringing an
 		// older file forward is running the same schema again: what it already
-		// has is left exactly as it is and what version 2 added arrives. That
-		// is only true because the additions are new tables and new triggers -
-		// an upgrade that had to alter an existing table would need its own
-		// statement here and a version of its own, and could not be folded
-		// into this one.
+		// has is left exactly as it is and what later versions added arrives.
+		// That is only true because every addition so far is a new table or a
+		// new trigger - an upgrade that had to alter an existing table would
+		// need its own statement here and a version of its own, and could not
+		// be folded into this one.
 		if err := upgradeSchema(j.db, version); err != nil {
 			return err
 		}
@@ -288,10 +318,13 @@ func EnsureSchema(db *sql.DB) error {
 //
 // It runs the same journalSchema an empty file gets, which is what makes the
 // upgrade one statement rather than a list: every statement there is IF NOT
-// EXISTS, so the tables and triggers a version-1 file already has are
-// untouched and version 2's are created beside them. from is named in the
-// error rather than used to choose statements, because there is exactly one
-// upgrade and a second one will need its own case.
+// EXISTS, so the tables and triggers the file already has are untouched and
+// whatever a later version added is created beside them. That is what lets one
+// path serve both hops - version 1 to 3 and version 2 to 3 - rather than a
+// chain. from is named in the error rather than used to choose statements,
+// because no upgrade so far has to know where it started; the first one that
+// alters an existing table will need its own case, and then this argument
+// stops being only diagnostic.
 func upgradeSchema(db *sql.DB, from int) error {
 	if _, err := db.Exec(journalSchema); err != nil {
 		return fmt.Errorf("sync: upgrade journal schema from version %d: %w", from, err)
@@ -410,6 +443,20 @@ func (j *Journal) stage(ctx context.Context, tx *sql.Tx, rec Record) error {
 			rec.Edge.FromKind, rec.Edge.FromID,
 			rec.Edge.ToKind, rec.Edge.ToID); err != nil {
 			return fmt.Errorf("sync: stage edge endpoints for %s: %w", rec.EntityID, err)
+		}
+	}
+	// The slice index is the position, so the order the producer asserted its
+	// subjects in is the order the publisher offers them in and the order the
+	// shared catalog stores them in. One INSERT per subject rather than one
+	// multi-row statement: a proposal has a handful of subjects, and a
+	// statement built from a variable number of placeholders is a statement
+	// nobody can read at a glance.
+	for i, subject := range rec.Subjects {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sync_record_subject(
+			record_id, position, subject_kind, subject_id)
+			VALUES(?, ?, ?, ?)`,
+			rec.EntityID, i, string(subject.Kind), subject.ID); err != nil {
+			return fmt.Errorf("sync: stage proposal subject %d for %s: %w", i, rec.EntityID, err)
 		}
 	}
 	return nil
@@ -555,7 +602,8 @@ func (j *Journal) run(ctx context.Context, runID string) (stagedRun, error) {
 }
 
 // pendingRecords reads the still-unpublished members of one run's closure, in
-// closure order, with the payloads that were staged for them.
+// closure order, with the payloads and the plaintext columns that were staged
+// for them.
 //
 // Only the pending ones are read. A record the catalog already holds needs
 // neither its payload re-sealed nor its bytes carried, and its payload row has
@@ -599,6 +647,61 @@ func (j *Journal) pendingRecords(ctx context.Context, runID string) ([]sharedcat
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sync: read staged records for run %s: %w", runID, err)
 	}
+	// The subjects are a second query, so it is worth not making it: a run with
+	// nothing left to publish has nothing to attach them to.
+	if len(out) == 0 {
+		return out, nil
+	}
+	subjects, err := j.pendingSubjects(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Subjects = subjects[out[i].RecordID]
+	}
+	return out, nil
+}
+
+// pendingSubjects reads what each of a run's pending proposals rests on or
+// addresses, keyed by record id and in the order the producer asserted it
+// (issue #114).
+//
+// It is a second query rather than a third join in pendingRecords, and that is
+// the whole reason it exists as its own method. An edge is one row per record,
+// so it joins; a proposal's subjects are many rows per record, so joining them
+// would multiply every record row by its subject count and make the payload
+// blob arrive once per subject - a correctness problem for the ordinal-ordered
+// scan above and a bandwidth problem for a payload that can reach mebibytes.
+func (j *Journal) pendingSubjects(ctx context.Context, runID string) (map[string][]sharedcatalog.RecordSubject, error) {
+	rows, err := j.db.QueryContext(ctx, `
+		SELECT s.record_id, s.subject_kind, s.subject_id
+		  FROM sync_record_subject s
+		  JOIN sync_record r ON r.record_id = s.record_id
+		 WHERE r.run_id = ? AND r.sync_state = ?
+		 ORDER BY s.record_id, s.position`, runID, sharedcatalog.SyncPending)
+	if err != nil {
+		return nil, fmt.Errorf("sync: read staged proposal subjects for run %s: %w", runID, err)
+	}
+	defer rows.Close()
+	var out map[string][]sharedcatalog.RecordSubject
+	for rows.Next() {
+		var recordID, kind string
+		var subject sharedcatalog.RecordSubject
+		if err := rows.Scan(&recordID, &kind, &subject.ID); err != nil {
+			return nil, fmt.Errorf("sync: read staged proposal subject: %w", err)
+		}
+		subject.Kind = sharedcatalog.SubjectKind(kind)
+		if out == nil {
+			// Allocated on the first row rather than up front: almost no run
+			// carries a proposal, and a map nothing is put in is a map nothing
+			// needed.
+			out = make(map[string][]sharedcatalog.RecordSubject)
+		}
+		out[recordID] = append(out[recordID], subject)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sync: read staged proposal subjects for run %s: %w", runID, err)
+	}
 	return out, nil
 }
 
@@ -615,8 +718,9 @@ func (j *Journal) pendingRecords(ctx context.Context, runID string) ([]sharedcat
 // record's payload copy has no remaining reader - the record's own component
 // holds the plaintext and Cellar holds the sealed object - and leaving it would
 // grow the durable file by every byte Babel has ever published. A staged edge's
-// endpoint columns are released with it, and for the same reason: the shared
-// catalog now holds them and internal/reference never stopped holding them.
+// endpoint columns and a staged proposal's subjects are released with it, and
+// for the same reason: the shared catalog now holds them, and internal/reference
+// and internal/frontier never stopped holding them.
 func (j *Journal) commit(ctx context.Context, runID string) error {
 	tx, err := j.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -632,6 +736,11 @@ func (j *Journal) commit(ctx context.Context, runID string) error {
 		`DELETE FROM sync_record_edge WHERE record_id IN (SELECT record_id FROM sync_record WHERE run_id = ?)`,
 		runID); err != nil {
 		return fmt.Errorf("sync: release staged edge endpoints for run %s: %w", runID, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sync_record_subject WHERE record_id IN (SELECT record_id FROM sync_record WHERE run_id = ?)`,
+		runID); err != nil {
+		return fmt.Errorf("sync: release staged proposal subjects for run %s: %w", runID, err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sync_record SET sync_state = ? WHERE run_id = ? AND sync_state <> ?`,

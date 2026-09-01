@@ -1,6 +1,6 @@
 ---
 id: code-health-comprehensibility
-version: 2
+version: 3
 kind: lens
 scope: [session, corpus, repository]
 stages: [investigate, challenge, synthesize]
@@ -161,6 +161,42 @@ retrieval has produced a reason for the construct. Stop before proposing a
 restructuring whose blast radius exceeds the evidence. Stop when the candidate
 has become a decision question ("was this architecture right?") and hand it to
 the decision-quality lens.
+
+**Claims and remedies.** A hypothesis states what is the case — an invariant
+held by convention, a symbol with no caller, a comment the code contradicts. A
+remedy states what should change about it, and it is where the smallest change
+this section asks you to name belongs. The optional per-candidate `remedy` is a
+want or an option, never a verified fact and never a finding; it carries no
+evidence weight of its own, and its backing is the claim it addresses. Naming a
+change does not establish that the change is safe: the experiment that built
+and passed is evidence for the claim about reachability, never for the remedy's
+blast radius. Candidate-status framing and the sanitization rules are
+unchanged. The dispositions are independent — declining the doc comment does
+not dispute the undocumented invariant, and accepting that a symbol is
+unreachable authorizes nothing about deleting it.
+
+A candidate carrying both emits both records, joined by an `addresses` edge, so
+a remedy this lens is right to be nervous about can be rejected without
+discarding the located cost that motivated it. Several competing remedies may
+address one claim, and separating them is how this lens avoids the rewrite it
+forbids: a doc comment stating the invariant, a test asserting it, and an
+assertion compiled into the code are three remedies of increasing cost against
+one claim, and emitting them as one "make the ordering explicit" hides the
+choice review exists to make. One remedy may also address several claims, where
+a single named concept closes several recorded confusions. The honest default
+is a claim alone, and it is the right default whenever counter-evidence
+retrieval has not produced the reason for the construct — a remedy invented to
+make the candidate feel actionable turns a well-evidenced comprehension gap
+into an unwanted suggestion the operator has to decline, and here it is also
+the shortest path to proposing the removal of something load-bearing.
+
+Concretely: "two unrelated sessions each re-derived an ordering invariant that
+appears in no comment and no test" is the claim, evidenced by both questions
+and the undocumented code. "Add a doc comment stating the invariant" and "add a
+test asserting the ordering" are two remedies addressing it, emitted separately
+because they cost differently and one may be wanted without the other.
+`missing-comprehension-layer` is true of the snapshot regardless of which, if
+either, is accepted.
 
 ## Cross-session synthesis keys
 

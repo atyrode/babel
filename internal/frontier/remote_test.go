@@ -319,6 +319,10 @@ func TestPublishedRecordValidation(t *testing.T) {
 		{"a proposal", func() PublishedRecord {
 			r := base()
 			r.Kind = PublishedProposal
+			// #114 gives a proposal two forms and RestsOn is what tells
+			// them apart, so a proposal that names nothing it rests on is
+			// neither form and is refused before it becomes an object.
+			r.RestsOn = []PublishedSubject{{Kind: EntityFinding, ID: "fnd-1"}}
 			return r
 		}},
 		{"a link", func() PublishedRecord {

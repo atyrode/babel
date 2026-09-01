@@ -159,8 +159,24 @@ type PublishedRecord struct {
 	// note and the row would know that something was asserted about the
 	// corpus and not what. §9 admits relationship ids in the clear, and they
 	// are sealed here anyway for the reason Answer's are.
-	Edge  *PublishedEdge `json:"edge,omitempty"`
-	RunID string         `json:"run_id,omitempty"`
+	Edge *PublishedEdge `json:"edge,omitempty"`
+	// RestsOn names the records a proposal rests on, and is empty for every
+	// other kind (#114).
+	//
+	// It is here for the reason Edge is: the relation is the record's
+	// meaning and is not recoverable from the payload. A proposal has two
+	// lawful forms - consolidated from findings (§4.5), or a candidate
+	// remedy addressing hypotheses directly - and which one it is decides
+	// how much authority a reader may lend it. An ingest that could not tell
+	// them apart would render an unbacked want exactly like an
+	// evidence-backed consolidation, which is the failure #114 exists to
+	// prevent.
+	//
+	// The order is the order the producing store asserted, because it is the
+	// order the plaintext projection's positions take and a fleet reader
+	// comparing the two must not see them disagree.
+	RestsOn []PublishedSubject `json:"rests_on,omitempty"`
+	RunID   string             `json:"run_id,omitempty"`
 	// Status is a candidate's lifecycle state at the moment the record was
 	// staged for publication, empty for every other kind.
 	//
@@ -210,6 +226,36 @@ type PublishedEdge struct {
 	FromID string   `json:"from_id"`
 	ToID   string   `json:"to_id"`
 	Type   LinkType `json:"type"`
+}
+
+// PublishedSubject is one record a proposal rests on: the finding it was
+// consolidated from, or the hypothesis its remedy addresses (#114).
+//
+// Kind is this package's own EntityType rather than a second vocabulary,
+// because the id is meaningless without knowing which store minted it and
+// there is exactly one naming of those stores that every surface already uses
+// - the same strings the reference graph's namespaces and 0003's kind column
+// carry.
+//
+// Only `finding` and `hypothesis` can appear. A proposal resting on an
+// observation would be §4.3's evidence-free consolidation wearing a different
+// name, and one resting on another proposal would be a remedy justified by a
+// want.
+type PublishedSubject struct {
+	Kind EntityType `json:"kind"`
+	ID   string     `json:"id"`
+}
+
+// valid reports whether this is a subject a proposal may rest on.
+func (s PublishedSubject) valid() bool {
+	if s.ID == "" {
+		return false
+	}
+	switch s.Kind {
+	case EntityFinding, EntityHypothesis:
+		return true
+	}
+	return false
 }
 
 // validate refuses a wire record that could not be read back as the record it
@@ -275,6 +321,22 @@ func (p PublishedRecord) validate() error {
 		}
 		if !p.Edge.Type.valid() {
 			return fmt.Errorf("%w: link %s type %q", ErrInvalidValue, p.ID, p.Edge.Type)
+		}
+	}
+	switch {
+	case p.Kind == PublishedProposal && len(p.RestsOn) == 0:
+		// A proposal that rests on nothing is neither form: not §4.5's
+		// consolidation, which is suggested by findings, and not #114's
+		// remedy, which answers a claim. Publishing one would put a want
+		// with no subject into the fleet's review queue.
+		return fmt.Errorf("%w: proposal %s names nothing it rests on", ErrInvalidValue, p.ID)
+	case p.Kind != PublishedProposal && len(p.RestsOn) > 0:
+		return fmt.Errorf("%w: a %s record rests on nothing", ErrInvalidValue, p.Kind)
+	}
+	for _, subject := range p.RestsOn {
+		if !subject.valid() {
+			return fmt.Errorf("%w: proposal %s rests on %q %q",
+				ErrInvalidValue, p.ID, subject.Kind, subject.ID)
 		}
 	}
 	return nil

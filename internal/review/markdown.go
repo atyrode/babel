@@ -139,18 +139,40 @@ func writeFinding(b *strings.Builder, f frontier.Finding) {
 	writeCounterEvidence(b, f.Payload.CounterEvidence, f.Payload.CounterEvidenceAbsent)
 }
 
+// proposalFraming is the sentence a reader meets before any of a proposal's
+// fields, and it differs by form because the two forms carry different
+// authority (#114).
+//
+// §4.5's consolidated artifact rests on findings that rest on evidence.
+// #114's candidate remedy rests on the claim it addresses and nothing else,
+// and this export is a surface an operator reads to decide, so saying so is
+// not decoration: an unbacked want introduced as "the canonical private
+// review artifact" would borrow authority no record behind it has. Neither
+// sentence claims the suggestion is correct, and neither ever will.
+func proposalFraming(form frontier.ProposalForm) string {
+	if form == frontier.ProposalCandidate {
+		return "A candidate proposal is the suggested-change half of an emitted candidate: " +
+			"a want or an option offered in answer to one or more claims, resting on those " +
+			"claims and on no finding. It is not a verified fact, not a finding, and not an " +
+			"issue, a document, or an instruction, and it has no external effect. Its review " +
+			"is separate from the review of the claims it addresses.\n\n"
+	}
+	return "A proposal is Babel's canonical private review artifact. " +
+		"It is not an issue, a document, or an instruction, and it has no external effect.\n\n"
+}
+
 func writeProposal(b *strings.Builder, p frontier.Proposal) {
 	b.WriteString("## Proposal\n\n")
-	b.WriteString("A proposal is Babel's canonical private review artifact. " +
-		"It is not an issue, a document, or an instruction, and it has no external effect.\n\n")
+	b.WriteString(proposalFraming(p.Form))
 	writeFields(b, [][2]string{
 		{"ID", mdCode(p.ID)},
 		{"Revises", optionalCode(p.AncestorID)},
 		{"Run", mdCode(p.RunID)},
 		{"Record schema", fmt.Sprint(p.SchemaVersion)},
 		{"Created", p.CreatedAt.UTC().Format(timeLayout)},
+		{"Form", mdCode(string(p.Form))},
 		{"Findings", codeList(p.FindingIDs)},
-		{"Hypotheses", codeList(p.HypothesisIDs)},
+		{"Addresses", codeList(p.HypothesisIDs)},
 		{"Review status", mdCode(string(p.ReviewStatus))},
 		{"Classification", mdCode(string(p.Payload.Classification))},
 		{"Impact", optionalCode(string(p.Payload.Impact))},

@@ -1,6 +1,6 @@
 ---
 id: security-trust-boundaries
-version: 2
+version: 3
 kind: lens
 scope: [session, corpus, repository]
 stages: [investigate, challenge, synthesize]
@@ -173,6 +173,40 @@ concern with no security consequence, and let the code-health lens have it.
 Sensitivity is part of the output: findings here default to the private
 security-brief destination, and nothing in this lens proposes a public
 artifact containing a locator, a path, or a value.
+
+**Claims and remedies.** A hypothesis states what is the case at a boundary; a
+remedy states what should change about it. The optional per-candidate `remedy`
+is a want or an option, never a verified fact and never a finding, and it
+carries no evidence weight of its own — its backing is the claim it addresses,
+and naming a control has never been evidence that a control is missing.
+Candidate-status framing and the sanitization rules above hold over a remedy
+exactly as they hold over the observation: no value, and a remedy that names a
+control inherits the claim's sensitivity and its private destination. The
+dispositions are independent. An operator who declines a proposed control has
+not disputed the crossing, and accepting that a crossing happened authorizes
+nothing about which control should exist.
+
+A candidate carrying both emits both records, joined by an `addresses` edge,
+which is what keeps a rejected control from taking a real exposure down with
+it. Competing remedies are expected here and must stay separate: scoping the
+token, moving the secret out of the argument list, and splitting the process
+that holds it from the process running untrusted code are three different costs
+with three different blast radii, and one hedged "improve credential handling"
+is reviewable as none of them. One remedy may also address several claims — a
+single isolation step often answers every crossing between the same two
+components. The honest default remains a claim alone, most of all under
+`hardening-opportunity`, where the boundary is worth strengthening and the
+record does not say how; a remedy invented to make the candidate feel
+actionable converts a defensible structural observation into an unwanted
+suggestion the operator must now decline.
+
+Concretely: "the record shows a process holding a provider credential also
+running an untrusted repository's build, and the snapshot shows no separation"
+is the claim, with the record and the snapshot as its locators. "Run untrusted
+builds in a credential-free child process" is a remedy addressing it. The
+crossing is a fact about the record whether or not that control is ever
+adopted, and rejecting the control leaves `containment-missing` standing
+exactly as evidenced.
 
 ## Cross-session synthesis keys
 

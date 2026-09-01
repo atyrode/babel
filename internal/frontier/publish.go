@@ -98,16 +98,33 @@ func (s *Store) commit(ctx context.Context, p publication) error {
 // schema, and so a new kind cannot forget to validate on the way out: Marshal
 // runs PublishedRecord.validate, which refuses a malformed record before it can
 // become a content-addressed object nothing ever deletes.
+//
+// The plaintext subject projection (migrations/0010, #114) is derived here from
+// the same wire field the sealed object carries, rather than passed in
+// alongside it. That is the whole reason it is one function: the columns a
+// keyless fleet reader sees and the object a key-holding one opens are two
+// views of one list, so they cannot disagree about what a proposal rests on.
 func staged(id string, kind sharedcatalog.RecordKind, wire PublishedRecord) (babelsync.Record, error) {
 	payload, err := wire.Marshal()
 	if err != nil {
 		return babelsync.Record{}, err
+	}
+	var subjects []sharedcatalog.RecordSubject
+	if len(wire.RestsOn) > 0 {
+		subjects = make([]sharedcatalog.RecordSubject, 0, len(wire.RestsOn))
+		for _, subject := range wire.RestsOn {
+			subjects = append(subjects, sharedcatalog.RecordSubject{
+				Kind: sharedcatalog.SubjectKind(subject.Kind),
+				ID:   subject.ID,
+			})
+		}
 	}
 	return babelsync.Record{
 		EntityID: id,
 		Kind:     kind,
 		Schema:   RecordSchema,
 		Payload:  payload,
+		Subjects: subjects,
 	}, nil
 }
 
@@ -160,6 +177,16 @@ func stagedFinding(record Finding, rootID string, payload []byte) (babelsync.Rec
 	})
 }
 
+// stagedProposal carries what the proposal rests on in RestsOn, because #114
+// gives a proposal two forms and nothing else on the wire tells them apart.
+//
+// Which ids go there depends on the form and the difference is not cosmetic. A
+// consolidated proposal rests on its findings, and its hypotheses are a
+// derivation through those findings' observations - publishing the derivation
+// would claim the proposal rests on claims it only reaches. A candidate
+// proposal rests on exactly the hypotheses it addresses, which for that form
+// are all HypothesisIDs holds, because the transitive half contributes nothing
+// when there is no finding to travel through.
 func stagedProposal(record Proposal, rootID string, payload []byte) (babelsync.Record, error) {
 	return staged(record.ID, sharedcatalog.KindProposal, PublishedRecord{
 		Schema:    RecordSchema,
@@ -169,8 +196,23 @@ func stagedProposal(record Proposal, rootID string, payload []byte) (babelsync.R
 		Ancestor:  record.AncestorID,
 		RunID:     record.RunID,
 		CreatedAt: record.CreatedAt,
+		RestsOn:   proposalRestsOn(record),
 		Payload:   payload,
 	})
+}
+
+// proposalRestsOn names the records one proposal rests on, in the order its
+// own rows hold them.
+func proposalRestsOn(record Proposal) []PublishedSubject {
+	ids, kind := record.FindingIDs, EntityFinding
+	if record.Form == ProposalCandidate {
+		ids, kind = record.HypothesisIDs, EntityHypothesis
+	}
+	subjects := make([]PublishedSubject, 0, len(ids))
+	for _, id := range ids {
+		subjects = append(subjects, PublishedSubject{Kind: kind, ID: id})
+	}
+	return subjects
 }
 
 // stagedLink carries the endpoints in PublishedEdge because a link's whole

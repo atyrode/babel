@@ -109,6 +109,17 @@ type StagedRecord struct {
 	// two are one fact, and a record row whose edge row is missing would be a
 	// citation no reader can see and no retry will supply.
 	Edge *RecordEdge
+	// Subjects is what a proposal rests on or addresses, and empty for every
+	// record that is not a proposal (issue #114, migrations/0010). Its rows are
+	// written in the same transaction as the record row, for a reason narrower
+	// than Edge's: a proposal has two lawful forms - resting on findings, or
+	// addressing hypotheses and resting on nothing - and `analysis_records`
+	// carries no column that tells them apart, so a record row whose subject
+	// rows are missing would be a want a reader could mistake for a verified
+	// conclusion.
+	//
+	// Order is the producer's and is preserved as the rows' position.
+	Subjects []RecordSubject
 }
 
 // RunClosure is one analysis run and the records it must commit.
@@ -289,6 +300,24 @@ func (c RunClosure) validate() error {
 					rec.RecordID, rec.Kind, KindLink)
 			}
 		}
+		if len(rec.Subjects) > 0 {
+			// A subject list is proposal vocabulary. The pairing is checked
+			// for the reason the edge pairing is, and the consequence is
+			// worse: analysis_proposal_subjects has no column saying which
+			// kind of record a row belongs to, so subjects accepted on a
+			// hypothesis would make the table mean two things at once - "what
+			// this proposal rests on" and whatever the other writer intended -
+			// and no later reader could tell which row was which.
+			if rec.Kind != KindProposal {
+				return fmt.Errorf("record %s carries proposal subjects but is a %s, not a %s",
+					rec.RecordID, rec.Kind, KindProposal)
+			}
+			for i, subject := range rec.Subjects {
+				if err := subject.Validate(); err != nil {
+					return fmt.Errorf("record %s subject %d: %w", rec.RecordID, i, err)
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -393,10 +422,12 @@ func commitRecord(
 	// object stands and ours becomes an orphan, which costs storage rather
 	// than correctness.
 	//
-	// The insert is a transaction rather than a statement because an edge
-	// record writes two rows - its identity and its plaintext citation - and
-	// SyncRun never revisits a record the catalog already holds, so a crash
-	// between them would leave the citation invisible forever.
+	// The insert is a transaction rather than a statement because a record may
+	// write more than its identity row. An edge record adds its plaintext
+	// citation; a proposal adds the subjects it rests on or addresses. SyncRun
+	// never revisits a record the catalog already holds, so a crash between
+	// those rows would leave the citation invisible or the proposal's form
+	// undeterminable, permanently.
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("record analysis record %s: begin: %w", rec.RecordID, err)
@@ -417,6 +448,9 @@ func commitRecord(
 		return false, fmt.Errorf("record analysis record %s: %w", rec.RecordID, err)
 	}
 	if err := commitEdge(ctx, tx, rec.RecordID, rec.Edge); err != nil {
+		return false, err
+	}
+	if err := commitSubjects(ctx, tx, rec.RecordID, rec.Subjects); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
