@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/explore"
@@ -930,6 +931,24 @@ func TestSyntheticExplorationRoundTrip(t *testing.T) {
 	}
 }
 
+// shippedRecipeVersion is what the embedded cookbook currently ships for id.
+// The run selects recipes at their shipped versions and refuses a claim
+// citing any other, so a fixture that pins a number rots on every recipe
+// bump - #114's bump caught a pinned @2 here. The version is derived; the
+// refusal behaviour itself is someone else's test.
+func shippedRecipeVersion(t *testing.T, id string) int {
+	t.Helper()
+	set, err := cookbook.Embedded()
+	if err != nil {
+		t.Fatalf("cookbook.Embedded() = %v", err)
+	}
+	r, ok := set.ByID(id)
+	if !ok {
+		t.Fatalf("the embedded cookbook ships no recipe %q", id)
+	}
+	return r.Version
+}
+
 // writeDiscoveryPayload builds the structured result the synthetic worker
 // emits: two candidates, one developed into an observation citing real
 // corpus bytes, consolidated into a finding and a proposal, with the second
@@ -967,7 +986,7 @@ func writeDiscoveryPayload(t *testing.T, p *phaseB) string {
 				},
 				Observations: []explore.Observation{{
 					Ref:    "o-1",
-					Recipe: worker.RecipeRef{ID: "outcome-integrity", Version: 2},
+					Recipe: worker.RecipeRef{ID: "outcome-integrity", Version: shippedRecipeVersion(t, "outcome-integrity")},
 					Claim: frontier.ObservationPayload{
 						Claim:                 "the first record of this session states the shape",
 						Category:              "outcome",
