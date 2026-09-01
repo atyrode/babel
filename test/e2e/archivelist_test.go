@@ -261,7 +261,7 @@ func TestArchiveListRejectsMixedListingSources(t *testing.T) {
 		},
 		{
 			name: "host without a password file",
-			args: []string{"sessions", "list", "--host", hostID, "--repo", e.repoDir},
+			args: []string{"sessions", "list", "--host", hostID, "--repo", e.repository},
 			want: "no repository password file selected",
 		},
 	} {

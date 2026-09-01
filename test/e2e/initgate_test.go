@@ -38,8 +38,8 @@ func TestPushRefusesToCreateTheRepository(t *testing.T) {
 	}
 	// Nothing was written where the repository would have gone. A refusal that
 	// left a half-made repository behind would be worse than the auto-init.
-	if entries, err := os.ReadDir(e.repoDir); err == nil && len(entries) > 0 {
-		t.Fatalf("the refused push left %d entries in %s", len(entries), e.repoDir)
+	if entries, err := os.ReadDir(e.repository); err == nil && len(entries) > 0 {
+		t.Fatalf("the refused push left %d entries in %s", len(entries), e.repository)
 	}
 
 	// The explicit step creates it, says so, and is idempotent.
@@ -47,7 +47,7 @@ func TestPushRefusesToCreateTheRepository(t *testing.T) {
 	if !first.Created {
 		t.Fatalf("the first init did not report creating the repository: %+v", first)
 	}
-	if _, err := os.Stat(filepath.Join(e.repoDir, "config")); err != nil {
+	if _, err := os.Stat(filepath.Join(e.repository, "config")); err != nil {
 		t.Fatalf("init reported success without a repository config: %v", err)
 	}
 	second := okJSON[initResultDoc](t, e, e.with("archive", "init", "--json")...)
@@ -84,7 +84,7 @@ func TestPushDistinguishesAWrongPasswordFromAMissingRepository(t *testing.T) {
 	}
 
 	_, stderr, code := e.run(t, "archive", "push",
-		"--repo", e.repoDir, "--password-file", wrong, "--json")
+		"--repo", e.repository, "--password-file", wrong, "--json")
 	if code == exitOK {
 		t.Fatal("a push with the wrong password succeeded")
 	}
@@ -93,7 +93,7 @@ func TestPushDistinguishesAWrongPasswordFromAMissingRepository(t *testing.T) {
 	}
 
 	// The repository is untouched: still openable with the real password.
-	if _, err := os.Stat(filepath.Join(e.repoDir, "config")); err != nil {
+	if _, err := os.Stat(filepath.Join(e.repository, "config")); err != nil {
 		t.Fatalf("the failed push disturbed the repository: %v", err)
 	}
 	push := okJSON[pushResult](t, e, e.with("archive", "push", "--json")...)
