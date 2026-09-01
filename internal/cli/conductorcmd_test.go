@@ -127,7 +127,10 @@ func TestConductorStatusReportsPlantedStateTruthfully(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenJournal: %v", err)
 	}
-	at := time.Date(2026, 8, 31, 9, 0, 0, 0, time.UTC)
+	// Planted at the start of today so the journalled-spend assertion below
+	// stays inside SpentToday's window whenever the test runs; a fixed
+	// calendar date rotted at midnight UTC once already.
+	at := conductor.StartOfDay(time.Now().UTC())
 	plant := []conductor.Cycle{
 		{
 			Seq: 1, StartedAt: at, FinishedAt: at.Add(time.Minute),
