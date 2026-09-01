@@ -419,7 +419,8 @@ func TestConductorDrawsAnAuthorizedDuty(t *testing.T) {
 		t.Errorf("authorizing one dimension authorized the other: %+v", duty)
 	}
 
-	// Cycle one: the duty, run as an ordinary run over this host's corpus.
+	// Cycle one: the friction lens of the authorized dimension (#120), run as
+	// an ordinary run over this host's corpus.
 	first := execJSON[conductorRunDoc](t, p,
 		append([]string{"conductor", "run", "--once", "--json"}, workerArgs...)...)
 	if len(first.Cycles) != 1 {
@@ -429,11 +430,11 @@ func TestConductorDrawsAnAuthorizedDuty(t *testing.T) {
 	if cycle.Outcome != "ran" || cycle.Rung != "policy" {
 		t.Fatalf("duty cycle = %+v, want a completed policy cycle", cycle)
 	}
-	if cycle.AuthorityKind != "policy" || cycle.AuthorityRef != "duty:babel-improves-babel" {
-		t.Fatalf("duty authority = %s/%s, want policy/duty:babel-improves-babel",
+	if cycle.AuthorityKind != "policy" || cycle.AuthorityRef != "duty:mechanization-audit" {
+		t.Fatalf("duty authority = %s/%s, want policy/duty:mechanization-audit",
 			cycle.AuthorityKind, cycle.AuthorityRef)
 	}
-	if len(cycle.Recipes) != 1 || cycle.Recipes[0] != "babel-improves-babel" {
+	if len(cycle.Recipes) != 1 || cycle.Recipes[0] != "mechanization-audit" {
 		t.Errorf("duty cycle ran %v, want the duty's own recipe", cycle.Recipes)
 	}
 	if cycle.Invitation != "" {
@@ -454,22 +455,24 @@ func TestConductorDrawsAnAuthorizedDuty(t *testing.T) {
 	}
 	// The durable half of the claim: months from now the receipt is what says
 	// which standing duty spent this budget.
-	assertReceiptAuthority(t, p, cycle.ReceiptID, "policy", "duty:babel-improves-babel")
+	assertReceiptAuthority(t, p, cycle.ReceiptID, "policy", "duty:mechanization-audit")
 
 	// Cycle two is the other duty of the same dimension, not the same one
-	// again: one toggle, two duties, each on its own daily cadence.
+	// again: one toggle, two duties, each on its own daily cadence. It follows
+	// the friction lens rather than leading, which is the whole of #120's
+	// weighting — the sibling still runs, in the same day, one cycle later.
 	second := execJSON[conductorRunDoc](t, p,
 		append([]string{"conductor", "run", "--once", "--json"}, workerArgs...)...)
 	if len(second.Cycles) != 1 {
 		t.Fatalf("--once ran %d cycles: %+v", len(second.Cycles), second.Cycles)
 	}
-	audit := second.Cycles[0]
-	if audit.AuthorityRef != "duty:mechanization-audit" {
-		t.Fatalf("second cycle authority = %s/%s, want the audit duty",
-			audit.AuthorityKind, audit.AuthorityRef)
+	improvesCycle := second.Cycles[0]
+	if improvesCycle.AuthorityRef != "duty:babel-improves-babel" {
+		t.Fatalf("second cycle authority = %s/%s, want the output-quality duty",
+			improvesCycle.AuthorityKind, improvesCycle.AuthorityRef)
 	}
-	assertReceiptAuthority(t, p, audit.ReceiptID, "policy", "duty:mechanization-audit")
-	if audit.RunID == cycle.RunID {
+	assertReceiptAuthority(t, p, improvesCycle.ReceiptID, "policy", "duty:babel-improves-babel")
+	if improvesCycle.RunID == cycle.RunID {
 		t.Error("two duty cycles shared one run identity")
 	}
 
