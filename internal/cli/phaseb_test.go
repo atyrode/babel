@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -460,6 +461,38 @@ func TestExploreRejectsAnUnknownPreparation(t *testing.T) {
 		"--preparation", "prep-absent", "--worker", worker, "--profile", "synthetic@1")
 	if !strings.Contains(stderr, "babel prepare") {
 		t.Errorf("the message does not name the remedy:\n%s", stderr)
+	}
+}
+
+// TestExploreRefusesAStoredDial holds the exploration path to the same rule
+// the ceremony enforces. A machine configured before #86 carries "--set" in
+// its stored worker arguments; launching the worker with it attached produces
+// Code's own refusal and then "exited without a result", which names neither
+// the cause nor the remedy. The run must not start at all.
+func TestExploreRefusesAStoredDial(t *testing.T) {
+	f := newFixture(t)
+	binary, record := ceremonyWorker(t, `{"profile":"dialled","revision":1}`, 0)
+	if _, err := saveAnalysisSettings(analysisSettings{
+		Worker:     binary,
+		WorkerArgs: []string{"babel", "--set", "model=haiku"},
+		Profile:    &profileRecord{ID: "agent-minted", Revision: 5, ConfiguredAt: "2026-08-30T00:00:00Z"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := settingsBytes(t)
+
+	_, stderr := f.mustExit(exitUsage, "explore", "--preparation", "prep-whatever")
+
+	for _, want := range []string{"stored worker arguments", "--worker"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the refusal does not name the remedy %q:\n%s", want, stderr)
+		}
+	}
+	if _, err := os.Stat(record); !errors.Is(err, os.ErrNotExist) {
+		t.Error("the worker was launched with the stored override attached")
+	}
+	if got := settingsBytes(t); got != before {
+		t.Error("the refusal rewrote the settings document")
 	}
 }
 

@@ -179,6 +179,14 @@ func (a *app) explore(ctx context.Context, args []string) error {
 	if !ok {
 		return a.reportNoWorker()
 	}
+	// A stored dial is refused here for the same reason the ceremony refuses
+	// one: a machine configured that way keeps reproducing it. Without this,
+	// the worker is launched, Code rejects the override itself, and the run
+	// dies as "exited without a result" - a true statement that names neither
+	// the cause nor the remedy.
+	if err := refuseDials(c, wcfg.Args, len(wf.args) == 0); err != nil {
+		return err
+	}
 	profileRef, err := resolveProfile(c, *profile, settings)
 	if err != nil {
 		return err
