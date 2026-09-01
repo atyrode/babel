@@ -57,6 +57,33 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The acceptance drill's repository half addresses a real object store
+  (issue #20).** The §14 two-instance and outage gates could be pointed at an
+  operator's PostgreSQL but always archived into a local path, so "against real
+  Cellar" was the one bullet the 2026-08-31 run explicitly did not claim.
+  `BABEL_ACCEPT_REPO` is now `BABEL_ACCEPT_PG_URI`'s counterpart — a base restic
+  locator, with `BABEL_ACCEPT_REPO_KEY_ID` and `BABEL_ACCEPT_REPO_KEY_SECRET`
+  required together and named rather than quoted when one is missing. Each
+  scenario archives into its own prefix under that base, so runs never collide,
+  and each purges its prefix and re-lists to confirm the bucket was left as it
+  was found. Nothing below the selection branches on local versus real, so the
+  drill cannot prove less against the store than against a directory. Measured
+  against Clever Cloud Cellar on 2026-09-01: eleven scenarios on the store, ten
+  pass and one skips for a catalog-side reason, 402.5 s, bucket empty
+  afterwards.
+  - **`TestArchiveRestoresWithResticAlone` runs against the object store too.**
+    The direct-recovery guarantee is now exercised where recovery would actually
+    happen: the restic binary, the repository password file, and the two `AWS_`
+    variables that are the only form restic accepts a store credential in — no
+    storage document, no catalog, no host identity. Every fixture file came back
+    byte-identical out of Cellar.
+  - **A repository outage is expressed in the store's own terms.** An object
+    store has no directory to rename, so the gate that moves the repository out
+    from under a running push moves every object to a sibling prefix
+    server-side and deletes it from this one, then moves it back. The push
+    fails naming the repository, the catalog gains nothing, and the next push is
+    ordinary — the same three assertions the local path makes, with no invented
+    outage semantics and no skip.
 - **The cookbook opens with a statement of what it is for (issue #120).**
   `cookbook/preamble.md` carries SPEC.md §1's charter into the asset tree:
   Babel's axiomatic center is the friction between an operator and their
