@@ -331,21 +331,46 @@ real  0m2.235s   exit 0
 `--read-data` to re-read and re-hash every pack; that costs a full download of
 5.687 GiB and is the deep check behind `babel archive verify --deep`.
 
-> **OPERATOR STEP — clear the two stale locks.** `restic unlock` is a write verb
-> and was deliberately not run by this drill. Bare `restic` reads nothing from
-> Babel's `storage.json`, so first assemble the environment with the four-line
-> `jq` block that opens §2.3 — that block is the prerequisite for **every**
-> direct `restic` command in this runbook. Then, having confirmed above that the
-> holding PIDs are dead — a check that is only meaningful when the lock names
-> this host — run:
+> **OPERATOR STEP — clear the two stale locks.** `babel archive unlock` is the
+> verb for this, and it is deliberately one you type: no timer, no conductor
+> duty and no other Babel path invokes it. Babel supplies the plumbing this
+> drill originally had to assemble by hand — repository locator, password file
+> and object-store keys, read from `storage.json` exactly as `archive verify`
+> reads them — so clearing a lock needs no environment block at all:
 >
 > ```sh
-> restic unlock          # add --remove-all only if a lock is exclusive and provably stale
+> babel archive unlock   # lists every lock with its staleness reasoning,
+>                        # then removes the stale shared ones
 > babel archive verify   # success looks like: ok (structure), exit 0
 > ```
 >
+> Both locks above are shared and both holders are dead, which is precisely
+> what the default removes. Every run prints the listing before removing
+> anything, states the judgement it reached on each lock and the reason, and
+> refuses the PID-liveness claim for a lock naming another host — the same
+> check made by hand above, made by the command instead. A run that removes
+> nothing exits 0 and says so.
+>
+> A lock that is not both stale and shared is removed only when the run names
+> it: `babel archive unlock --remove LOCKID`, with an id from that listing. An
+> exclusive lock is always in that category, and `restic unlock` cannot spare
+> one while clearing its shared neighbours, so Babel refuses the whole run and
+> names the lock instead of removing it quietly. That granularity is restic's:
+> measured against restic 0.19.1, plain `restic unlock` **does** remove a stale
+> exclusive lock, so the earlier note here — that `--remove-all` is what an
+> exclusive lock needs — was wrong about restic. `--remove-all` is what a lock
+> that is not *stale* needs, and it removes every lock in the repository.
+>
+> The four-line `jq` block that opens §2.3 remains the prerequisite for every
+> **direct** `restic` command in this runbook, including a bare `restic unlock`.
+> That is the recovery path which uses no Babel code, and it is the one to reach
+> for when Babel will not build; it is no longer the path for clearing a lock on
+> a working machine.
+>
 > Never run `restic forget` or `restic prune`: Babel's retention contract is
-> append-only and it ships no code path that deletes a snapshot.
+> append-only and it ships no code path that deletes a snapshot. `babel archive
+> unlock` removes coordination state and never archived data, so it leaves that
+> contract exactly where it was.
 
 ---
 
@@ -970,4 +995,8 @@ require something an unattended drill cannot supply:
 
 One unrelated operator action is queued by this drill: clearing the two stale
 shared locks found in §2.4, which currently make `babel archive verify` exit 1
-while leaving restores and data integrity unaffected.
+while leaving restores and data integrity unaffected. It is one command —
+`babel archive unlock` — and that command exists because of this drill: the
+step above originally asked the operator to assemble restic's environment by
+hand, and bare `restic unlock` answers `Fatal: Please specify repository
+location` because it reads nothing from Babel's `storage.json` (issue #108).

@@ -23,6 +23,7 @@ Commands:
   status   report snapshots per host
   fleet    report whether every host has published recently
   verify   check repository integrity
+  unlock   remove stale repository locks, listing every lock first
 
 Repository selection:
   --repo REPOSITORY           else $BABEL_RESTIC_REPO
@@ -237,6 +238,61 @@ from an interrupted run fails this check while leaving restores unaffected;
 docs/runbook.md records that case and its operator remedy.
 `
 
+const archiveUnlockUsage = `Usage: babel archive unlock [flags]
+
+Removes the stale restic repository locks an interrupted command leaves
+behind - the failure that makes "babel archive verify" exit 1 while restores
+and repository data stay unaffected.
+
+Babel supplies the plumbing: repository locator, password file and
+object-store credentials, resolved exactly as "archive verify" resolves them,
+so clearing a lock needs no hand-assembled restic environment. You supply the
+intent. Nothing in Babel runs this on its own: no timer, no conductor duty and
+no other autonomous path can reach it, and none ever may.
+
+Every run lists every lock before removing anything - kind, holder, age - and
+states the staleness judgement it reached and the reason for it, because a
+removal you cannot check is one you have to trust. The judgement is restic's
+own rule rather than a policy of Babel's:
+
+  stale       older than restic's 30m staleness timeout, which a running
+              restic keeps its lock inside of by refreshing every five
+              minutes; or naming a pid on this host that can no longer be
+              signalled.
+
+  held        still claimed. A lock naming another host is never judged by
+              its pid - that number means nothing on this machine - so
+              Babel makes no liveness claim it cannot check.
+
+  unreadable  the lock is there and blocks other commands, but its own
+              document could not be read. restic's stale removal skips it.
+
+Only a lock that is both stale and shared is removed by default. Anything
+else - a lock still held, or an exclusive lock, which is what "restic check",
+"prune" and "repair" take - is removed only when you name it with --remove.
+
+A run that removes nothing is a success that says so.
+
+Flags:
+  --remove LOCKID[,LOCKID...] also remove these locks even when held or
+                              exclusive, named by the short id the listing
+                              prints or by the full id
+  --repo REPOSITORY           restic repository (default $BABEL_RESTIC_REPO)
+  --password-file FILE        password file (default $BABEL_RESTIC_PASSWORD_FILE)
+  --restic-binary PATH        restic executable (default "restic" from $PATH)
+  --json                      emit the report as JSON on stdout
+
+restic removes stale locks or every lock and offers nothing in between, so a
+run that cannot honour the default without exceeding it refuses instead, and
+names the lock that made it refuse: a stale exclusive lock nobody named, or,
+with --remove, a lock that is neither named nor stale-and-shared.
+
+Exits 1 on a refusal or a removal that did not take effect. "restic forget",
+"prune" and "repair" stay outside Babel permanently: this verb removes
+coordination state and never archived data, so retention remains append-only
+(SPEC.md §6.1).
+`
+
 // archive routes `babel archive <verb>`.
 func (a *app) archive(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -256,6 +312,8 @@ func (a *app) archive(ctx context.Context, args []string) error {
 		return a.archiveFleet(ctx, args[1:])
 	case "verify":
 		return a.archiveVerify(ctx, args[1:])
+	case "unlock":
+		return a.archiveUnlock(ctx, args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown archive subcommand %q", args[0]), usage: archiveUsage}
 	}
