@@ -71,14 +71,26 @@ async function answerConfirm(accept: boolean, act: () => Promise<void>): Promise
 // reports on the server rather than on the page's state. It presents the
 // session the browser established, which is the only credential the server
 // accepts: the launch nonce was spent by the page and authenticates nothing.
+//
+// One transport failure is not evidence: this process has already spoken to
+// this port in beforeAll, and a pooled socket the server has since let go
+// idle fails on reuse rather than being redialled. Observed only under CI
+// (bun 1.4.0), where a declined confirmation - which stops nothing - was
+// followed by an "unreachable" the browser contradicted by still rendering
+// the page. A server that is genuinely gone refuses the second dial too, so
+// the retry costs the negative case nothing and removes the false one.
 async function call(path: string): Promise<number | "unreachable"> {
-  try {
-    const response = await fetch(`${base}${path}`, {
-      headers: { Cookie: `babel_session=${session}` },
-    });
-    return response.status;
-  } catch {
-    return "unreachable";
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch(`${base}${path}`, {
+        headers: { Cookie: `babel_session=${session}` },
+      });
+      return response.status;
+    } catch {
+      // No delay: a socket the server has let go fails at once, and the
+      // redial opens a new one. Waiting would only guess at a duration.
+      if (attempt > 0) return "unreachable";
+    }
   }
 }
 
