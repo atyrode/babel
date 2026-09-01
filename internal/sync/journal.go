@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/atyrode/babel/internal/sharedcatalog"
 
@@ -209,10 +208,13 @@ type Journal struct {
 	db   *sql.DB
 	path string
 
-	// now supplies staging and declaration timestamps. It is a field so a test
-	// can make ordering deterministic without sleeping; production never
-	// replaces it.
-	now func() time.Time
+	// stager is the staging half of this journal: the rows a writer's own
+	// transaction writes, and the timestamps they carry. It is held rather
+	// than reimplemented because a journal and a bare Stager must write
+	// identical rows - a record staged by `babel tell` and one staged by
+	// `babel sync`'s own publisher are the same row - and one implementation
+	// is how that stays true.
+	stager *Stager
 }
 
 // OpenJournal opens the durable database in dir and creates this component's
@@ -229,7 +231,7 @@ func OpenJournal(dir string) (*Journal, error) {
 	// One connection: the pragmas below are per-connection, and the durable
 	// file has a single writer per §9's local state-writer lock invariant.
 	db.SetMaxOpenConns(1)
-	j := &Journal{db: db, path: path, now: func() time.Time { return time.Now().UTC() }}
+	j := &Journal{db: db, path: path, stager: NewStager()}
 	if err := j.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -377,7 +379,7 @@ type stagedRun struct {
 // payload is not compared, because a durable record is immutable - the bytes
 // cannot legitimately differ, and reading a blob back to prove it would cost a
 // read on every write to catch nothing.
-func (j *Journal) stage(ctx context.Context, tx *sql.Tx, rec Record) error {
+func (s *Stager) stage(ctx context.Context, tx *sql.Tx, rec Record) error {
 	if err := rec.validate(); err != nil {
 		return err
 	}
@@ -427,7 +429,7 @@ func (j *Journal) stage(ctx context.Context, tx *sql.Tx, rec Record) error {
 		record_id, run_id, kind, record_schema, ordinal, staged_at, sync_state)
 		VALUES(?, ?, ?, ?, ?, ?, ?)`,
 		rec.EntityID, rec.RunID, string(rec.Kind), rec.Schema, ordinal,
-		j.now().Format(timestampLayout), sharedcatalog.SyncPending); err != nil {
+		s.now().Format(timestampLayout), sharedcatalog.SyncPending); err != nil {
 		return fmt.Errorf("sync: stage record %s: %w", rec.EntityID, err)
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -475,7 +477,7 @@ func (j *Journal) stage(ctx context.Context, tx *sql.Tx, rec Record) error {
 // Declaring is idempotent, and a second declaration at a different size is
 // ErrClosureConflict rather than an update: the size is what 0003's flip to
 // committed is conditional on, and it is immutable there.
-func (j *Journal) declareTx(ctx context.Context, tx *sql.Tx, c Closure) (stagedRun, error) {
+func (s *Stager) declareTx(ctx context.Context, tx *sql.Tx, c Closure) (stagedRun, error) {
 	if !validEntityID.MatchString(c.RunID) {
 		return stagedRun{}, fmt.Errorf("sync: run id %q is not a well-formed Phase B identifier", c.RunID)
 	}
@@ -493,7 +495,7 @@ func (j *Journal) declareTx(ctx context.Context, tx *sql.Tx, c Closure) (stagedR
 		VALUES(?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO NOTHING`,
 		c.RunID, nullable(c.ExecutionHostID), nullable(c.ContinuesRunID), count,
-		j.now().Format(timestampLayout), sharedcatalog.SyncPending); err != nil {
+		s.now().Format(timestampLayout), sharedcatalog.SyncPending); err != nil {
 		return stagedRun{}, fmt.Errorf("sync: declare run %s: %w", c.RunID, err)
 	}
 
@@ -523,7 +525,7 @@ func (j *Journal) declare(ctx context.Context, c Closure) (stagedRun, error) {
 		return stagedRun{}, fmt.Errorf("sync: begin declaration: %w", err)
 	}
 	defer tx.Rollback()
-	run, err := j.declareTx(ctx, tx, c)
+	run, err := j.stager.declareTx(ctx, tx, c)
 	if err != nil {
 		return stagedRun{}, err
 	}
@@ -543,7 +545,7 @@ func (j *Journal) declare(ctx context.Context, c Closure) (stagedRun, error) {
 // simpler rule is that a record naming a run that never declares stays staged
 // and undeclared - visible in `babel sync`'s report, publishable as soon as
 // that run ends, and never silently dropped.
-func (j *Journal) closureOpen(ctx context.Context, tx *sql.Tx, runID string) (bool, error) {
+func (s *Stager) closureOpen(ctx context.Context, tx *sql.Tx, runID string) (bool, error) {
 	var declared int
 	err := tx.QueryRowContext(ctx,
 		`SELECT record_count FROM sync_run WHERE run_id = ?`, runID).Scan(&declared)

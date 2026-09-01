@@ -24,6 +24,7 @@ import (
 	"github.com/atyrode/babel/internal/reference"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/sharedcatalog"
+	babelsync "github.com/atyrode/babel/internal/sync"
 	"github.com/atyrode/babel/internal/transcript"
 	"github.com/atyrode/babel/internal/web"
 	webdist "github.com/atyrode/babel/web"
@@ -159,7 +160,7 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 // its lifetime and the caller must close it once Serve has returned. It is
 // never nil on success, and closing a nil one is harmless.
 func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Server, *webServices, error) {
-	cfg, _, err := config.Load()
+	cfg, storageFound, err := config.Load()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -308,12 +309,28 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	} else if !presence.NotConfigured(err) {
 		a.diagf("warning: the fleet presence surface is unavailable: %s\n", Sanitize(err.Error()))
 	}
-	// Options.SyncJournal is deliberately left nil here. The publication
-	// journal is the only thing that can tell a record staged while
-	// PostgreSQL was unreachable from one that was never staged at all, and
-	// a build with no journal must say so rather than guess: fleet's
-	// resolution reads a nil journal as "nothing here claims this record is
-	// going anywhere", which is exactly what is true.
+	// The publication journal, which is what lets a record page tell a record
+	// staged while PostgreSQL was unreachable from one nothing will ever carry
+	// (#137). Before the writers staged, this was deliberately nil and honest:
+	// the journal was empty on every deployment, so "local" was the true answer
+	// everywhere. Now that a shared host's writers stage, a nil journal here
+	// would render every freshly told complaint as `local` - the one lie
+	// runbook §9.1 says the visible-staging requirement must not tell.
+	//
+	// It is opened only in shared mode and assigned only when it opened, on the
+	// nil-interface discipline every service above follows: internal/fleet
+	// tests this value for nil and an interface holding a nil *Journal would
+	// pass that test and then read from no database at all. A local-only
+	// machine keeps the nil, where "local" is what its records are.
+	if stagingUnavailable(cfg, storageFound) == "" {
+		if journal, err := babelsync.OpenJournal(d.durableDir()); err != nil {
+			a.diagf("warning: the publication journal is unavailable, so record pages will report every "+
+				"record as local: %s\n", Sanitize(err.Error()))
+		} else {
+			opts.SyncJournal = journal
+			services.syncJournal = journal
+		}
+	}
 
 	srv, err := web.New(opts)
 	if err != nil {
@@ -356,6 +373,11 @@ type webServices struct {
 	// PostgreSQL pool of its own, so a launch that fails after opening it and
 	// a served session that ends both have to release it.
 	presence *presence.Store
+	// syncJournal is this machine's publication journal, nil in local mode. It
+	// is held here for the SQLite handle it owns on the durable file: a served
+	// session that ended while holding one leaves the next command waiting on
+	// a file lock.
+	syncJournal *babelsync.Journal
 	// sessions resolves the durable session keys #113's edges record, nil on a
 	// machine with no deployment identity. It holds no handle of its own: it
 	// reads the scan coordinator's listing, which is the same listing the
@@ -537,6 +559,11 @@ func (s *webServices) Close() error {
 	}
 	if s.analysis != nil {
 		if e := s.analysis.Close(); err == nil {
+			err = e
+		}
+	}
+	if s.syncJournal != nil {
+		if e := s.syncJournal.Close(); err == nil {
 			err = e
 		}
 	}

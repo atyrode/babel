@@ -161,6 +161,69 @@ func (a *app) syncCmd(ctx context.Context, args []string) error {
 	return a.writeSync(res)
 }
 
+// stagingHook is the Phase B publication hook every durable writer on this
+// machine opens with (#137): a staging hook in shared mode, and nothing at all
+// in local mode.
+//
+// It stages and never publishes, and that is the decision this whole wiring
+// turns on. internal/sync splits publication into a transaction-local half and
+// a networked one: staging writes journal rows inside the writer's own
+// transaction on the writer's own connection, while committing a closure needs
+// PostgreSQL, the object store and the payload keyring. Only the first half
+// belongs at store-open time. Handing `babel tell` a full publisher would make
+// an operator's one-sentence complaint dial the catalog before it could be
+// recorded - slow on a good day, and on a bad one a command that would rather
+// fail than write, which is the exact inversion SPEC.md §6.5 forbids. So the
+// writers stage, `babel sync` and the reconcile step after an archive push hold
+// the publisher, and the journal is the handoff between them.
+//
+// The gate is mode and nothing else, which is why it is not openPublisher's.
+// A shared deployment with no catalog reachable, or one whose payload keys have
+// not arrived, publishes nothing and must still stage everything: a record owed
+// to the fleet has to be visibly pending rather than silently local (SPEC.md
+// §9, runbook §9.1), and staging needs neither of those two things to say so.
+//
+// The nil is a nil interface and never a typed nil pointer. Every store tests
+// its hook for nil to decide whether it publishes at all, and an interface
+// holding a nil *Stager would pass that test and then stage into nothing -
+// which is precisely the silence #137 was.
+//
+// A configuration that will not load is returned as an error rather than
+// degraded into local mode. An absent storage.json loads cleanly as "not
+// configured", so this cannot fire on a local-only machine; what it does fire
+// on is a present document this build cannot read, where the mode is unknown,
+// and staging nothing on an unknown mode is how a shared host silently stops
+// owing the fleet its records.
+func stagingHook() (babelsync.Hook, error) {
+	cfg, found, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	if stagingUnavailable(cfg, found) != "" {
+		return nil, nil
+	}
+	return babelsync.NewStager(), nil
+}
+
+// stagingUnavailable names why this deployment's durable writers stage nothing,
+// and returns the empty string when they stage.
+//
+// It is syncUnavailable's mode half, split out rather than repeated because the
+// two questions have the same answer only at the top: what publishes must be in
+// shared mode, and what is in shared mode stages whether or not it can publish.
+// Keeping one definition of the mode decision is what stops a writer and
+// `babel sync` from disagreeing about which deployments are local-only.
+func stagingUnavailable(cfg config.Config, found bool) string {
+	switch {
+	case !found:
+		return "storage is not configured, so this machine is local-only and owes the fleet nothing"
+	case storageMode(cfg) != config.ModeShared:
+		return fmt.Sprintf("storage is configured in %s mode, so there is nothing to publish",
+			Sanitize(storageMode(cfg)))
+	}
+	return ""
+}
+
 // syncUnavailable names why this deployment publishes nothing, and returns the
 // empty string when it does publish.
 //
@@ -172,21 +235,18 @@ func (a *app) syncCmd(ctx context.Context, args []string) error {
 // than fatal, which is why it is a line and an exit code of 0 rather than a
 // refusal - a writer keeps writing, and its records stay durable and pending.
 //
-// This is the one place the absence is decided. openPublisher gates on it too,
-// so the constructor and the report cannot come to different conclusions about
-// what local-only means.
+// This is the one place publication's absence is decided. openPublisher gates on
+// it too, so the constructor and the report cannot come to different conclusions
+// about what local-only means.
 func syncUnavailable() (string, error) {
 	cfg, found, err := config.Load()
 	if err != nil {
 		return "", err
 	}
-	switch {
-	case !found:
-		return "storage is not configured, so this machine is local-only and owes the fleet nothing", nil
-	case storageMode(cfg) != config.ModeShared:
-		return fmt.Sprintf("storage is configured in %s mode, so there is nothing to publish",
-			Sanitize(storageMode(cfg))), nil
-	case cfg.Catalog == nil:
+	if reason := stagingUnavailable(cfg, found); reason != "" {
+		return reason, nil
+	}
+	if cfg.Catalog == nil {
 		return "shared mode is configured with no catalog, so there is nowhere to publish to", nil
 	}
 	if _, found, err := config.LoadPayloadKeys(); err != nil {

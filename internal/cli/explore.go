@@ -359,6 +359,14 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		Dispositions: state.dispositions,
 		Complaints:   state.complaints,
 		Index:        idx,
+		// #137's write half: the same hook every store in this state was
+		// opened with, so an exploration's own records - its receipt, and the
+		// frontier records it produced through the stores above - stage under
+		// one closure rather than under two conclusions about what this
+		// deployment publishes. Nil in local mode, which internal/explore
+		// documents as a supported deployment: no closure is declared and the
+		// run's durable output is unchanged.
+		Sync: state.sync,
 		// #113's emission half. Both are nil on a build with no reference
 		// store or no deployment identity, which internal/explore documents
 		// as the feature quietly absent: nothing is minted, no run is

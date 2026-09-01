@@ -257,12 +257,21 @@ func (a *app) noteUnreadCitations(err error) {
 // gates Append, and a command that lists a record's citations validates no
 // endpoint. Building one here would open the frontier, the receipts and the
 // session catalog to answer a question this command never asks.
+//
+// It does attach the deployment's publication hook, which is the one thing this
+// opener does not get to leave out (#137). A registry is a gate on writes this
+// caller never performs; a hook is what makes a write publishable at all, and
+// the difference matters because the next caller of this function may write.
 func openRecordReferences() (*reference.Store, error) {
 	d, err := babelDirs()
 	if err != nil {
 		return nil, err
 	}
-	return reference.Open(d.durableDir())
+	hook, err := stagingHook()
+	if err != nil {
+		return nil, err
+	}
+	return reference.Open(d.durableDir(), reference.WithSync(hook))
 }
 
 // sessionRecordRef addresses one local session in the reference graph.
