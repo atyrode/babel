@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -1256,6 +1257,54 @@ func TestLockStopsTheListener(t *testing.T) {
 	// revoked session and a stopped server.
 	if _, err := http.Get(base + "/api/version"); err == nil {
 		t.Fatal("the listener still accepts connections after the lock")
+	}
+}
+
+// TestLockDrainsPastASilentConnection plants the connection a browser's
+// speculative preconnect leaves behind: accepted, never a byte sent. Shutdown
+// deliberately never closes a connection that has not delivered a request
+// (golang/go#22682), so without the unserved sweep this held the drain until
+// its ReadHeaderTimeout - past the drain deadline - and an operator-requested
+// stop exited nonzero. The bound below is well under the 5-second drain
+// deadline, so the old behaviour cannot pass it.
+func TestLockDrainsPastASilentConnection(t *testing.T) {
+	s, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- s.Serve(ctx) }()
+
+	base, session := bootstrapLaunch(t, http.DefaultClient, s.URL())
+
+	silent, err := net.Dial("tcp", strings.TrimPrefix(base, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+
+	response := request(t, http.DefaultClient, http.MethodPost, base+"/api/lock", session)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Serve after lock with a silent connection open: %v", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("the drain is waiting on a connection that never sent a request")
+	}
+
+	// The sweep closed the silent connection rather than merely outwaiting
+	// it: the next read observes the server-side close.
+	_ = silent.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := silent.Read(make([]byte, 1)); err == nil {
+		t.Fatal("the silent connection is still open after the stop")
 	}
 }
 

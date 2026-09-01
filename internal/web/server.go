@@ -38,6 +38,17 @@ type Server struct {
 	logMu    sync.Mutex
 	lockOnce sync.Once
 	locked   chan struct{}
+	// unserved is every accepted connection that has not yet delivered a
+	// request, and draining marks that shutdown has begun. Shutdown drains
+	// active requests but deliberately never closes a connection that has
+	// not sent one (golang/go#22682); a browser's speculative preconnect is
+	// exactly that - accepted, silent, and holding the drain hostage until
+	// its ReadHeaderTimeout, which is longer than the drain deadline. A
+	// connection that never asked for anything is owed nothing on stop, so
+	// shutdown closes these itself.
+	connMu   sync.Mutex
+	unserved map[net.Conn]struct{}
+	draining bool
 }
 
 // New mints the launch nonce and binds a loopback listener. Port zero asks the
@@ -64,6 +75,7 @@ func New(opts Options) (*Server, error) {
 		creds:    credentials{nonce: nonce, deadline: time.Now().Add(BootstrapTTL)},
 		url:      fmt.Sprintf("http://127.0.0.1:%d/#nonce=%s", port, nonce),
 		locked:   make(chan struct{}),
+		unserved: make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -84,6 +96,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		Handler:           s.middleware(http.HandlerFunc(s.route)),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
+		ConnState:         s.trackConn,
 		BaseContext: func(net.Listener) context.Context {
 			return ctx
 		},
@@ -113,6 +126,17 @@ func (s *Server) shutdown(httpServer *http.Server, serveResult <-chan error) err
 	// Closing the listener first also covers cancellation racing with
 	// http.Server's listener registration.
 	_ = s.listener.Close()
+	// Connections that never sent a request would otherwise pin the drain
+	// until their ReadHeaderTimeout; see the unserved field. Marking
+	// draining first makes the sweep complete: a connection accepted before
+	// the listener closed but registered after this sweep is closed by
+	// trackConn instead.
+	s.connMu.Lock()
+	s.draining = true
+	for c := range s.unserved {
+		_ = c.Close()
+	}
+	s.connMu.Unlock()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	shutdownErr := httpServer.Shutdown(shutdownCtx)
@@ -131,6 +155,24 @@ func (s *Server) shutdown(httpServer *http.Server, serveResult <-chan error) err
 		return nil
 	}
 	return serveErr
+}
+
+// trackConn keeps unserved current: a connection joins on accept, leaves on
+// its first request (the drain owns it from there), and is closed on arrival
+// if shutdown has already begun.
+func (s *Server) trackConn(c net.Conn, state http.ConnState) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	switch state {
+	case http.StateNew:
+		if s.draining {
+			_ = c.Close()
+			return
+		}
+		s.unserved[c] = struct{}{}
+	default:
+		delete(s.unserved, c)
+	}
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
