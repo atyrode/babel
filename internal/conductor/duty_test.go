@@ -128,7 +128,8 @@ func TestUnauthorizedDutiesAreNeverDrawn(t *testing.T) {
 // One toggle authorizes its whole dimension, each duty is drawn at most once
 // per cadence, and the cadence is measured on the clock rather than per
 // process. #94's audit rides the product toggle because #94 places it in that
-// dimension.
+// dimension, and it is drawn first because it is that dimension's friction
+// lens (#120).
 func TestAuthorizedDutyIsDrawnOncePerCadence(t *testing.T) {
 	d := newDutyLoop(t, conductor.Duties{ImprovesBabel: true}, 100)
 
@@ -137,11 +138,11 @@ func TestAuthorizedDutyIsDrawnOncePerCadence(t *testing.T) {
 		t.Fatalf("first cycle drew from %q, want the duty rung", first.Rung)
 	}
 	if first.Authority.Kind != runstore.AuthorityPolicy ||
-		first.Authority.Ref != conductor.DutyRef(conductor.DutyImprovesBabel) {
+		first.Authority.Ref != conductor.DutyRef(conductor.DutyMechanizationAudit) {
 		t.Errorf("duty authority = %+v, want policy/%s",
-			first.Authority, conductor.DutyRef(conductor.DutyImprovesBabel))
+			first.Authority, conductor.DutyRef(conductor.DutyMechanizationAudit))
 	}
-	if len(first.Recipes) != 1 || first.Recipes[0] != conductor.DutyImprovesBabel {
+	if len(first.Recipes) != 1 || first.Recipes[0] != conductor.DutyMechanizationAudit {
 		t.Errorf("duty cycle ran %v, want exactly the duty's own recipe", first.Recipes)
 	}
 	if len(first.Sessions) != 0 {
@@ -154,10 +155,9 @@ func TestAuthorizedDutyIsDrawnOncePerCadence(t *testing.T) {
 	// The second duty of the same dimension follows, because it is the next one
 	// due — one toggle, two duties.
 	second := d.once(t)
-	if second.Authority.Ref != conductor.DutyRef(conductor.DutyMechanizationAudit) {
-		t.Fatalf("second cycle authority = %+v, want the audit duty", second.Authority)
+	if second.Authority.Ref != conductor.DutyRef(conductor.DutyImprovesBabel) {
+		t.Fatalf("second cycle authority = %+v, want the output-quality duty", second.Authority)
 	}
-
 	// Both are inside their cadence now, and the personal duty is unauthorized,
 	// so there is nothing left to draw: the rung does not repeat a duty within
 	// the day just because it is the only rung with anything to offer.
@@ -177,11 +177,12 @@ func TestAuthorizedDutyIsDrawnOncePerCadence(t *testing.T) {
 		}
 	}
 
-	// A day later the first duty is due again, and says when it last ran.
+	// A day later both are due again, and the friction lens leads the new day
+	// exactly as it led the first one.
 	d.clk.advance(conductor.DefaultDutyCadence)
 	fourth := d.once(t)
-	if fourth.Authority.Ref != conductor.DutyRef(conductor.DutyImprovesBabel) {
-		t.Fatalf("cycle after the cadence = %+v, want the first duty again", fourth.Authority)
+	if fourth.Authority.Ref != conductor.DutyRef(conductor.DutyMechanizationAudit) {
+		t.Fatalf("cycle after the cadence = %+v, want the friction lens again", fourth.Authority)
 	}
 	if !strings.Contains(fourth.Note, "last drawn") {
 		t.Errorf("note = %q, want it to name the previous draw", fourth.Note)
@@ -288,4 +289,62 @@ func TestSerendipityFloorStillBindsAgainstDueDuties(t *testing.T) {
 	if chaotic < 2 {
 		t.Errorf("cycles = %v, want at least half of them chaotic", rungs)
 	}
+}
+
+// Friction lenses weigh first inside the duty rung (#120). SPEC.md §1 makes
+// operator-agent friction Babel's axiomatic center, and the only thing weight
+// can mean here is order: Draw takes the first due duty, so the duty that
+// reads for friction is the one a contested cycle goes to.
+//
+// The ordering is checked on the list itself, not on one draw, because the
+// list is what a later duty would be added to: a duty declared in the wrong
+// place must still be drawn in the right one.
+func TestFrictionLensesWeighFirstAmongDuties(t *testing.T) {
+	duties := conductor.StandingDuties()
+
+	friction := 0
+	for _, duty := range duties {
+		if duty.Friction {
+			friction++
+		}
+	}
+	if friction == 0 {
+		t.Fatal("no standing duty reads for friction; the charter's axis has no duty to weigh")
+	}
+	for i, duty := range duties {
+		if duty.Friction && i >= friction {
+			t.Errorf("duties = %v: friction lens %q is drawn after a duty that is not one",
+				dutyNames(duties), duty.Name)
+		}
+	}
+	// #94's audit is the friction lens this build ships as a duty: it reads
+	// for where an agent inferred because retrieval, tooling, or context was
+	// missing.
+	if duties[0].Name != conductor.DutyMechanizationAudit {
+		t.Errorf("duties = %v, want the mechanization audit drawn first", dutyNames(duties))
+	}
+
+	// And the weight is real in a cycle: with every dimension authorized and
+	// every duty due, the friction lens takes the first one.
+	d := newDutyLoop(t, conductor.Duties{ImprovesBabel: true, TunesItself: true}, 100)
+	first := d.once(t)
+	if first.Authority.Ref != conductor.DutyRef(conductor.DutyMechanizationAudit) {
+		t.Errorf("first contested duty cycle = %+v, want the friction lens", first.Authority)
+	}
+
+	// The rung's position is what the weighting may not touch: the operator
+	// still outranks the friction lens, however due it is.
+	d = newDutyLoop(t, conductor.Duties{ImprovesBabel: true, TunesItself: true}, 100)
+	d.invitations.work = &conductor.Assignment{Invitation: "inv-1", Note: "an operator asked"}
+	if cycle := d.once(t); cycle.Rung != conductor.RungInvitation {
+		t.Errorf("cycle drew from %q with an invitation waiting; friction never outranks a person", cycle.Rung)
+	}
+}
+
+func dutyNames(duties []conductor.Duty) []string {
+	names := make([]string, 0, len(duties))
+	for _, duty := range duties {
+		names = append(names, duty.Name)
+	}
+	return names
 }

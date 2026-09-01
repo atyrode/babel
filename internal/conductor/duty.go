@@ -3,6 +3,7 @@ package conductor
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,6 +68,17 @@ type Duty struct {
 	Toggle string
 	// Dimension is the audience, for status and for the recipe's own framing.
 	Dimension Dimension
+	// Friction reports that this duty's subject is the friction between the
+	// operator and their agents — SPEC.md §1's axiomatic center, restated in
+	// the cookbook's own statement (#120). It is what the duty reads for, not
+	// how useful it is: every duty here is worth running, and a flag that
+	// meant "important" would be a second, quieter ranking nobody could
+	// argue with.
+	//
+	// It is declared per duty rather than derived from the recipe id so that
+	// a duty whose recipe is renamed or split keeps its weight, for the same
+	// reason Recipe is a field.
+	Friction bool
 	// About is the duty in one clause, for `conductor status`.
 	About string
 }
@@ -77,8 +89,22 @@ type Duty struct {
 // existing is not an obligation to run it: the duties are the three the
 // operator authorized dimensions for, and a build that grew a self-analysis
 // recipe would otherwise start scheduling it by accident.
+//
+// Friction lenses are drawn first (#120). Inside this rung, order is the only
+// thing weight can mean — Draw takes the first due duty and the cycle is
+// spent — so a friction lens being consulted before its siblings is what it is
+// for the charter's axis to outrank the loop's other standing curiosity. The
+// weight applies within the rung and nowhere else: the rung still sits below
+// the operator's invitations, and the serendipity floor's protected fraction
+// is untouched, so the ordering cannot turn friction-primacy into
+// friction-exclusivity.
+//
+// The order is imposed here rather than left to how the list happens to be
+// written, because a duty added in the wrong place would otherwise silently
+// outrank the axis. The sort is stable, so duties of equal weight keep their
+// declared order.
 func StandingDuties() []Duty {
-	return []Duty{
+	duties := []Duty{
 		{
 			Name:      DutyImprovesBabel,
 			Recipe:    DutyImprovesBabel,
@@ -91,7 +117,12 @@ func StandingDuties() []Duty {
 			Recipe:    DutyMechanizationAudit,
 			Toggle:    DutyImprovesBabel,
 			Dimension: DimensionProduct,
-			About:     "where inference substituted for retrieval, read off the run receipts",
+			// #94's axis is where an agent inferred because retrieval,
+			// tooling or context was not there to be used, which is the
+			// charter's friction stated as a duty: the error came from the
+			// system around the work rather than from the work.
+			Friction: true,
+			About:    "where inference substituted for retrieval, read off the run receipts",
 		},
 		{
 			Name:      DutyTunesItself,
@@ -101,6 +132,8 @@ func StandingDuties() []Duty {
 			About:     "this operator's relevance and memory, revisited against the archive",
 		},
 	}
+	sort.SliceStable(duties, func(i, j int) bool { return duties[i].Friction && !duties[j].Friction })
+	return duties
 }
 
 // Duties is the operator's standing-duty authorization: which dimensions the
@@ -174,6 +207,10 @@ const DefaultDutyCadence = 24 * time.Hour
 // rung with permanent work would quietly become the only rung, and it would do
 // it by running the same analysis over an unchanged record.
 //
+// Inside the rung, friction lenses are consulted first (#120): the ladder
+// decides whether a duty runs at all, and this ordering decides which one does
+// when several are due. Nothing above or below the rung moves for it.
+//
 // The rung is implemented whatever the operator authorized. A depth of zero
 // here means "no duty is due", and States reports each duty's own state, so an
 // unauthorized duty is visibly off rather than absent — #88's toggles default
@@ -236,12 +273,15 @@ func (r *DutyRung) Depth(context.Context) (Depth, error) {
 	}, nil
 }
 
-// Draw takes the first authorized duty whose cadence has elapsed.
+// Draw takes the first authorized duty whose cadence has elapsed, in
+// StandingDuties order: friction lenses, then the rest.
 //
-// First-due-first rather than round-robin: with a daily cadence every
-// authorized duty is drawn within a day whichever order they are consulted in,
-// and a rotation kept somewhere other than the journal would be one more piece
-// of scheduling state that a restart could disagree with.
+// First-due-first rather than round-robin, because a rotation kept somewhere
+// other than the journal would be one more piece of scheduling state that a
+// restart could disagree with. With a daily cadence every authorized duty is
+// still drawn within the day whichever order they are consulted in, so the
+// order is not a ration — it decides which duty gets *this* cycle, and #120
+// gives that cycle to the friction lens.
 //
 // Nothing is consumed here. A duty is a standing obligation rather than a queue
 // entry, so the draw is a statement about the clock and the journal, and a

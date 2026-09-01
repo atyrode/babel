@@ -196,12 +196,13 @@ func (r *Recipe) HasStage(s Stage) bool {
 	return false
 }
 
-// Set is a loaded cookbook: every recipe of one asset tree, validated
-// together. Recipes are ordered by id so every listing, manifest, and receipt
-// derived from a Set is stable.
+// Set is a loaded cookbook: the statement it opens with and every recipe of
+// one asset tree, validated together. Recipes are ordered by id so every
+// listing, manifest, and receipt derived from a Set is stable.
 type Set struct {
-	recipes []*Recipe
-	byID    map[string]*Recipe
+	recipes  []*Recipe
+	byID     map[string]*Recipe
+	preamble *Preamble
 }
 
 // recipesDir is the asset-tree directory holding recipe documents.
@@ -220,14 +221,17 @@ func LoadDir(dir string) (*Set, error) {
 	return Load(os.DirFS(dir))
 }
 
-// Load reads and validates every recipe in fsys.
+// Load reads and validates the cookbook's statement and every recipe in fsys.
 //
 // Ids are unique by construction rather than by a separate scan: a recipe's
 // file name must be its id, and a directory cannot hold two files of one name.
 //
 // Validation is all-or-nothing by design: a cookbook with one invalid recipe
 // is not a cookbook missing one recipe, because a run receipt that recorded a
-// silently reduced recipe set would misdescribe the analysis it produced.
+// silently reduced recipe set would misdescribe the analysis it produced. A
+// tree with no statement is invalid for the same reason it is not merely
+// undocumented: the statement is what recipe changes are reviewed against, and
+// a cookbook that lost it would go on evolving against nothing.
 func Load(fsys fs.FS) (*Set, error) {
 	entries, err := fs.ReadDir(fsys, recipesDir)
 	if err != nil {
@@ -251,6 +255,12 @@ func Load(fsys fs.FS) (*Set, error) {
 		if want := strings.TrimSuffix(entry.Name(), ".md"); recipe.ID != want {
 			return nil, fmt.Errorf("cookbook: recipe %s declares id %q; the file name must be the id", name, recipe.ID)
 		}
+		// The version record keys the statement and the recipes by one
+		// namespace, so a recipe wearing the statement's id would make a
+		// drift report name two documents at once.
+		if recipe.ID == preambleID {
+			return nil, fmt.Errorf("cookbook: recipe %s takes id %q, which is reserved for the cookbook's own statement", name, preambleID)
+		}
 		set.byID[recipe.ID] = recipe
 		set.recipes = append(set.recipes, recipe)
 	}
@@ -258,8 +268,26 @@ func Load(fsys fs.FS) (*Set, error) {
 		return nil, errors.New("cookbook: no recipes found")
 	}
 	sort.Slice(set.recipes, func(i, j int) bool { return set.recipes[i].ID < set.recipes[j].ID })
+
+	// The statement is read after the recipes so that a tree holding neither
+	// reports the recipes first: "this is not a cookbook" is the more useful
+	// half of that answer.
+	data, err := fs.ReadFile(fsys, preambleFile)
+	if err != nil {
+		return nil, fmt.Errorf("read cookbook %s: %w", preambleFile, err)
+	}
+	preamble, err := ParsePreamble(preambleFile, data)
+	if err != nil {
+		return nil, err
+	}
+	set.preamble = preamble
 	return set, nil
 }
+
+// Preamble returns the cookbook's standing statement, which every Set has:
+// a narrowed selection is still the same cookbook, so it answers with the
+// same statement its recipes were written under.
+func (s *Set) Preamble() *Preamble { return s.preamble }
 
 // All returns every recipe, ordered by id.
 func (s *Set) All() []*Recipe {
@@ -327,7 +355,7 @@ func (e *UnknownRecipeError) Error() string {
 // non-empty, so an empty selection is an error here rather than a run that
 // analyzes nothing and writes a receipt for it.
 func (s *Set) Select(ids []string) (*Set, error) {
-	out := &Set{byID: make(map[string]*Recipe, len(ids))}
+	out := &Set{byID: make(map[string]*Recipe, len(ids)), preamble: s.preamble}
 	for _, id := range ids {
 		r, ok := s.byID[id]
 		if !ok {

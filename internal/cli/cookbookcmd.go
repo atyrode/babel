@@ -15,20 +15,22 @@ const cookbookUsage = `Usage: babel cookbook <command> [flags]
 
 Commands:
   list     list the analysis recipes this build carries
-  check    check every recipe's declared version against its content
+  check    check every document's declared version against its content
 
 The cookbook is Babel's versioned analysis guidance (SPEC.md §5): shared
-investigation policies, domain lenses, and meta-analysis recipes. It is a
-public, reviewable asset compiled into the binary, and it never names a
-provider or a model.
+investigation policies, domain lenses, and meta-analysis recipes, opening
+with the statement they are written and reviewed against. It is a public,
+reviewable asset compiled into the binary, and it never names a provider or
+a model.
 
 Run "babel cookbook <command> -h" for a command's flags.
 `
 
 const cookbookListUsage = `Usage: babel cookbook list [flags]
 
-Lists the recipes, their declared versions, the stages they run in, and
-whether they are enabled without an operator naming them.
+Names the cookbook's standing statement, then lists the recipes, their
+declared versions, the stages they run in, and whether they are enabled
+without an operator naming them.
 
 Flags:
   --dir DIR     read this asset tree instead of the embedded one
@@ -37,13 +39,15 @@ Flags:
 
 const cookbookCheckUsage = `Usage: babel cookbook check [flags]
 
-Checks §5.1's versioning rule: a recipe whose semantics changed must have
-its version increased. Each recipe's content digest is compared against the
-committed version record, and any disagreement is reported. Drift exits 1.
+Checks §5.1's versioning rule: a document whose semantics changed must have
+its version increased. The content digest of the cookbook's statement and of
+each recipe is compared against the committed version record, and any
+disagreement is reported. Drift exits 1.
 
 This is how the rule stays enforceable from outside the build. A recipe body
 edited without a version bump would otherwise leave every receipt claiming a
-version whose guidance no longer matches.
+version whose guidance no longer matches, and a silently restated preamble
+would leave every review citing a standard that is gone.
 
 Flags:
   --dir DIR     check this asset tree instead of the embedded one
@@ -64,10 +68,23 @@ type recipeRow struct {
 	Digest       string   `json:"digest"`
 }
 
+// preambleRow is the cookbook's standing statement in machine-readable
+// output. The text itself is not emitted: it is a page of prose meant to be
+// read in the repository or the diff that changes it, and what a listing
+// needs to say is that it exists, which version the recipes were written
+// under, and where to read it.
+type preambleRow struct {
+	Version int    `json:"version"`
+	Title   string `json:"title"`
+	Path    string `json:"path"`
+	Digest  string `json:"digest"`
+}
+
 type cookbookListResult struct {
-	Recipes []recipeRow `json:"recipes"`
-	Total   int         `json:"total"`
-	Source  string      `json:"source"`
+	Preamble preambleRow `json:"preamble"`
+	Recipes  []recipeRow `json:"recipes"`
+	Total    int         `json:"total"`
+	Source   string      `json:"source"`
 }
 
 type driftRow struct {
@@ -139,10 +156,26 @@ func (a *app) cookbookList(args []string) error {
 		rows = append(rows, row)
 	}
 
-	res := cookbookListResult{Recipes: rows, Total: len(rows), Source: cookbookSource(*dir)}
+	preamble := set.Preamble()
+	res := cookbookListResult{
+		Preamble: preambleRow{
+			Version: preamble.Version,
+			Title:   Sanitize(preamble.Title),
+			Path:    Sanitize(preamble.Path),
+			Digest:  string(preamble.Digest),
+		},
+		Recipes: rows,
+		Total:   len(rows),
+		Source:  cookbookSource(*dir),
+	}
 	if *asJSON {
 		return a.emitJSON(res)
 	}
+	// The statement is named above the recipes because that is its relation
+	// to them: it is what they are written and reviewed against, and a
+	// listing that only showed the table would present the lenses as peers
+	// with nothing above them.
+	fmt.Fprintf(a.stdout, "%s (%s, version %d)\n\n", res.Preamble.Title, res.Preamble.Path, res.Preamble.Version)
 	table := make([][]string, 0, len(rows))
 	for _, row := range rows {
 		table = append(table, []string{row.ID, strconv.Itoa(row.Version), row.Kind,
@@ -179,13 +212,13 @@ func (a *app) cookbookCheck(args []string) error {
 			return err
 		}
 	} else if res.OK {
-		fmt.Fprint(a.stdout, "every recipe's declared version matches its content\n")
+		fmt.Fprint(a.stdout, "the statement and every recipe declare a version that matches their content\n")
 	} else {
 		table := make([][]string, 0, len(res.Drift))
 		for _, d := range res.Drift {
 			table = append(table, []string{d.ID, d.Kind, d.Detail})
 		}
-		if err := writeTable(a.stdout, []string{"RECIPE", "DRIFT", "DETAIL"}, table); err != nil {
+		if err := writeTable(a.stdout, []string{"DOCUMENT", "DRIFT", "DETAIL"}, table); err != nil {
 			return err
 		}
 	}
@@ -195,8 +228,9 @@ func (a *app) cookbookCheck(args []string) error {
 	// The report is the result document and it has already been written to
 	// stdout; the exit code is what a check is for, so the failure is
 	// reported without a second explanation.
-	a.diagf("%d %s disagree with the version record; increase the version of each changed recipe\n",
-		len(res.Drift), plural(len(res.Drift), "recipe", "recipes"))
+	a.diagf("%d cookbook %s %s with the version record; increase the version of each changed document\n",
+		len(res.Drift), plural(len(res.Drift), "document", "documents"),
+		plural(len(res.Drift), "disagrees", "disagree"))
 	return errReported
 }
 

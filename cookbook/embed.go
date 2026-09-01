@@ -18,12 +18,13 @@ import (
 	"io/fs"
 )
 
-//go:embed recipes versions.json
+//go:embed preamble.md recipes versions.json
 var assets embed.FS
 
-// Assets is the cookbook asset tree: a `recipes` directory of Markdown
-// recipes plus `versions.json`, the committed record of each recipe's declared
-// version and content digest.
+// Assets is the cookbook asset tree: `preamble.md`, the cookbook's standing
+// statement; a `recipes` directory of Markdown recipes; and `versions.json`,
+// the committed record of each document's declared version and content
+// digest.
 func Assets() fs.FS {
 	return assets
 }
