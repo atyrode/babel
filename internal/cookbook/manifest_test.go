@@ -70,9 +70,10 @@ func TestDriftDetection(t *testing.T) {
 		t.Fatalf("ParseRecipe = %v", err)
 	}
 
-	// The recorded state: one recipe at version 1 with its current digest.
+	// The recorded state: the planted statement, and one recipe at version 1
+	// with its current digest.
 	record := func(entries ...ManifestEntry) string {
-		m := Manifest{Schema: manifestSchema, Recipes: entries}
+		m := Manifest{Schema: manifestSchema, Preamble: defaultPreambleEntry(t), Recipes: entries}
 		data, err := m.Canonical()
 		if err != nil {
 			t.Fatalf("Canonical() = %v", err)
@@ -189,6 +190,9 @@ func TestDriftDetection(t *testing.T) {
 // build only partly understands cannot be trusted to detect drift, so every
 // case is a load failure rather than a tolerated oddity.
 func TestManifestRejections(t *testing.T) {
+	sha := "sha256:" + strings.Repeat("a", 64)
+	preamble := `"preamble":{"version":1,"digest":"` + sha + `"},`
+
 	tests := []struct {
 		name    string
 		content string
@@ -196,32 +200,47 @@ func TestManifestRejections(t *testing.T) {
 	}{
 		{
 			name:    "unknown field",
-			content: `{"manifest_schema":1,"recipes":[],"notes":"extra"}`,
+			content: `{"manifest_schema":2,` + preamble + `"recipes":[],"notes":"extra"}`,
 			want:    "unknown field",
 		},
 		{
 			name:    "wrong schema",
+			content: `{"manifest_schema":1,` + preamble + `"recipes":[]}`,
+			want:    "manifest schema 1",
+		},
+		{
+			name:    "no statement recorded",
 			content: `{"manifest_schema":2,"recipes":[]}`,
-			want:    "manifest schema 2",
+			want:    "want at least 1",
+		},
+		{
+			name:    "statement with a malformed digest",
+			content: `{"manifest_schema":2,"preamble":{"version":1,"digest":"abc"},"recipes":[]}`,
+			want:    "malformed digest",
+		},
+		{
+			name:    "a recipe recorded under the statement's id",
+			content: `{"manifest_schema":2,` + preamble + `"recipes":[{"id":"preamble","version":1,"digest":"` + sha + `"}]}`,
+			want:    `id "preamble"`,
 		},
 		{
 			name:    "malformed digest",
-			content: `{"manifest_schema":1,"recipes":[{"id":"sample","version":1,"digest":"abc"}]}`,
+			content: `{"manifest_schema":2,` + preamble + `"recipes":[{"id":"sample","version":1,"digest":"abc"}]}`,
 			want:    "malformed digest",
 		},
 		{
 			name:    "invalid id",
-			content: `{"manifest_schema":1,"recipes":[{"id":"Sample","version":1,"digest":"sha256:` + strings.Repeat("a", 64) + `"}]}`,
+			content: `{"manifest_schema":2,` + preamble + `"recipes":[{"id":"Sample","version":1,"digest":"` + sha + `"}]}`,
 			want:    "invalid id",
 		},
 		{
 			name:    "version below one",
-			content: `{"manifest_schema":1,"recipes":[{"id":"sample","version":0,"digest":"sha256:` + strings.Repeat("a", 64) + `"}]}`,
+			content: `{"manifest_schema":2,` + preamble + `"recipes":[{"id":"sample","version":0,"digest":"` + sha + `"}]}`,
 			want:    "want at least 1",
 		},
 		{
 			name:    "not json",
-			content: "manifest_schema: 1\n",
+			content: "manifest_schema: 2\n",
 			want:    "decode cookbook",
 		},
 	}
@@ -245,6 +264,9 @@ func TestWriteManifestRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, recipesDir), 0o755); err != nil {
 		t.Fatalf("create recipe directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, preambleFile), defaultPreamble, 0o644); err != nil {
+		t.Fatalf("write statement: %v", err)
 	}
 	path := filepath.Join(dir, recipesDir, "sample.md")
 	if err := os.WriteFile(path, sampleDoc(nil, sampleBody("Sample")), 0o644); err != nil {

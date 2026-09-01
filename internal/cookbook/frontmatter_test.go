@@ -62,8 +62,14 @@ func sampleBody(title string) string {
 
 // mapFS renders an in-memory asset tree. Tests never need a real cookbook
 // directory, so nothing here depends on the repository layout.
+//
+// Every tree carries the cookbook's statement unless the case supplies its
+// own, because Load requires one: a case about recipes stays about recipes.
 func mapFS(files map[string]string) fstest.MapFS {
-	fsys := make(fstest.MapFS, len(files))
+	fsys := make(fstest.MapFS, len(files)+1)
+	if _, ok := files[preambleFile]; !ok {
+		fsys[preambleFile] = &fstest.MapFile{Data: defaultPreamble}
+	}
 	for name, content := range files {
 		fsys[name] = &fstest.MapFile{Data: []byte(content)}
 	}

@@ -1,5 +1,9 @@
 {
-  "manifest_schema": 1,
+  "manifest_schema": 2,
+  "preamble": {
+    "version": 1,
+    "digest": "sha256:7867c920f390bda7b7fd2d6489675546312f8f6913b6648add35937abb112b88"
+  },
   "recipes": [
     {
       "id": "babel-improves-babel",
