@@ -100,6 +100,15 @@ func TestFrozenAllowlistShape(t *testing.T) {
 		// liveness columns. Nothing was widened to make room for it: every
 		// column is an identifier, a closed vocabulary or a timestamp.
 		"presence",
+		// A proposal's provenance (migrations/0010, issue #114). It is the
+		// second Phase B table whose columns say something structural about a
+		// record rather than only identifying it, and it was added for the
+		// reason the first was: relationship IDs are what SPEC.md 9 admits, and
+		// a fleet host with no payload key that cannot tell a want from a
+		// finding-backed conclusion renders the first with the authority of the
+		// second. No content column came with it, and the Phase B class gate is
+		// what keeps one from arriving later.
+		"analysis_proposal_subjects",
 	}
 	var got []string
 	for table := range tables {

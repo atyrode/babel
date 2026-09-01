@@ -200,10 +200,17 @@ type findingRow struct {
 }
 
 type proposalRow struct {
-	ID                   string        `json:"id"`
-	AncestorID           string        `json:"ancestor_id,omitempty"`
-	RunID                string        `json:"run_id"`
-	ReviewStatus         string        `json:"review_status"`
+	ID           string `json:"id"`
+	AncestorID   string `json:"ancestor_id,omitempty"`
+	RunID        string `json:"run_id"`
+	ReviewStatus string `json:"review_status"`
+	// Form is #114's provenance: `consolidated` for §4.5's finding-backed
+	// review artifact, `candidate` for the remedy half of an emitted
+	// candidate. It sits beside ReviewStatus because the two answer adjacent
+	// questions - what has been decided about this suggestion, and how much
+	// stands behind it - and a script that renders one without the other
+	// would present an unbacked want as a consolidation.
+	Form                 string        `json:"form"`
 	CreatedAt            string        `json:"created_at"`
 	Title                string        `json:"title"`
 	Problem              string        `json:"problem"`
@@ -256,6 +263,17 @@ type hypothesisResult struct {
 	Observations  []observationRow `json:"observations"`
 	LinksFrom     []linkRow        `json:"links_from"`
 	LinksTo       []linkRow        `json:"links_to"`
+	// Proposals are the remedies that address this claim directly (#114),
+	// newest first. The relation is many-to-many, so several competing
+	// remedies against one claim is the ordinary case rather than a
+	// contradiction, and none at all is the honest default for a claim
+	// nobody has suggested a change for.
+	//
+	// It lists the asserted relation only. A consolidated proposal is
+	// already reachable from here through the finding it rests on, and
+	// mixing the two would bury the competing remedies among the
+	// consolidations.
+	Proposals []proposalRow `json:"proposals"`
 	// References is #113's citation graph around this candidate. It is absent
 	// rather than empty on a build with no edge store, because an empty
 	// object would state that nothing cites this candidate and a machine
@@ -446,6 +464,15 @@ func (a *app) hypothesisShow(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// #114's other half of the record: the remedies somebody has offered in
+	// answer to this claim. They are read here rather than left to the
+	// citation section because a competing remedy is not a citation an
+	// operator scans past - it is the thing a reviewer came to decide about,
+	// and the graph's edges are a best-effort shadow of these rows.
+	remedies, err := state.frontier.ProposalsAddressing(ctx, id)
+	if err != nil {
+		return err
+	}
 
 	refs, refsErr := citationsFor(ctx, state.references,
 		reference.RecordRef{Kind: resolve.NamespaceHypothesis, ID: id})
@@ -456,6 +483,7 @@ func (a *app) hypothesisShow(ctx context.Context, args []string) error {
 		Observations:  renderObservations(observations),
 		LinksFrom:     renderLinks(from),
 		LinksTo:       renderLinks(to),
+		Proposals:     renderProposals(remedies),
 		References:    refs,
 	}
 	if *asJSON {
@@ -502,6 +530,14 @@ func (a *app) hypothesisShow(ctx context.Context, args []string) error {
 		linkTable = append(linkTable, []string{"in", l.Type, l.FromID, orMissing(l.Note)})
 	}
 	if err := writeTable(a.stdout, []string{"DIR", "TYPE", "OTHER", "NOTE"}, linkTable); err != nil {
+		return err
+	}
+	fmt.Fprint(a.stdout, "\nremedies addressing this claim\n")
+	remedyTable := make([][]string, 0, len(res.Proposals))
+	for _, p := range res.Proposals {
+		remedyTable = append(remedyTable, []string{p.ID, p.ReviewStatus, p.Classification, p.Title})
+	}
+	if err := writeTable(a.stdout, []string{"ID", "REVIEW", "CLASS", "TITLE"}, remedyTable); err != nil {
 		return err
 	}
 	return a.writeCitations(refs, refsErr)
@@ -688,11 +724,15 @@ func (a *app) findingShow(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Fprint(a.stdout, "\nproposals\n")
+	// FORM is in the table rather than only in the JSON because this is
+	// where an operator decides what to open next (#114). A finding-backed
+	// consolidation and a candidate remedy read identically by title, and
+	// the difference is exactly how much stands behind the suggestion.
 	table := make([][]string, 0, len(res.Proposals))
 	for _, p := range res.Proposals {
-		table = append(table, []string{p.ID, p.ReviewStatus, p.Classification, p.Title})
+		table = append(table, []string{p.ID, p.Form, p.ReviewStatus, p.Classification, p.Title})
 	}
-	if err := writeTable(a.stdout, []string{"ID", "REVIEW", "CLASS", "TITLE"}, table); err != nil {
+	if err := writeTable(a.stdout, []string{"ID", "FORM", "REVIEW", "CLASS", "TITLE"}, table); err != nil {
 		return err
 	}
 	return a.writeCitations(refs, refsErr)
@@ -885,12 +925,22 @@ func renderFinding(f frontier.Finding, status frontier.ReviewStatus) findingRow 
 	}
 }
 
+// renderProposals maps a list of proposals, preserving the store's order.
+func renderProposals(list []frontier.Proposal) []proposalRow {
+	rows := make([]proposalRow, 0, len(list))
+	for _, p := range list {
+		rows = append(rows, renderProposal(p))
+	}
+	return rows
+}
+
 func renderProposal(p frontier.Proposal) proposalRow {
 	row := proposalRow{
 		ID:                   Sanitize(p.ID),
 		AncestorID:           Sanitize(p.AncestorID),
 		RunID:                Sanitize(p.RunID),
 		ReviewStatus:         Sanitize(string(p.ReviewStatus)),
+		Form:                 Sanitize(string(p.Form)),
 		CreatedAt:            formatTime(p.CreatedAt),
 		Title:                Sanitize(p.Payload.Title),
 		Problem:              Sanitize(p.Payload.Problem),

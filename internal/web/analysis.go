@@ -484,6 +484,15 @@ type hypothesisDetail struct {
 	Observations  []observationView `json:"observations"`
 	Links         []linkView        `json:"links"`
 	Lineage       lineageView       `json:"lineage"`
+	// Proposals are #114's remedies addressing this claim, newest first.
+	//
+	// They are on the candidate's own page rather than only reachable
+	// through the citation graph because the split is what an operator came
+	// here to act on: the claim and the suggested change are reviewed
+	// separately, and a page that showed only the claim would hide the
+	// decision waiting beside it. Several competing remedies is the ordinary
+	// case, and none is the honest default.
+	Proposals []proposalView `json:"proposals"`
 }
 
 func (s *Server) handleHypothesis(w http.ResponseWriter, r *http.Request) {
@@ -525,6 +534,11 @@ func (s *Server) handleHypothesis(w http.ResponseWriter, r *http.Request) {
 		s.serviceError(w, r, err)
 		return
 	}
+	remedies, err := s.opts.Frontier.ProposalsAddressing(ctx, id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
 	detail := hypothesisDetail{
 		Hypothesis: hypothesisView{
 			ID:            record.ID,
@@ -540,6 +554,7 @@ func (s *Server) handleHypothesis(w http.ResponseWriter, r *http.Request) {
 		Observations:  viewObservations(observations),
 		Links:         links,
 		Lineage:       viewLineage(lineage),
+		Proposals:     viewProposals(remedies),
 	}
 	for _, entry := range history {
 		detail.StatusHistory = append(detail.StatusHistory, viewStatusEvent(entry))
@@ -749,15 +764,46 @@ type findingView struct {
 }
 
 type proposalView struct {
-	ID            string                   `json:"id"`
-	AncestorID    string                   `json:"ancestor_id,omitempty"`
-	RunID         string                   `json:"run_id"`
-	SchemaVersion int                      `json:"schema_version"`
-	CreatedAt     string                   `json:"created_at"`
-	FindingIDs    []string                 `json:"finding_ids"`
-	HypothesisIDs []string                 `json:"hypothesis_ids"`
-	ReviewStatus  string                   `json:"review_status"`
-	Payload       frontier.ProposalPayload `json:"payload"`
+	ID            string   `json:"id"`
+	AncestorID    string   `json:"ancestor_id,omitempty"`
+	RunID         string   `json:"run_id"`
+	SchemaVersion int      `json:"schema_version"`
+	CreatedAt     string   `json:"created_at"`
+	FindingIDs    []string `json:"finding_ids"`
+	HypothesisIDs []string `json:"hypothesis_ids"`
+	// Form is #114's provenance: `consolidated` for §4.5's finding-backed
+	// artifact, `candidate` for a remedy resting only on the claim it
+	// addresses. The browser needs it to frame the record honestly - a want
+	// rendered with a consolidation's authority is the failure the split
+	// exists to prevent - so it is served rather than inferred from whether
+	// finding_ids happens to be empty.
+	Form         string                   `json:"form"`
+	ReviewStatus string                   `json:"review_status"`
+	Payload      frontier.ProposalPayload `json:"payload"`
+}
+
+// viewProposals renders proposals for a listing, preserving the store's order.
+func viewProposals(records []frontier.Proposal) []proposalView {
+	views := make([]proposalView, 0, len(records))
+	for _, record := range records {
+		views = append(views, viewProposal(record))
+	}
+	return views
+}
+
+func viewProposal(record frontier.Proposal) proposalView {
+	return proposalView{
+		ID:            record.ID,
+		AncestorID:    record.AncestorID,
+		RunID:         record.RunID,
+		SchemaVersion: record.SchemaVersion,
+		CreatedAt:     timeText(record.CreatedAt),
+		FindingIDs:    record.FindingIDs,
+		HypothesisIDs: record.HypothesisIDs,
+		Form:          string(record.Form),
+		ReviewStatus:  string(record.ReviewStatus),
+		Payload:       record.Payload,
+	}
 }
 
 type findingDetail struct {
@@ -838,17 +884,7 @@ func (s *Server) proposalsFor(ctx context.Context, findingID string) ([]proposal
 		if !contains(record.FindingIDs, findingID) {
 			continue
 		}
-		views = append(views, proposalView{
-			ID:            record.ID,
-			AncestorID:    record.AncestorID,
-			RunID:         record.RunID,
-			SchemaVersion: record.SchemaVersion,
-			CreatedAt:     timeText(record.CreatedAt),
-			FindingIDs:    record.FindingIDs,
-			HypothesisIDs: record.HypothesisIDs,
-			ReviewStatus:  string(record.ReviewStatus),
-			Payload:       record.Payload,
-		})
+		views = append(views, viewProposal(record))
 	}
 	return views, nil
 }

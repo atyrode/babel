@@ -169,6 +169,10 @@ type FrontierReader interface {
 	ObservationsFor(context.Context, string) ([]frontier.Observation, error)
 	Finding(context.Context, string) (frontier.Finding, error)
 	Proposal(context.Context, string) (frontier.Proposal, error)
+	// ProposalsAddressing lists the remedies that answer one claim directly
+	// (#114). It is a read of the asserted relation, so a candidate page can
+	// show the competing suggestions somebody has offered against it.
+	ProposalsAddressing(context.Context, string) ([]frontier.Proposal, error)
 	LinksFrom(context.Context, string) ([]frontier.Link, error)
 	LinksTo(context.Context, string) ([]frontier.Link, error)
 	StatusHistory(context.Context, string) ([]frontier.StatusEvent, error)

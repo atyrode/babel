@@ -396,6 +396,80 @@ func TestStagingSharesTheWritersTransaction(t *testing.T) {
 	}
 }
 
+// A proposal's provenance has to survive the crash window between the durable
+// write and the sync, which is why it is staged rather than recomputed: nothing
+// could re-derive these ids from a sealed payload (issue #114).
+//
+// The whole path is exercised, because each half fails differently. Losing the
+// staging loses the columns before publication; losing the release grows the
+// durable file forever; losing the order makes "the finding this was
+// consolidated from" a different answer on every read.
+func TestAProposalsSubjectsSurviveStagingAndReachTheCatalog(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+
+	proposal := record("run-p", "run-p-prop", sharedcatalog.KindProposal)
+	proposal.Subjects = []sharedcatalog.RecordSubject{
+		{Kind: sharedcatalog.SubjectHypothesis, ID: "run-p-hyp-b"},
+		{Kind: sharedcatalog.SubjectHypothesis, ID: "run-p-hyp-a"},
+	}
+	f.stageAndDeclare(t, "run-p",
+		record("run-p", "run-p-hyp", sharedcatalog.KindHypothesis),
+		proposal)
+
+	// Staged with the record, in the writer's own transaction.
+	if n := f.subjectRows(t); n != 2 {
+		t.Fatalf("the journal staged %d proposal subjects, want 2", n)
+	}
+
+	if err := f.pub.CommitInline(ctx, Closure{RunID: "run-p"}); err != nil {
+		t.Fatalf("commit inline: %v", err)
+	}
+	if len(f.failures) != 0 {
+		t.Fatalf("a clean publication reported %d diagnostics: %v", len(f.failures), f.failures)
+	}
+
+	got, err := sharedcatalog.RecordSubjects(ctx, f.catalog, []string{"run-p-prop", "run-p-hyp"})
+	if err != nil {
+		t.Fatalf("RecordSubjects: %v", err)
+	}
+	// The hypothesis has no subjects and is absent rather than answered with an
+	// empty list: subjects are proposal vocabulary.
+	if _, present := got["run-p-hyp"]; present {
+		t.Error("a hypothesis was answered for by the proposal subject read")
+	}
+	// Order is the producer's, not the ids' - the reversed pair is the point.
+	want := proposal.Subjects
+	read := got["run-p-prop"]
+	if len(read) != len(want) {
+		t.Fatalf("the catalog holds %d subjects, want %d", len(read), len(want))
+	}
+	for i := range want {
+		if read[i] != want[i] {
+			t.Errorf("subject %d is %s, want %s", i, read[i], want[i])
+		}
+	}
+
+	// Released with the payload once the record has committed: the catalog holds
+	// the columns now, and internal/frontier never stopped holding them, so a
+	// third copy that lived forever would grow the durable file by every
+	// proposal Babel has ever published.
+	if n := f.subjectRows(t); n != 0 {
+		t.Errorf("the journal still holds %d staged proposal subjects after a full commit", n)
+	}
+}
+
+// subjectRows counts the staged proposal subjects the journal still holds.
+func (f *fixture) subjectRows(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := f.journal.db.QueryRowContext(t.Context(),
+		`SELECT count(*) FROM sync_record_subject`).Scan(&n); err != nil {
+		t.Fatalf("count staged proposal subjects: %v", err)
+	}
+	return n
+}
+
 // A declared closure is closed. A record that tried to join one would leave a
 // run whose declared count can never be met, permanently pending with no
 // remedy, so the write is refused where it is still fixable.
@@ -473,6 +547,25 @@ func TestStagingRefusesWhatTheCatalogCannotCarry(t *testing.T) {
 		{"payload over the bound", Record{
 			RunID: "run-k", EntityID: "run-k-one", Kind: sharedcatalog.KindHypothesis,
 			Schema: 1, Payload: make([]byte, maxPayloadBytes+1)}, "over the"},
+		{"an unknown proposal subject kind", Record{
+			RunID: "run-k", EntityID: "run-k-one", Kind: sharedcatalog.KindProposal,
+			Schema: 1, Payload: []byte("{}"),
+			Subjects: []sharedcatalog.RecordSubject{{Kind: "observation", ID: "obs-1"}}},
+			"subject kind"},
+		{"a proposal subject with no id", Record{
+			RunID: "run-k", EntityID: "run-k-one", Kind: sharedcatalog.KindProposal,
+			Schema: 1, Payload: []byte("{}"),
+			Subjects: []sharedcatalog.RecordSubject{{Kind: sharedcatalog.SubjectFinding}}},
+			"subject id"},
+		// A subject list is proposal vocabulary. Accepted on a hypothesis it
+		// would make analysis_proposal_subjects mean two things, and the row
+		// carries no column that says which.
+		{"subjects on a record that is not a proposal", Record{
+			RunID: "run-k", EntityID: "run-k-one", Kind: sharedcatalog.KindHypothesis,
+			Schema: 1, Payload: []byte("{}"),
+			Subjects: []sharedcatalog.RecordSubject{
+				{Kind: sharedcatalog.SubjectHypothesis, ID: "hyp-1"}}},
+			"not a proposal"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
