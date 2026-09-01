@@ -287,11 +287,18 @@ func (a *app) storageMigrate(ctx context.Context, args []string) error {
 	// configured document's stands unless the ephemeral one states its own.
 	maxConns := cfg.Catalog.MaxConnections
 	if *fromJSON != "" {
+		// A migration document is read for exactly one thing: the credential
+		// this invocation connects with. Every other field it carries is
+		// ignored, a payload key ring included — this command persists nothing
+		// by contract, and installing keys from an ephemeral document would
+		// make the one command that promises to write nothing write the most
+		// consequential file Babel has. `babel storage configure` installs a
+		// ring.
 		ephemeral, err := a.decodeConfigDocument(*fromJSON)
 		if err != nil {
 			return err
 		}
-		if err := config.Validate(ephemeral); err != nil {
+		if err := config.Validate(ephemeral.Config); err != nil {
 			return err
 		}
 		if ephemeral.Catalog == nil {
@@ -397,31 +404,36 @@ func (a *app) storageVerify(ctx context.Context, args []string) error {
 
 // decodeConfigDocument reads exactly one JSON document from a file or stdin. It
 // is shared by `configure` and `migrate` so both reject trailing data the same
-// way, and neither ever echoes the document: it carries credentials.
-func (a *app) decodeConfigDocument(from string) (config.Config, error) {
+// way, and neither ever echoes the document: it carries credentials, and since
+// the ceremony grew a payload key ring (#112) it can carry key material too.
+//
+// The whole document is decoded here, ring included; what each caller does with
+// the halves is the caller's contract. `configure` installs both, `migrate`
+// reads a credential and persists nothing.
+func (a *app) decodeConfigDocument(from string) (config.ConfigureDocument, error) {
 	in := a.stdin
 	if from != "-" {
 		f, err := os.Open(from)
 		if err != nil {
-			return config.Config{}, fmt.Errorf("open configuration input %s: %w", from, err)
+			return config.ConfigureDocument{}, fmt.Errorf("open configuration input %s: %w", from, err)
 		}
 		defer f.Close()
 		in = f
 	}
 
-	var cfg config.Config
+	var doc config.ConfigureDocument
 	dec := json.NewDecoder(in)
-	if err := dec.Decode(&cfg); err != nil {
-		return config.Config{}, fmt.Errorf("decode configuration input: %w", err)
+	if err := dec.Decode(&doc); err != nil {
+		return config.ConfigureDocument{}, fmt.Errorf("decode configuration input: %w", err)
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("multiple JSON values")
 		}
-		return config.Config{}, fmt.Errorf("decode configuration input: %w", err)
+		return config.ConfigureDocument{}, fmt.Errorf("decode configuration input: %w", err)
 	}
-	return cfg, nil
+	return doc, nil
 }
 
 // rebuildResult is the machine-readable outcome of a host-scoped catalog

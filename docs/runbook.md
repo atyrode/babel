@@ -798,14 +798,22 @@ babel sync --generate-key phase-b-1
 ```
 $ babel sync --generate-key phase-b-1
 payload key phase-b-1 written to /home/operator/.config/babel/payload-keys.json
+note: back up that document; every object sealed under a key it holds is unreadable without it
+note: this host is the only place phase-b-1 exists; put the ring from /home/operator/.config/babel/payload-keys.json into the deployment's custody document as its "payload_keys" field, then re-provision the fleet — `babel storage configure --from-json` is what installs it on every other host
 ```
 
 The key material is never printed, never logged, and never appears in an error.
+The two notes are the steps this key is not finished without, and both are
+below. Babel names no custodian in either, deliberately: it receives one
+finished document, never learns Bitwarden exists, and never prints a secret
+(§3), so the vault-specific half of each step lives here and in
+`atyrode/dotfiles`.
+
 A second invocation **refuses**:
 
 ```
 $ babel sync --generate-key phase-b-2
-babel: /home/operator/.config/babel/payload-keys.json: payload key document already exists
+babel: /home/operator/.config/babel/payload-keys.json already holds this deployment's payload keys, and replacing it would leave every object sealed under them unreadable forever; add a key to that document to rotate instead
 ```
 
 That refusal is the point. Replacing the document orphans every sealed object
@@ -816,18 +824,137 @@ every previous key stays in the ring, so historical records keep opening. That
 is `internal/config`'s `AddPayloadKey`, and it is why `SavePayloadKeys` will not
 overwrite.
 
+**Distribution: the ring rides in the storage ceremony.** One custody path for
+the whole deployment, not two. The Bitwarden item **"Babel repository
+password"** (§3) carries the ring in a hidden `payload_keys` field;
+`scripts/babel-storage-configure.sh` reads it alongside the repository password
+it already reads, puts both in the one document it pipes to `babel storage
+configure --from-json -`, and Babel installs the ring at mode 0600 beside
+`storage.json`. `atyrode provision babel` therefore hands a new machine its
+locator, its provider credentials and its keys in a single act, and `babel sync`
+reads the ring from exactly where it always read it.
+
+The field is the ring, whole:
+
+```json
+{
+  "config_schema": 2,
+  "mode": "shared",
+  "...": "the rest of §4's document",
+  "payload_keys": {
+    "key_schema": 1,
+    "active_key_id": "phase-b-2",
+    "keys": [
+      {"key_id": "phase-b-1", "key": "<32 bytes, standard base64>"},
+      {"key_id": "phase-b-2", "key": "<32 bytes, standard base64>"}
+    ]
+  }
+}
+```
+
+The whole append-only history and never the newest key alone: a host given only
+the active key seals correctly and cannot open one historical record.
+`storage.json` itself never carries key material — `config_schema` 2 stays
+frozen (SPEC.md §14) and the ring lands in the mode-0600 document — and the
+install is a **union**. Exercised on 2026-08-31 against a scratch configuration
+home, delivering a ring to a machine that held none and then re-delivering it:
+
+```
+$ babel storage configure --from-json ceremony-document.json
+storage configuration written to /home/second/.config/babel/storage.json
+payload key ring at /home/second/.config/babel/payload-keys.json gained phase-b-1; new records seal under phase-b-1
+
+$ babel storage configure --from-json ceremony-document.json
+storage configuration written to /home/second/.config/babel/storage.json
+payload key ring at /home/second/.config/babel/payload-keys.json already carries every key the document delivers
+```
+
+Three properties, each of which a plainer "install what the document says"
+would break:
+
+- **A key this host holds that the document omits is kept**, and named. Dropping
+  it would orphan every object sealed under it, forever:
+
+  ```
+  warning: this host holds payload key(s) workstation-1 that the delivered document does not carry; they are kept, and as far as this document knows they exist on this disk alone — copy the ring from /home/operator/.config/babel/payload-keys.json into the document's "payload_keys" field, or every record sealed under them stays unreadable on every other host and unrecoverable if this one is lost
+  ```
+
+- **A delivered key id whose material differs from the material held here is
+  refused**, before `storage.json` is replaced, so the machine keeps the
+  configuration and the ring it had. Two keys under one id is a fork of the
+  deployment's key space — the id is what selects the key that opens a record —
+  and nothing on the machine can tell which side is authoritative:
+
+  ```
+  $ babel storage configure --from-json conflicting-document.json
+  babel: /home/second/.config/babel/payload-keys.json: payload key "phase-b-1": payload key material differs from the key already held under that id
+  ```
+
+- **A re-provision that delivers nothing new writes nothing.** The one file in
+  Babel that is nothing but key material is not rewritten for no change.
+
+**The one-time backfill.** `phase-b-1` was generated on `workstation-linux`
+before this ceremony carried rings, so the vault item does not have it. Every
+provision on that machine says so, and names the step:
+
+```
+note: vault item "Babel repository password" carries no payload key ring, and this machine holds one at /home/operator/.config/babel/payload-keys.json
+      until the vault carries it, no other host can open a single Phase B record this one sealed,
+      and losing this disk loses every record sealed under it
+      one time, on this machine: babel-storage-configure --upload-payload-keys
+      then re-provision the fleet: atyrode provision babel
+```
+
+Take it once, on the machine that holds the ring:
+
+```sh
+babel-storage-configure --upload-payload-keys   # unlock, upload, relock
+atyrode provision babel                         # then on every other host
+```
+
+The upload reports key ids and counts and never material, and it merges in the
+same direction the install does: a key the vault carries and this host lacks is
+kept, and conflicting material under one id refuses rather than picking a side.
+
+**Rotation.** A new key in the vault, then a re-provision of the fleet:
+
+1. **Append a key to the ring on one machine.** `babel sync --generate-key`
+   creates the document and refuses to replace it, so today this is a hand-edit
+   of the mode-0600 document: another entry in `keys` (32 bytes of standard
+   base64, id in `[a-z0-9._-]`) and `active_key_id` moved to it.
+   `internal/config`'s `AddPayloadKey` is the code path a rotate command would
+   use; the rotation *drill* is Phase C work (SPEC.md §657), and what #112 asked
+   of this format was only that it not preclude one.
+2. **`babel-storage-configure --upload-payload-keys`.** The vault item's ring
+   becomes the union, sealing under the new active key.
+3. **`atyrode provision babel` on every host.** Each gains the new key and keeps
+   every old one.
+
+Old keys are never removed, and that is what keeps history readable: an object
+sealed under `phase-b-1` still opens after `phase-b-2` becomes active. A ring
+that lost `phase-b-1` would leave those objects in Cellar forever, unreadable by
+anything, because nothing here deletes a remote object.
+
 **Custody.** This document is in the same class as the restic repository
 password (§3): if every copy of a key is lost, the records sealed under it are
-unrecoverable, and no provider can reissue it. Back it up with the repository
-password, in the same place, at the same time. A coordinated backup of
-PostgreSQL and Cellar without the key document restores ciphertext and nothing
-else.
+unrecoverable, and no provider can reissue it. With the ring in the vault item,
+backing up the repository password backs up the keys with it — one Bitwarden
+export, one obligation, and §3's note applies unchanged: a vault reachable only
+from the machines it protects is not a backup. A coordinated backup of
+PostgreSQL and Cellar without the keys restores ciphertext and nothing else.
 
 **Every authorized instance holds the same keys.** SPEC.md §9 states that
 plainly: every fully authorized instance can necessarily decrypt the shared
-corpus, and compromise of one has that blast radius. Distributing the document
-to a second machine is therefore a deliberate act with a stated cost, not a
-convenience.
+corpus, and compromise of one has that blast radius. Distributing the ring
+through the ceremony makes that easy, which does not make it free — a machine
+that should not read this corpus must not be provisioned into this deployment.
+
+**What has not been run.** Everything above was exercised on 2026-08-31 against
+a scratch configuration home and a stubbed vault: the delivery, the union, both
+refusals, the upload merge, and the notes. The Bitwarden half — a real
+`bw get item` carrying a real `payload_keys` field, and a real
+`--upload-payload-keys` against the live vault — needs the master password
+interactively, so it joins §3's unlock drill in *What remains operator-gated*.
 
 ### 8.2 What is pending, and why
 
@@ -980,13 +1107,21 @@ is nothing to distinguish.
 
 ## What remains operator-gated
 
-Everything above was executed tonight except two procedures, both of which
-require something an unattended drill cannot supply:
+Everything above was executed tonight except three procedures, each of which
+requires something an unattended drill cannot supply:
 
 1. **The Bitwarden unlock/retrieve/relock drill** (§3) — needs the master
    password interactively. Command and success criteria are written out above;
    it takes about a minute.
-2. **Full restore-to-service on a clean machine** — the end-to-end case where a
+2. **The payload key ring's vault half** (§8.1) — the same master password.
+   Reading a real `payload_keys` field out of the vault item, and the one-time
+   `babel-storage-configure --upload-payload-keys` that puts this workstation's
+   existing ring there, are the two steps that make a second host able to read
+   Phase B content rather than only its plaintext rows. Everything on the Babel
+   side of that boundary — delivery, the union install, both refusals — is
+   exercised; the vault call is not. Until the upload is taken, `phase-b-1`
+   exists on one disk.
+3. **Full restore-to-service on a clean machine** — the end-to-end case where a
    machine with no `storage.json`, no password file, and no local sessions is
    rebuilt into a publishing fleet member. Its parts are all proven: bootstrap
    of a genuinely new host (§6, `alex-x86_64-linux-wsl`, tonight), cross-machine

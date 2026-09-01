@@ -148,6 +148,49 @@ func TestSyncGenerateKeyEmitsOneDocumentForJSON(t *testing.T) {
 	assertNoMaterial(t, "generate --json", keys.Keys[0].Key, stdout, stderr)
 }
 
+// TestSyncGenerateKeyNamesTheCustodyStep covers what a freshly generated key
+// still needs from its operator.
+//
+// The key is on one disk. Until the ring reaches the rest of the fleet no other
+// host can open a single record sealed under it (#111 proved the degradation:
+// plaintext rows, no content), and if this disk dies the records are gone with
+// it. So the command names the step rather than leaving the operator to infer
+// it - the document field custody carries, and the command that installs a ring
+// on another machine - and it names the file to copy from rather than printing
+// the ring, because the material still reaches no stream.
+func TestSyncGenerateKeyNamesTheCustodyStep(t *testing.T) {
+	f := newFixture(t)
+
+	stdout, stderr := f.ok("sync", "--generate-key", "phase-b-1")
+	for _, want := range []string{
+		config.PayloadKeysPath(),
+		"payload_keys",
+		"babel storage configure --from-json",
+		"re-provision",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the custody note does not mention %q:\n%s", want, stderr)
+		}
+	}
+	keys, found, err := config.LoadPayloadKeys()
+	if err != nil || !found {
+		t.Fatalf("LoadPayloadKeys = (found=%v, err=%v)", found, err)
+	}
+	assertNoMaterial(t, "custody note", keys.Keys[0].Key, stdout, stderr)
+
+	// Babel is vault-agnostic by construction (SPEC.md decisions 38, 50, 51):
+	// it never learns what a vault is, so the step it prints must name the
+	// document and the command, never a custodian. Naming one here would be
+	// wrong for every deployment that keeps its keys somewhere else, and would
+	// put a dotfiles constant in Babel's output.
+	for _, forbidden := range []string{"Bitwarden", "bw ", "vault item"} {
+		if strings.Contains(stdout+stderr, forbidden) {
+			t.Errorf("sync named a particular custodian (%q), which Babel does not know about:\n%s",
+				forbidden, stdout+stderr)
+		}
+	}
+}
+
 // assertNoMaterial proves the key material reached neither stream. It is the
 // one value in Babel that no report, diagnostic or document may carry: the id
 // is admitted in plaintext beside every ciphertext, the bytes never are.
