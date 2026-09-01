@@ -38,6 +38,71 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Proposals are first-class records, joined to the hypotheses they answer by
+  `addresses` edges (issue #114, operator direction 2026-08-31: new outputs
+  only).** A candidate that carries a suggested change now emits two records
+  instead of one: the claim about how things are, and the remedy for it. Each
+  has its own revision chain and its own dispositions, so accepting a claim as
+  true while rejecting its remedy as unwanted — or the reverse — is a decision
+  the records can actually hold. No existing hypothesis was migrated.
+  - A proposal states which of its two forms it has: a consolidated proposal
+    rests on findings that rest on evidence; a candidate proposal rests only on
+    the claim it addresses and is shown as a want or an option rather than as a
+    verified fact. The form travels fleet-wide, including to hosts that cannot
+    decrypt a word of it.
+  - The five default cookbook lenses are version 3, telling a worker to emit
+    claims and remedies as separate addressable records, to prefer a claim
+    alone when the record does not support a remedy, and to offer competing
+    remedies separately rather than one hedged suggestion.
+  - A hypothesis page lists the remedies addressing it. `babel hypothesis show`
+    gains a "remedies addressing this claim" section, `babel finding show` a
+    FORM column, the web record page `proposals_addressing`, and the review
+    export introduces a candidate remedy as a want rather than as Babel's
+    canonical review artifact.
+- **`babel tell` — complaints as operator-authored steering records (issue
+  #115).** `babel tell TEXT` records something the operator wants Babel to know
+  that Babel did not ask about: a complaint, a wish, or a hunch. The text is an
+  argument or the whole of stdin, `--about` names an analysis record it is
+  about, `--amend` restates one already told, and `--json` emits the record
+  with its adjacency. Capture prints what Babel already holds touching the same
+  words, so telling it something is also asking what it already has.
+  - A complaint is a first-class Phase B record: durable, envelope-encrypted,
+    pending-sync, insert-only, with its own revision chain and its own place in
+    the reference graph. It enters the retrieval index beside Babel's own
+    output, so every later preparation surfaces the operator's standing
+    annoyances as context rather than only Babel's prior conclusions.
+  - A complaint has no lifecycle. Nothing is opened, assigned, scheduled, or
+    closed, and there is no resolved state to leave stale — "was this
+    addressed?" is a citation query on the complaint's own page, answered by
+    the records that carry an `addresses` edge to it. A complaint may be
+    amended and never ended: `--amend` appends a new wording and keeps the
+    earlier one, because the operator may say it better later and the earlier
+    wording is evidence of what they thought at the time.
+  - `babel fleet records --kind complaint` lists them across the fleet, and
+    `migrations/0011` admits the kind to the shared catalog.
+- **The complaint capture box, and complaint record pages (issue #115).**
+  `babel tell` gave the operator somewhere to say what is going badly; the
+  review surface now has the same thing behind a text box, and what was said
+  has a page. The box rides `/review` by operator decision (2026-08-31) rather
+  than becoming a seventh destination: the operator who came to review is the
+  operator with something to say.
+  - Capture is an attributed operator decision on §4.7's terms: `POST
+    /api/complaint/tell` resolves the author and host exactly as a disposition
+    does and refuses rather than defaulting when either is unnameable. The §14
+    whitelist gains `ComplaintService` and nothing else — `Amend` is absent
+    because no record page on this surface edits a record's wording.
+  - The capture answers with what Babel already has touching it: the spend-free
+    FTS pass #115 asks for, capped at a screenful, carrying no score, reading
+    the partition as the last reconcile left it. Every failure is a note and
+    none fails the capture, because the complaint is durable before the pass.
+  - A complaint's page is its words, its chain, and what cites it. The body
+    renders verbatim inside the quoted frame untrusted prose already uses; any
+    wording opens at its own id and reports the chain's head, so a citation of
+    a superseded wording still leads to what the citing record saw.
+  - Nothing here closes, and that is asserted rather than promised: one test
+    walks every response's JSON at every depth for the keys that would make
+    Babel a work tracker, and a browser test walks the rendered controls for
+    the same thing.
 - **Three draft lenses: where the memory, the tests, and the time actually go
   (operator direction 2026-08-31).** The cookbook gains `document-ceremony`,
   `test-economics`, and `time-and-spend`, each shipped `default: false` under
