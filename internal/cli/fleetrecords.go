@@ -690,7 +690,7 @@ var recordKindVocabulary = []sharedcatalog.RecordKind{
 	sharedcatalog.KindFinding, sharedcatalog.KindProposal,
 	sharedcatalog.KindLink, sharedcatalog.KindDisposition,
 	sharedcatalog.KindContext, sharedcatalog.KindPreparation,
-	sharedcatalog.KindReceipt,
+	sharedcatalog.KindReceipt, sharedcatalog.KindComplaint,
 }
 
 // parseRecordKinds validates --kind against that vocabulary, reading the

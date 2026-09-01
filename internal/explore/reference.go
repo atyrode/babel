@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/preflight"
 	"github.com/atyrode/babel/internal/reference"
@@ -167,21 +168,28 @@ func (c *Controller) mintEvidence(st *state, stage Stage, runID string,
 const SessionRecordKind = "session"
 
 // graphNamespace reports the reference-graph namespace of one searchable
-// frontier output, and whether the graph can address it at all.
+// output, and whether the graph can address it at all.
 //
 // The first three frontier.OutputKind values are entity kinds spelled the same
-// way and resolve as records. OutputReviewAnswer is not one of them: it is a
-// disposition or the refinement request a rejection authorized, which is an
-// operator's answer *about* a record rather than a record that develops, so no
-// resolver namespace names it and write-time validation would refuse an edge
-// bound to it. It would also be the wrong relation - "the run was shown a
-// decision" is addresses-shaped, and #113's vocabulary is closed - so the
-// injection is recorded in the job document, which is where a worker reads it,
-// and not in the graph.
+// way and resolve as records. OutputComplaint is a record too - internal/complaint
+// registers a resolver for it (#115) - and it matters here that it is
+// addressable: a run shown the operator's own complaint as related context is
+// exactly the injection an inspired-by edge should record, and it is the one
+// piece of injected material whose author is a person.
+//
+// OutputReviewAnswer is not one of them: it is a disposition or the refinement
+// request a rejection authorized, which is an operator's answer *about* a record
+// rather than a record that develops, so no resolver namespace names it and
+// write-time validation would refuse an edge bound to it. It would also be the
+// wrong relation - "the run was shown a decision" is addresses-shaped, and
+// #113's vocabulary is closed - so the injection is recorded in the job
+// document, which is where a worker reads it, and not in the graph.
 func graphNamespace(kind frontier.OutputKind) (string, bool) {
 	switch kind {
 	case frontier.OutputHypothesis, frontier.OutputObservation, frontier.OutputFinding:
 		return string(kind), true
+	case frontier.OutputComplaint:
+		return complaint.Namespace, true
 	}
 	return "", false
 }

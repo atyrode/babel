@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/digest"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/frontier"
@@ -296,8 +297,18 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 		return scopedCorpus{}, err
 	}
 	defer front.Close()
+	// The operator's complaints are reconciled in the same pass, which is what
+	// makes them steering rather than a suggestion box (#115): a preparation
+	// that surfaced Babel's own prior output and not the operator's standing
+	// annoyances would relate this scope to everything except the thing a
+	// person actually said about it.
+	told, err := complaint.Open(d.durableDir())
+	if err != nil {
+		return scopedCorpus{}, err
+	}
+	defer told.Close()
 	terms := salience.Terms(0)
-	frontierRecords, related, err := a.relatedOutputs(ctx, idx, front, terms)
+	frontierRecords, related, err := a.relatedOutputs(ctx, idx, front, told, terms)
 	if err != nil {
 		return scopedCorpus{}, err
 	}
@@ -366,10 +377,17 @@ func selectSessions(c *cmd, sessions []localSession, selectors []string) ([]loca
 // that pretended otherwise would be recording an empty gesture in an immutable
 // record.
 func (a *app) relatedOutputs(ctx context.Context, idx *index.Index, front *frontier.Store,
-	terms []string) (int, []relatedRow, error) {
+	told *complaint.Store, terms []string) (int, []relatedRow, error) {
 	outputs, err := front.Outputs(ctx)
 	if err != nil {
 		return 0, nil, fmt.Errorf("read the frontier: %w", err)
+	}
+	// One reconcile over both sources, because IndexFrontier deletes the local
+	// rows the set does not name: a frontier-only pass here would delete every
+	// complaint capture indexed, and the next `babel tell` would put them back.
+	outputs, err = complaint.Append(ctx, told, outputs)
+	if err != nil {
+		return 0, nil, err
 	}
 	indexed, err := idx.IndexFrontier(ctx, outputs)
 	if err != nil {

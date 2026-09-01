@@ -67,6 +67,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
@@ -235,6 +236,20 @@ type Config struct {
 	// whose result proposes an action Babel silently dropped would render
 	// nothing for the operator to click and report success.
 	Dispositions *disposition.Store
+
+	// Complaints is the operator's own steering input (#115), and it is
+	// optional for the reason it exists: a complaint outranks the loop at the
+	// invitation rung of #96's ladder and never blocks it, so a run on a
+	// machine that has opened no complaint component explores exactly as it
+	// did before.
+	//
+	// A run reads it twice and writes to it never. Its heads join the
+	// retrieval index this run reconciles, so a worker's frontier search can
+	// find what the operator has been saying; and a preparation that named a
+	// complaint as related context is resolved through it, which is how the
+	// operator's words reach a job document. Nothing a run produces amends a
+	// complaint - the operator is the only author.
+	Complaints *complaint.Store
 
 	// Sync declares this run's closure to the shared catalog when the run
 	// ends (§6.5, §12 Phase B). The stores above stage each record as they

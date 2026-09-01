@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/reference"
@@ -132,7 +133,7 @@ func (c *Controller) relatedContext(st *state) *RelatedContext {
 				"explore: preparation names related output %q of unknown kind %q", ref.ID, ref.Kind))
 			continue
 		}
-		output, err := c.cfg.Frontier.Output(st.commit, kind, ref.ID)
+		output, err := c.relatedOutput(st, kind, ref.ID)
 		if err != nil {
 			st.fail(StageExplore, FailureRelatedContext, c.now(), fmt.Errorf(
 				"explore: related output %s %q: %w", ref.Kind, ref.ID, err))
@@ -152,6 +153,28 @@ func (c *Controller) relatedContext(st *state) *RelatedContext {
 		}
 	}
 	return doc
+}
+
+// relatedOutput reads one related record from whichever store owns its kind.
+//
+// The dispatch exists because the retrieval index's kind vocabulary outgrew the
+// frontier: a complaint is indexed beside Babel's own output and retrieved by
+// the same query, but internal/complaint stores it and the frontier has never
+// heard of it (#115). Asking the frontier for one would report the operator's
+// own words as an unknown record.
+//
+// A machine that opened no complaint component says so rather than reporting
+// absence. The preparation is immutable and names what it named; "this build
+// has no complaint store" and "that complaint is gone" are different facts, and
+// the recorded failure should be the true one.
+func (c *Controller) relatedOutput(st *state, kind frontier.OutputKind, id string) (frontier.Output, error) {
+	if kind != frontier.OutputComplaint {
+		return c.cfg.Frontier.Output(st.commit, kind, id)
+	}
+	if c.cfg.Complaints == nil {
+		return frontier.Output{}, fmt.Errorf("this instance opened no complaint store")
+	}
+	return c.cfg.Complaints.Output(st.commit, id)
 }
 
 // extra encodes the job document's forward-compatible fields for one stage.
@@ -257,6 +280,17 @@ func (c *Controller) refreshFrontier(st *state) {
 	if err != nil {
 		st.fail(StageExplore, FailureFrontierIndex, c.now(),
 			fmt.Errorf("explore: read the frontier for indexing: %w", err))
+		return
+	}
+	// The complaint heads join the same set, because IndexFrontier reconciles
+	// the whole local partition and deletes the rows the set does not name: a
+	// frontier-only pass here would delete every complaint `babel tell`
+	// indexed, and the operator's words would appear and vanish depending on
+	// which command ran last.
+	outputs, err = complaint.Append(st.commit, c.cfg.Complaints, outputs)
+	if err != nil {
+		st.fail(StageExplore, FailureFrontierIndex, c.now(),
+			fmt.Errorf("explore: read the complaints for indexing: %w", err))
 		return
 	}
 	if _, err := c.cfg.Index.IndexFrontier(st.commit, outputs); err != nil {

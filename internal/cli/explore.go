@@ -349,6 +349,7 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		Runs:         state.runs,
 		Ledger:       ledger,
 		Dispositions: state.dispositions,
+		Complaints:   state.complaints,
 		Index:        idx,
 		// #113's emission half. Both are nil on a build with no reference
 		// store or no deployment identity, which internal/explore documents
