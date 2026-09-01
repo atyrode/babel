@@ -29,6 +29,7 @@ import (
 	stdsync "sync"
 
 	"github.com/atyrode/babel/internal/catalog"
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
@@ -42,12 +43,12 @@ import (
 // to_kind columns, so they are named once here rather than spelled at every
 // emission site.
 //
-// The set is what exists today. A namespace #113 anticipates but Babel has not
-// built - a complaint (#114, #115) - is deliberately absent rather than
-// registered against a store that cannot answer: an unregistered namespace is
-// refused with "this machine can resolve ..." and names the gap, while a
-// namespace wired to a resolver that always says no would report a real
-// complaint as a hallucination.
+// The set is what exists today, and it grows exactly when a store that can
+// answer for a namespace exists: a namespace wired to a resolver that always
+// said no would report a real record as a hallucination, and one left
+// unregistered is refused with "this machine can resolve ..." and names the gap
+// honestly. NamespaceComplaint joined the set with internal/complaint (#115);
+// before that store existed the namespace was deliberately absent.
 const (
 	// NamespaceSession addresses a session by its durable session key: the
 	// sharedcatalog.SessionUID digest. It is deliberately not the selector,
@@ -70,6 +71,12 @@ const (
 
 	NamespaceDisposition = "disposition"
 
+	// NamespaceComplaint addresses one wording of an operator's complaint by
+	// its own id (#115). It is the owning package's own spelling rather than a
+	// second literal, because internal/complaint mints edges from it and
+	// cannot import this package without a cycle.
+	NamespaceComplaint = complaint.Namespace
+
 	NamespaceRealityFact   = "reality_fact"
 	NamespaceRealityEntity = "reality_entity"
 )
@@ -83,6 +90,7 @@ type Stores struct {
 	Runs         *runstore.Store
 	Dispositions *disposition.Store
 	Reality      *reality.Store
+	Complaints   *complaint.Store
 
 	// Sessions resolves session endpoints, built by NewSessions.
 	//
@@ -177,6 +185,17 @@ func Registry(s Stores) (*reference.Registry, error) {
 			reference.ResolverFunc(func(ctx context.Context, id string) (bool, error) {
 				_, err := dispositions.Disposition(ctx, id)
 				return present(err, disposition.ErrUnknownDisposition)
+			})); err != nil {
+			return nil, err
+		}
+	}
+
+	if s.Complaints != nil {
+		complaints := s.Complaints
+		if err := register(NamespaceComplaint,
+			reference.ResolverFunc(func(ctx context.Context, id string) (bool, error) {
+				_, err := complaints.Complaint(ctx, id)
+				return present(err, complaint.ErrUnknownComplaint)
 			})); err != nil {
 			return nil, err
 		}

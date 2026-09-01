@@ -147,6 +147,7 @@ func TestMigrationLedgerIsExactlyThese(t *testing.T) {
 		"0008_reference_edges",
 		"0009_fleet_presence",
 		"0010_proposal_subjects",
+		"0011_complaint_records",
 	}
 
 	entries, err := migrations()
@@ -196,6 +197,10 @@ func TestAppliedMigrationBodiesAreFrozen(t *testing.T) {
 		"0008_reference_edges":   "f99bdd8f847118c30693fa7c3d5f8e66a4025ce61fb4ab3114276e9ccd24d6ba",
 		"0009_fleet_presence":    "dea82160aaeebb5bb38dae80395b2129850339633317f750948b032d97a3b562",
 		"0010_proposal_subjects": "0db9e9a935b0eaa776fb94ece018ba048c8378ca5d4a1c10bea4ac8af2b44f3e",
+		// Added 2026-08-31 with the migration itself (issue #115), so the
+		// freeze covers it from the commit that introduced it rather than
+		// from whenever somebody next remembered.
+		"0011_complaint_records": "5c24692e21a7aca9e296c8144afc5031f6863d9691de6ad339f718de745e96a4",
 	}
 
 	const remedy = "Two changes are legitimate here, and they are not the same " +
