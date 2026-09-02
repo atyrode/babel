@@ -285,16 +285,16 @@ One row per Babel need. "Manifold offers" carries the tag and the citation;
 
 | Need | Manifold offers | Missing | What Babel changes | Decision or draft issue |
 | --- | --- | --- | --- | --- |
-| **N1** Operator identity, principals, tokens | exists: one `Principal` shape for humans and agents (`packages/protocol/src/principal.ts:5-27`); owner key root plus capability-scoped, attenuation-only, revocable bearer tokens through `core.access` (`docs/CONTRACTS.md:107-246`); agent tokens never expire (`docs/CONTRACTS.md:134-137`). | A second identity layer distinguishing two humans (declared, ADR 0019 §6); nothing Babel needs. | Drops the bootstrap-nonce and session-cookie scheme (`internal/web/session.go:37-49`) with `internal/web`; the operator is the owner key or a delegate human principal; each machine's babel is an agent-kind principal; Babel's per-run `worker.Grant` stays Babel-internal and never becomes a `Cap`. | D2; babel "Agent-kind principal enrollment: babel holds a scoped manifold token per machine and announces presence". |
-| **N2** Machines and per-machine grants | exists: idempotent enrollment, revocation, live online state (`core.machines`, `packages/plugins/machines/src/index.ts:23-29`; `ActionCtx.machines.isOnline`, `packages/server/src/plugin-host.ts:237-239`); `machine_enrolled/online/offline` events. | absent: a `machine` node kind (`packages/protocol/src/uri.ts:33-45`), so no grant can name one machine; absent: any way to run work on a machine except a PTY. | The manifold roster becomes the fleet; Babel's host identity aligns with the machine name; `hosts` stays archive bookkeeping; `--expect` on `archive fleet` is replaced by the roster. | D2; manifold "A `machine` node kind in the manifold:// grammar so grants can scope per enrolled machine"; babel "Align Babel host identity with the manifold machine name". |
-| **N3** Timers and long-running loops | absent: no scheduler, timer or supervised-job primitive for a plugin (`ActionCtx`, `packages/server/src/plugin-host.ts:249-350`); lifecycle hooks are one-shot and 2 s bounded (`packages/plugin/src/lifecycle.ts:21`); the Budgets register has no server-half row (`REGISTRY.md:1944-1993`). | A supervised long-lived primitive, hub or spoke. | The hourly archive timer and `babel conductor run` stay OS-supervised (`internal/conductor/conductor.go:39-42`; `docs/runbook.md:53-70`) and become visible and drivable through the door. | D2; manifold "Typed exec/job primitive on the machine channel". |
-| **N4** Secrets | absent: no vault, no encrypted tier, no per-plugin env injection; `ctx.storage` is a plaintext string map (`packages/plugin/src/storage.ts:58-74`); `ActionCtx` has no env, config or secrets member (`packages/server/src/plugin-host.ts:249-350`); the word "vault" occurs once in the tree, as a negation (`docs/decisions/0020-desktop-shell.md:414`); searches in `.omp/research/manifold-permissions.md` facts 29-37. | Nothing requested: secrets stay outside manifold by decision. | Nothing: the ceremony keeps delivering `storage.json` per machine (`SPEC.md:77-81`); the plugin holds no credential; no `babel.*` door accepts a raw secret argument. | Settled earlier (operator); manifold general improvement "Widen the trace and log redaction field-name rule to password, credential and passphrase". |
-| **N5** Durable storage | exists: `plugin_kv`, string values at most 64 KiB (`packages/plugin/src/storage.ts:74`). absent: relational tables, blob or object storage, PostgreSQL; one SQLite schema ledger owns every table (`packages/server/src/db.ts:8`; searches in `.omp/research/manifold-machines.md` facts 44-49). | A plugin-owned table and blob seam on the master node. | Storage placement becomes a plugin setting with three values; (c) external provider is the only placement runnable today; `plugin_kv` holds pointers and projections, never the catalog or the archive. | D3; manifold "Workspace-scoped plugin settings with an enum kind"; manifold "Plugin-owned durable storage beyond plugin_kv: tables and a blob directory on the master node"; babel "Storage placement setting: master node, fleet machine, or external provider". |
-| **N6** Real-time events | exists: the event plane, door-gated, flat 16-key payloads, delivered to live subscribers, no replay (`packages/protocol/src/events.ts:73,82,91`; `packages/server/src/plugin-host.ts:1207-1210`). absent: any plugin-declarable continuous stream; the session-channel frame vocabulary is closed (`packages/protocol/src/session.ts:155,355`). | A continuous, structured, sub-second channel for run progress. | Milestone events at run boundaries now; the stream channel is the end state; presence carries a throttled snapshot in the interim. | D4; manifold "Plugin-declarable continuous stream channel on the session socket" (runs); babel "Run milestone events: a declared, bounded vocabulary emitted at run boundaries" (runs). |
-| **N7** UI surfaces | exists: sidebar sections, panels and seats, container disciplines with a `ContainerRenderer`, elements, tools, browser-side routes, one notice stack, one command palette (`packages/protocol/src/plugin.ts:260-410`; `docs/PLUGINS.md:588-923`). declared: under ADR 0016 an installed plugin paints only through a closed host component vocabulary (`docs/decisions/0016-plugin-isolation.md:219-240`). absent: a virtualized list, nested sidebar IA, non-boolean settings, any sanitizer (`.omp/research/manifold-webshell.md` facts 5, 12, 21). | The component vocabulary itself, sized to a real surface; a sanitizer. | Every Babel area becomes a section, a discipline or a route; Babel brings one sanitizer for every plugin-rendered surface; Babel's surface inventory (`.omp/research/manifold-babelsurface.md` §1) is the sizing input for the vocabulary. | Step 5; manifold "Size the isolated-plugin component vocabulary against a real plugin surface inventory"; manifold general improvement "Promote door-form rendering out of core.debug into @manifold/plugin/ui"; babel "Babel surfaces as plugin contributions: sections, disciplines and routes"; babel "One untrusted-content sanitizer for every plugin-rendered Babel surface". |
-| **N8** Traceability | exists: one trace row per dispatch, write-ahead, refusals included, read through `core.events.list` (`packages/server/src/plugin-host.ts:1172-1207`; ADR 0018). | A handler is not handed its trace id (`ActionCtx`, `packages/server/src/plugin-host.ts:249-350`). | Keeps receipts and dispositions as Babel's record (`internal/run/receipt.go`); gains a generic root-readable audit row for every operator call through the door; records the acting principal on the receipt; correlates by door, principal and time window until the id is handed over. | Settled; manifold general improvement "Hand an action handler its trace id". |
-| **N9** Executing the binary on hub and spokes | exists, undeclared: a server half may `Bun.spawn` in-process today (ADR 0010, `docs/decisions/0010-plugin-engine-and-action-plane.md:63-65`), unmediated and removed by isolation (`docs/decisions/0016-plugin-isolation.md:202-217`). absent: any exec verb on the machine channel (`packages/protocol/src/machine.ts:37-93`). | A typed exec/job primitive; a way for an isolated server half to reach a local companion service. | Babel runs on every machine, hub included, as OS-supervised services fronted by an agent principal; the plugin's server half reads the hub's engine service; nothing is driven through a PTY. | D2; manifold "Typed exec/job primitive on the machine channel"; manifold "Companion-service seam for an isolated plugin's server half"; babel "Action-door API over the babel engine: the babel.* action set and the headless engine service behind it". |
-| **N10** Packaging and distribution | exists: in-tree workspace packages only (`package.json:5-8`; `docs/PLUGINS.md:40-42`). declared: the dynamic wave with `entry` reserved (`packages/protocol/src/plugin.ts:554-555`; `AXIOMS.md:247-267`), artifact hash pinned on the roster row (ADR 0016 R8). absent: an out-of-tree authoring path (`packages/plugin/package.json:3`), a manifest field for an external binary dependency. | Out-of-tree loading; consumable SDK packages; an external-binary declaration. | The plugin package lives in `atyrode/babel` and ships as a hashed artifact from Babel's release; the Go binary keeps its own Nix pin through dotfiles; the plugin declares the binary and protocol versions it needs. | D1; manifold "Schedule ADR 0016 stage 1: the isolation runner, so an out-of-tree plugin can load"; manifold "Dynamic plugin loading from a pinned local artifact: evaluate entry, add install and uninstall doors"; manifold "Manifest declaration of an external host-binary dependency"; babel "Babel plugin package and manifest in atyrode/babel". |
+| **N1** Operator identity, principals, tokens | exists: one `Principal` shape for humans and agents (`packages/protocol/src/principal.ts:5-27`); owner key root plus capability-scoped, attenuation-only, revocable bearer tokens through `core.access` (`docs/CONTRACTS.md:107-246`); agent tokens never expire (`docs/CONTRACTS.md:134-137`). | A second identity layer distinguishing two humans (declared, ADR 0019 §6); nothing Babel needs. | Drops the bootstrap-nonce and session-cookie scheme (`internal/web/session.go:37-49`) with `internal/web`; the operator is the owner key or a delegate human principal; each machine's babel is an agent-kind principal; Babel's per-run `worker.Grant` stays Babel-internal and never becomes a `Cap`. | D2; babel "Agent-kind principal enrollment: babel holds a scoped manifold token per machine and announces presence" (#143). |
+| **N2** Machines and per-machine grants | exists: idempotent enrollment, revocation, live online state (`core.machines`, `packages/plugins/machines/src/index.ts:23-29`; `ActionCtx.machines.isOnline`, `packages/server/src/plugin-host.ts:237-239`); `machine_enrolled/online/offline` events. | absent: a `machine` node kind (`packages/protocol/src/uri.ts:33-45`), so no grant can name one machine; absent: any way to run work on a machine except a PTY. | The manifold roster becomes the fleet; Babel's host identity aligns with the machine name; `hosts` stays archive bookkeeping; `--expect` on `archive fleet` is replaced by the roster. | D2; manifold "A `machine` node kind in the manifold:// grammar so grants can scope per enrolled machine" (atyrode/manifold#157); babel "Align Babel host identity with the manifold machine name" (#144). |
+| **N3** Timers and long-running loops | absent: no scheduler, timer or supervised-job primitive for a plugin (`ActionCtx`, `packages/server/src/plugin-host.ts:249-350`); lifecycle hooks are one-shot and 2 s bounded (`packages/plugin/src/lifecycle.ts:21`); the Budgets register has no server-half row (`REGISTRY.md:1944-1993`). | A supervised long-lived primitive, hub or spoke. | The hourly archive timer and `babel conductor run` stay OS-supervised (`internal/conductor/conductor.go:39-42`; `docs/runbook.md:53-70`) and become visible and drivable through the door. | D2; manifold "Typed exec/job primitive on the machine channel" (atyrode/manifold#156). |
+| **N4** Secrets | absent: no vault, no encrypted tier, no per-plugin env injection; `ctx.storage` is a plaintext string map (`packages/plugin/src/storage.ts:58-74`); `ActionCtx` has no env, config or secrets member (`packages/server/src/plugin-host.ts:249-350`); the word "vault" occurs once in the tree, as a negation (`docs/decisions/0020-desktop-shell.md:414`); searches in `.omp/research/manifold-permissions.md` facts 29-37. | Nothing requested: secrets stay outside manifold by decision. | Nothing: the ceremony keeps delivering `storage.json` per machine (`SPEC.md:77-81`); the plugin holds no credential; no `babel.*` door accepts a raw secret argument. | Settled earlier (operator); manifold general improvement "Widen the trace and log redaction field-name rule to password, credential and passphrase" (atyrode/manifold#165). |
+| **N5** Durable storage | exists: `plugin_kv`, string values at most 64 KiB (`packages/plugin/src/storage.ts:74`). absent: relational tables, blob or object storage, PostgreSQL; one SQLite schema ledger owns every table (`packages/server/src/db.ts:8`; searches in `.omp/research/manifold-machines.md` facts 44-49). | A plugin-owned table and blob seam on the master node. | Storage placement becomes a plugin setting with three values; (c) external provider is the only placement runnable today; `plugin_kv` holds pointers and projections, never the catalog or the archive. | D3; manifold "Workspace-scoped plugin settings with an enum kind" (atyrode/manifold#158); manifold "Plugin-owned durable storage beyond plugin_kv: tables and a blob directory on the master node" (atyrode/manifold#159); babel "Storage placement setting: master node, fleet machine, or external provider" (#146). |
+| **N6** Real-time events | exists: the event plane, door-gated, flat 16-key payloads, delivered to live subscribers, no replay (`packages/protocol/src/events.ts:73,82,91`; `packages/server/src/plugin-host.ts:1207-1210`). absent: any plugin-declarable continuous stream; the session-channel frame vocabulary is closed (`packages/protocol/src/session.ts:155,355`). | A continuous, structured, sub-second channel for run progress. | Milestone events at run boundaries now; the stream channel is the end state; presence carries a throttled snapshot in the interim. | D4; manifold "Plugin-declarable continuous stream channel on the session socket" (atyrode/manifold#169) (runs); babel "Run milestone events: a declared, bounded vocabulary emitted at run boundaries" (#152) (runs). |
+| **N7** UI surfaces | exists: sidebar sections, panels and seats, container disciplines with a `ContainerRenderer`, elements, tools, browser-side routes, one notice stack, one command palette (`packages/protocol/src/plugin.ts:260-410`; `docs/PLUGINS.md:588-923`). declared: under ADR 0016 an installed plugin paints only through a closed host component vocabulary (`docs/decisions/0016-plugin-isolation.md:219-240`). absent: a virtualized list, nested sidebar IA, non-boolean settings, any sanitizer (`.omp/research/manifold-webshell.md` facts 5, 12, 21). | The component vocabulary itself, sized to a real surface; a sanitizer. | Every Babel area becomes a section, a discipline or a route; Babel brings one sanitizer for every plugin-rendered surface; Babel's surface inventory (`.omp/research/manifold-babelsurface.md` §1) is the sizing input for the vocabulary. | Step 5; manifold "Size the isolated-plugin component vocabulary against a real plugin surface inventory" (atyrode/manifold#160); manifold general improvement "Promote door-form rendering out of core.debug into @manifold/plugin/ui" (atyrode/manifold#168); babel "Babel surfaces as plugin contributions: sections, disciplines and routes" (#147); babel "One untrusted-content sanitizer for every plugin-rendered Babel surface" (#142). |
+| **N8** Traceability | exists: one trace row per dispatch, write-ahead, refusals included, read through `core.events.list` (`packages/server/src/plugin-host.ts:1172-1207`; ADR 0018). | A handler is not handed its trace id (`ActionCtx`, `packages/server/src/plugin-host.ts:249-350`). | Keeps receipts and dispositions as Babel's record (`internal/run/receipt.go`); gains a generic root-readable audit row for every operator call through the door; records the acting principal on the receipt; correlates by door, principal and time window until the id is handed over. | Settled; manifold general improvement "Hand an action handler its trace id" (atyrode/manifold#166). |
+| **N9** Executing the binary on hub and spokes | exists, undeclared: a server half may `Bun.spawn` in-process today (ADR 0010, `docs/decisions/0010-plugin-engine-and-action-plane.md:63-65`), unmediated and removed by isolation (`docs/decisions/0016-plugin-isolation.md:202-217`). absent: any exec verb on the machine channel (`packages/protocol/src/machine.ts:37-93`). | A typed exec/job primitive; a way for an isolated server half to reach a local companion service. | Babel runs on every machine, hub included, as OS-supervised services fronted by an agent principal; the plugin's server half reads the hub's engine service; nothing is driven through a PTY. | D2; manifold "Typed exec/job primitive on the machine channel" (atyrode/manifold#156); manifold "Companion-service seam for an isolated plugin's server half" (atyrode/manifold#155); babel "Action-door API over the babel engine: the babel.* action set and the headless engine service behind it" (#141). |
+| **N10** Packaging and distribution | exists: in-tree workspace packages only (`package.json:5-8`; `docs/PLUGINS.md:40-42`). declared: the dynamic wave with `entry` reserved (`packages/protocol/src/plugin.ts:554-555`; `AXIOMS.md:247-267`), artifact hash pinned on the roster row (ADR 0016 R8). absent: an out-of-tree authoring path (`packages/plugin/package.json:3`), a manifest field for an external binary dependency. | Out-of-tree loading; consumable SDK packages; an external-binary declaration. | The plugin package lives in `atyrode/babel` and ships as a hashed artifact from Babel's release; the Go binary keeps its own Nix pin through dotfiles; the plugin declares the binary and protocol versions it needs. | D1; manifold "Schedule ADR 0016 stage 1: the isolation runner, so an out-of-tree plugin can load" (atyrode/manifold#151); manifold "Dynamic plugin loading from a pinned local artifact: evaluate entry, add install and uninstall doors" (atyrode/manifold#152); manifold "Manifest declaration of an external host-binary dependency" (atyrode/manifold#153); babel "Babel plugin package and manifest in atyrode/babel" (#140). |
 | **N11** Cross-instance sharing | exists: the instance channel federates two manifold servers, control only (ADR 0014; `docs/CONTRACTS.md:1557-1615`); `Principal.origin` is data, never a branch (`packages/protocol/src/principal.ts:26`). | Nothing Babel needs: Babel's fleet is the machine channel, not the instance channel. | Nothing. Babel's cross-host sharing is its storage placement (D3); a second manifold instance is out of scope. | Settled: no issue. |
 | **N12** The analysis sandbox | absent: no `bwrap` anywhere in the tree (whole-repository search); a PTY is a bare `Bun.spawn` under the agent's user with no rlimits, cgroup or namespace (`packages/agent/src/terminal.ts:219-222`); "no sandbox in this wave" is said of plugin code, not of processes (`docs/decisions/0010-plugin-engine-and-action-plane.md:63-65`). | Nothing requested. | Nothing: the sandbox runs under Babel's OS-supervised process on the machine (`docs/sandbox-threat-model.md`), never as a descendant of a manifold PTY (`docs/ENROLL.md:157`); the manifold agent is not in the sandbox's trust chain. | D2 (the exec/job primitive later carries it); no issue. |
 
@@ -343,14 +343,14 @@ Consequences:
   published or pinned as an artifact, which is part of the loading prerequisite.
 
 Manifold prerequisites: "Schedule ADR 0016 stage 1: the isolation runner, so
-an out-of-tree plugin can load"; "Dynamic plugin loading from a pinned local
-artifact: evaluate entry, add install and uninstall doors"; "Companion-service
-seam for an isolated plugin's server half"; "Plugin-declared capability names
-beyond the closed nine-member enum"; "Manifest declaration of an external
-host-binary dependency"; "Size the isolated-plugin component vocabulary against
-a real plugin surface inventory". Babel work: "Babel plugin package and manifest
-in atyrode/babel"; "Plugin artifact in Babel's release: hashed, versioned
-against the manifold protocol".
+an out-of-tree plugin can load" (atyrode/manifold#151); "Dynamic plugin loading from a pinned local
+artifact: evaluate entry, add install and uninstall doors" (atyrode/manifold#152); "Companion-service
+seam for an isolated plugin's server half" (atyrode/manifold#155); "Plugin-declared capability names
+beyond the closed nine-member enum" (atyrode/manifold#154); "Manifest declaration of an external
+host-binary dependency" (atyrode/manifold#153); "Size the isolated-plugin component vocabulary against
+a real plugin surface inventory" (atyrode/manifold#160). Babel work: "Babel plugin package and manifest
+in atyrode/babel" (#140); "Plugin artifact in Babel's release: hashed, versioned
+against the manifold protocol" (#149).
 
 ### D2 Spokes: manifold-native shapes now
 
@@ -391,13 +391,13 @@ Consequences:
 - The sandbox (N12) stays under Babel's supervised process and is never a
   descendant of a manifold PTY (`docs/ENROLL.md:157`).
 
-Manifold prerequisites: "Typed exec/job primitive on the machine channel"; "A
+Manifold prerequisites: "Typed exec/job primitive on the machine channel" (atyrode/manifold#156); "A
 `machine` node kind in the manifold:// grammar so grants can scope per enrolled
-machine". Babel work: "Agent-kind principal enrollment: babel holds a scoped
-manifold token per machine and announces presence"; "Door-fed conductor intake
-and archive reporting"; "Align Babel host identity with the manifold machine
-name"; "Sandbox threat model addendum: manifold's agent and PTYs are outside the
-sandbox's supervision chain".
+machine" (atyrode/manifold#157). Babel work: "Agent-kind principal enrollment: babel holds a scoped
+manifold token per machine and announces presence" (#143); "Door-fed conductor intake
+and archive reporting" (#145); "Align Babel host identity with the manifold machine
+name" (#144); "Sandbox threat model addendum: manifold's agent and PTYs are outside the
+sandbox's supervision chain" (#150).
 
 ### D3 Storage placement is a plugin-level setting
 
@@ -432,10 +432,10 @@ Consequences:
   and treats (c) as the only value; that refusal is visible in the UI, not only
   in prose (`AXIOMS.md:519-522`).
 
-Manifold prerequisites: "Workspace-scoped plugin settings with an enum kind";
+Manifold prerequisites: "Workspace-scoped plugin settings with an enum kind" (atyrode/manifold#158);
 "Plugin-owned durable storage beyond plugin_kv: tables and a blob directory on
-the master node". Babel work: "Storage placement setting: master node, fleet
-machine, or external provider".
+the master node" (atyrode/manifold#159). Babel work: "Storage placement setting: master node, fleet
+machine, or external provider" (#146).
 
 ### D4 Runs console: full plugin-rendered UI
 
@@ -460,11 +460,11 @@ Consequences:
   becomes plugin state fed by presence and milestones.
 
 Manifold prerequisite: "Plugin-declarable continuous stream channel on the
-session socket" (owned by the runs document). Babel work: "Host-independent run
-projection API: list, detail, create, cancel"; "Run milestone events: a
-declared, bounded vocabulary emitted at run boundaries"; "Interim runs console
-in the React shell over the projection API"; "Runs console as manifold plugin
-surfaces".
+session socket" (atyrode/manifold#169) (owned by the runs document). Babel work: "Host-independent run
+projection API: list, detail, create, cancel" (#151); "Run milestone events: a
+declared, bounded vocabulary emitted at run boundaries" (#152); "Interim runs console
+in the React shell over the projection API" (#153); "Runs console as manifold plugin
+surfaces" (#154).
 
 ---
 
@@ -488,22 +488,22 @@ out-of-tree code, no exec verb, no stream channel, boolean settings, and
 ### Step 1. Loading, and the engine API
 
 Manifold: "Schedule ADR 0016 stage 1: the isolation runner, so an out-of-tree
-plugin can load"; "Dynamic plugin loading from a pinned local artifact: evaluate
-entry, add install and uninstall doors"; "Manifest declaration of an external
-host-binary dependency"; "Plugin-declared capability names beyond the closed
-nine-member enum"; "Companion-service seam for an isolated plugin's server
-half".
+plugin can load" (atyrode/manifold#151); "Dynamic plugin loading from a pinned local artifact: evaluate
+entry, add install and uninstall doors" (atyrode/manifold#152); "Manifest declaration of an external
+host-binary dependency" (atyrode/manifold#153); "Plugin-declared capability names beyond the closed
+nine-member enum" (atyrode/manifold#154); "Companion-service seam for an isolated plugin's server
+half" (atyrode/manifold#155).
 
 Babel, in parallel and host-independent: "Babel plugin package and manifest in
-atyrode/babel" (the package skeleton under `plugin/`, manifests as data,
+atyrode/babel" (#140) (the package skeleton under `plugin/`, manifests as data,
 `babel.<x>` ids, the capability ceiling); "Action-door API over the babel
-engine: the babel.* action set and the headless engine service behind it" (the
+engine: the babel.* action set and the headless engine service behind it" (#141) (the
 engine service serves the engine API over a Unix socket; during the transition
 `babel web` mounts the same engine API for the shell, so a route added for the
 shell is an engine-API endpoint or it is not added; `internal/web`'s Go services
 are reused, its React serving is not); "One untrusted-content sanitizer for
-every plugin-rendered Babel surface"; "Host-independent run projection API:
-list, detail, create, cancel" (runs).
+every plugin-rendered Babel surface" (#142); "Host-independent run projection API:
+list, detail, create, cancel" (#151) (runs).
 
 Proof: a development manifold loads the Babel plugin artifact from
 `atyrode/babel` by hash; `GET /api/plugins` lists `babel.<x>` rows with `source:
@@ -517,12 +517,12 @@ an engine-API endpoint.
 ### Step 2. The fleet as enrolled machines
 
 Manifold, in parallel, not blocking: "Typed exec/job primitive on the machine
-channel"; "A `machine` node kind in the manifold:// grammar so grants can scope
-per enrolled machine".
+channel" (atyrode/manifold#156); "A `machine` node kind in the manifold:// grammar so grants can scope
+per enrolled machine" (atyrode/manifold#157).
 
 Babel: "Agent-kind principal enrollment: babel holds a scoped manifold token per
-machine and announces presence"; "Align Babel host identity with the manifold
-machine name"; "Door-fed conductor intake and archive reporting". Deployment
+machine and announces presence" (#143); "Align Babel host identity with the manifold
+machine name" (#144); "Door-fed conductor intake and archive reporting" (#145). Deployment
 (dotfiles): the ceremony delivers the agent token beside the machine token; the
 master node's host enrolls its own babel.
 
@@ -539,12 +539,12 @@ an absent machine.
 
 ### Step 3. Storage placement
 
-Manifold: "Workspace-scoped plugin settings with an enum kind"; "Plugin-owned
+Manifold: "Workspace-scoped plugin settings with an enum kind" (atyrode/manifold#158); "Plugin-owned
 durable storage beyond plugin_kv: tables and a blob directory on the master
-node".
+node" (atyrode/manifold#159).
 
 Babel: "Storage placement setting: master node, fleet machine, or external
-provider".
+provider" (#146).
 
 Proof: the placement renders in manifold's generic settings pane with three
 values; (c) round-trips and every machine's engine service reports the same
@@ -555,11 +555,11 @@ Retired: nothing; the ceremony continues.
 
 ### Step 4. The runs console
 
-Manifold: "Plugin-declarable continuous stream channel on the session socket".
+Manifold: "Plugin-declarable continuous stream channel on the session socket" (atyrode/manifold#169).
 
 Babel: "Run milestone events: a declared, bounded vocabulary emitted at run
-boundaries"; "Interim runs console in the React shell over the projection API"
-(labelled interim); "Runs console as manifold plugin surfaces".
+boundaries" (#152); "Interim runs console in the React shell over the projection API" (#153)
+(labelled interim); "Runs console as manifold plugin surfaces" (#154).
 
 Proof: a run created from the plugin shows its milestones as events on the
 plugin's node and its state through the projection with no timer armed while
@@ -572,11 +572,11 @@ Retired: `exploreRefusal` in `internal/web/analysis.go`.
 ### Step 5. Every Babel area as plugin surfaces
 
 Manifold: "Size the isolated-plugin component vocabulary against a real plugin
-surface inventory"; general improvement "Promote door-form rendering out of
-core.debug into @manifold/plugin/ui".
+surface inventory" (atyrode/manifold#160); general improvement "Promote door-form rendering out of
+core.debug into @manifold/plugin/ui" (atyrode/manifold#168).
 
 Babel: "Babel surfaces as plugin contributions: sections, disciplines and
-routes", covering Sessions, Archive, Explore/Runs, Hypotheses and Findings,
+routes" (#147), covering Sessions, Archive, Explore/Runs, Hypotheses and Findings,
 Reality, Cookbook, Review and complaints, Help, Fleet; every page in
 `.omp/research/manifold-babelsurface.md` §1.1 has a named plugin equivalent.
 
@@ -589,7 +589,7 @@ Retired: nothing yet; the shell stays until this proof is recorded.
 
 ### Step 6. Retire the web shell
 
-Babel: "Retire internal/web and web/: the plugin is the only UI". The `babel
+Babel: "Retire internal/web and web/: the plugin is the only UI" (#148). The `babel
 web` verb, the bootstrap nonce and cookie, the loopback `Host` check and the
 embedded React build go; the engine service stays, headless.
 
@@ -626,13 +626,13 @@ recovery path), and the following never get a door:
 Not prerequisites, but each was found on the line Babel's work targets and
 each has a strong evidenced case; drafted as general improvements in
 `.omp/research/manifold-issues.md`: "No CI workflow runs on pull requests into
-dev"; "Dockerfile builds from floating oven/bun:1 against ADR 0001's exact
-1.3.13 pin"; "main is pinned at v0.4.4 while v0.5.0 was tagged from a dev
-commit"; "freeze is declared in PLAN.md but absent as a verb"; "Widen the trace
-and log redaction field-name rule to password, credential and passphrase";
-"Hand an action handler its trace id"; "Event-plane delivery to a session
-socket has no backpressure guard"; "Promote door-form rendering out of
-core.debug into @manifold/plugin/ui".
+dev" (atyrode/manifold#161); "Dockerfile builds from floating oven/bun:1 against ADR 0001's exact
+1.3.13 pin" (atyrode/manifold#162); "main is pinned at v0.4.4 while v0.5.0 was tagged from a dev
+commit" (atyrode/manifold#163); "freeze is declared in PLAN.md but absent as a verb" (atyrode/manifold#164); "Widen the trace
+and log redaction field-name rule to password, credential and passphrase" (atyrode/manifold#165);
+"Hand an action handler its trace id" (atyrode/manifold#166); "Event-plane delivery to a session
+socket has no backpressure guard" (atyrode/manifold#167); "Promote door-form rendering out of
+core.debug into @manifold/plugin/ui" (atyrode/manifold#168).
 
 ---
 

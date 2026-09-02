@@ -454,7 +454,7 @@ host-independent contract of §4; "surface" means the manifold-rendered UI of
   (`[absent]`: the ladder mints `traceId` at
   `packages/server/src/plugin-host.ts:1172` and the context at `:249-350` does
   not carry it; the general-improvement draft "Hand an action handler its
-  trace id" is `docs/manifold-transition.md`'s). Reading the ledger is
+  trace id" (atyrode/manifold#166) is `docs/manifold-transition.md`'s). Reading the ledger is
   root-only through `core.events.list` (`[exists]`, limit 500, filters
   `kind` and `containerId` only — no door or principal filter —
   `packages/plugins/events/src/index.ts:52-53, 139-151`), so the run page's
@@ -584,7 +584,7 @@ The projection is the contract Babel exposes regardless of host: today
 through `internal/web`'s routes to the React shell, tomorrow through the
 engine service and its engine API (the seam `docs/manifold-transition.md`
 owns; the Babel draft "Action-door API over the babel engine: the babel.*
-action set and the headless engine service behind it" builds it), consumed by
+action set and the headless engine service behind it" (#141) builds it), consumed by
 the plugin's server half as one engine-API client. Every method below is one
 JSON request and one JSON response, and every action in §4.6 is that method
 with the identical input and result schema.
@@ -681,7 +681,7 @@ walks its sections.
   - on a spoke, until manifold has a typed exec/job primitive on the machine
     channel (`[absent]`, machine channel verbs are PTY-only,
     `packages/protocol/src/machine.ts:36-93`; the prerequisite is the manifold
-    draft "Typed exec/job primitive on the machine channel"), the OS-supervised
+    draft "Typed exec/job primitive on the machine channel" (atyrode/manifold#156)), the OS-supervised
     babel service on that host draws the request as work of the operator's
     rung — the same rung invitations use (`internal/conductor/ladder.go:21-23`),
     subject to that host's ceilings, which park it with the reason (R34) —
@@ -821,7 +821,7 @@ closed, host-owned vocabulary. Every surface in the table above is therefore
 specified as data — a projection object mapped to a component tree — and the
 current React shell is the first renderer of that mapping. The manifold draft
 "Size the isolated-plugin component vocabulary against a real plugin surface
-inventory" (`docs/manifold-transition.md`) carries this table as part of that
+inventory" (atyrode/manifold#160) (`docs/manifold-transition.md`) carries this table as part of that
 inventory: a paged list, a sectioned document, a form, a status line, a
 notice, a text-with-escapes leaf, an allowlisted-AST prose leaf, and a
 locator link.
@@ -862,7 +862,7 @@ no stream kind (`packages/protocol/src/plugin.ts:316-403`); and the event
 plane rules continuous traffic out by design
 (`docs/decisions/0012-event-plane.md:13-18`; `docs/PLUGINS.md:926-929`). The
 prerequisite is filed as the manifold draft "Plugin-declarable continuous
-stream channel on the session socket" (`.omp/research/runs-issues.md`).
+stream channel on the session socket" (atyrode/manifold#169) (`.omp/research/runs-issues.md`).
 
 Interim, labelled interim on every surface that uses it: the seven milestones
 of §4.5 over the event plane, plus `runsLive` re-read on each milestone and
