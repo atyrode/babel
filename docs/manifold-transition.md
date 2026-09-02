@@ -289,7 +289,7 @@ One row per Babel need. "Manifold offers" carries the tag and the citation;
 | **N2** Machines and per-machine grants | exists: idempotent enrollment, revocation, live online state (`core.machines`, `packages/plugins/machines/src/index.ts:23-29`; `ActionCtx.machines.isOnline`, `packages/server/src/plugin-host.ts:237-239`); `machine_enrolled/online/offline` events. | absent: a `machine` node kind (`packages/protocol/src/uri.ts:33-45`), so no grant can name one machine; absent: any way to run work on a machine except a PTY. | The manifold roster becomes the fleet; Babel's host identity aligns with the machine name; `hosts` stays archive bookkeeping; `--expect` on `archive fleet` is replaced by the roster. | D2; manifold "A `machine` node kind in the manifold:// grammar so grants can scope per enrolled machine" (atyrode/manifold#157); babel "Align Babel host identity with the manifold machine name" (#144). |
 | **N3** Timers and long-running loops | absent: no scheduler, timer or supervised-job primitive for a plugin (`ActionCtx`, `packages/server/src/plugin-host.ts:249-350`); lifecycle hooks are one-shot and 2 s bounded (`packages/plugin/src/lifecycle.ts:21`); the Budgets register has no server-half row (`REGISTRY.md:1944-1993`). | A supervised long-lived primitive, hub or spoke. | The hourly archive timer and `babel conductor run` stay OS-supervised (`internal/conductor/conductor.go:39-42`; `docs/runbook.md:53-70`) and become visible and drivable through the door. | D2; manifold "Typed exec/job primitive on the machine channel" (atyrode/manifold#156). |
 | **N4** Secrets | absent: no vault, no encrypted tier, no per-plugin env injection; `ctx.storage` is a plaintext string map (`packages/plugin/src/storage.ts:58-74`); `ActionCtx` has no env, config or secrets member (`packages/server/src/plugin-host.ts:249-350`); the word "vault" occurs once in the tree, as a negation (`docs/decisions/0020-desktop-shell.md:414`); searches in `.omp/research/manifold-permissions.md` facts 29-37. | Nothing requested: secrets stay outside manifold by decision. | Nothing: the ceremony keeps delivering `storage.json` per machine (`SPEC.md:77-81`); the plugin holds no credential; no `babel.*` door accepts a raw secret argument. | Settled earlier (operator); manifold general improvement "Widen the trace and log redaction field-name rule to password, credential and passphrase" (atyrode/manifold#165). |
-| **N5** Durable storage | exists: `plugin_kv`, string values at most 64 KiB (`packages/plugin/src/storage.ts:74`). absent: relational tables, blob or object storage, PostgreSQL; one SQLite schema ledger owns every table (`packages/server/src/db.ts:8`; searches in `.omp/research/manifold-machines.md` facts 44-49). | A plugin-owned table and blob seam on the master node. | Storage placement becomes a plugin setting with three values; (c) external provider is the only placement runnable today; `plugin_kv` holds pointers and projections, never the catalog or the archive. | D3; manifold "Workspace-scoped plugin settings with an enum kind" (atyrode/manifold#158); manifold "Plugin-owned durable storage beyond plugin_kv: tables and a blob directory on the master node" (atyrode/manifold#159); babel "Storage placement setting: master node, fleet machine, or external provider" (#146). |
+| **N5** Durable storage | exists: `plugin_kv`, string values at most 64 KiB (`packages/plugin/src/storage.ts:74`). absent: relational tables, blob or object storage, PostgreSQL; one SQLite schema ledger owns every table (`packages/server/src/db.ts:8`; searches in `.omp/research/manifold-machines.md` facts 44-49). | Nothing for the stores: both placements are Babel's own modes. An enum, workspace-scoped setting kind to render the placement. | Storage placement is a plugin setting with two values, master (Babel's local mode on the hub's host, non-durable) and external (shared mode, the fleet default), both runnable today; `plugin_kv` holds pointers and projections, never the catalog or the archive. | D3 (revised); manifold "Workspace-scoped plugin settings with an enum kind" (atyrode/manifold#158) for the pane; babel "Storage placement setting: master (local mode, non-durable) or external (shared mode)" (#146). Manifold "Plugin-owned durable storage beyond plugin_kv" (atyrode/manifold#159) stays filed as a general need, off Babel's path. |
 | **N6** Real-time events | exists: the event plane, door-gated, flat 16-key payloads, delivered to live subscribers, no replay (`packages/protocol/src/events.ts:73,82,91`; `packages/server/src/plugin-host.ts:1207-1210`). absent: any plugin-declarable continuous stream; the session-channel frame vocabulary is closed (`packages/protocol/src/session.ts:155,355`). | A continuous, structured, sub-second channel for run progress. | Milestone events at run boundaries now; the stream channel is the end state; presence carries a throttled snapshot in the interim. | D4; manifold "Plugin-declarable continuous stream channel on the session socket" (atyrode/manifold#169) (runs); babel "Run milestone events: a declared, bounded vocabulary emitted at run boundaries" (#152) (runs). |
 | **N7** UI surfaces | exists: sidebar sections, panels and seats, container disciplines with a `ContainerRenderer`, elements, tools, browser-side routes, one notice stack, one command palette (`packages/protocol/src/plugin.ts:260-410`; `docs/PLUGINS.md:588-923`). declared: under ADR 0016 an installed plugin paints only through a closed host component vocabulary (`docs/decisions/0016-plugin-isolation.md:219-240`). absent: a virtualized list, nested sidebar IA, non-boolean settings, any sanitizer (`.omp/research/manifold-webshell.md` facts 5, 12, 21). | The component vocabulary itself, sized to a real surface; a sanitizer. | Every Babel area becomes a section, a discipline or a route; Babel brings one sanitizer for every plugin-rendered surface; Babel's surface inventory (`.omp/research/manifold-babelsurface.md` §1) is the sizing input for the vocabulary. | Step 5; manifold "Size the isolated-plugin component vocabulary against a real plugin surface inventory" (atyrode/manifold#160); manifold general improvement "Promote door-form rendering out of core.debug into @manifold/plugin/ui" (atyrode/manifold#168); babel "Babel surfaces as plugin contributions: sections, disciplines and routes" (#147); babel "One untrusted-content sanitizer for every plugin-rendered Babel surface" (#142). |
 | **N8** Traceability | exists: one trace row per dispatch, write-ahead, refusals included, read through `core.events.list` (`packages/server/src/plugin-host.ts:1172-1207`; ADR 0018). | A handler is not handed its trace id (`ActionCtx`, `packages/server/src/plugin-host.ts:249-350`). | Keeps receipts and dispositions as Babel's record (`internal/run/receipt.go`); gains a generic root-readable audit row for every operator call through the door; records the acting principal on the receipt; correlates by door, principal and time window until the id is handed over. | Settled; manifold general improvement "Hand an action handler its trace id" (atyrode/manifold#166). |
@@ -309,6 +309,19 @@ and dynamic-distribution wave, both declared and unscheduled today
 (`AXIOMS.md:247-267`; `docs/decisions/0016-plugin-isolation.md:4-20,302-323`).
 The Babel plugin package lives in `atyrode/babel` and is loaded out of tree.
 There is no vendoring into `packages/plugins` as an interim.
+
+Reaffirmed 2026-09-02 against the in-tree-first alternative this review
+proposed (SPEC.md decision 83): a thin `packages/plugins/babel` in manifold now,
+extracted when the loader exists, was rejected by the operator on three
+grounds — it would push the marketplace and dynamic-distribution wave back, it
+would mint debt to be paid at extraction, and it would contradict the
+direction that manifold builds exactly what Babel needs to exist. The
+consequence is accepted and named: nothing of Babel renders inside manifold
+before out-of-tree loading exists, and step 1 is entirely manifold work while
+Babel's host-independent items (#141, #142, #143, #151) proceed. The
+circularity in "size the isolated vocabulary against a real plugin surface"
+(atyrode/manifold#160) is resolved on paper: the surface inventory is SPEC.md
+§8.2–§8.3 and `docs/runs-interface.md`, not a plugin in the tree.
 
 Consequences:
 
@@ -399,43 +412,45 @@ and archive reporting" (#145); "Align Babel host identity with the manifold mach
 name" (#144); "Sandbox threat model addendum: manifold's agent and PTYs are outside the
 sandbox's supervision chain" (#150).
 
-### D3 Storage placement is a plugin-level setting
+### D3 Storage placement is a plugin-level setting with two values
 
-A Babel-plugin setting selects where durable state lives: (a) the manifold
-master node hosts it, (b) one enrolled fleet machine hosts it, (c) outbound to an
-external provider (today's Clever Cloud PostgreSQL plus Cellar and restic).
-Babel's storage interfaces are provider-neutral (`SPEC.md:516`), so placement
-changes locators and the ceremony's document, not code paths.
+Revised 2026-09-02 after the review (SPEC.md decision 84, narrowing 63). A
+Babel-plugin setting selects where durable state lives, and both values run
+today over Babel's provider-neutral storage interfaces (`SPEC.md` §9):
+
+- **master** — Babel's local mode (`storage.json` `mode: local`) on the hub's
+  host: a single box, and named non-durable in the setting itself, because the
+  hub's own backup is a hand-run archive of one named volume
+  (`docs/SELF-HOST.md`) and an archive placed there has the durability of the
+  thing it is meant to help recover;
+- **external** — shared mode: the restic repository and the PostgreSQL catalog
+  wherever the operator provisions them, today's Clever Cloud, the default for
+  any fleet.
+
+"One enrolled fleet machine hosts it" is not a third value. A store the
+operator runs on a fleet machine — an S3-compatible service, a restic REST
+server, a PostgreSQL — is external with that machine's endpoint, provisioned by
+dotfiles under OS supervision as any other service is; installing it through
+manifold waits on the exec primitive (D2, atyrode/manifold#156) and would still
+resolve to an endpoint underneath.
 
 Consequences:
 
-- (c) is the only placement runnable today. (a) and (b) require the backends,
-  a restic repository target and a catalog database, to be hostable on that
-  node. Babel's shared catalog is PostgreSQL (`SPEC.md:516-522`) and its archive
-  is a restic repository reachable from every machine; on the master node that
-  means PostgreSQL and a restic-reachable target (REST server, local path
-  exported, or an S3-compatible service) running there. Manifold hosts neither
-  today: no blob storage, no plugin-owned table, no supervised service
-  primitive.
-- The setting itself is a prerequisite. Manifold settings are boolean-only and
-  per principal (`packages/protocol/src/plugin.ts:104,128-133`;
-  `docs/PLUGINS.md:711-723`); placement is one value for the deployment, so it
-  needs an enum kind and a workspace scope.
-- Secrets stay outside manifold in every placement: the ceremony still delivers
-  `storage.json` per machine; for (a) and (b) the document points at the hosting
-  node's endpoints.
-- (b) is reachable through OS supervision: dotfiles can provision the backends
-  on a fleet machine today, and the plugin only needs to read the placement.
-  (a) needs manifold work, because the master node in the compose deployment is
-  a container with a single named volume (`docs/SELF-HOST.md`).
-- Until the setting exists, the plugin refuses (a) and (b) with a named reason
-  and treats (c) as the only value; that refusal is visible in the UI, not only
-  in prose (`AXIOMS.md:519-522`).
+- No manifold prerequisite stands between Babel and either placement. The
+  setting is `storage.json`'s `mode`, delivered per machine by the ceremony as
+  before; the plugin reads it and shows it.
+- Rendering the setting in manifold's generic settings pane needs an enum kind
+  and a workspace scope (boolean-only and per principal today:
+  `packages/protocol/src/plugin.ts:104,128-133`; `docs/PLUGINS.md:711-723`).
+  That is a UI prerequisite (atyrode/manifold#158), not a placement one; until
+  it lands the pane shows the placement read-only with its source named.
+- Plugin-owned tables and blobs on the master node (atyrode/manifold#159) are
+  no longer on Babel's path: master placement is Babel's own local mode, not
+  manifold-hosted storage. The issue stays filed as a general manifold need.
+- Secrets stay outside manifold in both placements.
 
-Manifold prerequisites: "Workspace-scoped plugin settings with an enum kind" (atyrode/manifold#158);
-"Plugin-owned durable storage beyond plugin_kv: tables and a blob directory on
-the master node" (atyrode/manifold#159). Babel work: "Storage placement setting: master node, fleet
-machine, or external provider" (#146).
+Manifold prerequisites: "Workspace-scoped plugin settings with an enum kind"
+(atyrode/manifold#158), for the pane only. Babel work: "Storage placement setting: master (local mode, non-durable) or external (shared mode)" (#146).
 
 ### D4 Runs console: full plugin-rendered UI
 
@@ -539,17 +554,16 @@ an absent machine.
 
 ### Step 3. Storage placement
 
-Manifold: "Workspace-scoped plugin settings with an enum kind" (atyrode/manifold#158); "Plugin-owned
-durable storage beyond plugin_kv: tables and a blob directory on the master
-node" (atyrode/manifold#159).
+Manifold: "Workspace-scoped plugin settings with an enum kind"
+(atyrode/manifold#158), for rendering the setting only.
 
-Babel: "Storage placement setting: master node, fleet machine, or external
-provider" (#146).
+Babel: "Storage placement setting: master (local mode, non-durable) or external (shared mode)" (#146).
 
-Proof: the placement renders in manifold's generic settings pane with three
-values; (c) round-trips and every machine's engine service reports the same
-placement; (a) and (b) refuse with a named reason until their backends are
-hostable, and the refusal is visible in the pane.
+Proof: every machine's engine service reports the deployment's placement and
+its source (`storage.json`); external round-trips against the real stores;
+master runs on one box and the surface names it non-durable wherever it is
+shown; the pane, once atyrode/manifold#158 lands, edits the value and the
+ceremony's document is what changes underneath.
 
 Retired: nothing; the ceremony continues.
 
