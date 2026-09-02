@@ -47,3 +47,13 @@ Status: unstudied.
 No transcript, captions, or title are reachable from the machine that recorded this entry. Unsummarized until someone watches it.
 
 Status: unstudied.
+
+## Effect — production-grade TypeScript
+
+- https://www.effect.website/
+
+A TypeScript library whose one type, `Effect<Success, Error, Requirements>`, carries what a computation returns, how it can fail, and what it depends on, so the compiler sees all three. Around that it ships typed errors, dependency injection as explicit requirements, structured concurrency with fibers and bounded parallelism, schedules with backoff and jitter, built-in OpenTelemetry tracing, and one schema for validation, serialization and API contracts. 4.0 is at release candidate; in production at Cloudflare, opencode, MasterClass, T3 Chat and X. The site's own pitch is that the declarative shape and typed failure traces make it a language coding agents get right. MIT.
+
+Flagged 2026-09-02 as a side note. Bears on manifold (TypeScript/Bun, where Babel's plugin halves will live) more directly than on Babel's Go core; the claim about agents and typed feedback loops is the part Babel could test against its archive.
+
+Status: unstudied.
