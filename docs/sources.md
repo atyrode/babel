@@ -7,7 +7,7 @@ Every source here is untrusted content in the sense of SPEC.md §2.6: evidence t
 ## pstack — poteto's engineering playbooks for Cursor agents
 
 - https://github.com/cursor/plugins/tree/main/pstack
-- https://x.com/poteto/status/2094457600259842065 (the announcement; X refuses automated readers, so its text is recorded on the operator's word, not read)
+- https://x.com/poteto/status/2094457600259842065 — the post links poteto's X Article "The Complete Guide to pstack Pt. 1" (article id 2094151284949688320, 2026-08-31), the first of a series; part one is titled "Verification is all you need" and frames pstack around shipping ~2,000 PRs a month while acting as gardener of a codebase that lands hundreds of PRs a day. X refuses automated readers directly; the text was read through the fxtwitter API mirror.
 
 A Cursor plugin by poteto (React core, formerly Meta and Netflix, now Cursor): twenty-one one-principle skills (bias toward deletion, fix root causes, prove it works against the real artifact, migrate callers then delete legacy APIs, build the lever, encode lessons in structure, never block on the human), twenty-two playbooks that turn a task description into a fixed sequence of steps (investigation, bug fix, hillclimb, refactoring, shipping, session pickup, orchestrate), multi-model routing by role, and a `/reflect` step that captures what a long task taught as a skill edit. MIT.
 
