@@ -1,8 +1,8 @@
 {
   "manifest_schema": 2,
   "preamble": {
-    "version": 1,
-    "digest": "sha256:7867c920f390bda7b7fd2d6489675546312f8f6913b6648add35937abb112b88"
+    "version": 2,
+    "digest": "sha256:135d0ca7b61e7c54da557a597defed8a471e49388b25d3d0e63a80597bd4fcc8"
   },
   "recipes": [
     {
@@ -57,8 +57,8 @@
     },
     {
       "id": "reusable-practice-capability-leverage",
-      "version": 1,
-      "digest": "sha256:0f157fca31af78a1141185c44c160c3db3fbb53bb1642941f9fe4ee4558e2d51"
+      "version": 2,
+      "digest": "sha256:0e5c2d859e5ff4922fb8c58455ece219a437682caff5b7ba49c78fce42536114"
     },
     {
       "id": "security-trust-boundaries",

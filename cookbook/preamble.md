@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 ---
 
 # What this cookbook is for
@@ -88,3 +88,23 @@ friction-primacy cannot quietly become friction-exclusivity.
 
 The cookbook itself weights curation, through this document: the questions
 above are the ones a review asks of a recipe diff.
+
+## Standing emphases
+
+Some causes of friction are general enough that the operator has named them as
+standing emphases rather than waiting for the record to surface them one
+session at a time. Each is dated, stated in the friction frame, and read by
+the lens that already covers its ground.
+
+**Delivery pipelines, continually improved** (operator direction, 2026-09-02).
+A project's CI/CD is where verification becomes mechanical: a check the
+pipeline performs is one no agent has to remember, no reviewer has to redo,
+and no operator has to re-explain. A pipeline that does not run where the work
+actually lands, a gate that exists only as a command contributors are asked to
+run, a release step done by hand, a check that drifts from what the project
+ships — each is a recurring cost the record shows as repeated correction,
+re-verification, or a merge that a machine could have refused. The emphasis is
+continual: a pipeline is improved against what the record shows slipping past
+it, not declared finished. It binds through the reusable-practice lens, whose
+inclusion rule names it, and through outcome integrity wherever a claimed
+verification was one the pipeline could have made unnecessary.

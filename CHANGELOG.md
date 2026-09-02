@@ -9,6 +9,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Added
+
+- **The cookbook records delivery pipelines as a standing emphasis (operator
+  direction 2026-09-02).** The statement gains a "Standing emphases" section
+  (version 2) naming continually improved CI/CD in the friction frame: a check
+  the pipeline performs is one no agent has to remember, no reviewer has to
+  redo, and no operator has to re-explain. The reusable-practice lens (version
+  2) includes the pipeline as a capability in its own right — a check performed
+  by hand that CI could perform, a pipeline that does not run where the work
+  lands, a gate that exists only as a command contributors are asked to run, a
+  release step done by hand. The version record is regenerated; `babel cookbook
+  check` is clean.
+
 ### Fixed
 
 - **A shared-mode deployment stages the records it writes, so `babel sync` has

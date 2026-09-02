@@ -1,6 +1,6 @@
 ---
 id: reusable-practice-capability-leverage
-version: 1
+version: 2
 kind: lens
 scope: [session, corpus, repository]
 stages: [investigate, challenge, synthesize]
@@ -44,6 +44,16 @@ script could perform; a procedure that succeeded and is written nowhere; a
 capability whose absence the record shows being worked around; a piece of
 knowledge transferred repeatedly by explanation; an existing tool that the
 record shows was not discoverable at the moment it was needed.
+
+Include the project's delivery pipeline as a capability in its own right
+(standing emphasis, cookbook statement, 2026-09-02): a check performed by hand
+or in review that CI could perform; a pipeline that does not run on the branch
+or pull-request path where the work lands; a gate that exists only as a command
+contributors are asked to run; a release, tag, or deployment step done by hand
+repeatedly; a check the record shows drifting from what the project ships.
+These are the same recurring manual costs as the rest of this list, with the
+difference that the tool that removes them usually already exists and is
+merely not wired in.
 
 Include the prerequisites and the recurring costs, always. A proposal for a
 capability includes what must exist first — data, access, a stable interface, a
