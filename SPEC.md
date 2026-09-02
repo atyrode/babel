@@ -24,6 +24,8 @@ Among everything Babel can be, its axiomatic center is friction (operator decisi
 
 The wider field does not move that center (operator direction 2026-09-02). Conversation analysis and repository analysis are two entry points into one question — what was asked, what the agent understood, and what the code became — so a run may start from the archive with repositories as context or from a repository with the archive as context (§4.9). Babel points at its subjects rather than copying them: the archive is the one kind it holds as immutable copies, and every other kind is observed at a pinned fingerprint at run time and recorded that way in the receipt (§3.1).
 
+The lake serves a second use beside Babel's own analysis (operator direction 2026-09-02, §4.10): it is hot-ready context for the operator's daily work with agents. Any agent, in any harness, on any connected machine, can be told "look at what we discussed about X" and, knowing Babel exists and what it can do, ask Babel for that discussion — search the archive, fetch a bounded excerpt with its provenance — and carry on with it as context. Babel's workers already read the lake that way during a run; recall is the same reading offered to every other agent the operator talks to. The archive stops being a record consulted only when Babel analyzes it and becomes memory the operator's agents can reach for.
+
 Babel does not promise reliable, exhaustive, or objectively correct analytical output. Its hard guarantees concern archive integrity, containment, provenance, reproducibility, and no mutating or publishing external effects. Brokered reads are observable external effects and are recorded. Hypotheses, findings, and proposals remain creative, fallible, incomplete interpretations for human review.
 
 ## 2. Product boundary
@@ -42,7 +44,8 @@ Babel does not promise reliable, exhaustive, or objectively correct analytical o
 - provenance-bearing findings and proposal generation without claiming analytical correctness;
 - its user interface, which under manifold (§2.8, operator decision 2026-09-02) is the plugin's rendered surface — the `babel.<x>` plugin package, its manifest, actions and both halves live in `atyrode/babel` — and until the plugin is proven is the self-hosted loopback web interface as the transitional management and exploration surface; plus a minimal terminal status overview and headless commands for operations;
 - the runs projection: one host-independent contract carrying every fact a surface shows about a run (§8.3);
-- subject kinds and, per kind, their observers, fingerprints and disclosure stories (§3.1, §4.9); and
+- subject kinds and, per kind, their observers, fingerprints and disclosure stories (§3.1, §4.9);
+- the recall interface: the lake as bounded, provenance-bearing, redacted context for any agent the operator works with, through the same retrieval Babel's own workers use (§4.10); and
 - globally committed review/refinement/output state plus rebuildable private local caches and materializations.
 
 ### 2.2 Babel does not own
@@ -338,6 +341,20 @@ A subject's kind decides what its fingerprint is and what its observer may do: a
 
 A **watch** is a standing operator interest in a subject. The conductor draws it (§7) when the subject's material-change fingerprint moves — a new snapshot, a new commit, a moved dirty state — and what it draws is an ordinary run over a preparation whose focus is the watched subject, carrying the watch as its authority in the receipt, as an invitation or a standing policy would be. Subject sensitivity is checked against the profile's disclosure class before any draw sends anything (§3.1).
 
+### 4.10 Recall: the lake as context for agents
+
+**Recall** is the lake read as memory by an agent that is not Babel's (operator direction 2026-09-02, §1). The operator, mid-conversation with any agent in any harness on any connected machine, points at a past discussion — a topic, a period, a repository, a machine — and the agent asks Babel for it and continues with what Babel returns. Babel does not join the conversation, choose what is relevant for the agent, or summarize on its behalf; it answers two questions, *where is it* and *what does it say*, with the same retrieval its own workers use.
+
+One retrieval, two doors. The evidence tool a sandboxed worker drives (`corpus-search`, §5.1, §6.5) and the recall interface an outside agent drives are the same service over the same local index (`internal/index`: §5.4's full-text search, structured filters, session and repository links, temporal filters, per-record locators) and the same selective fetch (§6.2). Nothing recall returns is computed twice, ranked differently, or excerpted by a second rule. What differs is the caller and the door: a worker reaches it through the broker inside a run, an agent reaches it through the CLI (§8) and, under manifold, through a `babel.<x>` action door when the agent is a manifold principal (§2.8).
+
+Recall is two steps so that the agent, not Babel, decides what it spends context on. **Search** returns hits: locators (harness, source host, snapshot, session, record), a bounded excerpt, the record's time, and the session's title and workspace; never a score (§5.4: rank is not evidence strength, and recall inherits the rule by construction). **Show** returns a bounded excerpt around a locator — a record, a turn range, a session at reduced fidelity — with a provenance header naming the source host, snapshot time and session, and a stated bound; the agent widens by asking again, and a whole session arrives only by explicit request with its size stated first. Locators are the archived-session locators of §2.5, so the same identity that continues a conversation also recalls it.
+
+What recall returns is untrusted content in the caller's context (§3, §2.7). Every excerpt is delimited and labelled as archived data rather than instruction, so an agent's harness treats it as material to read, not a message to obey; likely-secret spans are redacted by §6.4's preflight before anything leaves Babel, by default and without a flag to disable it on the recall door; and a subject whose sensitivity exceeds the recall disclosure class is refused by name (§3.1). The disclosure story is the caller's model provider: a recalled excerpt goes wherever the calling agent sends its context, so recall is the operator's act of disclosure, taken by asking, never Babel's. Recall reads the archive as archived, so it is as fresh as the source host's last push (§6.1) and says so: every answer carries the newest snapshot time it could see, and an agent asked about this morning's conversation learns it is looking at last hour's copy rather than being left to assume otherwise. Babel does not collect live conversations (§2.2), and recall does not change that.
+
+Recall is per machine and rebuildable. The index is a private local cache over the sessions that machine has fetched (§2.1, §9); the catalog says what exists across the fleet, and the bytes arrive through selective fetch on demand and are cached. "Any machine" therefore means the catalog is fleet-wide and a miss is a fetch, not a refusal; keeping a machine hot — fetching and indexing what its agents are likely to ask for ahead of the question — is the conductor's job (§7) under the same ceilings as its other draws, and is the first thing to measure rather than assume. The index stays local and unencrypted-at-rest only as a cache on a machine the operator already trusts with the sessions themselves; no full-text index over transcript plaintext is ever placed in the shared catalog, which Phase B encrypts client-side (§9).
+
+Agents learn recall exists from the operator's agent configuration, not from Babel: `atyrode/dotfiles` publishes the capability in the instructions every project inherits and installs the skill that says how to use it, and Babel provides that skill text at a versioned path so it moves with the CLI it describes — Babel does not edit agent configuration (§2.2), and dotfiles does not author Babel's contract (§2.3). Which agents recall, how often, what they search for and what they widen to is itself lake material: recall requests are records of Babel's own kind (§4.9, derived), so a run can later read where the operator's agents reached for memory and did not find it. That is friction (§1), and it is why recall belongs to Babel rather than beside it.
+
 ## 5. Analysis cookbook
 
 The cookbook is executable exploratory policy, not a fixed taxonomy or one opaque prompt. It gives analysis productive starting structures while preserving arbitrary emergence. It is versioned in the public repository and has three asset kinds:
@@ -533,6 +550,9 @@ babel sessions list [--harness omp|codex|claude] [--host HOST [--snapshot ID]] [
 babel sessions inspect SESSION [--json]
 babel sessions fetch SESSION [--host HOST] [--snapshot ID] [--json]
 babel sessions prune --local [selection flags] [--yes]
+babel recall search QUERY [--harness omp|codex|claude] [--host HOST] [--workspace PATH|--repo LOCATOR] [--since TIME] [--until TIME] [--limit N] [--json]
+babel recall show LOCATOR [--around N|--turns A-B|--session] [--max-bytes N] [--json]
+babel recall skill
 babel prepare [--focus SUBJECT...] [--context SUBJECT...] [selection flags]
 babel explore --preparation PREPARATION_ID [--new | --all | --resume ID] [--mode clean|chaos] [--chaos-pack ID] [--presentation marked|blind] [--lens ID] [--repo PATH] [--public-research] [--code-profile PROFILE_ID]
 babel runs list [--host HOST] [--state STATE] [--json]
@@ -766,7 +786,8 @@ This phase contains no model inference or transcript viewer. Local coding and sy
 - add restore-and-rescan completion for `catalog-pending` snapshots, which is the only way to recover a snapshot's session detail once its owning host failed to write it: restore the snapshot to a private location, rescan it with the adapters that own its trees, publish the session rows it actually held, and mark it committed. Phase A deliberately ships without it and reports that no shipped command resolves the state, rather than implying a fix it does not have;
 - decide whether per-instance eviction should exist, and where a provider permits creating database users add per-instance database-role revocation with column-level grants that reserve an eviction column to an operator role, so the control is database-enforced rather than an unauthenticated convention (§9); plus payload-key rotation, coordinated PostgreSQL/Cellar/key backup and restore drills, and monitoring;
 - expose continuation capture/preflight APIs and integrate Code's Cloud Sessions **Continue here** flow for OMP;
-- add sanitized destination projections such as issue-draft export and the agent brief (§4.6); and
+- add sanitized destination projections such as issue-draft export and the agent brief (§4.6);
+- add the recall interface (§4.10): `babel recall search` and `babel recall show` over the worker's own retrieval and selective fetch, the shipped skill text, the recall request record, and the dotfiles exposure — gated in §14; and
 - add opt-in scheduled analysis using a named Code profile with policy guards.
 
 ### Phase M: become manifold's plugin
@@ -880,6 +901,7 @@ No phase grants Babel permission to publish or apply its proposals.
 82. Every run fact Babel shows is exposed through one host-independent projection (operator decision 2026-09-02), so the transitional shell and the plugin render the same contract and nothing a surface shows about a run is computed in view code.
 83. Babel does not enter manifold's in-tree plugin roster as an interim, reaffirming decision 61 against the in-tree-first alternative the manifold review proposed (operator decision 2026-09-02). Three reasons, the operator's: an in-tree plugin would push the marketplace and dynamic-distribution wave back, it would mint debt to be paid at extraction, and it would contradict the direction that manifold builds exactly what Babel needs to exist. The consequence is accepted: nothing of Babel renders inside manifold before out-of-tree loading exists (atyrode/manifold#151, #152), and Babel's host-independent work proceeds meanwhile. The loader and the isolated component vocabulary (atyrode/manifold#160) are sized against Babel's written surface inventory — §8.2, §8.3, `docs/runs-interface.md` — rather than against a plugin in the tree.
 84. Storage placement has two values, both runnable today (operator decision 2026-09-02, narrowing decision 63): master — §9's local mode on the hub's host, single-box and named non-durable — and external — shared mode against operator-provisioned stores, the fleet default. A store on an enrolled fleet machine is external with that endpoint, not a third placement; installing one through manifold waits on the exec primitive (decision 62). The setting is `storage.json`'s `mode` now, and manifold's settings pane renders it once non-boolean settings kinds exist (atyrode/manifold#158) — a UI prerequisite, not a placement one.
+85. The lake is hot-ready context for the operator's agents, not only Babel's (operator direction 2026-09-02, §1, §4.10): any agent in any harness on any connected machine can ask Babel for a past discussion and continue with it. Recall is the worker's own retrieval and selective fetch offered through a second door — the CLI now, a `babel.<x>` action door under manifold — in two steps, search then show, bounded, provenance-bearing, redacted, labelled as archived data, and as fresh as the last push. Agents learn it exists from the dotfiles-published instructions and a skill whose text Babel ships; recall requests are lake material of Babel's own kind. Gated in §14 before any instruction names it. Babel is to be built around and with this interface in mind, so the retrieval, excerpting and disclosure rules are written once for both doors. Work item: #156; exposure: atyrode/dotfiles#505.
 
 ## 14. Deferred decision gates
 
@@ -960,6 +982,17 @@ For pointed subjects (§3.1, §4.9), per kind, before any run may name it as foc
 - a watch on the kind carries a per-subject cadence, and the conductor's ceilings bound its draws;
 - the recipes that may run over the kind name it in their `focus` front matter (§5.1); and
 - no code-intelligence index precedes measurement of what repository-focused runs actually retrieve.
+
+### Before recall serves an agent
+
+For the recall interface (§4.10), before the dotfiles instructions tell any agent it exists:
+
+- the recall output format is frozen: every excerpt delimited and labelled as archived data, carrying source host, snapshot time, session, locator and the bound applied, and a whole session only by explicit request with its size stated first;
+- §6.4's likely-secret redaction is proven to run on every recall path with no disabling flag, by test, and the recall disclosure class is defined against §3.1's subject sensitivity so a refused subject is refused by name;
+- freshness is stated on every answer as the newest snapshot time seen, and a machine's miss is a fetch, not a refusal, with the fetch's cost visible;
+- the recall request is recorded as a derived record (§4.9) with what was searched, what was shown and what was widened, and a first measurement of that record decides whether the conductor warms anything ahead of the question;
+- the worker's evidence tool and the recall door are shown to be one implementation, so a change to one changes the other; and
+- the skill text Babel ships is what dotfiles installs, and the instructions every project inherits name the capability in one sentence and defer the how to the skill.
 
 ### Later product questions
 

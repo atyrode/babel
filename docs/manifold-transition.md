@@ -520,6 +520,14 @@ are reused, its React serving is not); "One untrusted-content sanitizer for
 every plugin-rendered Babel surface" (#142); "Host-independent run projection API:
 list, detail, create, cancel" (#151) (runs).
 
+Also host-independent, and not a manifold step at all: "Recall: the data lake as
+hot-ready context for any agent, in any harness, on any machine" (#156) (SPEC.md
+§4.10). Recall is the worker's own retrieval and selective fetch offered through a
+second door — the CLI, and later one `babel.*` action for agents that are
+manifold principals — so it rides on #141's action-door API without a second
+implementation and needs nothing from manifold to exist. Its exposure to agents
+is dotfiles' (atyrode/dotfiles#505), not manifold's.
+
 Proof: a development manifold loads the Babel plugin artifact from
 `atyrode/babel` by hash; `GET /api/plugins` lists `babel.<x>` rows with `source:
 "plugin"` and an install grant; one `babel.*` action dispatched from the

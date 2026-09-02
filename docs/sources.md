@@ -21,7 +21,7 @@ Status: unstudied.
 
 A single-binary MCP server (C, tree-sitter over 162 languages, hybrid LSP for a dozen) that indexes a repository into a persistent graph of functions, classes, call chains, routes, and cross-service links, then answers structural queries in under a millisecond. Its claim is token economy: a handful of graph queries in place of dozens of grep and read cycles, with a preprint behind the numbers. It also carries ADR management and a cross-session coordination daemon. MIT.
 
-Status: unstudied.
+Status: unstudied. Bears on recall (SPEC.md §4.10): its economy argument — a few addressed queries in place of many reads — is the shape recall's search-then-show takes over conversations rather than code, and its MCP transport is one candidate for how an agent reaches a recall door beyond the CLI.
 
 ## nerdbrain — an agent that writes its own rules, subject to approval
 
@@ -30,7 +30,7 @@ Status: unstudied.
 
 A git repository attached to a Claude Code session. The agent notices corrections and preferences during work, writes them to a ledger with the evidence (seen once, seen three times, said outright), and turns a note into a rule only when the operator approves it, one item at a time; silence is never a yes. Rules are small routed packs rather than one long instructions file. Forks send general rules upstream as pull requests. MIT.
 
-Status: unstudied.
+Status: unstudied. Bears on recall (SPEC.md §4.10) from the other side: it is the agent noticing what to remember, where recall is the operator pointing at what to remember; both make the archive memory the agent can act on, and Babel's recall-request record is what would tell whether the pointed form is enough.
 
 ## refactoring.guru — the design-patterns catalogue
 
