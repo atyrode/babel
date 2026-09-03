@@ -57,3 +57,13 @@ A TypeScript library whose one type, `Effect<Success, Error, Requirements>`, car
 Flagged 2026-09-02 as a side note. Bears on manifold (TypeScript/Bun, where Babel's plugin halves will live) more directly than on Babel's Go core; the claim about agents and typed feedback loops is the part Babel could test against its archive.
 
 Status: unstudied.
+
+## lieflat-charts — a data-visualization skill with a data-contract index
+
+- https://github.com/larashero3-dotcom/lieflat-charts
+
+An Agent Skills package (`SKILL.md`, installable into Claude Code, Codex or moxt) that turns data into single-file HTML charts and full-page reports. Its interesting part is the method, not the pictures: `catalog.md` indexes 49 chart types *by the data contract each one needs*, so the agent is told to judge the shape of the data before it picks a form; `report-catalog.md` does the same for 12 whole-page layouts, bilingual. One shared token file (`mono-tokens.js`) plus three colour presets carry the visual grammar, and `scripts/validate.mjs` is a pre-publish check. The stated rules are the transferable bit — one chart carries one conclusion; real data units are the visual atoms rather than decorative density; titles, annotations, sources and whitespace count as part of the chart; two deliberate reading speeds (Lupi, a slow editorial register where a mark maps to a record, and Glance, pre-aggregated for a few seconds' read). 4.2k stars.
+
+Flagged 2026-09-03. Bears on §4.6 output projections and on Babel's own surfaces — the runs console and the fleet views are exactly "one conclusion per view over real units", and a data-contract index is the kind of thing the cookbook could carry for projections. Two caveats that make this a source to learn from rather than adopt: it is PolyForm Noncommercial 1.0.0, so nothing here can be vendored into an MIT repository, and its Glance, interactive and some report templates load Chart.js or ECharts from a CDN, which §2.4 forbids outright for Babel's frontend (embedded assets, no runtime CDN). The rule at the top of this file applies with full force to this one, since it ships an install command: extract the claims, install nothing.
+
+Status: unstudied.
