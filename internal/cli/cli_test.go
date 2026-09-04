@@ -51,6 +51,7 @@ type fixture struct {
 	home         string
 	sessionsDir  string
 	blobsDir     string
+	collabDir    string
 	repoDir      string
 	passwordFile string
 	dataDir      string
@@ -71,6 +72,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	f.sessionsDir = filepath.Join(f.home, ".omp", "agent", "sessions")
 	f.blobsDir = filepath.Join(f.home, ".omp", "agent", "blobs")
+	f.collabDir = filepath.Join(f.home, ".omp", "collab")
 	if err := os.MkdirAll(f.home, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +201,21 @@ func (f *fixture) blob(content string) string {
 		f.t.Fatal(err)
 	}
 	return "blob:sha256:" + name
+}
+
+// collab writes one synthetic collaboration transcript. It lives directly
+// in the collab directory rather than one level below it, which is exactly
+// why Discover cannot address it and why BackupRoots must carry the tree.
+func (f *fixture) collab(name, content string) string {
+	f.t.Helper()
+	if err := os.MkdirAll(f.collabDir, 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	path := filepath.Join(f.collabDir, name+".jsonl")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	return path
 }
 
 // sessionSpec describes one synthetic OMP session to materialize.
@@ -695,6 +712,9 @@ func verbSwitch(fn *ast.FuncDecl) *ast.SwitchStmt {
 func TestPushThenStatusAndVerify(t *testing.T) {
 	f := newFixture(t).withRepo()
 	f.threeSessions()
+	collabPath := f.collab("aT0L88jKQgE329p0hd4pkw",
+		`{"type":"session","version":3,"id":"collab-1","cwd":"/w","timestamp":"2026-09-04T00:00:00Z"}`+"\n"+
+			`{"type":"message","id":"m1","parentId":"collab-1","timestamp":"2026-09-04T00:00:01Z"}`+"\n")
 	f.bootstrapRepo()
 
 	stdout, stderr := f.ok(f.with("archive", "push", "--json")...)
@@ -712,13 +732,28 @@ func TestPushThenStatusAndVerify(t *testing.T) {
 		t.Fatalf("push processed nothing: %+v", push)
 	}
 	// BackupRoots must add OMP's blob store to the session root, so a
-	// snapshot can restore a continuation-grade closure (SPEC.md §3).
+	// snapshot can restore a continuation-grade closure (SPEC.md §3), and
+	// the collab tree, which is conversation history Discover cannot
+	// address but a backup must still carry.
 	wantRoots := []string{
 		filepath.Join(f.home, ".omp", "agent", "blobs"),
 		filepath.Join(f.home, ".omp", "agent", "sessions"),
+		filepath.Join(f.home, ".omp", "collab"),
 	}
 	if !slices.Equal(push.Roots, wantRoots) {
 		t.Fatalf("push roots = %v, want %v", push.Roots, wantRoots)
+	}
+	// A listed root proves configuration, not capture: `archive push`
+	// silently skips roots a machine does not have. Assert the transcript
+	// is really in the snapshot.
+	listed, err := exec.Command(resticBinary(t), "-r", f.repoDir,
+		"--password-file", f.passwordFile, "ls", push.SnapshotID).Output()
+	if err != nil {
+		t.Fatalf("restic ls %s: %v", push.SnapshotID, err)
+	}
+	if !strings.Contains(string(listed), collabPath) {
+		t.Fatalf("snapshot %s does not contain the collab transcript %q",
+			push.SnapshotID, collabPath)
 	}
 	if strings.Contains(stderr, "{") {
 		t.Fatalf("push wrote result data to stderr: %q", stderr)
