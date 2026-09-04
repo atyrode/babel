@@ -62,7 +62,13 @@ const (
 	dataDirName    = ".omp"
 	sessionsSubdir = "sessions"
 	blobsSubdir    = "blobs"
-	sessionExt     = ".jsonl"
+	// collabSubdir holds collaboration transcripts, which sit beside
+	// "agent" rather than inside it and are written in the same record
+	// language as a session log (a `session` header, then `message`,
+	// `compaction` and `model_change` records). They are conversation
+	// history, so a backup that omits them loses transcripts outright.
+	collabSubdir = "collab"
+	sessionExt   = ".jsonl"
 
 	// blobRefPrefix is the persisted blob-reference scheme; the remainder
 	// of a reference is the blob's lowercase SHA-256 hex, which makes
@@ -112,28 +118,44 @@ func (*Adapter) DefaultRoots() []string {
 	return []string{filepath.Join(agent, sessionsSubdir)}
 }
 
-// BackupRoots adds the content-addressed blob store to the session root:
-// referenced blobs live outside the session trees, so a backup that
-// captured only DefaultRoots could never restore a continuation-grade
-// closure (SPEC.md §3).
+// BackupRoots adds two trees to the session root. The content-addressed
+// blob store, because referenced blobs live outside the session trees and
+// a backup that captured only DefaultRoots could never restore a
+// continuation-grade closure (SPEC.md §3). And the collaboration
+// transcripts, because they are session history that Discover cannot
+// address: its layout contract is one "*.jsonl" a single directory below
+// a root, while collab logs sit directly in their own directory. Leaving
+// them out of DefaultRoots keeps session identity unchanged; leaving them
+// out of BackupRoots would silently drop transcripts from every snapshot.
 func (*Adapter) BackupRoots() []string {
-	agent, ok := agentDir()
-	if !ok {
+	agent, agentOK := agentDir()
+	data, dataOK := dataDir()
+	if !agentOK || !dataOK {
 		return nil
 	}
 	return []string{
 		filepath.Join(agent, sessionsSubdir),
 		filepath.Join(agent, blobsSubdir),
+		filepath.Join(data, collabSubdir),
 	}
 }
 
-// agentDir locates "~/.omp/agent", the parent of both default roots.
-func agentDir() (string, bool) {
+// dataDir locates "~/.omp", the parent of both "agent" and "collab".
+func dataDir() (string, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "", false
 	}
-	return filepath.Join(home, dataDirName, "agent"), true
+	return filepath.Join(home, dataDirName), true
+}
+
+// agentDir locates "~/.omp/agent", the parent of both default roots.
+func agentDir() (string, bool) {
+	data, ok := dataDir()
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(data, "agent"), true
 }
 
 // Discover enumerates primary session logs under roots. A session log is
