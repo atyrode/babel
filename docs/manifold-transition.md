@@ -727,3 +727,168 @@ Every hard ceiling or rule an implementer will hit, in the order they bite.
   through a plugin route path or a discipline container, and a grant can scope
   to the plugin, an action or a container, never to one run. The runs document
   names this gap; the machine node issue is its first instance.
+
+---
+
+## 7. Topology and first plugin (2026-09-05)
+
+Operator direction, 2026-09-05 night. Manifold facts below were read at manifold
+`main` @ `d8ec7aa`, where ADR 0016 stage 1+2 has landed: the authoring kit
+`packages/plugin-kit` (`defineServerPlugin`, `defineWebPlugin`, `ui`, `pack`),
+the guide `docs/PLUGINS.md` §9 "Writing an isolated (out-of-tree) plugin", the
+install door and the artifact shape (`docs/CONTRACTS.md` §Isolated plugins).
+Step 1's manifold half (§5) therefore exists; this section records Babel's
+half as built tonight in `plugins/`, and what is deliberately not built.
+
+### 7.1 The topology
+
+Each product ships a **baseline** plus independently enable-able
+**sub-plugins**, so a hub operator enables only what is needed and grants each
+part only what it needs. The engine has no parent notion and needs none: a
+sub-plugin is a flat plugin sharing the baseline's id prefix and declaring
+`dependencies: { "atyrode.babel": { type: "required" } }` (refusals
+`missing_dependency` and `dependency_disabled` exist,
+`packages/protocol/src/plugin.ts:416-431`). The layout rule follows the id: a
+child is a directory inside its parent's plugin directory
+(`plugins/atyrode.babel/sessions/`). The split rule: nest where existence
+lives, edge where a plugin borrows a noun; split only where the capability
+ceiling or independent use genuinely differs, never deeper.
+
+The baseline is **not a library**. The kit inlines shared code
+(`plugins/atyrode.babel/contract.ts`) into every bundle; the baseline owns
+shared STATE and ARBITRATION as doors, and a sub-plugin's web half calls them
+through the host's `action` method. A sub-plugin's SERVER half cannot call the
+baseline's doors tonight — `ISOLATE_CTX_METHODS` has no `actions.dispatch`
+(`packages/protocol/src/isolate.ts:348-360`); a manifold follow-up is filed
+with this rationale (ADR 0016 §2 allows "the action door, as a caller"; the
+contract omitted it) — so tonight's sub-plugin has no server half.
+
+**Id namespace.** Ids are `atyrode.<product>`: `atyrode.babel` and
+`atyrode.babel.<part>`. This supersedes the `babel.<x>` sentence in §1
+("Settled before this document"): the prefix is the account that owns both
+products, so the two product families read alike on one roster and a
+sub-plugin's prefix names the baseline it depends on.
+
+| Id                          | Tonight    | Directory                  | Halves         | Owns                                                                                                         |
+| --------------------------- | ---------- | -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------ |
+| `atyrode.babel`             | built      | `plugins/atyrode.babel/`   | server + web   | Doors `run` and `listRuns`, the run record in plugin storage, the event `run_recorded`. No panel.            |
+| `atyrode.babel.sessions`    | built      | `plugins/atyrode.babel/sessions/` | web     | Panel `reports` over the baseline's doors: runs a read-only report in a terminal on a chosen machine.        |
+| `atyrode.babel.configure`   | RESERVED   | —                          | —              | The profile ceremony (`analysis profile configure`, babel#160): the one write ceremony, its own grant.       |
+
+The sessions browser proper — listing and opening archived sessions inside
+`atyrode.babel.sessions` — is RESERVED too, inside that id (browse/open is the
+id's purpose; tonight it holds the honest first slice, §7.3).
+
+### 7.2 The interim behaviour, exactly
+
+**`atyrode.babel.run`** (caps `["terminals:spawn"]`). Input
+`{ machineId: string; report: "archive-status" | "archive-fleet" |
+"storage-status" | "version" }`; anything else is `invalid_args` from the
+door's own zod (graded in the child, `docs/PLUGINS.md:1478-1481`). Refuses
+`refused` when `ctx.machines.isOnline(machineId)` is false ("machine "<id>" is
+not online"). Otherwise: `runId = ctx.newId()`, `recordedAt = ISO-8601 UTC of
+ctx.now()`, writes `runs/<recordedAt>-<runId>` =
+`{ runId, machineId, report, argv, recordedAt }` to plugin storage, deletes
+the oldest keys beyond 50, emits `run_recorded { runId, machineId, report,
+recordedAt }` on `manifold://plugin/atyrode.babel`, answers `{ runId, argv,
+recordedAt }`. The argv is the closed map in `contract.ts`:
+
+| report           | argv                            |
+| ---------------- | ------------------------------- |
+| `archive-status` | `babel archive status`          |
+| `archive-fleet`  | `babel archive fleet`           |
+| `storage-status` | `babel storage status`          |
+| `version`        | `babel version`                 |
+
+All four are read-only (`babel archive status --help`: "Read-only";
+`archive fleet`: "Read-only"; `storage status` "succeeds when storage is
+unconfigured"). The door records; it does not run anything — an isolated
+server half has no exec verb (N9) and no spawn.
+
+**`atyrode.babel.listRuns`** (caps `["containers:read"]`). Input `{}`; answers
+`{ runs: RunRecord[] }`, newest first, at most 50. The local name is `listRuns`
+and not `runs.list` because a local action name has no dots
+(`LocalNameSchema`, `packages/protocol/src/plugin.ts:70-71`; assembly refuses
+"not a local name", `packages/plugin/src/assemble.ts:564-571`), the shipped
+spelling being `listX` (`core.index.listContainers`, `core.access.listGrants`).
+
+**Panel `reports`** (title "babel", `atyrode.babel.sessions`). A `select` of
+online machines (`host.machines()` filtered on `online`, re-read every 10 s
+from `subscribe`; a selection that goes offline is dropped), a `select` of the
+four reports, a `button` "Run here" (`event: "run"`, `action:
+"atyrode.babel.run"`, disabled with no online machine), status text, and a
+`list` of the recent runs from `listRuns`. On `run`: `host.action(RUN_DOOR,
+{ machineId, report })`; a denial is shown as text. On `ok`:
+
+```
+host.openTerminal({
+  elementId: crypto.randomUUID(), cols: 120, rows: 40, machineId, placement: "tile",
+  program: { argv: ["sh", "-c",
+    "<argv, each word shell-quoted>; printf '\n[babel exited %s]\n' $?; exec sleep 600"] },
+})
+```
+
+because every report exits at once and an exited PTY is a blank tile: the
+wrapper shows the exit status and holds the tile readable for ten minutes. The
+quoting is `contract.ts`'s `shellQuote` (single quotes, `'\''` for an embedded
+quote), tested by running the result through `sh`. The program runs ON the
+chosen machine with the agent's PATH (`babel` is on PATH on the fleet by
+dotfiles). `openTerminal` is born in the container the viewer is looking at
+(`packages/web/src/room-pipes.ts:61-63,103`) and the host refuses by name when
+that container has no mounted composition view ("no occupant view of container
+<id> is mounted"; "no container is open",
+`packages/web/src/room-pipes.test.ts:84-87`); the panel shows the refusal as
+text with the run still recorded. The terminal is graded as the VIEWER
+(`terminals:spawn` on the viewer's own token), never as the plugin: the door
+requires the same cap so a run that cannot open is refused before it is
+recorded.
+
+**What the panel says of itself:** one muted line — it runs read-only reports
+and records the run; session browsing waits on a hub-reachable babel API. No
+placeholder, no fake row.
+
+**Manifests.** Baseline: `capabilities: ["containers:read", "terminals:spawn"]`,
+`contributes.events: [run_recorded]`, `purges: ["storage"]`, `entry: { server:
+true, web: "web.js" }` (the web half serves no panel; `ready { panels: [] }`).
+Sub-plugin: `capabilities: []`, one panel, `dependencies` on the baseline
+`required` with a reason, `entry: { web: "web.js" }`.
+
+**Build.** `plugins/` is a private Bun package (`zod` 4.4.3 exactly, the kit's
+own pin); the SDK is a sibling checkout of `atyrode/manifold` at
+`plugins/MANIFOLD_REV` (= `d8ec7aa`) reached through `tsconfig.json` `paths`
+until the kit is published (`plugins/README.md`); `plugins/pack.sh` cuts every
+bundle from one tree and writes `dist/SHA256SUMS`;
+`.github/workflows/manifold-plugins.yml` installs, typechecks, tests
+(`bun test`: the doors against a fake ctx and over the kit's transport, the
+panel against a fake host with every rendered tree parsed by `UiNodeSchema`,
+the shell quoting through `sh`) and packs on every change under `plugins/`,
+uploading `dist/`. Until the kit is a package, each bundle carries zod twice
+(the checkout's and ours, one version); the `loaded`-frame test proves they
+interoperate.
+
+### 7.3 Why this slice, and what waits
+
+`babel web` "serves the local web interface on 127.0.0.1 and prints a launch URL
+whose fragment carries a one-time bootstrap nonce … Nothing binds beyond
+loopback" (`babel web --help`). A hub-origin Worker cannot reach it, and an
+isolated server half has no network it should use (`docs/PLUGINS.md:1580-1600`;
+D1). So there is no session browsing tonight, and the panel does not pretend
+to. What IS possible end to end is exactly what shipped: babel's read-only
+reports run in a terminal on a chosen machine, each run a door dispatch with
+its trace row. The next slices, each filed:
+
+- **Sessions browser proper** (in `atyrode.babel.sessions`): needs the
+  hub-reachable engine API of #141 (the headless engine service over a
+  declared seam, atyrode/manifold#155) so a panel reads sessions through a
+  door rather than a loopback nonce URL.
+- **`atyrode.babel.configure`**: the profile ceremony, today `analysis
+  profile configure` handing the terminal to Code's TUI; it becomes a
+  sub-plugin only once the ceremony consumes a selection document headlessly
+  (babel#160, atyrode/code#96), and it is a separate plugin because it is the
+  one write with its own risk and its own grant.
+- **Server-side dispatch of the baseline's doors** from a sub-plugin's server
+  half, and **bundle-set install** (baseline + sub-plugins in one door call,
+  atomic, dependency order the engine's): manifold follow-ups from tonight's
+  topology direction.
+
+Issues: see the "Filed" line below, appended when the issues exist.
