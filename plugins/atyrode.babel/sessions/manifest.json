@@ -1,0 +1,21 @@
+{
+  "id": "atyrode.babel.sessions",
+  "version": "0.1.0",
+  "title": "babel sessions",
+  "description": "One panel over the baseline's doors: pick an online machine and one of babel's read-only reports, record the run through atyrode.babel.run, and open a terminal tile on that machine running it. Browsing archived sessions waits on a hub-reachable babel API; babel web binds loopback only.",
+  "capabilities": [],
+  "contributes": {
+    "panels": [{ "id": "reports", "title": "babel" }],
+    "sections": [],
+    "elements": [],
+    "tools": [],
+    "events": []
+  },
+  "dependencies": {
+    "atyrode.babel": {
+      "type": "required",
+      "reason": "The panel records every run through atyrode.babel.run and reads atyrode.babel.listRuns."
+    }
+  },
+  "entry": { "web": "web.js" }
+}
