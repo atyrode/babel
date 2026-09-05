@@ -1,0 +1,18 @@
+{
+  "name": "babel-manifold-plugins",
+  "private": true,
+  "type": "module",
+  "description": "Babel's manifold plugins: atyrode.babel (baseline) and atyrode.babel.sessions, packed as isolated bundles.",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "pack": "./pack.sh"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "typescript": "5.9.3"
+  }
+}

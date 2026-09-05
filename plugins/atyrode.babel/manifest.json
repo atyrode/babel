@@ -1,0 +1,16 @@
+{
+  "id": "atyrode.babel",
+  "version": "0.1.0",
+  "title": "babel",
+  "description": "Babel's baseline: records a run of one of babel's read-only reports (archive status, archive fleet, storage status, version) on a chosen enrolled machine and lists the last fifty. The terminal that runs the report is opened by a sub-plugin's panel through the viewer's own authority.",
+  "capabilities": ["containers:read", "terminals:spawn"],
+  "contributes": {
+    "panels": [],
+    "sections": [],
+    "elements": [],
+    "tools": [],
+    "events": [{ "id": "run_recorded", "title": "Report run recorded" }]
+  },
+  "purges": ["storage"],
+  "entry": { "server": true, "web": "web.js" }
+}
