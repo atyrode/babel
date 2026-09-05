@@ -877,11 +877,11 @@ to. What IS possible end to end is exactly what shipped: babel's read-only
 reports run in a terminal on a chosen machine, each run a door dispatch with
 its trace row. The next slices, each filed:
 
-- **Sessions browser proper** (in `atyrode.babel.sessions`): needs the
+- **Sessions browser proper** (in `atyrode.babel.sessions`, #161): needs the
   hub-reachable engine API of #141 (the headless engine service over a
   declared seam, atyrode/manifold#155) so a panel reads sessions through a
   door rather than a loopback nonce URL.
-- **`atyrode.babel.configure`**: the profile ceremony, today `analysis
+- **`atyrode.babel.configure`** (#162): the profile ceremony, today `analysis
   profile configure` handing the terminal to Code's TUI; it becomes a
   sub-plugin only once the ceremony consumes a selection document headlessly
   (babel#160, atyrode/code#96), and it is a separate plugin because it is the
@@ -891,4 +891,8 @@ its trace row. The next slices, each filed:
   atomic, dependency order the engine's): manifold follow-ups from tonight's
   topology direction.
 
-Issues: see the "Filed" line below, appended when the issues exist.
+Filed: "atyrode.babel.sessions: the sessions browser proper over a
+hub-reachable babel API" (#161); "atyrode.babel.configure: the profile
+ceremony as its own sub-plugin" (#162). The manifold follow-ups (server-side
+`actions.dispatch`, bundle-set install, dependency version ranges) are filed
+against atyrode/manifold from the topology direction, not from this record.

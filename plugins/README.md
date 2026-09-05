@@ -9,8 +9,8 @@ against `@manifold/plugin-kit` (manifold `docs/PLUGINS.md` §9), packed as one
 | Plugin                        | Directory                   | Halves          | What it is                                                                                                                                                              |
 | ----------------------------- | --------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `atyrode.babel`               | `atyrode.babel/`            | server + web    | The baseline. Doors `atyrode.babel.run` (record that one of babel's read-only reports runs on an online machine; answers the argv) and `atyrode.babel.listRuns`. No panel. |
-| `atyrode.babel.sessions`      | `atyrode.babel/sessions/`   | web             | Panel `reports`: pick an online machine and a report, "Run here" records through the baseline's door and opens a terminal tile on that machine running it.             |
-| `atyrode.babel.configure`     | reserved                    |                 | The profile ceremony (babel#160). Not built; recorded in the transition record and filed.                                                                               |
+| `atyrode.babel.sessions`      | `atyrode.babel/sessions/`   | web             | Panel `reports`: pick an online machine and a report, "Run here" records through the baseline's door and opens a terminal tile on that machine running it. The sessions browser proper is #161. |
+| `atyrode.babel.configure`     | reserved                    |                 | The profile ceremony (babel#160). Not built; recorded in the transition record §7 and filed as #162.                                                                    |
 
 A child is a directory inside its parent's directory, and depends on it with
 `dependencies: { "atyrode.babel": { type: "required" } }`. The baseline is not a library: the
