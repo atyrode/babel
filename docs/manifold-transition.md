@@ -896,3 +896,95 @@ hub-reachable babel API" (#161); "atyrode.babel.configure: the profile
 ceremony as its own sub-plugin" (#162). The manifold follow-ups (server-side
 `actions.dispatch`, bundle-set install, dependency version ranges) are filed
 against atyrode/manifold from the topology direction, not from this record.
+
+---
+
+## 8. Direction: manifold is babel's runtime (operator, 2026-09-05)
+
+Operator direction, 2026-09-05 night, after §7. It sharpens §1's invariant
+(21-27) and amends §1 "Settled before this document" (45-50), D2 (370-378,
+382-384), D3 (439-441), step 2 (548-550), step 3 (576), step 6's CLI-only list
+(629-632) and §7.2's "`babel` is on PATH on the fleet by dotfiles" (834-836).
+
+### 8.1 The statement
+
+Babel's runtime is manifold. Babel is not meant to work standalone (standalone
+is no longer the focus) and is no longer deployed per machine by the dotfiles.
+The operator adds `atyrode.babel` to manifold once; the dotfiles may at most
+declare that the hub installs it by default (atyrode/dotfiles#557). Babel on
+manifold backs up the operator's chats, the omp, claude and codex session
+stores on every machine, THROUGH manifold's fleet, where the agent already is.
+All setup and every setting go through manifold, one interface. So manifold
+puts babel onto each node too, for filesystem access: a bundle carries a third,
+MACHINE half that the hub distributes and the agent runs
+(atyrode/manifold#235). And installing a plugin is accepting what it asks for;
+babel asks to read the session stores and write its archive on every machine,
+as named locations the agent resolves, never raw paths (atyrode/manifold#236).
+
+### 8.2 What it changes in the capability map
+
+| Row | After this direction | Why |
+| --- | --- | --- |
+| N1 identity | hub half | The install grant on the roster row is babel's authority; the machine half carries the machine identity the agent serves it (#235). D2's per-machine agent-kind token delivered by the ceremony (382-384) is gone. |
+| N2 machines | hub half | The roster is the fleet and the hub names the machine when it schedules; nothing of babel names a host itself. |
+| N3 timers | hub half schedules, machine half runs | `<verb>` on `<machine>` at `<cadence>` is a door (#235); the systemd user timer (`docs/runbook.md:55-56`) is gone. The conductor loop has no place in that shape yet (8.5). |
+| N4 secrets | open | Untouched by the direction and unreconciled with it (8.5). |
+| N5 storage | hub half | Placement (D3) is set once in the manager, not per machine; `plugin_kv` still holds projections only; the stores stay external. Per-machine `storage configure` is gone. |
+| N6 events | hub half | A machine-half result is an event through the hub (#235); the stream channel (D4) is unchanged. |
+| N7 UI | hub half | Unchanged in shape; the sessions browser reads the archive through the server half (8.3, step 6). |
+| N8 trace | hub half | Every scheduled verb is a dispatch with its trace row; unchanged. |
+| N9 executing the binary | machine half | The binary IS the machine half, a platform artifact by URL and sha256 (#235, absorbing #153); babel's OS-supervised services on hub and spokes are gone; #155 is superseded if #235 is accepted; what babel asked #156 for, the hub's scheduling serves. |
+| N10 packaging | hub half distributes | Babel's release ships server, web and machine halves as one hashed bundle; the Nix pin through dotfiles is gone (#557). |
+| N11 cross-instance | unchanged | |
+| N12 sandbox | machine half | The sandbox runs under the machine half, so the agent enters its supervision chain; #150's addendum says the opposite and is rewritten when #235 lands. |
+
+Interim. Tonight's report runner (§7.2) opens a PTY that runs `babel` from the
+agent's PATH, put there by dotfiles: a bridge over the gap #235 closes, not
+the destination. Nothing further is built that needs the binary on PATH.
+
+### 8.3 The end state
+
+1. The operator installs `atyrode.babel` through the plugin manager
+   (`engine.plugins.install`); the dotfiles at most declare the default (#557).
+2. The install form lists the named-location grants, `fs:read:omp-sessions`,
+   `fs:read:claude-sessions`, `fs:read:codex-sessions`, `fs:write:babel-archive`
+   (atyrode/manifold#236); the operator accepts; the roster row publishes them.
+3. The hub distributes the machine half to every enrolled machine; the agent
+   fetches it, verifies fail-closed, resolves each granted location on its
+   machine and enforces them as the only paths the half may open (#235).
+4. The server half asks the hub to run `archive push` on each machine at a
+   cadence; the hub dispatches; the agent runs the machine half with that verb.
+5. Results return as events on the plugin's node, one trace row per dispatch;
+   the server half keeps the projections in `plugin_kv`.
+6. The sessions browser (`atyrode.babel.sessions`, #161) is served from the
+   archive by the server half through doors: no loopback, no nonce.
+
+### 8.4 What this retires
+
+- In the dotfiles (atyrode/dotfiles#557), in one wave when #235 and #236 land:
+  the babel package pin, the module or profile that installs it, the
+  `babel-archive` timer and wrapper (`docs/runbook.md:53-70`), the
+  storage-configuration ceremony (`SPEC.md:84,89`), doctor checks.
+- Babel's own `storage configure --from-json -` as a per-machine ceremony
+  (629-632): setup happens once, in the manager. The verb stays, as recovery.
+- `babel web` as the primary surface, now rather than at step 6: the loopback
+  UI is a developer tool over the engine API until step 6 deletes it, gains
+  nothing (29-35), and is not the operator's surface again.
+- Not retired: step 6's headless verbs (623-644). Recovery must not depend on
+  manifold any more than on Babel or PostgreSQL; `archive push`, `archive
+  verify`, `sessions fetch` and the storage verbs run with the hub down.
+
+### 8.5 Open for the operator
+
+From atyrode/manifold#235: (1) whether the machine half runs as the agent's
+user (the default today, the agent running as the enrolled user) or under a
+dedicated user; (2) whether a machine half may open PTYs (the issue recommends
+no: terminals stay the terminal plugin's); (3) the protocol frames, proposed
+once ADR 0023 (topology) and #235's shape are ratified. From this record: how
+the machine half receives the repository credential once the per-machine
+ceremony is gone, §1's "secrets stay outside manifold" (45-50) being neither
+revoked nor reconciled; and where `babel conductor run` lives at a cadence.
+
+Filed: https://github.com/atyrode/manifold/issues/235 (the machine half),
+https://github.com/atyrode/manifold/issues/236 (named locations),
+https://github.com/atyrode/dotfiles/issues/557 (per-machine deployment).
