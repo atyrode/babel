@@ -11,6 +11,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Babel's first manifold plugins, `atyrode.babel` and `atyrode.babel.sessions`
+  (operator direction 2026-09-05; `docs/manifold-transition.md` §7).** `plugins/`
+  holds two isolated plugins authored against manifold's plugin kit and packed
+  by `plugins/pack.sh` into hashed `<id>.manifold-plugin.json` artifacts. The
+  baseline owns two doors: `atyrode.babel.run` records that one of babel's
+  read-only reports (`archive status`, `archive fleet`, `storage status`,
+  `version`) runs on an online enrolled machine, keeps the last fifty records
+  and emits `run_recorded`; `atyrode.babel.listRuns` reads them. The sub-plugin
+  is one panel over those doors that opens a terminal tile on the chosen
+  machine running the report under `sh -c`, held open so the output stays
+  readable. Session browsing is not in it: `babel web` binds loopback behind a
+  one-time nonce, so the browser waits on a hub-reachable API (#161);
+  `atyrode.babel.configure` is reserved (#162). A workflow typechecks, tests and
+  packs the bundles on every change under `plugins/`.
+
 - **The cookbook records delivery pipelines as a standing emphasis (operator
   direction 2026-09-02).** The statement gains a "Standing emphases" section
   (version 2) naming continually improved CI/CD in the friction frame: a check
