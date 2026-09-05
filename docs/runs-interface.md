@@ -1,9 +1,10 @@
 # Runs interface: creating, watching and reading a run
 
-Status: design, 2026-09-02. Companion to `docs/manifold-transition.md`, which
-owns the transition sequence, the engine service seam and every manifold
-prerequisite except the one this document files. Nothing here is built; every
-claim about what exists today cites the file that proves it.
+Status: design, 2026-09-02; citations re-pinned 2026-09-05. Companion to
+`docs/manifold-transition.md`, which owns the transition sequence, the engine
+service seam and every manifold prerequisite except the one this document
+files. Nothing here is built; every claim about what exists today cites the
+file that proves it.
 
 The operator's requirement, in intent: Babel is entirely runnable from its
 interface, and runs are the crux — one interface dedicated to runs, from
@@ -17,9 +18,12 @@ until it exists the interim is milestone events plus polled state, labelled
 interim wherever it appears.
 
 Every manifold capability named below carries one of three tags on first
-appearance — `[exists]`, `[declared]`, `[absent]` — and a path, all at manifold
-`dev` @ 68f102e, re-read for this document where the text depends on them.
-`[declared]` means named in a ratified decision record and not in code.
+appearance — `[exists]`, `[declared]`, `[absent]` — and a path, read at
+manifold `dev` @ 68f102e and re-verified 2026-09-05 at `main` @ 8466628
+(v0.6.2), the revision every path below now names: all 56 citations were still
+exact, since no file this document cites changed between the two
+(`docs/manifold-transition.md` §1, Revision 2026-09-05). `[declared]` means
+named in a ratified decision record and not in code.
 
 Transition steps are numbered as `docs/manifold-transition.md` §5 numbers
 them: step 1 (loading and the engine API) carries the run projection of §4;

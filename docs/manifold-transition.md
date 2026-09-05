@@ -1,8 +1,10 @@
 # Babel as a manifold plugin: the transition
 
-Status: operator direction, revised 2026-09-02. Every manifold fact below was
-read at manifold `dev` @ `68f102e`; every Babel fact at the working tree of the
-same date. Tags are `exists` (in code, cited), `declared` (named in a ratified
+Status: operator direction, revised 2026-09-02; citations re-pinned 2026-09-05.
+Every manifold fact below was read at manifold `dev` @ `68f102e` and re-verified
+at `main` @ `8466628` (v0.6.2), which is the revision every `path:line` below
+now names (§1, Revision 2026-09-05); every Babel fact is at the working tree of
+2026-09-02. Tags are `exists` (in code, cited), `declared` (named in a ratified
 manifold document, not implemented), `absent` (searched for, not found; the
 search is in the brief that reports it).
 
@@ -17,6 +19,28 @@ them.
 ---
 
 ## 1. Status and direction
+
+**Revision 2026-09-05.** Every manifold citation in this document and in
+`docs/runs-interface.md` was re-read against `main` @ `8466628` (v0.6.2) and
+re-pinned to it: `dev` was retired by atyrode/manifold#174 (merged 2026-09-02
+as `9bbd004`, PR #179), so `dev` @ `68f102e` is now an ancestor of `main` and
+the branch no longer exists; `.github/workflows/ci.yml` runs `bun run gate` on
+every pull request into `main` and every push to `main`
+(`.github/workflows/ci.yml:1-10,34-35`; `AGENTS.md:66-68`), which resolves the
+gotcha "No CI on PRs into `dev`" (§6) and closes atyrode/manifold#161; #163 is
+closed likewise, `main` now carrying v0.6.0 to v0.6.2 with every tag an
+ancestor. Of the 201 citations checked, 180 were still exact, 20 had moved
+(`AGENTS.md`, `REGISTRY.md`, `docs/CONTRACTS.md`, `docs/SELF-HOST.md`,
+`.github/workflows/release.yml`) and are corrected in place, and one construct
+is gone (`Dockerfile`'s floating tag), marked where it stood; two ceilings
+changed underneath unchanged lines (`SCHEMA_VERSION`, the gate roster S1 to
+S17) and are corrected in place. Implementation status: as of Babel `93eb714`
+no code exists toward any of #140 to #156 — no `plugin/`, no engine service,
+no `babel.*` action data, no sanitizer — and the transition is documentation
+and filed issues. The six research briefs of `.omp/research/` are gitignored
+and can no longer be audited, so every "fact N" pointer below is a dead
+reference; future briefs should be committed under `docs/research/` or have
+their facts folded fully into this record.
 
 **The invariant.** Babel's final form is a manifold plugin. Its whole web UI
 becomes plugin-rendered UI with full integration into manifold's workspace,
@@ -34,13 +58,15 @@ new is built PTY-bound or web-shell-bound. A capability that would land in
 capability that would ride a terminal waits for the door or the exec primitive
 (§4, D2). The final step (§5, step 6) retires `internal/web` and `web/`.
 
-**Manifold revision studied.** `dev` @ `68f102e` (2026-09-02 02:15 +0200).
-`origin/main` is at `59e221b` "release: v0.4.4" (2026-08-27); `dev` is 30
-first-parent commits ahead of it (`git log --oneline --first-parent
-origin/main..dev | wc -l`). The newest tag, `v0.5.0` (2026-08-30), was cut from
-`dev` commit `9d37e5e` and is not an ancestor of `main`. `dev` is the line
-Babel's work targets; `main`'s position is a manifold housekeeping matter
-(`.omp/research/manifold-issues.md`, general improvements).
+**Manifold revision studied.** `dev` @ `68f102e` (2026-09-02 02:15 +0200), at
+which time `origin/main` was at `59e221b` "release: v0.4.4" (2026-08-27), `dev`
+30 first-parent commits ahead of it, and the newest tag `v0.5.0` (2026-08-30)
+cut from `dev` commit `9d37e5e` and not an ancestor of `main`. Superseded by the
+revision above: `dev` was merged into `main` (#178) and retired (#174), `main`
+is at `8466628` "release: v0.6.2" (2026-09-02), twelve commits (eight
+first-parent) past `68f102e`, and `v0.5.0` is now an ancestor of `main`, recorded by
+`docs/ENROLL.md:165-170` as the one tag that was never a release. `main` is
+the line Babel's work targets.
 
 **Settled before this document** (operator): manifest ids live
 in the `babel.<x>` namespace; secrets stay outside manifold (the dotfiles
@@ -94,8 +120,9 @@ A pillar is floor if and only if it passes all three of bootstrap circularity,
 neutrality (zero domain nouns) and arbitration (`AXIOMS.md:381-397`); failing
 one makes it a plugin. The registries in `REGISTRY.md` (pillars, floor rows,
 lexicon, `cssFamilies`, device-local, gate contracts, budgets) are read in both
-directions by `bun run verify:axioms` (static S1 to S16 plus browser R1 to R10;
-`REGISTRY.md:2069-2138`) and `verify:trace` (T1 to T5). A boundary crossed
+directions by `bun run verify:axioms` (static S1 to S17 plus browser R1 to R10;
+`REGISTRY.md:2079-2150`; S17, hosting neutrality, arrived with ADR 0022 after
+`68f102e`) and `verify:trace` (T1 to T5). A boundary crossed
 without a registry edit fails `bun run gate` (`AXIOMS.md:9-14`).
 
 ### 2.3 What a plugin structurally is
@@ -107,7 +134,7 @@ without a registry edit fails `bun run gate` (`AXIOMS.md:9-14`).
   `packages/plugins/machines/package.json:5-9`). Its source imports are limited
   to `@manifold/protocol`, `@manifold/scene`, `@manifold/sdk` and
   `@manifold/plugin` (gate S2); its own npm dependencies are unrestricted by the
-  gate and governed by review under invariant 8 (`AGENTS.md:116-117`).
+  gate and governed by review under invariant 8 (`AGENTS.md:120-121`).
 - **Manifest.** Inert, strict-schema data (exists,
   `packages/protocol/src/plugin.ts:510-556`): `id` matching
   `^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$`, at most 64 characters, so at least
@@ -207,11 +234,11 @@ landable alone; none is scheduled.
 ### 2.5 Identity, grants, trace
 
 Two credential kinds authenticate: the owner key (root, never expires) and
-bearer tokens hashed at rest, each a grant reference (`docs/CONTRACTS.md:107-246`).
+bearer tokens hashed at rest, each a grant reference (`docs/CONTRACTS.md:113-259`).
 One identity shape for humans and agents, `Principal {id, kind: "human" |
 "agent", name, color, origin?}` (`packages/protocol/src/principal.ts:5-27`).
 Interactive tokens expire after 14 days; agent-kind and machine tokens never
-expire, by two independent code paths (`docs/CONTRACTS.md:125-137`). A grant is
+expire, by two independent code paths (`docs/CONTRACTS.md:138-150`). A grant is
 a row `{principal | class, node, caps, effect, reach}` on the node tree; the
 addressable node kinds are exactly `terminal`, `container`, `element`, `tile`,
 `principal`, `plugin`, `action` (`packages/protocol/src/uri.ts:33-45`); there is
@@ -241,34 +268,46 @@ infrastructure: a systemd user unit with `Restart=always` or a launchd plist,
 documented but not generated (`docs/ENROLL.md:96-126`). The hub is also a
 machine: the compose container spawns an in-container agent named `hub`, and
 real shells on the host require enrolling the host natively as a spoke
-(`docs/SELF-HOST.md:211-216`). Protocol version is 21 and the machine channel
+(`docs/SELF-HOST.md:270-275`; `MANIFOLD_SPAWN_AGENT=0` turns that agent off
+since v0.6.1). Protocol version is 21 and the machine channel
 accepts agents at `{16..21}` (`packages/protocol/src/version.ts:2,216-218`); a
 spoke newer than the hub is refused silently from the spoke's side, the incident
-that produced invariant 10 (`AGENTS.md:126-144`).
+that produced invariant 10 (`AGENTS.md:130-148`).
 
 ### 2.7 Persistence
 
-One SQLite database in WAL mode, `SCHEMA_VERSION = 15`
-(`packages/server/src/db.ts:8`), holding containers, scene documents, the
+One SQLite database in WAL mode, `SCHEMA_VERSION = 16`
+(`packages/server/src/db.ts:8`; 15 at `68f102e`, 16 retires the grant rows of
+already-revoked tokens, `docs/CONTRACTS.md:1698-1702`), holding containers, scene documents, the
 events journal (plain events and trace rows), principals, tokens, machines,
 terminals, `plugin_kv`, shares, dials, grants and meta. No PostgreSQL, no object
 or blob storage, no per-plugin table (absent; the search is in
 `.omp/research/manifold-machines.md` facts 47 to 49). The journal is pruned at 30
 days, 10,000 rows per container, 100,000 in the container-less bucket
-(`docs/CONTRACTS.md:991-994`).
+(`docs/CONTRACTS.md:1011-1014`).
 
 ### 2.8 Build, release, branch discipline
 
 Bun is pinned exactly at 1.3.13 by ADR 0001
-(`docs/decisions/0001-runtime-and-pins.md:5,26`) and by the release runner
-(`.github/workflows/release.yml:28`), while `Dockerfile:4,18` builds `FROM
-oven/bun:1`, a floating tag. Two Nix outputs, `manifold-agent` and
-`manifold-server`, both `bun build --compile`. Production is Docker Compose
-behind caddy (`docs/SELF-HOST.md:3-19`); upgrade is `git pull && docker compose
-up -d --build` (`:205`). `.github/workflows/` holds exactly `main-guard.yml`
-(PRs into `main` must come from `dev`) and `release.yml` (tag-triggered); no
-workflow runs `bun run check` or `bun run gate` on a pull request into `dev`.
-`scripts/release.ts` runs on `main` only. Every planned change starts from a
+(`docs/decisions/0001-runtime-and-pins.md:5,26`), by the CI and release runners
+(`.github/workflows/ci.yml:29`; `.github/workflows/release.yml:29`) and, since
+v0.6.1, by the hub image (`Dockerfile:5,19`; at `68f102e` `Dockerfile:4,18`
+built `FROM oven/bun:1`, a floating tag — gone at main@8466628: pinned to
+`1.3.13` by #177, though atyrode/manifold#162 is still open). Two Nix outputs,
+`manifold-agent` and `manifold-server`, both `bun build --compile`. Production
+is Docker Compose behind caddy (`docs/SELF-HOST.md:3-19`); upgrade is `git pull
+&& docker compose up -d --build` (`:258`) or, since v0.6.1, `docker compose
+pull` of a published `ghcr.io/atyrode/manifold:<tag>` image (`:22-32,261-265`).
+`.github/workflows/` holds `ci.yml` (`bun run gate` on every pull request into
+`main` and every push to `main`, `.github/workflows/ci.yml:1-10,34-35`),
+`release.yml` (tag-triggered, publishes only; `scripts/release.ts:82-93` refuses
+a `main` commit with no green CI run) and `deploy-hub.yml` (the operator's own
+deployment, inert without a repository variable, ADR 0022
+`docs/decisions/0022-hosting-posture.md:45-50`); at `68f102e` it held exactly
+`main-guard.yml` (PRs into `main` had to come from `dev`) and `release.yml`,
+and no workflow ran the gate on a pull request — gone at main@8466628: `dev`
+and `main-guard.yml` retired by #174, the gate runs once per commit on CI.
+`scripts/release.ts` runs on `main` only (`scripts/release.ts:72-73`). Every planned change starts from a
 GitHub issue; one `## [Unreleased]` changelog bullet per user-visible change;
 new runtime dependencies need a dated ADR (invariant 8); protocol bumps ship as
 dedicated commits and the hub is deployed at or ahead of any release whose
@@ -285,9 +324,9 @@ One row per Babel need. "Manifold offers" carries the tag and the citation;
 
 | Need | Manifold offers | Missing | What Babel changes | Decision or draft issue |
 | --- | --- | --- | --- | --- |
-| **N1** Operator identity, principals, tokens | exists: one `Principal` shape for humans and agents (`packages/protocol/src/principal.ts:5-27`); owner key root plus capability-scoped, attenuation-only, revocable bearer tokens through `core.access` (`docs/CONTRACTS.md:107-246`); agent tokens never expire (`docs/CONTRACTS.md:134-137`). | A second identity layer distinguishing two humans (declared, ADR 0019 §6); nothing Babel needs. | Drops the bootstrap-nonce and session-cookie scheme (`internal/web/session.go:37-49`) with `internal/web`; the operator is the owner key or a delegate human principal; each machine's babel is an agent-kind principal; Babel's per-run `worker.Grant` stays Babel-internal and never becomes a `Cap`. | D2; babel "Agent-kind principal enrollment: babel holds a scoped manifold token per machine and announces presence" (#143). |
+| **N1** Operator identity, principals, tokens | exists: one `Principal` shape for humans and agents (`packages/protocol/src/principal.ts:5-27`); owner key root plus capability-scoped, attenuation-only, revocable bearer tokens through `core.access` (`docs/CONTRACTS.md:113-259`); agent tokens never expire (`docs/CONTRACTS.md:147-150`). | A second identity layer distinguishing two humans (declared, ADR 0019 §6); nothing Babel needs. | Drops the bootstrap-nonce and session-cookie scheme (`internal/web/session.go:37-49`) with `internal/web`; the operator is the owner key or a delegate human principal; each machine's babel is an agent-kind principal; Babel's per-run `worker.Grant` stays Babel-internal and never becomes a `Cap`. | D2; babel "Agent-kind principal enrollment: babel holds a scoped manifold token per machine and announces presence" (#143). |
 | **N2** Machines and per-machine grants | exists: idempotent enrollment, revocation, live online state (`core.machines`, `packages/plugins/machines/src/index.ts:23-29`; `ActionCtx.machines.isOnline`, `packages/server/src/plugin-host.ts:237-239`); `machine_enrolled/online/offline` events. | absent: a `machine` node kind (`packages/protocol/src/uri.ts:33-45`), so no grant can name one machine; absent: any way to run work on a machine except a PTY. | The manifold roster becomes the fleet; Babel's host identity aligns with the machine name; `hosts` stays archive bookkeeping; `--expect` on `archive fleet` is replaced by the roster. | D2; manifold "A `machine` node kind in the manifold:// grammar so grants can scope per enrolled machine" (atyrode/manifold#157); babel "Align Babel host identity with the manifold machine name" (#144). |
-| **N3** Timers and long-running loops | absent: no scheduler, timer or supervised-job primitive for a plugin (`ActionCtx`, `packages/server/src/plugin-host.ts:249-350`); lifecycle hooks are one-shot and 2 s bounded (`packages/plugin/src/lifecycle.ts:21`); the Budgets register has no server-half row (`REGISTRY.md:1944-1993`). | A supervised long-lived primitive, hub or spoke. | The hourly archive timer and `babel conductor run` stay OS-supervised (`internal/conductor/conductor.go:39-42`; `docs/runbook.md:53-70`) and become visible and drivable through the door. | D2; manifold "Typed exec/job primitive on the machine channel" (atyrode/manifold#156). |
+| **N3** Timers and long-running loops | absent: no scheduler, timer or supervised-job primitive for a plugin (`ActionCtx`, `packages/server/src/plugin-host.ts:249-350`); lifecycle hooks are one-shot and 2 s bounded (`packages/plugin/src/lifecycle.ts:21`); the Budgets register has no server-half row (`REGISTRY.md:1954-2003`). | A supervised long-lived primitive, hub or spoke. | The hourly archive timer and `babel conductor run` stay OS-supervised (`internal/conductor/conductor.go:39-42`; `docs/runbook.md:53-70`) and become visible and drivable through the door. | D2; manifold "Typed exec/job primitive on the machine channel" (atyrode/manifold#156). |
 | **N4** Secrets | absent: no vault, no encrypted tier, no per-plugin env injection; `ctx.storage` is a plaintext string map (`packages/plugin/src/storage.ts:58-74`); `ActionCtx` has no env, config or secrets member (`packages/server/src/plugin-host.ts:249-350`); the word "vault" occurs once in the tree, as a negation (`docs/decisions/0020-desktop-shell.md:414`); searches in `.omp/research/manifold-permissions.md` facts 29-37. | Nothing requested: secrets stay outside manifold by decision. | Nothing: the ceremony keeps delivering `storage.json` per machine (`SPEC.md:77-81`); the plugin holds no credential; no `babel.*` door accepts a raw secret argument. | Settled earlier (operator); manifold general improvement "Widen the trace and log redaction field-name rule to password, credential and passphrase" (atyrode/manifold#165). |
 | **N5** Durable storage | exists: `plugin_kv`, string values at most 64 KiB (`packages/plugin/src/storage.ts:74`). absent: relational tables, blob or object storage, PostgreSQL; one SQLite schema ledger owns every table (`packages/server/src/db.ts:8`; searches in `.omp/research/manifold-machines.md` facts 44-49). | Nothing for the stores: both placements are Babel's own modes. An enum, workspace-scoped setting kind to render the placement. | Storage placement is a plugin setting with two values, master (Babel's local mode on the hub's host, non-durable) and external (shared mode, the fleet default), both runnable today; `plugin_kv` holds pointers and projections, never the catalog or the archive. | D3 (revised); manifold "Workspace-scoped plugin settings with an enum kind" (atyrode/manifold#158) for the pane; babel "Storage placement setting: master (local mode, non-durable) or external (shared mode)" (#146). Manifold "Plugin-owned durable storage beyond plugin_kv" (atyrode/manifold#159) stays filed as a general need, off Babel's path. |
 | **N6** Real-time events | exists: the event plane, door-gated, flat 16-key payloads, delivered to live subscribers, no replay (`packages/protocol/src/events.ts:73,82,91`; `packages/server/src/plugin-host.ts:1207-1210`). absent: any plugin-declarable continuous stream; the session-channel frame vocabulary is closed (`packages/protocol/src/session.ts:155,355`). | A continuous, structured, sub-second channel for run progress. | Milestone events at run boundaries now; the stream channel is the end state; presence carries a throttled snapshot in the interim. | D4; manifold "Plugin-declarable continuous stream channel on the session socket" (atyrode/manifold#169) (runs); babel "Run milestone events: a declared, bounded vocabulary emitted at run boundaries" (#152) (runs). |
@@ -295,7 +334,7 @@ One row per Babel need. "Manifold offers" carries the tag and the citation;
 | **N8** Traceability | exists: one trace row per dispatch, write-ahead, refusals included, read through `core.events.list` (`packages/server/src/plugin-host.ts:1172-1207`; ADR 0018). | A handler is not handed its trace id (`ActionCtx`, `packages/server/src/plugin-host.ts:249-350`). | Keeps receipts and dispositions as Babel's record (`internal/run/receipt.go`); gains a generic root-readable audit row for every operator call through the door; records the acting principal on the receipt; correlates by door, principal and time window until the id is handed over. | Settled; manifold general improvement "Hand an action handler its trace id" (atyrode/manifold#166). |
 | **N9** Executing the binary on hub and spokes | exists, undeclared: a server half may `Bun.spawn` in-process today (ADR 0010, `docs/decisions/0010-plugin-engine-and-action-plane.md:63-65`), unmediated and removed by isolation (`docs/decisions/0016-plugin-isolation.md:202-217`). absent: any exec verb on the machine channel (`packages/protocol/src/machine.ts:37-93`). | A typed exec/job primitive; a way for an isolated server half to reach a local companion service. | Babel runs on every machine, hub included, as OS-supervised services fronted by an agent principal; the plugin's server half reads the hub's engine service; nothing is driven through a PTY. | D2; manifold "Typed exec/job primitive on the machine channel" (atyrode/manifold#156); manifold "Companion-service seam for an isolated plugin's server half" (atyrode/manifold#155); babel "Action-door API over the babel engine: the babel.* action set and the headless engine service behind it" (#141). |
 | **N10** Packaging and distribution | exists: in-tree workspace packages only (`package.json:5-8`; `docs/PLUGINS.md:40-42`). declared: the dynamic wave with `entry` reserved (`packages/protocol/src/plugin.ts:554-555`; `AXIOMS.md:247-267`), artifact hash pinned on the roster row (ADR 0016 R8). absent: an out-of-tree authoring path (`packages/plugin/package.json:3`), a manifest field for an external binary dependency. | Out-of-tree loading; consumable SDK packages; an external-binary declaration. | The plugin package lives in `atyrode/babel` and ships as a hashed artifact from Babel's release; the Go binary keeps its own Nix pin through dotfiles; the plugin declares the binary and protocol versions it needs. | D1; manifold "Schedule ADR 0016 stage 1: the isolation runner, so an out-of-tree plugin can load" (atyrode/manifold#151); manifold "Dynamic plugin loading from a pinned local artifact: evaluate entry, add install and uninstall doors" (atyrode/manifold#152); manifold "Manifest declaration of an external host-binary dependency" (atyrode/manifold#153); babel "Babel plugin package and manifest in atyrode/babel" (#140). |
-| **N11** Cross-instance sharing | exists: the instance channel federates two manifold servers, control only (ADR 0014; `docs/CONTRACTS.md:1557-1615`); `Principal.origin` is data, never a branch (`packages/protocol/src/principal.ts:26`). | Nothing Babel needs: Babel's fleet is the machine channel, not the instance channel. | Nothing. Babel's cross-host sharing is its storage placement (D3); a second manifold instance is out of scope. | Settled: no issue. |
+| **N11** Cross-instance sharing | exists: the instance channel federates two manifold servers, control only (ADR 0014; `docs/CONTRACTS.md:1584-1642`); `Principal.origin` is data, never a branch (`packages/protocol/src/principal.ts:26`). | Nothing Babel needs: Babel's fleet is the machine channel, not the instance channel. | Nothing. Babel's cross-host sharing is its storage placement (D3); a second manifold instance is out of scope. | Settled: no issue. |
 | **N12** The analysis sandbox | absent: no `bwrap` anywhere in the tree (whole-repository search); a PTY is a bare `Bun.spawn` under the agent's user with no rlimits, cgroup or namespace (`packages/agent/src/terminal.ts:219-222`); "no sandbox in this wave" is said of plugin code, not of processes (`docs/decisions/0010-plugin-engine-and-action-plane.md:63-65`). | Nothing requested. | Nothing: the sandbox runs under Babel's OS-supervised process on the machine (`docs/sandbox-threat-model.md`), never as a descendant of a manifold PTY (`docs/ENROLL.md:157`); the manifold agent is not in the sandbox's trust chain. | D2 (the exec/job primitive later carries it); no issue. |
 
 ---
@@ -370,12 +409,18 @@ against the manifold protocol" (#149).
 Babel on an enrolled machine acts as an agent-kind principal with its own
 scoped token (A2, `AXIOMS.md:41-51`; `Principal.kind: "agent"`,
 `packages/protocol/src/principal.ts:7`; agent tokens never expire,
-`docs/CONTRACTS.md:134-137`). Babel's per-machine processes, the hourly archive
+`docs/CONTRACTS.md:147-150`). Babel's per-machine processes, the hourly archive
 push and the conductor loop, stay OS-supervised services exactly as
 `docs/ENROLL.md:96-126` supervises `manifold-agent`; the plugin observes and
 drives them through the action door and presence. A typed exec/job primitive on
 the machine channel is filed as a manifold prerequisite so the OS-supervision
-seam can later be replaced.
+seam can later be replaced. Noted 2026-09-05: a sibling plugin, atyrode/code
+(its `docs/manifold-transition.md`, written in parallel with this revision),
+needs the inverse of atyrode/manifold#156 — an interactive PTY on a named
+machine that execs a named command with a `cwd`, where today `create` runs a
+login shell and nothing else (`packages/protocol/src/machine.ts:37-93`;
+`packages/agent/src/terminal.ts:115-124`) — so #156's "no PTY" scope must not
+be read as the only exec shape manifold needs.
 
 Consequences:
 
@@ -398,7 +443,7 @@ Consequences:
   invitations and a door-fed report of parks and spends. The archive timer
   gains nothing but visibility: its last result is a projection.
 - The hub runs a babel instance configured like any other machine: the master
-  node's host is enrolled natively as a spoke (`docs/SELF-HOST.md:211-216`
+  node's host is enrolled natively as a spoke (`docs/SELF-HOST.md:270-275`
   places real shells on the host, not in the container), holds its own storage
   document, and its engine service is the one the plugin's server half reads.
 - The sandbox (N12) stays under Babel's supervised process and is never a
@@ -585,7 +630,7 @@ boundaries" (#152); "Interim runs console in the React shell over the projection
 
 Proof: a run created from the plugin shows its milestones as events on the
 plugin's node and its state through the projection with no timer armed while
-the socket is up (`verify:budgets` discipline, `REGISTRY.md:1974-1990`); once
+the socket is up (`verify:budgets` discipline, `REGISTRY.md:1984-2000`); once
 the stream channel lands, progress frames arrive sub-second and the interim
 label is removed.
 
@@ -647,20 +692,35 @@ recovery path), and the following never get a door:
 
 Not prerequisites, but each was found on the line Babel's work targets and
 each has a strong evidenced case; drafted as general improvements in
-`.omp/research/manifold-issues.md`: "No CI workflow runs on pull requests into
-dev" (atyrode/manifold#161); "Dockerfile builds from floating oven/bun:1 against ADR 0001's exact
-1.3.13 pin" (atyrode/manifold#162); "main is pinned at v0.4.4 while v0.5.0 was tagged from a dev
-commit" (atyrode/manifold#163); "freeze is declared in PLAN.md but absent as a verb" (atyrode/manifold#164); "Widen the trace
-and log redaction field-name rule to password, credential and passphrase" (atyrode/manifold#165);
-"Hand an action handler its trace id" (atyrode/manifold#166); "Event-plane delivery to a session
-socket has no backpressure guard" (atyrode/manifold#167); "Promote door-form rendering out of
-core.debug into @manifold/plugin/ui" (atyrode/manifold#168).
+`.omp/research/manifold-issues.md`, with their state at 2026-09-05: "No CI
+workflow runs on pull requests into dev" (atyrode/manifold#161, CLOSED
+2026-09-02 by #174: `ci.yml` gates every PR into `main`); "Dockerfile builds
+from floating oven/bun:1 against ADR 0001's exact 1.3.13 pin"
+(atyrode/manifold#162, fixed in v0.6.1 by #177, `Dockerfile:5,19`; the issue
+is still open); "main is pinned at v0.4.4 while v0.5.0 was tagged from a dev
+commit" (atyrode/manifold#163, CLOSED 2026-09-02: `dev` merged and retired,
+`main` at v0.6.2); "freeze is declared in PLAN.md but absent as a verb"
+(atyrode/manifold#164); "Widen the trace and log redaction field-name rule to
+password, credential and passphrase" (atyrode/manifold#165); "Hand an action
+handler its trace id" (atyrode/manifold#166); "Event-plane delivery to a
+session socket has no backpressure guard" (atyrode/manifold#167); "Promote
+door-form rendering out of core.debug into @manifold/plugin/ui"
+(atyrode/manifold#168). #164 to #168 are open.
 
 ---
 
 ## 6. Gotchas
 
 Every hard ceiling or rule an implementer will hit, in the order they bite.
+Re-verified 2026-09-05 at `main` @ `8466628`: `PROTOCOL_VERSION`, both
+compatibility sets, `CAPS`, `SETTING_KINDS`, `MAX_STORAGE_VALUE_BYTES`,
+`MAX_HTTP_BODY_BYTES`, `LIFECYCLE_TIMEOUT_MS`, the event bounds and the seven
+node kinds are byte-for-byte what `68f102e` had (`packages/protocol/src` is
+untouched between the two, and so is every cited file under `packages/plugin`,
+`packages/server`, `packages/agent`, `packages/web` and `packages/plugins`
+except `packages/server/src/db.ts`; `git diff --stat 68f102e..8466628`); what
+changed is the CI gotcha below, `SCHEMA_VERSION` (§2.7), the gate roster
+(§2.2) and the `Dockerfile` pin (§2.8).
 
 - **Id pattern.** `id` must match `^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$`, at
   most 64 characters; `babel` alone is invalid, `babel.<x>` is required
@@ -692,16 +752,21 @@ Every hard ceiling or rule an implementer will hit, in the order they bite.
 - **Emission only inside a dispatch.** `ctx.emit` is staged and flushes on a
   handler's `ok` (`packages/server/src/plugin-host.ts:1207-1210`); a kind not in
   `contributes.events` is refused. Payloads are flat, at most 16 scalar keys.
-- **No CI on PRs into `dev`.** `.github/workflows/` holds `main-guard.yml` and
-  `release.yml` only; `bun run gate` green before push is contributor
-  discipline (`AGENTS.md`). A Babel-authored manifold PR runs the gate locally.
+- **CI gates PRs into `main`.** `.github/workflows/ci.yml` runs `bun run gate`
+  on every pull request into `main` and every push to `main`
+  (`.github/workflows/ci.yml:6-10,34-35`), and `scripts/release.ts:82-93`
+  refuses to release a commit with no green run; `bun run gate` green before
+  push is still contributor discipline (`AGENTS.md`), because the gate takes
+  minutes and CI is one runner. A Babel-authored manifold PR is gated by CI
+  (at `68f102e` nothing ran on a PR into `dev` — gone at main@8466628: `dev`
+  and `main-guard.yml` retired by atyrode/manifold#174, which closed #161).
 - **Invariant 8 dependency ADRs.** In manifold's tree every new runtime
-  dependency needs a dated `docs/decisions/` entry (`AGENTS.md:116-117`), with
+  dependency needs a dated `docs/decisions/` entry (`AGENTS.md:120-121`), with
   no mechanical gate; the same applies to a hand-rolled pattern that a named
   library covers (D14).
 - **`cssFamilies` and one stylesheet.** A plugin ships one `src/styles.css`
   (`docs/PLUGINS.md:78-98`); every selector family has one owner, checked by
-  S13 (`REGISTRY.md:1369,2095`); a classless rule outside the floor sheet is
+  S13 (`REGISTRY.md:1369,2105`); a classless rule outside the floor sheet is
   RED. Under isolation the plugin paints no CSS at all.
 - **No sanitization in manifold.** No sanitizer, no `DOMPurify`, no
   `dangerouslySetInnerHTML` anywhere under `packages/`; user text passes through
@@ -709,15 +774,17 @@ Every hard ceiling or rule an implementer will hit, in the order they bite.
   sanitizer.
 - **The Budgets register.** An idle workspace asks nothing: a backgrounded
   tab has a ceiling of zero, a timer beside a live subscription is RED, an
-  undeclared door polled at idle is RED on sight (`REGISTRY.md:1974-1990`).
+  undeclared door polled at idle is RED on sight (`REGISTRY.md:1984-2000`).
   There is no server-half row; ADR 0016 T5 owes one at stage 1.
 - **Redaction is by field name.** `SECRET_FIELD = /(token|key|authorization|secret)/i`
   (`packages/server/src/log.ts:36`) does not match `password`, `credential` or
   `passphrase`. No `babel.*` action accepts such an argument.
 - **Protocol lanes.** `PROTOCOL_VERSION = 21`; the machine channel accepts
-  `{16..21}`; the session channel has no compatibility set
-  (`packages/protocol/src/version.ts:2,216-218`). A spoke ahead of the hub is
-  refused silently from the spoke's side (`AGENTS.md:126-144`).
+  `{16..21}`; the instance channel accepts `{18..21}` on a separate set; the
+  session channel has no compatibility set, browser joins are strictly current
+  (`packages/protocol/src/version.ts:2,5-9,216-218,244`; unchanged since
+  `68f102e`). A spoke ahead of the hub is refused silently from the spoke's
+  side (`AGENTS.md:130-148`).
 - **Trace id is not handed to the handler.** `traceId` is minted at
   `packages/server/src/plugin-host.ts:1172` and absent from `ActionCtx`; a
   receipt cannot cite its trace row directly.
