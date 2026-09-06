@@ -30,8 +30,8 @@ func completedReceipt(receipt runstore.Receipt) conductor.CompletedRun {
 	result := conductor.CompletedRun{
 		Result: conductor.Result{
 			PreparationID: string(receipt.Preparation.ID),
-			ReceiptID: string(receipt.Header.ID),
-			Failures: len(receipt.Body.Failures),
+			ReceiptID:     string(receipt.Header.ID),
+			Failures:      len(receipt.Body.Failures),
 		},
 		FinishedAt: receipt.Body.Timing.FinishedAt,
 	}

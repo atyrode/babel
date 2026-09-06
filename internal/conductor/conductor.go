@@ -165,7 +165,7 @@ type Runner interface {
 type CompletedRun struct {
 	Result
 	FinishedAt time.Time
-	Failure string
+	Failure    string
 }
 
 // CompletionReader lets a durable runner repair the receipt-to-cycle crash
