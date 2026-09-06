@@ -87,12 +87,17 @@ func TestRestageResumesWithoutChangingCanonicalRecordsOrDeclaringActiveRuns(t *t
 	if err != nil || len(skipped) != 0 || len(declared) != 1 || declared[0] != r.Header.RunID {
 		t.Fatalf("finished declaration = %v, %v, %v", declared, skipped, err)
 	}
-	var count sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT record_count FROM sync_run WHERE run_id = ?`, "active-run").Scan(&count); err != nil {
+	// Undeclared runs have staged records but no sync_run declaration row;
+	// record_count is never a nullable placeholder for an active run.
+	var activeRecords int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sync_record r
+		WHERE r.record_id = ? AND r.run_id = ? AND r.sync_state = ?
+		AND NOT EXISTS (SELECT 1 FROM sync_run u WHERE u.run_id = r.run_id)`,
+		"active-output", "active-run", sharedcatalog.SyncPending).Scan(&activeRecords); err != nil {
 		t.Fatal(err)
 	}
-	if count.Valid {
-		t.Fatal("active unreceipted run was declared")
+	if activeRecords != 1 {
+		t.Fatal("active unreceipted output is not pending in an undeclared run")
 	}
 	var receipts int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM run_receipt`).Scan(&receipts); err != nil || receipts != 1 {
