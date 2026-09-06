@@ -783,8 +783,17 @@ func (r *runner) handle(ctx context.Context, in inbound) error {
 		return r.session.writeMessage(hostURIResult{Type: "host_uri_result", ID: f.ID, IsError: true,
 			Error: "Babel registers no URI schemes"})
 	case frameMessageEnd:
-		if f.Message != nil && f.Message.Role == "assistant" {
-			record := f.Message.AssistantMessageAccounting
+		var message struct {
+			Role string `json:"role"`
+			AssistantMessageAccounting
+		}
+		if len(f.Message) != 0 {
+			if err := json.Unmarshal(f.Message, &message); err != nil {
+				return fmt.Errorf("%w: message_end message: %v", ErrMalformedFrame, err)
+			}
+		}
+		if message.Role == "assistant" {
+			record := message.AssistantMessageAccounting
 			record.Seq, record.At = r.events, at
 			r.receipt.AssistantMessages = append(r.receipt.AssistantMessages, record)
 		}

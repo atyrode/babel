@@ -91,11 +91,9 @@ type frame struct {
 	To   string `json:"to"`
 	Role string `json:"role"`
 
-	// message_end: decode only accounting, never assistant content.
-	Message *struct {
-		Role string `json:"role"`
-		AssistantMessageAccounting
-	} `json:"message"`
+	// message is polymorphic across native frame types: extension UI uses
+	// text, while message_end carries a message object. Decode at dispatch.
+	Message json.RawMessage `json:"message"`
 
 	// extension_error
 	ExtensionPath string `json:"extensionPath"`
