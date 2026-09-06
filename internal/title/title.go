@@ -31,7 +31,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	_ "modernc.org/sqlite"
+	"github.com/atyrode/babel/internal/durable"
 )
 
 // storeComponent names this package's migrations in the shared ledger.
@@ -88,7 +88,7 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("title: create state directory: %w", err)
 	}
 	path := filepath.Join(dir, DatabaseName)
-	db, err := sql.Open("sqlite", path)
+	db, err := durable.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("title: open durable database: %w", err)
 	}
@@ -131,7 +131,7 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
 		return fmt.Errorf("title: enable durable WAL: %w", err)
 	}
-	if _, err := s.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if _, err := s.db.Exec(durable.BusyPragma); err != nil {
 		return fmt.Errorf("title: set durable busy timeout: %w", err)
 	}
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migration(

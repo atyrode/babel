@@ -44,6 +44,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/atyrode/babel/internal/durable"
 	_ "modernc.org/sqlite"
 )
 
@@ -98,7 +99,7 @@ func Open(dir string) (*Index, error) {
 }
 
 func open(path string) (*Index, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := durable.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +237,7 @@ func (x *Index) init() error {
 	if err := x.db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
 		return fmt.Errorf("enable index WAL: %w", err)
 	}
-	if _, err := x.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if _, err := x.db.Exec(durable.BusyPragma); err != nil {
 		return fmt.Errorf("set index busy timeout: %w", err)
 	}
 

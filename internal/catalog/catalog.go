@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/atyrode/babel/internal/durable"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -172,7 +173,7 @@ func Count(dir string) (int, error) {
 }
 
 func open(path string) (*Cache, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := durable.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +191,7 @@ func (c *Cache) init() error {
 	// lock: quick_check reads, and the WAL switch and the schema write on a
 	// fresh file both write. Set any later, a catalog another connection was
 	// writing at that instant read as failed rather than as busy.
-	if _, err := c.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if _, err := c.db.Exec(durable.BusyPragma); err != nil {
 		return fmt.Errorf("set catalog busy timeout: %w", err)
 	}
 

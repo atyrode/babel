@@ -12,6 +12,7 @@ import (
 
 	babelsync "github.com/atyrode/babel/internal/sync"
 
+	"github.com/atyrode/babel/internal/durable"
 	_ "modernc.org/sqlite"
 )
 
@@ -656,7 +657,7 @@ func Open(dir string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("reality: create durable state directory: %w", err)
 	}
 	path := filepath.Join(dir, databaseFile)
-	db, err := sql.Open("sqlite", path)
+	db, err := durable.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("reality: open durable database: %w", err)
 	}
@@ -697,7 +698,7 @@ func (s *Store) init() error {
 	if err := s.db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
 		return fmt.Errorf("reality: enable durable WAL: %w", err)
 	}
-	if _, err := s.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if _, err := s.db.Exec(durable.BusyPragma); err != nil {
 		return fmt.Errorf("reality: set durable busy timeout: %w", err)
 	}
 	// Foreign keys carry the ledger's referential rules into the engine: a
