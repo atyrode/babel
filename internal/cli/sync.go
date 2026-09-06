@@ -178,7 +178,7 @@ func (a *app) syncCmd(ctx context.Context, args []string) error {
 // size is reported and left alone: that is a writer bug to read, not a
 // closure to force.
 func (a *app) declareFinishedRuns(ctx context.Context, d dirs, pub *babelsync.Publisher) error {
-	runs, err := runstore.Open(d.durableDir())
+	runs, err := runstore.Open(d.durableDir(), runstore.WithSync(pub))
 	if err != nil {
 		return fmt.Errorf("open the run store: %w", err)
 	}

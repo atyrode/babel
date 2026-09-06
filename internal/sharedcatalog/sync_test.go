@@ -315,6 +315,9 @@ func TestObjectFailureLeavesNoRowNamingAMissingObject(t *testing.T) {
 			ctx := context.Background()
 
 			c := sampleClosure("run-objfail", KindHypothesis, KindObservation, KindFinding)
+			// The assertions below reason about which record the protocol
+			// reached, which is a property of the serial protocol.
+			c.Workers = 1
 			tc.setup(store, c.Records[1].RecordID)
 
 			res, err := SyncRun(ctx, db, store, ring, c)
@@ -378,6 +381,7 @@ func TestDatabaseFailureAfterObjectWriteLeavesPendingSyncAndResumes(t *testing.T
 	store, ring := newMemStore(), newKeyring(t)
 
 	c := sampleClosure("run-outage", KindHypothesis, KindObservation, KindFinding)
+	c.Workers = 1 // the test reasons about which record the cancellation reached
 	last := c.Records[len(c.Records)-1].RecordID
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -451,6 +455,68 @@ func TestDatabaseFailureAfterObjectWriteLeavesPendingSyncAndResumes(t *testing.T
 	}
 	if n := countRows(t, db, "analysis_runs"); n != 1 {
 		t.Errorf("catalog holds %d run rows, want 1", n)
+	}
+}
+
+// TestConcurrentCommitKeepsTheInvariantUnderAFailure is #180's contract: with
+// records committed many at a time, a failure on one still leaves every row the
+// catalog holds naming a present, verified object, leaves the failed record
+// without a row, keeps the run visibly pending, and the next sync completes it
+// without re-uploading what landed. Which other records reached the catalog
+// is not asserted, because concurrency makes that order meaningless.
+func TestConcurrentCommitKeepsTheInvariantUnderAFailure(t *testing.T) {
+	db := newInternalDB(t)
+	seedPhaseB(t, db)
+	store, ring := newMemStore(), newKeyring(t)
+	ctx := context.Background()
+
+	kinds := make([]RecordKind, 40)
+	for i := range kinds {
+		kinds[i] = KindObservation
+	}
+	c := sampleClosure("run-concurrent", kinds...)
+	failing := c.Records[17].RecordID
+	store.failPut = func(key string) error {
+		if strings.Contains(key, failing) {
+			return errors.New("injected put failure")
+		}
+		return nil
+	}
+
+	res, err := SyncRun(ctx, db, store, ring, c)
+	if err == nil {
+		t.Fatal("SyncRun succeeded despite an object-store failure")
+	}
+	if res.State != SyncPending {
+		t.Errorf("state = %q, want %q", res.State, SyncPending)
+	}
+	rows, err := AnalysisRecords(ctx, db, c.RunID)
+	if err != nil {
+		t.Fatalf("list records: %v", err)
+	}
+	if len(rows) >= len(c.Records) {
+		t.Fatalf("catalog holds %d rows despite a failed record", len(rows))
+	}
+	for _, r := range rows {
+		if r.RecordID == failing {
+			t.Fatalf("the failed record %s has a row", failing)
+		}
+		if !store.has(r.ObjectKey) {
+			t.Fatalf("row %s names object %q, which the store does not hold", r.RecordID, r.ObjectKey)
+		}
+	}
+
+	store.failPut = nil
+	putsBefore := store.putCount()
+	again := mustSync(t, db, store, ring, c)
+	if again.State != SyncCommitted {
+		t.Fatalf("state after resync = %q, want %q", again.State, SyncCommitted)
+	}
+	if got, want := store.putCount()-putsBefore, len(c.Records)-len(rows); got != want {
+		t.Errorf("resync put %d objects, want exactly the %d records that had not landed", got, want)
+	}
+	if n := countRows(t, db, "analysis_records"); n != len(c.Records) {
+		t.Errorf("catalog holds %d record rows, want %d", n, len(c.Records))
 	}
 }
 
