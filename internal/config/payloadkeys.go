@@ -114,11 +114,11 @@ func PayloadKeysPath() string {
 }
 
 func payloadKeysPathName() (string, error) {
-	base, err := os.UserConfigDir()
+	dir, err := Dir()
 	if err != nil {
-		return "", fmt.Errorf("resolve configuration directory: %w", err)
+		return "", err
 	}
-	return filepath.Join(base, "babel", PayloadKeysName), nil
+	return filepath.Join(dir, PayloadKeysName), nil
 }
 
 // LoadPayloadKeys reads the payload key document. A missing file is not an
