@@ -1,6 +1,7 @@
 package explore
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -109,26 +110,30 @@ func (c *Controller) runStage(st *state, stage Stage, runID string, params map[s
 		return nil
 	}
 
-	receipt, runErr := client.Run(st.ctx, c.job(st, stage, runID, recipes, params))
+	receipt, runErr := client.Run(st.ctx, c.job(st, stage, runID, recipes, params, broker))
 	steps, served := broker.trace()
 	st.out.Retrieval = append(st.out.Retrieval, served...)
 	sr := &stageRun{receipt: receipt, steps: steps, started: at}
 	if runErr != nil {
-		st.fail(stage, FailureWorker, c.now(), fmt.Errorf("explore: %s job: %w", stage, runErr))
+		code := FailureWorker
+		if errors.Is(runErr, worker.ErrNoResult) && receipt != nil && receipt.ExitCode == 0 {
+			// The engine's turn ended, it left cleanly, and nothing was
+			// accepted. Every refused submission is already in the receipt
+			// with its reason; the stage's verdict is that it produced
+			// nothing. An engine that died mid-turn is the other case,
+			// and its exit status says so.
+			code = FailureResultSchema
+		}
+		st.fail(stage, code, c.now(), fmt.Errorf("explore: %s job: %w", stage, runErr))
 		return sr
 	}
-
-	var delivered *worker.ResultRecord
-	if receipt != nil {
-		delivered = receipt.Result
-	}
-	result, err := parseResult(delivered)
+	// The accepted submission already parsed once, when Accept admitted it;
+	// parsing it again here reads the same bytes into the value persist
+	// consumes, so the receipt's payload and the persisted result cannot
+	// diverge.
+	result, err := parseResult(receipt.Result)
 	if err != nil {
-		code := FailureResultSchema
-		if errors.Is(err, ErrDevelopmentPath) {
-			code = FailureDevelopmentPath
-		}
-		st.fail(stage, code, c.now(), fmt.Errorf("explore: %s result: %w", stage, err))
+		st.fail(stage, FailureResultSchema, c.now(), fmt.Errorf("explore: %s result: %w", stage, err))
 		return sr
 	}
 	sr.result = result
@@ -171,13 +176,15 @@ func (c *Controller) stageRecipes(stage Stage) []*cookbook.Recipe {
 	return out
 }
 
-// job builds the job document for one stage.
-func (c *Controller) job(st *state, stage Stage, runID string, recipes []*cookbook.Recipe, params map[string]string) worker.Job {
+// job builds one stage's job: the tools its grant registers, the prompt, the
+// result contract, and the semantic check every submission goes through. The
+// broker is the run's evidence trace, which Accept reads at submission time.
+func (c *Controller) job(st *state, stage Stage, runID string, recipes []*cookbook.Recipe, params map[string]string, broker *retrieval) worker.Job {
 	merged := make(map[string]string, len(st.opt.Params)+len(params)+1)
 	maps.Copy(merged, st.opt.Params)
 	maps.Copy(merged, params)
 	// The parameters this package owns are written last: a caller must not be
-	// able to tell a worker it is running a stage other than the one Babel
+	// able to tell the model it is running a stage other than the one Babel
 	// is about to hold it to.
 	merged[ParamStage] = string(stage)
 
@@ -194,6 +201,8 @@ func (c *Controller) job(st *state, stage Stage, runID string, recipes []*cookbo
 			Snapshot: sel.Snapshot,
 		})
 	}
+	contract := OutputContract(stage)
+	tools := jobTools(c.cfg.Grant)
 	return worker.Job{
 		JobID:   runID + "/job",
 		RunID:   runID,
@@ -201,15 +210,54 @@ func (c *Controller) job(st *state, stage Stage, runID string, recipes []*cookbo
 		Recipes: refs,
 		Grant:   c.cfg.Grant,
 		Sources: sources,
-		Broker:  c.cfg.Broker,
 		Params:  merged,
+		Tools:   tools,
+		Output:  contract,
 		// Every stage carries the refine-first context, not only discovery.
 		// A challenger arguing against a candidate the frontier already
 		// rejected, and a synthesizer consolidating a finding that restates
 		// an existing one, are the same duplication one step further down
 		// the development path (#87).
-		Extra: c.extra(st),
+		Prompt: composePrompt(stage, contract, recipes, sources, merged, c.relatedContext(st), tools),
+		// Accept is what persistence can decide at submission time without
+		// a durable record: the shape, the references within the result,
+		// the recipe provenance, and every citation against what this run
+		// has served so far. The model reads a refusal while it can still
+		// correct it. What a stage may emit, and what a brief's identifier
+		// resolves to, are decided in persist over the records the run has
+		// written — a stray observation there is dropped with a warning,
+		// never at the cost of the candidate beside it (#179).
+		Accept: func(payload json.RawMessage) error {
+			res, err := parseResult(&worker.ResultRecord{Schema: contract.Schema, Payload: payload})
+			if err != nil {
+				return err
+			}
+			if err := c.checkRecipes(stage, res); err != nil {
+				return err
+			}
+			_, servedSoFar := broker.trace()
+			return verifyCitations(servedByRun(append(slices.Clone(st.out.Retrieval), servedSoFar...)), res)
+		},
 	}
+}
+
+// checkRecipes refuses a result whose claims cite a recipe this stage did not
+// select, so the model corrects the provenance rather than losing the claim
+// at persistence. Persist applies the same predicate per item.
+func (c *Controller) checkRecipes(stage Stage, res *Result) error {
+	for _, cand := range res.Candidates {
+		for _, obs := range cand.Observations {
+			if !c.recipeAllowed(stage, obs.Recipe) {
+				return fmt.Errorf("%w: observation %q cites %s@%d", ErrUnknownRecipe, obs.Ref, obs.Recipe.ID, obs.Recipe.Version)
+			}
+		}
+	}
+	for _, obj := range res.Objections {
+		if !c.recipeAllowed(stage, obj.Recipe) {
+			return fmt.Errorf("%w: objection %q cites %s@%d", ErrUnknownRecipe, obj.Ref, obj.Recipe.ID, obj.Recipe.Version)
+		}
+	}
+	return nil
 }
 
 // brief tells a separate pass which durable records it is examining, and makes
@@ -279,6 +327,9 @@ func (c *Controller) persist(st *state, stage Stage, runID string, res *Result) 
 		st.fail(stage, FailureStorage, c.now(), err)
 		return
 	}
+	// The evidence index is rebuilt per stage from the run's whole trace,
+	// because each stage's job appends its own retrievals to it.
+	st.served = servedByRun(st.out.Retrieval)
 
 	for _, cand := range res.Candidates {
 		id, reused, err := c.putHypothesis(st, stage, runID, committed, cand)
@@ -332,6 +383,13 @@ func (c *Controller) remedy(st *state, stage Stage, runID string, committed map[
 			"%w: the %s stage cannot suggest changes, and candidate %q arrived with a remedy",
 			ErrStageAuthority, stage, cand.Ref))
 		return
+	}
+	if _, done := committed[cand.Remedy.Ref]; !done {
+		if err := st.served.verify("remedy", cand.Remedy.Ref,
+			cand.Remedy.Proposal.Supporting, cand.Remedy.Proposal.Conflicting); err != nil {
+			st.fail(stage, FailureProvenance, c.now(), err)
+			return
+		}
 	}
 	id, reused, err := c.putRemedy(st, stage, runID, committed, *cand.Remedy, hypothesisID)
 	if err != nil {
@@ -395,6 +453,14 @@ func (c *Controller) develop(st *state, stage Stage, runID string, committed map
 					"%w: observation %q cites %s@%d", ErrUnknownRecipe, obs.Ref, obs.Recipe.ID, obs.Recipe.Version))
 				continue
 			}
+			// A committed record was verified when it was written; the
+			// resumed attempt's trace need not serve it again.
+			if _, done := committed[obs.Ref]; !done {
+				if err := st.served.verify("observation", obs.Ref, obs.Claim.Evidence, obs.Claim.CounterEvidence); err != nil {
+					st.fail(stage, FailureProvenance, c.now(), err)
+					continue
+				}
+			}
 			id, reused, err := c.putObservation(st, stage, runID, committed, hypothesisID, obs)
 			if err != nil {
 				st.fail(stage, FailureDevelopmentPath, c.now(),
@@ -440,6 +506,12 @@ func (c *Controller) object(st *state, stage Stage, runID string, committed map[
 			st.fail(stage, FailureUnknownRecipe, c.now(), fmt.Errorf(
 				"%w: objection %q cites %s@%d", ErrUnknownRecipe, obj.Ref, obj.Recipe.ID, obj.Recipe.Version))
 			continue
+		}
+		if _, done := committed[obj.Ref]; !done {
+			if err := st.served.verify("objection", obj.Ref, obj.Claim.Evidence, obj.Claim.CounterEvidence); err != nil {
+				st.fail(stage, FailureProvenance, c.now(), err)
+				continue
+			}
 		}
 		id, kind, reused, err := c.putObjection(st, stage, runID, committed, target, obj)
 		if err != nil {
@@ -494,6 +566,12 @@ func (c *Controller) consolidate(st *state, stage Stage, runID string, committed
 				fmt.Errorf("explore: consolidation %q: %w", con.Ref, err))
 			continue
 		}
+		if _, done := committed[con.Ref]; !done {
+			if err := st.served.verify("consolidation", con.Ref, con.Finding.CounterEvidence); err != nil {
+				st.fail(stage, FailureProvenance, c.now(), err)
+				continue
+			}
+		}
 		finding, reused, err := c.putFinding(st, stage, runID, committed, con, ids)
 		if err != nil {
 			st.fail(stage, FailureDevelopmentPath, c.now(),
@@ -510,9 +588,9 @@ func (c *Controller) consolidate(st *state, stage Stage, runID string, committed
 		// the operator is actually looking at.
 		bearer := frontier.Ref{Type: frontier.EntityFinding, ID: finding.ID}
 		if con.Proposal != nil {
-			id, reusedProposal, err := c.putProposal(st, stage, runID, committed, con, finding.ID)
+			id, reusedProposal, err := c.putConsolidatedProposal(st, stage, runID, committed, con, finding.ID)
 			if err != nil {
-				st.fail(stage, FailureDevelopmentPath, c.now(),
+				st.fail(stage, failureCodeFor(err), c.now(),
 					fmt.Errorf("explore: persist proposal for %q: %w", con.Ref, err))
 			} else {
 				st.out.Proposals = append(st.out.Proposals, id)
@@ -554,6 +632,13 @@ func (c *Controller) supporting(st *state, con Consolidation) ([]string, error) 
 	ids := make([]string, 0, len(con.Observations))
 	for _, ref := range con.Observations {
 		id, ok := st.observations[ref]
+		if !ok && servedObservation(st.out.Retrieval, ref) {
+			// A frontier search disclosed this record to the worker, which
+			// is the same footing a brief gives it: named by Babel, not
+			// guessed. It resolves to itself and stays resolvable.
+			id, ok = ref, true
+			st.observations[ref] = ref
+		}
 		if !ok {
 			if st.undeveloped[ref] {
 				return nil, errConsolidationDeferred
@@ -575,12 +660,27 @@ func (c *Controller) supporting(st *state, con Consolidation) ([]string, error) 
 	return ids, nil
 }
 
+// putConsolidatedProposal verifies a consolidation's proposal citations and
+// writes it. The finding it hangs off is already durable: a proposal citing
+// something the run was not served is a refused proposal, never a lost
+// finding.
+func (c *Controller) putConsolidatedProposal(st *state, stage Stage, runID string, committed map[string]Commit, con Consolidation, findingID string) (string, bool, error) {
+	if _, done := committed[con.Ref+"/proposal"]; !done {
+		if err := st.served.verify("proposal", con.Ref+"/proposal", con.Proposal.Supporting, con.Proposal.Conflicting); err != nil {
+			return "", false, err
+		}
+	}
+	return c.putProposal(st, stage, runID, committed, con, findingID)
+}
+
 func failureCodeFor(err error) string {
 	switch {
 	case errors.Is(err, ErrDevelopmentPath):
 		return FailureDevelopmentPath
 	case errors.Is(err, ErrUnknownReference):
 		return FailureUnknownRecord
+	case errors.Is(err, ErrUnservedEvidence):
+		return FailureProvenance
 	default:
 		return FailureStorage
 	}

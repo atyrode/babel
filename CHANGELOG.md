@@ -9,6 +9,47 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Changed
+
+- **Babel drives Code's engine over OMP's native RPC and owns everything the
+  model is told and everything it submits (#182, code#123).** The
+  `babel.analysis-worker` protocol is gone. `babel explore` launches
+  `code engine --profile ID@REV --runtime-info PATH`, reads Code's
+  `code.runtime/1` sidecar — profile, privacy, cost, containment — and refuses
+  the launch before a byte of the prompt is written when the sandbox falls
+  short; then it negotiates RPC v2, registers the evidence tools the grant
+  covers and one `babel_submit_result` tool whose parameters are the stage's
+  result schema, and writes a prompt it composed itself from the stage
+  instructions, the recipes verbatim, the sources, the brief and the
+  refine-first context. The schema is generated at start-up from
+  `explore.Result` and the frontier payload types it embeds, pruned per stage
+  by the authority table, so a payload field added on Babel's side reaches the
+  model on the next run with no Code edit; the engine validates every
+  submission against it before Babel is asked, and Babel's own check —
+  references, recipe provenance, and every citation against the corpus hits
+  and research documents this run served — answers the model as a tool error
+  it can correct, never replacing an earlier accepted submission. Stage
+  authority and brief-identifier resolution remain per-item persistence checks.
+  Receipts record the registered tools, every call with its decision, the engine's own session
+  accounting, and Code's measurements from its finished report. The
+  configuration ceremony runs `code engine --configure` and stores what
+  `--describe` reports; session titles are an ordinary engine job; `babel
+  conformance CODE` grades `--describe` offline and launches one nonce-schema
+  job only under `--allow-inference --profile`, after printing the cost. A
+  stored `--worker-arg babel` is refused with the command to reconfigure.
+  Standard configuration paths, Code's profile/executable overrides and the
+  user-session transport survive launch; provider credentials do not. On
+  dev-01, a real Babel → contained Code → OMP 18.1.11 round trip against a
+  scripted localhost provider persisted a hypothesis, an evidence-backed
+  observation, a finding and a proposal across discovery and synthesis,
+  without live inference or fleet writes.
+  The fixture behind the suites is `internal/worker/testdata/fakeengine`, a
+  synthetic `code engine`; `TestWellBehavedRunProducesAReceipt`,
+  `TestLaunchIsRefusedBeforeThePromptWhenCodeFallsShort`,
+  `TestSubmissionRulesHold`, `TestChunkedFramesAreReassembled`,
+  `TestForgedCitationIsRefusedAtSubmissionAndTheCorrectionPersists` and
+  `TestSynthesizerConsolidatesServedObservationsUnderItsContract` pin it.
+
 ### Fixed
 
 - **`babel sync` commits a closure's records sixteen at a time (#180).** Each

@@ -48,6 +48,7 @@ package disposition
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/atyrode/babel/internal/frontier"
@@ -115,14 +116,18 @@ func Kinds() []Kind {
 	return []Kind{KindDraftIssue, KindProposeRealityFact, KindStoreMemory, KindAskQuestion, KindDevelopFurther}
 }
 
-func (k Kind) valid() bool {
-	for _, known := range Kinds() {
-		if k == known {
-			return true
-		}
+// Values is Kinds as strings, the shape the result schema a worker is handed
+// lists an enumeration in.
+func (Kind) Values() []string {
+	kinds := Kinds()
+	values := make([]string, len(kinds))
+	for i, k := range kinds {
+		values[i] = string(k)
 	}
-	return false
+	return values
 }
+
+func (k Kind) valid() bool { return slices.Contains(Kinds(), k) }
 
 // Ruling is an operator's answer to a proposed action. There are exactly two:
 // #87's constraint is that every action is a proposal until the operator

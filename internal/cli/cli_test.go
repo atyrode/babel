@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -17,6 +18,32 @@ import (
 	"strings"
 	"testing"
 )
+
+// fakeEnginePath is the synthetic `code engine`, built once per test binary
+// for the commands that launch a native engine job: the titler and the
+// conformance exam. Nothing is prebuilt or committed, and the suite needs no
+// Code, no OMP, no provider and no credential to drive either.
+var fakeEnginePath string
+
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "babel-cli-fixture-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "creating fixture dir: %v\n", err)
+		os.Exit(1)
+	}
+	fakeEnginePath = filepath.Join(dir, "fakeengine")
+	build := exec.Command("go", "build", "-o", fakeEnginePath,
+		"github.com/atyrode/babel/internal/worker/testdata/fakeengine")
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "building the fake engine: %v\n", err)
+		os.RemoveAll(dir)
+		os.Exit(1)
+	}
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // testHostID is the host identity every fixture backs up under.
 const testHostID = "testhost"

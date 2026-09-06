@@ -50,8 +50,7 @@ func testWorkerReceipt() *worker.Receipt {
 		Recipes: []worker.RecipeRef{{ID: "outcome-integrity", Version: 1}},
 		Sources: []worker.Source{{Kind: "session", Selector: "omp/session-0001",
 			Digest: string(testDigest("omp-normalized")), Snapshot: "0a1b2c3d"}},
-		Worker:          worker.Identity{Name: "code", Version: "1.4.2"},
-		ProtocolVersion: worker.ProtocolVersion,
+		Worker: worker.Identity{Name: "code", Version: "1.4.2"},
 		Grant: worker.Grant{
 			Capabilities: []worker.Capability{
 				worker.CapabilityCorpusSearch,
@@ -62,10 +61,10 @@ func testWorkerReceipt() *worker.Receipt {
 			Disclosure: worker.DisclosureLocal,
 			ExpiresAt:  runEnd,
 		},
-		Privacy:              worker.Privacy{Disclosure: worker.DisclosureLocal, RedactionRequired: true},
-		Cost:                 worker.Cost{Currency: "USD", InputPer1K: 0.5, OutputPer1K: 1.5, EstimatedRun: 2},
-		ResolvedCapabilities: []worker.Capability{worker.CapabilityCorpusSearch},
-		Metadata:             map[string]string{"provider": "local", "model": "m-1", "thinking": "high"},
+		Privacy:  worker.Privacy{Disclosure: worker.DisclosureLocal, RedactionRequired: true},
+		Cost:     worker.Cost{Currency: "USD", InputPer1K: 0.5, OutputPer1K: 1.5, EstimatedRun: 2},
+		Tools:    []string{worker.ToolSearch, worker.ToolSubmit},
+		Metadata: map[string]string{"provider": "local", "model": "m-1", "thinking": "high"},
 		ToolRequests: []worker.ToolRecord{
 			{
 				Index: 0, RequestID: "t-1", Capability: worker.CapabilityCorpusSearch,
@@ -79,16 +78,23 @@ func testWorkerReceipt() *worker.Receipt {
 				At: runStart.Add(time.Second), Decided: time.Millisecond,
 			},
 			{
-				Index: 2, RequestID: "t-3", Capability: worker.CapabilityPublicResearch,
-				Tool: "fetch", ArgumentsDigest: testDigest("args-3"), ArgumentsBytes: 90,
-				Allowed: false, DenyCode: worker.DenyNotGranted, Reason: "not in the grant",
+				Index: 2, RequestID: "t-3", Tool: "babel_repo_read",
+				ArgumentsDigest: testDigest("args-3"), ArgumentsBytes: 90,
+				Allowed: false, DenyCode: worker.DenyUnknownTool, Reason: "the job registered no tool named babel_repo_read",
 				At: runStart.Add(2 * time.Second), Decided: 2 * time.Millisecond,
+			},
+			{
+				Index: 3, RequestID: "t-4", ToolCallID: "toolu_4", Tool: worker.ToolSubmit,
+				ArgumentsDigest: testDigest("args-4"), ArgumentsBytes: 17,
+				Allowed: true, Reason: "submission accepted as the job's result",
+				At: runStart.Add(3 * time.Second), Decided: time.Millisecond,
 			},
 		},
 		Progress: []worker.ProgressRecord{
-			{Seq: 2, Stage: "discover", Message: "reading normalized events", Fraction: 0.25, At: runStart},
+			{Seq: 2, Stage: "agent", Message: "reading normalized events", At: runStart},
 		},
 		ProgressDropped: 1,
+		Submissions:     1,
 		Result: &worker.ResultRecord{
 			Status: worker.StatusOK, Schema: "babel.analysis-result/1",
 			Payload: json.RawMessage(`{"hypotheses":2}`), At: runEnd,
@@ -98,9 +104,11 @@ func testWorkerReceipt() *worker.Receipt {
 			Message: "the search tool did not answer", Retryable: true, At: runEnd,
 		},
 		Resources: &worker.Resources{
-			CPUSeconds: 12.5, MaxRSSBytes: 1 << 26, SandboxBytesWritten: 4096, ToolCalls: 3,
+			CPUSeconds: new(12.5), MaxRSSBytes: new(int64(1 << 26)), SandboxBytesWritten: new(int64(4096)),
+			Provenance: "cgroup",
 		},
-		UnknownFields: []string{"future_field"},
+		Usage:         &worker.Usage{InputTokens: 1200, OutputTokens: 340, TotalTokens: 1540, Cost: 0.01, ToolCalls: 4},
+		UnknownFrames: []string{"future_frame"},
 		StderrTail:    "worker: finished",
 		ExitCode:      0,
 		StartedAt:     runStart,
@@ -187,7 +195,7 @@ func TestNewReceiptDerivesHeaderFromBody(t *testing.T) {
 	if r.Header.PreparationID != r.Preparation.ID {
 		t.Errorf("header names preparation %s, record is %s", r.Header.PreparationID, r.Preparation.ID)
 	}
-	want := Counts{ToolRequests: 3, ToolsDenied: 2, Retrieval: 2, Deferred: 1, Rejected: 1, Failures: 1}
+	want := Counts{ToolRequests: 4, ToolsDenied: 2, Retrieval: 2, Deferred: 1, Rejected: 1, Failures: 1}
 	if r.Header.Counts != want {
 		t.Errorf("counts %+v, want %+v", r.Header.Counts, want)
 	}

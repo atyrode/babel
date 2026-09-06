@@ -117,12 +117,12 @@ type conductorStatusDoc struct {
 func TestConductorCyclesAreAttributableRuns(t *testing.T) {
 	ctx := context.Background()
 	p := newPhaseB(t)
-	worker := fakeWorker(t)
+	worker := fakeEngine(t)
 	payload := writeCandidatePayload(t, p)
 	workerArgs := []string{
 		"--worker", worker,
-		"--worker-arg", "-result-payload-selector", "--worker-arg", explore.ParamStage,
-		"--worker-arg", "-result-payload", "--worker-arg", string(explore.StageExplore) + "=" + payload,
+		"--worker-arg", "-submit-selector", "--worker-arg", explore.ParamStage,
+		"--worker-arg", "-submit", "--worker-arg", string(explore.StageExplore) + "=" + payload,
 	}
 
 	// An unconfigured conductor refuses to run, and says what to do about it.
@@ -265,14 +265,17 @@ func TestConductorCyclesAreAttributableRuns(t *testing.T) {
 	if final.Spend == nil {
 		t.Fatal("a configured conductor reported no spend")
 	}
-	// The synthetic worker quotes its cost in a currency the ceilings are not
-	// in, so every run today is unpriced rather than free — which is exactly
-	// what the status view has to say instead of showing a reassuring zero.
-	if final.Spend.Unpriced < 3 {
-		t.Errorf("spend = %+v, want the unpriceable runs counted", final.Spend)
+	// The synthetic engine quotes its run estimate in the ceilings' own
+	// currency, so all three of today's runs — the manual one and both
+	// cycles — are priced against the day rather than counted as unpriced,
+	// and the figure is the receipts' estimate rather than the loop's own
+	// arithmetic.
+	if final.Spend.Runs != 3 || final.Spend.Unpriced != 0 {
+		t.Errorf("spend = %+v, want three priced runs and none unpriceable", final.Spend)
 	}
-	if final.Spend.Spent != 0 || final.Spend.Remaining != 5.00 {
-		t.Errorf("spend = %+v, want nothing priced against the ceiling", final.Spend)
+	if final.Spend.Spent < 0.149 || final.Spend.Spent > 0.151 ||
+		final.Spend.Remaining < 4.849 || final.Spend.Remaining > 4.851 {
+		t.Errorf("spend = %+v, want three runs at the engine's 0.05 estimate priced against the ceiling", final.Spend)
 	}
 	if !strings.HasSuffix(final.Journal, "conductor.json") {
 		t.Errorf("journal path = %q", final.Journal)
@@ -308,12 +311,12 @@ func TestConductorCyclesAreAttributableRuns(t *testing.T) {
 // and parking is not a failure exit: the ceilings are working.
 func TestConductorParksOnTheDailyCeiling(t *testing.T) {
 	p := newPhaseB(t)
-	worker := fakeWorker(t)
+	worker := fakeEngine(t)
 	payload := writeCandidatePayload(t, p)
 	workerArgs := []string{
 		"--worker", worker,
-		"--worker-arg", "-result-payload-selector", "--worker-arg", explore.ParamStage,
-		"--worker-arg", "-result-payload", "--worker-arg", string(explore.StageExplore) + "=" + payload,
+		"--worker-arg", "-submit-selector", "--worker-arg", explore.ParamStage,
+		"--worker-arg", "-submit", "--worker-arg", string(explore.StageExplore) + "=" + payload,
 	}
 	plantProfile(t, p, "synthetic-profile", 1)
 
@@ -362,12 +365,12 @@ func TestConductorParksOnTheDailyCeiling(t *testing.T) {
 // that claim survives the process that made it.
 func TestConductorDrawsAnAuthorizedDuty(t *testing.T) {
 	p := newPhaseB(t)
-	worker := fakeWorker(t)
+	worker := fakeEngine(t)
 	payload := writeCandidatePayload(t, p)
 	workerArgs := []string{
 		"--worker", worker,
-		"--worker-arg", "-result-payload-selector", "--worker-arg", explore.ParamStage,
-		"--worker-arg", "-result-payload", "--worker-arg", string(explore.StageExplore) + "=" + payload,
+		"--worker-arg", "-submit-selector", "--worker-arg", explore.ParamStage,
+		"--worker-arg", "-submit", "--worker-arg", string(explore.StageExplore) + "=" + payload,
 	}
 	plantProfile(t, p, "synthetic-profile", 1)
 

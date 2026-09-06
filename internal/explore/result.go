@@ -4,27 +4,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/worker"
 )
 
-// Result is one analysis job's structured output, decoded from the payload of
-// a terminal result declaring worker.ResultSchema. Anything declaring another
-// schema is refused rather than parsed hopefully, because a payload
-// interpreted under the wrong schema would produce durable records nobody
-// wrote.
+// Result is an accepted Babel submission. Its receipt retains ResultSchema
+// so a stored payload is not interpreted under a different Babel contract.
 //
-// The types below are internal/frontier's payload types verbatim rather than a
-// parallel set of wire structs. That is a deliberate coupling: the fields a
-// worker proposes and the fields Babel stores are the same information, and
-// two declarations of it would drift into a translation layer that silently
-// dropped one of them. The cost is that a change to a frontier payload is a
-// change to the schema, and therefore requires worker.ResultSchema to change
-// too — the string itself lives in internal/worker because it is wire surface
-// shared with a separately-developed worker implementation, and naming it from
-// here is what keeps exactly one definition of it.
+// The types below reuse internal/frontier's payloads rather than a parallel
+// set of wire structs. OutputContract generates the native tool schema from
+// these same declarations: the schema, the submitted value, and the store
+// cannot silently drift apart, and adding a payload field needs no Code edit.
 //
 // Every field is optional and an absent field is a statement: a job that
 // emitted no candidate emitted none, which §5.2 permits. What a stage is
@@ -148,13 +141,13 @@ const (
 	GroundsAlternative  Grounds = "alternative"
 )
 
-func (g Grounds) valid() bool {
-	switch g {
-	case GroundsEvidence, GroundsConsequence, GroundsMissingCheck, GroundsAlternative:
-		return true
-	}
-	return false
+// Values lists the grounds, for the result schema a worker is handed and for
+// validation, so the two cannot disagree.
+func (Grounds) Values() []string {
+	return []string{string(GroundsEvidence), string(GroundsConsequence), string(GroundsMissingCheck), string(GroundsAlternative)}
 }
+
+func (g Grounds) valid() bool { return slices.Contains(Grounds.Values(g), string(g)) }
 
 // Objection is one challenger criticism of a hypothesis (§5.4).
 //
@@ -188,11 +181,8 @@ type Disposal struct {
 }
 
 // ProposedAction is one next action a job proposes against the record it is
-// attached to (#87). It is the schema field that lets a run propose a
-// disposition, and it is deliberately additive: a worker that emits none is a
-// worker that proposed none, and the result schema does not move for a field
-// both sides may ignore, which is the same rule worker.ProtocolVersion states
-// for optional message fields.
+// attached to (#87). It lets a run propose a disposition and is deliberately
+// optional: a job that emits none proposed none.
 //
 // Babel refuses a kind it does not implement rather than storing it as an
 // opaque string. The five kinds are five surfaces a click feeds; a sixth would
@@ -255,6 +245,13 @@ var (
 	// objection against an unknown candidate, a disposal of one, or a
 	// consolidation naming an identifier no brief listed.
 	ErrUnknownReference = errors.New("explore: structured result names a record that does not exist")
+
+	// ErrUnservedEvidence reports a citation whose locator this run never
+	// served. frontier.Evidence checks that a locator is well formed; this
+	// is the check that it is real, made against the retrieval trace before
+	// the claim becomes durable, because a plausible fabrication reads
+	// exactly like provenance once stored.
+	ErrUnservedEvidence = errors.New("explore: claim cites evidence this run was not served")
 )
 
 // parseResult decodes and structurally validates a worker's terminal result.

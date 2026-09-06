@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/digest"
+	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/explore"
 	"github.com/atyrode/babel/internal/research"
 	"github.com/atyrode/babel/internal/run"
@@ -24,9 +25,19 @@ import (
 // proves the refusals — the address policy, the redirect ceiling, the
 // media-type allowlist — against real sockets in its own suite.
 
-const researchFetchURL = "https://example.com/spec/section-2"
+const (
+	researchFetchURL = "https://example.com/spec/section-2"
+	researchBody     = "# Section 2\n\nThe upstream document says the flag was removed.\n"
+)
 
 var researchFetchedAt = time.Date(2026, 8, 31, 18, 30, 0, 0, time.UTC)
+
+// researchLocator is how a claim cites the brokered document: the source URL
+// and the content digest, with no line and no offset, because the whole
+// object is what Babel served.
+func researchLocator() event.Locator {
+	return event.Locator{Path: researchFetchURL, Digest: string(digest.Bytes([]byte(researchBody)))}
+}
 
 type testBroker struct {
 	fetched []string
@@ -46,7 +57,7 @@ func (b *testBroker) Fetch(_ context.Context, id string) (research.Document, err
 		if src.ID != id {
 			continue
 		}
-		const body = "# Section 2\n\nThe upstream document says the flag was removed.\n"
+		const body = researchBody
 		return research.Document{
 			Schema:      research.DocumentSchema,
 			Source:      src,
@@ -90,11 +101,13 @@ func TestBrokeredResearchReachesTheWorkerAndTheReceipt(t *testing.T) {
 
 	// The worker found both operations because the job published them: the
 	// fixture requests nothing under a capability whose names it was not
-	// given, so two requests is the evidence that the mapping travelled.
+	// given, so two requests between the served corpus search and the
+	// submission is the evidence that the mapping travelled.
 	requests := outcome.Receipt.Body.Worker.ToolRequests
-	if len(requests) != 2 {
-		t.Fatalf("recorded %d tool requests, want the catalog and the fetch: %+v", len(requests), requests)
+	if len(requests) != 4 || requests[0].Capability != worker.CapabilityCorpusSearch || requests[3].Tool != worker.ToolSubmit {
+		t.Fatalf("recorded %d tool requests, want the corpus search, the catalog, the fetch and the submission: %+v", len(requests), requests)
 	}
+	requests = requests[1:3]
 	for i, want := range []string{worker.ToolSources, worker.ToolFetch} {
 		if requests[i].Tool != want || requests[i].Capability != worker.CapabilityPublicResearch {
 			t.Errorf("request %d = %s/%s, want public-research/%s",
@@ -178,9 +191,10 @@ func TestAFetchCarryingItsOwnFieldsIsRefused(t *testing.T) {
 		t.Errorf("the run produced %d findings, want 1: a denial is not a termination", len(outcome.Findings))
 	}
 	requests := outcome.Receipt.Body.Worker.ToolRequests
-	if len(requests) != 2 {
-		t.Fatalf("recorded %d tool requests, want the catalog and the refused fetch", len(requests))
+	if len(requests) != 4 || requests[0].Capability != worker.CapabilityCorpusSearch || requests[3].Tool != worker.ToolSubmit {
+		t.Fatalf("recorded %d tool requests, want the corpus search, the catalog, the refused fetch and the submission: %+v", len(requests), requests)
 	}
+	requests = requests[1:3]
 	if !requests[0].Allowed {
 		t.Errorf("the catalog was denied: %s", requests[0].Reason)
 	}

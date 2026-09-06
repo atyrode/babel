@@ -88,13 +88,9 @@ type analysisSettings struct {
 // Babel keep. The provider configuration behind the reference is Code's and
 // never appears here.
 //
-// Only the first three fields are ever written now: the configuration
-// ceremony hands Code the operator's terminal, so the stdio channel that used
-// to report a worker build, a disclosure class, a cost estimate and a
-// capability list is the terminal itself (issue #86). The rest is read back
-// from documents an earlier build wrote, and displayed, because a stored fact
-// Code once reported is still a fact about the profile the document names —
-// but nothing refreshes it, and nothing invents it.
+// The terminal ceremony returns the immutable reference. A separate offline
+// describe resolves the non-secret metadata beside it; if that read fails,
+// the reference is still stored and the unavailable facts remain absent.
 type profileRecord struct {
 	ID           string `json:"id"`
 	Revision     int    `json:"revision"`
@@ -104,10 +100,8 @@ type profileRecord struct {
 	WorkerVersion   string `json:"worker_version,omitempty"`
 	ProtocolVersion int    `json:"protocol_version,omitempty"`
 	Disclosure      string `json:"disclosure,omitempty"`
-	// RedactionRequired is a pointer because "Code never told Babel" and
-	// "Code said no redaction is required" are different documents, and the
-	// second is a claim about what may leave this machine raw. A record the
-	// ceremony minted carries neither.
+	// RedactionRequired distinguishes an unavailable description from Code's
+	// explicit statement that no redaction is required.
 	RedactionRequired *bool             `json:"redaction_required,omitempty"`
 	Capabilities      []string          `json:"capabilities,omitempty"`
 	Currency          string            `json:"cost_currency,omitempty"`
@@ -239,17 +233,17 @@ func authorityFor(id string) (review.Authority, error) {
 	return by, nil
 }
 
-// workerFlags select the Code executable that speaks the
-// babel.analysis-worker protocol. Babel launches it; it never chooses a
-// provider or a model (SPEC.md §2.6).
+// workerFlags select the Code executable whose `engine` subcommand launches
+// the contained OMP engine. Babel launches it; it never chooses a provider or
+// a model (SPEC.md §2.6).
 type workerFlags struct {
 	binary string
 	args   repeatedFlag
 }
 
 func (wf *workerFlags) bind(fs *flag.FlagSet) {
-	fs.StringVar(&wf.binary, "worker", "", "Code executable speaking the babel.analysis-worker protocol")
-	fs.Var(&wf.args, "worker-arg", "extra argument for the worker executable; repeatable")
+	fs.StringVar(&wf.binary, "worker", "", "Code executable; Babel runs its engine subcommand")
+	fs.Var(&wf.args, "worker-arg", "extra argument for the Code executable, before the engine subcommand; repeatable")
 }
 
 // resolve fixes the worker launch template from flags, the environment, and
@@ -281,30 +275,26 @@ func (wf *workerFlags) resolveFrom(stored string, storedArgs []string) (worker.C
 	return worker.Config{Binary: binary, Args: args}, true
 }
 
-// reportNoWorker explains an absent Code capability and reports that the
+// reportNoWorker explains an absent Code executable and reports that the
 // explanation has been given.
 //
-// The message is the product here. Code does not implement this protocol
-// yet, so an operator who runs `babel explore` today hits this path on a
-// correctly installed Babel; it has to read as a stated boundary with a
+// The message is the product here: it has to read as a stated boundary with a
 // remedy rather than as a malfunction, and it has to say what still works.
 func (a *app) reportNoWorker() error {
-	fmt.Fprint(a.stderr, `babel: no Code analysis worker is available, so this exploration cannot start.
+	fmt.Fprint(a.stderr, `babel: no Code executable is configured, so this exploration cannot start.
 
-Exploration runs inside Code, which owns the analysis profile, the provider
-credential, and the sandbox (SPEC.md §2.6). Babel launches an executable
-speaking the babel.analysis-worker protocol and never chooses a model
-itself. This machine has none configured.
+Exploration runs inside Code's engine, which owns the analysis profile, the
+provider credential, and the sandbox (SPEC.md §2.6). Babel launches
+"code engine" under a profile and never chooses a model itself. This machine
+has no Code executable configured.
 
 To name one:
   babel analysis profile configure --worker PATH
   babel explore --worker PATH --preparation ID
   or set $BABEL_ANALYSIS_WORKER
 
-Code does not implement this protocol yet, so this is the expected state
-today rather than a fault. Everything that does not need a worker still
-works: archive, sessions, prepare, hypotheses, findings, review, export,
-reality, and cookbook.
+Everything that does not need Code still works: archive, sessions, prepare,
+hypotheses, findings, review, export, reality, and cookbook.
 `)
 	return errReported
 }
@@ -425,9 +415,9 @@ a terminal and needs $TERM, the locale, and its own configuration.
 Nothing is analysed and no session is read by this command.
 
 Flags:
-  --worker PATH        Code executable speaking babel.analysis-worker
+  --worker PATH        Code executable; Babel runs its engine subcommand
                        (default $BABEL_ANALYSIS_WORKER, else the stored one)
-  --worker-arg ARG     extra argument for the worker; repeatable
+  --worker-arg ARG     extra argument for Code, before the engine subcommand; repeatable
   --json               emit the stored reference as JSON on stdout
 `
 
@@ -533,16 +523,28 @@ func (a *app) analysisProfileConfigure(ctx context.Context, args []string) error
 		return err
 	}
 
-	// The ceremony carries a reference and nothing else, so a record it
-	// mints has no worker build, privacy, cost, or capability metadata: the
-	// stdio channel that used to report those is the operator's terminal
-	// now. Whatever the previous record held is replaced rather than
-	// carried forward — that metadata described the profile that was just
-	// superseded, and attributing it to the new one would be an invention.
+	// The ceremony carries a reference and nothing else. The metadata the
+	// record shows beside it — the worker build, the disclosure class, the
+	// cost estimate — is read back from Code's own describe of that
+	// reference, which resolves the profile without launching anything,
+	// so what is stored is what Code says about the profile the operator
+	// just confirmed and never what an earlier record said about another.
 	record := &profileRecord{
 		ID:           ref.ID,
 		Revision:     ref.Revision,
 		ConfiguredAt: formatTime(time.Now().UTC()),
+	}
+	if described, err := describeProfile(ctx, wcfg, ref); err != nil {
+		a.diagf("warning: the profile was stored but Code could not describe it: %s\n", Sanitize(err.Error()))
+	} else {
+		record.WorkerName = described.Worker.Name
+		record.WorkerVersion = described.Worker.Version
+		record.Disclosure = described.Privacy.Disclosure
+		redaction := described.Privacy.RedactionRequired
+		record.RedactionRequired = &redaction
+		record.Currency = described.Cost.Currency
+		record.EstimatedRun = described.Cost.EstimatedRun
+		record.Metadata = described.Metadata
 	}
 	settings.Worker = wcfg.Binary
 	settings.WorkerArgs = wcfg.Args
@@ -595,14 +597,26 @@ type operatorTerminal struct {
 // this command is that the decision is made in front of them.
 const selectionStateEnv = "CODE_SELECTION_STATE"
 
-// configureFlags are the two arguments Babel appends to the worker's own
-// argv. They belong to Babel, so an operator may not supply them: a
+// configureFlags are the arguments Babel appends to the worker's own argv for
+// the ceremony: Code's engine subcommand, its configure mode, and the result
+// file. They belong to Babel, so an operator may not supply them: a
 // pre-supplied result file is a way to hand Babel a reference the operator
 // never confirmed.
 const (
-	configureFlag  = "--configure"
-	resultFileFlag = "--result-file"
+	engineSubcommand = "engine"
+	configureFlag    = "--configure"
+	resultFileFlag   = "--result-file"
 )
+
+// describeProfile asks Code for a profile's non-secret metadata without
+// launching anything.
+func describeProfile(ctx context.Context, wcfg worker.Config, ref worker.ProfileRef) (*worker.Configuration, error) {
+	client, err := worker.New(wcfg)
+	if err != nil {
+		return nil, err
+	}
+	return client.Configure(ctx, &ref)
+}
 
 // ceremonyTarget names the configuration one ceremony launch belongs to, so
 // that the reports it writes name that command's own remedy.
@@ -650,9 +664,9 @@ func (a *app) runConfigureCeremony(ctx context.Context, binary string, args []st
 		return worker.ProfileRef{}, fmt.Errorf("create the configuration result file: %w", err)
 	}
 
-	argv := make([]string, 0, len(args)+3)
+	argv := make([]string, 0, len(args)+4)
 	argv = append(argv, args...)
-	argv = append(argv, configureFlag, resultFileFlag, resultPath)
+	argv = append(argv, engineSubcommand, configureFlag, resultFileFlag, resultPath)
 	proc := exec.CommandContext(ctx, binary, argv...)
 	env, dropped := modelEnv()
 	proc.Env = env
@@ -716,28 +730,44 @@ func modelEnv() (env []string, dropped bool) {
 	return env, dropped
 }
 
-// refuseDials rejects a worker argument that pre-answers the configuration.
+// refuseDials rejects a worker argument that pre-answers the configuration or
+// puts Code into a mode Babel no longer speaks.
 //
-// --worker-arg exists because Code speaks the worker protocol under a
-// subcommand, so the executable has to be put into a mode; it is not a
-// channel for choosing a model. Forwarding a "--set"-shaped argument into
-// the ceremony would produce exactly the thing issue #86 removes: a profile
-// minted from a dial nobody confirmed, indistinguishable afterwards from one
-// an operator chose. Stored arguments are held to the same rule, because a
-// machine configured that way would otherwise keep reproducing it — and that
-// is the recorded state of at least one machine.
+// --worker-arg exists so an operator can name how the Code executable is
+// invoked; it is not a channel for choosing a model. Forwarding a
+// "--set"-shaped argument into the ceremony would produce exactly the thing
+// issue #86 removes: a profile minted from a dial nobody confirmed,
+// indistinguishable afterwards from one an operator chose. Stored arguments
+// are held to the same rule, because a machine configured that way would
+// otherwise keep reproducing it — and that is the recorded state of at least
+// one machine.
+//
+// The legacy "babel" subcommand is refused the same way. Babel appends
+// "engine" itself, and a stored template still naming the protocol Code no
+// longer implements must be reconfigured rather than quietly rewritten: the
+// message says what to run.
 func refuseDials(c *cmd, args []string, stored bool) error {
 	for _, arg := range args {
+		if arg == legacyWorkerSubcommand || arg == engineSubcommand {
+			if stored {
+				return c.usagef("the stored worker arguments carry the %q subcommand, which Babel now appends itself as %q; run \"babel analysis profile configure --worker PATH\" without it to reconfigure", arg, engineSubcommand)
+			}
+			return c.usagef("--worker-arg %q names Code's mode, which Babel selects itself (%q); pass only the arguments that precede it", arg, engineSubcommand)
+		}
 		if !dialArg(arg) {
 			continue
 		}
 		if stored {
-			return c.usagef("the stored worker arguments carry the configuration override %q; relaunch with --worker PATH plus the --worker-arg values Code's worker mode needs, without it", arg)
+			return c.usagef("the stored worker arguments carry the configuration override %q; relaunch with --worker PATH plus the --worker-arg values Code needs, without it", arg)
 		}
 		return c.usagef("--worker-arg %q is a configuration override; the profile is chosen in Code's own interface, not pre-answered on the command line", arg)
 	}
 	return nil
 }
+
+// legacyWorkerSubcommand is the mode Code spoke Babel's former analysis-worker
+// protocol under. It is named only to be refused.
+const legacyWorkerSubcommand = "babel"
 
 // dialArg reports whether one worker argument is a configuration override or
 // one of the flags Babel's own launches append.
@@ -756,15 +786,17 @@ func dialArg(arg string) bool {
 }
 
 // babelOwnedFlags are the flags Babel appends itself, without their dashes. A
-// supplied or stored worker argument may not carry one: the two ceremony flags
-// are how an operator would hand Babel a reference nobody confirmed, and the
-// two titler flags are how a worker argument would name a profile other than
-// the one inference was configured with.
+// supplied or stored worker argument may not carry one: the ceremony flags are
+// how an operator would hand Babel a reference nobody confirmed, and the
+// engine flags are how a worker argument would name a profile other than the
+// one a run was configured with.
 var babelOwnedFlags = []string{
 	strings.TrimLeft(configureFlag, "-"),
 	strings.TrimLeft(resultFileFlag, "-"),
-	strings.TrimLeft(titlesModeFlag, "-"),
 	strings.TrimLeft(profileFlag, "-"),
+	"runtime-info",
+	"describe",
+	"import-profiles",
 }
 
 // configureResult is the file the worker writes when the operator confirms:

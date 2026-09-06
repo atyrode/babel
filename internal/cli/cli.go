@@ -136,7 +136,7 @@ Commands:
   titles configure            hand this terminal to Code and store the
                               reference title inference uses
   titles show                 show the stored title-inference reference
-  conformance WORKER          run the analysis-worker contract suite
+  conformance CODE            check a Code executable against what explore needs
 
 A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one. It may
 begin with "-" — every Claude Code and OMP source id does, because they encode
