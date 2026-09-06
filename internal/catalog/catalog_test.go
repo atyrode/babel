@@ -3,12 +3,62 @@ package catalog
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// TestOpenLeavesABusyCatalogAlone is the contract behind the web server's
+// SIGBUS on macOS: a catalog another connection is writing at the instant
+// Open runs is busy, not corrupt, and Open must report that rather than
+// remove the file. The writer holds a fresh database under a rollback
+// journal with its write lock, which is what Open's switch to WAL collides
+// with; SQLite refuses that switch without consulting the busy handler, so
+// Open's answer is an error — and the writer's table must still be there
+// for it to commit and for the next Open to find.
+func TestOpenLeavesABusyCatalogAlone(t *testing.T) {
+	dir := t.TempDir()
+	writer, err := sql.Open("sqlite", filepath.Join(dir, "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { writer.Close() })
+	ctx := context.Background()
+	conn, err := writer.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	for _, stmt := range []string{`BEGIN IMMEDIATE`, `CREATE TABLE marker(x INTEGER)`, `INSERT INTO marker VALUES(1)`} {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if cache, err := Open(dir); err == nil {
+		cache.Close()
+		t.Fatal("Open succeeded against a database another connection holds the write lock on")
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		t.Fatalf("the writer's commit failed after Open, so Open touched the file: %v", err)
+	}
+
+	cache, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open after the writer released the lock: %v", err)
+	}
+	t.Cleanup(func() { cache.Close() })
+	var n int
+	if err := cache.db.QueryRow(`SELECT COUNT(*) FROM marker`).Scan(&n); err != nil {
+		t.Fatalf("the writer's table did not survive Open: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("marker rows = %d, want the writer's 1", n)
+	}
+}
 
 func TestRefreshPopulatesFreshCatalog(t *testing.T) {
 	cache, refs := testCache(t, 2)

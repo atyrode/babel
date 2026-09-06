@@ -72,6 +72,14 @@ func scanner(dataDir string) *scanCoordinator {
 type scanCoordinator struct {
 	dataDir string
 
+	// loadMu serialises catalog reads. Two requests arriving on a cold
+	// process would otherwise open the same catalog twice at once, and on a
+	// fresh file both connections would race to create the schema in one
+	// process. WAL coordinates readers with a writer across processes; it
+	// makes no promise about two connections initialising one file inside
+	// the same address space, and macOS answered that race with SIGBUS.
+	loadMu sync.Mutex
+
 	mu              sync.Mutex
 	state           scanState
 	rows            []sessionRow
@@ -121,6 +129,8 @@ func (c *scanCoordinator) Listing(ads []adapter.Adapter, roots []string) ([]sess
 // the scan has already committed are readable, which is what makes a cold
 // listing fill in progressively instead of staying empty for minutes.
 func (c *scanCoordinator) load() {
+	c.loadMu.Lock()
+	defer c.loadMu.Unlock()
 	c.mu.Lock()
 	loaded, running := c.loaded, c.state.Running
 	c.mu.Unlock()
