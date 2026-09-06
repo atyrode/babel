@@ -133,6 +133,7 @@ Commands:
   cookbook check              check recipe versions against their bodies
   analysis profile configure  hand this terminal to Code's configuration
   analysis profile show       show the stored Code profile reference
+  analysis migrate            migrate stored worker launches offline
   titles configure            hand this terminal to Code and store the
                               reference title inference uses
   titles show                 show the stored title-inference reference
