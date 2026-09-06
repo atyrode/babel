@@ -34,12 +34,13 @@ is a checkout of `atyrode/manifold` **beside this repository**, at the revision 
 `tsconfig.json` maps `@manifold/plugin-kit`, `@manifold/plugin-kit/*` and `@manifold/protocol`
 to `../../manifold/packages/{plugin-kit,protocol}/src`; Bun honours those paths at run time and
 when bundling, and `pack.sh` runs the kit's `pack` from the same checkout. The checkout needs
-its own `bun install` for the kit's one dependency (zod):
+its own `bun install`: the kit's one dependency (zod) is enough to check and pack, and `verify`
+spawns the checkout's server, which needs the whole workspace:
 
 ```sh
 git clone https://github.com/atyrode/manifold ../manifold
 git -C ../manifold checkout "$(cat MANIFOLD_REV)"
-bun install --cwd ../manifold --frozen-lockfile --filter '@manifold/plugin-kit' --filter '@manifold/protocol'
+bun install --cwd ../manifold --frozen-lockfile
 ```
 
 The plugins' own `zod` (`package.json`, pinned to the kit's exact version) and the checkout's
@@ -48,20 +49,37 @@ The two interoperate — `test/server.test.ts` proves the kit's `z.toJSONSchema`
 contract's schemas from the `loaded` frame — and the duplication ends when the kit is a package
 this directory installs, at which point the `paths` block and `MANIFOLD_REV` go away.
 
-## Build, test, pack
+## Build, test, pack, verify, develop
 
 ```sh
 bun install                 # zod, typescript, @types/bun; nothing else
+bun run check               # tsc --noEmit against the kit's types
 bun test                    # the doors against a fake ctx; the panel against a fake host; the launch line
-bunx tsc --noEmit -p tsconfig.json
-./pack.sh                   # dist/<id>.manifold-plugin.json for every manifest, plus dist/SHA256SUMS
+bun run pack                # dist/<id>.manifold-plugin.json for every manifest, plus dist/SHA256SUMS
+bun run verify              # every bundle installed on a real manifold server spawned from the checkout
+bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifold-1
 ```
 
-`.github/workflows/manifold-plugins.yml` runs exactly those steps on every push or pull request
-touching `plugins/` and uploads `dist/` as an artifact. Installing on a hub is
-`engine.plugins.install` with the artifact and its sha256 from `SHA256SUMS`, baseline first
-(the engine has no bundle-set install yet; a manifold follow-up is filed). Nothing here
-installs anything.
+`verify` is the kit's `verify.ts` (manifold `docs/PLUGINS.md` §9): it spawns the sibling
+checkout's server on a temporary data directory, installs each bundle in order, requires its
+`GET /api/plugins` row enabled and not `enable_failed`, dispatches every door it publishes with
+`{}` as the owner and refuses `unavailable`, then uninstalls with purge. `dev` is the inner loop:
+the kit's `dev.ts` packs every manifest under this directory, installs the baseline before the
+sub-plugin on the hub named by `--hub`, then watches for edits and reinstalls only the bundles
+whose sha changed; a browser reload shows the change. The line above is the integrated preview
+(`https://preview.manifold.tyrode.dev`) as addressed from dev-01, the box it runs on, where
+`docker:` delivery copies the bundle into the hub's container and reads the owner key from its
+volume, so the key never appears in argv, output or this repository. Against another hub, pass
+`--owner-key-file <path>` and `--deliver path`.
+
+`.github/workflows/manifold-plugins.yml` runs `check`, `test`, `pack` and `verify` through
+manifold's reusable `plugins.yml` on every push or pull request touching `plugins/` and uploads
+`dist/` as an artifact; the workflow's `uses:` ref and `MANIFOLD_REV` are one revision, bumped
+together. A `v*` tag then attaches `dist/*.manifold-plugin.json` to the GitHub Release, appends
+their sums to the release's `SHA256SUMS`, and hands each asset URL and sha to the preview hub's
+receiver, baseline first, so the integrated preview installs the release by itself
+(`.github/workflows/release.yml`). Production (`https://manifold.tyrode.dev`) is installed by
+the operator, by hand, from the release URL in the plugin manager; nothing here automates it.
 
 The sha256 is over the artifact's exact bytes, and Bun writes every bundled module's path as a
 comment, so a hash reproduces only from the layout above (`../../manifold`, an isolated

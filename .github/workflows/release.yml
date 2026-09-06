@@ -49,3 +49,95 @@ jobs:
             --notes-file dist/notes.md \
             --verify-tag \
             dist/*.tar.gz dist/SHA256SUMS
+
+  # The manifold plugins ride the same release as the binary (docs/manifold-transition.md §4 D1:
+  # the release produces a hashed plugin artifact beside the Go binary). The bundles are packed
+  # from the same sibling-checkout layout the manifold-plugins workflow uses, so the sha256 the
+  # release attaches is the one CI verified. SHA256SUMS is one file for the whole release: the
+  # bundle lines are appended to the sums the release job wrote for the tarballs.
+  plugins:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: babel
+
+      - name: Read the pinned manifold revision
+        id: manifold
+        run: echo "rev=$(tr -d '[:space:]' < babel/plugins/MANIFOLD_REV)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: atyrode/manifold
+          ref: ${{ steps.manifold.outputs.rev }}
+          path: manifold
+
+      # ADR 0001 pins manifold's runtime at exactly 1.3.13; the kit's `pack` is a Bun program.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install the plugin kit's dependencies
+        working-directory: manifold
+        run: bun install --frozen-lockfile --filter '@manifold/plugin-kit' --filter '@manifold/protocol'
+
+      - name: Install
+        working-directory: babel/plugins
+        run: bun install --frozen-lockfile
+
+      - name: Pack
+        working-directory: babel/plugins
+        run: bun run pack
+
+      - name: Attach the bundles to the release
+        working-directory: babel/plugins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --output SHA256SUMS
+          cat dist/SHA256SUMS >> SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            dist/*.manifold-plugin.json SHA256SUMS
+
+  # The integrated preview (https://preview.manifold.tyrode.dev) installs every released bundle
+  # by itself, baseline before sub-plugin, so a tag is visible in its plugin manager without
+  # anyone copying an owner key. The receiver is manifold's infra/previews/receiver.sh reached
+  # over the same forced-command deploy key as manifold's deploy-dev.yml, and the verb is
+  # `plugin <asset-url> <sha256>`: the host fetches the asset from the release itself and
+  # installs it against the preview hub, so no secret leaves the box. Inert unless the
+  # repository variable DEV_DEPLOY_HOST exists, so a fork never runs it. Production stays the
+  # operator's: installed by hand from the release URL in the plugin manager, never from here.
+  preview:
+    needs: plugins
+    if: vars.DEV_DEPLOY_HOST != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment:
+      name: development
+      url: ${{ vars.DEV_DEPLOY_URL }}
+    steps:
+      - name: Hand the host each bundle
+        # The receiver's key is forced-command: whatever is typed here is ignored as a command
+        # and delivered as SSH_ORIGINAL_COMMAND, which is how the URL and the sha travel. The
+        # bundles' shas come from the release's own SHA256SUMS, so what the host is told to
+        # expect is exactly what the release serves, and the ids sort so that a parent
+        # (atyrode.babel) is installed before its part (atyrode.babel.sessions).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --output SHA256SUMS
+          umask 077
+          key="$(mktemp)"
+          printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"
+          while read -r sha id; do
+            url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$id.manifold-plugin.json"
+            echo "$id -> ${{ vars.DEV_DEPLOY_HOST }}"
+            ssh -n -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
+              "${{ vars.DEV_DEPLOY_USER }}@${{ vars.DEV_DEPLOY_HOST }}" "plugin $url $sha"
+          done < <(awk '$2 ~ /\.manifold-plugin\.json$/ { sub(/\.manifold-plugin\.json$/, "", $2); print $1, $2 }' SHA256SUMS | sort -k2,2)
+          rm -f "$key"
