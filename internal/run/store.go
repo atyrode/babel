@@ -176,6 +176,8 @@ func (s *Store) DeclareClosure(ctx context.Context, runID string) error {
 // id is a run's, not a stage job's. It is the backfill for runs an earlier
 // build ended without DeclareClosure, and for a process that died between
 // its receipt write and its declaration.
+// A recovered receipt can retain an old local committed marker; its newly
+// pending journal row is also evidence that this finished run needs declaration.
 //
 // A run whose closure is already declared is left as it is: DeclareTx is
 // idempotent on an identical declaration and refuses a different size, and
@@ -183,8 +185,11 @@ func (s *Store) DeclareClosure(ctx context.Context, runID string) error {
 // still in flight has no receipt and is never touched.
 func (s *Store) DeclareFinished(ctx context.Context, hook sync.Hook) (declared []string, skipped map[string]error, err error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT run_id FROM run_receipt WHERE sync_state = ? AND instr(run_id, '/') = 0 ORDER BY run_id`,
-		SyncPending)
+		`SELECT DISTINCT run_id FROM run_receipt r
+		WHERE (sync_state = ? OR EXISTS (
+			SELECT 1 FROM sync_record j WHERE j.record_id = r.id AND j.sync_state = ?))
+		AND instr(run_id, '/') = 0 ORDER BY run_id`,
+		SyncPending, SyncPending)
 	if err != nil {
 		return nil, nil, fmt.Errorf("run: list finished runs: %w", err)
 	}

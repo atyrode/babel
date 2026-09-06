@@ -3,6 +3,7 @@ package complaint
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/atyrode/babel/internal/reference"
@@ -165,4 +166,60 @@ const Namespace = "complaint"
 // recordRef addresses one of this store's records in the reference graph.
 func recordRef(id string) reference.RecordRef {
 	return reference.RecordRef{Kind: Namespace, ID: id}
+}
+
+// Restage recovers every local wording missing from the publication journal,
+// including superseded wordings. It never attempts network publication.
+func (s *Store) Restage(ctx context.Context) (int, error) {
+	if s.sync == nil {
+		return 0, fmt.Errorf("complaint: restage requires a sync hook")
+	}
+	ids, err := sync.Missing(ctx, s.db, "complaint", "id")
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, id := range ids {
+		staged := false
+		err := s.transact(ctx, func(tx *sql.Tx) error {
+			var present bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+				SELECT 1 FROM sync_record WHERE record_id = ?)`, id).Scan(&present); err != nil {
+				return err
+			}
+			if present {
+				return nil
+			}
+			var p publishedComplaint
+			var body []byte
+			var schema int
+			if err := tx.QueryRowContext(ctx, `SELECT id, root_id, COALESCE(ancestor_id, ''),
+				seq, operator_id, host_id, redacted, created_at, schema_version, payload_json
+				FROM complaint WHERE id = ?`, id).Scan(&p.ID, &p.RootID, &p.AncestorID,
+				&p.Sequence, &p.OperatorID, &p.HostID, &p.Redacted, &p.CreatedAt, &schema, &body); err != nil {
+				return err
+			}
+			var stored payload
+			if err := json.Unmarshal(body, &stored); err != nil {
+				return err
+			}
+			p.Text = stored.Text
+			wire, err := marshalPayload(p)
+			if err != nil {
+				return err
+			}
+			_, _, err = s.stage(ctx, tx, "", sync.Record{
+				EntityID: id, Kind: complaintKind, Schema: schema, Payload: wire,
+			})
+			staged = err == nil
+			return err
+		})
+		if err != nil {
+			return count, fmt.Errorf("complaint: restage %s: %w", id, err)
+		}
+		if staged {
+			count++
+		}
+	}
+	return count, nil
 }

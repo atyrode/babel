@@ -277,3 +277,54 @@ func stagedEdge(e Edge, payload []byte) (babelsync.Record, error) {
 		Edge:     edge,
 	}, nil
 }
+
+// Restage recovers locally durable edges absent from the publication journal.
+// It only stages local transactions; publication remains a separate operation.
+func (s *Store) Restage(ctx context.Context) (int, error) {
+	if s.sync == nil {
+		return 0, fmt.Errorf("reference: restage requires a sync hook")
+	}
+	ids, err := babelsync.Missing(ctx, s.db, "reference_edge", "id")
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, id := range ids {
+		staged := false
+		err := s.transact(ctx, func(tx *sql.Tx) error {
+			var present bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+				SELECT 1 FROM sync_record WHERE record_id = ?)`, id).Scan(&present); err != nil {
+				return err
+			}
+			if present {
+				return nil
+			}
+			var e Edge
+			var payload []byte
+			var schema int
+			if err := tx.QueryRowContext(ctx, `SELECT id, edge_kind, from_kind, from_id,
+				to_kind, to_id, actor_kind, COALESCE(actor_ref, ''), schema_version, payload_json
+				FROM reference_edge WHERE id = ?`, id).Scan(
+				&e.ID, &e.Kind, &e.From.Kind, &e.From.ID, &e.To.Kind, &e.To.ID,
+				&e.ActorKind, &e.ActorRef, &schema, &payload); err != nil {
+				return err
+			}
+			rec, err := stagedEdge(e, payload)
+			if err != nil {
+				return err
+			}
+			rec.Schema = schema
+			_, err = s.stage(ctx, tx, producingRun(e), rec)
+			staged = err == nil
+			return err
+		})
+		if err != nil {
+			return count, fmt.Errorf("reference: restage %s: %w", id, err)
+		}
+		if staged {
+			count++
+		}
+	}
+	return count, nil
+}

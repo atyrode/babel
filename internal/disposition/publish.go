@@ -294,3 +294,100 @@ func (p publishedInvitation) MarshalJSON() ([]byte, error) {
 	type wire publishedInvitation
 	return json.Marshal(wire(p))
 }
+
+// Restage recovers proposed actions, their complete decision histories, and
+// invitations missing from the publication journal. Consumption is local
+// scheduling state, not a published record.
+func (s *Store) Restage(ctx context.Context) (int, error) {
+	if s.sync == nil {
+		return 0, fmt.Errorf("disposition: restage requires a sync hook")
+	}
+	count := 0
+	for _, table := range []string{"disposition_proposal", "disposition_ledger", "disposition_invitation"} {
+		ids, err := sync.Missing(ctx, s.db, table, "id")
+		if err != nil {
+			return count, err
+		}
+		for _, id := range ids {
+			staged := false
+			err := s.transact(ctx, func(tx *sql.Tx) error {
+				var present bool
+				if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+					SELECT 1 FROM sync_record WHERE record_id = ?)`, id).Scan(&present); err != nil {
+					return err
+				}
+				if present {
+					return nil
+				}
+				if err := s.restageRecord(ctx, tx, table, id); err != nil {
+					return err
+				}
+				staged = true
+				return nil
+			})
+			if err != nil {
+				return count, fmt.Errorf("disposition: restage %s: %w", id, err)
+			}
+			if staged {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
+func (s *Store) restageRecord(ctx context.Context, tx *sql.Tx, table, id string) error {
+	var (
+		body       any
+		producedBy string
+		schema     = RecordSchema
+		kind       = dispositionKind
+	)
+	switch table {
+	case "disposition_proposal":
+		var p publishedDisposition
+		var payload []byte
+		if err := tx.QueryRowContext(ctx, `SELECT id, record_type, record_id, kind,
+			proposer_kind, proposer_id, emitted_ref, created_at, payload_json, schema_version
+			FROM disposition_proposal WHERE id = ?`, id).Scan(&p.ID, &p.RecordType,
+			&p.RecordID, &p.Kind, &p.ProposerKind, &p.ProposerID, &p.EmittedRef,
+			&p.CreatedAt, &payload, &schema); err != nil {
+			return err
+		}
+		p.Payload = payload
+		if p.ProposerKind == frontier.ActorRun {
+			producedBy = p.ProposerID
+		}
+		body = p
+	case "disposition_ledger":
+		var p publishedLedgerEntry
+		var payload []byte
+		if err := tx.QueryRowContext(ctx, `SELECT id, disposition_id, seq, ruling,
+			operator_id, recorded_at, payload_json, schema_version
+			FROM disposition_ledger WHERE id = ?`, id).Scan(&p.ID, &p.DispositionID,
+			&p.Sequence, &p.Ruling, &p.OperatorID, &p.RecordedAt, &payload, &schema); err != nil {
+			return err
+		}
+		p.Payload = payload
+		body = p
+	case "disposition_invitation":
+		var p publishedInvitation
+		if err := tx.QueryRowContext(ctx, `SELECT id, record_type, record_id, operator_id,
+			created_at FROM disposition_invitation WHERE id = ?`, id).Scan(&p.ID,
+			&p.RecordType, &p.RecordID, &p.OperatorID, &p.CreatedAt); err != nil {
+			return err
+		}
+		body = p
+		kind = invitationKind
+	default:
+		return fmt.Errorf("unknown publication table %q", table)
+	}
+	wire, err := marshalPayload(body)
+	if err != nil {
+		return err
+	}
+	_, _, err = s.stage(ctx, tx, producedBy, sync.Record{
+		EntityID: id, Kind: kind, Schema: schema, Payload: wire,
+	})
+	return err
+}
