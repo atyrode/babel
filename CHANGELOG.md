@@ -11,6 +11,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **`babel analysis migrate [--check] [--json]` converges stored analysis and
+  title launches without selecting profiles or calling a model.** It removes
+  only a trailing legacy `babel` mode argument, preserving custom account
+  wrappers, other arguments, exact profile revisions and unknown settings.
+  Before an atomic settings replacement it resolves every configured reference
+  through the stored worker's offline `engine --describe`; any failure leaves
+  settings untouched. A pending `--check` exits 1 without launching a worker;
+  canonical checks resolve references offline. Unconfigured machines create
+  nothing. Import legacy profiles with Code's `engine --import-profiles` before
+  migrating launches when moving to its generic profile store.
+
 - **Babel drives Code's engine over OMP's native RPC and owns everything the
   model is told and everything it submits (#182, code#123).** The
   `babel.analysis-worker` protocol is gone. `babel explore` launches
@@ -36,7 +47,7 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `--describe` reports; session titles are an ordinary engine job; `babel
   conformance CODE` grades `--describe` offline and launches one nonce-schema
   job only under `--allow-inference --profile`, after printing the cost. A
-  stored `--worker-arg babel` is refused with the command to reconfigure.
+  stored `--worker-arg babel` is refused with guidance to migrate explicitly.
   Standard configuration paths, Code's profile/executable overrides and the
   user-session transport survive launch; provider credentials do not. On
   dev-01, a real Babel → contained Code → OMP 18.1.11 round trip against a

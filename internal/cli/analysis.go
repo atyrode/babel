@@ -138,6 +138,10 @@ func loadAnalysisSettings() (analysisSettings, error) {
 	if err != nil {
 		return analysisSettings{}, fmt.Errorf("read %s: %w", path, err)
 	}
+	return decodeAnalysisSettings(data, path)
+}
+
+func decodeAnalysisSettings(data []byte, path string) (analysisSettings, error) {
 	var s analysisSettings
 	if err := json.Unmarshal(data, &s); err != nil {
 		// The path is named and the content is not, matching storage.json's
@@ -158,15 +162,20 @@ func saveAnalysisSettings(s analysisSettings) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := ensureDir(filepath.Dir(path)); err != nil {
-		return "", err
-	}
 	s.Schema = analysisSchema
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("encode analysis settings: %w", err)
 	}
-	data = append(data, '\n')
+	return saveAnalysisDocument(path, append(data, '\n'))
+}
+
+// saveAnalysisDocument also serves migrations, which retain fields this build
+// does not own instead of round-tripping them through analysisSettings.
+func saveAnalysisDocument(path string, data []byte) (string, error) {
+	if err := ensureDir(filepath.Dir(path)); err != nil {
+		return "", err
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return "", fmt.Errorf("write %s: %w", tmp, err)
@@ -365,13 +374,14 @@ a platform that does have a qualified backend.
 	return errReported
 }
 
-// analysisUsage is the profile command group.
-const analysisUsage = `Usage: babel analysis profile <command> [flags]
+// analysisUsage covers stored references and their launch migration.
+const analysisUsage = `Usage: babel analysis <command> [flags]
 
 Commands:
-  configure    hand this terminal to Code and store the reference the
-               operator confirms there
-  show         show the stored profile reference and its metadata
+  profile configure    hand this terminal to Code and store the reference the
+                       operator confirms there
+  profile show         show the stored profile reference and its metadata
+  migrate              migrate stored analysis and title launches offline
 
 Babel does not own an analysis profile (SPEC.md §2.6, decision 18). The
 provider, the model, the credential, the prompt budget, and the sandbox all
@@ -447,6 +457,8 @@ func (a *app) analysis(ctx context.Context, args []string) error {
 		return nil
 	case "profile":
 		return a.analysisProfile(ctx, args[1:])
+	case "migrate":
+		return a.analysisMigrate(ctx, args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown analysis subcommand %q", args[0]), usage: analysisUsage}
 	}
@@ -742,15 +754,13 @@ func modelEnv() (env []string, dropped bool) {
 // otherwise keep reproducing it — and that is the recorded state of at least
 // one machine.
 //
-// The legacy "babel" subcommand is refused the same way. Babel appends
-// "engine" itself, and a stored template still naming the protocol Code no
-// longer implements must be reconfigured rather than quietly rewritten: the
-// message says what to run.
+// The legacy "babel" subcommand is refused here too. Only the explicit offline
+// migration may remove it, after validating the surviving launch and reference.
 func refuseDials(c *cmd, args []string, stored bool) error {
 	for _, arg := range args {
 		if arg == legacyWorkerSubcommand || arg == engineSubcommand {
 			if stored {
-				return c.usagef("the stored worker arguments carry the %q subcommand, which Babel now appends itself as %q; run \"babel analysis profile configure --worker PATH\" without it to reconfigure", arg, engineSubcommand)
+				return c.usagef("the stored worker arguments carry the %q subcommand, which Babel now appends itself as %q; run \"babel analysis migrate\" to migrate a trailing legacy babel mode, or reconfigure ambiguous arguments", arg, engineSubcommand)
 			}
 			return c.usagef("--worker-arg %q names Code's mode, which Babel selects itself (%q); pass only the arguments that precede it", arg, engineSubcommand)
 		}
@@ -766,7 +776,7 @@ func refuseDials(c *cmd, args []string, stored bool) error {
 }
 
 // legacyWorkerSubcommand is the mode Code spoke Babel's former analysis-worker
-// protocol under. It is named only to be refused.
+// protocol under. Only the explicit launch migration may remove it.
 const legacyWorkerSubcommand = "babel"
 
 // dialArg reports whether one worker argument is a configuration override or
