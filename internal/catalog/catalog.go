@@ -5,12 +5,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // schemaVersion is bumped when the cached columns change. A mismatch makes Open
@@ -96,6 +98,14 @@ type Cache struct {
 
 // Open opens <dir>/catalog.db. A corrupt or incompatible database is removed
 // and rebuilt once; only a failure of that clean rebuild is returned.
+//
+// Only corruption or an unrecognised schema earns the rebuild. Every other
+// failure — a lock held past busy_timeout, an I/O error, a permission — is
+// returned as it is, because the database behind it is intact and removing it
+// would destroy a catalog that was merely busy. The web server showed why
+// that matters: two requests opening the same fresh catalog at once, one
+// losing the lock race, and the loser deleting the WAL index out from under
+// the winner's memory mapping, which macOS answers with SIGBUS.
 func Open(dir string) (*Cache, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create catalog directory: %w", err)
@@ -105,12 +115,37 @@ func Open(dir string) (*Cache, error) {
 	if err == nil {
 		return cache, nil
 	}
+	if !rebuildable(err) {
+		return nil, fmt.Errorf("open catalog: %w", err)
+	}
 	removeDatabase(path)
 	cache, err = open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open catalog after rebuild: %w", err)
 	}
 	return cache, nil
+}
+
+// errSchema marks an init failure whose remedy is a clean rebuild: the file
+// is a readable database, but not one this binary knows how to use.
+var errSchema = errors.New("catalog schema")
+
+// rebuildable reports whether err describes a database that a rebuild fixes:
+// SQLite's own verdict that the file is corrupt or not a database, or this
+// package's verdict that its schema is not ours.
+func rebuildable(err error) bool {
+	if errors.Is(err, errSchema) {
+		return true
+	}
+	var sqlErr *sqlite.Error
+	if !errors.As(err, &sqlErr) {
+		return false
+	}
+	switch sqlErr.Code() & 0xff {
+	case sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB:
+		return true
+	}
+	return false
 }
 
 // Count reports how many sessions the catalog at dir currently caches. A
@@ -151,12 +186,20 @@ func open(path string) (*Cache, error) {
 }
 
 func (c *Cache) init() error {
+	// busy_timeout comes first because every statement after it can need a
+	// lock: quick_check reads, and the WAL switch and the schema write on a
+	// fresh file both write. Set any later, a catalog another connection was
+	// writing at that instant read as failed rather than as busy.
+	if _, err := c.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		return fmt.Errorf("set catalog busy timeout: %w", err)
+	}
+
 	var integrity string
 	if err := c.db.QueryRow(`PRAGMA quick_check`).Scan(&integrity); err != nil {
 		return fmt.Errorf("check catalog integrity: %w", err)
 	}
 	if integrity != "ok" {
-		return fmt.Errorf("check catalog integrity: %s", integrity)
+		return fmt.Errorf("%w: check catalog integrity: %s", errSchema, integrity)
 	}
 
 	// WAL lets a reader (the web process answering /api/sessions) see
@@ -167,9 +210,6 @@ func (c *Cache) init() error {
 	var journal string
 	if err := c.db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
 		return fmt.Errorf("enable catalog WAL: %w", err)
-	}
-	if _, err := c.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
-		return fmt.Errorf("set catalog busy timeout: %w", err)
 	}
 
 	const schema = `
@@ -208,9 +248,9 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`
 			return fmt.Errorf("record catalog schema: %w", err)
 		}
 	case err != nil:
-		return fmt.Errorf("read catalog schema: %w", err)
+		return fmt.Errorf("%w: read catalog schema: %w", errSchema, err)
 	case version != schemaVersion:
-		return fmt.Errorf("unsupported catalog schema %q", version)
+		return fmt.Errorf("%w: unsupported catalog schema %q", errSchema, version)
 	}
 
 	// Naming every expected column turns a pre-versioned or partially-created
@@ -221,7 +261,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`
 		unresolved_blob_count, cost_usd, total_tokens, turns, tool_errors,
 		row_json FROM sessions LIMIT 0`)
 	if err != nil {
-		return fmt.Errorf("validate catalog schema: %w", err)
+		return fmt.Errorf("%w: validate catalog schema: %w", errSchema, err)
 	}
 	return rows.Close()
 }

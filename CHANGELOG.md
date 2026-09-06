@@ -52,6 +52,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **`babel web` no longer crashes with SIGBUS on macOS when two requests open a
+  fresh session catalog at once.** The first browser load fires two overview
+  requests; each ran the coordinator's cold-catalog read, so two connections
+  initialised one empty `catalog.db` in the same process. One lost the lock,
+  `catalog.Open` mistook `SQLITE_BUSY` for corruption and removed the database
+  — WAL index included — under the other connection's memory mapping, which
+  Linux tolerates and macOS answers with a bus error. The coordinator now
+  serialises catalog reads, `Open` rebuilds only on SQLite's own corruption
+  verdicts or an unrecognised schema and returns every other failure with the
+  file intact, and `busy_timeout` is set before the first statement that can
+  take a lock. `TestOpenLeavesABusyCatalogAlone` holds a write lock from a
+  second connection while `Open` runs and proves the writer's table survives;
+  before the fix its commit failed with a disk I/O error because the file had
+  been unlinked beneath it.
+
 - **A shared-mode deployment stages the records it writes, so `babel sync` has
   something to publish (issue #137).** Every record store shipped a `WithSync`
   option, `explore.Config` a `Sync` field, and `*sync.Publisher` the hook that
