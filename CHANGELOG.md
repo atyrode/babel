@@ -26,6 +26,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   into accounting. Native frame fixtures cover completed-message accounting
   and the redaction boundary.
 
+- **Analysis considers the user's agent-working environment, not only their
+  project.** The default coordination lens and optional capability-leverage
+  lens now connect observed friction to better harness use, `AGENTS.md`, and
+  surrounding tooling, including OMP subagent roles where applicable.
+  Suggestions require version-applicable evidence, costs, and an observable
+  benefit rather than unused-feature checklists; Babel does not apply them.
+  The cookbook versions are bumped and the embedded cookbook check passes.
+
 - **`babel analysis migrate [--check] [--json]` converges stored analysis and
   title launches without selecting profiles or calling a model.** It removes
   only a trailing legacy `babel` mode argument, preserving custom account

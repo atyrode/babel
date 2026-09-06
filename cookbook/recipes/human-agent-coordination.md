@@ -1,6 +1,6 @@
 ---
 id: human-agent-coordination
-version: 3
+version: 4
 kind: lens
 scope: [session, corpus]
 stages: [investigate, challenge, synthesize]
@@ -55,6 +55,26 @@ Include successful coordination: a request that was precise enough to succeed
 first time, a handoff that carried its state, a standing convention that was
 followed without restatement. This is the material the effective-patterns lens
 uses, and this lens is where it is observed.
+
+Include the agent-working environment itself (standing emphasis, cookbook
+statement, 2026-09-06): repeated delegation instructions, lost handoffs, or
+recurring corrections that better harness use, `AGENTS.md`, skills, or
+surrounding tooling could address. For a user whose recorded workflow uses
+Oh My Pi (OMP), custom subagent roles are one capability to investigate, not
+a mandatory remedy. Compare observed practice with the applicable harness
+version and documentation or source available through the granted evidence
+surfaces. If support or current configuration cannot be checked, name the
+gap; do not invent capabilities or infer non-use from missing session evidence.
+
+The hypothesis names the coordination friction; a separate proposal may
+suggest better use of an existing capability, clearer instructions, or an
+improvement to the harness itself. State why it fits this user's work, its
+maintenance and delegation costs, and what observable reduction in corrections,
+repeated setup, or lost context would test its benefit. Preserve deliberate
+controls, consider doing nothing, and never turn an unused-feature list into
+recommendations. The reusable-practice lens supplies deeper capability
+comparison when selected; this lens needs no new grant and never edits the
+user's environment.
 
 Exclude ordinary iteration. Exploratory back-and-forth is how thinking works,
 and calling it rework is both wrong and insulting to the record. Rework

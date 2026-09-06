@@ -1,6 +1,6 @@
 ---
 id: reusable-practice-capability-leverage
-version: 2
+version: 3
 kind: lens
 scope: [session, corpus, repository]
 stages: [investigate, challenge, synthesize]
@@ -54,6 +54,32 @@ repeatedly; a check the record shows drifting from what the project ships.
 These are the same recurring manual costs as the rest of this list, with the
 difference that the tool that removes them usually already exists and is
 merely not wired in.
+
+Include harness capability leverage (standing emphasis, cookbook statement,
+2026-09-06): repeated delegation instructions, handoff reconstruction, manual
+context setup, or tool workarounds that an applicable harness capability could
+reduce. Investigate the user's actual harness, not a preferred one. For an OMP
+user, this can mean assessing custom subagent roles alongside other supported
+features; it can also mean improving `AGENTS.md`, skills, defaults, or the
+harness itself where existing capabilities do not meet the observed need.
+
+Compare the recorded workflow with version-applicable documentation or source,
+using pinned repository evidence or authorized public research without sending
+private session material. Distinguish an existing capability worth using from
+a configuration problem, a discoverability gap, and a missing harness feature.
+Do not infer non-use from silence in the archive or treat a feature catalogue
+as a backlog. If harness identity, support, configuration, or documentation is
+unavailable, name that uncertainty and the evidence needed before recommending
+adoption.
+
+Keep the hypothesis about the recurring cost separately reviewable from the
+proposal. The proposal names the smallest applicable change, prerequisites,
+maintenance and delegation overhead, and an observable comparison against
+current practice: fewer repeated instructions or corrections, better handoffs,
+or more reliable task completion. Prefer existing capabilities over custom
+machinery when they fit; retain doing nothing as a valid result. Configuration
+changes, instruction edits, installations, and upstream harness changes remain
+operator-reviewed suggestions, never actions Babel takes during analysis.
 
 Include the prerequisites and the recurring costs, always. A proposal for a
 capability includes what must exist first — data, access, a stable interface, a
