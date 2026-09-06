@@ -894,20 +894,61 @@ Three states are worth telling apart in that report:
 - **pending, in a declared closure** — the records are ready and the backend was
   unreachable. The next `babel sync` finishes them, and nothing is lost by
   waiting.
-- **undeclared** — records of a run that has not finished. A run's record count
-  is fixed when its closure is declared and is immutable in the catalog
-  (`migrations/0003`), so a closure may not be declared while it can still grow.
-  These publish as soon as that run ends, and resuming an interrupted
-  exploration under the same run id is what ends it. They are never dropped.
-- **local** — this build has no shared publication configured (local mode, no
-  catalog, or no payload key document). Nothing is owed to anybody, and the
-  report says so rather than implying a sync that nothing will perform.
+- **undeclared** — staged records whose producing attempt has not yet declared
+  its publication closure. Cooperative interruption declares a partial closure;
+  process loss needs `babel runs reconcile` first. Resumed work and later
+  receipt amendments use continuation closures, not mutations of an already
+  declared catalog count.
+- **local** — this build has intentionally disabled shared publication or has
+  no shared backend configured. A configured backend with a missing or dangling
+  payload-key document is a custody failure, not local mode.
 
 **Publication never blocks a write.** An unreachable catalog, a refused object
 write, a missing key: all of them leave the record durable and pending, emit one
 diagnostic line, and let the command that produced the record succeed. That is
 SPEC.md §6.5's ordering, and it is the only arrangement under which an outage
 cannot destroy analysis output.
+
+#### 8.2.1 Owner-local recovery
+
+**OPERATOR STEP — not executed against the fleet for this change.** First
+establish that this machine's shared storage and payload-key placement are
+ready; machine activation is tracked in the owning dotfiles rollout issue,
+not performed by Babel's recovery commands. Inspect durable interrupted runs:
+
+```sh
+babel runs interrupted --json
+```
+
+After confirming that the affected locally owned processes are no longer
+running, reconcile stale attempts and recover records missing from the
+publication journal:
+
+```sh
+babel runs reconcile --stale-after 5m --json
+babel sync --restage --json
+```
+
+Reconciliation must leave fresh or live attempts alone and record unknown
+process loss without inventing a quota failure, signal, profile or historical
+launch. Restaging must preserve canonical record identities; another unchanged
+restage reports zero newly staged records. Inspect the sync report's pending
+records and failures, not just its exit status. These commands write durable
+state and can publish to the shared backend.
+
+Only the operator chooses whether an interrupted run should launch inference
+again with `babel runs resume RUN_ID`, or be deliberately ended without
+inference using `babel runs close RUN_ID`. Resume requires the saved preparation,
+profile and cookbook versions; historical runs lacking trusted launch inputs
+are refused rather than silently adopting current defaults. Reconstruct those
+inputs explicitly before using `babel explore --run-id`.
+
+For a controlled future run, `babel explore --stop-file PATH`, `babel runs
+resume RUN_ID --stop-file PATH` and `babel conductor run --stop-file PATH`
+observe a caller-owned stop file at safe points. Create that file to request a
+cooperative stop instead of signalling a process tree. A completed receipt whose
+conductor cycle journal was not finalized is recovered without a second model
+launch, preserving the receipt's outcome and spend.
 
 ### 8.3 Reconcile after a push
 

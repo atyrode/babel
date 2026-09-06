@@ -24,29 +24,54 @@ func lifecycleReceipt(t *testing.T, s *Store, id string, state Lifecycle) Receip
 }
 
 func TestReconcileDeadOwnerExcludesLiveAndTerminal(t *testing.T) {
- s := testStore(t)
- host, err := os.Hostname(); if err != nil { t.Fatal(err) }
- stale := time.Now().Add(-time.Hour)
- lost := lifecycleReceipt(t,s,"lost",Running)
- lifecycleReceipt(t,s,"live",Running)
- lifecycleReceipt(t,s,"terminal",Closed)
- lifecycleReceipt(t,s,"fresh",Running)
- for _, c := range []struct{id string; pid int; at time.Time}{
-  {"lost",2147483647,stale}, {"live",os.Getpid(),stale}, {"terminal",2147483647,stale}, {"fresh",2147483647,time.Now()},
- } {
-  if _, err := s.db.Exec(`INSERT INTO run_lease VALUES(?,?,?,?)`,c.id,host,c.pid,formatTime(c.at)); err != nil { t.Fatal(err) }
- }
- before, _ := lost.MarshalBody()
- recovered, err := s.Reconcile(t.Context(),time.Now().Add(-5*time.Minute),ReconcileOptions{})
- if err != nil { t.Fatal(err) }
- if len(recovered)!=1 || recovered[0].Header.RunID!="lost" || recovered[0].Body.Checkpoint.State!=Interrupted { t.Fatalf("recovered = %+v",recovered) }
- prior, err := s.Receipt(t.Context(),lost.Header.ID); if err != nil { t.Fatal(err) }
- after, _ := prior.MarshalBody()
- if !bytes.Equal(before,after) { t.Fatal("reconciliation rewrote the original receipt") }
- again, err := s.Reconcile(t.Context(),time.Now().Add(-5*time.Minute),ReconcileOptions{})
- if err != nil || len(again)!=0 { t.Fatalf("reconcile is not idempotent: %v %v",again,err) }
- live, err := s.Latest(t.Context(),"live"); if err != nil { t.Fatal(err) }
- if live.Body.Checkpoint.State!=Running { t.Fatal("a live process was interrupted") }
+	s := testStore(t)
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-time.Hour)
+	lost := lifecycleReceipt(t, s, "lost", Running)
+	lifecycleReceipt(t, s, "live", Running)
+	lifecycleReceipt(t, s, "terminal", Closed)
+	lifecycleReceipt(t, s, "fresh", Running)
+	for _, c := range []struct {
+		id  string
+		pid int
+		at  time.Time
+	}{
+		{"lost", 2147483647, stale}, {"live", os.Getpid(), stale}, {"terminal", 2147483647, stale}, {"fresh", 2147483647, time.Now()},
+	} {
+		if _, err := s.db.Exec(`INSERT INTO run_lease VALUES(?,?,?,?)`, c.id, host, c.pid, formatTime(c.at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, _ := lost.MarshalBody()
+	recovered, err := s.Reconcile(t.Context(), time.Now().Add(-5*time.Minute), ReconcileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 || recovered[0].Header.RunID != "lost" || recovered[0].Body.Checkpoint.State != Interrupted {
+		t.Fatalf("recovered = %+v", recovered)
+	}
+	prior, err := s.Receipt(t.Context(), lost.Header.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := prior.MarshalBody()
+	if !bytes.Equal(before, after) {
+		t.Fatal("reconciliation rewrote the original receipt")
+	}
+	again, err := s.Reconcile(t.Context(), time.Now().Add(-5*time.Minute), ReconcileOptions{})
+	if err != nil || len(again) != 0 {
+		t.Fatalf("reconcile is not idempotent: %v %v", again, err)
+	}
+	live, err := s.Latest(t.Context(), "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.Body.Checkpoint.State != Running {
+		t.Fatal("a live process was interrupted")
+	}
 }
 
 func TestInterruptedCloseListsAndExcludesConcurrentResume(t *testing.T) {
@@ -81,18 +106,32 @@ func TestInterruptedCloseListsAndExcludesConcurrentResume(t *testing.T) {
 }
 
 func TestHistoricalRecoveryPreservesUnknownProvenance(t *testing.T) {
- s := testStore(t)
- prep := mustPreparation(t,preparedAt,testSelection())
- if err := s.PutPreparation(t.Context(),prep); err != nil { t.Fatal(err) }
- if _, err := s.db.Exec(`CREATE TABLE explore_commit(run_id TEXT,stage TEXT,ref TEXT,entity_id TEXT,recorded_at TEXT)`); err != nil { t.Fatal(err) }
- if _, err := s.db.Exec(`INSERT INTO explore_commit VALUES('old','explore','candidate','hyp-old','2026-01-01')`); err != nil { t.Fatal(err) }
- receipt, err := s.RecoverHistorical(t.Context(),"old",prep.ID,Authority{},"old-recipe",time.Now().Add(-time.Hour),ReconcileOptions{})
- if err != nil || receipt==nil { t.Fatalf("recover historical: %v %v",receipt,err) }
- cp := receipt.Body.Checkpoint
- if !cp.Historical || cp.Launch!=nil || len(receipt.Body.Cookbook)!=0 || receipt.Header.Authority.Recorded() || len(cp.Records)!=1 || cp.Records[0]!="hyp-old" { t.Fatal("historical recovery invented or dropped provenance") }
- again, err := s.RecoverHistorical(t.Context(),"old",prep.ID,Authority{},"old-recipe",time.Now().Add(-time.Hour),ReconcileOptions{})
- if err != nil || again!=nil { t.Fatal("historical recovery was not idempotent") }
- if _, err := s.CloseInterrupted(t.Context(),"old"); err != nil { t.Fatal(err) }
+	s := testStore(t)
+	prep := mustPreparation(t, preparedAt, testSelection())
+	if err := s.PutPreparation(t.Context(), prep); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`CREATE TABLE explore_commit(run_id TEXT,stage TEXT,ref TEXT,entity_id TEXT,recorded_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO explore_commit VALUES('old','explore','candidate','hyp-old','2026-01-01')`); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := s.RecoverHistorical(t.Context(), "old", prep.ID, Authority{}, "old-recipe", time.Now().Add(-time.Hour), ReconcileOptions{})
+	if err != nil || receipt == nil {
+		t.Fatalf("recover historical: %v %v", receipt, err)
+	}
+	cp := receipt.Body.Checkpoint
+	if !cp.Historical || cp.Launch != nil || len(receipt.Body.Cookbook) != 0 || receipt.Header.Authority.Recorded() || len(cp.Records) != 1 || cp.Records[0] != "hyp-old" {
+		t.Fatal("historical recovery invented or dropped provenance")
+	}
+	again, err := s.RecoverHistorical(t.Context(), "old", prep.ID, Authority{}, "old-recipe", time.Now().Add(-time.Hour), ReconcileOptions{})
+	if err != nil || again != nil {
+		t.Fatal("historical recovery was not idempotent")
+	}
+	if _, err := s.CloseInterrupted(t.Context(), "old"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRunningReceiptCannotPublishAsFinished(t *testing.T) {
