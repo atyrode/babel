@@ -338,6 +338,79 @@ type Usage struct {
 	Messages         int     `json:"messages"`
 }
 
+// NativeUsage preserves the per-message Usage vocabulary from OMP v18.1.12
+// packages/catalog/src/types.ts. Nil fields mean unavailable, never zero.
+// ReasoningTokens is a subset of Output; these observations are not added to
+// the independently reported session Usage totals.
+type NativeUsage struct {
+	Input           *float64 `json:"input,omitempty"`
+	Output          *float64 `json:"output,omitempty"`
+	CacheRead       *float64 `json:"cacheRead,omitempty"`
+	CacheWrite      *float64 `json:"cacheWrite,omitempty"`
+	TotalTokens     *float64 `json:"totalTokens,omitempty"`
+	ContextTokens   *float64 `json:"contextTokens,omitempty"`
+	PremiumRequests *float64 `json:"premiumRequests,omitempty"`
+	ReasoningTokens *float64 `json:"reasoningTokens,omitempty"`
+	Orchestration   *struct {
+		Input     *float64 `json:"input,omitempty"`
+		CacheRead *float64 `json:"cacheRead,omitempty"`
+		Output    *float64 `json:"output,omitempty"`
+	} `json:"orchestration,omitempty"`
+	CTTL *struct {
+		Ephemeral5m *float64 `json:"ephemeral5m,omitempty"`
+		Ephemeral1h *float64 `json:"ephemeral1h,omitempty"`
+	} `json:"cttl,omitempty"`
+	Server *struct {
+		WebSearch *float64 `json:"webSearch,omitempty"`
+		WebFetch  *float64 `json:"webFetch,omitempty"`
+	} `json:"server,omitempty"`
+	Credits *struct {
+		Cost          *float64 `json:"cost,omitempty"`
+		CommittedCost *float64 `json:"committedCost,omitempty"`
+		ACUCost       *float64 `json:"acuCost,omitempty"`
+	} `json:"credits,omitempty"`
+	Cost *struct {
+		Input      *float64 `json:"input,omitempty"`
+		Output     *float64 `json:"output,omitempty"`
+		CacheRead  *float64 `json:"cacheRead,omitempty"`
+		CacheWrite *float64 `json:"cacheWrite,omitempty"`
+		Total      *float64 `json:"total,omitempty"`
+	} `json:"cost,omitempty"`
+}
+
+// AssistantMessageAccounting is the content-free projection of one native
+// assistant message_end. Seq orders it with FallbackRecord in the received
+// event stream; At is Babel's observation time. Timestamp and CompletedAt are
+// native milliseconds since epoch. Missing native fields remain unavailable;
+// declared profile metadata never supplies them.
+type AssistantMessageAccounting struct {
+	Seq              int          `json:"seq"`
+	At               time.Time    `json:"at"`
+	Provider         string       `json:"provider,omitempty"`
+	Model            string       `json:"model,omitempty"`
+	UpstreamProvider string       `json:"upstreamProvider,omitempty"`
+	UpstreamModel    string       `json:"upstreamModel,omitempty"`
+	Usage            *NativeUsage `json:"usage,omitempty"`
+	StopReason       string       `json:"stopReason,omitempty"`
+	Timestamp        *int64       `json:"timestamp,omitempty"`
+	CompletedAt      *int64       `json:"completedAt,omitempty"`
+	ResponseID       string       `json:"responseId,omitempty"`
+}
+
+// FallbackRecord preserves one native retry_fallback_applied or
+// retry_fallback_succeeded event, not an inferred pairing. Applied carries
+// From/To/Role; succeeded carries Model/Role. An applied edge without a later
+// succeeded event has an unknown outcome, not an implied success or failure.
+type FallbackRecord struct {
+	Seq   int       `json:"seq"`
+	At    time.Time `json:"at"`
+	Type  string    `json:"type"`
+	From  string    `json:"from,omitempty"`
+	To    string    `json:"to,omitempty"`
+	Model string    `json:"model,omitempty"`
+	Role  string    `json:"role,omitempty"`
+}
+
 // Privacy is the profile's disclosure class and redaction requirement — the
 // fields §3 requires Babel to show before material is sent.
 type Privacy struct {

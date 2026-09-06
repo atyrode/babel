@@ -499,6 +499,17 @@ func TestStoredBytesNeverCarryTheCredentialSentinel(t *testing.T) {
 	body.Worker.Metadata["provider"] = credentialSentinel
 	body.Worker.StderrTail = "authorization: Bearer " + credentialSentinel
 	body.Worker.Failure.Message = "postgres://babel:" + credentialSentinel + "@db:5432/babel"
+	input, reasoning, cacheRead, cacheWrite := 1200.0, 140.0, 80.0, 20.0
+	body.Worker.AssistantMessages = []worker.AssistantMessageAccounting{{
+		Seq: 3, At: runStart, Provider: credentialSentinel, Model: credentialSentinel,
+		UpstreamProvider: credentialSentinel, UpstreamModel: credentialSentinel,
+		StopReason: credentialSentinel, ResponseID: credentialSentinel,
+		Usage: &worker.NativeUsage{Input: &input, ReasoningTokens: &reasoning, CacheRead: &cacheRead, CacheWrite: &cacheWrite},
+	}}
+	body.Worker.Fallbacks = []worker.FallbackRecord{{
+		Seq: 2, At: runStart, Type: "retry_fallback_applied",
+		From: credentialSentinel, To: credentialSentinel, Model: credentialSentinel, Role: credentialSentinel,
+	}}
 	body.Failures[0].Message = "broker refused " + credentialSentinel
 	body.Retrieval[0].Query = credentialSentinel
 
@@ -508,6 +519,23 @@ func TestStoredBytesNeverCarryTheCredentialSentinel(t *testing.T) {
 	}
 	if err := s.PutReceipt(ctx, r); err != nil {
 		t.Fatalf("PutReceipt: %v", err)
+	}
+	stored, err := s.Receipt(ctx, r.Header.ID)
+	if err != nil {
+		t.Fatalf("Receipt: %v", err)
+	}
+	if len(stored.Body.Worker.AssistantMessages) != 1 || len(stored.Body.Worker.Fallbacks) != 1 {
+		t.Fatal("sanitizing the durable receipt discarded observed accounting")
+	}
+	usage := stored.Body.Worker.AssistantMessages[0].Usage
+	if usage == nil || usage.Input == nil || *usage.Input != 1200 || usage.ReasoningTokens == nil ||
+		*usage.ReasoningTokens != 140 || usage.CacheRead == nil || *usage.CacheRead != 80 ||
+		usage.CacheWrite == nil || *usage.CacheWrite != 20 || usage.Output != nil {
+		t.Fatalf("sanitizing the durable receipt changed native accounting: %+v", usage)
+	}
+	if stored.Body.Worker.Fallbacks[0].Seq >= stored.Body.Worker.AssistantMessages[0].Seq ||
+		stored.Body.Worker.Fallbacks[0].Type != "retry_fallback_applied" {
+		t.Fatal("sanitizing the durable receipt changed fallback sequence/outcome")
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

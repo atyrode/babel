@@ -95,6 +95,15 @@ type Receipt struct {
 	// get_session_stats before the run ended. Nil when it did not.
 	Usage *Usage
 
+	// AssistantMessages and Fallbacks retain received native accounting
+	// facts independently of the progress bound. Nil/empty means no such
+	// observation was received, not proof of no model work or no fallback.
+	// Older receipts and runs ending before these events are unavailable.
+	// These are an observed stream prefix on failure, not a complete native
+	// session history; the run's Failure describes interrupted supervision.
+	AssistantMessages []AssistantMessageAccounting
+	Fallbacks         []FallbackRecord
+
 	// UnknownFrames lists the stdout frame types this build did not
 	// interpret, so a newer engine's additions are visible rather than
 	// silently ignored. Frame types only, never content.

@@ -37,6 +37,8 @@ const (
 	frameRetryFallback  = "retry_fallback_applied"
 	framePromptResult   = "prompt_result"
 	frameExtensionErr   = "extension_error"
+	frameMessageEnd     = "message_end"
+	frameFallbackSucceeded = "retry_fallback_succeeded"
 
 	commandNegotiate    = "negotiate_protocol"
 	commandSetHostTools = "set_host_tools"
@@ -81,8 +83,19 @@ type frame struct {
 	AgentInvoked *bool           `json:"agentInvoked"`
 	Messages     json.RawMessage `json:"messages"`
 
-	// model_changed
+	// model_changed / retry_fallback_succeeded
 	Model json.RawMessage `json:"model"`
+
+	// retry_fallback_applied / retry_fallback_succeeded
+	From string `json:"from"`
+	To   string `json:"to"`
+	Role string `json:"role"`
+
+	// message_end: decode only accounting, never assistant content.
+	Message *struct {
+		Role string `json:"role"`
+		AssistantMessageAccounting
+	} `json:"message"`
 
 	// extension_error
 	ExtensionPath string `json:"extensionPath"`

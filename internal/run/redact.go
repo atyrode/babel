@@ -296,6 +296,35 @@ func redactWorkerReceipt(in *worker.Receipt, total int) (*worker.Receipt, int) {
 		out.Progress = nil
 	}
 
+	out.AssistantMessages = make([]worker.AssistantMessageAccounting, len(in.AssistantMessages))
+	for i, rec := range in.AssistantMessages {
+		rec.Provider, total = addRedaction(total, rec.Provider)
+		rec.Model, total = addRedaction(total, rec.Model)
+		rec.UpstreamProvider, total = addRedaction(total, rec.UpstreamProvider)
+		rec.UpstreamModel, total = addRedaction(total, rec.UpstreamModel)
+		rec.StopReason, total = addRedaction(total, rec.StopReason)
+		rec.ResponseID, total = addRedaction(total, rec.ResponseID)
+		rec.Timestamp = copyAccountingValue(rec.Timestamp)
+		rec.CompletedAt = copyAccountingValue(rec.CompletedAt)
+		rec.Usage = copyNativeUsage(rec.Usage)
+		out.AssistantMessages[i] = rec
+	}
+	if len(out.AssistantMessages) == 0 {
+		out.AssistantMessages = nil
+	}
+	out.Fallbacks = make([]worker.FallbackRecord, len(in.Fallbacks))
+	for i, rec := range in.Fallbacks {
+		rec.Type, total = addRedaction(total, rec.Type)
+		rec.From, total = addRedaction(total, rec.From)
+		rec.To, total = addRedaction(total, rec.To)
+		rec.Model, total = addRedaction(total, rec.Model)
+		rec.Role, total = addRedaction(total, rec.Role)
+		out.Fallbacks[i] = rec
+	}
+	if len(out.Fallbacks) == 0 {
+		out.Fallbacks = nil
+	}
+
 	if in.Result != nil {
 		result := *in.Result
 		var n int
@@ -331,6 +360,61 @@ func copyWorkerResources(r worker.Resources) worker.Resources {
 	}
 	if r.SandboxBytesWritten != nil {
 		out.SandboxBytesWritten = new(*r.SandboxBytesWritten)
+	}
+	return out
+}
+
+// copyAccountingValue preserves absence while detaching native measurements
+// from the caller's mutable worker receipt.
+func copyAccountingValue[T any](in *T) *T {
+	if in == nil {
+		return nil
+	}
+	return new(*in)
+}
+
+func copyNativeUsage(in *worker.NativeUsage) *worker.NativeUsage {
+	out := copyAccountingValue(in)
+	if out == nil {
+		return nil
+	}
+	out.Input = copyAccountingValue(in.Input)
+	out.Output = copyAccountingValue(in.Output)
+	out.CacheRead = copyAccountingValue(in.CacheRead)
+	out.CacheWrite = copyAccountingValue(in.CacheWrite)
+	out.TotalTokens = copyAccountingValue(in.TotalTokens)
+	out.ContextTokens = copyAccountingValue(in.ContextTokens)
+	out.PremiumRequests = copyAccountingValue(in.PremiumRequests)
+	out.ReasoningTokens = copyAccountingValue(in.ReasoningTokens)
+	out.Orchestration = copyAccountingValue(in.Orchestration)
+	if out.Orchestration != nil {
+		out.Orchestration.Input = copyAccountingValue(in.Orchestration.Input)
+		out.Orchestration.CacheRead = copyAccountingValue(in.Orchestration.CacheRead)
+		out.Orchestration.Output = copyAccountingValue(in.Orchestration.Output)
+	}
+	out.CTTL = copyAccountingValue(in.CTTL)
+	if out.CTTL != nil {
+		out.CTTL.Ephemeral5m = copyAccountingValue(in.CTTL.Ephemeral5m)
+		out.CTTL.Ephemeral1h = copyAccountingValue(in.CTTL.Ephemeral1h)
+	}
+	out.Server = copyAccountingValue(in.Server)
+	if out.Server != nil {
+		out.Server.WebSearch = copyAccountingValue(in.Server.WebSearch)
+		out.Server.WebFetch = copyAccountingValue(in.Server.WebFetch)
+	}
+	out.Credits = copyAccountingValue(in.Credits)
+	if out.Credits != nil {
+		out.Credits.Cost = copyAccountingValue(in.Credits.Cost)
+		out.Credits.CommittedCost = copyAccountingValue(in.Credits.CommittedCost)
+		out.Credits.ACUCost = copyAccountingValue(in.Credits.ACUCost)
+	}
+	out.Cost = copyAccountingValue(in.Cost)
+	if out.Cost != nil {
+		out.Cost.Input = copyAccountingValue(in.Cost.Input)
+		out.Cost.Output = copyAccountingValue(in.Cost.Output)
+		out.Cost.CacheRead = copyAccountingValue(in.Cost.CacheRead)
+		out.Cost.CacheWrite = copyAccountingValue(in.Cost.CacheWrite)
+		out.Cost.Total = copyAccountingValue(in.Cost.Total)
 	}
 	return out
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"reflect"
 	"syscall"
 	"testing"
 	"time"
@@ -109,6 +110,74 @@ func run(t *testing.T, args []string, mutate ...func(*worker.Config)) (*worker.R
 	return client(t, args, mutate...).Run(ctx, job())
 }
 
+// Native accounting must survive progress exhaustion without becoming a
+// transcript or treating declared profile metadata as the actual model.
+func TestObservedAccountingSurvivesProgressExhaustion(t *testing.T) {
+	receipt, err := run(t, []string{"-accounting", "-chunk", "-submit", submission(t, `{"answer":"done"}`)},
+		func(cfg *worker.Config) { cfg.Limits.MaxProgressRecords = 1 })
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if receipt.ProgressDropped == 0 {
+		t.Fatal("fixture did not exhaust progress")
+	}
+	if receipt.Metadata["model"] != "synthetic-1" || len(receipt.AssistantMessages) != 2 {
+		t.Fatalf("declared metadata %v; observations %+v", receipt.Metadata, receipt.AssistantMessages)
+	}
+	first, last := receipt.AssistantMessages[0], receipt.AssistantMessages[1]
+	if first.Provider != "gateway" || first.Model != "actual-2" || first.UpstreamProvider != "native-provider" ||
+		first.UpstreamModel != "concrete-2" || first.ResponseID != "response-2" || first.StopReason != "toolUse" ||
+		first.Timestamp == nil || *first.Timestamp != 1001 || first.CompletedAt == nil || *first.CompletedAt != 1010 {
+		t.Fatalf("actual assistant accounting = %+v", first)
+	}
+	var wantUsage map[string]any
+	if err := json.Unmarshal([]byte(`{"input":1200,"output":340,"reasoningTokens":140,"cacheRead":80,"cacheWrite":20,"totalTokens":1646,"contextTokens":1300,"premiumRequests":0.5,"orchestration":{"input":1,"cacheRead":2,"output":3},"cttl":{"ephemeral5m":15,"ephemeral1h":5},"server":{"webSearch":1,"webFetch":0},"credits":{"cost":0.4,"committedCost":0.3,"acuCost":0.2},"cost":{"input":0.01,"output":0.02,"cacheRead":0.001,"cacheWrite":0.002,"total":0.033}}`), &wantUsage); err != nil {
+		t.Fatal(err)
+	}
+	nativeJSON, err := json.Marshal(first.Usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotUsage map[string]any
+	if err := json.Unmarshal(nativeJSON, &gotUsage); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotUsage, wantUsage) {
+		t.Errorf("native usage = %+v, want %+v", gotUsage, wantUsage)
+	}
+	wantTotal := &worker.Usage{InputTokens: 1200, OutputTokens: 340, ReasoningTokens: 140, CacheReadTokens: 80,
+		CacheWriteTokens: 20, TotalTokens: 1646, Cost: 0.033, ToolCalls: 1, Messages: 2}
+	if !reflect.DeepEqual(receipt.Usage, wantTotal) {
+		t.Errorf("aggregate usage = %+v, want %+v", receipt.Usage, wantTotal)
+	}
+	if last.Model != "last-resort" || last.Provider != "" || last.Usage != nil || last.Timestamp != nil ||
+		last.CompletedAt != nil || last.StopReason != "error" {
+		t.Errorf("absent native values were fabricated: %+v", last)
+	}
+	if len(receipt.Fallbacks) != 3 {
+		t.Fatalf("fallback events = %+v", receipt.Fallbacks)
+	}
+	applied, succeeded, unresolved := receipt.Fallbacks[0], receipt.Fallbacks[1], receipt.Fallbacks[2]
+	if applied.Type != "retry_fallback_applied" || applied.From != "declared/primary" || applied.To != "gateway/actual-2" ||
+		applied.Role != "default" || applied.Model != "" || succeeded.Type != "retry_fallback_succeeded" ||
+		succeeded.Model != "gateway/actual-2" || succeeded.Role != "default" || succeeded.From != "" || succeeded.To != "" ||
+		unresolved.Type != "retry_fallback_applied" || unresolved.From != "gateway/actual-2" || unresolved.To != "last-resort" {
+		t.Errorf("fallback edge/outcome changed: %+v", receipt.Fallbacks)
+	}
+	if !(applied.Seq < first.Seq && first.Seq < succeeded.Seq && succeeded.Seq < unresolved.Seq && unresolved.Seq < last.Seq) {
+		t.Errorf("accounting order lost: %+v / %+v", receipt.Fallbacks, receipt.AssistantMessages)
+	}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"private user text", "private assistant text", "private tool arguments", "private error text"} {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Errorf("receipt contains message content %q", secret)
+		}
+	}
+}
+
 // TestWellBehavedRunProducesAReceipt is the whole boundary on the happy path:
 // the launch, the sidecar, the containment check, tool registration, an
 // evidence call served, a submission accepted, the engine's own accounting,
@@ -168,6 +237,9 @@ func TestWellBehavedRunProducesAReceipt(t *testing.T) {
 	}
 	if receipt.Usage == nil || receipt.Usage.TotalTokens != 1540 || receipt.Usage.ToolCalls != 2 {
 		t.Errorf("usage = %+v, want the engine's own stats", receipt.Usage)
+	}
+	if receipt.AssistantMessages != nil || receipt.Fallbacks != nil {
+		t.Error("native observations were invented when no accounting events were emitted")
 	}
 	if receipt.Resources == nil || receipt.Resources.CPUSeconds == nil || *receipt.Resources.CPUSeconds != 0.42 {
 		t.Errorf("resources = %+v, want Code's finished report", receipt.Resources)
