@@ -11,6 +11,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A challenge or synthesis pass no longer fails outright when the model
+  attaches observations to its candidates (#171).** With code v0.18.0 every
+  challenge and synthesis pass on 2026-09-06 ended with `the challenge stage
+  cannot develop observations, and candidate "c1" arrived with 2` for every
+  candidate — a full run spent, nothing but refusals recorded, and no finding
+  possible. The stage-authority table still persists none of those
+  observations; it now drops them with one recorded warning per candidate and
+  keeps the candidate and the objection or consolidation beside it, which is
+  the material the stage exists to produce. Remedies and findings a stage has
+  no authority for are refused as before: an observation is an additive claim
+  the table declines to keep, a remedy or a finding is a prescription.
+  `TestAChallengerCandidateWithObservationsKeepsTheCandidate` pins it.
+
 - **An exploration now declares its publication closure when it ends, so
   its hypotheses, observations and receipt actually reach the fleet.** Since
   the writers took a staging hook (#138), the one call that ended a run for

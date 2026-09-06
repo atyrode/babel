@@ -103,6 +103,65 @@ func TestACandidateCarryingARemedyEmitsBothRecordsAndTheEdge(t *testing.T) {
 	}
 }
 
+// TestAChallengerCandidateWithObservationsKeepsTheCandidate is #171. A
+// model that attaches an observation to every candidate it raises in a
+// challenge pass used to fail the whole pass — spending the run and recording
+// nothing but the refusal. The observations are still not persisted, the
+// refusal is still recorded, but the candidate survives and the run does.
+// This is deliberately narrower than the remedy and consolidation refusals
+// above: an observation is an additive claim the table simply declines to
+// keep, while a remedy or a finding is the stage prescribing something it has
+// no authority to prescribe.
+func TestAChallengerCandidateWithObservationsKeepsTheCandidate(t *testing.T) {
+	h := newHarness(t)
+	explorePayload := h.writeResult("discovery.json", h.discovery())
+	challengePayload := h.writeResult("challenge.json", explore.Result{
+		Candidates: []explore.Candidate{{
+			Ref:        "c-critic",
+			Hypothesis: frontier.HypothesisPayload{Statement: "the critic's candidate", Priority: 0.3},
+			Observations: []explore.Observation{{
+				Ref:    "o-critic",
+				Recipe: testRecipe,
+				Claim: frontier.ObservationPayload{
+					Claim: "the critic's own claim", Confidence: frontier.ConfidenceLow,
+					Impact: frontier.ImpactLow, Evidence: []frontier.Evidence{h.evidence(0, "cited")},
+					CounterEvidenceAbsent: true,
+				},
+			}},
+		}},
+	})
+	controller := h.controller(payloadArgs(map[explore.Stage]string{
+		explore.StageExplore:   explorePayload,
+		explore.StageChallenge: challengePayload,
+	}))
+
+	outcome, err := controller.Explore(context.Background(), explore.Options{
+		Authority: testAuthority, RunID: "r-critic-observes", Challenge: true,
+	})
+	if err != nil {
+		t.Fatalf("Explore failed the run over a dropped observation: %v (failures %+v)", err, outcome.Failures)
+	}
+	if len(outcome.Hypotheses) != 4 {
+		t.Fatalf("the run holds %d hypotheses, want the exploration's 3 and the critic's 1", len(outcome.Hypotheses))
+	}
+	// The exploration developed exactly two observations; the critic's was
+	// dropped, not persisted under another name.
+	if len(outcome.Observations) != 2 {
+		t.Errorf("the run holds %d observations, want only the exploration's 2", len(outcome.Observations))
+	}
+	var recorded bool
+	for _, failure := range outcome.Failures {
+		if failure.Stage == string(explore.StageChallenge) &&
+			failure.Code == string(explore.FailureAuthority) &&
+			strings.Contains(failure.Message, "dropped") {
+			recorded = true
+		}
+	}
+	if !recorded {
+		t.Errorf("the dropped observation was not recorded on the challenger's receipt; failures %+v", outcome.Failures)
+	}
+}
+
 // TestAChallengerCannotSuggestAChange holds §5.4's boundary. The challenger is
 // granted criticism; prescribing the fix inside the stage that raised the
 // objection would let a critic answer itself.
