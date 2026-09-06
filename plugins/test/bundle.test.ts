@@ -100,6 +100,7 @@ function spawn(file: string): Child {
 }
 
 const ctx = {
+  traceId: 1,
   principal: { id: "p1", kind: "human", name: "Ada", color: "#e03131" },
   caps: ["terminals:spawn", "containers:read"],
   isRoot: false,
