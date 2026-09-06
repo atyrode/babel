@@ -65,6 +65,8 @@ const leaseSchema = `CREATE TABLE IF NOT EXISTS run_lease (
 
 var ErrAttemptOwned = errors.New("run: attempt is owned; reconcile it after the owner is lost")
 
+const ReconcileStaleAfter = 5 * time.Minute
+
 type ReconcileOptions struct {
 	RunID string
 	// Publish runs while the exact recovered lease is still held.
@@ -287,61 +289,34 @@ func (s *Store) KnownRecords(ctx context.Context, id string) ([]string, string, 
 // RecoverHistorical records only facts actually known from an old local
 // presence row and its durable preparation/ledger. The caller has established
 // that every announcement of this run is stale and local, with no receipt.
-func (s *Store) RecoverHistorical(ctx context.Context, id string, prepID PreparationID, authority Authority, recipe string, started time.Time) (*Receipt, error) {
-	var owned int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM run_lease WHERE run_id=?`, id).Scan(&owned); err != nil {
-		return nil, err
-	}
-	if owned != 0 {
-		return nil, nil
-	}
-	if _, err := s.Latest(ctx, id); err == nil {
-		return nil, nil
-	} else if !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
-	prep, err := s.Preparation(ctx, prepID)
-	if errors.Is(err, ErrNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	records, stage, err := s.KnownRecords(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	// Local preparation alone may be replicated. Require locally committed
-	// output as well before claiming custody of an old receipt-less run.
-	if len(records) == 0 {
-		return nil, nil
-	}
-	release, err := s.BeginAttempt(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-	if _, err := s.Latest(ctx, id); err == nil {
-		return nil, nil
-	} else if !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
-	now := time.Now().UTC()
-	cp := &Checkpoint{State: Interrupted, Stage: stage, Records: records, Historical: true,
-		Reason: "unknown process loss (stale local presence; historical launch checkpoint was never recorded)"}
-	if recipe != "" {
-		cp.Recipes = []string{recipe}
-	}
-	body := Body{Checkpoint: cp, Timing: Timing{StartedAt: started, FinishedAt: now}}
-	receipt, err := NewReceipt(NewReceiptID(), id, prep, authority, body, now)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.PutReceipt(ctx, receipt); err != nil {
-		return nil, err
-	}
-	if err := s.DeclareClosure(ctx, id); err != nil {
-		return nil, err
-	}
-	return &receipt, nil
+func (s *Store) RecoverHistorical(ctx context.Context, id string, prepID PreparationID, authority Authority, recipe string, started time.Time, opt ReconcileOptions) (*Receipt, error) {
+ var owned int
+ if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM run_lease WHERE run_id=?`, id).Scan(&owned); err != nil { return nil, err }
+ if owned!=0 { return nil, nil }
+ if _, err := s.Latest(ctx, id); err==nil { return nil, nil } else if !errors.Is(err, ErrNotFound) { return nil, err }
+ prep, err := s.Preparation(ctx, prepID)
+ if errors.Is(err, ErrNotFound) { return nil, nil }
+ if err != nil { return nil, err }
+ records, stage, err := s.KnownRecords(ctx, id)
+ if err != nil { return nil, err }
+ // Local preparation alone may be replicated. Require locally committed
+ // output as well before claiming custody of an old receipt-less run.
+ if len(records)==0 { return nil, nil }
+ release, err := s.BeginAttempt(ctx, id)
+ if err != nil { return nil, err }; defer release()
+ ctx = context.WithoutCancel(ctx)
+ if _, err := s.Latest(ctx, id); err==nil { return nil, nil } else if !errors.Is(err, ErrNotFound) { return nil, err }
+ now := time.Now().UTC()
+ cp := &Checkpoint{State: Interrupted, Stage: stage, Records: records, Historical:true,
+  Reason:"unknown process loss (stale local presence; historical launch checkpoint was never recorded)"}
+ if recipe!="" { cp.Recipes=[]string{recipe} }
+ body := Body{Checkpoint:cp, Timing:Timing{StartedAt:started, FinishedAt:now}}
+ receipt, err := NewReceipt(NewReceiptID(), id, prep, authority, body, now)
+ if err != nil { return nil, err }
+ if err := s.PutReceipt(ctx, receipt); err != nil { return nil, err }
+ if err := s.DeclareClosure(ctx, id); err != nil { return nil, err }
+ if opt.Publish != nil {
+  if err := opt.Publish(ctx, id); err != nil { return nil, err }
+ }
+ return &receipt, nil
 }

@@ -81,32 +81,18 @@ func TestInterruptedCloseListsAndExcludesConcurrentResume(t *testing.T) {
 }
 
 func TestHistoricalRecoveryPreservesUnknownProvenance(t *testing.T) {
-	s := testStore(t)
-	prep := mustPreparation(t, preparedAt, testSelection())
-	if err := s.PutPreparation(t.Context(), prep); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec(`CREATE TABLE explore_commit(run_id TEXT,stage TEXT,ref TEXT,entity_id TEXT,recorded_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec(`INSERT INTO explore_commit VALUES('old','explore','candidate','hyp-old','2026-01-01')`); err != nil {
-		t.Fatal(err)
-	}
-	receipt, err := s.RecoverHistorical(t.Context(), "old", prep.ID, Authority{}, "old-recipe", time.Now().Add(-time.Hour))
-	if err != nil || receipt == nil {
-		t.Fatalf("recover historical: %v %v", receipt, err)
-	}
-	cp := receipt.Body.Checkpoint
-	if !cp.Historical || cp.Launch != nil || len(receipt.Body.Cookbook) != 0 || receipt.Header.Authority.Recorded() || len(cp.Records) != 1 || cp.Records[0] != "hyp-old" {
-		t.Fatal("historical recovery invented or dropped provenance")
-	}
-	again, err := s.RecoverHistorical(t.Context(), "old", prep.ID, Authority{}, "old-recipe", time.Now().Add(-time.Hour))
-	if err != nil || again != nil {
-		t.Fatal("historical recovery was not idempotent")
-	}
-	if _, err := s.CloseInterrupted(t.Context(), "old"); err != nil {
-		t.Fatal(err)
-	}
+ s := testStore(t)
+ prep := mustPreparation(t,preparedAt,testSelection())
+ if err := s.PutPreparation(t.Context(),prep); err != nil { t.Fatal(err) }
+ if _, err := s.db.Exec(`CREATE TABLE explore_commit(run_id TEXT,stage TEXT,ref TEXT,entity_id TEXT,recorded_at TEXT)`); err != nil { t.Fatal(err) }
+ if _, err := s.db.Exec(`INSERT INTO explore_commit VALUES('old','explore','candidate','hyp-old','2026-01-01')`); err != nil { t.Fatal(err) }
+ receipt, err := s.RecoverHistorical(t.Context(),"old",prep.ID,Authority{},"old-recipe",time.Now().Add(-time.Hour),ReconcileOptions{})
+ if err != nil || receipt==nil { t.Fatalf("recover historical: %v %v",receipt,err) }
+ cp := receipt.Body.Checkpoint
+ if !cp.Historical || cp.Launch!=nil || len(receipt.Body.Cookbook)!=0 || receipt.Header.Authority.Recorded() || len(cp.Records)!=1 || cp.Records[0]!="hyp-old" { t.Fatal("historical recovery invented or dropped provenance") }
+ again, err := s.RecoverHistorical(t.Context(),"old",prep.ID,Authority{},"old-recipe",time.Now().Add(-time.Hour),ReconcileOptions{})
+ if err != nil || again!=nil { t.Fatal("historical recovery was not idempotent") }
+ if _, err := s.CloseInterrupted(t.Context(),"old"); err != nil { t.Fatal(err) }
 }
 
 func TestRunningReceiptCannotPublishAsFinished(t *testing.T) {

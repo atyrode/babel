@@ -801,6 +801,25 @@ type conductorRunner struct {
 // Run prepares the assignment's corpus slice and explores it.
 func (r *conductorRunner) Run(ctx context.Context, runID string,
 	a conductor.Assignment) (conductor.Result, error) {
+	receipt, err := r.state.runs.Latest(ctx, runID)
+	if err == nil {
+		if cp := receipt.Body.Checkpoint; cp == nil || cp.State == runstore.Closed {
+			completed := completedReceipt(receipt)
+			if completed.Failure != "" {
+				return completed.Result, errors.New(completed.Failure)
+			}
+			return completed.Result, nil
+		}
+		plan, err := recordedExplorePlan(receipt, r.worker)
+		if err != nil {
+			return conductor.Result{}, fmt.Errorf("%w: %v", conductor.ErrRecoveryPending, err)
+		}
+		plan.presence = r.presence
+		return r.execute(ctx, plan, true)
+	}
+	if !errors.Is(err, runstore.ErrNotFound) {
+		return conductor.Result{}, fmt.Errorf("%w: read the original run: %v", conductor.ErrRecoveryPending, err)
+	}
 	sessions, _ := r.app.scan(ctx, r.adapters, r.scanRoots)
 	chosen, missing := sliceSessions(sessions, a.Sessions)
 	if len(missing) > 0 {
@@ -831,7 +850,7 @@ func (r *conductorRunner) Run(ctx context.Context, runID string,
 	// are separate jobs with their own worker invocations, so scheduling them
 	// unasked would multiply a cycle's cost against a ceiling the operator set
 	// for one run; they stay operator choices on `babel explore`.
-	res, outcome, runErr := r.app.runExploration(ctx, r.state, explorePlan{
+	return r.execute(ctx, explorePlan{
 		prep:      scoped.prep,
 		profile:   r.profile,
 		recipes:   set,
@@ -841,9 +860,16 @@ func (r *conductorRunner) Run(ctx context.Context, runID string,
 		roots:     a.Roots,
 		scanRoots: r.scanRoots,
 		presence:  r.presence,
-	})
+	}, false)
+}
+
+func (r *conductorRunner) execute(ctx context.Context, plan explorePlan, recovering bool) (conductor.Result, error) {
+	res, outcome, runErr := r.app.runExploration(ctx, r.state, plan)
+	if recovering && outcome == nil && runErr != nil {
+		return conductor.Result{}, fmt.Errorf("%w: %w", conductor.ErrRecoveryPending, runErr)
+	}
 	result := conductor.Result{
-		PreparationID: string(scoped.prep.ID),
+		PreparationID: string(plan.prep.ID),
 		ReceiptID:     res.ReceiptID,
 		Failures:      len(res.Failures),
 		Cancelled:     res.Cancelled,

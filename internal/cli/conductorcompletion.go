@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/atyrode/babel/internal/conductor"
 	"github.com/atyrode/babel/internal/explore"
@@ -14,6 +15,36 @@ import (
 // launches nothing: receipt custody, not a fresh preparation, decides the result.
 func (r *conductorRunner) Completed(ctx context.Context, runID string) (conductor.CompletedRun, bool, error) {
 	receipt, err := r.state.runs.Latest(ctx, runID)
+	if err != nil && !errors.Is(err, runstore.ErrNotFound) {
+		return conductor.CompletedRun{}, false, err
+	}
+	if err == nil && (receipt.Body.Checkpoint == nil || receipt.Body.Checkpoint.State == runstore.Closed) {
+		return completedReceipt(receipt), true, nil
+	}
+	owned, err := r.state.runs.AttemptOwned(ctx, runID)
+	if err != nil {
+		return conductor.CompletedRun{}, false, err
+	}
+	if owned {
+		_, err := r.state.runs.Reconcile(ctx, time.Now().Add(-runstore.ReconcileStaleAfter), runstore.ReconcileOptions{
+			RunID: runID,
+			Publish: func(commit context.Context, id string) error {
+				r.app.publishLifecycle(commit, id)
+				return nil
+			},
+		})
+		if err != nil {
+			return conductor.CompletedRun{}, false, err
+		}
+		owned, err = r.state.runs.AttemptOwned(ctx, runID)
+		if err != nil {
+			return conductor.CompletedRun{}, false, err
+		}
+		if owned {
+			return conductor.CompletedRun{}, false, runstore.ErrAttemptOwned
+		}
+	}
+	receipt, err = r.state.runs.Latest(ctx, runID)
 	if errors.Is(err, runstore.ErrNotFound) {
 		return conductor.CompletedRun{}, false, nil
 	}

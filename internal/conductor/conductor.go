@@ -175,6 +175,10 @@ type CompletionReader interface {
 	Completed(context.Context, string) (CompletedRun, bool, error)
 }
 
+// ErrRecoveryPending leaves a claimed cycle unfinished while its recorded
+// attempt is still owned or cannot safely restore its original launch inputs.
+var ErrRecoveryPending = errors.New("conductor: recorded attempt remains pending recovery")
+
 // Ledger reports what the day's receipts already estimated. It is an interface
 // for the same reason Runner is: the conductor is told what was spent, and has
 // no path to a number it produced itself.
@@ -498,6 +502,9 @@ func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
 // finish is shared by live runs and recovery of a completed receipt, so the
 // journal records the same verdict and spend on either side of a crash.
 func (c *Conductor) finish(ctx context.Context, presenceID presence.PresenceID, cycle Cycle, result Result, finished time.Time, runErr error) (Cycle, error) {
+	if errors.Is(runErr, ErrRecoveryPending) || errors.Is(runErr, run.ErrAttemptOwned) {
+		return cycle, runErr
+	}
 	cycle.FinishedAt = finished
 	cycle.PreparationID = result.PreparationID
 	cycle.ReceiptID = result.ReceiptID
