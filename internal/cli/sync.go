@@ -10,6 +10,7 @@ import (
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/envelope"
 	"github.com/atyrode/babel/internal/objectstore"
+	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 	// internal/sync is imported under a name of its own because this package
 	// already imports the standard library's `sync` in scan.go and web.go. One
@@ -146,6 +147,16 @@ func (a *app) syncCmd(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// A run that ended without declaring its closure — under a build that
+	// staged but never declared, or a process that died between its receipt
+	// and its declaration — is finished, and finished is what a declaration
+	// says. Declaring it here is what turns "pending forever" into "published
+	// on this sync"; a run still in flight has no receipt and is not touched.
+	if pub != nil {
+		if err := a.declareFinishedRuns(ctx, d, pub); err != nil {
+			return err
+		}
+	}
 	// Retry on a nil publisher is an empty report and no error, which is the
 	// only outcome the configuration changing between the check above and the
 	// call can produce. Nothing was staged by this process, so an empty report
@@ -159,6 +170,37 @@ func (a *app) syncCmd(ctx context.Context, args []string) error {
 		return a.emitJSON(res)
 	}
 	return a.writeSync(res)
+}
+
+// declareFinishedRuns closes the closure of every run whose receipt is
+// written and still pending, through the publisher's own declaration, and
+// says on stderr what it did. A run whose closure was declared at another
+// size is reported and left alone: that is a writer bug to read, not a
+// closure to force.
+func (a *app) declareFinishedRuns(ctx context.Context, d dirs, pub *babelsync.Publisher) error {
+	runs, err := runstore.Open(d.durableDir())
+	if err != nil {
+		return fmt.Errorf("open the run store: %w", err)
+	}
+	defer runs.Close()
+	declared, skipped, err := runs.DeclareFinished(ctx, pub)
+	if err != nil {
+		return fmt.Errorf("declare finished runs: %w", err)
+	}
+	if len(declared) > 0 {
+		a.diagf("declared the closure of %d finished %s that had none\n",
+			len(declared), plural(len(declared), "run", "runs"))
+	}
+	ids := make([]string, 0, len(skipped))
+	for id := range skipped {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		a.diagf("warning: run %s ended but its closure could not be declared: %s\n",
+			Sanitize(id), Sanitize(skipped[id].Error()))
+	}
+	return nil
 }
 
 // stagingHook is the Phase B publication hook every durable writer on this

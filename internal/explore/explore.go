@@ -1029,8 +1029,21 @@ func (c *Controller) publishRun(st *state) {
 	if c.cfg.Sync == nil {
 		return
 	}
-	if err := c.cfg.Sync.CommitInline(st.commit, sync.Closure{RunID: st.opt.RunID}); err != nil {
+	closure := sync.Closure{RunID: st.opt.RunID}
+	// The declaration needs a transaction on the durable file, which the
+	// hook alone cannot open: the writers' staging hook declares only inside a
+	// store's transaction, and its CommitInline publishes nothing. So the run
+	// store declares, and CommitInline then carries what was declared — or,
+	// under the staging hook, leaves it for `babel sync` to carry.
+	if c.cfg.Runs != nil {
+		if err := c.cfg.Runs.DeclareClosure(st.commit, st.opt.RunID); err != nil {
+			st.warn(StageExplore, FailureSyncPublish, c.now(),
+				fmt.Errorf("explore: declare the shared-catalog closure for run %s: %w", st.opt.RunID, err))
+			return
+		}
+	}
+	if err := c.cfg.Sync.CommitInline(st.commit, closure); err != nil {
 		st.warn(StageExplore, FailureSyncPublish, c.now(),
-			fmt.Errorf("explore: declare the shared-catalog closure for run %s: %w", st.opt.RunID, err))
+			fmt.Errorf("explore: publish the shared-catalog closure for run %s: %w", st.opt.RunID, err))
 	}
 }

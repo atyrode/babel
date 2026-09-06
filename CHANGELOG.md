@@ -11,6 +11,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **An exploration now declares its publication closure when it ends, so
+  its hypotheses, observations and receipt actually reach the fleet.** Since
+  the writers took a staging hook (#138), the one call that ended a run for
+  the fleet — `CommitInline` on the hook — declared nothing on the staging
+  half, and no exploration since had declared its closure: on 2026-09-06 a
+  machine held 50 finished runs and 19,000 staged records that `babel sync`
+  reported as belonging to runs "that have not finished", while only
+  preparations ever published. The run store gains `DeclareClosure`, which
+  internal/explore calls once the receipt is written, and `babel sync`
+  declares the closure of every run whose receipt is written and still
+  pending before it publishes — the backfill for runs an earlier build ended
+  without one. The first sync after the fix published dev-01's backlog.
+
 - **A record the model produced is no longer lost when several explorations
   record into one durable file at once (#173).** Every store began its
   transactions deferred; in WAL mode a transaction that had read and then wrote
