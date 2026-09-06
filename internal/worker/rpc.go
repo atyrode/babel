@@ -16,27 +16,29 @@ import (
 // (packages/coding-agent/src/modes/rpc/rpc-types.ts at v18.1.11); nothing here
 // is Babel's to define, which is why the set is small and stated once.
 const (
-	frameReady          = "ready"
-	frameResponse       = "response"
-	frameChunk          = "rpc_chunk"
-	frameHostToolCall   = "host_tool_call"
-	frameHostToolCancel = "host_tool_cancel"
-	frameHostURIRequest = "host_uri_request"
-	frameExtensionUI    = "extension_ui_request"
-	frameAgentStart     = "agent_start"
-	frameAgentEnd       = "agent_end"
-	frameTurnStart      = "turn_start"
-	frameTurnEnd        = "turn_end"
-	frameToolStart      = "tool_execution_start"
-	frameToolEnd        = "tool_execution_end"
-	frameModelChanged   = "model_changed"
-	frameCompactStart   = "auto_compaction_start"
-	frameCompactEnd     = "auto_compaction_end"
-	frameRetryStart     = "auto_retry_start"
-	frameRetryEnd       = "auto_retry_end"
-	frameRetryFallback  = "retry_fallback_applied"
-	framePromptResult   = "prompt_result"
-	frameExtensionErr   = "extension_error"
+	frameReady             = "ready"
+	frameResponse          = "response"
+	frameChunk             = "rpc_chunk"
+	frameHostToolCall      = "host_tool_call"
+	frameHostToolCancel    = "host_tool_cancel"
+	frameHostURIRequest    = "host_uri_request"
+	frameExtensionUI       = "extension_ui_request"
+	frameAgentStart        = "agent_start"
+	frameAgentEnd          = "agent_end"
+	frameTurnStart         = "turn_start"
+	frameTurnEnd           = "turn_end"
+	frameToolStart         = "tool_execution_start"
+	frameToolEnd           = "tool_execution_end"
+	frameModelChanged      = "model_changed"
+	frameCompactStart      = "auto_compaction_start"
+	frameCompactEnd        = "auto_compaction_end"
+	frameRetryStart        = "auto_retry_start"
+	frameRetryEnd          = "auto_retry_end"
+	frameRetryFallback     = "retry_fallback_applied"
+	framePromptResult      = "prompt_result"
+	frameExtensionErr      = "extension_error"
+	frameMessageEnd        = "message_end"
+	frameFallbackSucceeded = "retry_fallback_succeeded"
 
 	commandNegotiate    = "negotiate_protocol"
 	commandSetHostTools = "set_host_tools"
@@ -81,8 +83,17 @@ type frame struct {
 	AgentInvoked *bool           `json:"agentInvoked"`
 	Messages     json.RawMessage `json:"messages"`
 
-	// model_changed
+	// model_changed / retry_fallback_succeeded
 	Model json.RawMessage `json:"model"`
+
+	// retry_fallback_applied / retry_fallback_succeeded
+	From string `json:"from"`
+	To   string `json:"to"`
+	Role string `json:"role"`
+
+	// message is polymorphic across native frame types: extension UI uses
+	// text, while message_end carries a message object. Decode at dispatch.
+	Message json.RawMessage `json:"message"`
 
 	// extension_error
 	ExtensionPath string `json:"extensionPath"`

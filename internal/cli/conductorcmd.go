@@ -19,6 +19,7 @@ import (
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/presence"
+	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
 )
 
@@ -89,6 +90,7 @@ the unexplored frontier deferred.
 
 Flags:
   --once               run exactly one cycle and stop
+  --stop-file PATH     stop before the next cycle when this file exists
   --until TIME         stop at RFC 3339 time, HH:MM today, or after a duration
   --worker PATH        the Code executable that speaks the worker protocol
   --worker-arg ARG     extra argument for the worker; repeatable
@@ -477,6 +479,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	sf.bindRoots(c)
 	once := c.fs.Bool("once", false, "run exactly one cycle and stop")
 	until := c.fs.String("until", "", "stop at this time, or after this duration")
+	stopFile := c.fs.String("stop-file", "", "stop at the cycle boundary when this file exists")
 	asJSON := c.fs.Bool("json", false, "emit the cycles this invocation ran as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -586,7 +589,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 		settings.Ceilings.PerCycle, settings.Ceilings.PerDay, settings.Ceilings.Currency,
 		Sanitize(profileRef.String()))
 	before := journal.NextSeq()
-	runErr := loop.Run(ctx, conductor.RunOptions{Until: deadline, Once: *once, Stop: stop.soft})
+	runErr := loop.Run(ctx, conductor.RunOptions{Until: deadline, Once: *once, Stop: stop.soft, StopFile: *stopFile})
 
 	res := conductorRunResult{Cycles: []conductorCycleRow{}}
 	for _, cycle := range journal.Recent(0) {
@@ -799,6 +802,25 @@ type conductorRunner struct {
 // Run prepares the assignment's corpus slice and explores it.
 func (r *conductorRunner) Run(ctx context.Context, runID string,
 	a conductor.Assignment) (conductor.Result, error) {
+	receipt, err := r.state.runs.Latest(ctx, runID)
+	if err == nil {
+		if cp := receipt.Body.Checkpoint; cp == nil || cp.State == runstore.Closed {
+			completed := completedReceipt(receipt)
+			if completed.Failure != "" {
+				return completed.Result, errors.New(completed.Failure)
+			}
+			return completed.Result, nil
+		}
+		plan, err := recordedExplorePlan(receipt, r.worker)
+		if err != nil {
+			return conductor.Result{}, fmt.Errorf("%w: %v", conductor.ErrRecoveryPending, err)
+		}
+		plan.presence = r.presence
+		return r.execute(ctx, plan, true)
+	}
+	if !errors.Is(err, runstore.ErrNotFound) {
+		return conductor.Result{}, fmt.Errorf("%w: read the original run: %v", conductor.ErrRecoveryPending, err)
+	}
 	sessions, _ := r.app.scan(ctx, r.adapters, r.scanRoots)
 	chosen, missing := sliceSessions(sessions, a.Sessions)
 	if len(missing) > 0 {
@@ -829,7 +851,7 @@ func (r *conductorRunner) Run(ctx context.Context, runID string,
 	// are separate jobs with their own worker invocations, so scheduling them
 	// unasked would multiply a cycle's cost against a ceiling the operator set
 	// for one run; they stay operator choices on `babel explore`.
-	res, outcome, runErr := r.app.runExploration(ctx, r.state, explorePlan{
+	return r.execute(ctx, explorePlan{
 		prep:      scoped.prep,
 		profile:   r.profile,
 		recipes:   set,
@@ -839,9 +861,16 @@ func (r *conductorRunner) Run(ctx context.Context, runID string,
 		roots:     a.Roots,
 		scanRoots: r.scanRoots,
 		presence:  r.presence,
-	})
+	}, false)
+}
+
+func (r *conductorRunner) execute(ctx context.Context, plan explorePlan, recovering bool) (conductor.Result, error) {
+	res, outcome, runErr := r.app.runExploration(ctx, r.state, plan)
+	if recovering && outcome == nil && runErr != nil {
+		return conductor.Result{}, fmt.Errorf("%w: %w", conductor.ErrRecoveryPending, runErr)
+	}
 	result := conductor.Result{
-		PreparationID: string(scoped.prep.ID),
+		PreparationID: string(plan.prep.ID),
 		ReceiptID:     res.ReceiptID,
 		Failures:      len(res.Failures),
 		Cancelled:     res.Cancelled,

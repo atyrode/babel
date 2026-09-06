@@ -782,8 +782,36 @@ func (r *runner) handle(ctx context.Context, in inbound) error {
 	case frameHostURIRequest:
 		return r.session.writeMessage(hostURIResult{Type: "host_uri_result", ID: f.ID, IsError: true,
 			Error: "Babel registers no URI schemes"})
+	case frameMessageEnd:
+		var message struct {
+			Role string `json:"role"`
+			AssistantMessageAccounting
+		}
+		if len(f.Message) != 0 {
+			if err := json.Unmarshal(f.Message, &message); err != nil {
+				return fmt.Errorf("%w: message_end message: %v", ErrMalformedFrame, err)
+			}
+		}
+		if message.Role == "assistant" {
+			record := message.AssistantMessageAccounting
+			record.Seq, record.At = r.events, at
+			r.receipt.AssistantMessages = append(r.receipt.AssistantMessages, record)
+		}
+		return nil
+	case frameRetryFallback, frameFallbackSucceeded:
+		record := FallbackRecord{Seq: r.events, At: at, Type: f.Type, Role: f.Role}
+		if f.Type == frameRetryFallback {
+			record.From, record.To = f.From, f.To
+		} else if len(f.Model) != 0 {
+			if err := json.Unmarshal(f.Model, &record.Model); err != nil {
+				return fmt.Errorf("%w: fallback model: %v", ErrMalformedFrame, err)
+			}
+		}
+		r.receipt.Fallbacks = append(r.receipt.Fallbacks, record)
+		r.recordProgress("agent", f.Type, at)
+		return nil
 	case frameAgentStart, frameTurnStart, frameTurnEnd, frameToolStart, frameToolEnd,
-		frameCompactStart, frameCompactEnd, frameRetryStart, frameRetryEnd, frameRetryFallback:
+		frameCompactStart, frameCompactEnd, frameRetryStart, frameRetryEnd:
 		r.recordProgress("agent", f.Type, at)
 		return nil
 	case frameModelChanged:

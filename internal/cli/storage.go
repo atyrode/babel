@@ -288,6 +288,8 @@ type storageStatusResult struct {
 	PasswordFile       string `json:"password_file"`
 	PasswordFileExists bool   `json:"password_file_exists"`
 	PasswordFileSecure bool   `json:"password_file_secure"`
+	PayloadKeysFile    string `json:"payload_keys_file"`
+	PayloadKeysState   string `json:"payload_keys_state"`
 	HostID             string `json:"host_id"`
 	ResticBinary       string `json:"restic_binary"`
 	DeploymentID       string `json:"deployment_id,omitempty"`
@@ -313,15 +315,16 @@ func (a *app) storageStatus(args []string) error {
 		return err
 	}
 	res := storageStatusResult{
-		Path:         Sanitize(config.Path()),
-		Exists:       found,
-		Mode:         storageMode(cfg),
-		Repository:   Sanitize(cfg.Repository),
-		PasswordFile: Sanitize(cfg.PasswordFile),
-		HostID:       Sanitize(cfg.HostID),
-		ResticBinary: Sanitize(cfg.ResticBinary),
-		DeploymentID: Sanitize(cfg.DeploymentID),
-		InstanceID:   Sanitize(cfg.InstanceID),
+		Path:            Sanitize(config.Path()),
+		Exists:          found,
+		Mode:            storageMode(cfg),
+		Repository:      Sanitize(cfg.Repository),
+		PasswordFile:    Sanitize(cfg.PasswordFile),
+		PayloadKeysFile: Sanitize(config.PayloadKeysPath()),
+		HostID:          Sanitize(cfg.HostID),
+		ResticBinary:    Sanitize(cfg.ResticBinary),
+		DeploymentID:    Sanitize(cfg.DeploymentID),
+		InstanceID:      Sanitize(cfg.InstanceID),
 	}
 	// The endpoint and role names are reported; the passwords are not read here
 	// at all, so no redaction can be forgotten downstream.
@@ -338,6 +341,10 @@ func (a *app) storageStatus(args []string) error {
 		}
 		res.PasswordFileExists, res.PasswordFileSecure = state.exists, state.secure
 	}
+	res.PayloadKeysState, err = payloadKeysFileState(config.PayloadKeysPath())
+	if err != nil {
+		return err
+	}
 
 	if *asJSON {
 		return a.emitJSON(res)
@@ -350,6 +357,8 @@ func (a *app) storageStatus(args []string) error {
 		{"password file", res.PasswordFile},
 		{"password file exists", yesNo(res.PasswordFileExists, "yes", "no")},
 		{"password file secure", yesNo(res.PasswordFileSecure, "yes", "no")},
+		{"payload keyring", res.PayloadKeysFile},
+		{"payload keyring state", res.PayloadKeysState},
 		{"host id", res.HostID},
 		{"restic binary", res.ResticBinary},
 	}
@@ -366,6 +375,30 @@ func (a *app) storageStatus(args []string) error {
 		}
 	}
 	return writeDetail(a.stdout, rows)
+}
+
+// payloadKeysFileState inspects placement only, never key material.
+func payloadKeysFileState(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "absent", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspect payload key document %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		info, err = os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return "dangling-link", nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("inspect payload key document target %s: %w", path, err)
+		}
+	}
+	if !info.Mode().IsRegular() {
+		return "not-a-file", nil
+	}
+	return "present", nil
 }
 
 // passwordFileState is everything an offline inspection can say about the

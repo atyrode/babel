@@ -121,6 +121,10 @@ func Open(dir string, opts ...Option) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(leaseSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("run: prepare local attempt leases: %w", err)
+	}
 	// The journal lives in this same file and stages on this same connection,
 	// so its tables have to exist here before a writer opens a transaction.
 	// It is cheap and idempotent. A local-only store skips it: a deployment
@@ -176,6 +180,8 @@ func (s *Store) DeclareClosure(ctx context.Context, runID string) error {
 // id is a run's, not a stage job's. It is the backfill for runs an earlier
 // build ended without DeclareClosure, and for a process that died between
 // its receipt write and its declaration.
+// A recovered receipt can retain an old local committed marker; its newly
+// pending journal row is also evidence that this finished run needs declaration.
 //
 // A run whose closure is already declared is left as it is: DeclareTx is
 // idempotent on an identical declaration and refuses a different size, and
@@ -183,8 +189,11 @@ func (s *Store) DeclareClosure(ctx context.Context, runID string) error {
 // still in flight has no receipt and is never touched.
 func (s *Store) DeclareFinished(ctx context.Context, hook sync.Hook) (declared []string, skipped map[string]error, err error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT run_id FROM run_receipt WHERE sync_state = ? AND instr(run_id, '/') = 0 ORDER BY run_id`,
-		SyncPending)
+		`SELECT DISTINCT run_id FROM run_receipt r
+		WHERE (sync_state = ? OR EXISTS (
+			SELECT 1 FROM sync_record j WHERE j.record_id = r.id AND j.sync_state = ?))
+		AND instr(run_id, '/') = 0 ORDER BY run_id`,
+		SyncPending, SyncPending)
 	if err != nil {
 		return nil, nil, fmt.Errorf("run: list finished runs: %w", err)
 	}
@@ -202,6 +211,13 @@ func (s *Store) DeclareFinished(ctx context.Context, hook sync.Hook) (declared [
 	}
 	skipped = map[string]error{}
 	for _, id := range runIDs {
+		latest, readErr := s.Latest(ctx, id)
+		if readErr != nil {
+			return declared, skipped, readErr
+		}
+		if cp := latest.Body.Checkpoint; cp != nil && (cp.State == Running || cp.State == Resumed) {
+			continue
+		}
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return declared, skipped, fmt.Errorf("run: begin closure declaration: %w", err)

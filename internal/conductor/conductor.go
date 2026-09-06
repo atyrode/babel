@@ -159,6 +159,26 @@ type Runner interface {
 	Run(ctx context.Context, runID string, a Assignment) (Result, error)
 }
 
+// CompletedRun is the durable result of inference that finished before its
+// conductor cycle could be finalized. Failure is the recorded run verdict,
+// not an error reading the receipt.
+type CompletedRun struct {
+	Result
+	FinishedAt time.Time
+	Failure    string
+}
+
+// CompletionReader lets a durable runner repair the receipt-to-cycle crash
+// window without launching inference again. Other runners need not implement
+// it when they cannot outlive the cycle that called them.
+type CompletionReader interface {
+	Completed(context.Context, string) (CompletedRun, bool, error)
+}
+
+// ErrRecoveryPending leaves a claimed cycle unfinished while its recorded
+// attempt is still owned or cannot safely restore its original launch inputs.
+var ErrRecoveryPending = errors.New("conductor: recorded attempt remains pending recovery")
+
 // Ledger reports what the day's receipts already estimated. It is an interface
 // for the same reason Runner is: the conductor is told what was spent, and has
 // no path to a number it produced itself.
@@ -272,7 +292,8 @@ type RunOptions struct {
 	// the context is the harder stop: it cancels the run itself, which
 	// internal/explore already makes safe — the frontier keeps what was
 	// committed and the receipt records the cancellation.
-	Stop <-chan struct{}
+	Stop     <-chan struct{}
+	StopFile string
 }
 
 // ErrParked reports that the loop stopped because the budget refused the next
@@ -293,6 +314,16 @@ func (c *Conductor) Run(ctx context.Context, opt RunOptions) error {
 		return err
 	}
 	for {
+		if opt.StopFile != "" {
+			_, err := os.Stat(opt.StopFile)
+			if err == nil {
+				c.cfg.Log("conductor: stop file requested a cycle-boundary stop\n")
+				return nil
+			}
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("conductor: read stop file: %w", err)
+			}
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -330,13 +361,23 @@ func (c *Conductor) wait(ctx context.Context, opt RunOptions) error {
 	}
 	timer := time.NewTimer(c.cfg.Interval)
 	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-opt.Stop:
-		return nil
-	case <-timer.C:
-		return nil
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-opt.Stop:
+			return nil
+		case <-timer.C:
+			return nil
+		case <-tick.C:
+			if opt.StopFile != "" {
+				if _, err := os.Stat(opt.StopFile); !os.IsNotExist(err) {
+					return nil // Run checks and reports access errors at the boundary.
+				}
+			}
+		}
 	}
 }
 
@@ -367,6 +408,23 @@ func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
 	resume, resuming, err := c.reconcile(now)
 	if err != nil {
 		return Cycle{}, err
+	}
+	if resuming {
+		if reader, ok := c.cfg.Runner.(CompletionReader); ok {
+			completed, found, err := reader.Completed(ctx, resume.RunID)
+			if err != nil {
+				return Cycle{}, fmt.Errorf("conductor: read completed run: %w", err)
+			}
+			if found {
+				var runErr error
+				if completed.Failure != "" {
+					runErr = errors.New(completed.Failure)
+				}
+				// No budget or corpus read may prevent recording work that
+				// is already complete. The next cycle enforces the budget.
+				return c.finish(ctx, "", resume, completed.Result, completed.FinishedAt, runErr)
+			}
+		}
 	}
 
 	spend, err := c.cfg.Ledger.SpentSince(ctx, StartOfDay(now), c.cfg.Ceilings.Currency)
@@ -438,7 +496,16 @@ func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
 	// raced past it.
 	stopBeat()
 
-	cycle.FinishedAt = c.cfg.Now()
+	return c.finish(ctx, presenceID, cycle, result, c.cfg.Now(), runErr)
+}
+
+// finish is shared by live runs and recovery of a completed receipt, so the
+// journal records the same verdict and spend on either side of a crash.
+func (c *Conductor) finish(ctx context.Context, presenceID presence.PresenceID, cycle Cycle, result Result, finished time.Time, runErr error) (Cycle, error) {
+	if errors.Is(runErr, ErrRecoveryPending) || errors.Is(runErr, run.ErrAttemptOwned) {
+		return cycle, runErr
+	}
+	cycle.FinishedAt = finished
 	cycle.PreparationID = result.PreparationID
 	cycle.ReceiptID = result.ReceiptID
 	cycle.Cost = result.Cost

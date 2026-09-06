@@ -102,6 +102,10 @@ Commands:
   sessions prune --local      remove locally fetched session directories
   prepare [SELECTOR...]       fix an exploration's corpus scope
   explore --preparation ID    run one exploration through Code
+  runs interrupted            list durable partial explorations
+  runs reconcile              receipt stale local attempts with unknown outcomes
+  runs resume ID              resume from the recorded launch inputs
+  runs close ID               deliberately close an interrupted run
   conductor run               run the autonomous cycle loop in the foreground
   conductor status            report the loop, its queues and its spend
   conductor configure         set the budget ceilings the loop runs under
@@ -263,6 +267,8 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.prepare(ctx, args[1:])
 	case "explore":
 		return a.explore(ctx, args[1:])
+	case "runs":
+		return a.runsCmd(ctx, args[1:])
 	case "analysis":
 		return a.analysis(ctx, args[1:])
 	case "titles":

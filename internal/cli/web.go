@@ -274,20 +274,13 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	services.sessions = newWebSessionKeys(sc, cfg.DeploymentID, hostID)
 	opts.Sessions = services.sessionKeys()
 
-	// The fleet read surface, when this machine has one. A launch on a
-	// machine in local mode, or one whose payload keys are not placed, leaves
-	// it nil and every fleet view reports that honestly rather than failing:
-	// the local pages are what a single machine has always served, and a
-	// missing shared backend must not cost an operator their own analysis
-	// (issue #109 item 3).
-	//
-	// Any other failure is reported and also leaves it nil. That is
-	// deliberate: a launch is not the moment to refuse over a shared backend,
-	// and a warning naming the reason is what an operator can act on.
+	// Local mode has no reader. A failed shared-backend startup must preserve
+	// its reason for the browser while leaving local analysis available.
 	if reader, err := fleet.OpenReader(context.Background(), cfg, hostID); err == nil {
 		opts.Fleet = reader
 		services.fleet = reader
 	} else if !fleet.NotConfigured(err) {
+		opts.FleetError = err
 		a.diagf("warning: the fleet read surface is unavailable: %s\n", Sanitize(err.Error()))
 	}
 	// The fleet presence read surface, on exactly the same terms (#118). It is

@@ -7,9 +7,14 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/config"
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/envelope"
+	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/objectstore"
+	"github.com/atyrode/babel/internal/reality"
+	"github.com/atyrode/babel/internal/reference"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 	// internal/sync is imported under a name of its own because this package
@@ -35,6 +40,8 @@ to publish, says so, and exits 0.
 Flags:
   --generate-key ID           create the payload key document with one fresh
                               AES-256 key under this id, and publish nothing
+  --restage                   recover locally durable records missing from the
+                              publication journal before retrying publication
   --json                      emit the report as JSON
 `
 
@@ -59,6 +66,7 @@ type syncResult struct {
 	RunsCommitted  int           `json:"runs_committed"`
 	RunsPending    int           `json:"runs_pending"`
 	ObjectsWritten int           `json:"objects_written"`
+	Restaged       int           `json:"restaged"`
 	// Undeclared counts staged records whose producing run has not finished.
 	// They are deliberately unpublishable rather than stuck; see writeSync.
 	Undeclared int `json:"undeclared"`
@@ -105,6 +113,7 @@ func (a *app) syncCmd(ctx context.Context, args []string) error {
 	c := newCmd("sync", syncUsage)
 	asJSON := c.fs.Bool("json", false, "emit the report as JSON")
 	keyID := c.fs.String("generate-key", "", "create the payload key document with one fresh key under this id")
+	restage := c.fs.Bool("restage", false, "recover locally durable records missing from the publication journal")
 	if err := c.parse(a, args); err != nil {
 		return err
 	}
@@ -123,6 +132,9 @@ func (a *app) syncCmd(ctx context.Context, args []string) error {
 		}
 	})
 	if generate {
+		if *restage {
+			return fmt.Errorf("--restage and --generate-key cannot be combined")
+		}
 		return a.generatePayloadKey(c, *keyID, *asJSON)
 	}
 
@@ -141,6 +153,13 @@ func (a *app) syncCmd(ctx context.Context, args []string) error {
 	d, err := babelDirs()
 	if err != nil {
 		return err
+	}
+	restaged := 0
+	if *restage {
+		restaged, err = restageLocalRecords(ctx, d)
+		if err != nil {
+			return fmt.Errorf("restaged %d records before recovery stopped: %w", restaged, err)
+		}
 	}
 	pub, cleanup, err := a.openPublisher(ctx, d)
 	defer cleanup()
@@ -166,6 +185,7 @@ func (a *app) syncCmd(ctx context.Context, args []string) error {
 		return fmt.Errorf("read the sync journal: %w", err)
 	}
 	res := syncReport(rep)
+	res.Restaged = restaged
 	if *asJSON {
 		return a.emitJSON(res)
 	}
@@ -201,6 +221,71 @@ func (a *app) declareFinishedRuns(ctx context.Context, d dirs, pub *babelsync.Pu
 			Sanitize(id), Sanitize(skipped[id].Error()))
 	}
 	return nil
+}
+
+// restageLocalRecords is deliberately reachable only through --restage. Every
+// owner reconstructs its own canonical bytes; no publisher is opened until all
+// local recovery transactions have ended. Receipts are recovered last, and the
+// caller declares finished runs only after this entire pass succeeds.
+func restageLocalRecords(ctx context.Context, d dirs) (int, error) {
+	hook := babelsync.NewStager()
+	front, err := frontier.Open(d.durableDir(), frontier.WithSync(hook))
+	if err != nil {
+		return 0, err
+	}
+	defer front.Close()
+	total, err := front.Restage(ctx)
+	if err != nil {
+		return total, err
+	}
+	// Keep acquisition and release beside each owner. In particular, no
+	// database result set or write transaction spans another owner's call.
+	restage := func(store interface {
+		Restage(context.Context) (int, error)
+		Close() error
+	}) error {
+		n, err := store.Restage(ctx)
+		total += n
+		closeErr := store.Close()
+		if err != nil {
+			return err
+		}
+		return closeErr
+	}
+	refs, err := reference.Open(d.durableDir(), reference.WithSync(hook))
+	if err != nil {
+		return total, err
+	}
+	if err := restage(refs); err != nil {
+		return total, err
+	}
+	disps, err := disposition.Open(d.durableDir(), front, disposition.WithSync(hook))
+	if err != nil {
+		return total, err
+	}
+	if err := restage(disps); err != nil {
+		return total, err
+	}
+	complaints, err := complaint.Open(d.durableDir(), complaint.WithSync(hook))
+	if err != nil {
+		return total, err
+	}
+	if err := restage(complaints); err != nil {
+		return total, err
+	}
+	real, err := reality.Open(d.durableDir(), reality.WithSync(hook))
+	if err != nil {
+		return total, err
+	}
+	if err := restage(real); err != nil {
+		return total, err
+	}
+	runs, err := runstore.Open(d.durableDir(), runstore.WithSync(hook))
+	if err != nil {
+		return total, err
+	}
+	err = restage(runs)
+	return total, err
 }
 
 // stagingHook is the Phase B publication hook every durable writer on this
@@ -581,6 +666,7 @@ func (a *app) writeSync(res syncResult) error {
 		rows = append(rows, [2]string{"committed " + row.Kind, fmt.Sprint(row.Count)})
 	}
 	rows = append(rows,
+		[2]string{"records restaged", fmt.Sprint(res.Restaged)},
 		[2]string{"runs committed", fmt.Sprint(res.RunsCommitted)},
 		[2]string{"objects written", fmt.Sprint(res.ObjectsWritten)},
 	)

@@ -150,6 +150,48 @@ func TestStorageStatusMissingAndPasswordPermissions(t *testing.T) {
 	}
 }
 
+func TestPayloadKeyPlacementIsNotLocalMode(t *testing.T) {
+	f := newFixture(t)
+	cfg := ceremonyConfig(t, f)
+	cfg.Mode, cfg.DeploymentID, cfg.InstanceID = config.ModeShared, "custody-test", "custody-host"
+	cfg.Catalog = &config.Catalog{
+		Host: "127.0.0.1", Port: 1, Database: "unused", User: "unused",
+		Password: "synthetic-custody-secret", TLSMode: config.TLSVerifyFull,
+	}
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := config.PayloadKeysPath()
+	target := filepath.Join(f.root, "placed-keyring")
+	for _, state := range []string{"absent", "dangling-link", "present"} {
+		if state == "dangling-link" {
+			if err := os.Symlink(target, keyPath); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if state == "present" {
+			// Status inspects placement, not secret bytes or JSON validity.
+			if err := os.WriteFile(target, []byte("synthetic-custody-secret"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		stdout, stderr := f.ok("storage", "status", "--json")
+		got := decode[storageStatusResult](t, stdout)
+		if got.Mode != config.ModeShared || got.PayloadKeysState != state || got.PayloadKeysFile != keyPath {
+			t.Fatalf("%s placement: %+v", state, got)
+		}
+		if strings.Contains(stdout+stderr, "synthetic-custody-secret") {
+			t.Fatal("storage status exposed secret material")
+		}
+		if state != "present" {
+			stdout, stderr, code := f.run("fleet", "records")
+			if code == exitOK || !strings.Contains(stderr, keyPath) || strings.Contains(stderr, "local mode") {
+				t.Fatalf("%s fleet refusal: exit %d, stdout %q, stderr %q", state, code, stdout, stderr)
+			}
+		}
+	}
+}
+
 func TestStorageConfigureRejectsInvalidInputWithoutReplacement(t *testing.T) {
 	f := newFixture(t)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(f.root, "config"))

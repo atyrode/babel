@@ -508,6 +508,14 @@ func TestCredentialSentinelReachesNoStoredFieldOrError(t *testing.T) {
 func TestNewReceiptCopiesTheBodyItIsGiven(t *testing.T) {
 	prep := mustPreparation(t, preparedAt, testSelection())
 	body := testBody(t)
+	var native worker.NativeUsage
+	if err := json.Unmarshal([]byte(`{"input":12,"output":4,"cacheRead":0,"reasoningTokens":2,"orchestration":{"input":1},"cttl":{"ephemeral5m":3},"server":{"webSearch":1},"credits":{"cost":0.5},"cost":{"total":0.02}}`), &native); err != nil {
+		t.Fatal(err)
+	}
+	body.Worker.AssistantMessages = []worker.AssistantMessageAccounting{{
+		Seq: 2, Model: "actual", Timestamp: new(int64(1000)), CompletedAt: new(int64(1010)), Usage: &native,
+	}}
+	body.Worker.Fallbacks = []worker.FallbackRecord{{Seq: 1, Type: "retry_fallback_applied", From: "primary", To: "actual"}}
 	r, err := NewReceipt(NewReceiptID(), "run-1", prep, testAuthority(), body, recorded)
 	if err != nil {
 		t.Fatalf("NewReceipt: %v", err)
@@ -518,6 +526,27 @@ func TestNewReceiptCopiesTheBodyItIsGiven(t *testing.T) {
 	body.Frontier.Roots[0] = "hyp-9999"
 	body.Failures[0].Message = "rewritten"
 	*body.Resources.CPUSeconds = 999
+	body.Worker.AssistantMessages[0].Model = "swapped"
+	*body.Worker.AssistantMessages[0].Timestamp = 9999
+	*body.Worker.AssistantMessages[0].CompletedAt = 9999
+	*native.Input = 999
+	*native.ReasoningTokens = 999
+	*native.CacheRead = 999
+	*native.Orchestration.Input = 999
+	*native.CTTL.Ephemeral5m = 999
+	*native.Server.WebSearch = 999
+	*native.Credits.Cost = 999
+	*native.Cost.Total = 999
+	body.Worker.Fallbacks[0].To = "swapped"
+
+	message := r.Body.Worker.AssistantMessages[0]
+	if message.Model != "actual" || *message.Timestamp != 1000 || *message.CompletedAt != 1010 ||
+		*message.Usage.Input != 12 || *message.Usage.ReasoningTokens != 2 || *message.Usage.CacheRead != 0 ||
+		*message.Usage.Orchestration.Input != 1 || *message.Usage.CTTL.Ephemeral5m != 3 ||
+		*message.Usage.Server.WebSearch != 1 || *message.Usage.Credits.Cost != 0.5 || *message.Usage.Cost.Total != 0.02 ||
+		message.Usage.CacheWrite != nil || r.Body.Worker.Fallbacks[0].To != "actual" {
+		t.Error("a caller mutated observed accounting across the receipt boundary")
+	}
 
 	if !r.Body.Worker.ToolRequests[0].Allowed {
 		t.Error("a caller mutated a stored tool decision")

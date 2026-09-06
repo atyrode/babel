@@ -65,6 +65,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/atyrode/babel/internal/complaint"
@@ -596,6 +597,9 @@ type Options struct {
 	// Params are extra job parameters merged into every stage's job, after
 	// the parameters this package owns.
 	Params map[string]string
+	// Launch is the typed CLI continuation input, never a worker command.
+	Launch   *run.Launch
+	StopFile string
 
 	OnRecord   func(RecordEvent)
 	OnProgress func(Stage, worker.ProgressRecord)
@@ -665,10 +669,14 @@ type Outcome struct {
 
 // state is one attempt's working set.
 type state struct {
-	ctx    context.Context
-	commit context.Context
-	opt    Options
-	out    *Outcome
+	ctx       context.Context
+	commit    context.Context
+	opt       Options
+	out       *Outcome
+	lifecycle run.Lifecycle
+	stage     Stage
+	known     []string
+	started   time.Time
 
 	// hypotheses and observations resolve a reference — a ref this run's
 	// results emitted, or a durable identifier a brief listed — to a durable
@@ -800,6 +808,9 @@ func (s *state) allFailures() []run.Failure {
 // edges of #113 belong: a new emission site for a new record kind would
 // otherwise be a site that forgets them.
 func (c *Controller) record(st *state, e RecordEvent) {
+	if !slices.Contains(st.known, e.ID) {
+		st.known = append(st.known, e.ID)
+	}
 	if e.Reused {
 		st.out.Reused++
 	}
@@ -845,6 +856,35 @@ func (c *Controller) Explore(ctx context.Context, opt Options) (*Outcome, error)
 		written:      map[Stage]bool{},
 		failures:     map[Stage][]run.Failure{},
 	}
+	release, err := c.cfg.Runs.BeginAttempt(st.commit, opt.RunID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	st.started, st.stage, st.lifecycle = started, StagePreflight, run.Running
+	if prior, err := c.cfg.Runs.Latest(st.commit, opt.RunID); err == nil {
+		if prior.Preparation.ID != c.cfg.Preparation.ID {
+			return nil, fmt.Errorf("explore: resume preparation differs from the recorded scope")
+		}
+		if prior.Body.Checkpoint != nil && prior.Body.Checkpoint.State != run.Interrupted {
+			return nil, fmt.Errorf("explore: reconcile or interrupt the prior attempt before resuming")
+		}
+		st.lifecycle = run.Resumed
+	} else if !errors.Is(err, run.ErrNotFound) {
+		return nil, err
+	}
+	st.known, _, err = c.cfg.Runs.KnownRecords(st.commit, opt.RunID)
+	if err != nil {
+		return nil, err
+	}
+	if st.opt.Launch == nil {
+		st.opt.Launch = &run.Launch{Profile: c.cfg.Profile, Recipes: c.cfg.Recipes.IDs(),
+			Roots: opt.Roots, Prior: opt.Prior, Challenge: opt.Challenge, Synthesize: opt.Synthesize,
+			Develop: opt.Budget.Develop, Retrievals: opt.Budget.Retrievals, Fetches: opt.Budget.Fetches, Params: opt.Params}
+	}
+	if c.writeReceipt(st, opt.RunID, nil, nil, nil, started) == nil {
+		return st.out, st.err
+	}
 
 	// The run becomes visible to the fleet before the first worker starts and
 	// stops being claimed as running the moment this call returns, whichever
@@ -873,6 +913,11 @@ func (c *Controller) Explore(ctx context.Context, opt Options) (*Outcome, error)
 	report, err := c.runPreflight(st, started)
 	st.out.Preflight = report
 	if err != nil {
+		st.lifecycle = run.Closed
+		if st.ctx.Err() != nil {
+			st.out.Cancelled = true
+			st.lifecycle = run.Interrupted
+		}
 		st.out.Receipt = c.writeReceipt(st, opt.RunID, nil, nil,
 			st.failuresFor(StagePreflight, StageExplore), started)
 		// A refused run publishes too: the refusal's receipt is a durable
@@ -917,6 +962,18 @@ func (c *Controller) Explore(ctx context.Context, opt Options) (*Outcome, error)
 	)
 	if exploration != nil {
 		workerReceipt, steps = exploration.receipt, exploration.steps
+	}
+	c.safePoint(st, st.stage)
+	st.lifecycle = run.Closed
+	if st.out.Cancelled || st.ctx.Err() != nil {
+		st.out.Cancelled = true
+		st.lifecycle = run.Interrupted
+	}
+	for _, failure := range st.allFailures() {
+		if failure.Code == FailureWorker {
+			st.lifecycle = run.Interrupted
+			break
+		}
 	}
 	st.out.Receipt = c.writeReceipt(st, opt.RunID, workerReceipt, steps, c.runFailures(st), started)
 	// The run's own verdict is fixed before publication is attempted. A

@@ -565,6 +565,9 @@ func TestEveryCandidateIsPersistedWhenTheRunIsCancelled(t *testing.T) {
 	if outcome.Receipt == nil {
 		t.Fatal("a cancelled run wrote no receipt")
 	}
+	if cp := outcome.Receipt.Body.Checkpoint; cp == nil || cp.State != run.Interrupted || cp.Launch == nil {
+		t.Fatal("clean cancellation did not preserve an interrupted launch checkpoint")
+	}
 	if !hasFailure(outcome.Receipt.Body.Failures, explore.FailureCancelled) {
 		t.Errorf("the receipt does not record the cancellation: %+v", outcome.Receipt.Body.Failures)
 	}
@@ -634,14 +637,17 @@ func TestResumeAfterCancellationNeitherLosesNorDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read revisions: %v", err)
 	}
-	if len(revisions) != 2 {
-		t.Fatalf("the run has %d receipt revisions, want 2", len(revisions))
+	states := []run.Lifecycle{}
+	for i, revision := range revisions {
+		if i > 0 && revision.Header.Supersedes != revisions[i-1].Header.ID {
+			t.Fatal("lifecycle amendments forked the receipt chain")
+		}
+		if cp := revision.Body.Checkpoint; cp != nil && (len(states) == 0 || states[len(states)-1] != cp.State) {
+			states = append(states, cp.State)
+		}
 	}
-	if revisions[1].Header.Supersedes != revisions[0].Header.ID {
-		t.Errorf("revision 2 supersedes %q, want %q", revisions[1].Header.Supersedes, revisions[0].Header.ID)
-	}
-	if revisions[1].Body.AmendmentReason == "" {
-		t.Error("the amendment does not say why it exists")
+	if !slices.Equal(states, []run.Lifecycle{run.Running, run.Interrupted, run.Resumed, run.Closed}) {
+		t.Fatalf("lifecycle transitions = %v", states)
 	}
 }
 

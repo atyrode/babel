@@ -188,6 +188,10 @@ func (s *Server) handleFleetRecords(w http.ResponseWriter, r *http.Request) {
 	filter.Hosts = queryValues(r, "host")
 	filter.Limit, filter.Offset = pg.limit, pg.offset
 
+	if s.opts.FleetError != nil {
+		s.fleetError(w, r, s.opts.FleetError)
+		return
+	}
 	result := fleetRecordList{Items: []fleetRecordView{}, Hosts: []fleetHostView{}}
 	if s.opts.Fleet == nil {
 		s.writeJSON(w, http.StatusOK, result)
@@ -239,6 +243,10 @@ func (s *Server) handleFleetHosts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if s.opts.FleetError != nil {
+		s.fleetError(w, r, s.opts.FleetError)
+		return
+	}
 	result := fleetHostList{Hosts: []fleetHostView{}}
 	if s.opts.Fleet == nil {
 		s.writeJSON(w, http.StatusOK, result)
@@ -271,12 +279,13 @@ func (s *Server) handleFleetHosts(w http.ResponseWriter, r *http.Request) {
 // configured while his catalog is down, which is the one failure the honest
 // empty response must not be able to cause.
 //
-// The generic 500 the other Phase B routes fall back to is replaced with a
-// sentence about the catalog, because that is what a caller can act on. Nothing
-// from the error's own text reaches the client, for serviceError's reason: a
-// wrapped catalog error can carry a connection string.
+// Unknown failures remain generic: wrapped catalog errors can carry connection
+// strings. Keyring failures use a fixed, safe custody diagnostic.
 func (s *Server) fleetError(w http.ResponseWriter, r *http.Request, err error) {
 	status, message := classifyService(err)
+	if errors.Is(err, fleet.ErrPayloadKeysUnavailable) {
+		status, message = http.StatusServiceUnavailable, fleet.ErrPayloadKeysUnavailable.Error()
+	}
 	if status == http.StatusInternalServerError {
 		status, message = http.StatusBadGateway, "the shared catalog could not be read"
 	}
@@ -431,6 +440,9 @@ func (s *Server) syncStates(ctx context.Context, r *http.Request, ids []string) 
 }
 
 func (s *Server) resolveSyncStates(ctx context.Context, ids []string) (map[string]string, error) {
+	if s.opts.FleetError != nil {
+		return nil, s.opts.FleetError
+	}
 	if s.opts.Fleet != nil {
 		states, err := s.opts.Fleet.SyncStates(ctx, s.opts.SyncJournal, ids)
 		// A reader that turns out to hold no fleet is asking the same question
@@ -471,6 +483,10 @@ func (s *Server) localMark(sync string) fleetMark {
 func (s *Server) fleetRequested(w http.ResponseWriter, r *http.Request) (bool, bool) {
 	wanted, ok := s.requireFlag(w, r, "fleet")
 	if !ok {
+		return false, false
+	}
+	if wanted && s.opts.FleetError != nil {
+		s.fleetError(w, r, s.opts.FleetError)
 		return false, false
 	}
 	return wanted && s.opts.Fleet != nil, true
@@ -539,6 +555,9 @@ func (s *Server) otherHosts(ctx context.Context, limit int,
 func (s *Server) runHosts(ctx context.Context, r *http.Request,
 	runIDs []string) (map[string]fleetMark, bool) {
 	out := make(map[string]fleetMark, len(runIDs))
+	if s.opts.FleetError != nil {
+		return out, len(runIDs) != 0
+	}
 	if s.opts.Fleet == nil || len(runIDs) == 0 {
 		return out, false
 	}
@@ -621,14 +640,15 @@ func markFleetRecord(record fleet.Record, localHost string) (fleetMark, string) 
 		mark.CommittedAt = timeText(*record.CommittedAt)
 	}
 	if record.Published == nil {
+		// Producer-owned JSON can be open without a frontier projection.
+		// Its lack of a searchable summary must not mark the row unopened.
 		return mark, ""
 	}
 	out, err := record.Published.Output()
 	switch {
 	case errors.Is(err, frontier.ErrNotSearchable):
-		// A kind the retrieval surface does not hold — a proposal, a link, a
-		// receipt — has no summary by construction rather than by failure, so
-		// this is an absent summary and not an unopened record.
+		// A frontier kind without a retrieval surface (proposal or link) has
+		// no summary by construction rather than by failure.
 		return mark, ""
 	case err != nil:
 		if mark.Unopened == "" {

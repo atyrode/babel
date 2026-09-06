@@ -11,6 +11,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **Interrupted runs have durable checkpoints and explicit recovery commands
+  (#176).** `babel runs interrupted`, `reconcile`, `resume` and `close` distinguish
+  observed interruption from unknown process loss, retain the producing run's
+  identity and trusted launch inputs, and publish partial results without
+  reopening immutable closures. A stop file requests a cooperative safe-point
+  stop. Conductor recovery finalizes a completed receipt's unfinished cycle
+  without launching inference again; regression coverage checks preserved spend,
+  outcome and identity, as well as remedy deduplication across a real interruption.
+
+- **Run receipts retain observed native assistant accounting (#169).** Actual
+  provider/model responses, reported fallback events, timing and usage are
+  recorded separately from configured intent, without copying transcript text
+  into accounting. Native frame fixtures cover completed-message accounting
+  and the redaction boundary.
+
 - **Analysis considers the user's agent-working environment, not only their
   project.** The default coordination lens and optional capability-leverage
   lens now connect observed friction to better harness use, `AGENTS.md`, and
@@ -70,6 +85,28 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `TestSynthesizerConsolidatesServedObservationsUnderItsContract` pin it.
 
 ### Fixed
+
+- **`babel sync --restage` recovers locally durable records that predate the
+  publication journal or payload ring (#170).** Recovery uses the owning
+  stores' canonical records, including amendments and disposition history,
+  without treating ordinary sync as an implicit migration. Isolated recovery
+  checks cover repeated restaging and records already present in the journal.
+
+- **Fleet opening preserves the authenticated canonical record payload (#174).**
+  Legacy preparation decoding uses its record kind rather than reconstructing
+  a lossy substitute, so another host can inspect the original content.
+  Round-trip coverage includes legacy preparations and receipt revisions.
+
+- **A configured shared backend with missing payload keys is no longer
+  presented as intentional local mode (#167).** CLI and web consumers receive
+  an actionable custody failure; storage diagnostics distinguish absent,
+  dangling, non-file and present payload-key paths. Isolated placement and
+  fleet-opening checks defend the distinction.
+
+- **The provisioning runbook follows the current clan-owned custody handoff
+  (#165).** Retired vault-era procedures are no longer presented as current
+  setup; unexecuted generation, placement and recovery procedures are explicitly
+  operator steps rather than claims of live verification.
 
 - **`babel sync` commits a closure's records sixteen at a time (#180).** Each
   record is four network round-trips — a presence check, the sealed object's

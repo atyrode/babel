@@ -85,12 +85,11 @@ type Options struct {
 	// every host in the deployment commits to, and this machine's own
 	// publication journal.
 	//
-	// Both are optional and their absence is a state rather than a fault. A
-	// nil Fleet is local mode — there is no shared backend, so there are no
-	// other hosts, and the routes in fleet.go answer that plainly instead of
-	// refusing. A nil SyncJournal is a build with no publication journal
-	// wired, which internal/fleet resolves to "local" rather than guessing on
-	// its behalf.
+	// A nil Fleet with no FleetError is intentional local mode. FleetError
+	// preserves a failed shared-backend startup so routes cannot mistake it
+	// for an unconfigured machine. A nil SyncJournal is a build with no
+	// publication journal wired, which internal/fleet resolves to "local"
+	// rather than guessing on its behalf.
 	//
 	// They are two fields because they are two things: the catalog is
 	// authoritative about what committed globally, and the journal is the only
@@ -98,6 +97,7 @@ type Options struct {
 	// unreachable. Collapsing them would lose exactly the case SPEC.md §6.5
 	// requires to stay visible.
 	Fleet       FleetReader
+	FleetError  error
 	SyncJournal fleet.SyncJournal
 	// Presence is issue #118's fleet-presence read: what every machine in the
 	// deployment says it is running right now.

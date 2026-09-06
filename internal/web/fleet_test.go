@@ -437,6 +437,35 @@ func TestFleetReadFailureIsNotReportedAsAnAbsentFleet(t *testing.T) {
 	}
 }
 
+func TestMissingKeyCustodyPreservesConfiguredFleetFailure(t *testing.T) {
+	h := newPhaseB(t, "plain", func(opts *Options) {
+		opts.Fleet = nil
+		opts.FleetError = fmt.Errorf("%w: synthetic-private-detail", fleet.ErrPayloadKeysUnavailable)
+	})
+	for _, path := range []string{
+		"/api/fleet/records", "/api/fleet/hosts",
+		"/api/hypotheses?fleet=1", "/api/findings?fleet=1",
+		"/api/review/queue?status=all&fleet=1",
+	} {
+		response := h.get(path)
+		text := body(t, response)
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("GET %s status %d: %s", path, response.StatusCode, text)
+		}
+		if !strings.Contains(text, "payload-keys.json") || strings.Contains(text, `"configured":false`) {
+			t.Errorf("GET %s lost the custody failure: %s", path, text)
+		}
+		if strings.Contains(text, "synthetic-private-detail") {
+			t.Errorf("GET %s exposed private diagnostic detail", path)
+		}
+	}
+	var hypotheses hypothesisList
+	decodeResponse(t, h.get("/api/hypotheses"), &hypotheses)
+	if len(hypotheses.Items) == 0 || !hypotheses.SyncDegraded {
+		t.Fatal("missing fleet keys must preserve local records with unknown sync state")
+	}
+}
+
 // TestUnresolvableSyncStateDegradesRatherThanRefusing is the other half, and it
 // is the one that matters more.
 //

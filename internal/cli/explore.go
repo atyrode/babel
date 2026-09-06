@@ -55,6 +55,7 @@ for it, never by a URL of its own.
 
 Flags:
   --preparation ID     required: the corpus scope to explore
+  --stop-file PATH     interrupt at a safe point when this file exists
   --recipe ID          cookbook recipe to run; repeatable. Naming one runs
                        exactly it, default-enabled or not
                        (default: the default-enabled lenses)
@@ -156,6 +157,7 @@ func (a *app) explore(ctx context.Context, args []string) error {
 	challenge := c.fs.Bool("challenge", false, "run the independent challenger pass")
 	synthesize := c.fs.Bool("synthesize", false, "run the synthesis pass")
 	runID := c.fs.String("run-id", "", "resume this run instead of starting a new one")
+	stopFile := c.fs.String("stop-file", "", "interrupt at a safe point when this file exists")
 	develop := c.fs.Int("develop", 0, "cap the candidates developed in this pass")
 	retrievals := c.fs.Int("retrievals", 0, "cap the corpus searches served")
 	c.fs.Var(&sources, "public-research", "grant brokered public research and fix this source URL; repeatable")
@@ -233,11 +235,12 @@ func (a *app) explore(ctx context.Context, args []string) error {
 	defer closePresence()
 
 	res, outcome, runErr := a.runExploration(ctx, state, explorePlan{
-		prep:    prep,
-		profile: profileRef,
-		recipes: set,
-		worker:  wcfg,
-		runID:   id,
+		prep:     prep,
+		profile:  profileRef,
+		recipes:  set,
+		worker:   wcfg,
+		runID:    id,
+		stopFile: *stopFile,
 		// The command is the authority (#96). An operator typed it, which is
 		// the same intentionality #86 requires of a profile applied to
 		// scheduling: the receipt records that a person asked for this run
@@ -283,7 +286,10 @@ type explorePlan struct {
 	recipes   *cookbook.Set
 	worker    worker.Config
 	runID     string
+	stopFile  string
 	authority runstore.Authority
+	prior     []string
+	params    map[string]string
 	// roots are frontier candidates the run starts from; scanRoots are source
 	// directories preflight rediscovers the selected sessions under.
 	roots      []string
@@ -398,12 +404,18 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		Sanitize(p.authority.String()))
 	reporter := &exploreReporter{app: a, last: time.Now()}
 	outcome, runErr := controller.Explore(ctx, explore.Options{
+		Prior:      p.prior,
+		Params:     p.params,
 		RunID:      p.runID,
 		Authority:  p.authority,
 		Roots:      p.roots,
 		Challenge:  p.challenge,
 		Synthesize: p.synthesize,
 		Budget:     p.budget,
+		StopFile:   p.stopFile,
+		Launch: &runstore.Launch{Profile: p.profile, Recipes: p.recipes.IDs(), Roots: p.roots, Prior: p.prior, Params: p.params,
+			ScanRoots: p.scanRoots, Research: p.research, Challenge: p.challenge,
+			Synthesize: p.synthesize, Develop: p.budget.Develop, Retrievals: p.budget.Retrievals, Fetches: p.budget.Fetches},
 		OnRecord:   reporter.record,
 		OnProgress: reporter.progress,
 	})
@@ -416,6 +428,9 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 	// record that is never enrolled is invisible to the review queue. It
 	// runs even for a failed run, because what a degraded run did produce is
 	// exactly what a reviewer has to look at.
+	if outcome.Receipt != nil && outcome.Receipt.Body.Checkpoint != nil && outcome.Receipt.Body.Checkpoint.State == runstore.Interrupted {
+		a.publishLifecycle(context.WithoutCancel(ctx), p.runID)
+	}
 	enrolled := a.enrol(ctx, state.review, outcome)
 	return exploreOutcome(p.prep, p.profile, p.recipes, outcome, enrolled), outcome, runErr
 }

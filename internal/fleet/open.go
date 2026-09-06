@@ -17,6 +17,11 @@ import (
 // knows nothing about documents, and OpenReader is the only function here that
 // reads one.
 
+// ErrPayloadKeysUnavailable distinguishes missing or unusable key custody from
+// intentional local mode. Its message is safe for a client; wrapped load errors
+// remain private diagnostics.
+var ErrPayloadKeysUnavailable = errors.New("shared storage is configured, but payload-keys.json is unavailable; restore the deployment's existing keyring through its provisioning mechanism")
+
 // OpenReader assembles the fleet read surface from this machine's storage
 // configuration: the shared catalog connection, the Phase B object store, and
 // the payload keyring.
@@ -27,10 +32,9 @@ import (
 //   - Local mode. There is no fleet, and saying so is the correct answer to
 //     "show me every host's records". ErrNotConfigured.
 //   - Shared mode with no payload keys. The catalog is reachable and every
-//     plaintext row is readable, but no record's content can be opened. That
-//     is still ErrNotConfigured, because a reader that could list records and
-//     never read one would make every listing a wall of unopenable rows - and
-//     the message names the key document, which is the thing to fix.
+//     plaintext row is readable, but no record's content can be opened.
+//     ErrPayloadKeysUnavailable names the custody problem rather than sending
+//     the operator through shared-storage configuration again.
 //   - A catalog that cannot be reached. That is not a configuration answer at
 //     all: the deployment is configured and PostgreSQL is down, and
 //     sharedcatalog.Unreachable is what tells those apart, so the error is
@@ -38,20 +42,23 @@ import (
 //
 // The caller owns the returned reader's connection lifetime through Close.
 func OpenReader(ctx context.Context, cfg config.Config, localHostID string) (*Reader, error) {
-	if cfg.Mode != config.ModeShared || cfg.Catalog == nil {
+	if cfg.Mode != config.ModeShared {
 		return nil, fmt.Errorf("%w: this machine runs in local mode", ErrNotConfigured)
 	}
+	if cfg.Catalog == nil {
+		return nil, errors.New("shared storage configuration names no catalog")
+	}
 	if cfg.DeploymentID == "" {
-		return nil, fmt.Errorf("%w: the storage configuration names no deployment", ErrNotConfigured)
+		return nil, errors.New("shared storage configuration names no deployment")
 	}
 
 	keys, found, err := config.LoadPayloadKeys()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrPayloadKeysUnavailable, err)
 	}
 	if !found {
-		return nil, fmt.Errorf("%w: no payload keys at %s, so no record's content can be opened",
-			ErrNotConfigured, config.PayloadKeysPath())
+		return nil, fmt.Errorf("%w (expected at %s)",
+			ErrPayloadKeysUnavailable, config.PayloadKeysPath())
 	}
 	active, material, err := keys.Material()
 	if err != nil {

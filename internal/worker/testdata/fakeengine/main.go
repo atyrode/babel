@@ -63,6 +63,7 @@ func main() {
 		uriRequest     = flag.Bool("uri-request", false, "raise a host URI request during the turn")
 		unknownFrames  = flag.Bool("unknown-frames", false, "emit a frame type Babel does not define")
 		statsExit      = flag.Bool("stats-refused", false, "refuse get_session_stats")
+		accounting     = flag.Bool("accounting", false, "emit native assistant accounting and fallback events")
 
 		// The model side: which tools the fixture calls and what it submits.
 		calls          = flag.String("call", "", "comma-separated tool names to call once each, in order, before submitting")
@@ -213,6 +214,28 @@ func main() {
 	params := promptParams(prompt)
 	f.emit(map[string]any{"type": "agent_start"})
 	f.emit(map[string]any{"type": "turn_start"})
+	if *accounting {
+		f.emit(map[string]any{"type": "message_end", "message": map[string]any{
+			"role": "user", "content": "private user text", "timestamp": 1000,
+		}})
+		f.emit(map[string]any{"type": "retry_fallback_applied", "from": "declared/primary", "to": "gateway/actual-2", "role": "default"})
+		f.emit(map[string]any{"type": "message_end", "message": map[string]any{
+			"role": "assistant", "provider": "gateway", "model": "actual-2",
+			"upstreamProvider": "native-provider", "upstreamModel": "concrete-2",
+			"timestamp": 1001, "completedAt": 1010, "responseId": "response-2", "stopReason": "toolUse",
+			"content": []any{map[string]any{"type": "text", "text": "private assistant text"},
+				map[string]any{"type": "toolCall", "name": "search", "arguments": map[string]any{"query": "private tool arguments"}}},
+			"usage": json.RawMessage(`{"input":1200,"output":340,"reasoningTokens":140,"cacheRead":80,"cacheWrite":20,"totalTokens":1646,"contextTokens":1300,"premiumRequests":0.5,"orchestration":{"input":1,"cacheRead":2,"output":3},"cttl":{"ephemeral5m":15,"ephemeral1h":5},"server":{"webSearch":1,"webFetch":0},"credits":{"cost":0.4,"committedCost":0.3,"acuCost":0.2},"cost":{"input":0.01,"output":0.02,"cacheRead":0.001,"cacheWrite":0.002,"total":0.033}}`),
+		}})
+		f.emit(map[string]any{"type": "retry_fallback_succeeded", "model": "gateway/actual-2", "role": "default"})
+		// An applied fallback is not proof of success; a failed assistant
+		// message may have no usage at all.
+		f.emit(map[string]any{"type": "retry_fallback_applied", "from": "gateway/actual-2", "to": "last-resort", "role": "default"})
+		f.emit(map[string]any{"type": "message_end", "message": map[string]any{
+			"role": "assistant", "model": "last-resort", "stopReason": "error",
+			"content": []any{map[string]any{"type": "text", "text": "private error text"}},
+		}})
+	}
 	if *unknownFrames {
 		f.emit(map[string]any{"type": "telemetry_sample", "value": 1})
 	}
@@ -280,6 +303,13 @@ func main() {
 		case "get_session_stats":
 			if *statsExit {
 				f.emit(map[string]any{"type": "response", "id": id, "command": kind, "success": false, "error": "stats unavailable"})
+				continue
+			}
+			if *accounting {
+				f.respond(id, kind, map[string]any{
+					"tokens": map[string]any{"input": 1200, "output": 340, "reasoning": 140, "cacheRead": 80, "cacheWrite": 20, "total": 1646},
+					"cost":   0.033, "toolCalls": f.calls, "assistantMessages": 2,
+				})
 				continue
 			}
 			f.respond(id, kind, map[string]any{
