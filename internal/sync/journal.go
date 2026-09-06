@@ -10,7 +10,7 @@ import (
 
 	"github.com/atyrode/babel/internal/sharedcatalog"
 
-	_ "modernc.org/sqlite"
+	"github.com/atyrode/babel/internal/durable"
 )
 
 // component names this package's rows in the durable database's shared
@@ -224,7 +224,7 @@ func OpenJournal(dir string) (*Journal, error) {
 		return nil, fmt.Errorf("sync: create durable state directory: %w", err)
 	}
 	path := filepath.Join(dir, DatabaseName)
-	db, err := sql.Open("sqlite", path)
+	db, err := durable.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("sync: open durable database: %w", err)
 	}
@@ -255,7 +255,7 @@ func (j *Journal) migrate() error {
 	if err := j.db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journalMode); err != nil {
 		return fmt.Errorf("sync: enable durable WAL: %w", err)
 	}
-	if _, err := j.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if _, err := j.db.Exec(durable.BusyPragma); err != nil {
 		return fmt.Errorf("sync: set durable busy timeout: %w", err)
 	}
 	if _, err := j.db.Exec(`PRAGMA foreign_keys=ON`); err != nil {

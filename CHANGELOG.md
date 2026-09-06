@@ -11,6 +11,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **A record the model produced is no longer lost when several explorations
+  record into one durable file at once (#173).** Every store began its
+  transactions deferred; in WAL mode a transaction that had read and then wrote
+  after another connection committed got `SQLITE_BUSY` at once, without the
+  busy handler being consulted, and the run logged `persist observation …
+  database is locked` while the observation vanished — hundreds of times on a
+  machine running eight investigations. `internal/durable` now opens every
+  store with immediate transactions, so a writer waits behind a writer instead
+  of failing on its first insert, and a sixty-second busy window sized for
+  concurrent runs. `TestDeferredTransactionLosesTheWrite` reproduces the loss
+  on a plain handle; `TestWriterWaitsBehindAnotherWriter` proves the fix.
+
 - **Babel reads its configuration from `~/.config/babel` on macOS too.**
   `storage.json` and the payload key ring were resolved through
   `os.UserConfigDir`, which on darwin answers `~/Library/Application Support`
@@ -24,7 +36,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 ## [0.2.2] - 2026-09-06
 
 Shared-mode staging, the manifold plugins, and `babel web` on macOS.
-
 ### Added
 
 - **Babel's first manifold plugins, `atyrode.babel` and `atyrode.babel.sessions`

@@ -20,6 +20,7 @@ import (
 	"github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/sync"
 
+	"github.com/atyrode/babel/internal/durable"
 	_ "modernc.org/sqlite"
 )
 
@@ -121,7 +122,7 @@ func Open(dir string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("complaint: create durable state directory: %w", err)
 	}
 	path := filepath.Join(dir, databaseFile)
-	db, err := sql.Open("sqlite", path)
+	db, err := durable.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("complaint: open durable database: %w", err)
 	}
@@ -165,7 +166,7 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
 		return fmt.Errorf("complaint: enable durable WAL: %w", err)
 	}
-	if _, err := s.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if _, err := s.db.Exec(durable.BusyPragma); err != nil {
 		return fmt.Errorf("complaint: set durable busy timeout: %w", err)
 	}
 	if _, err := s.db.Exec(`PRAGMA foreign_keys=ON`); err != nil {

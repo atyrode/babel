@@ -15,7 +15,7 @@ import (
 	// package by that name is the Phase B publication hook, not a mutex.
 	"github.com/atyrode/babel/internal/sync"
 
-	_ "modernc.org/sqlite"
+	"github.com/atyrode/babel/internal/durable"
 )
 
 // storeComponent names this package's migrations inside the durable database's
@@ -108,7 +108,7 @@ func Open(dir string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("run: create state directory: %w", err)
 	}
 	path := filepath.Join(dir, DatabaseName)
-	db, err := sql.Open("sqlite", path)
+	db, err := durable.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("run: open durable database: %w", err)
 	}
@@ -206,7 +206,7 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
 		return fmt.Errorf("run: enable durable WAL: %w", err)
 	}
-	if _, err := s.db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if _, err := s.db.Exec(durable.BusyPragma); err != nil {
 		return fmt.Errorf("run: set durable busy timeout: %w", err)
 	}
 	if _, err := s.db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
