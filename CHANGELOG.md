@@ -11,6 +11,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **`babel sync` commits a closure's records sixteen at a time (#180).** Each
+  record is four network round-trips — a presence check, the sealed object's
+  write, its read-back, the row — and they ran one after another, so a
+  700-record run took four minutes to publish and a day's backlog hours.
+  Records within a closure are independent (the row insert already tolerates
+  two instances committing the same one), so they are now committed
+  concurrently; the closure-level verdict is unchanged and a partial closure
+  is the same visibly pending state it was.
+  `TestConcurrentCommitKeepsTheInvariantUnderAFailure` holds the invariant
+  under an injected failure; the serial protocol remains selectable and its
+  tests select it.
+
 - **A challenge or synthesis pass no longer fails outright when the model
   attaches observations to its candidates (#171).** With code v0.18.0 every
   challenge and synthesis pass on 2026-09-06 ended with `the challenge stage
