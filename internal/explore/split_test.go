@@ -240,9 +240,20 @@ func TestAResumedRunNeitherLosesNorDuplicatesARemedy(t *testing.T) {
 	controller := h.controller(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}))
 
 	ctx := context.Background()
-	first, err := controller.Explore(ctx, explore.Options{Authority: testAuthority, RunID: "r-resume"})
-	if err != nil {
-		t.Fatalf("first attempt: %v (failures %+v)", err, first.Failures)
+	interruptedCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	first, err := controller.Explore(interruptedCtx, explore.Options{
+		Authority: testAuthority, RunID: "r-resume",
+		OnRecord: func(e explore.RecordEvent) {
+			// The remedy and its resume-ledger binding are durable before
+			// this callback. Interrupt here, not at the earlier candidate.
+			if e.Type == frontier.EntityProposal && e.Ref == "r-1" {
+				cancel()
+			}
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("first attempt: %v, want interruption after the remedy commit", err)
 	}
 	if len(first.Proposals) != 1 {
 		t.Fatalf("first attempt persisted %d proposals, want 1", len(first.Proposals))
