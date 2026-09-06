@@ -63,35 +63,44 @@ const leaseSchema = `CREATE TABLE IF NOT EXISTS run_lease (
  run_id TEXT PRIMARY KEY, host TEXT NOT NULL, pid INTEGER NOT NULL,
  heartbeat TEXT NOT NULL)`
 
+var ErrAttemptOwned = errors.New("run: attempt is owned; reconcile it after the owner is lost")
+
+type ReconcileOptions struct {
+	RunID string
+	// Publish runs while the exact recovered lease is still held.
+	Publish func(context.Context, string) error
+}
+
+type reconcileCandidate struct {
+	id string
+	pid int
+	beat string
+}
+
 // BeginAttempt excludes simultaneous controllers and recovery on this local
 // database. A dead owner's lease is removed only by explicit reconciliation.
 func (s *Store) BeginAttempt(ctx context.Context, id string) (func(), error) {
-	host, err := os.Hostname()
-	if err != nil {
-		return nil, err
-	}
-	if _, err = s.db.ExecContext(ctx, `INSERT INTO run_lease VALUES (?, ?, ?, ?)`, id, host, os.Getpid(), formatTime(time.Now())); err != nil {
-		return nil, fmt.Errorf("run: attempt already owned; reconcile stale attempts before resuming: %w", err)
-	}
-	stop, done := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(done)
-		tick := time.NewTicker(30 * time.Second)
-		defer tick.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-tick.C:
-				_, _ = s.db.ExecContext(context.Background(), `UPDATE run_lease SET heartbeat = ? WHERE run_id = ? AND host = ? AND pid = ?`, formatTime(time.Now()), id, host, os.Getpid())
-			}
-		}
-	}()
-	return func() {
-		close(stop)
-		<-done
-		_, _ = s.db.ExecContext(context.Background(), `DELETE FROM run_lease WHERE run_id = ? AND host = ? AND pid = ?`, id, host, os.Getpid())
-	}, nil
+ host, err := os.Hostname()
+ if err != nil { return nil, err }
+ if _, err = s.db.ExecContext(ctx, `INSERT INTO run_lease VALUES (?, ?, ?, ?)`, id, host, os.Getpid(), formatTime(time.Now())); err != nil {
+  return nil, fmt.Errorf("%w: %v", ErrAttemptOwned, err)
+ }
+ return s.holdAttempt(id, host), nil
+}
+
+func (s *Store) holdAttempt(id, host string) func() {
+ stop, done := make(chan struct{}), make(chan struct{})
+ go func() {
+  defer close(done)
+  tick := time.NewTicker(30*time.Second)
+  defer tick.Stop()
+  for { select {
+  case <-stop: return
+  case <-tick.C:
+   _, _ = s.db.ExecContext(context.Background(), `UPDATE run_lease SET heartbeat = ? WHERE run_id = ? AND host = ? AND pid = ?`, formatTime(time.Now()), id, host, os.Getpid())
+  } }
+ }()
+ return func() { close(stop); <-done; _, _ = s.db.ExecContext(context.Background(), `DELETE FROM run_lease WHERE run_id = ? AND host = ? AND pid = ?`, id, host, os.Getpid()) }
 }
 
 func (s *Store) Latest(ctx context.Context, id string) (Receipt, error) {
@@ -158,91 +167,68 @@ func (s *Store) Interrupted(ctx context.Context) ([]Receipt, error) {
 // Reconcile only considers local ownership with a stale heartbeat AND a dead
 // process. A stale heartbeat alone cannot establish that a worker stopped.
 // The cause is unknown process loss, never an inferred quota or signal.
-func (s *Store) Reconcile(ctx context.Context, before time.Time) ([]Receipt, error) {
-	host, err := os.Hostname()
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT run_id, pid, heartbeat FROM run_lease WHERE host = ? AND heartbeat < ?`, host, formatTime(before))
-	if err != nil {
-		return nil, err
-	}
-	type candidate struct {
-		id   string
-		pid  int
-		beat string
-	}
-	var candidates []candidate
-	for rows.Next() {
-		var c candidate
-		if err := rows.Scan(&c.id, &c.pid, &c.beat); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		candidates = append(candidates, c)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	out := []Receipt{}
-	for _, c := range candidates {
-		if c.pid <= 0 {
-			continue
-		}
-		p, err := os.FindProcess(c.pid)
-		if err != nil {
-			continue
-		}
-		err = p.Signal(syscall.Signal(0))
-		p.Release()
-		if !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
-			continue
-		}
-		prior, err := s.Latest(ctx, c.id)
-		if err != nil {
-			if !errors.Is(err, ErrNotFound) {
-				return out, err
-			}
-			// The process died before its first durable launch checkpoint. There is
-			// nothing to invent a receipt from, but the dead lease must not prevent
-			// historical recovery or an explicitly supplied --run-id attempt.
-			if _, err := s.db.ExecContext(ctx, `DELETE FROM run_lease WHERE run_id=? AND heartbeat=? AND pid=?`, c.id, c.beat, c.pid); err != nil {
-				return out, err
-			}
-			continue
-		}
-		cp := prior.Body.Checkpoint
-		if cp == nil {
-			continue
-		}
-		next := prior
-		if cp.State == Running || cp.State == Resumed {
-			records, _, err := s.KnownRecords(ctx, c.id)
-			if err != nil {
-				return out, err
-			}
-			copy := *cp
-			copy.Records = records
-			prior.Body.Checkpoint = &copy
-			next, err = s.Transition(ctx, prior, Interrupted, "unknown process loss (stale local heartbeat; owner no longer exists)")
-			if err != nil {
-				return out, err
-			}
-		}
-		if err = s.DeclareClosure(ctx, c.id); err != nil {
-			return out, err
-		}
-		_, err = s.db.ExecContext(ctx, `DELETE FROM run_lease WHERE run_id = ? AND heartbeat = ? AND pid = ?`, c.id, c.beat, c.pid)
-		if err != nil {
-			return out, err
-		}
-		if next.Body.Checkpoint.State == Interrupted {
-			out = append(out, next)
-		}
-	}
-	return out, nil
+func (s *Store) Reconcile(ctx context.Context, before time.Time, opt ReconcileOptions) ([]Receipt, error) {
+ host, err := os.Hostname()
+ if err != nil { return nil, err }
+ rows, err := s.db.QueryContext(ctx, `SELECT run_id, pid, heartbeat FROM run_lease WHERE host = ? AND heartbeat < ? AND (? = '' OR run_id = ?)`, host, formatTime(before), opt.RunID, opt.RunID)
+ if err != nil { return nil, err }
+ var candidates []reconcileCandidate
+ for rows.Next() { var c reconcileCandidate; if err := rows.Scan(&c.id, &c.pid, &c.beat); err != nil { rows.Close(); return nil, err }; candidates = append(candidates, c) }
+ err = rows.Err(); rows.Close(); if err != nil { return nil, err }
+ out := []Receipt{}
+ for _, c := range candidates {
+  recovered, err := s.reconcileCandidate(ctx, host, c, opt)
+  if err != nil { return out, err }
+  if recovered != nil { out = append(out, *recovered) }
+ }
+ return out, nil
+}
+
+func (s *Store) reconcileCandidate(ctx context.Context, host string, c reconcileCandidate, opt ReconcileOptions) (*Receipt, error) {
+ if c.pid <= 0 { return nil, nil }
+ p, err := os.FindProcess(c.pid)
+ if err != nil { return nil, nil }
+ err = p.Signal(syscall.Signal(0)); p.Release()
+ if !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) { return nil, nil }
+ // Compare-and-swap the exact observed lease BEFORE reading the receipt.
+ // Another reconciler may have released this lease and a live resume may
+ // already own its successor. Old process-loss evidence cannot claim it.
+ claimed, err := s.db.ExecContext(ctx, `UPDATE run_lease SET pid=?, heartbeat=? WHERE run_id=? AND host=? AND pid=? AND heartbeat=?`, os.Getpid(), formatTime(time.Now()), c.id, host, c.pid, c.beat)
+ if err != nil { return nil, err }
+ count, err := claimed.RowsAffected()
+ if err != nil || count == 0 { return nil, err }
+ release := s.holdAttempt(c.id, host)
+ defer release()
+ commit := context.WithoutCancel(ctx)
+ prior, err := s.Latest(commit, c.id)
+ if errors.Is(err, ErrNotFound) { return nil, nil }
+ if err != nil { return nil, err }
+ cp := prior.Body.Checkpoint
+ if cp == nil { return nil, nil }
+ next := prior
+ if cp.State == Running || cp.State == Resumed {
+  records, _, err := s.KnownRecords(commit, c.id)
+  if err != nil { return nil, err }
+  copy := *cp
+  copy.Records = records
+  prior.Body.Checkpoint = &copy
+  next, err = s.Transition(commit, prior, Interrupted, "unknown process loss (stale local heartbeat; owner no longer exists)")
+  if err != nil { return nil, err }
+ }
+ if err := s.DeclareClosure(commit, c.id); err != nil { return nil, err }
+ if opt.Publish != nil {
+  if err := opt.Publish(commit, c.id); err != nil { return nil, err }
+ }
+ if next.Body.Checkpoint.State == Interrupted { return &next, nil }
+ return nil, nil
+}
+
+// AttemptOwned is a conservative admission check. BeginAttempt remains the
+// atomic authority if another process races this read.
+func (s *Store) AttemptOwned(ctx context.Context, id string) (bool, error) {
+ var count int
+ err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM run_lease WHERE run_id=?`, id).Scan(&count)
+ return count != 0, err
 }
 
 // CloseInterrupted is an operator decision, never a conclusion inferred from
