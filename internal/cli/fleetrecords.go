@@ -411,6 +411,8 @@ func recordSummary(rec fleet.Record) (summary, unopened string) {
 		return "", Sanitize(rec.Unopened)
 	}
 	if rec.Published == nil {
+		// Successfully opened producer-owned JSON (preparation, receipt,
+		// context or complaint) has no frontier summary, not an opening error.
 		return "", ""
 	}
 	out, err := rec.Published.Output()

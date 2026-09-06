@@ -640,14 +640,15 @@ func markFleetRecord(record fleet.Record, localHost string) (fleetMark, string) 
 		mark.CommittedAt = timeText(*record.CommittedAt)
 	}
 	if record.Published == nil {
+		// Producer-owned JSON can be open without a frontier projection.
+		// Its lack of a searchable summary must not mark the row unopened.
 		return mark, ""
 	}
 	out, err := record.Published.Output()
 	switch {
 	case errors.Is(err, frontier.ErrNotSearchable):
-		// A kind the retrieval surface does not hold — a proposal, a link, a
-		// receipt — has no summary by construction rather than by failure, so
-		// this is an absent summary and not an unopened record.
+		// A frontier kind without a retrieval surface (proposal or link) has
+		// no summary by construction rather than by failure.
 		return mark, ""
 	case err != nil:
 		if mark.Unopened == "" {

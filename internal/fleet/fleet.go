@@ -37,6 +37,7 @@ package fleet
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -147,10 +148,13 @@ func (r *Reader) LocalHost() string { return r.localHost }
 type Record struct {
 	sharedcatalog.FleetRecord
 
-	// Published is the decoded record, nil when content was not requested or
-	// could not be opened.
+	// Content is the exact authenticated JSON plaintext, nil when content was
+	// not requested or could not be opened. Its schema belongs to its producer.
+	Content json.RawMessage
+	// Published is the validated frontier projection, nil for non-frontier
+	// kinds even when Content was successfully opened.
 	Published *frontier.PublishedRecord
-	// Unopened says why Published is nil, empty when it is not. It carries a
+	// Unopened says why content could not be opened, empty on success. It carries a
 	// reason rather than a boolean because the reasons call for different
 	// responses - a missing key is a key to install, a newer schema is a
 	// binary to update, a store error is a store to check - and a renderer
@@ -191,38 +195,69 @@ func (r *Reader) RecordsWithContent(ctx context.Context, filter sharedcatalog.Re
 		return nil, err
 	}
 	for i := range out {
-		published, err := r.Open(ctx, out[i].FleetRecord)
+		opened, err := r.Open(ctx, out[i].FleetRecord)
 		if err != nil {
 			out[i].Unopened = err.Error()
 			continue
 		}
-		out[i].Published = &published
+		out[i] = opened
 	}
 	return out, nil
 }
 
-// Open fetches, verifies and decrypts one record's sealed object, then decodes
-// the frontier record inside it.
+// Open fetches, verifies and decrypts one record's sealed object. Content keeps
+// the original JSON; only frontier kinds receive a typed Published projection.
 //
-// The digest check happens inside sharedcatalog.OpenRecord, before decryption,
-// so a swapped or truncated object is reported as a storage fault rather than
-// surfacing as an opaque authentication failure. What this adds is the decode,
-// which is where a record from a newer build announces itself.
-func (r *Reader) Open(ctx context.Context, rec sharedcatalog.FleetRecord) (frontier.PublishedRecord, error) {
+// sharedcatalog.OpenRecord checks the digest and authenticates both the record
+// identity and catalog kind before that kind selects a decoder. Preparations,
+// receipts, contexts and complaints retain their producer-owned wire forms.
+func (r *Reader) Open(ctx context.Context, rec sharedcatalog.FleetRecord) (Record, error) {
 	if !r.holdsKey(rec.Record.KeyID) {
 		// Saying this before fetching is not an optimisation. SPEC.md 9 makes
 		// the key id plaintext precisely so an instance can tell whether it
 		// can read a record before spending a network round trip on it, and
 		// the resulting message names a key rather than a decryption failure.
-		return frontier.PublishedRecord{}, fmt.Errorf(
+		return Record{}, fmt.Errorf(
 			"record %s is sealed under key %s, which this instance does not hold",
 			rec.Record.RecordID, rec.Record.KeyID)
 	}
 	plaintext, err := sharedcatalog.OpenRecord(ctx, r.store, r.ring, rec.Record)
 	if err != nil {
-		return frontier.PublishedRecord{}, err
+		return Record{}, err
 	}
-	return frontier.DecodePublishedRecord(plaintext)
+	if !json.Valid(plaintext) {
+		return Record{}, fmt.Errorf("record %s contains malformed JSON", rec.Record.RecordID)
+	}
+	opened := Record{FleetRecord: rec, Content: plaintext}
+	var kind frontier.PublishedKind
+	switch rec.Record.Kind {
+	case sharedcatalog.KindHypothesis:
+		kind = frontier.PublishedHypothesis
+	case sharedcatalog.KindObservation:
+		kind = frontier.PublishedObservation
+	case sharedcatalog.KindFinding:
+		kind = frontier.PublishedFinding
+	case sharedcatalog.KindProposal:
+		kind = frontier.PublishedProposal
+	case sharedcatalog.KindLink:
+		kind = frontier.PublishedLink
+	case sharedcatalog.KindDisposition:
+		kind = frontier.PublishedReviewAnswer
+	case sharedcatalog.KindPreparation, sharedcatalog.KindReceipt,
+		sharedcatalog.KindContext, sharedcatalog.KindComplaint:
+		return opened, nil
+	default:
+		return Record{}, fmt.Errorf("record %s has unsupported catalog kind %q", rec.Record.RecordID, rec.Record.Kind)
+	}
+	published, err := frontier.DecodePublishedRecord(plaintext)
+	if err != nil {
+		return Record{}, err
+	}
+	if published.Kind != kind || published.ID != rec.Record.RecordID {
+		return Record{}, fmt.Errorf("record %s frontier identity or kind disagrees with authenticated catalog row", rec.Record.RecordID)
+	}
+	opened.Published = &published
+	return opened, nil
 }
 
 // holdsKey reports whether this instance's ring can open a record sealed under
@@ -468,12 +503,15 @@ func (r *Reader) collect(ctx context.Context, hosts []string) (
 				unattributed++
 				continue
 			}
-			published, err := r.Open(ctx, rec.FleetRecord)
+			opened, err := r.Open(ctx, rec.FleetRecord)
 			if err != nil {
 				unopened = append(unopened, fmt.Sprintf("%s: %v", rec.Record.RecordID, err))
 				continue
 			}
-			output, err := published.Output()
+			if opened.Published == nil {
+				continue
+			}
+			output, err := opened.Published.Output()
 			if errors.Is(err, frontier.ErrNotSearchable) {
 				// Normal rather than exceptional: the catalog carries kinds
 				// with no retrieval surface, and meeting one is not a fault.
