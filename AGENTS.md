@@ -73,6 +73,16 @@ direction — Babel becomes a manifold plugin — is `docs/manifold-transition.m
 - Cross-repository facts about manifold are cited with `path:line` at a named manifold revision
   (`docs/manifold-transition.md` §1 explains the pinning); do not restate them from memory.
 
+## Active batch handoff
+
+The fleet-scale 2026-09-06 follow-ups are tracked in
+https://github.com/atyrode/babel/issues/189; `docs/handoff-2026-09-06.md` records
+the rollout context. When resuming this batch, read the tracker's pending
+operator actions and remind the operator at the next conversation. Record
+apply/recovery steps there and continue independent work without waiting for
+them. A recorded operator step is not authorization to mutate the live archive,
+restart analysis, or apply the fleet.
+
 ## Manifold plugins
 
 `plugins/` holds `atyrode.babel` (the baseline: doors, no panel) and `atyrode.babel.sessions`
