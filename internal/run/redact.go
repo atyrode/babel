@@ -140,6 +140,13 @@ func redactJSON(raw json.RawMessage) (json.RawMessage, int) {
 func redactBody(b Body) (Body, int) {
 	total := 0
 	out := b
+	if b.Checkpoint != nil {
+		raw, _ := json.Marshal(b.Checkpoint)
+		raw, removed := redactJSON(raw)
+		total += removed
+		out.Checkpoint = new(Checkpoint)
+		_ = json.Unmarshal(raw, out.Checkpoint)
+	}
 
 	out.Cookbook = append([]CookbookAsset(nil), b.Cookbook...)
 	out.Frontier = FrontierScope{

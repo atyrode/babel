@@ -121,6 +121,10 @@ func Open(dir string, opts ...Option) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(leaseSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("run: prepare local attempt leases: %w", err)
+	}
 	// The journal lives in this same file and stages on this same connection,
 	// so its tables have to exist here before a writer opens a transaction.
 	// It is cheap and idempotent. A local-only store skips it: a deployment
@@ -207,6 +211,13 @@ func (s *Store) DeclareFinished(ctx context.Context, hook sync.Hook) (declared [
 	}
 	skipped = map[string]error{}
 	for _, id := range runIDs {
+		latest, readErr := s.Latest(ctx, id)
+		if readErr != nil {
+			return declared, skipped, readErr
+		}
+		if cp := latest.Body.Checkpoint; cp != nil && (cp.State == Running || cp.State == Resumed) {
+			continue
+		}
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return declared, skipped, fmt.Errorf("run: begin closure declaration: %w", err)

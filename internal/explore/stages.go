@@ -79,6 +79,9 @@ var errConsolidationDeferred = errors.New("explore: consolidation deferred with 
 // worker receipt is the audit record of the boundary and is needed most when
 // the boundary failed. It returns nil only when nothing could be launched.
 func (c *Controller) runStage(st *state, stage Stage, runID string, params map[string]string) *stageRun {
+	if !c.safePoint(st, stage) {
+		return nil
+	}
 	at := c.now()
 	recipes := c.stageRecipes(stage)
 	if len(recipes) == 0 {

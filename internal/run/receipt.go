@@ -481,6 +481,7 @@ type Header struct {
 // plaintext. It holds queries, reasons, worker metadata, failure messages and
 // the worker's own structured output.
 type Body struct {
+	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
 	// Cookbook is the policy and lens identities and versions the run applied
 	// (SPEC.md §7).
 	Cookbook []CookbookAsset `json:"cookbook"`
@@ -579,6 +580,22 @@ func Amend(prior Receipt, id ReceiptID, body Body, recordedAt time.Time) (Receip
 	if body.AmendmentReason == "" {
 		return Receipt{}, fmt.Errorf("receipt: amendment reason is required")
 	}
+	if old := prior.Body.Checkpoint; old != nil {
+		if body.Checkpoint == nil {
+			return Receipt{}, fmt.Errorf("receipt: an amendment cannot erase lifecycle history")
+		}
+		next := body.Checkpoint.State
+		allowed := old.State == next
+		switch old.State {
+		case Running, Resumed:
+			allowed = allowed || next == Interrupted || next == Closed
+		case Interrupted:
+			allowed = allowed || next == Resumed || next == Closed
+		}
+		if !allowed {
+			return Receipt{}, fmt.Errorf("receipt: invalid lifecycle transition")
+		}
+	}
 	return newReceipt(id, prior.Header.RunID, prior.Preparation, prior.Header.Authority, body,
 		recordedAt, prior.Header.Revision+1, prior.Header.ID)
 }
@@ -596,7 +613,7 @@ func newReceipt(id ReceiptID, runID string, prep Preparation, authority Authorit
 	}
 	// An unrecorded authority survives amendment and nothing else: a first
 	// revision this build writes has to name one.
-	if revision == 1 || authority.Recorded() {
+	if (revision == 1 && !(body.Checkpoint != nil && body.Checkpoint.Historical)) || authority.Recorded() {
 		if err := authority.validate(); err != nil {
 			return Receipt{}, err
 		}
@@ -635,7 +652,18 @@ func newReceipt(id ReceiptID, runID string, prep Preparation, authority Authorit
 // runs after redaction, so any string it might name has already been cleaned —
 // but it names none of them anyway.
 func validateBody(b Body) error {
-	if len(b.Cookbook) == 0 {
+	historical := b.Checkpoint != nil && b.Checkpoint.Historical
+	if historical && (b.Checkpoint.Launch != nil || (b.Checkpoint.State != Interrupted && b.Checkpoint.State != Closed)) {
+		return fmt.Errorf("receipt: historical recovery cannot invent launch provenance")
+	}
+	if b.Checkpoint != nil {
+		switch b.Checkpoint.State {
+		case Running, Interrupted, Resumed, Closed:
+		default:
+			return fmt.Errorf("receipt: unknown lifecycle state")
+		}
+	}
+	if len(b.Cookbook) == 0 && !historical {
 		return fmt.Errorf("receipt: no cookbook asset recorded")
 	}
 	seen := make(map[worker.RecipeRef]struct{}, len(b.Cookbook))
@@ -663,10 +691,10 @@ func validateBody(b Body) error {
 			return fmt.Errorf("receipt: prior hypothesis %d is not an identifier", i)
 		}
 	}
-	if b.Job.Job < 1 || b.Job.Prompt == "" || b.Job.Schema == "" {
+	if !historical && (b.Job.Job < 1 || b.Job.Prompt == "" || b.Job.Schema == "") {
 		return fmt.Errorf("receipt: analysis job/prompt/schema version is incomplete")
 	}
-	if b.Policy.Redaction == "" || b.Policy.Disclosure == "" {
+	if !historical && (b.Policy.Redaction == "" || b.Policy.Disclosure == "") {
 		return fmt.Errorf("receipt: redaction/disclosure policy version is incomplete")
 	}
 	if b.Timing.StartedAt.IsZero() || b.Timing.FinishedAt.IsZero() {
@@ -676,7 +704,7 @@ func validateBody(b Body) error {
 		return fmt.Errorf("receipt: run finished before it started")
 	}
 	if b.Worker == nil {
-		if len(b.Failures) == 0 {
+		if len(b.Failures) == 0 && b.Checkpoint == nil {
 			return fmt.Errorf("receipt: a run with no worker receipt must record why")
 		}
 	} else if err := validateGrantedFacilities(b); err != nil {

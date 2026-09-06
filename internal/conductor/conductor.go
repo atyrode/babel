@@ -273,6 +273,7 @@ type RunOptions struct {
 	// internal/explore already makes safe — the frontier keeps what was
 	// committed and the receipt records the cancellation.
 	Stop <-chan struct{}
+	StopFile string
 }
 
 // ErrParked reports that the loop stopped because the budget refused the next
@@ -293,6 +294,16 @@ func (c *Conductor) Run(ctx context.Context, opt RunOptions) error {
 		return err
 	}
 	for {
+		if opt.StopFile != "" {
+			_, err := os.Stat(opt.StopFile)
+			if err == nil {
+				c.cfg.Log("conductor: stop file requested a cycle-boundary stop\n")
+				return nil
+			}
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("conductor: read stop file: %w", err)
+			}
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -330,13 +341,23 @@ func (c *Conductor) wait(ctx context.Context, opt RunOptions) error {
 	}
 	timer := time.NewTimer(c.cfg.Interval)
 	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-opt.Stop:
-		return nil
-	case <-timer.C:
-		return nil
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-opt.Stop:
+			return nil
+		case <-timer.C:
+			return nil
+		case <-tick.C:
+			if opt.StopFile != "" {
+				if _, err := os.Stat(opt.StopFile); !os.IsNotExist(err) {
+					return nil // Run checks and reports access errors at the boundary.
+				}
+			}
+		}
 	}
 }
 

@@ -89,6 +89,7 @@ the unexplored frontier deferred.
 
 Flags:
   --once               run exactly one cycle and stop
+  --stop-file PATH     stop before the next cycle when this file exists
   --until TIME         stop at RFC 3339 time, HH:MM today, or after a duration
   --worker PATH        the Code executable that speaks the worker protocol
   --worker-arg ARG     extra argument for the worker; repeatable
@@ -477,6 +478,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	sf.bindRoots(c)
 	once := c.fs.Bool("once", false, "run exactly one cycle and stop")
 	until := c.fs.String("until", "", "stop at this time, or after this duration")
+	stopFile := c.fs.String("stop-file", "", "stop at the cycle boundary when this file exists")
 	asJSON := c.fs.Bool("json", false, "emit the cycles this invocation ran as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -586,7 +588,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 		settings.Ceilings.PerCycle, settings.Ceilings.PerDay, settings.Ceilings.Currency,
 		Sanitize(profileRef.String()))
 	before := journal.NextSeq()
-	runErr := loop.Run(ctx, conductor.RunOptions{Until: deadline, Once: *once, Stop: stop.soft})
+	runErr := loop.Run(ctx, conductor.RunOptions{Until: deadline, Once: *once, Stop: stop.soft, StopFile: *stopFile})
 
 	res := conductorRunResult{Cycles: []conductorCycleRow{}}
 	for _, cycle := range journal.Recent(0) {

@@ -35,6 +35,17 @@ func (c *Controller) writeReceipt(st *state, runID string, workerReceipt *worker
 		Failures:     failures,
 		Timing:       run.Timing{StartedAt: started, FinishedAt: c.now()},
 	}
+	if runID == st.opt.RunID {
+		reason := ""
+		if st.lifecycle == run.Interrupted {
+			reason = "a worker stage did not complete; see the recorded boundary failure"
+			if st.out.Cancelled || st.ctx.Err() != nil {
+				reason = "operator stop or context cancellation"
+			}
+		}
+		body.Checkpoint = &run.Checkpoint{State: st.lifecycle, Stage: string(st.stage),
+			Reason: reason, Launch: st.opt.Launch, Records: slices.Clone(st.known)}
+	}
 	// The frontier checkpoint belongs to the exploration's own receipt: the
 	// separate passes of §5.4 do not schedule the frontier, and recording
 	// their deferral would claim they did.
@@ -64,7 +75,7 @@ func (c *Controller) writeReceipt(st *state, runID string, workerReceipt *worker
 		receipt, err = run.NewReceipt(run.NewReceiptID(), runID, c.cfg.Preparation,
 			st.opt.Authority, body, c.now())
 	} else {
-		body.AmendmentReason = "the run was resumed after an interruption"
+		body.AmendmentReason = "record the next durable attempt checkpoint"
 		receipt, err = run.Amend(prior[len(prior)-1], run.NewReceiptID(), body, c.now())
 	}
 	if err != nil {
