@@ -272,7 +272,7 @@ type RunOptions struct {
 	// the context is the harder stop: it cancels the run itself, which
 	// internal/explore already makes safe — the frontier keeps what was
 	// committed and the receipt records the cancellation.
-	Stop <-chan struct{}
+	Stop     <-chan struct{}
 	StopFile string
 }
 

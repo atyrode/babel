@@ -235,11 +235,11 @@ func (a *app) explore(ctx context.Context, args []string) error {
 	defer closePresence()
 
 	res, outcome, runErr := a.runExploration(ctx, state, explorePlan{
-		prep:    prep,
-		profile: profileRef,
-		recipes: set,
-		worker:  wcfg,
-		runID:   id,
+		prep:     prep,
+		profile:  profileRef,
+		recipes:  set,
+		worker:   wcfg,
+		runID:    id,
 		stopFile: *stopFile,
 		// The command is the authority (#96). An operator typed it, which is
 		// the same intentionality #86 requires of a profile applied to
@@ -286,10 +286,10 @@ type explorePlan struct {
 	recipes   *cookbook.Set
 	worker    worker.Config
 	runID     string
-	stopFile string
+	stopFile  string
 	authority runstore.Authority
-	prior []string
-	params map[string]string
+	prior     []string
+	params    map[string]string
 	// roots are frontier candidates the run starts from; scanRoots are source
 	// directories preflight rediscovers the selected sessions under.
 	roots      []string
@@ -404,15 +404,15 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		Sanitize(p.authority.String()))
 	reporter := &exploreReporter{app: a, last: time.Now()}
 	outcome, runErr := controller.Explore(ctx, explore.Options{
-		Prior: p.prior,
-		Params: p.params,
+		Prior:      p.prior,
+		Params:     p.params,
 		RunID:      p.runID,
 		Authority:  p.authority,
 		Roots:      p.roots,
 		Challenge:  p.challenge,
 		Synthesize: p.synthesize,
 		Budget:     p.budget,
-		StopFile: p.stopFile,
+		StopFile:   p.stopFile,
 		Launch: &runstore.Launch{Profile: p.profile, Recipes: p.recipes.IDs(), Roots: p.roots, Prior: p.prior, Params: p.params,
 			ScanRoots: p.scanRoots, Research: p.research, Challenge: p.challenge,
 			Synthesize: p.synthesize, Develop: p.budget.Develop, Retrievals: p.budget.Retrievals, Fetches: p.budget.Fetches},

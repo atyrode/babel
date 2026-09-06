@@ -598,7 +598,7 @@ type Options struct {
 	// the parameters this package owns.
 	Params map[string]string
 	// Launch is the typed CLI continuation input, never a worker command.
-	Launch *run.Launch
+	Launch   *run.Launch
 	StopFile string
 
 	OnRecord   func(RecordEvent)
@@ -669,14 +669,14 @@ type Outcome struct {
 
 // state is one attempt's working set.
 type state struct {
-	ctx    context.Context
-	commit context.Context
-	opt    Options
-	out    *Outcome
+	ctx       context.Context
+	commit    context.Context
+	opt       Options
+	out       *Outcome
 	lifecycle run.Lifecycle
-	stage Stage
-	known []string
-	started time.Time
+	stage     Stage
+	known     []string
+	started   time.Time
 
 	// hypotheses and observations resolve a reference — a ref this run's
 	// results emitted, or a durable identifier a brief listed — to a durable
