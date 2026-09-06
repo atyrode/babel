@@ -26,6 +26,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `atyrode.babel.configure` is reserved (#162). A workflow typechecks, tests and
   packs the bundles on every change under `plugins/`.
 
+- **The manifold plugins have a dev loop, a verifying CI and a delivery path
+  (atyrode/manifold#319).** `plugins/` gains `bun run verify`, which installs
+  every bundle on a real manifold server spawned from the sibling checkout and
+  dispatches every door it publishes, and `bun run dev`, which packs and
+  replace-installs on a hub and reinstalls on edit; both are the kit's own
+  commands, so nothing is duplicated here. `manifold-plugins.yml` is one call
+  of manifold's reusable `plugins.yml` (its ref and `plugins/MANIFOLD_REV` are
+  bumped together), and `release.yml` now attaches the bundles and their sums to
+  the GitHub Release and hands each one, baseline first, to the integrated
+  preview's receiver, so `https://preview.manifold.tyrode.dev` installs a tag
+  by itself. Production stays a hand install from the release URL. `AGENTS.md`
+  is new and says where a change is seen and what to tell the operator.
+
 - **The cookbook records delivery pipelines as a standing emphasis (operator
   direction 2026-09-02).** The statement gains a "Standing emphases" section
   (version 2) naming continually improved CI/CD in the friction frame: a check

@@ -37,6 +37,7 @@ function fake(): Fake {
   let ids = 0;
   const principal = { id: "p1", kind: "human", name: "Ada", color: "#e03131" } as const;
   const ctx: GuestCtx = {
+    traceId: 1,
     pluginId: BASELINE_ID,
     principal,
     auth: {
@@ -201,6 +202,7 @@ function host(): FakeHost {
 }
 
 const dispatchCtx: IsolateDispatchCtx = {
+  traceId: 1,
   principal: { id: "p1", kind: "human", name: "Ada", color: "#e03131" },
   caps: ["terminals:spawn", "containers:read"],
   isRoot: false,
