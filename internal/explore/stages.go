@@ -346,13 +346,25 @@ func (c *Controller) remedy(st *state, stage Stage, runID string, committed map[
 // develop writes the observations a candidate arrived with, bounded by the
 // pass's budget. §5.2 confines a budget to choosing what is explored now: a
 // candidate past it keeps its record and reaches the deferred frontier.
+//
+// A stage without observation authority — the challenger, the synthesizer —
+// drops the observations its candidates arrived with and records that it
+// did, once per candidate, as a warning rather than the run's verdict. The
+// table still decides what is persisted: none of those observations is. What
+// it no longer decides is whether the pass survives, because a model that
+// attaches an observation to every objection it raises (#171) would otherwise
+// turn every challenge and synthesis pass into a failure that spends the run
+// and records nothing — and the objection beside the observation, which is
+// the material the stage exists to produce, was never the problem.
 func (c *Controller) develop(st *state, stage Stage, runID string, committed map[string]Commit, auth authority, res *Result) {
 	if !auth.observations {
-		for _, cand := range res.Candidates {
+		for i := range res.Candidates {
+			cand := &res.Candidates[i]
 			if len(cand.Observations) > 0 {
-				st.fail(stage, FailureAuthority, c.now(), fmt.Errorf(
-					"%w: the %s stage cannot develop observations, and candidate %q arrived with %d",
-					ErrStageAuthority, stage, cand.Ref, len(cand.Observations)))
+				st.warn(stage, FailureAuthority, c.now(), fmt.Errorf(
+					"%w: the %s stage cannot develop observations; the %d candidate %q arrived with were dropped",
+					ErrStageAuthority, stage, len(cand.Observations), cand.Ref))
+				cand.Observations = nil
 			}
 		}
 		return

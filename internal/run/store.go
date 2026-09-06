@@ -140,6 +140,85 @@ func (s *Store) Close() error { return s.db.Close() }
 // Path reports the durable database's path.
 func (s *Store) Path() string { return s.path }
 
+// DeclareClosure closes runID's publication closure at the records staged
+// for it so far, inside one transaction on this store's connection. It is
+// the act that ends an exploration for the fleet: internal/explore calls it
+// once the receipt is written and nothing can still grow the run, and
+// CommitInline may then carry the closure to the shared backend.
+//
+// It exists because the writers hold a staging hook (#137) whose
+// CommitInline publishes nothing and declares nothing — declaration needs a
+// transaction on the durable file, which only a store has. Without this,
+// every exploration since #138 staged its records and never declared, and
+// `babel sync` waited forever for runs that had already ended.
+//
+// A local-only store declares nothing and reports nothing.
+func (s *Store) DeclareClosure(ctx context.Context, runID string) error {
+	if s.sync == nil {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("run: begin closure declaration: %w", err)
+	}
+	defer tx.Rollback()
+	if err := s.sync.DeclareTx(ctx, tx, sync.Closure{RunID: runID}); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("run: commit closure declaration for %s: %w", runID, err)
+	}
+	return nil
+}
+
+// DeclareFinished declares the closure of every run that has ended without
+// declaring one: its own receipt is written and still pending, and the run
+// id is a run's, not a stage job's. It is the backfill for runs an earlier
+// build ended without DeclareClosure, and for a process that died between
+// its receipt write and its declaration.
+//
+// A run whose closure is already declared is left as it is: DeclareTx is
+// idempotent on an identical declaration and refuses a different size, and
+// that refusal is reported per run rather than stopping the others. A run
+// still in flight has no receipt and is never touched.
+func (s *Store) DeclareFinished(ctx context.Context, hook sync.Hook) (declared []string, skipped map[string]error, err error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT run_id FROM run_receipt WHERE sync_state = ? AND instr(run_id, '/') = 0 ORDER BY run_id`,
+		SyncPending)
+	if err != nil {
+		return nil, nil, fmt.Errorf("run: list finished runs: %w", err)
+	}
+	var runIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		runIDs = append(runIDs, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	skipped = map[string]error{}
+	for _, id := range runIDs {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return declared, skipped, fmt.Errorf("run: begin closure declaration: %w", err)
+		}
+		if err := hook.DeclareTx(ctx, tx, sync.Closure{RunID: id}); err != nil {
+			tx.Rollback()
+			skipped[id] = err
+			continue
+		}
+		if err := tx.Commit(); err != nil {
+			return declared, skipped, fmt.Errorf("run: commit closure declaration for %s: %w", id, err)
+		}
+		declared = append(declared, id)
+	}
+	return declared, skipped, nil
+}
+
 // schema is this component's tables, indexes and immutability triggers. Table
 // names are prefixed so the file's other components cannot collide with them.
 const schema = `

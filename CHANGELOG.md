@@ -11,6 +11,44 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **`babel sync` commits a closure's records sixteen at a time (#180).** Each
+  record is four network round-trips — a presence check, the sealed object's
+  write, its read-back, the row — and they ran one after another, so a
+  700-record run took four minutes to publish and a day's backlog hours.
+  Records within a closure are independent (the row insert already tolerates
+  two instances committing the same one), so they are now committed
+  concurrently; the closure-level verdict is unchanged and a partial closure
+  is the same visibly pending state it was.
+  `TestConcurrentCommitKeepsTheInvariantUnderAFailure` holds the invariant
+  under an injected failure; the serial protocol remains selectable and its
+  tests select it.
+
+- **A challenge or synthesis pass no longer fails outright when the model
+  attaches observations to its candidates (#171).** With code v0.18.0 every
+  challenge and synthesis pass on 2026-09-06 ended with `the challenge stage
+  cannot develop observations, and candidate "c1" arrived with 2` for every
+  candidate — a full run spent, nothing but refusals recorded, and no finding
+  possible. The stage-authority table still persists none of those
+  observations; it now drops them with one recorded warning per candidate and
+  keeps the candidate and the objection or consolidation beside it, which is
+  the material the stage exists to produce. Remedies and findings a stage has
+  no authority for are refused as before: an observation is an additive claim
+  the table declines to keep, a remedy or a finding is a prescription.
+  `TestAChallengerCandidateWithObservationsKeepsTheCandidate` pins it.
+
+- **An exploration now declares its publication closure when it ends, so
+  its hypotheses, observations and receipt actually reach the fleet.** Since
+  the writers took a staging hook (#138), the one call that ended a run for
+  the fleet — `CommitInline` on the hook — declared nothing on the staging
+  half, and no exploration since had declared its closure: on 2026-09-06 a
+  machine held 50 finished runs and 19,000 staged records that `babel sync`
+  reported as belonging to runs "that have not finished", while only
+  preparations ever published. The run store gains `DeclareClosure`, which
+  internal/explore calls once the receipt is written, and `babel sync`
+  declares the closure of every run whose receipt is written and still
+  pending before it publishes — the backfill for runs an earlier build ended
+  without one. The first sync after the fix published dev-01's backlog.
+
 - **A record the model produced is no longer lost when several explorations
   record into one durable file at once (#173).** Every store began its
   transactions deferred; in WAL mode a transaction that had read and then wrote

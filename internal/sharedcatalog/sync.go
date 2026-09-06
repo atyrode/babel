@@ -6,10 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atyrode/babel/internal/envelope"
 )
+
+// publishWorkers bounds how many of a closure's records are in flight at once.
+// Each record is four round-trips — a presence check, the object write, its
+// read-back, the row insert — and records within a closure are independent
+// (the insert's ON CONFLICT already covers two instances committing the same
+// one), so running them serially made a 700-record run a four-minute wait and
+// a day's backlog a matter of hours (#180). The bound keeps a large closure
+// from opening hundreds of connections to the object store at once.
+const publishWorkers = 16
 
 // Sync states of a Phase B run (SPEC.md 6.5, 9). They deliberately match
 // internal/run's local vocabulary: a record staged locally is pending-sync
@@ -146,6 +157,10 @@ type RunClosure struct {
 	ContinuesRunID string
 	RecordCount    int
 	Records        []StagedRecord
+	// Workers bounds how many records are committed at once. Zero selects
+	// publishWorkers; one is the serial protocol, which a test that reasons
+	// about which record was reached selects explicitly.
+	Workers int
 }
 
 // SyncResult reports what one sync attempt achieved. It is returned even
@@ -214,22 +229,66 @@ func SyncRun(ctx context.Context, db *sql.DB, store ObjectStore, ring *envelope.
 		return res, err
 	}
 
+	// Every record's outcome is independent, and the closure-level verdict is
+	// finishRun's count below rather than this loop's bookkeeping, so records
+	// are committed concurrently. The first error stops new records from
+	// starting and is the one reported; records already in flight finish on
+	// their own, because each is a whole object-then-row commit and stopping
+	// it midway would only leave more for the next sync. A partial closure is
+	// the same visibly pending state a serial failure left, and the next sync
+	// resumes from the records the catalog holds.
+	workers := c.Workers
+	if workers <= 0 {
+		workers = publishWorkers
+	}
+	var (
+		objects, inserted atomic.Int64
+		firstErr          error
+		errMu             sync.Mutex
+		wg                sync.WaitGroup
+	)
+	failed := func() bool { errMu.Lock(); defer errMu.Unlock(); return firstErr != nil }
+	slots := make(chan struct{}, workers)
 	for _, rec := range c.Records {
-		present, err := recordPresent(ctx, db, c.RunID, rec.RecordID)
-		if err != nil {
-			return res, err
+		// The slot is taken before the check, so that with one worker the
+		// check sees the previous record's outcome and the serial protocol
+		// stops exactly at the record that failed.
+		slots <- struct{}{}
+		if failed() {
+			<-slots
+			break
 		}
-		if present {
-			continue
-		}
-		inserted, err := commitRecord(ctx, db, store, ring, c.RunID, rec)
-		if err != nil {
-			return res, err
-		}
-		res.ObjectsWritten++
-		if inserted {
-			res.RecordsCommitted++
-		}
+		wg.Add(1)
+		go func(rec StagedRecord) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			present, err := recordPresent(ctx, db, c.RunID, rec.RecordID)
+			if err == nil && present {
+				return
+			}
+			var ins bool
+			if err == nil {
+				ins, err = commitRecord(ctx, db, store, ring, c.RunID, rec)
+			}
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				return
+			}
+			objects.Add(1)
+			if ins {
+				inserted.Add(1)
+			}
+		}(rec)
+	}
+	wg.Wait()
+	res.ObjectsWritten = int(objects.Load())
+	res.RecordsCommitted = int(inserted.Load())
+	if firstErr != nil {
+		return res, firstErr
 	}
 
 	state, present, err := finishRun(ctx, db, c.RunID)
