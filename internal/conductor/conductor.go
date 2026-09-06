@@ -159,6 +159,22 @@ type Runner interface {
 	Run(ctx context.Context, runID string, a Assignment) (Result, error)
 }
 
+// CompletedRun is the durable result of inference that finished before its
+// conductor cycle could be finalized. Failure is the recorded run verdict,
+// not an error reading the receipt.
+type CompletedRun struct {
+	Result
+	FinishedAt time.Time
+	Failure string
+}
+
+// CompletionReader lets a durable runner repair the receipt-to-cycle crash
+// window without launching inference again. Other runners need not implement
+// it when they cannot outlive the cycle that called them.
+type CompletionReader interface {
+	Completed(context.Context, string) (CompletedRun, bool, error)
+}
+
 // Ledger reports what the day's receipts already estimated. It is an interface
 // for the same reason Runner is: the conductor is told what was spent, and has
 // no path to a number it produced itself.
@@ -389,6 +405,23 @@ func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
 	if err != nil {
 		return Cycle{}, err
 	}
+	if resuming {
+		if reader, ok := c.cfg.Runner.(CompletionReader); ok {
+			completed, found, err := reader.Completed(ctx, resume.RunID)
+			if err != nil {
+				return Cycle{}, fmt.Errorf("conductor: read completed run: %w", err)
+			}
+			if found {
+				var runErr error
+				if completed.Failure != "" {
+					runErr = errors.New(completed.Failure)
+				}
+				// No budget or corpus read may prevent recording work that
+				// is already complete. The next cycle enforces the budget.
+				return c.finish(ctx, "", resume, completed.Result, completed.FinishedAt, runErr)
+			}
+		}
+	}
 
 	spend, err := c.cfg.Ledger.SpentSince(ctx, StartOfDay(now), c.cfg.Ceilings.Currency)
 	if err != nil {
@@ -459,7 +492,13 @@ func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
 	// raced past it.
 	stopBeat()
 
-	cycle.FinishedAt = c.cfg.Now()
+	return c.finish(ctx, presenceID, cycle, result, c.cfg.Now(), runErr)
+}
+
+// finish is shared by live runs and recovery of a completed receipt, so the
+// journal records the same verdict and spend on either side of a crash.
+func (c *Conductor) finish(ctx context.Context, presenceID presence.PresenceID, cycle Cycle, result Result, finished time.Time, runErr error) (Cycle, error) {
+	cycle.FinishedAt = finished
 	cycle.PreparationID = result.PreparationID
 	cycle.ReceiptID = result.ReceiptID
 	cycle.Cost = result.Cost

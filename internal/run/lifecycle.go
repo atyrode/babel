@@ -39,16 +39,24 @@ type Launch struct {
 	Params     map[string]string `json:"params,omitempty"`
 }
 
+// Verdict distinguishes a successful attempt with warnings from a failed one.
+// Nil on older checkpoints means that this explicit verdict was not recorded.
+type Verdict struct {
+	Failure string `json:"failure,omitempty"`
+	Cancelled bool `json:"cancelled,omitempty"`
+}
+
 type Checkpoint struct {
-	State   Lifecycle `json:"state"`
-	Stage   string    `json:"stage,omitempty"`
-	Reason  string    `json:"reason,omitempty"`
-	Launch  *Launch   `json:"launch,omitempty"`
-	Records []string  `json:"records,omitempty"`
-	// Historical marks recovery where the old process never recorded launch
-	// provenance. Missing versions/profile are unknown, not current defaults.
-	Historical bool     `json:"historical,omitempty"`
-	Recipes    []string `json:"known_recipes,omitempty"`
+ State Lifecycle `json:"state"`
+ Stage string `json:"stage,omitempty"`
+ Reason string `json:"reason,omitempty"`
+ Launch *Launch `json:"launch,omitempty"`
+ Records []string `json:"records,omitempty"`
+ Verdict *Verdict `json:"verdict,omitempty"`
+ // Historical marks recovery where the old process never recorded launch
+ // provenance. Missing versions/profile are unknown, not current defaults.
+ Historical bool `json:"historical,omitempty"`
+ Recipes []string `json:"known_recipes,omitempty"`
 }
 
 const leaseSchema = `CREATE TABLE IF NOT EXISTS run_lease (
@@ -97,24 +105,24 @@ func (s *Store) Latest(ctx context.Context, id string) (Receipt, error) {
 // Transition extends the immutable receipt chain and publishes through the
 // existing continuation-of-one path when the partial closure already exists.
 func (s *Store) Transition(ctx context.Context, prior Receipt, state Lifecycle, reason string) (Receipt, error) {
-	body := prior.Body
-	if body.Checkpoint == nil {
-		body.Checkpoint = &Checkpoint{}
-	} else {
-		cp := *body.Checkpoint
-		body.Checkpoint = &cp
-	}
-	body.Checkpoint.State, body.Checkpoint.Reason = state, reason
-	body.AmendmentReason = reason
-	body.Timing.FinishedAt = time.Now().UTC()
-	next, err := Amend(prior, NewReceiptID(), body, time.Now().UTC())
-	if err != nil {
-		return Receipt{}, err
-	}
-	if err = s.PutReceipt(ctx, next); err != nil {
-		return Receipt{}, err
-	}
-	return next, nil
+ body := prior.Body
+ if body.Checkpoint == nil { body.Checkpoint = &Checkpoint{} } else { cp := *body.Checkpoint; body.Checkpoint = &cp }
+ if body.Checkpoint.Verdict == nil {
+  if state == Interrupted {
+   body.Checkpoint.Verdict = &Verdict{Failure:reason}
+  } else if state == Closed && body.Checkpoint.State == Interrupted {
+   failure := body.Checkpoint.Reason
+   if failure == "" { failure = "interrupted run was deliberately closed" }
+   body.Checkpoint.Verdict = &Verdict{Failure:failure}
+  }
+ }
+ body.Checkpoint.State, body.Checkpoint.Reason = state, reason
+ body.AmendmentReason = reason
+ body.Timing.FinishedAt = time.Now().UTC()
+ next, err := Amend(prior, NewReceiptID(), body, time.Now().UTC())
+ if err != nil { return Receipt{}, err }
+ if err = s.PutReceipt(ctx, next); err != nil { return Receipt{}, err }
+ return next, nil
 }
 
 func (s *Store) Interrupted(ctx context.Context) ([]Receipt, error) {
