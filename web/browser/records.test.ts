@@ -131,16 +131,23 @@ test.skipIf(!chrome)("authorizing a proposed action records a ruling and publish
 
   await page.click("[data-disposition-accept='dsp_001']");
   await visible("Babel published nothing");
+  // The notice confirms the committed decision; the record refresh is still
+  // asynchronous. Wait for the attributed ruling, not merely the notice.
+  await page.waitForFunction(() => {
+    const entry = document.querySelector("[data-disposition-accept='dsp_001']")?.closest(".disposition-entry");
+    const ruling = entry?.querySelector(".ruling-timeline")?.textContent ?? "";
+    return ruling.includes("accepted") && ruling.includes("operator");
+  });
   const state = await page.evaluate(() => {
     const entry = document.querySelector("[data-disposition-accept='dsp_001']")?.closest(".disposition-entry");
     return {
-      text: (entry as HTMLElement | null)?.innerText ?? "",
-      status: document.body.innerText.includes("accepted"),
+      text: (entry?.querySelector(".ruling-timeline") as HTMLElement | null)?.innerText ?? "",
+      status: entry?.querySelector(".disposition-heading")?.textContent ?? "",
     };
   });
   expect(state.text).toContain("accepted");
   expect(state.text).toContain("operator");
-  expect(state.status).toBe(true);
+  expect(state.status).toContain("accepted");
 
   // The ruling survives a reload, because it is a durable record rather than
   // page state, and the declined action beside it is still readable.
