@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 ---
 
 # What this cookbook is for
@@ -108,3 +108,24 @@ continual: a pipeline is improved against what the record shows slipping past
 it, not declared finished. It binds through the reusable-practice lens, whose
 inclusion rule names it, and through outcome integrity wherever a claimed
 verification was one the pipeline could have made unnecessary.
+
+**Improve the agent-working environment, not only the project** (operator
+direction, 2026-09-06). Hypotheses and proposals should also ask whether the
+user could make better use of the harness they actually use, their `AGENTS.md`
+and other standing instructions, and the tooling around agent work. Compare
+observed practice and friction with evidenced capabilities: for an Oh My Pi
+(OMP) user, custom subagent roles are one example to investigate, not a
+prescription or an exhaustive feature list. Look for opportunities to improve
+clarity, user experience, and progress through better use, configuration, or
+improvement of the harness itself.
+
+An unused feature is not evidence of a missed opportunity. Establish the
+user's harness and relevant version, cite the workflow that could benefit,
+and check applicable documentation or source through authorized research.
+Separate the hypothesis about friction from the proposal to address it; name
+the smallest useful change, its maintenance and coordination costs, and what
+observable outcome would support or refute its benefit. Missing access or
+uncertain support stays explicit, not filled from memory. The coordination
+lens covers instruction and handoff friction; the reusable-practice lens
+covers capability leverage. Neither authorizes Babel to edit instructions,
+reconfigure a harness, install tooling, or widen permissions.

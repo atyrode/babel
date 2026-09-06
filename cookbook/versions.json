@@ -1,8 +1,8 @@
 {
   "manifest_schema": 2,
   "preamble": {
-    "version": 2,
-    "digest": "sha256:135d0ca7b61e7c54da557a597defed8a471e49388b25d3d0e63a80597bd4fcc8"
+    "version": 3,
+    "digest": "sha256:219122161362bf2871aaabbd9e2ec7e1336a0fb704eeaf514cf44eb22c936aec"
   },
   "recipes": [
     {
@@ -42,8 +42,8 @@
     },
     {
       "id": "human-agent-coordination",
-      "version": 3,
-      "digest": "sha256:9d345318d105732aafb8fac590b1a7ec1b2e2c8d123f72d38026e09902b960df"
+      "version": 4,
+      "digest": "sha256:4493d1a215e3ced3919ac0f05b8eeac7e3f64f648886e74b196bc62b29602245"
     },
     {
       "id": "mechanization-audit",
@@ -57,8 +57,8 @@
     },
     {
       "id": "reusable-practice-capability-leverage",
-      "version": 2,
-      "digest": "sha256:0e5c2d859e5ff4922fb8c58455ece219a437682caff5b7ba49c78fce42536114"
+      "version": 3,
+      "digest": "sha256:44be63a2b5608ee88b8edff7389fa55775a8086ef9c24e3e8b81c37ec72e467a"
     },
     {
       "id": "security-trust-boundaries",
