@@ -211,8 +211,8 @@ func TestStoredReceiptCarriesEveryFieldSectionSevenRequires(t *testing.T) {
 		original.Body.Retrieval[0].Results[0].Evidence.Locator() {
 		t.Error("a retrieval hit lost the locator that recovers it")
 	}
-	if len(got.Body.Worker.ToolRequests) != 3 {
-		t.Errorf("tool trace kept %d requests, want 3", len(got.Body.Worker.ToolRequests))
+	if len(got.Body.Worker.ToolRequests) != 4 {
+		t.Errorf("tool trace kept %d requests, want 4", len(got.Body.Worker.ToolRequests))
 	}
 	if len(got.Body.Deferred) != 1 || got.Body.Deferred[0].ID != "hyp-0003" {
 		t.Errorf("deferred candidates %+v", got.Body.Deferred)

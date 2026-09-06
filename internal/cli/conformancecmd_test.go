@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -20,9 +22,9 @@ import (
 // of this output a worker writes, and streaming it as it settles must not be a
 // way around the sanitizer.
 var conformanceVerdicts = []worker.ObligationResult{
-	{Name: "handshake/accept", Passed: true},
-	{Name: "run/well-behaved", Failures: []string{"worker: handshake timed out: no hello within 15s", "\x1b[31mred\x1b[0m"}},
-	{Name: "run/cancellation", Passed: true},
+	{Name: "describe/reports-runtime", Passed: true},
+	{Name: "engine/becomes-ready", Failures: []string{"worker: engine did not become ready in time", "\x1b[31mred\x1b[0m"}},
+	{Name: "engine/exits-on-eof", Passed: true},
 }
 
 // TestConformanceReportStreamsEachVerdictAsItSettles grades the command's own
@@ -54,10 +56,10 @@ func TestConformanceReportStreamsEachVerdictAsItSettles(t *testing.T) {
 	// first, and every earlier obligation before the ones after it.
 	want := []string{
 		"",
-		"ok    handshake/accept\n",
-		"ok    handshake/accept\n" +
-			"FAIL  run/well-behaved\n" +
-			"        worker: handshake timed out: no hello within 15s\n" +
+		"ok    describe/reports-runtime\n",
+		"ok    describe/reports-runtime\n" +
+			"FAIL  engine/becomes-ready\n" +
+			"        worker: engine did not become ready in time\n" +
 			"        \\u{1B}[31mred\\u{1B}[0m\n",
 	}
 	if !slices.Equal(seen, want) {
@@ -73,10 +75,10 @@ func TestConformanceReportStreamsEachVerdictAsItSettles(t *testing.T) {
 	if !strings.HasSuffix(final, "\n3 obligations, 2 passed, 1 failed\n") {
 		t.Errorf("report did not end with the summary:\n%s", final)
 	}
-	if strings.Count(final, "run/well-behaved") != 1 {
+	if strings.Count(final, "engine/becomes-ready") != 1 {
 		t.Errorf("an obligation was reported twice; streaming must replace the closing recital, not join it:\n%s", final)
 	}
-	if !strings.Contains(stderr.String(), "does not yet implement") {
+	if !strings.Contains(stderr.String(), "does not yet provide") {
 		t.Errorf("stderr did not point at the contract: %q", stderr.String())
 	}
 }
@@ -88,7 +90,7 @@ func TestConformanceReportRelaxedGradingIsStillAnnounced(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	a := &app{stdout: &stdout, stderr: &stderr}
 
-	passed := []worker.ObligationResult{{Name: "handshake/accept", Passed: true}}
+	passed := []worker.ObligationResult{{Name: "describe/reports-runtime", Passed: true}}
 	grade := func(settled func(worker.ObligationResult)) []worker.ObligationResult {
 		settled(passed[0])
 		return passed
@@ -128,7 +130,7 @@ func TestConformanceReportHoldsJSONUntilTheEnd(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
 		t.Fatalf("stdout was not one JSON document: %v\n%s", err, stdout.String())
 	}
-	wantKeys := []string{"failed", "obligations", "ok", "passed", "total", "unsandboxed", "worker", "worker_args"}
+	wantKeys := []string{"failed", "inference", "obligations", "ok", "passed", "total", "unsandboxed", "worker", "worker_args"}
 	keys := make([]string, 0, len(doc))
 	for key := range doc {
 		keys = append(keys, key)
@@ -151,7 +153,7 @@ func TestConformanceReportHoldsJSONUntilTheEnd(t *testing.T) {
 	if _, present := first["failures"]; present {
 		t.Errorf("a passing obligation carried failures: %v", first)
 	}
-	if first["name"] != "handshake/accept" || first["passed"] != true {
+	if first["name"] != "describe/reports-runtime" || first["passed"] != true {
 		t.Errorf("first row = %v", first)
 	}
 	second, _ := obligations[1].(map[string]any)
@@ -193,12 +195,12 @@ func TestConformanceReportNamesTheObligationThatStalls(t *testing.T) {
 
 	<-stalled
 	during := stdout.String()
-	for _, name := range []string{"handshake/accept", "run/cancellation"} {
+	for _, name := range []string{"describe/reports-runtime", "engine/exits-on-eof"} {
 		if !strings.Contains(during, name) {
 			t.Errorf("obligation %s had settled but was not on the terminal:\n%s", name, during)
 		}
 	}
-	if strings.Contains(during, "run/well-behaved") {
+	if strings.Contains(during, "engine/becomes-ready") {
 		t.Errorf("an obligation that has not settled was reported:\n%s", during)
 	}
 	if strings.Contains(during, "obligations,") {
@@ -209,7 +211,111 @@ func TestConformanceReportNamesTheObligationThatStalls(t *testing.T) {
 	if err := <-done; !errors.Is(err, errReported) {
 		t.Fatalf("reportConformance = %v, want errReported", err)
 	}
-	if !strings.Contains(stdout.String(), "FAIL  run/well-behaved") {
+	if !strings.Contains(stdout.String(), "FAIL  engine/becomes-ready") {
 		t.Errorf("the stalled obligation's verdict never arrived:\n%s", stdout.String())
+	}
+}
+
+// TestConformanceOfflineDescribesAndLaunchesNothing is the default exam: with
+// no --allow-inference the suite grades what "code engine --describe" reports
+// and nothing else runs, so an operator can check a Code build without a
+// provider, a credential or a bill.
+//
+// The fake engine only opens its record file inside a job, so the file's
+// absence afterwards is the proof that no job was launched.
+func TestConformanceOfflineDescribesAndLaunchesNothing(t *testing.T) {
+	f := newFixture(t)
+	record := filepath.Join(f.root, "engine-record")
+
+	stdout, _ := f.ok("conformance", fakeEnginePath, "--worker-arg", "-record", "--worker-arg", record,
+		"--profile", "synthetic@1", "--json")
+	res := decode[conformanceResult](t, stdout)
+	if !res.OK || res.Inference || res.Unsandboxed || res.Total != 3 || res.Passed != 3 || res.Failed != 0 {
+		t.Errorf("offline exam = %+v, want three passing obligations and no launch", res)
+	}
+	if res.Worker != fakeEnginePath || !slices.Equal(res.WorkerArgs, []string{"-record", record}) || res.Profile != "synthetic@1" {
+		t.Errorf("the report does not name what was examined: %+v", res)
+	}
+	names := make([]string, 0, len(res.Obligations))
+	for _, row := range res.Obligations {
+		names = append(names, row.Name)
+	}
+	want := []string{"describe/reports-runtime", "describe/declares-no-credential", "describe/resolves-profile"}
+	if !slices.Equal(names, want) {
+		t.Errorf("obligations = %v, want %v", names, want)
+	}
+	if _, err := os.Stat(record); !errors.Is(err, os.ErrNotExist) {
+		t.Error("an offline exam launched an engine job")
+	}
+
+	// Without a profile, the exam describes Code's default and the profile
+	// obligation is not graded, because there is nothing to hold it to.
+	stdout, _ = f.ok("conformance", fakeEnginePath, "--json")
+	res = decode[conformanceResult](t, stdout)
+	if !res.OK || res.Total != 2 || res.Profile != "" {
+		t.Errorf("profile-less exam = %+v, want two passing obligations", res)
+	}
+}
+
+// TestConformanceInferenceNeedsAProfile: a launch spends, so the exam refuses
+// to launch under a profile nobody named rather than under whatever Code
+// would default to.
+func TestConformanceInferenceNeedsAProfile(t *testing.T) {
+	f := newFixture(t)
+	_, stderr := f.mustExit(exitUsage, "conformance", fakeEnginePath, "--allow-inference")
+	if !strings.Contains(stderr, "--profile") {
+		t.Errorf("the refusal does not name the missing flag:\n%s", stderr)
+	}
+}
+
+// TestConformanceInferenceGradesOneEngineJob is the full exam against the
+// fake engine: the spend is disclosed on stderr before the launch, one job
+// runs under the named profile, and every engine obligation holds when the
+// engine submits the nonce the prompt asked for.
+func TestConformanceInferenceGradesOneEngineJob(t *testing.T) {
+	f := newFixture(t)
+	payload := filepath.Join(f.root, "answer.json")
+	if err := os.WriteFile(payload, []byte(`{"answer":"${param:`+worker.ConformanceAnswerParam+`}"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr := f.ok("conformance", fakeEnginePath, "--worker-arg", "-submit", "--worker-arg", payload,
+		"--profile", "synthetic@1", "--allow-inference")
+	if !strings.Contains(stderr, "launching one engine job under profile synthetic@1") {
+		t.Errorf("the spend was not disclosed before the launch:\n%s", stderr)
+	}
+	for _, name := range []string{
+		"describe/reports-runtime", "describe/declares-no-credential", "describe/resolves-profile",
+		"engine/becomes-ready", "engine/declares-containment", "engine/registers-tools",
+		"engine/submits-under-schema", "engine/exits-on-eof", "engine/reports-resources",
+	} {
+		if !strings.Contains(stdout, "ok    "+name+"\n") {
+			t.Errorf("obligation %s did not pass:\n%s", name, stdout)
+		}
+	}
+	if !strings.HasSuffix(stdout, "\n9 obligations, 9 passed, 0 failed\n") {
+		t.Errorf("report did not end with the summary:\n%s", stdout)
+	}
+
+	stdout, _ = f.ok("conformance", fakeEnginePath, "--worker-arg", "-submit", "--worker-arg", payload,
+		"--profile", "synthetic@1", "--allow-inference", "--json")
+	res := decode[conformanceResult](t, stdout)
+	if !res.OK || !res.Inference || res.Total != 9 || res.Passed != 9 {
+		t.Errorf("launched exam = %+v, want nine passing obligations", res)
+	}
+
+	// An engine that ends its turn without submitting fails exactly the
+	// obligation about submitting; the rest of the launch is still graded
+	// on its own merits.
+	stdout, _ = f.mustExit(exitFailure, "conformance", fakeEnginePath, "--worker-arg", "-no-submit",
+		"--profile", "synthetic@1", "--allow-inference", "--json")
+	res = decode[conformanceResult](t, stdout)
+	if res.OK || res.Failed != 1 {
+		t.Errorf("exam of a silent engine = %+v, want one failure", res)
+	}
+	for _, row := range res.Obligations {
+		if row.Passed == (row.Name == "engine/submits-under-schema") {
+			t.Errorf("obligation %s passed=%v: %v", row.Name, row.Passed, row.Failures)
+		}
 	}
 }

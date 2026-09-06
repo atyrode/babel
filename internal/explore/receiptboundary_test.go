@@ -38,7 +38,7 @@ func TestExportedReceiptNeverCarriesAServedExcerpt(t *testing.T) {
 	h := newHarness(t)
 	payload := h.writeResult("discovery.json", h.discovery())
 	args := append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
-		"-request-capability", "corpus-search", "-search-query", "")
+		"-call", worker.ToolSearch, "-search-query", "")
 	controller := h.controller(args)
 
 	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-boundary"})

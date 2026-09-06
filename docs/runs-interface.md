@@ -126,28 +126,34 @@ and hands back the age too, and nothing reaps a row
   []RetrievalStep`, `Deferred`/`Rejected []Candidate`, `Failures []Failure`,
   `Resources` (pointer fields: absence is not zero), `Timing`,
   `AmendmentReason` (`internal/run/receipt.go:483-524`).
-- **Worker receipt** (`internal/worker/receipt.go:28-113`): `JobID`, `RunID`,
-  `Profile`, `Recipes`, `Sources`, `Worker` identity, `ProtocolVersion`,
-  `Grant {Capabilities, Disclosure, ExpiresAt}`, `Privacy`, `Cost` (the
-  profile's own estimate, never a measurement — `internal/worker/protocol.go:853-860`),
-  `Containment`, `ResolvedCapabilities`, `Metadata`, `ToolRequests
-  []ToolRecord`, **`Progress []ProgressRecord` and `ProgressDropped int`**,
-  `Result`, `Failure`, `Resources` (last self-report), `UnknownFields`,
-  `StderrTail`, `ExitCode`, `StartedAt`, `FinishedAt`, `Duration`.
+- **Worker receipt** (`internal/worker/receipt.go:31-114`): `JobID`, `RunID`,
+  `Profile`, `Recipes`, `Sources`, `Worker` identity (Code's build, from its
+  runtime-info sidecar), `Grant {Capabilities, Disclosure, ExpiresAt}`,
+  `Privacy`, `Cost` (the profile's own estimate, never a measurement —
+  `internal/worker/domain.go:346-354`), `Containment`, `Metadata`, `Tools`
+  (the host tool names the engine confirmed), `ToolRequests []ToolRecord`,
+  **`Progress []ProgressRecord` and `ProgressDropped int`**, `Submissions`,
+  `Result` (the last accepted submission), `Failure`, `Resources` (Code's
+  measurements from its finished report, each a pointer that is nil when
+  unmeasured — `internal/worker/domain.go:311-321`), `Usage` (the engine's own
+  session accounting), `UnknownFrames`, `StderrTail`, `ExitCode`, timing.
   - The progress trail is bounded: `Limits.MaxProgressRecords`, default 256
-    (`internal/worker/worker.go:33, 201-204, 236-238`); past the bound
-    `ProgressDropped` is incremented instead of appending
-    (`internal/worker/worker.go:839-843`). Each `ProgressRecord` is `{Seq,
-    Stage, Message, Fraction, At}` (`internal/worker/receipt.go:139-145`),
-    stage and message scrubbed of credentials before recording.
-  - A `ToolRecord` is `{Index, RequestID, Capability, Tool, ArgumentsDigest,
-    ArgumentsBytes, Allowed, DenyCode, Reason, At, Decided}`; arguments are
-    absent by design, digest and size only
-    (`internal/worker/receipt.go:115-136`). Capabilities are `corpus-search`,
-    `repo-read`, `sandbox-exec`, `public-research`
-    (`internal/worker/protocol.go:462-467`). The `tool-decision` `results`
-    payload travels on the pipe and never into a receipt
-    (`internal/worker/protocol.go:227-240`).
+    (`internal/worker/worker.go:188`); past the bound `ProgressDropped` is
+    incremented instead of appending (`internal/worker/worker.go:807`). Each
+    `ProgressRecord` is `{Seq, Stage, Message, At}`
+    (`internal/worker/receipt.go:141-146`), a lifecycle event name and never
+    model text.
+  - A `ToolRecord` is `{Index, RequestID, ToolCallID, Capability, Tool,
+    ArgumentsDigest, ArgumentsBytes, Allowed, DenyCode, Reason, At, Decided}`;
+    arguments are absent by design, digest and size only
+    (`internal/worker/receipt.go:119-138`). A submission through
+    `babel_submit_result` is a `ToolRecord` like any other, with an empty
+    capability. Capabilities are `corpus-search`, `repo-read`,
+    `sandbox-exec`, `public-research` (`internal/worker/domain.go:113-118`);
+    tools are registered only for the capabilities Babel serves
+    (`internal/worker/domain.go:70-74`). Served evidence travels to the model
+    as the tool result's text and never into a receipt
+    (`internal/worker/worker.go:60-80`).
 
 ### 2.4 Authority record
 
@@ -200,26 +206,30 @@ Every frontier record carries the run that wrote it: `RunID` on hypotheses,
 observations, findings, proposals and status transitions
 (`internal/frontier/model.go:499, 551, 618, 718, 973`).
 
-### 2.6 Worker protocol event kinds, and what reaches the web UI
+### 2.6 Engine events, and what reaches the web UI
 
-Eleven message types over newline-delimited JSON on the child's stdio
-(`internal/worker/protocol.go:15-29, 315-327`). Two in-process callbacks exist
-so an interface can stay responsive: `Config.OnProgress(ProgressRecord)`
-(`internal/worker/worker.go:297-301`) and, one layer up,
+Babel launches `code engine` and speaks OMP's native RPC on the child's stdio:
+it sends `negotiate_protocol`, `set_host_tools`, `prompt` and
+`get_session_stats`, and answers `host_tool_call` frames
+(`internal/worker/rpc.go:17-45`). Before the first command it reads Code's
+`code.runtime/1` sidecar and refuses the launch when the containment falls
+short (`internal/worker/worker.go:503-527`). Two in-process callbacks exist so
+an interface can stay responsive: `Config.OnProgress(ProgressRecord)`
+(`internal/worker/worker.go:268-272`) and, one layer up,
 `Options.OnRecord(RecordEvent)` / `Options.OnProgress(Stage, ProgressRecord)`
 (`internal/explore/explore.go:546-561, 598-599`). Today the only consumer of
 both is the CLI's stderr narration, throttled to one line per second
 (`internal/cli/explore.go:83, 625-648`).
 
-| Message | Direction | Reaches the web UI today |
+| Frame | Direction | Reaches the web UI today |
 | --- | --- | --- |
-| `hello`, `accept`, `refuse` | handshake | never |
-| `job-preamble`, `job` | Babel → worker | never; `job` carries the broker token and is recorded nowhere |
-| `configuration` | worker → Babel | never live; its `privacy`, `cost`, `containment`, `capabilities`, `metadata` land in the receipt body, which no route serves |
-| `progress` | worker → Babel | never; stderr only; the trail lands in the receipt body |
-| `tool-request` / `tool-decision` | both | never; `ToolRecord` lands in the receipt body |
-| `result` | worker → Babel | indirectly: the durable records it validated into appear on Hypotheses, Findings and Review once written |
-| `error` | worker → Babel | never live; becomes `Failure`/`FailureRecord` in the receipt body |
+| `ready` | engine → Babel | never |
+| runtime-info sidecar | Code → Babel (file) | never live; its `privacy`, `cost`, `containment`, `metadata` land in the receipt body, which no route serves |
+| `set_host_tools`, `prompt` | Babel → engine | never; the prompt is the run's material and is recorded nowhere |
+| `agent_start`, `turn_*`, `tool_execution_*`, `agent_end` | engine → Babel | never; stderr only; the trail lands in the receipt body |
+| `host_tool_call` / `host_tool_result` | both | never; `ToolRecord` lands in the receipt body |
+| `host_tool_call` to `babel_submit_result` | engine → Babel | indirectly: the durable records the accepted submission validated into appear on Hypotheses, Findings and Review once written |
+| Code's finished report | Code → Babel (file) | never live; `Resources` and `ExitCode` in the receipt body |
 
 Precisely what the current web UI carries about a run, verified against the
 route switch (`internal/web/server.go:323-561`): `GET /api/analysis/state`
@@ -282,7 +292,7 @@ host-independent contract of §4; "surface" means the manifold-rendered UI of
   the capability is not granted without them (`internal/cli/explore.go:47-53`).
   The resolved profile's disclosure class and redaction requirement are shown
   and consented to before any material is sent (SPEC.md §3, `Privacy` at
-  `internal/worker/protocol.go:848-851`). *Test:* a run created without
+  `internal/worker/domain.go:341-344`). *Test:* a run created without
   `public-research` URLs has no `public-research` in `worker.grant`; a
   hosted-disclosure run over a corpus with a secret finding is refused before
   launch with `redaction-required` (`internal/explore/explore.go:170-174`).
@@ -332,7 +342,7 @@ host-independent contract of §4; "surface" means the manifold-rendered UI of
   shown as a gap. *Test:* the sequence shown equals the worker's `seq`.
 - **R12 Progress trail.** The bounded trail is shown in order with
   `ProgressDropped` rendered as "N further progress events were counted, not
-  kept" when non-zero (`internal/worker/receipt.go:75-79`). *Test:* a worker
+  kept" when non-zero (`internal/worker/receipt.go:76-79`). *Test:* a worker
   emitting 300 progress events yields 256 shown and "44 counted, not kept".
 - **R13 Evidence being read.** Each retrieval step is shown as the receipt
   records it — index, tool, scope, query, time, hits with rank and locator,
@@ -344,10 +354,10 @@ host-independent contract of §4; "surface" means the manifold-rendered UI of
   path, line and byte offset.
 - **R14 Tool requests and broker decisions.** Every tool request is shown as
   it is decided: capability, tool, arguments digest and size, allowed or
-  denied, deny code, reason, decision latency (`internal/worker/receipt.go:121-136`).
+  denied, deny code, reason, decision latency (`internal/worker/receipt.go:119-138`).
   Denials are counted prominently, since a denied count is what a reviewer
   looks for first (`:170-172`). *Test:* a request outside the grant appears
-  as denied `not-granted` within one live refresh.
+  as denied `unknown-tool` within one live refresh.
 - **R15 Sandbox commands.** A `sandbox-exec` request is shown as a tool
   request (R14) and labelled as a sandbox command. The command text, exit
   status, output digest and diff SPEC.md §2.6 asks a receipt to record are not
@@ -362,10 +372,10 @@ host-independent contract of §4; "surface" means the manifold-rendered UI of
   the run ends.
 - **R17 Spend so far.** The live view shows what Babel can honestly count:
   tool calls, retrievals, fetches against their budgets, the worker's last
-  self-reported resources (`cpu_seconds`, `max_rss_bytes`,
-  `sandbox_bytes_written`, `tool_calls` — `internal/worker/protocol.go:839-844`,
+  Code-measured resources (`cpu_seconds`, `max_rss_bytes`,
+  `sandbox_bytes_written` with their provenance — `internal/worker/domain.go:311-321`,
   absent when unreported), and the profile's cost estimate labelled
-  "estimate, never a measurement" (`internal/worker/protocol.go:853-860`). For
+  "estimate, never a measurement" (`internal/worker/domain.go:346-354`). For
   a cycle, the day's spend against the ceilings and the unpriced count
   (`internal/conductor/budget.go:43-63`). *Test:* a worker that reports no
   resources shows "not reported", not zeros.
@@ -379,7 +389,7 @@ host-independent contract of §4; "surface" means the manifold-rendered UI of
 - **R19 Containment.** The worker's declared containment — backend,
   filesystem isolation, network default deny, resource ceilings, disposable,
   and the mandatory `escape` sentence — is shown from the moment the
-  configuration event is recorded (`internal/worker/protocol.go:169-187`).
+  runtime-info sidecar is read (`internal/worker/domain.go:368-397`).
   *Test:* the `escape` text is visible on the live view and on the receipt.
 
 ### 3.3 The output view
@@ -408,9 +418,10 @@ host-independent contract of §4; "surface" means the manifold-rendered UI of
   rendering an empty section. *Test:* revision 2 shows its
   `amendment_reason` and links to revision 1.
 - **R24 Failures.** Babel-side failures (stage, code, message, at —
-  `internal/explore/explore.go:140-168`) and the worker's first failure
-  (origin `worker` or `babel`, code, retryable —
-  `internal/worker/receipt.go:158-168`) are shown separately, because a
+  `internal/explore/explore.go:140-173`; `provenance` is the code for a
+  claim citing a locator the run never served) and the worker's first
+  failure (origin `worker` or `babel`, code, retryable —
+  `internal/worker/receipt.go:167-173`) are shown separately, because a
   worker that reported its own failure behaved correctly. *Test:* a
   `development-path` refusal appears under Babel-side failures with stage
   `explore`.
@@ -698,7 +709,7 @@ walks its sections.
   durable cancel request; the executing process observes it at every progress
   event and at least every five seconds, cancels the run's context (which
   kills the process tree and keeps everything committed —
-  `internal/worker/worker.go:435-438, 1532-1540`; `internal/explore/explore.go:25-33`),
+  `internal/worker/worker.go:388-400, 1393-1408`; `internal/explore/explore.go:25-33`),
   and finalizes presence as `cancelled`. `accepted` is false with the phase
   when the run is already terminal.
 - `runsReport {run_id, milestone, at, payload}` — called only by the babel

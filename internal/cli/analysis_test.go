@@ -109,16 +109,27 @@ func TestWorkerShortfallIsNotReportedAsAPlatformLimit(t *testing.T) {
 	}
 }
 
-// ceremonyWorker writes a stub worker that records how Babel launched it and
-// then answers the way Code's configuration mode does: it writes payload to
-// the result file Babel named and exits with code. An empty payload writes
-// nothing, which is what a session the operator backed out of looks like from
-// Babel's side.
+// ceremonyWorker writes a stub Code executable that records how Babel launched
+// it and then answers the two launches the ceremony makes. In configuration
+// mode (engine --configure) it writes payload to the result file Babel named
+// and exits with code; an empty payload writes nothing, which is what a session
+// the operator backed out of looks like from Babel's side. In describe mode
+// (engine --describe --profile ID@REV) it reports the runtime document for the
+// profile it was asked about, which is where the metadata Babel stores beside
+// the reference comes from.
 //
 // It is a script rather than a compiled helper because what has to be observed
 // is the launch itself — the argv, the three inherited streams, and the
 // environment — and a shell answers all three questions directly.
 func ceremonyWorker(t *testing.T, payload string, code int) (binary, record string) {
+	t.Helper()
+	return ceremonyStub(t, payload, code, 0)
+}
+
+// ceremonyStub is ceremonyWorker with the describe launch's exit status under
+// the test's control: a nonzero describeExit is a Code that confirmed a
+// profile and then could not say anything about it.
+func ceremonyStub(t *testing.T, payload string, code, describeExit int) (binary, record string) {
 	t.Helper()
 	dir := t.TempDir()
 	binary = filepath.Join(dir, "stub-code")
@@ -143,16 +154,26 @@ for fd in 0 1 2; do
 		printf 'fd%%s: not a terminal\n' "$fd" >>"$record"
 	fi
 done
+mode=''
 result=''
+profile=''
 while [ $# -gt 0 ]; do
-	if [ "$1" = '--result-file' ]; then
-		shift
-		result="$1"
-	fi
+	case "$1" in
+	--configure) mode='configure' ;;
+	--describe) mode='describe' ;;
+	--result-file) shift; result="$1" ;;
+	--profile) shift; profile="$1" ;;
+	esac
 	shift
 done
+if [ "$mode" = 'describe' ]; then
+	# The document Code's describe prints: the profile it was asked about,
+	# split back into its reference, and nothing that could be a credential.
+	printf '{"schema":"code.runtime/1","worker":{"name":"stub-code","version":"0.1-synthetic"},"profile":{"id":"%%s","revision":%%s},"privacy":{"disclosure":"local","redaction_required":false},"cost":{"currency":"USD","input_per_1k":0,"output_per_1k":0,"estimated_run":0.25},"metadata":{"model":"stub-model"}}\n' "${profile%%%%@*}" "${profile#*@}"
+	exit %d
+fi
 %sexit %d
-`, record, answer, code)
+`, record, describeExit, answer, code)
 	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +305,8 @@ func TestProfileConfigureRefusesWithoutATerminal(t *testing.T) {
 // against a real pty: the worker is launched in configuration mode with the
 // operator's terminal on all three streams, without the environment dial that
 // used to be able to answer for them, and the reference it writes is what
-// Babel stores.
+// Babel stores — together with what Code's own describe of that reference
+// reports, and nothing Babel invented.
 func TestProfileConfigureHandsTheTerminalToCode(t *testing.T) {
 	f := newFixture(t)
 	term := openTerminal(t)
@@ -294,7 +316,7 @@ func TestProfileConfigureHandsTheTerminalToCode(t *testing.T) {
 	t.Setenv("CODE_SELECTION_STATE", "model=haiku;effort=low")
 
 	var stderr bytes.Buffer
-	code := run([]string{"analysis", "profile", "configure", "--worker", binary, "--worker-arg", "babel"},
+	code := run([]string{"analysis", "profile", "configure", "--worker", binary, "--worker-arg", "--quiet"},
 		term.slave, term.slave, &stderr)
 	displayed := term.collect(t)
 	if code != exitOK {
@@ -303,9 +325,13 @@ func TestProfileConfigureHandsTheTerminalToCode(t *testing.T) {
 
 	launch := launchRecord(t, record)
 	for _, want := range []string{
-		// The worker's own arguments come first, then the two flags Babel
-		// owns: Code is put into its mode, then told where to answer.
-		"argv: babel --configure --result-file ",
+		// The worker's own arguments come first, then the subcommand and
+		// the two flags Babel owns: Code is put into its mode, then told
+		// where to answer.
+		"argv: --quiet engine --configure --result-file ",
+		// And the same arguments again when the confirmed reference is read
+		// back, with nothing but the reference to say which profile.
+		"argv: --quiet engine --describe --profile operator-chosen@4\n",
 		"fd0: terminal",
 		"fd1: terminal",
 		"fd2: terminal",
@@ -328,24 +354,27 @@ func TestProfileConfigureHandsTheTerminalToCode(t *testing.T) {
 	case settings.Profile.ConfiguredAt == "":
 		t.Error("the stored reference does not record when it was configured")
 	}
-	if settings.Worker != binary || !slices.Equal(settings.WorkerArgs, []string{"babel"}) {
+	if settings.Worker != binary || !slices.Equal(settings.WorkerArgs, []string{"--quiet"}) {
 		t.Errorf("stored launch template = %q %v, want the one that was used", settings.Worker, settings.WorkerArgs)
 	}
-	// The ceremony carries a reference and nothing else, so nothing else may
-	// appear in the document: an invented disclosure class or redaction
-	// verdict would be a claim about what may leave this machine raw.
-	if p := settings.Profile; p.RedactionRequired != nil || p.Disclosure != "" ||
-		p.WorkerName != "" || p.ProtocolVersion != 0 || len(p.Capabilities) != 0 {
-		t.Errorf("the ceremony stored metadata the worker never reported:\n%s", settingsBytes(t))
+	// The ceremony carries a reference and nothing else; everything stored
+	// beside it is what Code said about that reference when asked. A
+	// disclosure class or redaction verdict is a claim about what may leave
+	// this machine raw, so it must be Code's claim and not a default.
+	p := settings.Profile
+	if p.WorkerName != "stub-code" || p.WorkerVersion != "0.1-synthetic" || p.Disclosure != "local" ||
+		p.RedactionRequired == nil || *p.RedactionRequired || p.Currency != "USD" || p.EstimatedRun != 0.25 ||
+		p.Metadata["model"] != "stub-model" {
+		t.Errorf("the stored record does not carry what describe reported:\n%s", settingsBytes(t))
 	}
 
-	for _, want := range []string{"operator-chosen", "revision", "4"} {
+	// The summary shows the reference and the described metadata beside
+	// it, including the redaction verdict now that Code has actually given
+	// one.
+	for _, want := range []string{"operator-chosen", "revision", "4", "stub-code 0.1-synthetic", "local", "not required", "0.2500 USD", "stub-model"} {
 		if !strings.Contains(displayed, want) {
 			t.Errorf("the summary on the terminal does not show %q:\n%s", want, displayed)
 		}
-	}
-	if strings.Contains(displayed, "not required") {
-		t.Errorf("an unknown redaction requirement was displayed as a verdict:\n%s", displayed)
 	}
 	for _, want := range []string{"handing this terminal", "ignoring $CODE_SELECTION_STATE"} {
 		if !strings.Contains(stderr.String(), want) {
@@ -416,13 +445,52 @@ func TestProfileConfigureLeavesTheStoredProfileAlone(t *testing.T) {
 	}
 }
 
+// TestProfileConfigureStoresTheBareReferenceWhenCodeCannotDescribe holds the
+// describe read-back to its place: it decorates the record, it does not gate
+// it. The operator confirmed a profile in Code's own interface, and a Code
+// that cannot then describe it is a warning beside a stored reference, never
+// a ceremony to sit through again.
+func TestProfileConfigureStoresTheBareReferenceWhenCodeCannotDescribe(t *testing.T) {
+	newFixture(t)
+	term := openTerminal(t)
+	binary, _ := ceremonyStub(t, `{"profile":"operator-chosen","revision":4}`, 0, 3)
+
+	var stderr bytes.Buffer
+	code := run([]string{"analysis", "profile", "configure", "--worker", binary}, term.slave, term.slave, &stderr)
+	displayed := term.collect(t)
+	if code != exitOK {
+		t.Fatalf("the ceremony exited %d\nstderr: %s\nterminal: %s", code, stderr.String(), displayed)
+	}
+	if !strings.Contains(stderr.String(), "could not describe") {
+		t.Errorf("the failed describe was not reported:\n%s", stderr.String())
+	}
+	p := storedSettings(t).Profile
+	if p == nil || p.ID != "operator-chosen" || p.Revision != 4 {
+		t.Fatalf("the confirmed profile was not stored:\n%s", settingsBytes(t))
+	}
+	// Nothing Code never said may appear in the document: an invented
+	// disclosure class or redaction verdict would be a claim about what may
+	// leave this machine raw.
+	if p.RedactionRequired != nil || p.Disclosure != "" || p.WorkerName != "" || p.Currency != "" || len(p.Metadata) != 0 {
+		t.Errorf("the ceremony stored metadata the worker never reported:\n%s", settingsBytes(t))
+	}
+	if strings.Contains(displayed, "not required") {
+		t.Errorf("an unknown redaction requirement was displayed as a verdict:\n%s", displayed)
+	}
+}
+
 // TestProfileConfigureRefusesAPreAnsweredProfile is the pass-through that had
-// to go. --worker-arg puts Code into its worker mode; it was also a channel
-// for handing Code a dial, which is how a profile gets minted with nobody
-// deciding anything. Both the argument the operator types and the one a
-// previous configuration stored are refused, and the worker is not launched:
-// a machine whose stored launch template carries a dial keeps reproducing it
-// otherwise, which is the recorded state of at least one machine.
+// to go. --worker-arg carries the arguments that precede Code's mode; it was
+// also a channel for handing Code a dial, which is how a profile gets minted
+// with nobody deciding anything. Both the argument the operator types and the
+// one a previous configuration stored are refused, and the worker is not
+// launched: a machine whose stored launch template carries a dial keeps
+// reproducing it otherwise, which is the recorded state of at least one
+// machine.
+//
+// The mode itself is refused the same way. Babel appends "engine" to every
+// launch, and a stored "babel" is the protocol Code no longer speaks: a
+// template carrying either has to be reconfigured, not quietly rewritten.
 func TestProfileConfigureRefusesAPreAnsweredProfile(t *testing.T) {
 	newFixture(t)
 
@@ -432,7 +500,7 @@ func TestProfileConfigureRefusesAPreAnsweredProfile(t *testing.T) {
 			binary, record := ceremonyWorker(t, `{"profile":"dialled","revision":1}`, 0)
 			var stderr bytes.Buffer
 			code := run([]string{"analysis", "profile", "configure", "--worker", binary,
-				"--worker-arg", "babel", "--worker-arg", arg}, term.slave, term.slave, &stderr)
+				"--worker-arg", "--quiet", "--worker-arg", arg}, term.slave, term.slave, &stderr)
 			term.collect(t)
 			if code != exitUsage {
 				t.Fatalf("a pre-answered ceremony exited %d, want %d\nstderr: %s", code, exitUsage, stderr.String())
@@ -445,35 +513,58 @@ func TestProfileConfigureRefusesAPreAnsweredProfile(t *testing.T) {
 			}
 		})
 	}
-
-	t.Run("stored by an earlier configuration", func(t *testing.T) {
-		binary, record := ceremonyWorker(t, `{"profile":"dialled","revision":1}`, 0)
-		if _, err := saveAnalysisSettings(analysisSettings{
-			Worker:     binary,
-			WorkerArgs: []string{"babel", "--set", "model=haiku"},
-			Profile:    &profileRecord{ID: "agent-minted", Revision: 5, ConfiguredAt: "2026-08-30T00:00:00Z"},
-		}); err != nil {
-			t.Fatal(err)
-		}
-		before := settingsBytes(t)
-
-		term := openTerminal(t)
-		var stderr bytes.Buffer
-		code := run([]string{"analysis", "profile", "configure"}, term.slave, term.slave, &stderr)
-		term.collect(t)
-		if code != exitUsage {
-			t.Fatalf("a stored override exited %d, want %d\nstderr: %s", code, exitUsage, stderr.String())
-		}
-		for _, want := range []string{"stored worker arguments", "--worker"} {
-			if !strings.Contains(stderr.String(), want) {
-				t.Errorf("the refusal does not name the remedy %q:\n%s", want, stderr.String())
+	for _, arg := range []string{"babel", "engine"} {
+		t.Run("given the "+arg+" subcommand", func(t *testing.T) {
+			term := openTerminal(t)
+			binary, record := ceremonyWorker(t, `{"profile":"dialled","revision":1}`, 0)
+			var stderr bytes.Buffer
+			code := run([]string{"analysis", "profile", "configure", "--worker", binary,
+				"--worker-arg", arg}, term.slave, term.slave, &stderr)
+			term.collect(t)
+			if code != exitUsage {
+				t.Fatalf("a ceremony naming Code's mode exited %d, want %d\nstderr: %s", code, exitUsage, stderr.String())
 			}
-		}
-		if _, err := os.Stat(record); !errors.Is(err, os.ErrNotExist) {
-			t.Error("the worker was launched with the stored override attached")
-		}
-		if got := settingsBytes(t); got != before {
-			t.Error("the refusal rewrote the settings document")
-		}
-	})
+			for _, want := range []string{"names Code's mode", `"engine"`} {
+				if !strings.Contains(stderr.String(), want) {
+					t.Errorf("the refusal does not mention %q:\n%s", want, stderr.String())
+				}
+			}
+			if _, err := os.Stat(record); !errors.Is(err, os.ErrNotExist) {
+				t.Error("the worker was launched with the subcommand attached")
+			}
+		})
+	}
+
+	for _, stored := range [][]string{{"--set", "model=haiku"}, {"babel"}} {
+		t.Run("stored by an earlier configuration: "+strings.Join(stored, " "), func(t *testing.T) {
+			binary, record := ceremonyWorker(t, `{"profile":"dialled","revision":1}`, 0)
+			if _, err := saveAnalysisSettings(analysisSettings{
+				Worker:     binary,
+				WorkerArgs: stored,
+				Profile:    &profileRecord{ID: "agent-minted", Revision: 5, ConfiguredAt: "2026-08-30T00:00:00Z"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before := settingsBytes(t)
+
+			term := openTerminal(t)
+			var stderr bytes.Buffer
+			code := run([]string{"analysis", "profile", "configure"}, term.slave, term.slave, &stderr)
+			term.collect(t)
+			if code != exitUsage {
+				t.Fatalf("a stored override exited %d, want %d\nstderr: %s", code, exitUsage, stderr.String())
+			}
+			for _, want := range []string{"stored worker arguments", "--worker"} {
+				if !strings.Contains(stderr.String(), want) {
+					t.Errorf("the refusal does not name the remedy %q:\n%s", want, stderr.String())
+				}
+			}
+			if _, err := os.Stat(record); !errors.Is(err, os.ErrNotExist) {
+				t.Error("the worker was launched with the stored override attached")
+			}
+			if got := settingsBytes(t); got != before {
+				t.Error("the refusal rewrote the settings document")
+			}
+		})
+	}
 }

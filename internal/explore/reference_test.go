@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -92,11 +93,16 @@ func syntheticSessionKey(harness, sourceID string) string {
 	return "sess-synthetic-deployment-" + harness + "-" + sourceID
 }
 
-// sessionKey is the durable session key of one of the harness's corpus
-// sessions, under the same derivation the controller was handed.
-func (h *harness) sessionKey(i int) string {
-	stream := h.inputs[i].Stream
-	return syntheticSessionKey(stream.Harness, stream.SourceID)
+// sessionOf is the durable session key of the harness corpus session a served
+// locator's bytes live in, under the same derivation the controller was handed.
+func (h *harness) sessionOf(locator event.Locator) string {
+	for _, in := range h.inputs {
+		if in.Stream.Path == locator.Path {
+			return syntheticSessionKey(in.Stream.Harness, in.Stream.SourceID)
+		}
+	}
+	h.t.Fatalf("locator %+v belongs to no harness session", locator)
+	return ""
 }
 
 // TestEvidenceEdgesNameTheSessionTheLocatorCameFrom is #113's evidence
@@ -125,22 +131,25 @@ func TestEvidenceEdgesNameTheSessionTheLocatorCameFrom(t *testing.T) {
 		t.Fatalf("the run wrote %d observations, want 2", len(outcome.Observations))
 	}
 
-	// Both synthetic claims cite the first corpus session, so both edges name
-	// it and each names it once.
-	want := h.sessionKey(0)
+	// Each synthetic claim cites one served record, so each edge names the
+	// session that record lives in, and no other.
+	want := map[string]int{h.sessionOf(h.locators[0]): 1}
+	want[h.sessionOf(h.locators[1])]++
 	edges := appender.of(reference.KindEvidence)
 	if len(edges) != 2 {
 		t.Fatalf("minted %d evidence edges for 2 observations: %v",
 			len(edges), appender.keys(reference.KindEvidence))
 	}
 	cited := map[string]bool{}
+	got := map[string]int{}
 	for _, e := range edges {
 		if e.From.Kind != "observation" {
 			t.Errorf("evidence edge from %s, want an observation", e.From)
 		}
-		if e.To != (reference.RecordRef{Kind: explore.SessionRecordKind, ID: want}) {
-			t.Errorf("evidence edge to %s, want session:%s", e.To, want)
+		if e.To.Kind != explore.SessionRecordKind {
+			t.Errorf("evidence edge to %s, want a session", e.To)
 		}
+		got[e.To.ID]++
 		if e.ActorKind != "run" || e.ActorRef != "r-evidence" {
 			t.Errorf("evidence edge actor = %s/%s, want run/r-evidence", e.ActorKind, e.ActorRef)
 		}
@@ -148,6 +157,9 @@ func TestEvidenceEdgesNameTheSessionTheLocatorCameFrom(t *testing.T) {
 			t.Errorf("evidence edge note %q does not say the locator is the authority", e.Note)
 		}
 		cited[e.From.ID] = true
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("evidence edges name sessions %v, want %v", got, want)
 	}
 	for _, id := range outcome.Observations {
 		if !cited[id] {
@@ -244,18 +256,17 @@ func TestObjectionEvidenceIsAttributedToTheChallengerRun(t *testing.T) {
 // TestWholeObjectEvidenceMintsNoSessionEdge covers the locator that has no
 // session behind it.
 //
-// frontier.NewEvidence admits whole-object evidence - a repository blob, a
-// brokered research document - and those locators recover their bytes without
-// naming a session at all. There is no session endpoint to bind to, so the
-// honest answer is no edge and no warning: the claim keeps its locator, and
-// the diagnostics path stays useful for the failures that mean something.
+// frontier.NewEvidence admits whole-object evidence - a brokered research
+// document - and that locator recovers its bytes without naming a session at
+// all. There is no session endpoint to bind to, so the honest answer is no
+// edge and no warning: the claim keeps its locator, and the diagnostics path
+// stays useful for the failures that mean something. The document is one the
+// run fetched, because a whole-object locator is checked against what was
+// served like any other.
 func TestWholeObjectEvidenceMintsNoSessionEdge(t *testing.T) {
 	h := newHarness(t)
 	appender := &recordingAppender{}
-	blob, err := frontier.NewEvidence(event.Locator{
-		Path:   "synthetic-repository/deploy.yaml",
-		Digest: strings.Repeat("ab", 32),
-	}, "a repository blob, which is not a session")
+	document, err := frontier.NewEvidence(researchLocator(), "a fetched document, which is not a session")
 	if err != nil {
 		t.Fatalf("build whole-object evidence: %v", err)
 	}
@@ -263,11 +274,11 @@ func TestWholeObjectEvidenceMintsNoSessionEdge(t *testing.T) {
 	result.Consolidations = nil
 	result.Deferred = nil
 	result.Candidates = result.Candidates[:1]
-	result.Candidates[0].Observations[0].Claim.Evidence = []frontier.Evidence{blob}
+	result.Candidates[0].Observations[0].Claim.Evidence = []frontier.Evidence{document}
 	payload := h.writeResult("discovery.json", result)
 	controller := h.controller(
-		payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
-		withReferences(appender))
+		append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}), "-research"),
+		withReferences(appender), grantResearch(&testBroker{}))
 
 	outcome, err := controller.Explore(context.Background(),
 		explore.Options{Authority: testAuthority, RunID: "r-blob"})
@@ -288,7 +299,7 @@ func TestWholeObjectEvidenceMintsNoSessionEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read observation: %v", err)
 	}
-	if record.Payload.Evidence[0].Locator().Path != "synthetic-repository/deploy.yaml" {
+	if record.Payload.Evidence[0].Locator() != researchLocator() {
 		t.Errorf("the whole-object locator was altered: %+v", record.Payload.Evidence[0].Locator())
 	}
 }

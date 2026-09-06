@@ -119,8 +119,11 @@ const (
 // They live here rather than in a caller's configuration because this package
 // is what implements them: a caller could only misreport them.
 const (
-	JobVersion              = 1
-	PromptVersion           = "babel.analysis-prompt/1"
+	// JobVersion 2 is the native-engine job: tools registered from the
+	// grant, the prompt composed here, and the result submitted through a
+	// host tool under a generated schema. PromptVersion 2 is that prompt.
+	JobVersion              = 2
+	PromptVersion           = "babel.analysis-prompt/2"
 	RedactionPolicyVersion  = "babel.redaction/1"
 	DisclosurePolicyVersion = "babel.disclosure/1"
 )
@@ -147,9 +150,14 @@ const (
 	FailureAuthority       = "stage-authority"
 	FailureUnknownRecipe   = "unknown-recipe"
 	FailureUnknownRecord   = "unknown-record"
-	FailureDisposition     = "disposition"
-	FailureStorage         = "storage"
-	FailureCancelled       = "cancelled"
+	// FailureProvenance reports a citation naming a locator this run never
+	// served: an invented path, a retyped digest, a line the worker did not
+	// receive. The item is refused and recorded; the records beside it are
+	// untouched.
+	FailureProvenance  = "provenance"
+	FailureDisposition = "disposition"
+	FailureStorage     = "storage"
+	FailureCancelled   = "cancelled"
 	// FailureFrontierIndex reports that the frontier's own retrieval surface
 	// could not be brought up to date. It degrades dedup warnings and the
 	// frontier scope of corpus search and nothing else, so it is recorded
@@ -216,12 +224,6 @@ type Config struct {
 	// consulted before Babel serves anything and can only deny; nil means no
 	// narrowing beyond the grant.
 	Policy worker.Authorizer
-
-	// Broker locates the evidence API for the job document. §14 defers the
-	// evidence-tool and public-research broker protocols, so this is
-	// normally empty in this build and the retrieval a run performs is
-	// recorded in its receipt's trace rather than streamed to the worker.
-	Broker worker.Broker
 
 	// Frontier, Runs and Ledger are the durable stores. All three live in
 	// one file (§9's durable, pending-sync state) and are injected open so a
@@ -694,6 +696,10 @@ type state struct {
 	// unwritten, so a consolidation over them waits for the resumed run
 	// instead of being reported as an unresolvable result.
 	undeveloped map[string]bool
+	// served is the evidence the run has disclosed so far, rebuilt from the
+	// retrieval trace as each stage persists, and what every citation is
+	// checked against before the claim carrying it becomes durable.
+	served served
 	// deferredRecords and rejectedRecords are the receipt's account of the
 	// candidates this finite run did not develop (§6.5).
 	deferredRecords []run.Candidate

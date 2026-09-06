@@ -20,6 +20,7 @@ import (
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/explore"
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/review"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/synth"
@@ -39,51 +40,51 @@ import (
 // an exit-code test and fail this one.
 //
 // Nothing here needs Code, a provider credential, a network, or a real
-// transcript. The worker is the synthetic protocol counterpart from
+// transcript. The engine is the synthetic `code engine` counterpart from
 // internal/worker/testdata, and every corpus byte is generated (SPEC.md §10).
 
-// fakeWorker builds the synthetic analysis worker once per package run. It
-// is the same fixture internal/explore drives; building it here rather than
-// per test keeps one compile from becoming several.
+// fakeEngine builds the synthetic `code engine` counterpart once per package
+// run. It is the same fixture internal/explore drives; building it here
+// rather than per test keeps one compile from becoming several.
 var (
-	fakeWorkerOnce sync.Once
-	fakeWorkerPath string
-	fakeWorkerErr  error
+	fakeEngineOnce sync.Once
+	fakeEnginePath string
+	fakeEngineErr  error
 )
 
-func fakeWorker(t *testing.T) string {
+func fakeEngine(t *testing.T) string {
 	t.Helper()
-	fakeWorkerOnce.Do(func() {
+	fakeEngineOnce.Do(func() {
 		goTool, err := exec.LookPath("go")
 		if err != nil {
-			fakeWorkerErr = err
+			fakeEngineErr = err
 			return
 		}
 		// Not t.TempDir(): the binary outlives the test that built it.
-		dir, err := os.MkdirTemp("", "babel-fakeworker-*")
+		dir, err := os.MkdirTemp("", "babel-fakeengine-*")
 		if err != nil {
-			fakeWorkerErr = err
+			fakeEngineErr = err
 			return
 		}
-		path := filepath.Join(dir, "fakeworker")
+		path := filepath.Join(dir, "fakeengine")
 		cmd := exec.Command(goTool, "build", "-o", path,
-			"github.com/atyrode/babel/internal/worker/testdata/fakeworker")
+			"github.com/atyrode/babel/internal/worker/testdata/fakeengine")
 		cmd.Dir = repoRoot(t)
 		// The environment this process started with: by the time a test
-		// needs the worker it has already pointed HOME at a synthetic tree,
+		// needs the engine it has already pointed HOME at a synthetic tree,
 		// and `go build` would put its module cache there.
 		cmd.Env = baseEnv
 		if out, err := cmd.CombinedOutput(); err != nil {
-			fakeWorkerErr = err
-			t.Logf("go build fakeworker: %s", out)
+			fakeEngineErr = err
+			t.Logf("go build fakeengine: %s", out)
 			return
 		}
-		fakeWorkerPath = path
+		fakeEnginePath = path
 	})
-	if fakeWorkerErr != nil {
-		t.Skipf("cannot build the synthetic analysis worker: %v", fakeWorkerErr)
+	if fakeEngineErr != nil {
+		t.Skipf("cannot build the synthetic engine: %v", fakeEngineErr)
 	}
-	return fakeWorkerPath
+	return fakeEnginePath
 }
 
 // explorationOperator is the attributed identity every mutation in this
@@ -560,18 +561,13 @@ func TestSyntheticExplorationRoundTrip(t *testing.T) {
 	}
 
 	// --- exploration is refused before a worker exists ----------------
-	// This is the state a correctly installed Babel is in today, because
-	// Code does not implement the worker protocol yet, so the round trip
-	// asserts the refusal before configuring its way past it.
+	// No engine is configured in this isolated installation yet.
 	stdout, stderr, code := p.exec(t, "explore", "--preparation", "prep-none")
 	if code != exitFailure {
 		t.Fatalf("explore without a worker exited %d, want %d", code, exitFailure)
 	}
 	if stdout != "" {
 		t.Errorf("the refusal wrote to stdout: %q", stdout)
-	}
-	if !strings.Contains(stderr, "no Code analysis worker is available") {
-		t.Fatalf("the refusal does not name the missing capability:\n%s", stderr)
 	}
 	for _, forbidden := range []string{"panic", "goroutine", "runtime error"} {
 		if strings.Contains(stderr, forbidden) {
@@ -605,27 +601,29 @@ func TestSyntheticExplorationRoundTrip(t *testing.T) {
 		runs.Close()
 		t.Fatalf("the stored selection holds %d sessions, want 2", len(stored.Selection))
 	}
+	var sourceIDs []string
 	for _, sel := range stored.Selection {
 		if sel.Host != hostID || sel.Harness != synth.HarnessOMP {
 			t.Errorf("selection entry %+v is not this host's OMP session", sel)
 		}
+		sourceIDs = append(sourceIDs, sel.SourceID)
 	}
 	runs.Close()
 
-	// --- explore it through the synthetic worker ------------------------
-	payload := writeDiscoveryPayload(t, p)
+	// --- explore it through the synthetic engine --------------------------
+	payload := writeDiscoveryPayload(t, p, sourceIDs)
 	run := execJSON[exploreDoc](t, p,
 		"explore", "--preparation", prepared.PreparationID,
-		"--worker", fakeWorker(t),
-		"--worker-arg", "-result-payload-selector", "--worker-arg", explore.ParamStage,
-		"--worker-arg", "-result-payload", "--worker-arg", string(explore.StageExplore)+"="+payload,
-		// #87 item 4: the synthetic worker asks corpus-search for the
-		// frontier scope. The frontier is empty at this point in the round
-		// trip, so what this exercises is the whole path — served, bounded,
-		// receipted with its scope — answering honestly that Babel has said
-		// nothing yet, which is a different fact from not having looked.
-		"--worker-arg", "-request-capability", "--worker-arg", "corpus-search",
-		"--worker-arg", "-search-scope", "--worker-arg", explore.ScopeFrontier,
+		"--worker", fakeEngine(t),
+		"--worker-arg", "-submit-selector", "--worker-arg", explore.ParamStage,
+		"--worker-arg", "-submit", "--worker-arg", string(explore.StageExplore)+"="+payload,
+		// The synthetic engine makes one corpus search — no match, so the
+		// preparation's sessions newest first — before it submits. That is
+		// what serves the locator the payload cites: a citation is accepted
+		// only when the run was served it, so this exercises the whole path
+		// — served, bounded, receipted, and then verified against the claim.
+		"--worker-arg", "-call", "--worker-arg", "babel_corpus_search",
+		"--worker-arg", "-search-query", "--worker-arg", "",
 		"--profile", exploreProfile,
 		"--json")
 	if len(run.Failures) != 0 {
@@ -660,7 +658,7 @@ func TestSyntheticExplorationRoundTrip(t *testing.T) {
 	proposalID := run.Proposals[0]
 	findingID := run.Findings[0]
 	if run.Retrievals != 1 {
-		t.Errorf("the run served %d retrievals, want the frontier search the worker asked for",
+		t.Errorf("the run served %d retrievals, want the corpus search the engine made",
 			run.Retrievals)
 	}
 
@@ -954,24 +952,15 @@ func shippedRecipeVersion(t *testing.T, id string) int {
 // corpus bytes, consolidated into a finding and a proposal, with the second
 // candidate deferred rather than dropped.
 //
-// The citation matters. Babel validates that an evidence locator recovers
-// its bytes, so the payload cites a record scanned out of the generated
-// corpus; a fabricated locator would be refused, which is the behaviour that
-// makes a proposal reopenable at all (§4.3).
-func writeDiscoveryPayload(t *testing.T, p *phaseB) string {
+// The citation matters. Babel accepts an evidence locator only when the run
+// was served it and it recovers its bytes, so the payload cites the record the
+// engine's corpus search serves first; a locator found any other way would be
+// refused, which is the behaviour that makes a proposal reopenable at all
+// (§4.3).
+func writeDiscoveryPayload(t *testing.T, p *phaseB, sourceIDs []string) string {
 	t.Helper()
-	var omp *synth.Session
-	for i := range p.corpus.Sessions {
-		if p.corpus.Sessions[i].Harness == synth.HarnessOMP {
-			omp = &p.corpus.Sessions[i]
-			break
-		}
-	}
-	if omp == nil {
-		t.Fatal("the generated corpus holds no OMP session")
-	}
-	evidence, err := frontier.NewEvidence(firstLocator(t, omp.Path),
-		"the first intact record of a generated session")
+	evidence, err := frontier.NewEvidence(servedLocator(t, p, sourceIDs),
+		"the first record the corpus search served")
 	if err != nil {
 		t.Fatalf("build the citation: %v", err)
 	}
@@ -1051,33 +1040,33 @@ func writeDiscoveryPayload(t *testing.T, p *phaseB) string {
 	return path
 }
 
-// firstLocator returns the locator of a session's first intact record, which
-// is what makes the synthetic observation's evidence recover real bytes
-// rather than assert that it could.
-func firstLocator(t *testing.T, path string) event.Locator {
+// servedLocator returns the locator the run's corpus search serves first,
+// which is what the synthetic observation cites as evidence.
+//
+// It is read through the query the run's broker builds for the search the
+// engine makes — the preparation's sessions, no match, newest first — out of
+// the index `prepare` built, because a citation Babel accepts is one it served,
+// byte for byte (§4.3): a locator scanned out of the file would be a
+// fabrication however real its bytes, and the run refuses it as one.
+func servedLocator(t *testing.T, p *phaseB, sourceIDs []string) event.Locator {
 	t.Helper()
-	file, err := os.Open(path)
+	idx, err := index.Open(filepath.Join(p.cacheHome, "babel"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open the retrieval index prepare built: %v", err)
 	}
-	defer file.Close()
-	stream := event.Stream{Harness: synth.HarnessOMP, AdapterSchema: 1, SourceID: "unused", Path: path}
-	var found event.Locator
-	stop := errors.New("enough")
-	err = event.Scan(file, stream, func(e event.Event) error {
-		if e.Partial || e.Text == "" {
-			return nil
-		}
-		found = e.Locator
-		return stop
+	defer idx.Close()
+	hits, err := idx.Search(context.Background(), index.Query{
+		SourceIDs: sourceIDs,
+		Order:     index.OrderNewest,
+		Limit:     1,
 	})
-	if err != nil && !errors.Is(err, stop) {
-		t.Fatalf("scan %s: %v", path, err)
+	if err != nil {
+		t.Fatalf("search the prepared corpus: %v", err)
 	}
-	if found.Digest == "" {
-		t.Fatalf("%s yielded no usable record locator", path)
+	if len(hits) == 0 {
+		t.Fatal("the prepared corpus serves no hits, so nothing can be cited")
 	}
-	return found
+	return hits[0].Locator
 }
 
 // fingerprintTree digests every regular file under root, path and content

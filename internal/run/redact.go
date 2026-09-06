@@ -242,16 +242,16 @@ func copyResources(r Resources) Resources {
 }
 
 // redactWorkerReceipt deep-copies the embedded worker receipt and cleans the
-// strings the counterpart controls.
+// strings the far side controls.
 //
-// internal/worker already scrubs the run-scoped broker token it issued and
-// records tool arguments as a digest rather than as content, so the remaining
-// exposure is a value the worker itself composed: a metadata value, a
-// diagnostic tail, a denial reason it echoed, a progress message, its
-// structured result, or its own failure text. Identifiers Babel assigned —
-// the job and run ids, the profile reference, the source selectors it echoed
-// back — are left alone, because rewriting them would break the correlation
-// the receipt exists to support.
+// internal/worker records tool arguments as a digest rather than as content
+// and never sees a provider credential, so the remaining exposure is a value
+// Code or the engine composed: a metadata value, a diagnostic tail, a denial
+// reason the model was given, a lifecycle message, the accepted result, or a
+// failure text. Identifiers Babel assigned — the job and run ids, the profile
+// reference, the source selectors, the tool names it registered — are left
+// alone, because rewriting them would break the correlation the receipt
+// exists to support.
 func redactWorkerReceipt(in *worker.Receipt, total int) (*worker.Receipt, int) {
 	if in == nil {
 		return nil, total
@@ -260,8 +260,8 @@ func redactWorkerReceipt(in *worker.Receipt, total int) (*worker.Receipt, int) {
 
 	out.Recipes = append([]worker.RecipeRef(nil), in.Recipes...)
 	out.Sources = append([]worker.Source(nil), in.Sources...)
-	out.ResolvedCapabilities = append([]worker.Capability(nil), in.ResolvedCapabilities...)
-	out.UnknownFields = append([]string(nil), in.UnknownFields...)
+	out.Tools = append([]string(nil), in.Tools...)
+	out.UnknownFrames = append([]string(nil), in.UnknownFrames...)
 	out.Grant.Capabilities = append([]worker.Capability(nil), in.Grant.Capabilities...)
 
 	out.Worker.Name, total = addRedaction(total, in.Worker.Name)
@@ -309,8 +309,28 @@ func redactWorkerReceipt(in *worker.Receipt, total int) (*worker.Receipt, int) {
 		out.Failure = &failure
 	}
 	if in.Resources != nil {
-		resources := *in.Resources
+		resources := copyWorkerResources(*in.Resources)
 		out.Resources = &resources
 	}
+	if in.Usage != nil {
+		usage := *in.Usage
+		out.Usage = &usage
+	}
 	return &out, total
+}
+
+// copyWorkerResources copies a measurement so the redacted receipt shares no
+// pointer with the original.
+func copyWorkerResources(r worker.Resources) worker.Resources {
+	out := worker.Resources{Provenance: r.Provenance}
+	if r.CPUSeconds != nil {
+		out.CPUSeconds = new(*r.CPUSeconds)
+	}
+	if r.MaxRSSBytes != nil {
+		out.MaxRSSBytes = new(*r.MaxRSSBytes)
+	}
+	if r.SandboxBytesWritten != nil {
+		out.SandboxBytesWritten = new(*r.SandboxBytesWritten)
+	}
+	return out
 }

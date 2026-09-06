@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -85,9 +86,9 @@ Nothing is analysed, no session is read, and no title is written by this
 command.
 
 Flags:
-  --worker PATH        Code executable speaking babel.analysis-worker
+  --worker PATH        Code executable; Babel runs its engine subcommand
                        (default $BABEL_ANALYSIS_WORKER, else the stored one)
-  --worker-arg ARG     extra argument for the worker; repeatable
+  --worker-arg ARG     extra argument for Code, before the engine subcommand; repeatable
   --json               emit the stored reference as JSON on stdout
 `
 
@@ -101,15 +102,11 @@ Flags:
   --json    emit the stored reference as JSON on stdout
 `
 
-// titlesModeFlag asks the worker for titles rather than an exploration, and
-// profileFlag names the reference it must use. They are Babel's half of the
-// titler launch, the way --configure and --result-file are Babel's half of the
-// ceremony: the worker's own arguments put the executable into its mode, and
-// these two say what Babel wants done and under whose authority.
-const (
-	titlesModeFlag = "--titles"
-	profileFlag    = "--profile"
-)
+// profileFlag is Babel's half of every engine launch: it names the reference
+// the engine must run under, the way --configure and --result-file are Babel's
+// half of the ceremony. The worker's own arguments put the executable into its
+// mode; this says under whose authority.
+const profileFlag = "--profile"
 
 // titlesRecord is what the ceremony produced: the Code profile the operator
 // confirmed for title inference, and the launch that reaches it.
@@ -131,22 +128,21 @@ func (t *titlesRecord) ref() worker.ProfileRef {
 	return worker.ProfileRef{ID: t.Profile, Revision: t.Revision}
 }
 
-// launch is the argv one inference passes the stored executable: the worker's
-// own arguments, the mode, and the confirmed reference. Nothing in it is
-// chosen at invocation time, which is the whole point — an operator who runs
-// inference twice gets the same model both times, and the only way to change
-// that is to sit through the ceremony again.
-func (t *titlesRecord) launch() []string {
-	argv := make([]string, 0, len(t.WorkerArgs)+3)
-	argv = append(argv, t.WorkerArgs...)
-	return append(argv, titlesModeFlag, profileFlag, t.ref().String())
+// config is the client configuration one inference launches the stored
+// executable with: the worker's own arguments and nothing chosen at invocation
+// time, which is the whole point — an operator who runs inference twice gets
+// the same model both times, and the only way to change that is to sit
+// through the ceremony again.
+func (t *titlesRecord) config() worker.Config {
+	return worker.Config{Binary: t.Worker, Args: slices.Clone(t.WorkerArgs)}
 }
 
 // command is the whole launch for display: what would run, in the order it
 // would run, so the disclosure names the process that receives the material
 // rather than describing it.
 func (t *titlesRecord) command() []string {
-	return append([]string{t.Worker}, t.launch()...)
+	argv := append([]string{t.Worker}, t.WorkerArgs...)
+	return append(argv, engineSubcommand, profileFlag, t.ref().String())
 }
 
 // titlesResult is the machine-readable titles document, shared by configure
@@ -335,10 +331,10 @@ func sanitizeTitles(t *titlesRecord) *titlesRecord {
 func (a *app) reportNoTitlesWorker() error {
 	fmt.Fprint(a.stderr, `babel: no Code executable is available, so there is nothing to configure titles against.
 
-Title inference runs through Code, which owns the profile, the model, and the
-provider credential (SPEC.md §2.6). Babel launches an executable speaking the
-babel.analysis-worker protocol and stores the reference the operator confirms
-in its interface; it never chooses a model itself. This machine has none.
+Title inference runs through Code's engine, which owns the profile, the model,
+and the provider credential (SPEC.md §2.6). Babel launches "code engine" and
+stores the reference the operator confirms in Code's interface; it never
+chooses a model itself. This machine has no Code executable configured.
 
 To name one:
   babel titles configure --worker PATH

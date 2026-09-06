@@ -1,7 +1,6 @@
 package explore
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/atyrode/babel/internal/complaint"
@@ -30,22 +29,9 @@ import (
 // is stored with a warning naming what it resembles, and the operator and the
 // next run decide.
 
-// RelatedContextField is the job document's top-level key for the refine-first
-// context, and RelatedContextSchema versions what is under it.
-//
-// It travels as a top-level field through worker.Job's Extra rather than as a
-// job parameter, because a parameter map is strings and this is a list of
-// records with summaries. Extra is the material stage's forward-compatible map,
-// which is where this belongs: prior candidates are the run's material, so they
-// travel with the sources and the grant, after the worker has declared the
-// boundary it will read them behind. A worker that does not know the field
-// ignores it, per the protocol's rule that unknown fields are never fatal in
-// either direction, and a worker that does know it reads a versioned document
-// rather than parsing prose out of a parameter value.
-const (
-	RelatedContextField  = "related_outputs"
-	RelatedContextSchema = "babel.related-outputs/1"
-)
+// The refine-first context reaches the model as a section of the prompt
+// (composePrompt) rather than as a field of any wire document: prior candidates
+// are the run's material, and the prompt is the one place material travels.
 
 // The two framings, and they say different things on purpose.
 //
@@ -77,26 +63,25 @@ const (
 		"naming its id instead of emitting a duplicate."
 )
 
-// RelatedContext is the refine-first document one job carries.
+// RelatedContext is the refine-first section one prompt carries.
 type RelatedContext struct {
-	Schema  string `json:"schema"`
-	Framing string `json:"framing"`
+	Framing string
 	// Serendipitous mirrors the preparation's marker so a worker can tell
 	// which framing it is reading without matching the prose.
-	Serendipitous bool `json:"serendipitous,omitempty"`
+	Serendipitous bool
 	// Records are the prior outputs, in the preparation's canonical order.
 	// The order is not a ranking: §5.4 forbids retrieval rank from becoming
 	// evidence strength, and the preparation deliberately stored these
 	// sorted rather than ranked.
-	Records []RelatedRecord `json:"records"`
+	Records []RelatedRecord
 }
 
-// RelatedRecord is one prior output as the worker receives it: the id it must
+// RelatedRecord is one prior output as the model receives it: the id it must
 // name to refine the record, and one line saying what the record says.
 type RelatedRecord struct {
-	Kind    string `json:"kind"`
-	ID      string `json:"id"`
-	Summary string `json:"summary"`
+	Kind    string
+	ID      string
+	Summary string
 }
 
 // relatedContext resolves the preparation's related outputs into the job
@@ -115,7 +100,6 @@ func (c *Controller) relatedContext(st *state) *RelatedContext {
 		return nil
 	}
 	doc := &RelatedContext{
-		Schema:        RelatedContextSchema,
 		Framing:       FramingRefine,
 		Serendipitous: prep.Serendipitous,
 		Records:       make([]RelatedRecord, 0, len(prep.Related)),
@@ -175,24 +159,6 @@ func (c *Controller) relatedOutput(st *state, kind frontier.OutputKind, id strin
 		return frontier.Output{}, fmt.Errorf("this instance opened no complaint store")
 	}
 	return c.cfg.Complaints.Output(st.commit, id)
-}
-
-// extra encodes the job document's forward-compatible fields for one stage.
-func (c *Controller) extra(st *state) map[string]json.RawMessage {
-	doc := c.relatedContext(st)
-	if doc == nil {
-		return nil
-	}
-	encoded, err := json.Marshal(doc)
-	if err != nil {
-		// A context Babel cannot encode is dropped rather than allowed to
-		// stop the run: the exploration is still the work, and the failure
-		// says the injection did not happen.
-		st.fail(StageExplore, FailureRelatedContext, c.now(),
-			fmt.Errorf("explore: encode related outputs: %w", err))
-		return nil
-	}
-	return map[string]json.RawMessage{RelatedContextField: encoded}
 }
 
 // DuplicateOverlap is the term overlap at which a candidate is warned about as
