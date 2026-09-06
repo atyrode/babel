@@ -1,19 +1,18 @@
 # Operations runbook: recovery, custody, and rollback
 
-The archive is worth exactly what its recovery is worth, so every procedure
-below was run rather than reasoned about. Each section records what was
-actually executed, on which host, on which date, and what it printed. Where a
-step could not be run read-only it is marked **OPERATOR STEP** and says what
-success looks like, so nothing here is a procedure whose first real execution
-happens during an incident.
+This document separates **historical evidence** from **current operator
+procedures**. Captured output is dated; it is not a claim about today's fleet.
+Every new operational procedure is marked **OPERATOR STEP**, with prerequisites
+and observable success. No current secret generation, activation, rotation, or
+restore-to-service was executed for this documentation update.
 
-This closes the "document and exercise" half of the SPEC.md §14 gate on
-coordinated catalog backup, repository recovery, password custody, storage
-configuration recovery, manual bootstrap, timer enablement, and rollback.
+The 2026-08-31 exercises below supply historical evidence for SPEC.md §14's
+recovery and rollback gate. Current managed-fleet custody follows the pinned
+dotfiles sources in §3; the retired provisioning ceremony is not a recovery path.
 
 ## Exercise environment
 
-All output below was captured on **2026-08-31** on host `workstation-linux`
+All historical output below was captured on **2026-08-31** on host `workstation-linux`
 (kernel hostname `ubuntu-4gb-nbg1-1`), against the **real production
 deployment** — real Cellar repository, real managed PostgreSQL catalog.
 
@@ -22,9 +21,11 @@ babel 0-unstable-2026-08-30 (64ba5e178386) linux/amd64 go1.26.5
 restic 0.19.1 compiled with go1.26.5 on linux/amd64
 ```
 
-**Every command in this runbook that was exercised is read-only.** No snapshot
-was written, no catalog row was inserted or deleted, and no `restic`
-write verb (`init`, `backup`, `forget`, `prune`, `unlock`, `repair`) was run.
+**Production commands exercised by the historical drill were read-only with
+respect to durable remote state.** Scratch configuration checks are separately
+identified in §8.1. No snapshot was written, no catalog row was inserted or
+deleted, and no `restic` write verb (`init`, `backup`, `forget`, `prune`,
+`unlock`, `repair`) was run.
 Direct `restic` invocations all carried `--no-lock`; the one Babel command that
 reaches the repository through `restic restore` takes restic's ordinary
 transient shared lock and releases it, which was confirmed afterwards (see
@@ -55,19 +56,14 @@ applied here.
 The archive is published by a systemd user timer on every managed Linux
 machine. Babel itself is not scheduled; `atyrode/dotfiles` schedules it.
 
-**Preconditions.** `~/.config/babel/storage.json` exists (written by the
-ceremony in §4). The timer's `ConditionPathExists` names that document, so an
-unconfigured machine leaves the unit inactive with a journal line naming the
-missing path instead of failing hourly.
+**Preconditions.** The current clan-var placement and checks in §4 are complete.
+The Linux timer's `ConditionPathExists` names `~/.config/babel/storage.json`;
+Darwin instead relies on the common wrapper's storage-document gate (§7).
+Neither gate proves all inputs or remote services healthy; check §4 diagnostics.
 
-**Steps.** Nothing routine. The timer fires `babel-archive-push`, a wrapper that
-runs `babel archive push --json` and only stamps
-`~/.local/state/babel/last-success` when a complete snapshot was actually
-published. To force one archive by hand:
-
-```sh
-systemctl --user start babel-archive.service   # or: babel-archive-push
-```
+The scheduler runs `babel-archive-push`, which calls `babel archive push --json`
+and stamps `~/.local/state/babel/last-success` only for a complete published
+snapshot. Manual publication is the unexecuted **OPERATOR STEP** in §6.
 
 **Verify.** `babel archive status` is the read-only fleet-wide answer:
 
@@ -214,9 +210,9 @@ export AWS_ACCESS_KEY_ID="$(jq -r .repository_store.access_key_id     "$cfg")"
 export AWS_SECRET_ACCESS_KEY="$(jq -r .repository_store.secret_access_key "$cfg")"
 ```
 
-If `storage.json` is also gone, those four values come from §3 and §4: the
-repository password from Bitwarden, the locator and object-store keys from
-`clever addon env`.
+If `storage.json` is also gone, recover the existing clan custody and reapply
+placement as in §3–4. The repository password and provider inputs must survive
+independently of this machine; a new password cannot open the old repository.
 
 ```
 $ restic snapshots --no-lock --host alex-x86_64-linux-wsl
@@ -377,108 +373,126 @@ real  0m2.235s   exit 0
 
 ## 3. Restic repository password custody
 
-**This is the one secret no provider can reissue.** Clever Cloud can mint new
-object-store keys and a new database password; nobody can recover the restic
-repository password. Losing it makes all 44 snapshots — 23.466 GiB of source
-history — permanently unreadable. There is no support path, no escrow, and no
-brute force.
+**No provider can reissue this password.** Losing every copy makes the existing
+repository unreadable. The same rule applies independently to each Phase B
+payload key (§8.1). A working machine is not the only backup of either.
 
-**Custodian.** Bitwarden (`vault.bitwarden.eu`), item **"Babel repository
-password"**, username `babel-archive`. The item's own notes state the loss
-consequence.
+### Current source contract
 
-**Who creates it.** Bitwarden does. `scripts/babel-storage-configure.sh` in
-`atyrode/dotfiles` generates the password *through the vault* on first run and
-never regenerates it afterwards, so the secret is in its custodian from birth
-and no script ever invents a credential. Babel is vault-agnostic: it receives
-one finished document on stdin, never learns Bitwarden exists, and never prints
-a secret.
+The following sources were read at dotfiles revision
+**`f2a4749eab77ac859b85354142e42c78ac6d8c80` (2026-09-06)**. They establish
+declared behavior, not proof that any fleet member has applied it:
 
-**Where it lands on a machine.** Exactly one file, because restic accepts a
-password only by file or environment and a file keeps it off every command line:
+| Contract | Pinned source |
+| --- | --- |
+| Shared custody; existing password is prompted, never minted; existing rings survive rotation | [`modules/shared/babel-archive.nix:1–31`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L1-L31) |
+| sops placement, owner/group and 0600 mode | [`modules/shared/babel-archive.nix:44–75`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L44-L75) |
+| Shared `babel-custody`: three secret, undeployed inputs; deployed complete ring; prompt validation | [`modules/shared/babel-archive.nix:77–178`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L77-L178) |
+| Per-machine schema-2 shared configuration, registry host/instance identity, and Home Manager links | [`modules/shared/babel-archive.nix:180–243`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/modules/shared/babel-archive.nix#L180-L243) |
+| Operator-device generation followed by apply; no vault/provider session on target | [`fleet/provisioning.json:39–44`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/fleet/provisioning.json#L39-L44) |
+| Input readiness before success-stamp health | [`pkgs/atyrode/lib/doctor.sh:1262–1313`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/pkgs/atyrode/lib/doctor.sh#L1262-L1313) |
 
-```
-$ stat -c '%n  mode=%a  owner=%U  size=%s' ~/.config/babel/storage.json ~/.config/babel/repository-password
-/home/alex/.config/babel/storage.json         mode=600  owner=alex  size=708
-/home/alex/.config/babel/repository-password  mode=600  owner=alex  size=65
-```
+`babel-custody` holds `repository-password`, `cellar-env.json`,
+`catalog-env.json`, and `payload-keys.json`. The first three are generation
+inputs, not separately deployed custody files; their required values feed the
+machine's storage document and password file. The whole ring is deployed.
+Babel does not retrieve provider credentials or generate managed-fleet storage
+configuration. Identity comes from the clan machine registry, not a flag or
+the kernel hostname.
 
-`babel storage status` independently confirms the file is present and its mode
-is safe, without reading the value:
+> **OPERATOR STEP — preserve and recover custody (not executed).**
+> **Prerequisites:** an authorized operator device able to decrypt the clan
+> vars, access to the encrypted dotfiles history, and an independent secure
+> backup destination. Preserve the encrypted vars and the means to decrypt them
+> off the fleet; test access from a recovery device without printing secret
+> values. If custody is missing, recover the existing password and complete ring
+> from a surviving authorized copy or backup before generating derived files.
+> Do not replace a password or ring to repair missing placement.
+> **Success:** the recovery device can securely recover the existing custody
+> values, including all historical key ids, without relying on the failed host.
+> Repository recovery remains possible with restic alone (§2); Phase B recovery
+> additionally needs its catalog/object backups and every sealing key (§8).
 
-```
-password file exists  yes
-password file secure  yes
-```
-
-**Vault state observed tonight** (`bw status` is read-only and does not unlock;
-account fields redacted):
-
-```
-$ bw status
-{"serverUrl":"https://vault.bitwarden.eu","lastSync":"2026-08-29T15:48:52.837Z","status":"locked"}
-exit 0
-```
-
-The vault being `locked` between ceremonies is the correct steady state. The
-ceremony relocks on every exit path including failure — that is enforced by a
-`trap relock EXIT`, because leaving the vault unlocked is precisely the failure
-the ceremony exists to bound.
-
-> **OPERATOR STEP — the unlock/retrieve/relock drill.** It cannot be exercised
-> unattended: it needs the master password, and it is the one procedure whose
-> whole point is that a human is present. Run:
->
-> ```sh
-> atyrode provision babel --dry-run
-> ```
->
-> **Success looks like:** an interactive unlock prompt, then a `would
-> configure:` block naming host, instance, deployment, repository locator,
-> catalog host, both resolved add-on ids, the password file path, and
-> `vault item  Babel repository password (present)` — the `(present)` word is
-> the assertion that matters, because it proves the existing password was
-> *retrieved* rather than a new one generated. Nothing is written (`--dry-run`
-> writes no document), and `bw status` must report `locked` again afterwards.
-> If it reports `unlocked`, the relock trap failed and that is a defect.
->
-> **Backup of the secret itself** is Bitwarden's own export, and it is the
-> operator's periodic obligation, not Babel's: an encrypted vault export stored
-> off this fleet. A password held only in a vault that is only reachable from
-> the machines it protects is not backed up.
+**Historical evidence, 2026-08-31 only:** the old local password file and
+`storage.json` were observed with mode 0600; `storage status` reported the
+password present and secure. The former vault was observed locked. No live
+secret retrieval or custody export was exercised. These observations do not
+establish current clan-var custody or activation.
 
 ---
 
 ## 4. `storage.json` recovery
 
-**Preconditions.** `bw`, `clever`, `babel`, and `python3` on `PATH`; `clever`
-logged in to the organisation owning the add-ons.
+> **OPERATOR STEP — generate missing derived configuration (not executed).**
+> **Prerequisites:** a current dotfiles checkout on an authorized operator
+> device, the intended registered host, an existing archive repository, and
+> recoverable shared custody from §3. Inspect the declared/generated var status
+> without displaying contents first. If the existing vars are already complete,
+> skip generation and apply them; a dangling link is not a reason to regenerate.
+>
+> For a registered machine needing generated files, on the operator device:
+>
+> ```sh
+> clan vars generate <host>
+> ```
+>
+> If shared custody prompts appear, supply the existing repository password,
+> whole Cellar and catalog environment JSON documents, and **the entire existing
+> payload ring** through the hidden prompts. Never leave the ring prompt empty
+> for this existing deployment: the generator's empty-input branch mints a new
+> ring and cannot recover old ciphertext. Stop and recover custody if it is
+> unavailable. Review and commit only the encrypted var update in dotfiles,
+> then make that revision available to the target.
+> **Success:** the intended host's derived storage/password vars and shared
+> ring are present in encrypted custody; no secret value enters Git plaintext,
+> argv, shell history, logs, or an ordinary temporary file.
 
-**The document is regenerated, never hand-edited or restored from a backup.**
-It is not worth backing up: everything in it is derivable. The repository
-password comes from Bitwarden, and the Cellar and PostgreSQL credentials are
-read live from `clever addon env` — deliberately *not* copied into the vault,
-because a second source of truth goes stale the moment either is rotated.
+> **OPERATOR STEP — apply existing custody (not executed).**
+> **Prerequisites:** the target is the registered host, has its decryption
+> identity, and can apply the reviewed dotfiles revision containing its vars.
+> Run `atyrode apply` on that machine. Do not hand-edit managed config links or
+> invoke Babel's standalone configuration writer on them.
+> **Success:** sops-nix places these readable, nonempty 0600 files for the archive
+> account, and Home Manager links the two config documents:
+>
+> | Babel-facing path | Placed target |
+> | --- | --- |
+> | `~/.config/babel/storage.json` | `/run/secrets/vars/babel-archive/storage.json` |
+> | `~/.config/babel/payload-keys.json` | `/run/secrets/vars/babel-custody/payload-keys.json` |
+> | `password_file` inside storage | `/run/secrets/vars/babel-archive/repository-password` |
+>
+> Apply also restores declarative scheduling (§7). Failed generation or
+> activation is not success: do not remove old custody or manually arm a job
+> with partial inputs. Diagnose placement and retain a usable generation (§7.3).
+> This is not a claim that activation is an atomic rollback of all secret files.
 
-**Steps.**
+> **OPERATOR STEP — read-only readiness checks (not executed on current fleet).**
+> **Prerequisites:** the intended generation has been applied; run as the
+> archive account. These commands diagnose, not generate, activate, or publish:
+>
+> ```sh
+> babel storage status
+> babel storage verify
+> atyrode doctor provisioning --json
+> ```
+>
+> **Success:** status identifies shared mode and the registry host/instance,
+> with the placed password present and secure; verify reports negotiated TLS,
+> compatible schema and no pending migration. Inspect the `babel-archive`
+> entry in doctor's `surfaces`, not just exit status (this diagnostic can exit
+> zero while degraded). Missing, dangling, unreadable or empty storage/ring/
+> password files produce `archive-input-unavailable`; a storage document without
+> an absolute password path produces `archive-config-invalid`. A recent stamp
+> cannot mask either. With usable inputs, `never-succeeded` is expected before
+> first publication; `archive-stale` means the parsed success time is over
+> 48 hours old; `ok` reports a prior successful archive, not live remote health.
+> Neither doctor nor link existence validates that all historical keys are
+> present: §8.1's cross-host opening check covers that separately.
 
-```sh
-atyrode provision babel                       # already-configured machine: reuses its own identity
-atyrode provision babel --host-id <name>      # a machine that has never been configured
-```
+### Historical read-only verification — 2026-08-31
 
-Add-ons are referenced by name and resolved to ids at run time, so no opaque
-identifier is recorded in any repository or carried by an operator. An explicit
-`addon_<uuid>` is honoured as given, so recovery never depends on the lookup
-succeeding.
-
-Identity is read, not invented: a machine that has already published keeps the
-identity it published under, and changing it requires `--force-host-id`.
-Renaming a configured machine starts an empty history and abandons the one it
-already has, because host generations and commit ordering are per-host.
-
-**Verify.** Both checks below are read-only; `storage verify` explicitly never
-changes the database or the configuration.
+The paths and identities in this captured output belong to the old deployment,
+not the current sops placement. Both commands were read-only:
 
 ```
 $ babel storage status
@@ -520,14 +534,8 @@ real  0m0.388s   exit 0
 TLS is reported as *observed* (`TLSv1.3` actually negotiated), not as
 configured, and the privilege is reported as *observed* rather than assumed.
 
-**Failure behavior.** A failed vault retrieval, validation, or rotation
-preserves the previous valid `storage.json`, emits no secret, and does not
-enable or restart the archive timer with partial state. Configuration is
-replaced atomically from stdin only.
-
-**Exercised 2026-08-31 on `workstation-linux`** (`storage status` and
-`storage verify` live; the regenerating ceremony is the OPERATOR STEP in §3,
-since it is the same vault ceremony).
+**Exercised 2026-08-31 on `workstation-linux`:** `storage status` and
+`storage verify` only. Current generation and apply remain operator steps above.
 
 ---
 
@@ -598,9 +606,9 @@ catalog).
 
 ## 6. Manual bootstrap of a new machine
 
-**Exercised for real on 2026-08-31**: `alex-x86_64-linux-wsl` was bootstrapped
-into the fleet tonight. Its first snapshot is in the repository, and the four
-hourly snapshots after it show the timer took over unattended:
+**Historical evidence, 2026-08-31:** `alex-x86_64-linux-wsl` joined the fleet
+under the then-current deployment. Its first snapshot and subsequent hourly
+snapshots were observed; this does not exercise today's clan-var bootstrap:
 
 ```
 $ restic snapshots --no-lock --host alex-x86_64-linux-wsl
@@ -613,25 +621,14 @@ a3842fd3  2026-08-31 02:01:24
 Confirmed from the other side by `archive fleet` in §1: `current`, cadence
 `1h (observed)`, 4 snapshots.
 
-**Preconditions.** The machine is in the host registry; `bw`, `clever`, `babel`,
-`python3` present; the vault logged in; the repository **already created**.
-
-**Steps.**
-
-```sh
-atyrode apply                              # activation offers the ceremony, then:
-atyrode provision babel --host-id <name>   # or run it directly, by name
-```
-
-`--host-id` is required exactly once, on a machine that has never been
-configured, and it is the registry name — never the kernel hostname, which is
-the thing a stable archive identity exists to stop mattering. (`workstation-linux`
-is the archive identity of a machine whose kernel hostname is `ubuntu-4gb-nbg1-1`.)
-
-The ceremony writes `storage.json`, and `provision babel` then arms the timer in
-the same run rather than `exec`ing away — otherwise a machine provisioned by
-hand would archive nothing until its next login, because the timer's
-`ConditionPathExists` is evaluated when the timer *starts*, not continuously.
+> **OPERATOR STEP — join a registered machine (not executed).**
+> **Prerequisites:** the host is registered in current dotfiles, authorized to
+> read the entire shared corpus, and the repository already exists. Complete
+> §3–4's custody, generation (only if needed), apply, and read-only checks.
+> **Success:** storage uses the registered host/instance, inputs are usable,
+> catalog verification passes, and the platform scheduler is present (§7).
+> Registry identity must remain stable for a machine that has published:
+> changing it creates a different host history, not a rename of old snapshots.
 
 **Do not run `babel archive init` on a new machine.** Repository creation is a
 one-time operator act for the whole deployment. `archive push` refuses to create
@@ -639,14 +636,17 @@ a repository precisely so that a mistyped locator fails loudly instead of
 silently becoming a second, empty archive, and concurrent creation corrupts a
 fresh one.
 
-**Verify.**
-
-```sh
-babel storage status                      # configured yes, correct host id
-babel storage verify                      # tls active, schema compatible
-systemctl --user start babel-archive.service
-babel archive fleet --expect <all,hosts>  # the new host reports: current
-```
+> **OPERATOR STEP — first publication (not executed).**
+> **Prerequisites:** §4 readiness passes, the correct existing repository is
+> selected, source sessions exist, and publication is authorized. Run the common
+> `babel-archive-push` wrapper on either platform (on Linux, alternatively
+> `systemctl --user start babel-archive.service`). This writes the archive and
+> may reconcile/publish catalog state; it is not a read-only check.
+> **Success:** the wrapper reports a complete snapshot and updates `last-success`.
+> Then read `babel archive status` and
+> `babel archive fleet --expect <comma-separated-registry-hosts>`: the host has a
+> new published snapshot and is `current`. Confirm it from another authorized
+> machine. A successful no-op with no source roots is not proof of backup.
 
 ---
 
@@ -654,11 +654,14 @@ babel archive fleet --expect <all,hosts>  # the new host reports: current
 
 ### 7.1 Enablement
 
-The ordering is deliberate and is the SPEC.md §14 rule "timer enablement only
-after shared-storage health passes": activation configures and verifies storage
-first, and only then does anything start pushing on a schedule. A timer armed
-before the ceremony is kept from publishing into an unconfigured archive only by
-the push failing, and a guarantee made of a failure is no guarantee.
+Current source declares Linux's hourly persistent timer with 10-minute jitter,
+the storage-document start condition, and restarting that timer after activation
+([`checks/atyrode/babel-archive.nix:80–123`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/checks/atyrode/babel-archive.nix#L80-L123)).
+The condition is checked at timer start, not continuously. It gates only document
+existence; do not equate it with full storage health. §4's checks and §6's first
+publication establish readiness and actual archive outcome separately.
+
+**Historical unit and timer observations, 2026-08-31:**
 
 ```
 $ systemctl --user cat babel-archive.timer
@@ -696,20 +699,39 @@ NEXT                        LEFT   LAST                        PASSED    UNIT   
 Mon 2026-08-31 04:06:38 UTC 37min  Mon 2026-08-31 03:02:28 UTC 26min ago babel-archive.timer  babel-archive.service
 ```
 
-On macOS there is no `ConditionPathExists` equivalent, so a `launchd` agent runs
-the same wrapper every 3600s and the wrapper's own check of the same document is
-the gate.
+Darwin instead declares enabled `launchd.agents.babel-archive`, the same wrapper,
+`StartInterval = 3600`, and `RunAtLoad = true`
+([`checks/atyrode/babel-archive.nix:197–209`](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/checks/atyrode/babel-archive.nix#L197-L209)).
+There is no systemd condition on macOS: the wrapper checks the storage document.
+Do not infer Linux's persistent catch-up or jitter semantics from launchd's
+interval. The wrapper never initializes a repository and earns the success stamp
+from a nonempty snapshot id with no incomplete result
+([same check, lines 58–78](https://github.com/atyrode/dotfiles/blob/f2a4749eab77ac859b85354142e42c78ac6d8c80/checks/atyrode/babel-archive.nix#L58-L78)).
+
+> **OPERATOR STEP — inspect scheduling (read-only; not executed on current fleet).**
+> **Prerequisites:** §4 activation completed in the archive user's session.
+> On Linux, inspect `systemctl --user status babel-archive.timer` and
+> `systemctl --user list-timers 'babel*'`; success is an active waiting timer
+> with a next trigger and the expected service. On Darwin, inspect the installed
+> Home Manager LaunchAgent plist for `babel-archive`, then use `launchctl print`
+> with its actual `gui/<uid>/<Label>` service target. Success is a loaded job
+> with the wrapper, 3600-second interval and RunAtLoad configuration. No Mac
+> runtime observation was made here. On either platform, scheduling alone is
+> insufficient: §6 must show the actual published snapshot.
 
 ### 7.2 Stopping the archive
 
-```sh
-systemctl --user stop babel-archive.timer      # this boot only
-systemctl --user disable --now babel-archive.timer
-```
-
-Both are undone by the next `atyrode apply`, which is the point: the timer is
-declarative state, so a durable change belongs in the configuration, not in a
-`systemctl` invocation.
+> **OPERATOR STEP — suspend scheduling (not executed).**
+> **Prerequisites:** authorized maintenance and awareness that stopping a
+> scheduler does not cancel an already running archive. On Linux run
+> `systemctl --user stop babel-archive.timer` for this session, or
+> `systemctl --user disable --now babel-archive.timer`. On Darwin use
+> `launchctl bootout` with the actual service target inspected in §7.1.
+> **Success:** the timer is inactive or the launchd job is unloaded; separately
+> inspect the service/job before assuming an in-flight push ended. These are
+> temporary local changes: the next apply restores declarative scheduling.
+> For a durable suspension, change the owning dotfiles scheduler declaration
+> through review and apply it; success is absence of scheduled starts after apply.
 
 ### 7.3 Rollback
 
@@ -739,19 +761,31 @@ $ home-manager generations
 exit 0
 ```
 
-```sh
-/nix/store/<generation>/activate     # roll back to a chosen generation
-```
+> **OPERATOR STEP — rollback deployment (not executed).**
+> **Prerequisites:** authorized maintenance, independent recoverable custody
+> (§3), and a known-good generation compatible with the current complete ring.
+> Inspect available generations using the owning platform's deployment tools.
+> A Home Manager-only rollback activates the chosen generation's `activate`
+> script; it is not a NixOS/nix-darwin system or sops placement rollback.
+> Choose the matching system rollback when those components changed.
+> **Success:** the selected generation's package, links and scheduler are
+> effective, and §4 checks pass before §6 publication is attempted.
 
-**What rollback does and does not touch.** It removes the timer, the service,
-and the `babel-archive-push` wrapper. It does **not** delete `storage.json`, the
-password file, the repository, or the catalog — and it must not, because a
-rollback that discarded the repository password would convert a reversible
-deployment change into permanent data loss. Snapshots already published stay
-published; retention is append-only and Babel ships no delete path.
+**Rollback boundaries.** Which timer/service/launchd agent and wrapper remain
+depends on the chosen generation; rollback does not inherently remove them.
+Home Manager links or sops runtime files may change or disappear, so do not
+promise that old `~/.config` files survive. Preserve the encrypted custody and
+every historical payload key independently; never roll custody back to an
+incomplete ring. Deployment rollback must not delete the repository, catalog,
+published snapshots or pending local durable state. Already published snapshots
+remain restorable through §2, even without Babel or PostgreSQL. No legacy mirror
+is reintroduced.
 
-Rolling forward again is `atyrode apply`, which re-runs the §4 verification
-before rearming.
+> **OPERATOR STEP — roll forward (not executed).**
+> **Prerequisites:** corrected reviewed configuration and complete current
+> custody. Run `atyrode apply`, then §4 and §7.1 checks.
+> **Success:** usable placement and intended scheduling return; §6 publication
+> separately proves the machine archives again.
 
 **Exercised 2026-08-31 on `workstation-linux`** (timer state, unit definition,
 legacy-backup absence, and available rollback generations observed live; no
@@ -789,172 +823,58 @@ credential are current values an operator edits, while a key document is a
 *history* — every sealed object ever written under a retired key still needs
 that key to open.
 
-Create it once per deployment:
+On managed machines this path is a Home Manager out-of-store link to
+`/run/secrets/vars/babel-custody/payload-keys.json` (§3 sources), not a local
+document to overwrite. The generator validates and copies the supplied whole
+ring. It does **not** union it with extra keys on a target machine; the operator
+must preserve those in shared custody before switching that machine to the
+managed link. A new active key alone cannot open historical objects.
 
-```sh
-babel sync --generate-key phase-b-1
-```
+> **OPERATOR STEP — recover/distribute an existing ring (not executed).**
+> **Prerequisites:** an authorized operator device, access to encrypted clan
+> custody and surviving authorized ring copies, and knowledge of the intended
+> deployment. Securely reconcile the complete key history: preserve every key,
+> refuse conflicting material under the same id, and resolve any conflict from
+> authoritative backups before proceeding. Never print the ring or put it in
+> argv, shell history, logs or an ordinary temporary file. Use clan's var
+> get/set workflow for the existing shared `babel-custody/payload-keys.json`
+> value (see §3, module lines 21–31), not regeneration. Commit the encrypted
+> update, make it available to each authorized machine, and run `atyrode apply`.
+> If encrypted custody is already complete and only placement is missing, skip
+> the var edit and apply that existing value.
+> **Success:** §4 reports usable links/inputs and, on a second authorized host,
+> `babel fleet records` can open known committed records sealed under both the
+> active and historical key ids. Compare ids and opening outcomes privately;
+> do not publish record contents or key material as diagnostic evidence.
 
-```
-$ babel sync --generate-key phase-b-1
-payload key phase-b-1 written to /home/operator/.config/babel/payload-keys.json
-note: back up that document; every object sealed under a key it holds is unreadable without it
-note: this host is the only place phase-b-1 exists; put the ring from /home/operator/.config/babel/payload-keys.json into the deployment's custody document as its "payload_keys" field, then re-provision the fleet — `babel storage configure --from-json` is what installs it on every other host
-```
+> **OPERATOR STEP — deliberate append-only rotation (not executed).**
+> **Prerequisites:** an independently recoverable complete ring, authorized
+> rotation, and access to every intended fleet member. The source-prescribed
+> sequence is `clan vars get`, append one securely generated 32-byte
+> standard-base64 key with a unique id, set `active_key_id` to that id, then
+> `clan vars set` for the same shared ring. Use protected secret input/output,
+> not a terminal transcript. Retain every old entry unchanged. Review/commit
+> encrypted custody and apply to every authorized host before relying on
+> cross-host opening of newly sealed records.
+> **Success:** every recipient has the full history and new active id; existing
+> committed records still open and a deliberately authorized new publication
+> can be opened by another host. Missing placement never justifies rotation.
 
-The key material is never printed, never logged, and never appears in an error.
-The two notes are the steps this key is not finished without, and both are
-below. Babel names no custodian in either, deliberately: it receives one
-finished document, never learns Bitwarden exists, and never prints a secret
-(§3), so the vault-specific half of each step lives here and in
-`atyrode/dotfiles`.
+The module can mint a ring when its prompt is empty, but that branch is only
+for a genuinely new deployment that has sealed nothing. It is **not** part of
+this existing deployment's recovery or bootstrap procedure. Losing every copy
+of a key leaves its ciphertext permanently unreadable; a coordinated PostgreSQL
+and Cellar backup without the ring restores ciphertext, not readable records.
+Every fully authorized instance can decrypt the shared corpus, so a machine not
+authorized for that blast radius must not receive this custody.
 
-A second invocation **refuses**:
-
-```
-$ babel sync --generate-key phase-b-2
-babel: /home/operator/.config/babel/payload-keys.json already holds this deployment's payload keys, and replacing it would leave every object sealed under them unreadable forever; add a key to that document to rotate instead
-```
-
-That refusal is the point. Replacing the document orphans every sealed object
-written under the keys it held, and Babel deletes no remote object, so those
-objects would remain in Cellar forever and unreadable by anything. Rotation is
-an **append**: a new key becomes the one new envelopes are sealed under while
-every previous key stays in the ring, so historical records keep opening. That
-is `internal/config`'s `AddPayloadKey`, and it is why `SavePayloadKeys` will not
-overwrite.
-
-**Distribution: the ring rides in the storage ceremony.** One custody path for
-the whole deployment, not two. The Bitwarden item **"Babel repository
-password"** (§3) carries the ring in a hidden `payload_keys` field;
-`scripts/babel-storage-configure.sh` reads it alongside the repository password
-it already reads, puts both in the one document it pipes to `babel storage
-configure --from-json -`, and Babel installs the ring at mode 0600 beside
-`storage.json`. `atyrode provision babel` therefore hands a new machine its
-locator, its provider credentials and its keys in a single act, and `babel sync`
-reads the ring from exactly where it always read it.
-
-The field is the ring, whole:
-
-```json
-{
-  "config_schema": 2,
-  "mode": "shared",
-  "...": "the rest of §4's document",
-  "payload_keys": {
-    "key_schema": 1,
-    "active_key_id": "phase-b-2",
-    "keys": [
-      {"key_id": "phase-b-1", "key": "<32 bytes, standard base64>"},
-      {"key_id": "phase-b-2", "key": "<32 bytes, standard base64>"}
-    ]
-  }
-}
-```
-
-The whole append-only history and never the newest key alone: a host given only
-the active key seals correctly and cannot open one historical record.
-`storage.json` itself never carries key material — `config_schema` 2 stays
-frozen (SPEC.md §14) and the ring lands in the mode-0600 document — and the
-install is a **union**. Exercised on 2026-08-31 against a scratch configuration
-home, delivering a ring to a machine that held none and then re-delivering it:
-
-```
-$ babel storage configure --from-json ceremony-document.json
-storage configuration written to /home/second/.config/babel/storage.json
-payload key ring at /home/second/.config/babel/payload-keys.json gained phase-b-1; new records seal under phase-b-1
-
-$ babel storage configure --from-json ceremony-document.json
-storage configuration written to /home/second/.config/babel/storage.json
-payload key ring at /home/second/.config/babel/payload-keys.json already carries every key the document delivers
-```
-
-Three properties, each of which a plainer "install what the document says"
-would break:
-
-- **A key this host holds that the document omits is kept**, and named. Dropping
-  it would orphan every object sealed under it, forever:
-
-  ```
-  warning: this host holds payload key(s) workstation-1 that the delivered document does not carry; they are kept, and as far as this document knows they exist on this disk alone — copy the ring from /home/operator/.config/babel/payload-keys.json into the document's "payload_keys" field, or every record sealed under them stays unreadable on every other host and unrecoverable if this one is lost
-  ```
-
-- **A delivered key id whose material differs from the material held here is
-  refused**, before `storage.json` is replaced, so the machine keeps the
-  configuration and the ring it had. Two keys under one id is a fork of the
-  deployment's key space — the id is what selects the key that opens a record —
-  and nothing on the machine can tell which side is authoritative:
-
-  ```
-  $ babel storage configure --from-json conflicting-document.json
-  babel: /home/second/.config/babel/payload-keys.json: payload key "phase-b-1": payload key material differs from the key already held under that id
-  ```
-
-- **A re-provision that delivers nothing new writes nothing.** The one file in
-  Babel that is nothing but key material is not rewritten for no change.
-
-**The one-time backfill.** `phase-b-1` was generated on `workstation-linux`
-before this ceremony carried rings, so the vault item does not have it. Every
-provision on that machine says so, and names the step:
-
-```
-note: vault item "Babel repository password" carries no payload key ring, and this machine holds one at /home/operator/.config/babel/payload-keys.json
-      until the vault carries it, no other host can open a single Phase B record this one sealed,
-      and losing this disk loses every record sealed under it
-      one time, on this machine: babel-storage-configure --upload-payload-keys
-      then re-provision the fleet: atyrode provision babel
-```
-
-Take it once, on the machine that holds the ring:
-
-```sh
-babel-storage-configure --upload-payload-keys   # unlock, upload, relock
-atyrode provision babel                         # then on every other host
-```
-
-The upload reports key ids and counts and never material, and it merges in the
-same direction the install does: a key the vault carries and this host lacks is
-kept, and conflicting material under one id refuses rather than picking a side.
-
-**Rotation.** A new key in the vault, then a re-provision of the fleet:
-
-1. **Append a key to the ring on one machine.** `babel sync --generate-key`
-   creates the document and refuses to replace it, so today this is a hand-edit
-   of the mode-0600 document: another entry in `keys` (32 bytes of standard
-   base64, id in `[a-z0-9._-]`) and `active_key_id` moved to it.
-   `internal/config`'s `AddPayloadKey` is the code path a rotate command would
-   use; the rotation *drill* is Phase C work (SPEC.md §657), and what #112 asked
-   of this format was only that it not preclude one.
-2. **`babel-storage-configure --upload-payload-keys`.** The vault item's ring
-   becomes the union, sealing under the new active key.
-3. **`atyrode provision babel` on every host.** Each gains the new key and keeps
-   every old one.
-
-Old keys are never removed, and that is what keeps history readable: an object
-sealed under `phase-b-1` still opens after `phase-b-2` becomes active. A ring
-that lost `phase-b-1` would leave those objects in Cellar forever, unreadable by
-anything, because nothing here deletes a remote object.
-
-**Custody.** This document is in the same class as the restic repository
-password (§3): if every copy of a key is lost, the records sealed under it are
-unrecoverable, and no provider can reissue it. With the ring in the vault item,
-backing up the repository password backs up the keys with it — one Bitwarden
-export, one obligation, and §3's note applies unchanged: a vault reachable only
-from the machines it protects is not a backup. A coordinated backup of
-PostgreSQL and Cellar without the keys restores ciphertext and nothing else.
-
-**Every authorized instance holds the same keys.** SPEC.md §9 states that
-plainly: every fully authorized instance can necessarily decrypt the shared
-corpus, and compromise of one has that blast radius. Distributing the ring
-through the ceremony makes that easy, which does not make it free — a machine
-that should not read this corpus must not be provisioned into this deployment.
-
-**What has not been run.** Everything above was exercised on 2026-08-31 against
-a scratch configuration home and a stubbed vault: the delivery, the union, both
-refusals, the upload merge, and the notes. The Bitwarden half — a real
-`bw get item` carrying a real `payload_keys` field, and a real
-`--upload-payload-keys` against the live vault — needs the master password
-interactively, so it joins §3's unlock drill in *What remains operator-gated*.
+**Historical scratch evidence, 2026-08-31 only:** the former standalone
+configuration handoff and stubbed vault checks exercised delivery, repeat
+delivery, retaining omitted keys, refusing conflicting material, refusing
+replacement generation, and an upload merge. No live vault ring retrieval or
+upload was executed. Those results describe the retired handoff, not today's
+clan generator, which copies the supplied ring verbatim. No current generation,
+placement, cross-host opening, or rotation was exercised for this update.
 
 ### 8.2 What is pending, and why
 
@@ -1107,32 +1027,29 @@ is nothing to distinguish.
 
 ## What remains operator-gated
 
-Everything above was executed tonight except three procedures, each of which
-requires something an unattended drill cannot supply:
+The dated historical observations above do not establish current fleet state.
+The following **OPERATOR STEPS remain unexecuted** for the clan-var deployment:
 
-1. **The Bitwarden unlock/retrieve/relock drill** (§3) — needs the master
-   password interactively. Command and success criteria are written out above;
-   it takes about a minute.
-2. **The payload key ring's vault half** (§8.1) — the same master password.
-   Reading a real `payload_keys` field out of the vault item, and the one-time
-   `babel-storage-configure --upload-payload-keys` that puts this workstation's
-   existing ring there, are the two steps that make a second host able to read
-   Phase B content rather than only its plaintext rows. Everything on the Babel
-   side of that boundary — delivery, the union install, both refusals — is
-   exercised; the vault call is not. Until the upload is taken, `phase-b-1`
-   exists on one disk.
-3. **Full restore-to-service on a clean machine** — the end-to-end case where a
-   machine with no `storage.json`, no password file, and no local sessions is
-   rebuilt into a publishing fleet member. Its parts are all proven: bootstrap
-   of a genuinely new host (§6, `alex-x86_64-linux-wsl`, tonight), cross-machine
-   restore of a host's own data (§2), catalog rebuild from the repository (§5),
-   and configuration regeneration (§4). What is unproven is the composition, and
-   it needs a spare machine.
+1. Independent custody backup/recovery (§3), any necessary derived generation,
+   encrypted commit, and per-machine apply (§4). Preserve the existing password
+   and whole append-only ring; missing placement is not rotation.
+2. Read-only current placement/diagnostic/scheduler checks (§4, §7.1), including
+   actual Darwin launchd state, followed by authorized first publication and
+   cross-host archive visibility (§6).
+3. Ring reconciliation/distribution and any deliberately authorized rotation
+   (§8.1), including cross-host opening of historical and new records.
+4. Suspension, rollback and roll-forward (§7), none of which was activated by
+   the historical drill.
+5. **OPERATOR STEP — full restore-to-service on a clean machine (not executed).**
+   **Prerequisites:** an authorized spare registered machine, independently
+   recoverable custody, current dotfiles and access to the existing repository/
+   catalog. Follow §3–4 placement, restore a historical source tree using §2,
+   and complete §6 publication and §7 scheduling checks.
+   **Success:** the restored bytes match the chosen snapshot, the clean machine
+   publishes under its intended registry identity, and another authorized host
+   sees that publication. The 2026-08-31 cross-machine restores and archive
+   observations prove their historical parts, not this current composition.
 
-One unrelated operator action is queued by this drill: clearing the two stale
-shared locks found in §2.4, which currently make `babel archive verify` exit 1
-while leaving restores and data integrity unaffected. It is one command —
-`babel archive unlock` — and that command exists because of this drill: the
-step above originally asked the operator to assemble restic's environment by
-hand, and bare `restic unlock` answers `Fatal: Please specify repository
-location` because it reads nothing from Babel's `storage.json` (issue #108).
+The stale shared locks in §2.4 were also observed only on 2026-08-31. Reassess
+lock ownership and liveness before the explicit unlock operator step; do not
+assume those lock ids still need removal today.
