@@ -8,13 +8,13 @@ import (
 	"sort"
 
 	"github.com/atyrode/babel/internal/complaint"
+	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/disposition"
+	"github.com/atyrode/babel/internal/envelope"
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/objectstore"
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/reference"
-	"github.com/atyrode/babel/internal/config"
-	"github.com/atyrode/babel/internal/envelope"
-	"github.com/atyrode/babel/internal/objectstore"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 	// internal/sync is imported under a name of its own because this package

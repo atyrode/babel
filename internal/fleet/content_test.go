@@ -28,9 +28,9 @@ func (c *publicationCapture) Append(_ context.Context, _ *sql.Tx, _ string, rec 
 	return babelsync.Closure{}, false, nil
 }
 
-func (*publicationCapture) StageTx(context.Context, *sql.Tx, babelsync.Record) error { return nil }
+func (*publicationCapture) StageTx(context.Context, *sql.Tx, babelsync.Record) error    { return nil }
 func (*publicationCapture) DeclareTx(context.Context, *sql.Tx, babelsync.Closure) error { return nil }
-func (*publicationCapture) CommitInline(context.Context, babelsync.Closure) error { return nil }
+func (*publicationCapture) CommitInline(context.Context, babelsync.Closure) error       { return nil }
 
 func TestCanonicalContentAcrossHosts(t *testing.T) {
 	h := newHarness(t)
@@ -47,9 +47,9 @@ func TestCanonicalContentAcrossHosts(t *testing.T) {
 	receipt, err := run.NewReceipt(run.NewReceiptID(), "run-canonical", prep,
 		run.Authority{Kind: run.AuthorityOperator, Ref: "command:explore"}, run.Body{
 			Cookbook: []run.CookbookAsset{{Kind: run.AssetLens, Ref: worker.RecipeRef{ID: "fixture", Version: 1}}},
-			Job: run.JobVersions{Job: 1, Prompt: "fixture/1", Schema: "fixture/1"},
-			Policy: run.PolicyVersions{Redaction: "fixture/1", Disclosure: "fixture/1"},
-			Timing: run.Timing{StartedAt: at, FinishedAt: at},
+			Job:      run.JobVersions{Job: 1, Prompt: "fixture/1", Schema: "fixture/1"},
+			Policy:   run.PolicyVersions{Redaction: "fixture/1", Disclosure: "fixture/1"},
+			Timing:   run.Timing{StartedAt: at, FinishedAt: at},
 			Failures: []run.Failure{{Stage: "launch", Code: "unavailable", Message: "fixture has no worker", At: at}},
 		}, at)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestCanonicalContentAcrossHosts(t *testing.T) {
 	}
 	// A valid JSON body must not bypass object digest or authenticated identity.
 	for _, mutate := range []struct {
-		name string
+		name   string
 		change func(*sharedcatalog.FleetRecord)
 	}{
 		{"identity", func(r *sharedcatalog.FleetRecord) { r.Record.RecordID = "other-record" }},

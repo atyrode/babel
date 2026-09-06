@@ -308,7 +308,7 @@ func main() {
 			if *accounting {
 				f.respond(id, kind, map[string]any{
 					"tokens": map[string]any{"input": 1200, "output": 340, "reasoning": 140, "cacheRead": 80, "cacheWrite": 20, "total": 1646},
-					"cost": 0.033, "toolCalls": f.calls, "assistantMessages": 2,
+					"cost":   0.033, "toolCalls": f.calls, "assistantMessages": 2,
 				})
 				continue
 			}

@@ -50,8 +50,8 @@ WHERE NOT EXISTS (SELECT 1 FROM sync_record s WHERE s.record_id = c.id)
 ORDER BY anchor, CASE WHEN id = anchor THEN 0 ELSE 1 END, kind, id`
 
 type restageCandidate struct {
-	kind PublishedKind
-	id string
+	kind   PublishedKind
+	id     string
 	anchor string
 }
 

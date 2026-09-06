@@ -288,8 +288,8 @@ type storageStatusResult struct {
 	PasswordFile       string `json:"password_file"`
 	PasswordFileExists bool   `json:"password_file_exists"`
 	PasswordFileSecure bool   `json:"password_file_secure"`
-	PayloadKeysFile     string `json:"payload_keys_file"`
-	PayloadKeysState    string `json:"payload_keys_state"`
+	PayloadKeysFile    string `json:"payload_keys_file"`
+	PayloadKeysState   string `json:"payload_keys_state"`
 	HostID             string `json:"host_id"`
 	ResticBinary       string `json:"restic_binary"`
 	DeploymentID       string `json:"deployment_id,omitempty"`
@@ -315,16 +315,16 @@ func (a *app) storageStatus(args []string) error {
 		return err
 	}
 	res := storageStatusResult{
-		Path:         Sanitize(config.Path()),
-		Exists:       found,
-		Mode:         storageMode(cfg),
-		Repository:   Sanitize(cfg.Repository),
-		PasswordFile: Sanitize(cfg.PasswordFile),
+		Path:            Sanitize(config.Path()),
+		Exists:          found,
+		Mode:            storageMode(cfg),
+		Repository:      Sanitize(cfg.Repository),
+		PasswordFile:    Sanitize(cfg.PasswordFile),
 		PayloadKeysFile: Sanitize(config.PayloadKeysPath()),
-		HostID:       Sanitize(cfg.HostID),
-		ResticBinary: Sanitize(cfg.ResticBinary),
-		DeploymentID: Sanitize(cfg.DeploymentID),
-		InstanceID:   Sanitize(cfg.InstanceID),
+		HostID:          Sanitize(cfg.HostID),
+		ResticBinary:    Sanitize(cfg.ResticBinary),
+		DeploymentID:    Sanitize(cfg.DeploymentID),
+		InstanceID:      Sanitize(cfg.InstanceID),
 	}
 	// The endpoint and role names are reported; the passwords are not read here
 	// at all, so no redaction can be forgotten downstream.

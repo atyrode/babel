@@ -73,4 +73,3 @@ func (s *Store) restageRecord(ctx context.Context, table, id string) (bool, erro
 	}
 	return true, tx.Commit()
 }
-
