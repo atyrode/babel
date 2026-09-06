@@ -28,6 +28,27 @@ func validConfig(t *testing.T) Config {
 	}
 }
 
+// TestConfigDirIsXDGOnEveryPlatform pins where the fleet provisions Babel:
+// ~/.config/babel when XDG_CONFIG_HOME is unset, on darwin as much as on
+// Linux. os.UserConfigDir would answer ~/Library/Application Support on a
+// Mac, and a Mac provisioned under ~/.config/babel then reported itself
+// unconfigured with storage.json and the key ring both in place.
+func TestConfigDirIsXDGOnEveryPlatform(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	want := filepath.Join(home, ".config", "babel")
+	if got, err := Dir(); err != nil || got != want {
+		t.Fatalf("Dir() = (%q, %v), want %q", got, err, want)
+	}
+	if got := Path(); got != filepath.Join(want, "storage.json") {
+		t.Fatalf("Path() = %q, want under %q", got, want)
+	}
+	if got := PayloadKeysPath(); got != filepath.Join(want, PayloadKeysName) {
+		t.Fatalf("PayloadKeysPath() = %q, want under %q", got, want)
+	}
+}
+
 func TestLoadMissingAndSaveRoundTrip(t *testing.T) {
 	home := configHome(t)
 	if cfg, found, err := Load(); err != nil || found || cfg != (Config{}) {

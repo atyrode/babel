@@ -9,6 +9,22 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **Babel reads its configuration from `~/.config/babel` on macOS too.**
+  `storage.json` and the payload key ring were resolved through
+  `os.UserConfigDir`, which on darwin answers `~/Library/Application Support`
+  and ignores `XDG_CONFIG_HOME`, while Babel's data and cache directories are
+  XDG on every platform and the fleet provisions both documents under
+  `~/.config/babel` everywhere. A Mac with both documents in place therefore
+  reported `mode local` and refused every fleet read. `config.Dir` now resolves
+  `$XDG_CONFIG_HOME/babel`, else `~/.config/babel`, on every platform;
+  `TestConfigDirIsXDGOnEveryPlatform` pins it.
+
+## [0.2.2] - 2026-09-06
+
+Shared-mode staging, the manifold plugins, and `babel web` on macOS.
+
 ### Added
 
 - **Babel's first manifold plugins, `atyrode.babel` and `atyrode.babel.sessions`
@@ -2362,7 +2378,8 @@ storage configuration yet — repository selection is per-invocation
   (ea65a45…85fe13f), replaced in 8636960 and a879067. SPEC.md and README.md
   rewritten around the restic model (5b8d593).
 
-[Unreleased]: https://github.com/atyrode/babel/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/atyrode/babel/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/atyrode/babel/releases/tag/v0.2.2
 [0.2.1]: https://github.com/atyrode/babel/releases/tag/v0.2.1
 [0.2.0]: https://github.com/atyrode/babel/releases/tag/v0.2.0
 [0.1.0]: https://github.com/atyrode/babel/releases/tag/v0.1.0

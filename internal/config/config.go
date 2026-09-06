@@ -503,10 +503,30 @@ func validID(s string) bool {
 	return true
 }
 
-func pathName() (string, error) {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve configuration directory: %w", err)
+// Dir is Babel's configuration directory: $XDG_CONFIG_HOME/babel, or
+// ~/.config/babel when the variable is unset, on every platform.
+//
+// os.UserConfigDir is deliberately not used. On darwin it answers
+// ~/Library/Application Support and ignores XDG_CONFIG_HOME, while Babel's
+// data and cache directories are XDG everywhere (internal/cli) and the fleet
+// places storage.json and the payload key ring under ~/.config/babel on every
+// machine, macOS included. A Mac that read one convention and was provisioned
+// under the other reported itself unconfigured with both documents in place.
+func Dir() (string, error) {
+	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
+		return filepath.Join(v, "babel"), nil
 	}
-	return filepath.Join(base, "babel", "storage.json"), nil
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", errors.New("resolve configuration directory: no home directory")
+	}
+	return filepath.Join(home, ".config", "babel"), nil
+}
+
+func pathName() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "storage.json"), nil
 }
