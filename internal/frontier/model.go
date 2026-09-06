@@ -45,6 +45,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/atyrode/babel/internal/event"
@@ -312,13 +313,13 @@ const (
 	ConfidenceHigh     Confidence = "high"
 )
 
-func (c Confidence) valid() bool {
-	switch c {
-	case ConfidenceLow, ConfidenceModerate, ConfidenceHigh:
-		return true
-	}
-	return false
+// Values lists the gradings, for the result schema a worker is handed and for
+// validation, so the two cannot disagree about what is admissible.
+func (Confidence) Values() []string {
+	return []string{string(ConfidenceLow), string(ConfidenceModerate), string(ConfidenceHigh)}
 }
+
+func (c Confidence) valid() bool { return slices.Contains(Confidence.Values(c), string(c)) }
 
 // Impact grades how much a claim would matter if it held.
 type Impact string
@@ -330,13 +331,12 @@ const (
 	ImpactHigh     Impact = "high"
 )
 
-func (i Impact) valid() bool {
-	switch i {
-	case ImpactLow, ImpactModerate, ImpactHigh:
-		return true
-	}
-	return false
+// Values lists the gradings; see Confidence.Values.
+func (Impact) Values() []string {
+	return []string{string(ImpactLow), string(ImpactModerate), string(ImpactHigh)}
 }
+
+func (i Impact) valid() bool { return slices.Contains(Impact.Values(i), string(i)) }
 
 // TemporalStatus is §5.4's distinction between what a conversation claimed and
 // what is observable now. The empty value means the question was not assessed,
@@ -354,13 +354,15 @@ const (
 	TemporalUnverifiable    TemporalStatus = "unverifiable"
 )
 
+// Values lists the assessed statuses. The unassessed empty value is not among
+// them: on the wire it is an absent field, never a value a worker writes.
+func (TemporalStatus) Values() []string {
+	return []string{string(TemporalHistorical), string(TemporalStillApplicable), string(TemporalResolved),
+		string(TemporalRegressed), string(TemporalContradicted), string(TemporalUnverifiable)}
+}
+
 func (t TemporalStatus) valid() bool {
-	switch t {
-	case "", TemporalHistorical, TemporalStillApplicable, TemporalResolved,
-		TemporalRegressed, TemporalContradicted, TemporalUnverifiable:
-		return true
-	}
-	return false
+	return t == "" || slices.Contains(TemporalStatus.Values(t), string(t))
 }
 
 // Classification is §4.5's privacy/publication classification. It has no
@@ -378,13 +380,12 @@ const (
 	ClassificationPublicSafe        Classification = "public-safe"
 )
 
-func (c Classification) valid() bool {
-	switch c {
-	case ClassificationPrivate, ClassificationRedactionRequired, ClassificationPublicSafe:
-		return true
-	}
-	return false
+// Values lists the classifications; see Confidence.Values.
+func (Classification) Values() []string {
+	return []string{string(ClassificationPrivate), string(ClassificationRedactionRequired), string(ClassificationPublicSafe)}
 }
+
+func (c Classification) valid() bool { return slices.Contains(Classification.Values(c), string(c)) }
 
 // Destination is a §4.6 output projection a proposal suggests. Suggesting one
 // has no external effect; §8's export command is what renders it.
@@ -403,14 +404,14 @@ const (
 	DestinationSecurity      Destination = "security"
 )
 
-func (d Destination) valid() bool {
-	switch d {
-	case DestinationIssue, DestinationBrief, DestinationOperatorNote, DestinationSkill,
-		DestinationInvestigation, DestinationPattern, DestinationCookbook, DestinationSecurity:
-		return true
-	}
-	return false
+// Values lists the destinations; see Confidence.Values.
+func (Destination) Values() []string {
+	return []string{string(DestinationIssue), string(DestinationBrief), string(DestinationOperatorNote),
+		string(DestinationSkill), string(DestinationInvestigation), string(DestinationPattern),
+		string(DestinationCookbook), string(DestinationSecurity)}
 }
+
+func (d Destination) valid() bool { return slices.Contains(Destination.Values(d), string(d)) }
 
 // Evidence is one provenance-bearing citation: a locator that recovers the
 // original bytes, plus the note explaining what those bytes show.
@@ -433,6 +434,13 @@ type evidenceJSON struct {
 	Locator event.Locator `json:"locator"`
 	Note    string        `json:"note,omitempty"`
 }
+
+// WireShape reports the JSON object Evidence marshals to. The generator of
+// the result schema a worker is handed reads it, because Evidence's fields are
+// unexported and reflection over them would describe an empty object: this is
+// the one place the wire shape is stated, and it is the same struct the
+// marshaller writes.
+func (Evidence) WireShape() any { return evidenceJSON{} }
 
 // NewEvidence builds a citation, refusing a locator that could not recover
 // what it points at. Path and Digest are required because together they

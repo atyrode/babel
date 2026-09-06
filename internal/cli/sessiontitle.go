@@ -1,13 +1,10 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +13,7 @@ import (
 	"github.com/atyrode/babel/internal/adapter/codex"
 	"github.com/atyrode/babel/internal/title"
 	"github.com/atyrode/babel/internal/transcript"
+	"github.com/atyrode/babel/internal/worker"
 )
 
 // The inferred-title path, and why it looks nothing like an analysis run.
@@ -156,23 +154,19 @@ func (a *app) sessionsTitle(ctx context.Context, args []string) error {
 	}
 }
 
-// titlerRequest is one line babel writes to a titler's stdin. Every field is
-// something the operator has already been shown.
-type titlerRequest struct {
-	Selector  string `json:"selector"`
-	Harness   string `json:"harness"`
-	Workspace string `json:"workspace,omitempty"`
-	Excerpt   string `json:"excerpt"`
+// titleSubmission is the result one titling job submits: one entry per
+// session offered, each with a title or a reason none was given. Title and
+// Error are both optional so the model can decline one session without
+// failing the batch, which matters when a single unreadable session would
+// otherwise waste every other session's tokens.
+type titleSubmission struct {
+	Titles []titlerResponse `json:"titles"`
 }
 
-// titlerResponse is one line babel reads from a titler's stdout. Title and
-// Error are both optional so a titler can decline one session without failing
-// the batch, which matters when a single unreadable session would otherwise
-// waste every other session's tokens.
+// titlerResponse is one session's answer.
 type titlerResponse struct {
 	Selector string `json:"selector"`
 	Title    string `json:"title,omitempty"`
-	Model    string `json:"model,omitempty"`
 	Error    string `json:"error,omitempty"`
 }
 
@@ -436,19 +430,20 @@ func truncateRunes(s string, n int) string {
 	return string([]rune(s)[:n])
 }
 
-// runTitler launches the configured titler, streams the plan to it, and
-// records the titles it returns.
+// runTitler launches the configured engine with the plan as its prompt, and
+// records the titles it submits.
 //
 // The launch is the stored one, whole: the executable an operator confirmed a
 // profile in, that profile's reference, and nothing this invocation chose. The
 // one variable that could override the reference is dropped from the child's
 // environment for the same reason the ceremony drops it (modelEnv).
 //
-// Every response is checked against what was actually sent. A titler is an
-// external command whose output is untrusted in the same way a session log is,
-// and a response naming a selector babel did not offer would let it write a
-// title onto an arbitrary session - including one whose title the harness
-// recorded, which this command refuses to touch.
+// The job grants no capability and registers no evidence tool: the prompt
+// carries the excerpts, and the result schema admits one title per offered
+// selector. A submission naming a selector babel did not offer is refused at
+// submission time, because the alternative would let the model write a title
+// onto an arbitrary session — including one whose title the harness recorded,
+// which this command refuses to touch.
 func (a *app) runTitler(
 	ctx context.Context,
 	plan inferPlan,
@@ -467,92 +462,149 @@ func (a *app) runTitler(
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, titler.Worker, titler.launch()...)
+	cfg := titler.config()
+	cfg.Diagnostics = a.stderr
 	env, dropped := modelEnv()
-	cmd.Env = env
+	cfg.Env = env
 	if dropped {
 		a.diagf("ignoring $%s: titles run under the profile %s, which the operator configured\n",
 			selectionStateEnv, Sanitize(titler.ref().String()))
 	}
-	cmd.Stderr = a.stderr
-	stdin, err := cmd.StdinPipe()
+	client, err := worker.New(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("titler stdin: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("titler stdout: %w", err)
+		return nil, err
 	}
 	// The attribution stored with each title is the launch that produced it,
 	// executable and reference together. The settings document is
 	// reconfigurable and the row is not: a title has to keep saying what wrote
 	// it after the operator has chosen something else.
 	attribution := titler.Worker + " " + titler.ref().String()
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start the configured titler %s: %w (\"babel titles show\" prints the stored launch, \"babel titles configure\" replaces it)",
-			Sanitize(titler.Worker), err)
-	}
 
 	offered := make(map[string]struct{}, len(plan.Sessions))
-	writeErr := make(chan error, 1)
-	go func() {
-		enc := json.NewEncoder(stdin)
-		for _, s := range plan.Sessions {
-			if err := enc.Encode(titlerRequest{
-				Selector:  s.Selector,
-				Harness:   s.Harness,
-				Workspace: derefOr(s.Workspace, ""),
-				Excerpt:   s.Excerpt,
-			}); err != nil {
-				writeErr <- err
-				stdin.Close()
-				return
-			}
-		}
-		writeErr <- stdin.Close()
-	}()
+	selectors := make([]string, 0, len(plan.Sessions))
 	for _, s := range plan.Sessions {
 		offered[s.Selector] = struct{}{}
+		selectors = append(selectors, s.Selector)
 	}
-
+	schema, err := titleSchema(selectors)
+	if err != nil {
+		return nil, err
+	}
+	receipt, runErr := client.Run(ctx, worker.Job{
+		JobID:   "titles/job",
+		RunID:   "titles-" + formatTime(time.Now().UTC()),
+		Profile: titler.ref(),
+		Grant:   worker.Grant{Disclosure: worker.DisclosureHosted},
+		Output: worker.OutputContract{
+			Schema:       titleResultSchema,
+			JSONSchema:   schema,
+			Instructions: titleInstructions,
+		},
+		Prompt: titlePrompt(plan),
+		Accept: func(payload json.RawMessage) error {
+			var sub titleSubmission
+			if err := json.Unmarshal(payload, &sub); err != nil {
+				return err
+			}
+			for _, t := range sub.Titles {
+				if _, ok := offered[t.Selector]; !ok {
+					return fmt.Errorf("selector %q was not offered", t.Selector)
+				}
+			}
+			return nil
+		},
+	})
+	if receipt == nil {
+		return nil, fmt.Errorf("start the configured titler %s: %w (\"babel titles show\" prints the stored launch, \"babel titles configure\" replaces it)",
+			Sanitize(titler.Worker), runErr)
+	}
+	model := ""
+	if receipt.Metadata != nil {
+		model = receipt.Metadata["model"]
+	}
 	var results []inferResult
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64<<10), maxTitlerResponseLine)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	if receipt.Result != nil {
+		var sub titleSubmission
+		if err := json.Unmarshal(receipt.Result.Payload, &sub); err != nil {
+			return nil, fmt.Errorf("read the accepted submission: %w", err)
 		}
-		var resp titlerResponse
-		if err := json.Unmarshal([]byte(line), &resp); err != nil {
-			results = append(results, inferResult{Error: "titler wrote a line that is not a response object"})
-			continue
+		for _, resp := range sub.Titles {
+			results = append(results, a.recordInferred(ctx, store, offered, resp, attribution, model))
 		}
-		results = append(results, a.recordInferred(ctx, store, offered, resp, attribution))
 	}
-	scanErr := scanner.Err()
-	waitErr := cmd.Wait()
 	sort.Slice(results, func(i, j int) bool { return results[i].Selector < results[j].Selector })
-
-	if err := <-writeErr; err != nil && !errors.Is(err, os.ErrClosed) {
-		a.diagf("warning: titler stopped reading: %s\n", Sanitize(err.Error()))
-	}
-	if scanErr != nil {
-		return results, fmt.Errorf("read titler output: %w", scanErr)
-	}
-	if waitErr != nil {
-		return results, fmt.Errorf("titler %s failed: %w", Sanitize(attribution), waitErr)
+	if runErr != nil {
+		return results, fmt.Errorf("titler %s failed: %w", Sanitize(attribution), runErr)
 	}
 	return results, nil
 }
 
-// recordInferred validates and stores one titler response.
+// titleResultSchema names the shape a titling job submits.
+const titleResultSchema = "babel.session-titles/1"
+
+const titleInstructions = "For each session below, write one short title in the session's own language " +
+	"that says what the session was about — the task, not the tool. Six to twelve words, no trailing " +
+	"punctuation, no quotation marks. A session whose excerpt gives no basis for a title gets an " +
+	"\"error\" saying so instead of a title."
+
+// titleSchema is the result schema for one plan: an array of at most one
+// entry per offered selector, each selector drawn from the offered set.
+func titleSchema(selectors []string) (json.RawMessage, error) {
+	if len(selectors) == 0 {
+		return nil, errors.New("no session to title")
+	}
+	return json.Marshal(map[string]any{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type":    "object",
+		"properties": map[string]any{
+			"titles": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": len(selectors),
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"selector": map[string]any{"type": "string", "enum": selectors},
+						"title":    map[string]any{"type": "string"},
+						"error":    map[string]any{"type": "string"},
+					},
+					"required":             []string{"selector"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"titles"},
+		"additionalProperties": false,
+	})
+}
+
+// titlePrompt renders the plan the operator confirmed, and nothing else.
+func titlePrompt(plan inferPlan) string {
+	var b strings.Builder
+	b.WriteString("# Session titles\n\n")
+	b.WriteString(titleInstructions)
+	b.WriteString("\n\nCall `" + worker.ToolSubmit + "` once with every session's entry, then end your turn. ")
+	b.WriteString("Do not search or read files; the excerpts below are the whole material.\n\n")
+	for _, s := range plan.Sessions {
+		fmt.Fprintf(&b, "## %s\n\nharness: %s\n", s.Selector, s.Harness)
+		if s.Workspace != nil {
+			fmt.Fprintf(&b, "workspace: %s\n", *s.Workspace)
+		}
+		b.WriteString("\n```\n")
+		b.WriteString(s.Excerpt)
+		b.WriteString("\n```\n\n")
+	}
+	return b.String()
+}
+
+// recordInferred validates and stores one submitted title.
 func (a *app) recordInferred(
 	ctx context.Context,
 	store *title.Store,
 	offered map[string]struct{},
 	resp titlerResponse,
 	titler string,
+	model string,
 ) inferResult {
 	selector := Sanitize(resp.Selector)
 	if _, ok := offered[resp.Selector]; !ok {
@@ -572,7 +624,7 @@ func (a *app) recordInferred(
 		Selector:   resp.Selector,
 		Title:      normalized,
 		Titler:     titler,
-		Model:      resp.Model,
+		Model:      model,
 		InferredAt: time.Now().UTC(),
 	}); err != nil {
 		return inferResult{Selector: selector, Error: Sanitize(err.Error())}
@@ -580,7 +632,7 @@ func (a *app) recordInferred(
 	return inferResult{
 		Selector: selector,
 		Title:    Sanitize(normalized),
-		Model:    Sanitize(resp.Model),
+		Model:    Sanitize(model),
 	}
 }
 

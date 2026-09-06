@@ -16,30 +16,52 @@ import (
 	"github.com/atyrode/babel/internal/title"
 )
 
+// titlesStub is one stub Code executable and the files it reports through.
+type titlesStub struct {
+	binary string
+	// record is where every launch appends what it was actually given.
+	record string
+	// submit is the result the engine mode submits; a test writes it once it
+	// knows the selector Babel will offer.
+	submit string
+	// prompt is where the engine mode writes the prompt Babel sent, which is
+	// the material that left the machine.
+	prompt string
+}
+
 // titlesWorker writes a stub Code executable that answers both launches this
 // feature makes, because on a configured machine they are one executable: the
-// configuration ceremony (--configure --result-file PATH) and the titler run
-// (--titles --profile ID@REVISION). Every launch appends what it was actually
-// given to record, so a test asserts the argv and the environment Babel used
-// rather than the ones it meant to use.
+// configuration ceremony (engine --configure --result-file PATH) and the
+// titler run (engine --profile ID@REVISION --runtime-info PATH). Every launch
+// appends what it was actually given to record, so a test asserts the argv and
+// the environment Babel used rather than the ones it meant to use.
 //
 // It is a script rather than a compiled helper for the same reason
 // ceremonyWorker is: what has to be observed is the launch itself — the argv,
 // the inherited streams, and the environment — and a shell answers all three
-// directly.
-func titlesWorker(t *testing.T, payload string, code int) (binary, record string) {
+// directly. The titler run is a native engine job, so for that launch the
+// script hands over to the fake engine, which speaks the protocol and submits
+// whatever the test put in the submit file.
+func titlesWorker(t *testing.T, payload string, code int) titlesStub {
 	t.Helper()
 	dir := t.TempDir()
-	binary = filepath.Join(dir, "stub-code")
-	record = filepath.Join(dir, "launch")
+	stub := titlesStub{
+		binary: filepath.Join(dir, "stub-code"),
+		record: filepath.Join(dir, "launch"),
+		submit: filepath.Join(dir, "submit.json"),
+		prompt: filepath.Join(dir, "prompt"),
+	}
 	answer := ""
 	if payload != "" {
 		answer = `if [ -n "$result" ]; then printf '%s' '` + payload + `' >"$result"; fi`
 	}
 	script := strings.NewReplacer(
-		"@RECORD@", record,
+		"@RECORD@", stub.record,
 		"@ANSWER@", answer,
 		"@CODE@", strconv.Itoa(code),
+		"@ENGINE@", fakeEnginePath,
+		"@SUBMIT@", stub.submit,
+		"@PROMPT@", stub.prompt,
 	).Replace(`#!/bin/sh
 record='@RECORD@'
 {
@@ -47,14 +69,18 @@ record='@RECORD@'
 	printf 'selection: %s\n' "${CODE_SELECTION_STATE-unset}"
 	printf 'home: %s\n' "${HOME-unset}"
 } >>"$record"
-mode='titles'
+# The stub's own arguments precede Code's subcommand; they are recorded above
+# and mean nothing to either mode.
+while [ $# -gt 0 ] && [ "$1" != 'engine' ]; do shift; done
+mode='engine'
 result=''
-while [ $# -gt 0 ]; do
-	case "$1" in
+next=''
+for arg in "$@"; do
+	case "$arg" in
 	--configure) mode='configure' ;;
-	--result-file) shift; result="$1" ;;
+	--result-file) next='result'; continue ;;
 	esac
-	shift
+	if [ "$next" = 'result' ]; then result="$arg"; next=''; fi
 done
 if [ "$mode" = 'configure' ]; then
 	# The stream tests are outside the redirection above: inside it, fd 1 is
@@ -69,20 +95,14 @@ if [ "$mode" = 'configure' ]; then
 	@ANSWER@
 	exit @CODE@
 fi
-# Titler mode: one JSON response per request line, echoing back the selector
-# Babel sent so a test can prove which sessions were offered.
-while IFS= read -r line; do
-	rest=${line#*\"selector\":\"}
-	selector=${rest%%\"*}
-	printf 'titled: %s\n' "$selector" >>"$record"
-	printf '{"selector":"%s","title":"a model wrote this one","model":"stub-model"}\n' "$selector"
-done
-exit 0
+# Titler mode: the fake engine speaks the protocol, keeps the prompt Babel
+# sent, and submits the file the test prepared.
+exec '@ENGINE@' -prompt-file '@PROMPT@' -submit '@SUBMIT@' "$@"
 `)
-	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(stub.binary, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return binary, record
+	return stub
 }
 
 // untitledSessionStem names the fixture session the harness gave no title.
@@ -176,7 +196,7 @@ func seedInferredTitle(t *testing.T, f *fixture, selector, text string) {
 // nothing.
 func TestTitlesConfigureRefusesWithoutATerminal(t *testing.T) {
 	newFixture(t)
-	binary, record := titlesWorker(t, `{"profile":"titles-chosen","revision":4}`, 0)
+	stub := titlesWorker(t, `{"profile":"titles-chosen","revision":4}`, 0)
 
 	cases := []struct {
 		name string
@@ -210,7 +230,7 @@ func TestTitlesConfigureRefusesWithoutATerminal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			in, out := tc.open(t)
 			var stderr bytes.Buffer
-			code := run([]string{"titles", "configure", "--worker", binary}, in, out, &stderr)
+			code := run([]string{"titles", "configure", "--worker", stub.binary}, in, out, &stderr)
 			if code != exitFailure {
 				t.Fatalf("a terminal-less invocation exited %d, want %d\nstderr: %s", code, exitFailure, stderr.String())
 			}
@@ -224,7 +244,7 @@ func TestTitlesConfigureRefusesWithoutATerminal(t *testing.T) {
 					t.Errorf("the refusal does not mention %q:\n%s", want, stderr.String())
 				}
 			}
-			if _, err := os.Stat(record); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(stub.record); !errors.Is(err, os.ErrNotExist) {
 				t.Error("the worker was launched by an invocation that had no terminal to launch it on")
 			}
 			path, err := analysisPath()
@@ -258,24 +278,25 @@ func TestTitlesConfigureHandsTheTerminalToCode(t *testing.T) {
 	}
 
 	term := openTerminal(t)
-	binary, record := titlesWorker(t, `{"profile":"titles-chosen","revision":4}`, 0)
+	stub := titlesWorker(t, `{"profile":"titles-chosen","revision":4}`, 0)
 	// The dial an operator's shell might export. It is not intent, so it must
 	// not reach the worker.
 	t.Setenv("CODE_SELECTION_STATE", "model=haiku;effort=low")
 
 	var stderr bytes.Buffer
-	code := run([]string{"titles", "configure", "--worker", binary, "--worker-arg", "babel"},
+	code := run([]string{"titles", "configure", "--worker", stub.binary, "--worker-arg", "--quiet"},
 		term.slave, term.slave, &stderr)
 	displayed := term.collect(t)
 	if code != exitOK {
 		t.Fatalf("the ceremony exited %d\nstderr: %s\nterminal: %s", code, stderr.String(), displayed)
 	}
 
-	launch := launchRecord(t, record)
+	launch := launchRecord(t, stub.record)
 	for _, want := range []string{
-		// The worker's own arguments first, then the two flags Babel owns:
-		// Code is put into its mode, then told where to answer.
-		"argv: babel --configure --result-file ",
+		// The worker's own arguments first, then the subcommand and the two
+		// flags Babel owns: Code is put into its mode, then told where to
+		// answer.
+		"argv: --quiet engine --configure --result-file ",
 		"fd0: terminal",
 		"fd1: terminal",
 		"fd2: terminal",
@@ -298,7 +319,7 @@ func TestTitlesConfigureHandsTheTerminalToCode(t *testing.T) {
 		t.Errorf("stored revision = %d, want 4", titles.Revision)
 	case titles.ConfiguredAt == "":
 		t.Error("the stored reference does not record when it was configured")
-	case titles.Worker != binary || !slices.Equal(titles.WorkerArgs, []string{"babel"}):
+	case titles.Worker != stub.binary || !slices.Equal(titles.WorkerArgs, []string{"--quiet"}):
 		t.Errorf("stored launch = %q %v, want the one that was used", titles.Worker, titles.WorkerArgs)
 	}
 	// The analysis block is another ceremony's answer and not this command's
@@ -310,7 +331,7 @@ func TestTitlesConfigureHandsTheTerminalToCode(t *testing.T) {
 
 	// The summary states the reference and the launch inference will make,
 	// because "configured" without either is not a fact an operator can check.
-	for _, want := range []string{"titles-chosen", "4", "--titles --profile titles-chosen@4"} {
+	for _, want := range []string{"titles-chosen", "4", "--quiet engine --profile titles-chosen@4"} {
 		if !strings.Contains(displayed, want) {
 			t.Errorf("the summary on the terminal does not show %q:\n%s", want, displayed)
 		}
@@ -336,7 +357,7 @@ func TestTitlesConfigureHandsTheTerminalToCode(t *testing.T) {
 	}
 	second.collect(t)
 	after := storedSettings(t)
-	if after.Titles == nil || after.Titles.Profile != "titles-chosen" || after.Titles.Worker != binary {
+	if after.Titles == nil || after.Titles.Profile != "titles-chosen" || after.Titles.Worker != stub.binary {
 		t.Errorf("the analysis ceremony changed the titles reference:\n%s", settingsBytes(t))
 	}
 }
@@ -348,7 +369,7 @@ func TestTitlesConfigureHandsTheTerminalToCode(t *testing.T) {
 // operator would have no way to tell which model the next inference uses.
 func TestTitlesConfigureLeavesTheStoredReferenceAlone(t *testing.T) {
 	newFixture(t)
-	confirmed, _ := titlesWorker(t, `{"profile":"titles-chosen","revision":4}`, 0)
+	confirmed := titlesWorker(t, `{"profile":"titles-chosen","revision":4}`, 0).binary
 	first := openTerminal(t)
 	var stderr bytes.Buffer
 	if code := run([]string{"titles", "configure", "--worker", confirmed},
@@ -376,9 +397,9 @@ func TestTitlesConfigureLeavesTheStoredReferenceAlone(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			term := openTerminal(t)
-			binary, _ := titlesWorker(t, tc.payload, tc.code)
+			stub := titlesWorker(t, tc.payload, tc.code)
 			var stderr bytes.Buffer
-			code := run([]string{"titles", "configure", "--worker", binary},
+			code := run([]string{"titles", "configure", "--worker", stub.binary},
 				term.slave, term.slave, &stderr)
 			displayed := term.collect(t)
 			if code != exitFailure {
@@ -475,33 +496,49 @@ func TestTitleInferenceRefusesUntilAnOperatorConfiguresIt(t *testing.T) {
 
 // TestTitleInferenceUsesExactlyTheStoredReference is the other half: once an
 // operator has sat through the ceremony, inference launches what he confirmed
-// and nothing else - that executable, those arguments, that profile - and the
+// and nothing else - that executable, those arguments, that profile - as one
+// native engine job whose prompt carries the material he was shown, and the
 // title it records says which launch produced it.
 func TestTitleInferenceUsesExactlyTheStoredReference(t *testing.T) {
 	f := newFixture(t)
 	untitledSession(f)
 	term := openTerminal(t)
-	binary, record := titlesWorker(t, `{"profile":"titles-chosen","revision":4}`, 0)
+	stub := titlesWorker(t, `{"profile":"titles-chosen","revision":4}`, 0)
 	t.Setenv("CODE_SELECTION_STATE", "model=haiku;effort=low")
 
 	var stderr bytes.Buffer
-	if code := run([]string{"titles", "configure", "--worker", binary, "--worker-arg", "babel"},
+	if code := run([]string{"titles", "configure", "--worker", stub.binary, "--worker-arg", "--quiet"},
 		term.slave, term.slave, &stderr); code != exitOK {
 		t.Fatalf("the ceremony exited %d: %s\nterminal: %s", code, stderr.String(), term.collect(t))
 	}
 	term.collect(t)
 
 	selector := untitledSelector(t, f)
+	// The engine's submission, under the schema the job carries: one entry
+	// for the one selector Babel offers.
+	if err := os.WriteFile(stub.submit, []byte(`{"titles":[{"selector":"`+selector+`","title":"a model wrote this one"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	stdout, diagnostics := f.ok("sessions", "title", "infer", "--confirm")
 
-	launch := launchRecord(t, record)
-	// The titler launch: the stored arguments, then the mode and the reference
-	// the operator confirmed. No flag on this invocation contributed to it.
-	if !strings.Contains(launch, "argv: babel --titles --profile titles-chosen@4") {
+	launch := launchRecord(t, stub.record)
+	// The titler launch: the stored arguments, then the engine mode and the
+	// reference the operator confirmed. No flag on this invocation
+	// contributed to it.
+	if !strings.Contains(launch, "argv: --quiet engine --profile titles-chosen@4 --runtime-info ") {
 		t.Errorf("the titler was not launched with the stored reference:\n%s", launch)
 	}
-	if !strings.Contains(launch, "titled: "+selector) {
-		t.Errorf("the titler was not offered %q:\n%s", selector, launch)
+	// What left the machine is the prompt, and the prompt is the plan the
+	// disclosure showed: the offered selector and its excerpt, nothing
+	// resolved from anywhere else.
+	prompt, err := os.ReadFile(stub.prompt)
+	if err != nil {
+		t.Fatalf("the titler received no prompt: %v", err)
+	}
+	for _, want := range []string{selector, "the operator asked for a summary of this session"} {
+		if !strings.Contains(string(prompt), want) {
+			t.Errorf("the prompt does not carry %q:\n%s", want, prompt)
+		}
 	}
 	// Both launches, the ceremony's and the titler's, are free of the dial.
 	if got := strings.Count(launch, "selection: unset"); got != 2 {
@@ -517,13 +554,15 @@ func TestTitleInferenceUsesExactlyTheStoredReference(t *testing.T) {
 	case !ok:
 		t.Fatalf("no title was recorded for %q: %+v", selector, rows)
 	case stored.Title != "a model wrote this one":
-		t.Errorf("recorded title = %q, want the one the titler returned", stored.Title)
-	case stored.Model != "stub-model":
-		t.Errorf("recorded model = %q, want the identity the titler reported", stored.Model)
+		t.Errorf("recorded title = %q, want the one the titler submitted", stored.Title)
+	case stored.Model != "synthetic-1":
+		// The model is the one Code's runtime-info named for the launch,
+		// not anything the submission claimed.
+		t.Errorf("recorded model = %q, want the identity the engine reported", stored.Model)
 	}
 	// Attribution survives a later reconfiguration, so it carries the launch
 	// rather than pointing at a document that can change under it.
-	for _, want := range []string{binary, "titles-chosen@4"} {
+	for _, want := range []string{stub.binary, "titles-chosen@4"} {
 		if !strings.Contains(stored.Titler, want) {
 			t.Errorf("recorded titler %q does not name %q", stored.Titler, want)
 		}
@@ -578,7 +617,7 @@ func TestTitlesShowPrintsWhatWasStoredAndNothingElse(t *testing.T) {
 			Revision:     4,
 			ConfiguredAt: "2026-08-31T00:00:00Z",
 			Worker:       "/opt/code/code",
-			WorkerArgs:   []string{"babel"},
+			WorkerArgs:   []string{"--quiet"},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -588,7 +627,7 @@ func TestTitlesShowPrintsWhatWasStoredAndNothingElse(t *testing.T) {
 	for _, want := range []string{
 		"titles-chosen",
 		"2026-08-31T00:00:00Z",
-		"/opt/code/code babel --titles --profile titles-chosen@4",
+		"/opt/code/code --quiet engine --profile titles-chosen@4",
 		"SPEC.md §2.6",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -600,7 +639,7 @@ func TestTitlesShowPrintsWhatWasStoredAndNothingElse(t *testing.T) {
 	if !res.Configured || res.Titler == nil || res.Titler.Profile != "titles-chosen" || res.Titler.Revision != 4 {
 		t.Fatalf("show did not report the stored reference: %+v", res)
 	}
-	want := []string{"/opt/code/code", "babel", "--titles", "--profile", "titles-chosen@4"}
+	want := []string{"/opt/code/code", "--quiet", "engine", "--profile", "titles-chosen@4"}
 	if !slices.Equal(res.Launch, want) {
 		t.Errorf("launch = %v, want %v", res.Launch, want)
 	}

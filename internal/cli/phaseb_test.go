@@ -422,8 +422,10 @@ func TestPrepareRejectsAnUnmatchedSelector(t *testing.T) {
 }
 
 // TestExploreWithoutAWorkerFailsActionably is the message a correctly
-// installed Babel produces today: Code does not implement the worker
-// protocol yet, so this is the normal path and the text is the product.
+// installed Babel without Code produces: exploration runs inside "code
+// engine", so a machine with no Code executable named is the normal path and
+// the text is the product — it names the ceremony, the environment variable,
+// and what still works without Code.
 func TestExploreWithoutAWorkerFailsActionably(t *testing.T) {
 	f := newFixture(t)
 	stdout, stderr := f.mustExit(exitFailure, "explore", "--preparation", "prep-whatever")
@@ -432,10 +434,10 @@ func TestExploreWithoutAWorkerFailsActionably(t *testing.T) {
 		t.Errorf("the failure wrote to stdout: %q", stdout)
 	}
 	for _, want := range []string{
-		"no Code analysis worker is available",
+		"no Code executable is configured",
 		"babel analysis profile configure",
 		"BABEL_ANALYSIS_WORKER",
-		"Code does not implement this protocol yet",
+		"still works",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("the message does not mention %q:\n%s", want, stderr)
@@ -474,7 +476,7 @@ func TestExploreRefusesAStoredDial(t *testing.T) {
 	binary, record := ceremonyWorker(t, `{"profile":"dialled","revision":1}`, 0)
 	if _, err := saveAnalysisSettings(analysisSettings{
 		Worker:     binary,
-		WorkerArgs: []string{"babel", "--set", "model=haiku"},
+		WorkerArgs: []string{"--set", "model=haiku"},
 		Profile:    &profileRecord{ID: "agent-minted", Revision: 5, ConfiguredAt: "2026-08-30T00:00:00Z"},
 	}); err != nil {
 		t.Fatal(err)

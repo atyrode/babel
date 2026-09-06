@@ -31,10 +31,11 @@ Runs one exploration over a fixed corpus scope (SPEC.md §6.5). The scope is
 the preparation named on the command line, so what the run read is stated
 rather than implied; "babel prepare" emits one.
 
-Analysis itself happens inside Code. Babel launches an executable speaking
-the babel.analysis-worker protocol, authorizes every tool request it makes,
-and records what it produced; it never chooses a provider or a model
-(SPEC.md §2.6). Without a worker this command refuses to start and says so.
+Analysis itself happens inside Code's engine. Babel launches "code engine"
+under the configured profile, registers the evidence tools the run grants,
+authorizes every call the model makes, and records what it submitted; it
+never chooses a provider or a model (SPEC.md §2.6). Without a Code
+executable this command refuses to start and says so.
 
 Progress goes to stderr while the run is in flight; the receipt identity is
 reported at the end. Interrupting the run leaves everything it already
@@ -71,9 +72,9 @@ Flags:
   --fetches N          cap the public documents fetched (default 8)
   --profile REF        Code profile reference "ID" or "ID@REVISION"
                        (default: the one "analysis profile configure" stored)
-  --worker PATH        Code executable speaking babel.analysis-worker
+  --worker PATH        Code executable; Babel runs its engine subcommand
                        (default $BABEL_ANALYSIS_WORKER, else the stored one)
-  --worker-arg ARG     extra argument for the worker; repeatable
+  --worker-arg ARG     extra argument for Code, before the engine subcommand; repeatable
   --json               emit the outcome as JSON on stdout
 `
 
@@ -475,16 +476,25 @@ func resolveProfile(c *cmd, flagValue string, s analysisSettings) (worker.Profil
 		}
 		return s.Profile.ref(), nil
 	}
-	id, revision, ok := strings.Cut(flagValue, "@")
+	ref, err := parseProfileRef(flagValue)
+	if err != nil {
+		return worker.ProfileRef{}, c.usagef("--profile: %v", err)
+	}
+	return ref, nil
+}
+
+// parseProfileRef reads "ID" or "ID@REVISION"; a bare id is revision 1.
+func parseProfileRef(value string) (worker.ProfileRef, error) {
+	id, revision, ok := strings.Cut(value, "@")
 	if id == "" {
-		return worker.ProfileRef{}, c.usagef("--profile needs a profile id")
+		return worker.ProfileRef{}, errors.New("needs a profile id")
 	}
 	if !ok {
 		return worker.ProfileRef{ID: id, Revision: 1}, nil
 	}
 	n, err := strconv.Atoi(revision)
 	if err != nil || n < 1 {
-		return worker.ProfileRef{}, c.usagef("--profile revision %q is not a positive integer", revision)
+		return worker.ProfileRef{}, fmt.Errorf("revision %q is not a positive integer", revision)
 	}
 	return worker.ProfileRef{ID: id, Revision: n}, nil
 }

@@ -3,6 +3,8 @@ package explore_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -57,7 +59,7 @@ func TestFrontierScopeSearchIsServedAndReceipted(t *testing.T) {
 
 	payload := h.writeResult("discovery.json", oneCandidate("c-1", "an unrelated documentation formatting question"))
 	args := append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
-		"-request-capability", "corpus-search",
+		"-call", worker.ToolSearch,
 		"-search-scope", explore.ScopeFrontier,
 		"-search-query", "release pipeline integration suite")
 	controller := h.controller(args)
@@ -144,7 +146,7 @@ func TestUnservedSearchScopeIsDenied(t *testing.T) {
 	h := newHarness(t)
 	payload := h.writeResult("discovery.json", oneCandidate("c-1", "a candidate about nothing in particular"))
 	args := append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
-		"-request-capability", "corpus-search",
+		"-call", worker.ToolSearch,
 		"-search-scope", "everything")
 	controller := h.controller(args)
 
@@ -155,9 +157,10 @@ func TestUnservedSearchScopeIsDenied(t *testing.T) {
 	if len(outcome.Retrieval) != 0 {
 		t.Errorf("an unserved scope was answered with %d retrievals", len(outcome.Retrieval))
 	}
+	// The refused search and the submission that followed it.
 	requests := outcome.Receipt.Body.Worker.ToolRequests
-	if len(requests) != 1 {
-		t.Fatalf("receipt records %d tool requests, want 1", len(requests))
+	if len(requests) != 2 || requests[1].Tool != worker.ToolSubmit {
+		t.Fatalf("receipt records %d tool requests, want the search and the submission: %+v", len(requests), requests)
 	}
 	if requests[0].Allowed {
 		t.Error("a search naming an unserved scope was allowed")
@@ -233,11 +236,11 @@ func TestNearDuplicateCandidateIsRecordedWithAWarning(t *testing.T) {
 	})
 }
 
-// TestJobCarriesTheRefineFirstContext is the injection half: a preparation that
-// names prior outputs puts them in the job document with their summaries and
-// the framing that says what they are, and the framing changes when the scope
-// was drawn for serendipity.
-func TestJobCarriesTheRefineFirstContext(t *testing.T) {
+// TestPromptCarriesTheRefineFirstContext is the injection half: a preparation
+// that names prior outputs puts them in the prompt with their ids and the
+// framing that says what they are, and the framing changes when the scope was
+// drawn for serendipity.
+func TestPromptCarriesTheRefineFirstContext(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		serendipitous bool
@@ -260,8 +263,10 @@ func TestJobCarriesTheRefineFirstContext(t *testing.T) {
 			}
 
 			payload := h.writeResult("discovery.json", oneCandidate("c-1", "a candidate about something else"))
+			promptFile := filepath.Join(t.TempDir(), "prompt.md")
 			controller, err := explore.New(h.config(
-				payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
+				append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
+					"-prompt-file", promptFile),
 				func(cfg *explore.Config) { cfg.Preparation = prep }))
 			if err != nil {
 				t.Fatalf("explore.New: %v", err)
@@ -271,68 +276,28 @@ func TestJobCarriesTheRefineFirstContext(t *testing.T) {
 				t.Fatalf("Explore: %v (failures %+v)", err, outcome.Failures)
 			}
 
-			// The document itself, built from the same preparation the run
-			// used. Asserting on it rather than on the worker's echo keeps
-			// this test about Babel's own injection; the wire shape is
-			// internal/worker's own contract.
-			var doc explore.RelatedContext
-			encoded := jobExtra(t, prep, h, tc.serendipitous)
-			if err := json.Unmarshal(encoded, &doc); err != nil {
-				t.Fatalf("the context is not a RelatedContext document: %v", err)
+			// The prompt as the engine received it: the context reaches the
+			// model as a section of it, not as a document of its own.
+			prompt, err := os.ReadFile(promptFile)
+			if err != nil {
+				t.Fatalf("the fixture wrote no prompt: %v", err)
 			}
-			if doc.Schema != explore.RelatedContextSchema {
-				t.Errorf("context schema = %q, want %q", doc.Schema, explore.RelatedContextSchema)
+			_, section, ok := strings.Cut(string(prompt), "## Prior records\n")
+			if !ok {
+				t.Fatalf("the prompt carries no prior-records section:\n%s", prompt)
 			}
-			if doc.Framing != tc.framing {
-				t.Errorf("context framing = %q, want the %s framing", doc.Framing, tc.name)
+			section, _, _ = strings.Cut(section, "\n## ")
+			if !strings.Contains(section, tc.framing) {
+				t.Errorf("the section does not carry the %s framing:\n%s", tc.name, section)
 			}
-			if doc.Serendipitous != tc.serendipitous {
-				t.Errorf("context serendipitous = %v, want %v", doc.Serendipitous, tc.serendipitous)
+			if !strings.Contains(section, prior) {
+				t.Errorf("the section does not name the planted candidate %s:\n%s", prior, section)
 			}
-			if len(doc.Records) != 1 {
-				t.Fatalf("context records = %+v, want the one the preparation named", doc.Records)
-			}
-			record := doc.Records[0]
-			if record.ID != prior || record.Kind != string(frontier.OutputHypothesis) {
-				t.Errorf("context record = %+v, want the planted candidate %s", record, prior)
-			}
-			if !strings.Contains(record.Summary, "release pipeline") {
-				t.Errorf("context record carries no summary: %+v", record)
+			if !strings.Contains(section, "release pipeline") {
+				t.Errorf("the section carries no summary of the record:\n%s", section)
 			}
 		})
 	}
-}
-
-// jobExtra rebuilds the job document's context field for one preparation. It
-// exists because the controller builds the field per stage while a job is in
-// flight, and a test that reached into the launched process's stdin would be
-// asserting on the pipe rather than on the document.
-func jobExtra(t *testing.T, prep run.Preparation, h *harness, serendipitous bool) json.RawMessage {
-	t.Helper()
-	doc := explore.RelatedContext{
-		Schema:        explore.RelatedContextSchema,
-		Framing:       explore.FramingRefine,
-		Serendipitous: serendipitous,
-	}
-	if serendipitous {
-		doc.Framing = explore.FramingSerendipity
-	}
-	for _, ref := range prep.Related {
-		output, err := h.frontier.Output(context.Background(), frontier.OutputKind(ref.Kind), ref.ID)
-		if err != nil {
-			t.Fatalf("resolve related output %s: %v", ref.ID, err)
-		}
-		doc.Records = append(doc.Records, explore.RelatedRecord{
-			Kind:    string(output.Kind),
-			ID:      output.ID,
-			Summary: output.Summary,
-		})
-	}
-	encoded, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("encode the context: %v", err)
-	}
-	return encoded
 }
 
 // TestFrontierIndexRefreshIsAutomatic pins the ordering that makes the two

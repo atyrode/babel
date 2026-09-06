@@ -9,6 +9,7 @@ import (
 	"github.com/atyrode/babel/internal/explore"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
+	"github.com/atyrode/babel/internal/worker"
 )
 
 // TestFrontierHitsAttributeTheMachineTheyCameFrom is issue #109 item 4 at the
@@ -49,7 +50,7 @@ func TestFrontierHitsAttributeTheMachineTheyCameFrom(t *testing.T) {
 	payload := h.writeResult("discovery.json",
 		oneCandidate("c-1", "an unrelated documentation formatting question"))
 	args := append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
-		"-request-capability", "corpus-search",
+		"-call", worker.ToolSearch,
 		"-search-scope", explore.ScopeFrontier,
 		"-search-query", "release pipeline integration suite")
 

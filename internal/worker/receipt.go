@@ -7,9 +7,10 @@ import (
 	"github.com/atyrode/babel/internal/digest"
 )
 
-// Failure origins. The distinction is load-bearing for review: a worker that
-// reported its own failure behaved correctly, while a Babel-side failure means
-// the counterpart broke the contract or the supervision intervened.
+// Failure origins. The distinction is load-bearing for review: an engine that
+// exited with its own failure status behaved as a process should, while a
+// Babel-side failure means the boundary was broken or the supervision
+// intervened.
 const (
 	FailureWorker = "worker"
 	FailureBabel  = "babel"
@@ -17,21 +18,22 @@ const (
 
 // Receipt is what SPEC.md §6.5 requires this boundary to record: the profile
 // reference and revision, the resolved non-secret provider metadata, the
-// capability grant, every tool request with its decision, failures, resource
-// use where it was observable, and timing.
+// capability grant, every tool call with its decision, failures, resource use
+// where it was observable, and timing.
 //
-// It deliberately cannot hold a credential. The evidence-broker token is
-// scrubbed out of every worker-controlled string, tool arguments are recorded
-// as a digest rather than as content, and provider credentials never reach
-// Babel in the first place — Code gives them only to the OMP controller it
-// supervises (SPEC.md §2.6).
+// It deliberately cannot hold a credential. No credential travels through
+// Babel at all — Code holds the provider's and gives it to the engine it
+// supervises (SPEC.md §2.6), and the evidence tools answer over the pipe with
+// no token of their own — and tool arguments are recorded as a digest rather
+// than as content. Evidence a tool served is never here either: the receipt
+// records the decision and the retrieval trace's locators, and §9 forbids the
+// durable record becoming a plaintext store of archive content.
 type Receipt struct {
 	// JobID and RunID are the job's own identifiers, echoed for correlation.
 	JobID string
 	RunID string
 
-	// Profile is the Code profile the job named. The worker must resolve
-	// exactly this one; a mismatch fails the run.
+	// Profile is the Code profile the job named and the launch ran under.
 	Profile ProfileRef
 
 	// Recipes and Sources echo what the job authorized: SPEC.md §6.5 requires
@@ -41,86 +43,87 @@ type Receipt struct {
 	Recipes []RecipeRef
 	Sources []Source
 
-	// Worker is the counterpart's non-secret self-description, so a run can
-	// be attributed to a build.
+	// Worker is Code's non-secret self-description from the runtime-info
+	// sidecar, so a run can be attributed to a build.
 	Worker Identity
-
-	// ProtocolVersion is the negotiated version.
-	ProtocolVersion int
 
 	// Grant is the capability boundary the run was given.
 	Grant Grant
 
 	// Privacy and Cost are the resolved profile's non-secret disclosure and
-	// cost metadata, as the worker reported them.
+	// cost metadata, as Code reported them.
 	Privacy Privacy
 	Cost    Cost
 
-	// Containment is the sandbox the worker declared, recorded so a later
-	// reviewer can see which boundary this evidence was produced behind
-	// rather than assuming the boundary current at review time.
+	// Containment is the sandbox Code declared it launched the engine into,
+	// recorded so a later reviewer can see which boundary this evidence was
+	// produced behind rather than assuming the boundary current at review
+	// time.
 	Containment Containment
 
-	// ResolvedCapabilities is what the worker said the profile can do. It is
-	// the worker's claim, not a grant: authorization uses Grant.
-	ResolvedCapabilities []Capability
-
-	// Metadata is the resolved non-secret provider/model/thinking metadata.
+	// Metadata is the profile's non-secret provider metadata. Babel refuses
+	// a launch whose metadata names a credential, so nothing here is one.
 	Metadata map[string]string
 
-	// ToolRequests is every tool request the worker made, in order, with the
-	// decision Babel wrote back.
+	// Tools are the host tool names Babel registered for this job, in the
+	// order the engine confirmed them. The submit tool is always among them.
+	Tools []string
+
+	// ToolRequests are every host tool call the engine made, in order, with
+	// Babel's decision on each. Submissions are among them, under ToolSubmit.
 	ToolRequests []ToolRecord
 
-	// Progress is a bounded trail of progress events; ProgressDropped counts
-	// the ones past the bound. A chatty worker must not make the audit record
-	// unbounded.
+	// Progress is the bounded record of the engine's lifecycle events;
+	// ProgressDropped counts what the bound excluded.
 	Progress        []ProgressRecord
 	ProgressDropped int
 
-	// Result is the run's output when it delivered one.
-	Result *ResultRecord
+	// Submissions counts every call to the submit tool, accepted or not.
+	// Result is the last accepted one; a refused submission never replaces
+	// it.
+	Submissions int
+	Result      *ResultRecord
 
-	// Failure is the first failure, whether the worker reported it or Babel
-	// detected it.
+	// Failure is the first failure of the run, from whichever side.
 	Failure *FailureRecord
 
-	// Resources is the worker's last self-reported resource use, or nil when
-	// it reported none. Nil means unknown, never zero: SPEC.md §6.5 asks for
-	// resource use "where observable", and claiming zero would be a
-	// measurement Babel did not make.
+	// Resources are Code's measurements of the engine's process tree, from
+	// the finished runtime-info report. Nil when Code wrote none.
 	Resources *Resources
 
-	// UnknownFields names the JSON fields Babel did not recognize, sorted.
-	// They were ignored, not fatal — forward compatibility is a protocol
-	// requirement — and recording their names is how an operator notices that
-	// the counterpart is newer than this build.
-	UnknownFields []string
+	// Usage is the engine's own session accounting, when it answered
+	// get_session_stats before the run ended. Nil when it did not.
+	Usage *Usage
 
-	// StderrTail is a bounded, scrubbed tail of the worker's diagnostics.
+	// UnknownFrames lists the stdout frame types this build did not
+	// interpret, so a newer engine's additions are visible rather than
+	// silently ignored. Frame types only, never content.
+	UnknownFrames []string
+
+	// StderrTail is the bounded tail of the engine's diagnostics.
 	StderrTail string
 
-	// ExitCode is the worker's exit status, or -1 when it was signalled or
-	// never exited.
+	// ExitCode is the engine's exit status as Code reported it in the
+	// finished report, or Code's own when it wrote none; -1 when the tree
+	// was killed.
 	ExitCode int
 
-	// StartedAt, FinishedAt and Duration are Babel's own clock readings, not
-	// the worker's: a receipt timed by the counterpart would be
-	// unfalsifiable.
 	StartedAt  time.Time
 	FinishedAt time.Time
 	Duration   time.Duration
 }
 
-// ToolRecord is one authorized-or-denied tool request.
-//
-// Arguments are absent by design. They can carry private locators, and a
-// worker that echoes a credential into one must not be able to write it into
-// Babel's durable audit record; the digest and size still let a reviewer
-// correlate a request with the broker's own log.
+// ToolRecord is one host tool call and Babel's decision on it. Arguments are
+// digested rather than stored: a query can carry material a run is not cleared
+// to persist, and the digest still proves what was asked.
 type ToolRecord struct {
-	Index           int
-	RequestID       string
+	Index int
+	// RequestID is the engine's host_tool_call id; ToolCallID is the model's
+	// own tool-call identifier, which the transcript keys the call by.
+	RequestID  string
+	ToolCallID string
+	// Capability is the capability the tool serves, empty for the submit
+	// tool and for a call to a name the job did not register.
 	Capability      Capability
 	Tool            string
 	ArgumentsDigest digest.Digest
@@ -129,36 +132,38 @@ type ToolRecord struct {
 	DenyCode        DenyCode
 	Reason          string
 	At              time.Time
-
-	// Decided is how long the policy took, which is what distinguishes a slow
-	// authorization from a slow worker when a run is examined afterwards.
-	Decided time.Duration
+	Decided         time.Duration
 }
 
-// ProgressRecord is one progress event as recorded.
+// ProgressRecord is one engine lifecycle event, kept as a stage name and a
+// short message rather than the event itself: message deltas carry model
+// text, and a receipt is not a transcript.
 type ProgressRecord struct {
-	Seq      int
-	Stage    string
-	Message  string
-	Fraction float64
-	At       time.Time
+	Seq     int
+	Stage   string
+	Message string
+	At      time.Time
 }
 
-// ResultRecord is the run's terminal output. Payload is the worker's
-// structured result, validated as JSON and scrubbed, but not interpreted:
-// Babel validates structure and provenance without certifying analytical
-// correctness (SPEC.md §6.5).
+// ResultRecord is the last accepted submission.
 type ResultRecord struct {
-	Status  string
-	Schema  string
+	// Status is StatusOK when the run ended with this submission accepted.
+	Status string
+	// Schema is the job's result schema identifier.
+	Schema string
+	// Payload is the submission's arguments, byte for byte, as the engine
+	// validated them against the schema and the job accepted them.
 	Payload json.RawMessage
 	At      time.Time
 }
 
-// FailureRecord is the run's first failure. Origin distinguishes the
-// counterpart's own reported failure from a Babel-side supervision or
-// protocol failure; Code is the codes' authority in the former case and this
-// package in the latter.
+// Result statuses. A run that ended without an accepted submission has no
+// ResultRecord at all rather than a partial one: emitting nothing is an
+// outcome the caller decides about, and inventing a status for it here would
+// be Babel's control plane describing a result nobody wrote.
+const StatusOK = "ok"
+
+// FailureRecord is one failure with its origin.
 type FailureRecord struct {
 	Origin    string
 	Code      string
@@ -167,14 +172,13 @@ type FailureRecord struct {
 	At        time.Time
 }
 
-// Denied reports how many tool requests were refused, which is the number a
-// reviewer looks for first when a run's conclusions look thin.
+// Denied counts the tool calls Babel refused.
 func (r *Receipt) Denied() int {
-	denied := 0
-	for i := range r.ToolRequests {
-		if !r.ToolRequests[i].Allowed {
-			denied++
+	n := 0
+	for _, t := range r.ToolRequests {
+		if !t.Allowed {
+			n++
 		}
 	}
-	return denied
+	return n
 }

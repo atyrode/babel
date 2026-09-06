@@ -27,11 +27,11 @@ import (
 	"github.com/atyrode/babel/internal/worker"
 )
 
-// fakeWorkerPath is the synthetic analysis worker, built once per test binary.
+// fakeEnginePath is the synthetic `code engine`, built once per test binary.
 // Building it here rather than per test keeps a dozen supervised runs from
 // paying a dozen compiles of the same fixture, and nothing is prebuilt or
-// committed: the suite needs no worker, no credential and no transcript.
-var fakeWorkerPath string
+// committed: the suite needs no Code, no OMP, no credential and no transcript.
+var fakeEnginePath string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "babel-explore-fixture-")
@@ -39,12 +39,12 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "creating fixture dir: %v\n", err)
 		os.Exit(1)
 	}
-	fakeWorkerPath = filepath.Join(dir, "fakeworker")
-	build := exec.Command("go", "build", "-o", fakeWorkerPath,
-		"github.com/atyrode/babel/internal/worker/testdata/fakeworker")
+	fakeEnginePath = filepath.Join(dir, "fakeengine")
+	build := exec.Command("go", "build", "-o", fakeEnginePath,
+		"github.com/atyrode/babel/internal/worker/testdata/fakeengine")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "building the fake worker: %v\n", err)
+		fmt.Fprintf(os.Stderr, "building the fake engine: %v\n", err)
 		os.RemoveAll(dir)
 		os.Exit(1)
 	}
@@ -167,37 +167,38 @@ func newHarness(t *testing.T) *harness {
 	if h.recipes, err = cookbook.Embedded(); err != nil {
 		t.Fatalf("load cookbook: %v", err)
 	}
-	h.locators = h.corpusLocators(h.inputs[0].Stream, 3)
+	h.locators = h.servedLocators(3)
 	return h
 }
 
-// corpusLocators returns locators for the first intact events of a session,
-// which is what a synthetic observation cites so its evidence recovers real
-// bytes rather than being asserted.
-func (h *harness) corpusLocators(stream event.Stream, want int) []event.Locator {
+// servedLocators returns the locators the fixture's corpus search serves, in
+// served order, which is what a synthetic observation cites as evidence.
+//
+// They are read through the query the run's broker builds for the search
+// payloadArgs makes the fake worker request — the preparation's sessions, no
+// match, newest first — because a citation Babel accepts is one it served,
+// byte for byte, and a locator found any other way would be a fabrication
+// however real its bytes.
+func (h *harness) servedLocators(want int) []event.Locator {
 	h.t.Helper()
-	file, err := os.Open(stream.Path)
-	if err != nil {
-		h.t.Fatalf("open %s: %v", stream.Path, err)
+	var ids []string
+	for _, sel := range h.prep.Selection {
+		ids = append(ids, sel.SourceID)
 	}
-	defer file.Close()
-	var out []event.Locator
-	stop := errors.New("enough")
-	err = event.Scan(file, stream, func(e event.Event) error {
-		if e.Partial || e.Text == "" {
-			return nil
-		}
-		out = append(out, e.Locator)
-		if len(out) == want {
-			return stop
-		}
-		return nil
+	hits, err := h.index.Search(context.Background(), index.Query{
+		SourceIDs: ids,
+		Order:     index.OrderNewest,
+		Limit:     want,
 	})
-	if err != nil && !errors.Is(err, stop) {
-		h.t.Fatalf("scan %s: %v", stream.Path, err)
+	if err != nil {
+		h.t.Fatalf("search the fixture corpus: %v", err)
 	}
-	if len(out) < want {
-		h.t.Fatalf("corpus yielded %d usable locators, want %d", len(out), want)
+	if len(hits) < want {
+		h.t.Fatalf("the corpus serves %d hits, want at least %d", len(hits), want)
+	}
+	out := make([]event.Locator, want)
+	for i := range out {
+		out[i] = hits[i].Locator
 	}
 	return out
 }
@@ -214,7 +215,7 @@ func (h *harness) config(args []string, mutate ...func(*explore.Config)) explore
 		},
 		Profile: worker.ProfileRef{ID: "synthetic-profile", Revision: 1},
 		Worker: worker.Config{
-			Binary: fakeWorkerPath,
+			Binary: fakeEnginePath,
 			Args:   args,
 			Limits: worker.Limits{
 				HandshakeTimeout: 10 * time.Second,
@@ -257,8 +258,8 @@ func (h *harness) evidence(i int, note string) frontier.Evidence {
 	return ev
 }
 
-// writeResult marshals a structured result into a payload file the fake worker
-// emits verbatim.
+// writeResult marshals a structured result into a payload file the fake engine
+// submits verbatim.
 func (h *harness) writeResult(name string, res explore.Result) string {
 	h.t.Helper()
 	encoded, err := json.MarshalIndent(res, "", "  ")
@@ -343,10 +344,18 @@ func (h *harness) discovery() explore.Result {
 }
 
 // payloadArgs are the fixture flags that make one stage emit one payload.
+//
+// Every job also makes the one corpus search the harness's locators were
+// read from, so the evidence a payload cites is evidence the run served. A
+// test that names its own -call or -search-query overrides that search rather
+// than adding to it.
 func payloadArgs(perStage map[explore.Stage]string) []string {
-	args := []string{"-result-payload-selector", explore.ParamStage}
+	args := []string{
+		"-submit-selector", explore.ParamStage,
+		"-call", worker.ToolSearch, "-search-query", "",
+	}
 	for _, stage := range slices.Sorted(maps.Keys(perStage)) {
-		args = append(args, "-result-payload", string(stage)+"="+perStage[stage])
+		args = append(args, "-submit", string(stage)+"="+perStage[stage])
 	}
 	return args
 }
@@ -449,9 +458,9 @@ func TestReceiptRecordsEveryToolDecisionAndTheRetrievalTrace(t *testing.T) {
 	h := newHarness(t)
 	payload := h.writeResult("discovery.json", h.discovery())
 	args := append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
-		// One served corpus search and one request for a capability the
-		// grant does not carry, so the receipt has both decisions to record.
-		"-request-capability", "corpus-search,sandbox-exec",
+		// One served corpus search and one call to a tool the job never
+		// registered, so the receipt has both decisions to record.
+		"-call", worker.ToolSearch+",babel_sandbox_exec",
 		"-search-query", "")
 	controller := h.controller(args)
 
@@ -460,15 +469,19 @@ func TestReceiptRecordsEveryToolDecisionAndTheRetrievalTrace(t *testing.T) {
 		t.Fatalf("Explore: %v (failures %+v)", err, outcome.Failures)
 	}
 	body := outcome.Receipt.Body
-	if len(body.Worker.ToolRequests) != 2 {
-		t.Fatalf("receipt records %d tool decisions, want 2", len(body.Worker.ToolRequests))
+	// The submission is itself a recorded tool decision, the last one.
+	if len(body.Worker.ToolRequests) != 3 {
+		t.Fatalf("receipt records %d tool decisions, want 3", len(body.Worker.ToolRequests))
 	}
 	first, second := body.Worker.ToolRequests[0], body.Worker.ToolRequests[1]
 	if !first.Allowed || first.Capability != worker.CapabilityCorpusSearch {
 		t.Errorf("first decision = %+v, want an allowed corpus search", first)
 	}
-	if second.Allowed || second.DenyCode != worker.DenyNotGranted {
-		t.Errorf("second decision = %+v, want a not-granted denial", second)
+	if second.Allowed || second.DenyCode != worker.DenyUnknownTool {
+		t.Errorf("second decision = %+v, want an unknown-tool denial", second)
+	}
+	if submission := body.Worker.ToolRequests[2]; !submission.Allowed || submission.Tool != worker.ToolSubmit {
+		t.Errorf("last decision = %+v, want the accepted submission", submission)
 	}
 	if outcome.Receipt.Header.Counts.ToolsDenied != 1 {
 		t.Errorf("receipt counts %d denials, want 1", outcome.Receipt.Header.Counts.ToolsDenied)
@@ -666,12 +679,17 @@ func TestResultSkippingTheDevelopmentPathIsRefused(t *testing.T) {
 //
 // The capability under test is repo-read because it is one this build still
 // does not broker: §14's repository materialization protocol is open, while
-// public research left this list when internal/research shipped (#75).
+// public research left this list when internal/research shipped (#75). Tools
+// are only registered for the capabilities Babel serves, so a grant that
+// names repo-read registers nothing for it and the call is refused as a tool
+// the job never offered.
 func TestDeniedCapabilityDoesNotEndTheRun(t *testing.T) {
 	h := newHarness(t)
 	payload := h.writeResult("discovery.json", h.discovery())
+	// The served search stays first so the payload's citations remain real;
+	// the denial is the second decision and the submission the last.
 	args := append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
-		"-request-capability", "repo-read")
+		"-call", worker.ToolSearch+",babel_repo_read")
 	controller := h.controller(args, func(cfg *explore.Config) {
 		cfg.Grant.Capabilities = append(cfg.Grant.Capabilities, worker.CapabilityRepoRead)
 		cfg.Capabilities.Repository = "unavailable"
@@ -685,17 +703,18 @@ func TestDeniedCapabilityDoesNotEndTheRun(t *testing.T) {
 		t.Errorf("the run produced %d findings, want 1: a denial is not a termination", len(outcome.Findings))
 	}
 	requests := outcome.Receipt.Body.Worker.ToolRequests
-	if len(requests) != 1 {
-		t.Fatalf("recorded %d tool decisions, want 1", len(requests))
+	if len(requests) != 3 || !requests[0].Allowed || requests[2].Tool != worker.ToolSubmit {
+		t.Fatalf("recorded %d tool decisions, want the served search, the denial and the submission: %+v", len(requests), requests)
 	}
+	requests = requests[1:2]
 	if requests[0].Allowed {
 		t.Error("a capability with no facility behind it was allowed")
 	}
-	if requests[0].DenyCode != worker.DenyPolicy {
-		t.Errorf("denial code = %q, want a policy denial", requests[0].DenyCode)
+	if requests[0].DenyCode != worker.DenyUnknownTool {
+		t.Errorf("denial code = %q, want an unknown-tool denial", requests[0].DenyCode)
 	}
-	if !strings.Contains(requests[0].Reason, "repo-read") {
-		t.Errorf("the denial reason does not name the facility: %q", requests[0].Reason)
+	if !strings.Contains(requests[0].Reason, "babel_repo_read") {
+		t.Errorf("the denial reason does not name the tool: %q", requests[0].Reason)
 	}
 }
 
@@ -731,16 +750,19 @@ func TestHostedRunWithASecretIsBlockedUntilRedactionIsApplied(t *testing.T) {
 	}
 
 	// The same scope proceeds once redaction is applied, and what the run
-	// serves the worker is redacted rather than merely declared to be.
-	redacting := h.controller(append(args,
-		"-request-capability", "corpus-search", "-search-query", secretProbe),
+	// serves the worker is redacted rather than merely declared to be. The
+	// run's one search is for the probe, so its payload cites no evidence:
+	// the harness's locators were served by a different query.
+	probing := h.writeResult("probing.json", oneCandidate("c-1", "a candidate about the planted credential"))
+	redacting := h.controller(append(payloadArgs(map[explore.Stage]string{explore.StageExplore: probing}),
+		"-search-query", secretProbe),
 		hosted, func(cfg *explore.Config) { cfg.Redact = true })
 	outcome, err = redacting.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-hosted-redacted"})
 	if err != nil {
 		t.Fatalf("the redacted run was refused too: %v (failures %+v)", err, outcome.Failures)
 	}
-	if len(outcome.Findings) != 1 {
-		t.Errorf("the redacted run produced %d findings, want 1", len(outcome.Findings))
+	if len(outcome.Hypotheses) != 1 {
+		t.Errorf("the redacted run persisted %d candidates, want 1", len(outcome.Hypotheses))
 	}
 	if len(outcome.Retrieval) != 1 || len(outcome.Retrieval[0].Hits) == 0 {
 		t.Fatalf("the redacted run served no retrieval, so nothing proves the redaction")
@@ -908,9 +930,9 @@ func TestChallengerFailureLeavesExplorationIntact(t *testing.T) {
 	explorePayload := h.writeResult("discovery.json", h.discovery())
 	controller := h.controller(payloadArgs(map[explore.Stage]string{
 		explore.StageExplore: explorePayload,
-		// A payload the challenger's process cannot read: it dies without a
-		// terminal event, which is a worker-level failure of that job alone.
-		explore.StageChallenge: filepath.Join(t.TempDir(), "absent.json"),
+		// A submission the challenger's process cannot read: it dies before
+		// its agent_end, which is a worker-level failure of that job alone.
+		explore.StageChallenge: "/nonexistent/absent.json",
 	}))
 
 	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-challenge-fails", Challenge: true})
@@ -962,7 +984,7 @@ func TestObservationOrderIsIndependentOfRetrievalRank(t *testing.T) {
 	}
 	payload := h.writeResult("reversed.json", result)
 	args := append(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}),
-		"-request-capability", "corpus-search", "-search-query", "")
+		"-call", worker.ToolSearch, "-search-query", "")
 	controller := h.controller(args)
 
 	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-order"})

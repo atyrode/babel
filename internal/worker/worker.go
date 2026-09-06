@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -22,31 +23,32 @@ import (
 // analysis run is minutes of model work, so the budgets that must be small are
 // the ones bounding *silence* and *shutdown*, not the ones bounding work.
 const (
-	defaultHandshakeTimeout = 10 * time.Second
-	defaultIdleTimeout      = 2 * time.Minute
-	defaultExitGrace        = 5 * time.Second
+	defaultHandshakeTimeout = 30 * time.Second
+	defaultIdleTimeout      = 5 * time.Minute
+	defaultExitGrace        = 10 * time.Second
 	defaultTerminateGrace   = 2 * time.Second
 	defaultDrainGrace       = 2 * time.Second
-	defaultMaxLineBytes     = 1 << 20
+	defaultMaxFrameBytes    = 1 << 20
+	defaultMaxReassembled   = 64 << 20
 	defaultMaxEvents        = 100_000
 	defaultMaxToolRequests  = 1024
 	defaultMaxProgress      = 256
 	defaultStderrTailBytes  = 4 << 10
 
 	// readBufferSize is the stdout read buffer. Lines are usually short; the
-	// oversize check is enforced against Limits.MaxLineBytes independently of
-	// this, so the buffer is a throughput choice and not a protocol one.
+	// oversize check is enforced against Limits.MaxFrameBytes independently
+	// of this, so the buffer is a throughput choice and not a protocol one.
 	readBufferSize = 64 << 10
 
 	// stderrLineLimit bounds one retained diagnostic line. Stderr is not
 	// protocol, so an over-long line is truncated rather than fatal — but it
-	// is bounded, because buffering a worker's runaway log line would let it
+	// is bounded, because buffering a runaway log line would let the engine
 	// exhaust Babel's memory.
 	stderrLineLimit = 8 << 10
 
-	// toolBudgetSlack is how many over-budget tool requests a worker may make
+	// toolBudgetSlack is how many over-budget tool calls the engine may make
 	// before Babel gives up on it. Every one of them is denied with
-	// DenyLimit, so a worker that keeps asking is looping rather than
+	// DenyLimit, so an engine that keeps asking is looping rather than
 	// adapting, and a run that cannot progress must end rather than spin.
 	toolBudgetSlack = 16
 
@@ -54,63 +56,57 @@ const (
 	// to digest it. Arguments are never stored, only fingerprinted.
 	maxArgumentDigestBytes = 1 << 20
 
-	// redactedMarker replaces a job secret wherever worker-controlled text is
-	// recorded or reported.
-	redactedMarker = "[redacted]"
-
-	// minSecretLength is the shortest value worth scrubbing. A short secret
-	// would match innocuous substrings everywhere and turn every diagnostic
-	// into noise; Babel-issued run tokens are long by construction.
-	minSecretLength = 8
-
-	// rawTranscriptBytes bounds the conformance suite's raw transcript. It is
-	// larger than the stderr tail because an event line may legitimately be
-	// long, and small enough that a worker writing without end cannot make
-	// the grader itself the failure.
-	rawTranscriptBytes = 64 << 10
+	// engineSubcommand and its flags are Code's `engine` surface. Babel
+	// composes argv from them; an operator's stored worker arguments precede
+	// them and name only the executable's own mode.
+	engineSubcommand  = "engine"
+	flagProfile       = "--profile"
+	flagRuntimeInfo   = "--runtime-info"
+	flagDescribe      = "--describe"
+	runtimeInfoFile   = "runtime.json"
+	runtimeInfoPrefix = "babel-engine-"
 )
 
 // Decision is one authorization outcome from the injected policy. Reason is
-// recorded in the receipt and sent to the worker, so it must explain the
-// decision without disclosing anything the worker is not cleared to see.
+// recorded in the receipt and sent to the model, so it must explain the
+// decision without disclosing anything the model is not cleared to see.
 //
 // Results is the evidence a facility served, and it is the one field of a
 // Decision that never reaches the receipt. The asymmetry is the §9 boundary:
-// the wire carries content to the worker because a model that cannot read a
+// the pipe carries content to the model because a model that cannot read a
 // record cannot form an observation about it, and the receipt carries locators
 // and digests only because a plaintext store of archive content readable by
-// anyone with catalog access is exactly what §9 forbids. handleToolRequest
-// writes it to the pipe and to nothing else.
+// anyone with catalog access is exactly what §9 forbids.
 //
 // It is raw JSON rather than a Go type because the shape belongs to the
 // facility behind the capability: internal/explore decides what a corpus-search
 // hit is, and a type here would be Babel's control plane asserting a schema
-// over evidence it does not own. An empty value is no payload at all, which is
-// what a denial, a non-serving capability, and an older Babel all send.
+// over evidence it does not own. It travels to the model as the text of the
+// tool result, byte for byte.
 type Decision struct {
 	Allow   bool
 	Reason  string
 	Results json.RawMessage
 }
 
-// ToolRequest is one worker request for an evidence or execution capability,
-// as handed to the policy. Arguments are the worker's raw JSON: the policy
-// sees them, the receipt never does.
+// ToolRequest is one engine call to an evidence or execution tool, as handed
+// to the policy. Arguments are the model's JSON as the engine validated them
+// against the tool's schema: the policy sees them, the receipt never does.
 type ToolRequest struct {
 	JobID      string
 	RunID      string
 	Index      int
 	RequestID  string
+	ToolCallID string
 	Capability Capability
 	Tool       string
 	Arguments  json.RawMessage
-	Reason     string
 	Grant      Grant
 }
 
-// Authorizer decides tool requests. Babel authorizes every one of them
-// (SPEC.md §6.5), and the grant is checked before the policy runs, so an
-// Authorizer can only narrow what a run may do.
+// Authorizer decides tool calls. Babel authorizes every one of them (SPEC.md
+// §6.5), and the tool's capability was checked against the grant before the
+// job launched, so an Authorizer can only narrow what a run may do.
 type Authorizer interface {
 	Authorize(ctx context.Context, req ToolRequest) Decision
 }
@@ -123,29 +119,12 @@ func (f AuthorizerFunc) Authorize(ctx context.Context, req ToolRequest) Decision
 	return f(ctx, req)
 }
 
-// AllowWithinGrant is the permissive policy: it allows anything the run's
-// capability grant already covers, held to the tool names the job published
-// for that capability. It is not "allow everything" — the grant check runs
-// first and is not bypassable — but it delegates the rest of the decision to
-// the grant, so it belongs in development and tests rather than in a run whose
-// scope was negotiated with an operator.
-//
-// The name check is the part that is not a convenience. Without it this policy
-// was strictly more permissive than the one a real run installs:
-// internal/explore's authorizer consults the published mapping before it
-// serves anything, and this one consulted nothing at all. The conformance
-// suite grades with this policy, so the gap did not make the suite lenient
-// about tool names — it made the suite blind to them, and a worker that
-// invented "babel_corpus_search" passed every obligation and was denied on
-// every request of the only real exploration there has been.
-//
-// The suite cannot close that by authorizing through the production authorizer
-// instead: that one needs a corpus index and a run preparation, and the suite
-// must grade any candidate binary on a machine that has neither. So the two
-// policies share the predicate rather than the implementation — ServesTool and
-// DenyUnservedTool, over the one mapping the job published — which is what
-// makes a divergence between exam and reality unwritable rather than merely
-// tested for.
+// AllowWithinGrant is the permissive policy: it allows every call to a tool
+// the job registered, held to the names Babel serves for the capability. It
+// is not "allow everything" — the registration check ran before launch and is
+// not bypassable — but it answers with no evidence, so it belongs in
+// development and offline conformance rather than in a run whose scope was
+// negotiated with an operator.
 func AllowWithinGrant() Authorizer {
 	return AuthorizerFunc(func(_ context.Context, req ToolRequest) Decision {
 		if !ServesTool(req.Capability, req.Tool) {
@@ -155,8 +134,8 @@ func AllowWithinGrant() Authorizer {
 	})
 }
 
-// DenyAll refuses every request with the given reason. It is the default when
-// no Authorizer is configured: a run with no policy is not a run with a
+// DenyAll refuses every call with the given reason. It is the default when no
+// Authorizer is configured: a run with no policy is not a run with a
 // permissive policy.
 func DenyAll(reason string) Authorizer {
 	return AuthorizerFunc(func(context.Context, ToolRequest) Decision {
@@ -167,16 +146,17 @@ func DenyAll(reason string) Authorizer {
 // Limits bounds the transport and the shutdown, not the analysis. Zero fields
 // select the documented default.
 type Limits struct {
-	// HandshakeTimeout bounds the wait for the worker's hello.
+	// HandshakeTimeout bounds the wait for the engine's ready frame. It
+	// covers Code resolving the profile and establishing the sandbox.
 	HandshakeTimeout time.Duration
 
-	// IdleTimeout bounds the gap between events. Stderr output does not reset
-	// it: a worker that talks only on stderr is stalled, and the whole point
-	// of the timer is to notice that.
+	// IdleTimeout bounds the gap between frames. Stderr output does not
+	// reset it: an engine that talks only on stderr is stalled, and the
+	// whole point of the timer is to notice that.
 	IdleTimeout time.Duration
 
-	// ExitGrace bounds how long a worker may take to exit after its terminal
-	// event before Babel kills the tree (ErrWorkerLingered).
+	// ExitGrace bounds how long the process tree may take to exit after
+	// Babel closes its stdin before the tree is killed (ErrWorkerLingered).
 	ExitGrace time.Duration
 
 	// TerminateGrace is how long SIGTERM is given before SIGKILL when Babel
@@ -188,22 +168,26 @@ type Limits struct {
 	// stream from ever reaching EOF.
 	DrainGrace time.Duration
 
-	// MaxLineBytes is the largest event line accepted (ErrOversizedLine).
-	MaxLineBytes int
+	// MaxFrameBytes is the largest physical stdout line accepted
+	// (ErrOversizedFrame). It matches the engine's own physical bound.
+	MaxFrameBytes int
+
+	// MaxReassembledBytes bounds one v2 chunk sequence (ErrOversizedFrame).
+	MaxReassembledBytes int
 
 	// MaxEvents bounds the whole stream (ErrEventBudget).
 	MaxEvents int
 
-	// MaxToolRequests bounds authorized requests; further ones are denied
-	// with DenyLimit.
+	// MaxToolRequests bounds authorized calls; further ones are denied with
+	// DenyLimit.
 	MaxToolRequests int
 
-	// MaxProgressRecords bounds how many progress events a receipt keeps. A
-	// chatty worker must not make the audit record unbounded, so the excess
+	// MaxProgressRecords bounds how many lifecycle events a receipt keeps. A
+	// chatty engine must not make the audit record unbounded, so the excess
 	// is counted instead of stored.
 	MaxProgressRecords int
 
-	// StderrTailBytes bounds the retained tail of worker diagnostics.
+	// StderrTailBytes bounds the retained tail of diagnostics.
 	StderrTailBytes int
 }
 
@@ -224,8 +208,11 @@ func (l Limits) withDefaults() Limits {
 	if l.DrainGrace <= 0 {
 		l.DrainGrace = defaultDrainGrace
 	}
-	if l.MaxLineBytes <= 0 {
-		l.MaxLineBytes = defaultMaxLineBytes
+	if l.MaxFrameBytes <= 0 {
+		l.MaxFrameBytes = defaultMaxFrameBytes
+	}
+	if l.MaxReassembledBytes <= 0 {
+		l.MaxReassembledBytes = defaultMaxReassembled
 	}
 	if l.MaxEvents <= 0 {
 		l.MaxEvents = defaultMaxEvents
@@ -242,82 +229,50 @@ func (l Limits) withDefaults() Limits {
 	return l
 }
 
-// onWire renders the limits the worker must respect.
-func (l Limits) onWire() limitsOnWire {
-	return limitsOnWire{
-		MaxLineBytes:    l.MaxLineBytes,
-		MaxEvents:       l.MaxEvents,
-		MaxToolRequests: l.MaxToolRequests,
-		IdleSeconds:     l.IdleTimeout.Seconds(),
-		ExitGraceSecs:   l.ExitGrace.Seconds(),
-	}
-}
-
-// Config describes how to launch and supervise one worker process.
+// Config describes how to launch and supervise Code's engine.
 type Config struct {
-	// Binary is the worker executable. Required.
+	// Binary is the Code executable. Required.
 	Binary string
 
-	// Args are extra arguments. They must carry no secrets: argv is visible
-	// in any process listing. The mode and the job travel on stdin.
+	// Args are the operator's own arguments, placed before the `engine`
+	// subcommand Babel appends. They must carry no secrets: argv is visible
+	// in any process listing.
 	Args []string
 
 	// Dir is the child's working directory. Empty means the parent's.
 	Dir string
 
-	// Env is appended to a minimal derived environment (HOME, PATH, TMPDIR,
-	// LANG when the parent has them). It must carry no credentials, for the
-	// same reason Args must not.
+	// Env is appended to the derived launch environment: standard paths,
+	// Code's profile/executable overrides, and user-session transport.
+	// It must carry no credentials, for the same reason Args must not.
 	Env []string
 
-	// Versions is the protocol version set Babel offers. Nil means
-	// DefaultVersions.
-	Versions []int
-
-	// Authorizer decides tool requests. Nil fails closed: every request is
-	// denied.
+	// Authorizer decides evidence tool calls. Nil fails closed: every call
+	// is denied.
 	Authorizer Authorizer
 
 	// Limits bounds the transport and the shutdown.
 	Limits Limits
 
-	// Diagnostics receives the worker's stderr, one line at a time, with job
-	// secrets scrubbed. Nil discards it. The bounded tail is recorded in the
-	// receipt regardless.
+	// Diagnostics receives the engine's stderr, one line at a time. Nil
+	// discards it. The bounded tail is recorded in the receipt regardless.
 	Diagnostics io.Writer
 
-	// Requirement is the containment the worker must declare. The zero value
-	// means SandboxedRun: the strict setting is the default deliberately,
-	// because a permissive default would quietly become the norm and the
-	// operator who wants to relax it should have to say so per run. Set
-	// Unsandboxed for a run that genuinely needs no boundary, such as a
-	// configuration-only probe against a local worker.
+	// Requirement is the containment Code must declare. The zero value means
+	// SandboxedRun: the strict setting is the default deliberately, because
+	// a permissive default would quietly become the norm and the operator
+	// who wants to relax it should have to say so per run. Set Unsandboxed
+	// for a run that genuinely needs no boundary.
 	Requirement *Requirement
 
-	// OnProgress is called for each progress event as it arrives, so a
+	// OnProgress is called for each lifecycle event as it arrives, so a
 	// caller's interface stays responsive while a run is in flight (SPEC.md
 	// §2.6). It runs on the supervision goroutine and must not block: a slow
 	// callback delays the next tool authorization.
 	OnProgress func(ProgressRecord)
-
-	// rawTranscript captures the worker's stdout and stderr exactly as the
-	// worker wrote them — unscrubbed, credential included — and exists for
-	// one caller: the run/no-credential-leak obligation, which grades whether
-	// the worker itself keeps the broker token out of its own output. That
-	// cannot be graded from anything Babel stores, because Babel scrubs the
-	// token on the way in and a scrubbed record looks identical whether the
-	// worker was disciplined or not.
-	//
-	// It is unexported for exactly that reason. No caller outside this
-	// package can ask for unscrubbed worker output, the zero value is no
-	// tee, and nothing in production sets it. The capture is bounded
-	// (rawTranscriptBytes), lives only in memory for the length of one
-	// obligation, and is never written to a file, a log or a diagnostic
-	// sink. It observes; it does not change what Babel parses or stores.
-	rawTranscript *tail
 }
 
-// Client supervises worker processes. One Client may run many jobs; each Run
+// Client supervises engine processes. One Client may run many jobs; each Run
 // or Configure launches, supervises and reaps its own process.
 type Client struct {
 	cfg Config
@@ -325,20 +280,12 @@ type Client struct {
 
 // New validates cfg and returns a Client. It performs no I/O: the binary is
 // resolved when a process is launched, so New never blocks and never reports
-// whether a worker is installed.
+// whether Code is installed.
 func New(cfg Config) (*Client, error) {
 	if strings.TrimSpace(cfg.Binary) == "" {
 		return nil, errors.New("worker: binary is required")
 	}
 	return &Client{cfg: cfg}, nil
-}
-
-// versions is the offered version set.
-func (c *Client) versions() []int {
-	if len(c.cfg.Versions) == 0 {
-		return DefaultVersions()
-	}
-	return c.cfg.Versions
 }
 
 // authorizer is the configured policy, failing closed when absent.
@@ -349,13 +296,29 @@ func (c *Client) authorizer() Authorizer {
 	return c.cfg.Authorizer
 }
 
-// env builds the child environment: the few variables a subprocess
-// legitimately needs plus whatever the caller adds. Nothing else is
-// inherited, and no secret is ever placed here — the evidence-broker token
-// travels on stdin, where a process listing cannot see it.
+// requirement resolves the containment the run demands. A nil Config field
+// means the strict default rather than none: the failure mode of the opposite
+// choice is a run that silently executes outside a sandbox because a caller
+// forgot a field.
+func (c *Client) requirement() Requirement {
+	if c.cfg.Requirement != nil {
+		return *c.cfg.Requirement
+	}
+	return SandboxedRun()
+}
+
+// env preserves the launch configuration Code needs to resolve the same
+// profile its configuration ceremony saved and to reach the user's systemd
+// manager. Provider credentials and model-selection variables are not inherited.
 func (c *Client) env() []string {
-	env := make([]string, 0, 4+len(c.cfg.Env))
-	for _, key := range [...]string{"HOME", "PATH", "TMPDIR", "LANG"} {
+	inherited := [...]string{
+		"HOME", "PATH", "TMPDIR", "LANG",
+		"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+		"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+		"CODE_PROFILE_STATE", "CODE_OMP",
+	}
+	env := make([]string, 0, len(inherited)+len(c.cfg.Env))
+	for _, key := range inherited {
 		if value, ok := os.LookupEnv(key); ok {
 			env = append(env, key+"="+value)
 		}
@@ -363,88 +326,89 @@ func (c *Client) env() []string {
 	return append(env, c.cfg.Env...)
 }
 
-// Configure runs the worker in configuration-only mode: it opens Code's own
-// dials, saves the profile under Code's ownership, reports the reference plus
-// non-secret privacy/cost/capability metadata, and exits without launching
-// OMP (SPEC.md §2.6).
+// argv composes the executable's arguments: the operator's own, then the
+// engine subcommand and Babel's flags.
+func (c *Client) argv(engine ...string) []string {
+	args := make([]string, 0, len(c.cfg.Args)+1+len(engine))
+	args = append(args, c.cfg.Args...)
+	args = append(args, engineSubcommand)
+	return append(args, engine...)
+}
+
+// Configure asks Code to describe a profile without launching anything: it
+// runs `engine --describe`, which resolves the profile and reports its
+// reference plus non-secret privacy, cost and provider metadata, and never
+// opens an interface or reaches a provider (SPEC.md §2.6). A nil profile
+// describes Code's default.
 //
-// Babel persists only what this returns. A worker that declares
+// Babel persists only what this returns. A profile that declares
 // credential-shaped metadata fails with ErrSecretDeclared rather than having
-// the offending field quietly dropped.
-func (c *Client) Configure(ctx context.Context) (*Configuration, error) {
+// one value redacted: a worker that put a secret there once will do it again.
+func (c *Client) Configure(ctx context.Context, profile *ProfileRef) (*Configuration, error) {
+	engine := []string{flagDescribe}
+	if profile != nil {
+		engine = append(engine, flagProfile, profile.String())
+	}
 	limits := c.cfg.Limits.withDefaults()
-	s, err := c.start(ctx, limits, scrubber{})
-	if err != nil {
-		return nil, err
-	}
-	// A worker that already exited has nothing left to kill; one that has not
-	// is torn down by process group, whichever way this returns.
-	defer func() { s.teardown(!s.hasExited()) }()
+	ctx, cancel := context.WithTimeout(ctx, limits.HandshakeTimeout)
+	defer cancel()
 
-	hello, version, err := s.handshake(ctx, ModeConfigure, c.versions())
-	if err != nil {
-		return nil, err
-	}
-
-	in, err := s.next(ctx, limits.IdleTimeout)
-	if err != nil {
-		return nil, s.wrapWait(err)
-	}
-	if in.err != nil {
-		return nil, s.classifyStreamError(in.err)
-	}
-	if in.ev.Type != MessageConfiguration {
-		return nil, fmt.Errorf("%w: configure mode answered with %q", ErrEventOrder, in.ev.Type)
-	}
-	if err := validateMetadata(in.ev.Metadata); err != nil {
-		return nil, err
-	}
-
-	cfg := &Configuration{
-		Profile:         in.ev.Profile,
-		Privacy:         in.ev.Privacy,
-		Cost:            in.ev.Cost,
-		Capabilities:    in.ev.Capabilities,
-		Metadata:        in.ev.Metadata,
-		Worker:          hello.Worker,
-		ProtocolVersion: version,
-		Unknown:         in.unknown,
-	}
-	if len(in.unknown) > 0 {
-		cfg.Extra = make(map[string]json.RawMessage, len(in.unknown))
-		for _, name := range in.unknown {
-			cfg.Extra[name] = in.fields[name]
+	cmd := exec.CommandContext(ctx, c.cfg.Binary, c.argv(engine...)...)
+	cmd.Dir = c.cfg.Dir
+	cmd.Env = c.env()
+	var stdout bytes.Buffer
+	stderr := &tail{limit: limits.StderrTailBytes}
+	cmd.Stdout = &stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return nil, fmt.Errorf("%w: describe exited %d: %s", ErrDirtyExit, exit.ExitCode(), stderr)
 		}
+		return nil, fmt.Errorf("worker: describe: %w", err)
 	}
-
-	// Configuration mode must exit on its own once it has answered; a
-	// process that keeps running has launched something, which is exactly
-	// what this mode promises not to do.
-	if err := s.awaitExit(limits.ExitGrace); err != nil {
-		return cfg, err
+	info, err := decodeRuntimeInfo(bytes.TrimSpace(stdout.Bytes()))
+	if err != nil {
+		return nil, err
 	}
-	if code := s.exitCode(); code != 0 {
-		return cfg, fmt.Errorf("%w: configure mode exited %d", ErrDirtyExit, code)
+	if err := validateMetadata(info.Metadata); err != nil {
+		return nil, err
 	}
-	return cfg, nil
+	if profile != nil && info.Profile != *profile {
+		return nil, fmt.Errorf("%w: asked for %s, Code described %s", ErrProfileMismatch, profile, info.Profile)
+	}
+	return info.configurationOf(), nil
 }
 
 // Run executes one analysis job and returns its receipt.
 //
-// Babel owns the whole boundary here (SPEC.md §2.6): the version handshake,
-// authorization of every tool request, cancellation, the lifetime of the
-// entire process tree, validation of every event, and the final status.
-// Analysis is never detached — Run returns only after the tree is reaped and
-// every reader goroutine has finished.
+// Babel owns the whole boundary here (SPEC.md §2.6): the launch, the
+// containment check before any prompt is written, authorization of every tool
+// call, cancellation, the lifetime of the entire process tree, and the final
+// status. Analysis is never detached — Run returns only after the tree is
+// reaped and every reader goroutine has finished.
 //
 // A receipt is returned whenever the process started, including on failure:
 // the receipt is the audit record of what happened, and a failed run is
 // exactly when it is needed. It never contains a credential.
 func (c *Client) Run(ctx context.Context, job Job) (*Receipt, error) {
+	if err := job.validate(); err != nil {
+		return nil, err
+	}
 	limits := c.cfg.Limits.withDefaults()
-	scrub := newScrubber(job.secrets())
 
-	s, err := c.start(ctx, limits, scrub)
+	// The sidecar's directory is private to this launch: created 0700,
+	// named unguessably, and removed with the receipt captured. Nothing else
+	// reads it, so nothing else can read the launch facts of a run that is
+	// not its own.
+	dir, err := os.MkdirTemp("", runtimeInfoPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("worker: runtime-info directory: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	runtimePath := filepath.Join(dir, runtimeInfoFile)
+
+	s, err := c.start(ctx, limits, c.argv(flagProfile, job.Profile.String(), flagRuntimeInfo, runtimePath))
 	if err != nil {
 		return nil, err
 	}
@@ -455,8 +419,7 @@ func (c *Client) Run(ctx context.Context, job Job) (*Receipt, error) {
 		job:         job,
 		limits:      limits,
 		requirement: c.requirement(),
-		scrub:       scrub,
-		seen:        make(map[string]struct{}),
+		runtimePath: runtimePath,
 		unknown:     make(map[string]struct{}),
 		receipt: &Receipt{
 			JobID:     job.JobID,
@@ -474,11 +437,12 @@ func (c *Client) Run(ctx context.Context, job Job) (*Receipt, error) {
 	r.receipt.FinishedAt = time.Now().UTC()
 	r.receipt.Duration = r.receipt.FinishedAt.Sub(r.receipt.StartedAt)
 	r.receipt.ExitCode = s.exitCode()
-	r.receipt.StderrTail = scrub.clean(s.tail.String())
-	r.receipt.UnknownFields = sortedKeys(r.unknown)
+	r.receipt.StderrTail = s.tail.String()
+	r.receipt.UnknownFrames = sortedKeys(r.unknown)
+	r.readFinishedReport()
 	if err != nil && r.receipt.Failure == nil {
 		r.receipt.Failure = &FailureRecord{
-			Origin:  FailureBabel,
+			Origin:  failureOrigin(err),
 			Code:    failureCode(err),
 			Message: err.Error(),
 			At:      r.receipt.FinishedAt,
@@ -487,127 +451,232 @@ func (c *Client) Run(ctx context.Context, job Job) (*Receipt, error) {
 	return r.receipt, err
 }
 
-// execute performs the handshake, stages the job, and supervises the stream.
-// Teardown always runs; whether it kills the tree depends on whether anything
-// in it is still alive when the stream ends.
-func (r *runner) execute(ctx context.Context) error {
-	s := r.session
-
-	hello, version, err := s.handshake(ctx, ModeWorker, r.client.versions())
-	if err != nil {
-		s.teardown(true)
-		return err
-	}
-	r.receipt.Worker = hello.Worker
-	r.receipt.ProtocolVersion = version
-
-	if err := r.stage(ctx); err != nil {
-		s.teardown(true)
-		return err
-	}
-
-	fatal := r.loop(ctx)
-	s.teardown(fatal != nil || !r.readerDone)
-	return r.finalize(fatal)
-}
-
-// stage writes the job document in its two stages, with the worker's
-// containment declaration between them.
-//
-// The order is the property (SPEC.md §14, atyrode/babel#71). The preamble
-// carries the run's identity, the profile to resolve and the parameters that
-// say what kind of run this is; the material carries the recipes, the grant,
-// the sources and the run-scoped broker credential. Between them Babel waits
-// for the declaration and validates it, so a worker whose sandbox falls short
-// of what the run demands is refused holding a profile reference and nothing
-// else. Before this the whole document went out immediately after the
-// handshake and the declaration was checked when the first event arrived: the
-// under-declaring worker executed no analysis but already held the credential
-// and knew the selected corpus, which is a bound on the exposure rather than
-// an absence of it.
-//
-// A worker that answers with its own error event instead of a declaration has
-// nothing to be sent: the run is over, no material is written, and the stream
-// is left to the ordinary loop, which sees the terminal event already recorded
-// and reaps the process.
-func (r *runner) stage(ctx context.Context) error {
-	s := r.session
-
-	preamble, err := r.job.encodePreamble()
-	if err != nil {
-		return fmt.Errorf("worker: encoding the job preamble: %w", err)
-	}
-	if err := s.writeLine(preamble); err != nil {
-		return err
-	}
-
-	if err := r.awaitDeclaration(ctx); err != nil {
-		return err
-	}
-	if !r.sawConfig {
-		// The worker reported it could not run. Nothing is owed to a run that
-		// is already over, and the credential is what is not owed.
-		return nil
-	}
-
-	material, err := r.job.encodeMaterial()
-	if err != nil {
-		return fmt.Errorf("worker: encoding the job material: %w", err)
-	}
-	return s.writeLine(material)
-}
-
-// awaitDeclaration reads the worker's answer to the preamble and applies it
-// through the same validation every event goes through, so the ordering,
-// sequence, budget and profile rules have one implementation rather than a
-// second one for the first event.
-//
-// A rejected answer is refused on the wire before it is returned. The worker is
-// blocked reading stdin for material that is not coming, and killing it without
-// a word would leave a real counterpart unable to distinguish a boundary it
-// must fix from a supervisor that died — the same reason the handshake writes
-// its refusals rather than merely returning them.
-func (r *runner) awaitDeclaration(ctx context.Context) error {
-	s := r.session
-
-	in, err := s.next(ctx, r.limits.IdleTimeout)
-	if err != nil {
-		return s.wrapWait(err)
-	}
-	if in.err != nil {
-		return s.classifyStreamError(in.err)
-	}
-	if err := r.handle(ctx, in); err != nil {
-		return errors.Join(err, s.refuse(r.scrub.clean(err.Error()), nil))
-	}
-	return nil
-}
-
 // runner holds the per-run supervision state. It is single-goroutine: only
-// loop mutates it.
+// the supervision loop mutates it.
 type runner struct {
 	client  *Client
 	session *session
 	job     Job
 	limits  Limits
-	scrub   scrubber
 	receipt *Receipt
+	ids     commandIDs
 
-	// requirement is the containment the run demands of the worker. Babel
-	// does not implement the sandbox (decision 53), so this is the boundary
-	// it can still refuse to proceed without.
+	// requirement is the containment the run demands of Code. Babel does
+	// not implement the sandbox (decision 53), so this is the boundary it
+	// can still refuse to proceed without.
 	requirement Requirement
+	runtimePath string
 
-	lastSeq    int
-	events     int
-	toolCount  int
-	sawConfig  bool
-	terminal   string
-	workerErr  *WorkerError
-	readerDone bool
-	exited     bool
-	seen       map[string]struct{}
-	unknown    map[string]struct{}
+	events    int
+	toolCount int
+	progress  int
+	ended     bool
+	// invoked records whether the prompt reached the model at all. A prompt
+	// the engine completed locally never produces an agent_end.
+	invoked  bool
+	unknown  map[string]struct{}
+	finished *RuntimeInfo
+}
+
+// execute performs the launch, the containment check, the registration and
+// the prompt, and supervises the stream. Teardown always runs; whether it
+// kills the tree depends on whether anything in it is still alive when the
+// stream ends.
+func (r *runner) execute(ctx context.Context) error {
+	s := r.session
+
+	if err := r.ready(ctx); err != nil {
+		s.teardown(true)
+		return err
+	}
+	if err := r.admit(); err != nil {
+		// Nothing is owed to a launch Babel refuses, and the prompt is what
+		// is not owed. Stdin closes with no command written; the engine
+		// disposes on EOF, and the grace is what makes that observable.
+		return errors.Join(err, s.refuse(r.limits.ExitGrace))
+	}
+	if err := r.register(ctx); err != nil {
+		s.teardown(true)
+		return err
+	}
+	if err := r.prompt(ctx); err != nil {
+		s.teardown(true)
+		return err
+	}
+
+	fatal := r.loop(ctx)
+	if fatal == nil {
+		r.stats(ctx)
+	}
+	return r.finish(ctx, fatal)
+}
+
+// ready waits for the engine's ready frame and checks that it offers the
+// transport Babel speaks.
+func (r *runner) ready(ctx context.Context) error {
+	s := r.session
+	in, err := s.next(ctx, r.limits.HandshakeTimeout)
+	if err != nil {
+		if errors.Is(err, errTimeout) {
+			return fmt.Errorf("%w: no ready frame within %s", ErrHandshakeTimeout, r.limits.HandshakeTimeout)
+		}
+		return err
+	}
+	if in.err != nil {
+		if errors.Is(in.err, io.EOF) {
+			return fmt.Errorf("%w: engine closed its stdout before a ready frame, exit status %d",
+				ErrHandshakeTimeout, s.exitCode())
+		}
+		return in.err
+	}
+	f := in.frame
+	if f.Type != frameReady {
+		return fmt.Errorf("%w: first frame was %q, not ready", ErrProtocolMismatch, f.Type)
+	}
+	offersV2 := false
+	for _, v := range f.SupportedVersions {
+		offersV2 = offersV2 || v == rpcProtocolVersion
+	}
+	if !offersV2 {
+		return fmt.Errorf("%w: engine offers RPC versions %v, Babel needs %d",
+			ErrProtocolMismatch, f.SupportedVersions, rpcProtocolVersion)
+	}
+	return nil
+}
+
+// admit reads Code's launch report and decides whether this engine may be
+// prompted at all. Every refusal here happens before a byte of the prompt is
+// written: what a refused engine has seen is the profile it was launched
+// under.
+func (r *runner) admit() error {
+	info, err := readRuntimeInfo(r.runtimePath)
+	if err != nil {
+		return err
+	}
+	if err := validateMetadata(info.Metadata); err != nil {
+		return err
+	}
+	if info.Profile != r.job.Profile {
+		return fmt.Errorf("%w: job named %s, Code launched %s", ErrProfileMismatch, r.job.Profile, info.Profile)
+	}
+	r.receipt.Worker = info.Worker
+	r.receipt.Privacy = info.Privacy
+	r.receipt.Cost = info.Cost
+	r.receipt.Metadata = info.Metadata
+	if info.Containment == nil {
+		return fmt.Errorf("%w: Code declared no containment for the launch", ErrContainment)
+	}
+	r.receipt.Containment = *info.Containment
+	return info.Containment.Satisfies(r.requirement)
+}
+
+// register negotiates the transport and registers the job's tools.
+func (r *runner) register(ctx context.Context) error {
+	if _, err := r.call(ctx, negotiateCommand{ID: r.ids.next(), Type: commandNegotiate, ProtocolVersion: rpcProtocolVersion}); err != nil {
+		return err
+	}
+	tools := make([]hostToolOnWire, 0, len(r.job.Tools)+1)
+	for _, tool := range r.job.Tools {
+		tools = append(tools, hostToolOnWire{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+			LoadMode:    tool.LoadMode,
+		})
+	}
+	tools = append(tools, hostToolOnWire{
+		Name:        ToolSubmit,
+		Description: submitDescription,
+		Parameters:  r.job.Output.JSONSchema,
+		LoadMode:    "essential",
+	})
+	data, err := r.call(ctx, setHostToolsCommand{ID: r.ids.next(), Type: commandSetHostTools, Tools: tools})
+	if err != nil {
+		return err
+	}
+	var confirmed struct {
+		ToolNames []string `json:"toolNames"`
+	}
+	if err := json.Unmarshal(data, &confirmed); err != nil {
+		return fmt.Errorf("%w: set_host_tools answered with %s", ErrMalformedFrame, strings.TrimSpace(string(data)))
+	}
+	for _, tool := range tools {
+		if !containsString(confirmed.ToolNames, tool.Name) {
+			return fmt.Errorf("%w: engine registered %v, not %q", ErrCommandFailed, confirmed.ToolNames, tool.Name)
+		}
+	}
+	r.receipt.Tools = confirmed.ToolNames
+	return nil
+}
+
+// submitDescription is what the model reads about the submit tool. The job's
+// own instructions say what the result means; this says what calling it does.
+const submitDescription = "Record this job's result. The arguments are the complete result as it stands; " +
+	"calling again replaces the earlier submission, so include everything to be kept. " +
+	"A rejected submission leaves the previous accepted one in place and explains what to fix."
+
+// prompt writes the job's prompt. It is the first moment the run's material
+// leaves Babel.
+func (r *runner) prompt(ctx context.Context) error {
+	data, err := r.call(ctx, promptCommand{ID: r.ids.next(), Type: commandPrompt, Message: r.job.Prompt})
+	if err != nil {
+		return err
+	}
+	var ack struct {
+		AgentInvoked *bool `json:"agentInvoked"`
+	}
+	if len(data) > 0 && json.Unmarshal(data, &ack) == nil && ack.AgentInvoked != nil && !*ack.AgentInvoked {
+		// The engine completed the prompt without a model turn. There is
+		// nothing to supervise and nothing was submitted.
+		r.ended = true
+		return nil
+	}
+	r.invoked = true
+	return nil
+}
+
+// call writes one command and waits for its response, handling every other
+// frame that arrives first. It returns the response's data, or
+// ErrCommandFailed with the engine's own error text.
+func (r *runner) call(ctx context.Context, command any) (json.RawMessage, error) {
+	id := commandID(command)
+	if err := r.session.writeMessage(command); err != nil {
+		return nil, err
+	}
+	for {
+		in, err := r.session.next(ctx, r.limits.IdleTimeout)
+		if err != nil {
+			return nil, r.session.wrapWait(err)
+		}
+		if in.err != nil {
+			return nil, r.session.classifyStreamError(in.err)
+		}
+		f := in.frame
+		if f.Type == frameResponse && f.ID == id {
+			if f.Success == nil || !*f.Success {
+				return nil, fmt.Errorf("%w: %s: %s", ErrCommandFailed, f.Command, f.Error)
+			}
+			return f.Data, nil
+		}
+		if err := r.handle(ctx, in); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// commandID reads the id off one of Babel's command values.
+func commandID(command any) string {
+	switch c := command.(type) {
+	case negotiateCommand:
+		return c.ID
+	case setHostToolsCommand:
+		return c.ID
+	case promptCommand:
+		return c.ID
+	case plainCommand:
+		return c.ID
+	}
+	return ""
 }
 
 // errDrained is the internal signal that Babel stopped reading stdout because
@@ -615,19 +684,15 @@ type runner struct {
 // protocol failure by itself.
 var errDrained = errors.New("worker: stopped reading after exit")
 
-// loop supervises the event stream until it ends, and returns the first fatal
-// protocol or supervision failure. A nil return means the stream ended
-// cleanly, which does not yet mean the run succeeded.
+// loop supervises the stream until the model's turn ends, and returns the
+// first fatal protocol or supervision failure. A nil return means the turn
+// ended, which does not yet mean the run produced a result.
 func (r *runner) loop(ctx context.Context) error {
 	s := r.session
-
 	idle := time.NewTimer(r.limits.IdleTimeout)
 	defer idle.Stop()
-	var grace, drain *time.Timer
+	var drain *time.Timer
 	defer func() {
-		if grace != nil {
-			grace.Stop()
-		}
 		if drain != nil {
 			drain.Stop()
 		}
@@ -635,24 +700,14 @@ func (r *runner) loop(ctx context.Context) error {
 
 	inbox := s.inbound
 	reaped := s.reaped
-
-	for !(r.readerDone && r.exited) {
+	for !r.ended {
 		select {
 		case in := <-inbox:
 			if in.err != nil {
-				r.readerDone = true
-				inbox = nil
 				if errors.Is(in.err, io.EOF) {
-					// The stream is over, so the idle timer is measuring
-					// silence in something that no longer exists. Only the
-					// reap remains, and it gets the exit grace: a worker that
-					// closes stdout and then keeps running would otherwise
-					// block this loop with nothing left to observe.
-					stopTimer(idle)
-					if grace == nil {
-						grace = time.NewTimer(r.limits.ExitGrace)
-					}
-					continue
+					// The engine closed stdout before its turn ended: it
+					// died, or Code did. The exit status says which.
+					return s.classifyStreamError(in.err)
 				}
 				return in.err
 			}
@@ -661,35 +716,399 @@ func (r *runner) loop(ctx context.Context) error {
 			if err := r.handle(ctx, in); err != nil {
 				return err
 			}
-			if r.terminal != "" && grace == nil {
-				grace = time.NewTimer(r.limits.ExitGrace)
-			}
 
 		case <-reaped:
-			r.exited = true
 			reaped = nil
-			if !r.readerDone && drain == nil {
+			if drain == nil {
 				drain = time.NewTimer(r.limits.DrainGrace)
 			}
 
 		case <-ctx.Done():
+			// The engine's own abort is the courteous half; teardown's
+			// kill is the safety net.
+			_ = s.writeMessage(plainCommand{ID: r.ids.next(), Type: commandAbort})
 			return ctx.Err()
 
 		case <-idle.C:
-			return fmt.Errorf("%w: no event for %s", ErrWorkerStalled, r.limits.IdleTimeout)
-
-		case <-timerChan(grace):
-			return fmt.Errorf("%w: still running %s after %s",
-				ErrWorkerLingered, r.limits.ExitGrace, r.lingerCause())
+			return fmt.Errorf("%w: no frame for %s", ErrWorkerStalled, r.limits.IdleTimeout)
 
 		case <-timerChan(drain):
-			// The child is gone but its stdout is still open, which means
-			// something it spawned inherited the pipe. Stop reading; teardown
-			// kills the group.
 			return errDrained
 		}
 	}
 	return nil
+}
+
+// handle applies one inbound frame that is not the response Babel is waiting
+// for.
+func (r *runner) handle(ctx context.Context, in inbound) error {
+	f := in.frame
+	r.events++
+	if r.events > r.limits.MaxEvents {
+		return fmt.Errorf("%w: more than %d frames", ErrEventBudget, r.limits.MaxEvents)
+	}
+	at := time.Now().UTC()
+
+	switch f.Type {
+	case frameHostToolCall:
+		return r.handleToolCall(ctx, f, at)
+	case frameHostToolCancel:
+		// Every call is answered before the next frame is read, so a
+		// cancellation can only name a call already answered. It is noted
+		// and nothing is withdrawn.
+		r.recordProgress("tool", "the engine withdrew call "+f.TargetID+" after it was answered", at)
+		return nil
+	case frameAgentEnd:
+		if f.IsTerminal == nil || *f.IsTerminal {
+			r.ended = true
+		}
+		r.recordProgress("agent", "turn ended"+lastStop(f.Messages), at)
+		return nil
+	case framePromptResult:
+		if f.AgentInvoked != nil && !*f.AgentInvoked {
+			r.ended = true
+		}
+		return nil
+	case frameResponse:
+		// A response to nothing Babel is waiting for: a late error for an
+		// accepted prompt, or a stray. The prompt's async failure is the
+		// one that matters.
+		if f.Command == commandPrompt && f.Success != nil && !*f.Success {
+			return fmt.Errorf("%w: prompt: %s", ErrCommandFailed, f.Error)
+		}
+		return nil
+	case frameExtensionUI:
+		return r.session.writeMessage(extensionUIResponse{Type: "extension_ui_response", ID: f.ID, Cancelled: true})
+	case frameHostURIRequest:
+		return r.session.writeMessage(hostURIResult{Type: "host_uri_result", ID: f.ID, IsError: true,
+			Error: "Babel registers no URI schemes"})
+	case frameAgentStart, frameTurnStart, frameTurnEnd, frameToolStart, frameToolEnd,
+		frameCompactStart, frameCompactEnd, frameRetryStart, frameRetryEnd, frameRetryFallback:
+		r.recordProgress("agent", f.Type, at)
+		return nil
+	case frameModelChanged:
+		r.recordProgress("model", "model changed: "+string(bytes.TrimSpace(f.Model)), at)
+		return nil
+	case frameExtensionErr:
+		r.recordProgress("extension", "extension error in "+f.Event, at)
+		return nil
+	case frameReady:
+		return fmt.Errorf("%w: a second ready frame", ErrProtocolMismatch)
+	}
+	if f.Type == "" {
+		return fmt.Errorf("%w: frame without a type", ErrMalformedFrame)
+	}
+	r.unknown[f.Type] = struct{}{}
+	return nil
+}
+
+// recordProgress keeps a bounded lifecycle trail and notifies the caller so
+// an interface can stay responsive while the run is in flight (SPEC.md §2.6).
+func (r *runner) recordProgress(stage, message string, at time.Time) {
+	r.progress++
+	record := ProgressRecord{Seq: r.progress, Stage: stage, Message: message, At: at}
+	if len(r.receipt.Progress) < r.limits.MaxProgressRecords {
+		r.receipt.Progress = append(r.receipt.Progress, record)
+	} else {
+		r.receipt.ProgressDropped++
+	}
+	if r.client.cfg.OnProgress != nil {
+		r.client.cfg.OnProgress(record)
+	}
+}
+
+// handleToolCall answers one host_tool_call: a submission is validated and
+// recorded, an evidence call is authorized and served, and anything else is
+// refused. A refusal is answered, not fatal: the run continues (SPEC.md §2.6).
+func (r *runner) handleToolCall(ctx context.Context, f frame, at time.Time) error {
+	if f.ID == "" {
+		return fmt.Errorf("%w: host_tool_call without an id, which cannot be answered", ErrMalformedFrame)
+	}
+	r.toolCount++
+	if r.toolCount > r.limits.MaxToolRequests+toolBudgetSlack {
+		return fmt.Errorf("%w: %d calls against a budget of %d", ErrToolBudget, r.toolCount, r.limits.MaxToolRequests)
+	}
+	started := time.Now()
+	record := ToolRecord{
+		Index:           r.toolCount,
+		RequestID:       f.ID,
+		ToolCallID:      f.ToolCallID,
+		Tool:            f.ToolName,
+		ArgumentsDigest: argumentsDigest(f.Arguments),
+		ArgumentsBytes:  len(f.Arguments),
+		At:              at,
+	}
+
+	var answer hostToolResult
+	switch {
+	case f.ToolName == ToolSubmit:
+		reason, accepted := r.submit(f.Arguments, at)
+		record.Allowed = accepted
+		record.Reason = reason
+		if !accepted {
+			record.DenyCode = DenyPolicy
+		}
+		answer = textResult(f.ID, reason, !accepted)
+	default:
+		code, decision := r.decide(ctx, f)
+		record.Capability = r.capabilityOf(f.ToolName)
+		record.Allowed = decision.Allow
+		record.DenyCode = code
+		record.Reason = decision.Reason
+		if decision.Allow {
+			text := string(decision.Results)
+			if len(decision.Results) == 0 {
+				text = decision.Reason
+			}
+			answer = textResult(f.ID, text, false)
+		} else {
+			answer = textResult(f.ID, "refused ("+string(code)+"): "+decision.Reason, true)
+		}
+	}
+	record.Decided = time.Since(started)
+	// The receipt records the decision and the reason the model was given,
+	// and never the served payload. That split is §9: the pipe carries
+	// content to the model because a model that cannot read a record cannot
+	// form an observation about it, while the durable record an operator
+	// exports keeps locators and digests only.
+	r.receipt.ToolRequests = append(r.receipt.ToolRequests, record)
+	return r.session.writeMessage(answer)
+}
+
+// capabilityOf resolves a registered tool name to its capability.
+func (r *runner) capabilityOf(name string) Capability {
+	for _, tool := range r.job.Tools {
+		if tool.Name == name {
+			return tool.Capability
+		}
+	}
+	return ""
+}
+
+// decide applies the fixed authorization order for an evidence call. The
+// registration is checked before the policy, so a permissive policy can never
+// widen a run's boundary.
+//
+// A denial returns no payload even when the policy attached one. Served
+// evidence is what an allowed call produced; a facility that both refused a
+// call and answered it would be sending two contradictory things down one
+// pipe.
+func (r *runner) decide(ctx context.Context, f frame) (DenyCode, Decision) {
+	capability := r.capabilityOf(f.ToolName)
+	if capability == "" {
+		return DenyUnknownTool, Decision{Reason: "the job registered no tool named " + f.ToolName}
+	}
+	if !r.job.Grant.ExpiresAt.IsZero() && time.Now().After(r.job.Grant.ExpiresAt) {
+		return DenyPolicy, Decision{Reason: "the run's capability grant has expired"}
+	}
+	if r.toolCount > r.limits.MaxToolRequests {
+		return DenyLimit, Decision{Reason: "tool call budget exhausted"}
+	}
+	decision := r.client.authorizer().Authorize(ctx, ToolRequest{
+		JobID:      r.job.JobID,
+		RunID:      r.job.RunID,
+		Index:      r.toolCount,
+		RequestID:  f.ID,
+		ToolCallID: f.ToolCallID,
+		Capability: capability,
+		Tool:       f.ToolName,
+		Arguments:  f.Arguments,
+		Grant:      r.job.Grant,
+	})
+	if !decision.Allow {
+		return DenyPolicy, Decision{Reason: decision.Reason}
+	}
+	return "", decision
+}
+
+// submit records one call to the submit tool. The engine validated the
+// arguments against the job's schema; the job's own Accept decides the rest,
+// and a refusal is what the model reads back so it can correct itself. An
+// accepted submission replaces the earlier one; a refused one never does.
+func (r *runner) submit(arguments json.RawMessage, at time.Time) (string, bool) {
+	r.receipt.Submissions++
+	if len(arguments) == 0 || !json.Valid(arguments) {
+		return "the submission carries no JSON arguments", false
+	}
+	if r.job.Accept != nil {
+		if err := r.job.Accept(arguments); err != nil {
+			return "submission refused: " + err.Error(), false
+		}
+	}
+	payload := make(json.RawMessage, len(arguments))
+	copy(payload, arguments)
+	r.receipt.Result = &ResultRecord{
+		Status:  StatusOK,
+		Schema:  r.job.Output.Schema,
+		Payload: payload,
+		At:      at,
+	}
+	return "submission accepted as the job's result", true
+}
+
+// stats asks the engine for its own accounting once the turn has ended. A
+// refusal or a malformed answer is recorded as no usage rather than as a run
+// failure: the result is already in hand.
+func (r *runner) stats(ctx context.Context) {
+	data, err := r.call(ctx, plainCommand{ID: r.ids.next(), Type: commandSessionStats})
+	if err != nil {
+		return
+	}
+	if usage, err := usageOf(data); err == nil {
+		r.receipt.Usage = usage
+	}
+}
+
+// finish ends the process: stdin closes, the tree is given the exit grace,
+// and what is still alive after that is killed. The final verdict follows the
+// precedence supervision failure > missing result > dirty exit.
+func (r *runner) finish(ctx context.Context, fatal error) error {
+	s := r.session
+	if fatal != nil {
+		s.teardown(true)
+		if errors.Is(fatal, errDrained) {
+			fatal = nil
+		}
+	} else {
+		_ = s.stdinW.Close()
+		lingered := s.awaitExit(r.limits.ExitGrace)
+		s.teardown(lingered != nil)
+		if lingered != nil {
+			fatal = lingered
+		}
+	}
+	if fatal != nil {
+		return fatal
+	}
+	if r.receipt.Result == nil {
+		if !r.invoked {
+			return fmt.Errorf("%w: the engine completed the prompt without a model turn", ErrNoResult)
+		}
+		return fmt.Errorf("%w: %d submission(s), none accepted", ErrNoResult, r.receipt.Submissions)
+	}
+	if code := s.exitCode(); code != 0 {
+		return fmt.Errorf("%w: exit status %d", ErrDirtyExit, code)
+	}
+	return nil
+}
+
+// readFinishedReport reads Code's post-exit report for the measurements it
+// carries. It is best effort by contract: a wrapper killed before it could
+// write the report leaves the launch report in place, and Babel claims no
+// measurement from it.
+func (r *runner) readFinishedReport() {
+	info, err := readRuntimeInfo(r.runtimePath)
+	if err != nil || !info.Finished {
+		return
+	}
+	r.finished = info
+	r.receipt.Resources = info.Resources
+	if info.ExitCode != nil {
+		r.receipt.ExitCode = *info.ExitCode
+	}
+}
+
+// argumentsDigest fingerprints tool arguments without retaining them. A
+// digest of an empty document is the empty digest, so a call with no
+// arguments produces no record at all.
+func argumentsDigest(arguments json.RawMessage) digest.Digest {
+	if len(arguments) == 0 {
+		return ""
+	}
+	if len(arguments) > maxArgumentDigestBytes {
+		arguments = arguments[:maxArgumentDigestBytes]
+	}
+	return digest.Bytes(arguments)
+}
+
+// failureCode names the Babel-side failure a receipt records.
+func failureCode(err error) string {
+	for _, candidate := range []struct {
+		sentinel error
+		code     string
+	}{
+		{ErrHandshakeTimeout, "handshake-timeout"},
+		{ErrProtocolMismatch, "protocol-mismatch"},
+		{ErrRuntimeInfo, "runtime-info"},
+		{ErrProfileMismatch, "profile-mismatch"},
+		{ErrPlatformUnqualified, "platform-unqualified"},
+		{ErrContainment, "containment"},
+		{ErrSecretDeclared, "secret-declared"},
+		{ErrOversizedFrame, "oversized-frame"},
+		{ErrMalformedFrame, "malformed-frame"},
+		{ErrCommandFailed, "command-failed"},
+		{ErrNoResult, "no-result"},
+		{ErrEngineExited, "engine-exited"},
+		{ErrWorkerStalled, "stalled"},
+		{ErrWorkerLingered, "lingered"},
+		{ErrDirtyExit, "dirty-exit"},
+		{ErrEventBudget, "event-budget"},
+		{ErrToolBudget, "tool-budget"},
+	} {
+		if errors.Is(err, candidate.sentinel) {
+			return candidate.code
+		}
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline-exceeded"
+	}
+	return "supervision-failure"
+}
+
+// failureOrigin attributes a failure: the engine's own exit, silence or
+// refusal to leave is the far side's; everything else is Babel's supervision
+// or a boundary the far side broke.
+func failureOrigin(err error) string {
+	for _, sentinel := range []error{ErrDirtyExit, ErrEngineExited, ErrWorkerStalled, ErrWorkerLingered} {
+		if errors.Is(err, sentinel) {
+			return FailureWorker
+		}
+	}
+	return FailureBabel
+}
+
+// lastStop reads the last assistant message's stop reason and error text out
+// of an agent_end, so a turn the provider ended — an authentication failure,
+// retries exhausted — is legible in the receipt beside one the model ended.
+func lastStop(messages json.RawMessage) string {
+	var list []struct {
+		Role         string `json:"role"`
+		StopReason   string `json:"stopReason"`
+		ErrorMessage string `json:"errorMessage"`
+	}
+	if json.Unmarshal(messages, &list) != nil {
+		return ""
+	}
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].Role != "assistant" {
+			continue
+		}
+		if list[i].StopReason == "" {
+			return ""
+		}
+		out := " (" + list[i].StopReason
+		if list[i].ErrorMessage != "" {
+			out += ": " + list[i].ErrorMessage
+		}
+		return out + ")"
+	}
+	return ""
+}
+
+// sortedKeys renders a set deterministically for a receipt.
+func sortedKeys(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // timerChan yields a timer's channel, or nil for an unarmed timer so the
@@ -713,430 +1132,17 @@ func stopTimer(t *time.Timer) {
 	}
 }
 
-// lingerCause names what the worker should already have exited after, so the
-// error says which obligation was missed.
-func (r *runner) lingerCause() string {
-	if r.terminal != "" {
-		return "its " + r.terminal + " event"
-	}
-	return "closing its stdout"
-}
-
-// handle validates and applies one event.
-func (r *runner) handle(ctx context.Context, in inbound) error {
-	ev := in.ev
-	for _, name := range in.unknown {
-		r.unknown[name] = struct{}{}
-	}
-
-	if !knownEventType(ev.Type) {
-		return fmt.Errorf("%w: %q", ErrUnknownEventType, r.scrub.clean(ev.Type))
-	}
-	if r.terminal != "" {
-		switch {
-		case ev.Type == MessageResult && r.terminal == MessageError:
-			return ErrResultAfterError
-		case ev.Type == MessageResult:
-			return ErrDuplicateResult
-		default:
-			return fmt.Errorf("%w: %s after %s", ErrEventAfterResult, ev.Type, r.terminal)
-		}
-	}
-	r.events++
-	if r.events > r.limits.MaxEvents {
-		return fmt.Errorf("%w: more than %d events", ErrEventBudget, r.limits.MaxEvents)
-	}
-	if ev.Seq <= r.lastSeq {
-		return fmt.Errorf("%w: seq %d follows %d", ErrSequence, ev.Seq, r.lastSeq)
-	}
-	r.lastSeq = ev.Seq
-	at := eventTime(ev)
-
-	switch ev.Type {
-	case MessageConfiguration:
-		return r.handleConfiguration(ev)
-	case MessageProgress:
-		if !r.sawConfig {
-			return fmt.Errorf("%w: progress before the resolved configuration", ErrEventOrder)
-		}
-		r.recordProgress(ev, at)
-		return nil
-	case MessageToolRequest:
-		if !r.sawConfig {
-			return fmt.Errorf("%w: tool-request before the resolved configuration", ErrEventOrder)
-		}
-		return r.handleToolRequest(ctx, ev, at)
-	case MessageResult:
-		if !r.sawConfig {
-			// A result before the declaration is a run that produced output
-			// without ever stating the boundary it produced it behind, and it
-			// cannot have read the job's material because Babel has not sent
-			// any. Recording it would put a finding of unknown provenance in
-			// the receipt; an error event is how a worker that cannot run
-			// says so.
-			return fmt.Errorf("%w: result before the resolved configuration", ErrEventOrder)
-		}
-		return r.handleResult(ev, at)
-	case MessageError:
-		return r.handleWorkerError(ev, at)
-	}
-	// knownEventType already rejected everything else.
-	return fmt.Errorf("%w: %q", ErrUnknownEventType, ev.Type)
-}
-
-// handleConfiguration records the profile the worker actually resolved. The
-// receipt needs it (SPEC.md §6.5), so it is required, must come first, and
-// must name the profile the preamble named. It is also the worker's answer to
-// the preamble, so returning an error here is what withholds stage two.
-func (r *runner) handleConfiguration(ev event) error {
-	if r.sawConfig {
-		return fmt.Errorf("%w: a second configuration event", ErrEventOrder)
-	}
-	if r.events != 1 {
-		return fmt.Errorf("%w: configuration must be the first event, not event %d", ErrEventOrder, r.events)
-	}
-	if err := validateMetadata(ev.Metadata); err != nil {
-		return err
-	}
-	if ev.Profile != r.job.Profile {
-		return fmt.Errorf("%w: job named %s, worker resolved %s",
-			ErrProfileMismatch, r.job.Profile, ev.Profile)
-	}
-	// The containment check happens here because this event is the answer to
-	// the preamble: it is the earliest moment Babel knows what boundary the
-	// worker claims, and it is before the recipes, the grant, the sources and
-	// the run's broker credential have been written. Babel does not implement
-	// the sandbox (decision 53), so refusing an insufficient declaration —
-	// while the worker still holds nothing but a profile reference — is the
-	// whole of its leverage.
-	if err := ev.Containment.Satisfies(r.requirement); err != nil {
-		return err
-	}
-	r.sawConfig = true
-	r.receipt.Privacy = ev.Privacy
-	r.receipt.Cost = ev.Cost
-	r.receipt.ResolvedCapabilities = ev.Capabilities
-	r.receipt.Containment = ev.Containment
-	r.receipt.Metadata = r.scrub.cleanMap(ev.Metadata)
-	return nil
-}
-
-// recordProgress keeps a bounded progress trail, the latest observed resource
-// use, and notifies the caller so an interface can stay responsive while the
-// run is in flight (SPEC.md §2.6).
-func (r *runner) recordProgress(ev event, at time.Time) {
-	if ev.Resources != nil {
-		observed := *ev.Resources
-		r.receipt.Resources = &observed
-	}
-	record := ProgressRecord{
-		Seq:      ev.Seq,
-		Stage:    r.scrub.clean(ev.Stage),
-		Message:  r.scrub.clean(ev.Message),
-		Fraction: ev.Fraction,
-		At:       at,
-	}
-	if len(r.receipt.Progress) < r.limits.MaxProgressRecords {
-		r.receipt.Progress = append(r.receipt.Progress, record)
-	} else {
-		r.receipt.ProgressDropped++
-	}
-	if r.client.cfg.OnProgress != nil {
-		r.client.cfg.OnProgress(record)
-	}
-}
-
-// handleToolRequest authorizes one request, answers it on the worker's stdin,
-// and records the decision. A denial is answered, not fatal: the run
-// continues (SPEC.md §2.6).
-func (r *runner) handleToolRequest(ctx context.Context, ev event, at time.Time) error {
-	if ev.RequestID == "" {
-		return fmt.Errorf("%w: tool-request without a request_id, which cannot be answered", ErrMalformedEvent)
-	}
-	r.toolCount++
-	if r.toolCount > r.limits.MaxToolRequests+toolBudgetSlack {
-		return fmt.Errorf("%w: %d requests against a budget of %d",
-			ErrToolBudget, r.toolCount, r.limits.MaxToolRequests)
-	}
-
-	started := time.Now()
-	code, decision := r.decide(ctx, ev)
-
-	msg := decisionMessage{
-		Type:      MessageToolDecision,
-		RequestID: ev.RequestID,
-		Decision:  decisionAllow,
-		Reason:    r.scrub.clean(decision.Reason),
-		Results:   decision.Results,
-	}
-	if !decision.Allow {
-		msg.Decision = decisionDeny
-		msg.Code = code
-	}
-	line, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("worker: encoding tool decision: %w", err)
-	}
-	if len(line)+1 > r.limits.MaxLineBytes && len(msg.Results) > 0 {
-		// Babel published max_line_bytes in accept, and a line past it is a
-		// protocol violation on Babel's side that the worker is entitled to
-		// end the run for. The payload is the only field of a decision whose
-		// size a facility chooses, so it is the field that goes when the two
-		// cannot both fit — the decision itself must still be answered,
-		// because the worker blocks until it is. Saying so in the reason is
-		// what keeps this from looking like a facility that found nothing.
-		withheld := len(msg.Results)
-		msg.Results = nil
-		msg.Reason = fmt.Sprintf(
-			"%s (the served evidence was withheld: %d bytes exceeds this run's %d byte line budget)",
-			msg.Reason, withheld, r.limits.MaxLineBytes)
-		if line, err = json.Marshal(msg); err != nil {
-			return fmt.Errorf("worker: encoding tool decision: %w", err)
-		}
-	}
-
-	// The receipt records the decision and the reason the worker was given,
-	// and never msg.Results. That split is §9: the wire carries content to
-	// the worker because a model that cannot read a record cannot form an
-	// observation about it, while the durable record an operator exports
-	// keeps locators and digests only.
-	r.receipt.ToolRequests = append(r.receipt.ToolRequests, ToolRecord{
-		Index:           r.toolCount,
-		RequestID:       ev.RequestID,
-		Capability:      ev.Capability,
-		Tool:            r.scrub.clean(ev.Tool),
-		ArgumentsDigest: argumentsDigest(ev.Arguments),
-		ArgumentsBytes:  len(ev.Arguments),
-		Allowed:         decision.Allow,
-		DenyCode:        code,
-		Reason:          msg.Reason,
-		At:              at,
-		Decided:         time.Since(started),
-	})
-	return r.session.writeLine(line)
-}
-
-// decide applies the fixed authorization order. The grant is checked before
-// the policy, so a permissive policy can never widen a run's boundary.
-//
-// A denial returns no payload even when the policy attached one. Served
-// evidence is what an allowed request produced; a facility that both refused a
-// request and answered it would be sending two contradictory things down one
-// wire.
-func (r *runner) decide(ctx context.Context, ev event) (DenyCode, Decision) {
-	if _, repeated := r.seen[ev.RequestID]; repeated {
-		return DenyDuplicate, Decision{Reason: "request_id already used in this run"}
-	}
-	r.seen[ev.RequestID] = struct{}{}
-
-	if ev.Capability == "" {
-		return DenyMalformed, Decision{Reason: "request names no capability"}
-	}
-	if !ev.Capability.Known() {
-		return DenyUnknownCapability, Decision{Reason: "capability is not one Babel defines"}
-	}
-	if !r.job.Grant.Allows(ev.Capability) {
-		return DenyNotGranted, Decision{Reason: "capability is outside this run's grant"}
-	}
-	if !r.job.Grant.ExpiresAt.IsZero() && time.Now().After(r.job.Grant.ExpiresAt) {
-		return DenyNotGranted, Decision{Reason: "the run's capability grant has expired"}
-	}
-	if r.toolCount > r.limits.MaxToolRequests {
-		return DenyLimit, Decision{Reason: "tool request budget exhausted"}
-	}
-
-	decision := r.client.authorizer().Authorize(ctx, ToolRequest{
-		JobID:      r.job.JobID,
-		RunID:      r.job.RunID,
-		Index:      r.toolCount,
-		RequestID:  ev.RequestID,
-		Capability: ev.Capability,
-		Tool:       ev.Tool,
-		Arguments:  ev.Arguments,
-		Reason:     ev.Reason,
-		Grant:      r.job.Grant,
-	})
-	if !decision.Allow {
-		return DenyPolicy, Decision{Reason: decision.Reason}
-	}
-	return "", decision
-}
-
-// handleResult records the run's output.
-func (r *runner) handleResult(ev event, at time.Time) error {
-	if !r.sawConfig {
-		return fmt.Errorf("%w: result before the resolved configuration", ErrEventOrder)
-	}
-	if ev.Status != StatusOK && ev.Status != StatusPartial {
-		return fmt.Errorf("%w: result status %q", ErrMalformedEvent, r.scrub.clean(ev.Status))
-	}
-	if ev.Resources != nil {
-		observed := *ev.Resources
-		r.receipt.Resources = &observed
-	}
-	r.terminal = MessageResult
-	r.receipt.Result = &ResultRecord{
-		Status:  ev.Status,
-		Schema:  r.scrub.clean(ev.Schema),
-		Payload: r.scrub.cleanJSON(ev.Payload),
-		At:      at,
-	}
-	return nil
-}
-
-// handleWorkerError records the worker's own failure. It is terminal: the
-// counterpart said it failed, and a later result would contradict that.
-func (r *runner) handleWorkerError(ev event, at time.Time) error {
-	r.terminal = MessageError
-	r.workerErr = &WorkerError{
-		Code:      r.scrub.clean(ev.Code),
-		Message:   r.scrub.clean(ev.Message),
-		Retryable: ev.Retryable,
-	}
-	r.receipt.Failure = &FailureRecord{
-		Origin:    FailureWorker,
-		Code:      r.workerErr.Code,
-		Message:   r.workerErr.Message,
-		Retryable: ev.Retryable,
-		At:        at,
-	}
-	return nil
-}
-
-// finalize turns the supervision outcome into Run's error, in precedence
-// order: a protocol or supervision failure, then a missing terminal event,
-// then the worker's own reported error, then a self-contradicting exit status.
-func (r *runner) finalize(fatal error) error {
-	switch {
-	case errors.Is(fatal, errDrained):
-		// The child exited and left its stdout with a descendant. The stream
-		// has ended; judge the run on what it delivered.
-	case errors.Is(fatal, context.Canceled), errors.Is(fatal, context.DeadlineExceeded):
-		// The bare context error says nothing about what was cancelled.
-		return fmt.Errorf("worker run %s: %w", r.job.JobID, fatal)
-	case fatal != nil:
-		return fatal
-	}
-	if r.terminal == "" {
-		return fmt.Errorf("%w: exit status %d", ErrNoResult, r.session.exitCode())
-	}
-	if r.terminal == MessageError {
-		return r.workerErr
-	}
-	if code := r.session.exitCode(); code != 0 {
-		return fmt.Errorf("%w: exit status %d", ErrDirtyExit, code)
-	}
-	return nil
-}
-
-// knownEventType reports whether t is a worker-to-Babel message this version
-// defines.
-func knownEventType(t string) bool {
-	switch t {
-	case MessageConfiguration, MessageProgress, MessageToolRequest, MessageResult, MessageError:
-		return true
-	}
-	return false
-}
-
-// eventTime is the worker's timestamp, or Babel's observation time when the
-// worker supplied none. Which one it is matters: a receipt built from worker
-// clocks alone would be unfalsifiable.
-func eventTime(ev event) time.Time {
-	if ev.Time != nil {
-		return ev.Time.UTC()
-	}
-	return time.Now().UTC()
-}
-
-// argumentsDigest fingerprints a tool argument blob. The arguments themselves
-// are never recorded: they can carry private locators, and a worker echoing a
-// credential into one must not be able to write it into Babel's durable audit
-// record at all.
-func argumentsDigest(arguments json.RawMessage) digest.Digest {
-	if len(arguments) == 0 {
-		return ""
-	}
-	if len(arguments) > maxArgumentDigestBytes {
-		arguments = arguments[:maxArgumentDigestBytes]
-	}
-	return digest.Bytes(arguments)
-}
-
-// failureCode names the Babel-side failure a receipt records.
-func failureCode(err error) string {
-	for _, candidate := range []struct {
-		sentinel error
-		code     string
-	}{
-		{ErrProtocolMismatch, "protocol-mismatch"},
-		{ErrVersionMismatch, "version-mismatch"},
-		{ErrModeUnsupported, "mode-unsupported"},
-		{ErrHandshakeTimeout, "handshake-timeout"},
-		{ErrOversizedLine, "oversized-line"},
-		{ErrMalformedEvent, "malformed-event"},
-		{ErrUnknownEventType, "unknown-event-type"},
-		{ErrSequence, "sequence-violation"},
-		{ErrEventOrder, "event-order"},
-		{ErrProfileMismatch, "profile-mismatch"},
-		{ErrDuplicateResult, "duplicate-result"},
-		{ErrEventAfterResult, "event-after-result"},
-		{ErrResultAfterError, "result-after-error"},
-		{ErrNoResult, "no-result"},
-		{ErrWorkerStalled, "stalled"},
-		{ErrWorkerLingered, "lingered"},
-		{ErrDirtyExit, "dirty-exit"},
-		{ErrEventBudget, "event-budget"},
-		{ErrToolBudget, "tool-budget"},
-		{ErrSecretDeclared, "secret-declared"},
-	} {
-		if errors.Is(err, candidate.sentinel) {
-			return candidate.code
-		}
-	}
-	switch {
-	case errors.Is(err, context.Canceled):
-		return "cancelled"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "deadline-exceeded"
-	}
-	return "supervision-failure"
-}
-
-// sortedKeys renders a set deterministically for a receipt.
-func sortedKeys(set map[string]struct{}) []string {
-	if len(set) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(set))
-	for key := range set {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-// inbound is one line read from the worker, or the reason reading stopped.
+// inbound is one frame read from the engine, or the reason reading stopped.
 type inbound struct {
-	ev      event
-	fields  map[string]json.RawMessage
-	unknown []string
-	err     error
+	frame frame
+	err   error
 }
 
-// session is one supervised worker process: its pipes, its reader goroutines,
-// and its reaping.
-//
-// The pipes are created here rather than with exec.Cmd's StdoutPipe helpers so
-// that Babel owns both ends. Closing a read end is then the deterministic way
-// to release a blocked reader, with none of the "do not call Wait before reads
-// complete" hazard the helper pipes carry — which matters because the whole
-// point is to survive a worker that leaves a descendant holding the pipe.
+// session is one launched process and the goroutines reading it.
 type session struct {
 	cmd     *exec.Cmd
 	pgid    int
 	limits  Limits
-	scrub   scrubber
 	stdinW  *os.File
 	stdoutR *os.File
 	stderrR *os.File
@@ -1147,17 +1153,12 @@ type session struct {
 	tail    *tail
 	wg      sync.WaitGroup
 
-	// raw is Config.rawTranscript: nil in every production run, and the
-	// conformance suite's unscrubbed view of what the worker wrote when the
-	// credential obligation is grading one.
-	raw *tail
-
 	killOnce sync.Once
 	downOnce sync.Once
 }
 
-// start launches the worker and its supervision goroutines.
-func (c *Client) start(ctx context.Context, limits Limits, scrub scrubber) (*session, error) {
+// start launches the engine and its supervision goroutines.
+func (c *Client) start(ctx context.Context, limits Limits, args []string) (*session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("worker start: %w", err)
 	}
@@ -1177,7 +1178,7 @@ func (c *Client) start(ctx context.Context, limits Limits, scrub scrubber) (*ses
 		return nil, fmt.Errorf("worker start: stderr pipe: %w", err)
 	}
 
-	cmd := exec.Command(c.cfg.Binary, c.cfg.Args...)
+	cmd := exec.Command(c.cfg.Binary, args...)
 	cmd.Dir = c.cfg.Dir
 	cmd.Env = c.env()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
@@ -1197,7 +1198,6 @@ func (c *Client) start(ctx context.Context, limits Limits, scrub scrubber) (*ses
 		cmd:     cmd,
 		pgid:    cmd.Process.Pid,
 		limits:  limits,
-		scrub:   scrub,
 		stdinW:  inW,
 		stdoutR: outR,
 		stderrR: errR,
@@ -1205,11 +1205,10 @@ func (c *Client) start(ctx context.Context, limits Limits, scrub scrubber) (*ses
 		stop:    make(chan struct{}),
 		reaped:  make(chan struct{}),
 		tail:    &tail{limit: limits.StderrTailBytes},
-		raw:     c.cfg.rawTranscript,
 	}
 
 	s.wg.Add(3)
-	go s.readEvents()
+	go s.readFrames()
 	go s.readDiagnostics(c.cfg.Diagnostics)
 	go func() {
 		defer s.wg.Done()
@@ -1222,45 +1221,27 @@ func (c *Client) start(ctx context.Context, limits Limits, scrub scrubber) (*ses
 	return s, nil
 }
 
-// readEvents parses the worker's stdout into inbound values. Every stop is
-// reported exactly once: EOF, an oversized line, a malformed line, or a read
+// readFrames parses the engine's stdout into inbound values. Every stop is
+// reported exactly once: EOF, an oversized or malformed frame, or a read
 // failure.
-//
-// The raw line is offered to the conformance transcript before it is decoded,
-// which is the only place the worker's own bytes exist unaltered. Parsing is
-// unaffected: the tee is nil in every production run, and reading a line the
-// grader also observed is the same work either way.
-func (s *session) readEvents() {
+func (s *session) readFrames() {
 	defer s.wg.Done()
-	reader := bufio.NewReaderSize(s.stdoutR, readBufferSize)
+	reader := newFrameReader(s.stdoutR, s.limits.MaxFrameBytes, s.limits.MaxReassembledBytes)
 	for {
-		line, err := readLine(reader, s.limits.MaxLineBytes)
-		if len(bytes.TrimSpace(line)) > 0 {
-			if s.raw != nil {
-				s.raw.writeLine(string(line))
-			}
-			var ev event
-			fields, unknown, decodeErr := decode(line, &ev)
-			if decodeErr != nil {
-				s.deliver(inbound{err: fmt.Errorf("%w: %s", ErrMalformedEvent, s.scrub.clean(decodeErr.Error()))})
-				return
-			}
-			if !s.deliver(inbound{ev: ev, fields: fields, unknown: unknown}) {
-				return
-			}
-		}
+		f, _, err := reader.next()
 		if err == nil {
+			if !s.deliver(inbound{frame: f}) {
+				return
+			}
 			continue
 		}
 		switch {
 		case errors.Is(err, io.EOF):
 			s.deliver(inbound{err: io.EOF})
-		case errors.Is(err, ErrOversizedLine):
-			s.deliver(inbound{err: err})
 		case errors.Is(err, os.ErrClosed):
 			// Teardown closed the pipe; nobody is listening any more.
 		default:
-			s.deliver(inbound{err: fmt.Errorf("worker: reading events: %w", err)})
+			s.deliver(inbound{err: err})
 		}
 		return
 	}
@@ -1277,31 +1258,26 @@ func (s *session) deliver(in inbound) bool {
 	}
 }
 
-// readDiagnostics drains the worker's stderr into the bounded tail and the
-// optional diagnostics sink. It is never parsed: stderr carries the worker's
-// own logging, and treating it as protocol would let a log line steer a run.
+// readDiagnostics drains the engine's stderr into the bounded tail and the
+// optional diagnostics sink. It is never parsed: stderr carries Code's and the
+// engine's own logging, and treating it as protocol would let a log line
+// steer a run.
 //
-// Each line is bounded before it is retained. A worker that writes a gigabyte
-// without a newline is misbehaving, and reading that into memory to log it
-// would let it take Babel down.
+// Each line is bounded before it is retained. A process that writes a
+// gigabyte without a newline is misbehaving, and reading that into memory to
+// log it would let it take Babel down.
 func (s *session) readDiagnostics(sink io.Writer) {
 	defer s.wg.Done()
 	reader := bufio.NewReaderSize(s.stderrR, readBufferSize)
 	for {
 		line, truncated, err := readDiagnosticLine(reader, stderrLineLimit)
 		if trimmed := strings.TrimRight(string(line), "\r\n"); trimmed != "" {
-			// Before scrubbing: the conformance transcript is what the worker
-			// wrote, and stderr is a channel a careless worker leaks through.
-			if s.raw != nil {
-				s.raw.writeLine(trimmed)
-			}
-			cleaned := s.scrub.clean(trimmed)
 			if truncated {
-				cleaned += " [truncated]"
+				trimmed += " [truncated]"
 			}
-			s.tail.writeLine(cleaned)
+			s.tail.writeLine(trimmed)
 			if sink != nil {
-				fmt.Fprintf(sink, "worker: %s\n", cleaned)
+				fmt.Fprintf(sink, "engine: %s\n", trimmed)
 			}
 		}
 		if err != nil {
@@ -1331,30 +1307,23 @@ func readDiagnosticLine(reader *bufio.Reader, max int) (line []byte, truncated b
 	}
 }
 
-// writeMessage encodes one Babel-to-worker message as a single line.
+// writeMessage encodes one Babel-to-engine message as a single line.
 func (s *session) writeMessage(msg any) error {
 	encoded, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("worker: encoding message: %w", err)
 	}
-	return s.writeLine(encoded)
-}
-
-// writeLine writes one already-encoded message as a single line. It exists so
-// a caller that must inspect the encoded bytes before they travel — the tool
-// decision, whose payload is sized by a facility rather than by this package —
-// can do so without encoding the message twice on the ordinary path.
-func (s *session) writeLine(encoded []byte) error {
 	encoded = append(encoded, '\n')
 	if _, err := s.stdinW.Write(encoded); err != nil {
-		return fmt.Errorf("worker: writing to worker stdin: %w", err)
+		return fmt.Errorf("worker: writing to engine stdin: %w", err)
 	}
 	return nil
 }
 
 // next waits for the next inbound value, for at most budget. A child that
-// exits mid-wait does not end the wait immediately: lines it already wrote may
-// still be in the pipe, so the budget is replaced by the shorter drain grace.
+// exits mid-wait does not end the wait immediately: frames it already wrote
+// may still be in the pipe, so the budget is replaced by the shorter drain
+// grace.
 func (s *session) next(ctx context.Context, budget time.Duration) (inbound, error) {
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
@@ -1379,91 +1348,29 @@ func (s *session) next(ctx context.Context, budget time.Duration) (inbound, erro
 // into the sentinel that fits what they were waiting for.
 var errTimeout = errors.New("worker: wait budget elapsed")
 
-// handshake performs version negotiation for one mode and returns the
-// accepted hello. On refusal it writes the refusal so the worker learns why,
-// and no job material is ever written.
-func (s *session) handshake(ctx context.Context, mode string, versions []int) (helloMessage, int, error) {
-	in, err := s.next(ctx, s.limits.HandshakeTimeout)
-	if err != nil {
-		if errors.Is(err, errTimeout) {
-			return helloMessage{}, 0, fmt.Errorf("%w: no hello within %s", ErrHandshakeTimeout, s.limits.HandshakeTimeout)
-		}
-		return helloMessage{}, 0, err
-	}
-	if in.err != nil {
-		return helloMessage{}, 0, s.classifyStreamError(in.err)
-	}
-
-	var hello helloMessage
-	if _, _, err := decode(in.rawOrEncoded(), &hello); err != nil {
-		return helloMessage{}, 0, fmt.Errorf("%w: %s", ErrMalformedEvent, s.scrub.clean(err.Error()))
-	}
-	if hello.Type != MessageHello {
-		return hello, 0, fmt.Errorf("%w: first line was %q, not a hello",
-			ErrProtocolMismatch, s.scrub.clean(hello.Type))
-	}
-	if hello.Protocol != ProtocolName {
-		return hello, 0, errors.Join(fmt.Errorf("%w: worker speaks %q, Babel speaks %q",
-			ErrProtocolMismatch, s.scrub.clean(hello.Protocol), ProtocolName),
-			s.refuse("unrecognized protocol", versions))
-	}
-	version, ok := negotiate(versions, hello.Versions)
-	if !ok {
-		return hello, 0, errors.Join(fmt.Errorf("%w: worker offers %v, Babel offers %v",
-			ErrVersionMismatch, hello.Versions, versions),
-			s.refuse("no mutually supported protocol version", versions))
-	}
-	if !containsString(hello.Modes, mode) {
-		return hello, version, errors.Join(fmt.Errorf("%w: worker offers %v, Babel needs %q",
-			ErrModeUnsupported, hello.Modes, mode),
-			s.refuse("mode "+mode+" unsupported", versions))
-	}
-
-	if err := s.writeMessage(acceptMessage{
-		Type:     MessageAccept,
-		Protocol: ProtocolName,
-		Version:  version,
-		Mode:     mode,
-		Limits:   s.limits.onWire(),
-	}); err != nil {
-		return hello, version, err
-	}
-	return hello, version, nil
-}
-
-// refuse tells a rejected worker why, closes its stdin, and gives it the exit
-// grace to leave on its own. It returns ErrWorkerLingered when it does not.
-//
-// The wait is part of the contract rather than politeness: a refused worker
-// must exit, and killing it the instant the refusal is written would make that
-// obligation unobservable — Babel would never learn the difference between a
-// worker that exits and one that hangs. The refusal reason is joined with this
-// result, so a caller matching ErrVersionMismatch still matches while
-// Conformance can also see that the worker refused to leave.
-//
-// A write failure is discarded: the caller is already returning the refusal
-// reason, and a worker that cannot be told is killed by teardown anyway.
-func (s *session) refuse(reason string, versions []int) error {
-	_ = s.writeMessage(refuseMessage{
-		Type:      MessageRefuse,
-		Protocol:  ProtocolName,
-		Reason:    reason,
-		Supported: versions,
-	})
+// refuse ends a launch Babel will not prompt: stdin closes with nothing
+// written, the tree gets the grace to leave on its own, and what remains is
+// killed. The wait is part of the contract rather than politeness: a refused
+// engine must exit on EOF, and killing it the instant stdin closes would make
+// that obligation unobservable.
+func (s *session) refuse(grace time.Duration) error {
 	_ = s.stdinW.Close()
-	return s.awaitExit(s.limits.ExitGrace)
+	err := s.awaitExit(grace)
+	s.teardown(err != nil)
+	return err
 }
 
 // classifyStreamError turns a reader failure during a synchronous wait into
-// the sentinel that describes it.
+// the sentinel that describes it. EOF before the turn has ended is the engine
+// leaving, whatever else was pending; the exit status says how.
 func (s *session) classifyStreamError(err error) error {
 	if errors.Is(err, io.EOF) {
-		return fmt.Errorf("%w: exit status %d", ErrNoResult, s.exitCode())
+		return fmt.Errorf("%w: engine closed its stdout, exit status %d", ErrEngineExited, s.exitCode())
 	}
 	return err
 }
 
-// wrapWait translates a wait failure: an elapsed budget means the worker went
+// wrapWait translates a wait failure: an elapsed budget means the engine went
 // quiet, unless it has already exited, in which case it simply never
 // answered.
 func (s *session) wrapWait(err error) error {
@@ -1471,13 +1378,12 @@ func (s *session) wrapWait(err error) error {
 		return err
 	}
 	if s.hasExited() {
-		return fmt.Errorf("%w: exit status %d", ErrNoResult, s.exitCode())
+		return fmt.Errorf("%w: engine exited %d without answering", ErrEngineExited, s.exitCode())
 	}
-	return fmt.Errorf("%w: no event for %s", ErrWorkerStalled, s.limits.IdleTimeout)
+	return fmt.Errorf("%w: no frame for %s", ErrWorkerStalled, s.limits.IdleTimeout)
 }
 
-// awaitExit waits for the process to exit within grace, killing the tree when
-// it does not.
+// awaitExit waits for the process to exit within grace.
 func (s *session) awaitExit(grace time.Duration) error {
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
@@ -1485,7 +1391,7 @@ func (s *session) awaitExit(grace time.Duration) error {
 	case <-s.reaped:
 		return nil
 	case <-timer.C:
-		return fmt.Errorf("%w: still running %s after answering", ErrWorkerLingered, grace)
+		return fmt.Errorf("%w: still running %s after its stdin closed", ErrWorkerLingered, grace)
 	}
 }
 
@@ -1510,7 +1416,7 @@ func (s *session) exitCode() int {
 
 // kill terminates the whole process group: SIGTERM, then SIGKILL after the
 // terminate grace. Signalling the group rather than the pid is what makes the
-// guarantee whole — a sandbox the worker spawned is in that group, and killing
+// guarantee whole — the sandbox Code spawned is in that group, and killing
 // only the direct child would leave it running.
 //
 // The group is signalled before the child is reaped wherever Babel initiates
@@ -1547,44 +1453,6 @@ func (s *session) teardown(killTree bool) {
 	})
 }
 
-// rawOrEncoded re-encodes a decoded inbound so a second, differently-shaped
-// decode can run over the same line. Only the handshake needs it, and only
-// once per process, so re-encoding beats carrying the raw bytes through every
-// event.
-func (in inbound) rawOrEncoded() []byte {
-	encoded, err := json.Marshal(in.fields)
-	if err != nil {
-		return []byte("{}")
-	}
-	return encoded
-}
-
-// readLine reads one newline-terminated line, enforcing max on the payload.
-// It exists instead of bufio.Scanner because Scanner only reports ErrTooLong
-// once a token exceeds its *buffer*, so a small configured maximum would not
-// be enforced at all.
-func readLine(reader *bufio.Reader, max int) ([]byte, error) {
-	var line []byte
-	for {
-		chunk, err := reader.ReadSlice('\n')
-		if errors.Is(err, bufio.ErrBufferFull) {
-			line = append(line, chunk...)
-			if len(line) > max {
-				return nil, fmt.Errorf("%w: over %d bytes", ErrOversizedLine, max)
-			}
-			continue
-		}
-		line = append(line, chunk...)
-		if err != nil {
-			return line, err
-		}
-		if len(line)-1 > max {
-			return nil, fmt.Errorf("%w: %d bytes over a %d byte limit", ErrOversizedLine, len(line)-1, max)
-		}
-		return line[:len(line)-1], nil
-	}
-}
-
 // closeAll closes every non-nil file, ignoring errors: these are pipe ends
 // being released during teardown, where there is nothing left to do about a
 // failure.
@@ -1606,66 +1474,10 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-// scrubber removes job secrets from worker-controlled text. It is Babel's
-// defence, not the worker's obligation: a worker must not echo the broker
-// credential, and a receipt must not carry it even when the worker does.
-type scrubber struct {
-	secrets []string
-}
-
-// newScrubber keeps the values long enough to be scrubbed safely.
-func newScrubber(values []string) scrubber {
-	var kept []string
-	for _, value := range values {
-		if len(value) >= minSecretLength {
-			kept = append(kept, value)
-		}
-	}
-	return scrubber{secrets: kept}
-}
-
-// clean replaces every secret occurrence in text.
-func (s scrubber) clean(text string) string {
-	if len(s.secrets) == 0 || text == "" {
-		return text
-	}
-	for _, secret := range s.secrets {
-		text = strings.ReplaceAll(text, secret, redactedMarker)
-	}
-	return text
-}
-
-// cleanMap scrubs a metadata map's values, returning a copy so the caller's
-// map is never aliased into a receipt.
-func (s scrubber) cleanMap(values map[string]string) map[string]string {
-	if len(values) == 0 {
-		return nil
-	}
-	cleaned := make(map[string]string, len(values))
-	for key, value := range values {
-		cleaned[key] = s.clean(value)
-	}
-	return cleaned
-}
-
-// cleanJSON scrubs a raw JSON payload textually. Babel-issued run tokens are
-// URL-safe base64, so their JSON encoding is byte-identical to their value and
-// a byte replacement cannot straddle an escape.
-func (s scrubber) cleanJSON(payload json.RawMessage) json.RawMessage {
-	if len(payload) == 0 || len(s.secrets) == 0 {
-		return payload
-	}
-	cleaned := payload
-	for _, secret := range s.secrets {
-		cleaned = bytes.ReplaceAll(cleaned, []byte(secret), []byte(redactedMarker))
-	}
-	return cleaned
-}
-
-// tail keeps at most the last limit bytes of a worker-written stream, so a
-// runaway child cannot balloon a receipt, an error message or the conformance
-// suite's raw transcript. The bound is the whole point: it is the one idiom
-// this package uses for retaining anything a worker controls.
+// tail keeps at most the last limit bytes of an engine-written stream, so a
+// runaway child cannot balloon a receipt or an error message. The bound is
+// the whole point: it is the one idiom this package uses for retaining
+// anything the far side controls.
 type tail struct {
 	mu      sync.Mutex
 	limit   int
@@ -1673,9 +1485,18 @@ type tail struct {
 	dropped bool
 }
 
-// writeLine appends one line. The caller decides whether it has been scrubbed:
-// the receipt's tail is given cleaned lines, the conformance transcript is
-// given the worker's own bytes.
+// Write retains a stream's lines, so a tail can stand in for a process's
+// stderr directly.
+func (t *tail) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(string(p), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			t.writeLine(line)
+		}
+	}
+	return len(p), nil
+}
+
+// writeLine appends one line.
 func (t *tail) writeLine(line string) {
 	if t.limit <= 0 {
 		return
@@ -1711,25 +1532,4 @@ func (t *tail) String() string {
 		return "..." + joined
 	}
 	return joined
-}
-
-// discard drops what was retained. The conformance transcript holds a
-// credential in the clear, so the obligation that captured it ends by
-// releasing it rather than leaving it reachable for the rest of the process.
-func (t *tail) discard() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.buf = nil
-	t.dropped = false
-}
-
-// requirement resolves the containment the run demands. A nil Config field
-// means the strict default rather than none: the failure mode of the opposite
-// choice is a run that silently executes outside a sandbox because a caller
-// forgot a field.
-func (c *Client) requirement() Requirement {
-	if c.cfg.Requirement != nil {
-		return *c.cfg.Requirement
-	}
-	return SandboxedRun()
 }

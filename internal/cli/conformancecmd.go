@@ -10,68 +10,41 @@ import (
 	"github.com/atyrode/babel/internal/worker"
 )
 
-const conformanceUsage = `Usage: babel conformance WORKER [--worker-arg ARG]... [flags]
+const conformanceUsage = `Usage: babel conformance CODE [--worker-arg ARG]... [flags]
 
-Runs the babel.analysis-worker contract suite against the executable at
-WORKER: the handshake, the staged job document, the resolved configuration and
-the containment it declares, the grant boundary, tool decisions, terminal
-events, cancellation, and the worker's own discipline with the run-scoped
-broker credential. One obligation per line, printed the moment that obligation
+Checks the Code executable at CODE against what "babel explore" needs from
+"code engine". One obligation per line, printed the moment that obligation
 settles; the exit code is 0 only when every obligation held.
 
-Obligations are graded one at a time, and one that cannot reach the worker
-spends its whole handshake budget — 15 seconds — before its verdict is
-known, so grading a program that is not a worker takes that long per
-obligation. The line for the last obligation to settle is therefore also
-the name of the obligation being graded now: a suite that appears to have
-stopped has stopped somewhere legible. --json is exempt: a machine-readable
-report is one document, written after the last obligation.
+Without --allow-inference nothing is launched. The suite runs
+"code engine --describe", which resolves a profile and reports its non-secret
+metadata without opening an interface or reaching a provider, and grades what
+it reports: a worker build, a disclosure class, a cost in a currency, no
+credential-shaped metadata, and — with --profile — the profile that was asked
+for.
 
-The credential obligation deliberately instructs the worker to leak: it is
-told to echo its broker token, and it holds only if the run still reached a
-terminal result, the token appears in nothing the worker wrote, and the
-token appears nowhere in the receipt. All three, because a worker that
-emits no bytes at all would otherwise pass a test for an absence.
+With --allow-inference and --profile, the suite also runs one real engine job
+under that profile: a prompt asking the model to record a nonce through the
+result tool, under a schema that admits nothing else. That is one model turn
+and it costs what the profile costs; the profile and its cost estimate are
+printed before the launch. The obligations grade the launch itself — the
+ready frame and Code's runtime-info, the containment it declares, the tools
+the engine confirms, the submission the schema admits, the exit on stdin
+close, and the measurements Code reports afterwards. --unsandboxed grades the
+declared containment against a relaxed requirement so "needs a sandbox" is
+legible as a separate finding from "does not speak the protocol"; it never
+relaxes anything about a real run.
 
-Two obligations grade the staged job document, which is what protocol version
-2 is: Babel writes a preamble carrying the run's identity, the profile and the
-parameters, the worker answers with its containment declaration, and only then
-does Babel write the recipes, the grant, the sources and the broker token. A
-worker must therefore declare from the preamble alone — one that waits for the
-material first waits forever — and a worker whose declaration is refused must
-produce nothing and exit rather than block on a read. The second of those is
-reached by telling the worker to under-declare on purpose, for the reason the
-credential obligation tells it to leak: a worker that always declares enough is
-never refused, so the path that decides whether the credential travels would be
-graded by nothing. That obligation grades against the strict requirement even
-under --unsandboxed, because a relaxed requirement would accept the very
-declaration it asks for.
-
-The same suite is what Babel's own tests run against their fake worker, so
-an implementation that passes here is one Babel can supervise. It is a
-command rather than an importable package because Go forbids importing
-internal/ from another repository, and the counterpart is developed in one
-(SPEC.md §2.6).
-
-A worker need not speak the protocol at argv[0]: Code is an interactive
-program that speaks it under a subcommand, so --worker-arg is how the
-executable is put into worker mode, exactly as for "babel explore".
-
-Nothing is analysed, no session is read, and no credential is needed: the
-suite drives the worker with a synthetic job over its own pipes.
-
-A worker that declares honestly weak containment fails every obligation
-that reaches worker mode with the same containment error, which says
-nothing about whether it implements the rest of the protocol.
---unsandboxed grades it against a relaxed requirement so "needs a sandbox"
-is legible as a separate finding from "does not speak the protocol". It
-never relaxes anything about a real run: which containment an exploration
-demands is decided at launch, not here.
+Nothing about the exam is Code's to implement: the same "code engine" surface
+"babel explore" uses is what is graded, and the only thing peculiar to the
+exam is the schema the one job carries.
 
 Flags:
-  --worker-arg ARG   extra argument for the worker executable; repeatable
-  --unsandboxed      grade against relaxed containment, not the strict default
-  --json             emit the report as JSON on stdout
+  --worker-arg ARG     extra argument for the Code executable; repeatable
+  --profile ID[@REV]   the profile to describe and, with --allow-inference, to launch
+  --allow-inference    launch one engine job under --profile; this spends
+  --unsandboxed        grade declared containment against the relaxed requirement
+  --json               emit the report as JSON on stdout
 `
 
 // obligationRow is one obligation's verdict in machine-readable output.
@@ -84,10 +57,13 @@ type obligationRow struct {
 type conformanceResult struct {
 	Worker     string   `json:"worker"`
 	WorkerArgs []string `json:"worker_args,omitempty"`
-	// Unsandboxed records that the grading was relaxed. It is always present
-	// rather than omitted when false, because a relaxed pass reported
-	// identically to a strict one would be the most misleading output this
-	// command could produce.
+	Profile    string   `json:"profile,omitempty"`
+	// Inference records that an engine was launched, and Unsandboxed that
+	// the grading was relaxed. Both are always present rather than omitted
+	// when false: an offline pass reported identically to a launched one,
+	// or a relaxed pass identically to a strict one, would be the most
+	// misleading output this command could produce.
+	Inference   bool            `json:"inference"`
 	Unsandboxed bool            `json:"unsandboxed"`
 	OK          bool            `json:"ok"`
 	Total       int             `json:"total"`
@@ -96,11 +72,13 @@ type conformanceResult struct {
 	Obligations []obligationRow `json:"obligations"`
 }
 
-// conformanceCmd serves `babel conformance WORKER`.
+// conformanceCmd serves `babel conformance CODE`.
 func (a *app) conformanceCmd(ctx context.Context, args []string) error {
 	c := newCmd("conformance", conformanceUsage)
 	var workerArgs repeatedFlag
-	c.fs.Var(&workerArgs, "worker-arg", "extra argument for the worker executable; repeatable")
+	c.fs.Var(&workerArgs, "worker-arg", "extra argument for the Code executable; repeatable")
+	profileFlag := c.fs.String("profile", "", "the profile to describe and, with --allow-inference, to launch")
+	inference := c.fs.Bool("allow-inference", false, "launch one engine job under --profile")
 	unsandboxed := c.fs.Bool("unsandboxed", false, "grade against relaxed containment")
 	asJSON := c.fs.Bool("json", false, "emit the report as JSON")
 	if err := c.parse(a, args); err != nil {
@@ -108,29 +86,75 @@ func (a *app) conformanceCmd(ctx context.Context, args []string) error {
 	}
 	positional := c.args()
 	if len(positional) != 1 {
-		return c.usagef("conformance takes exactly one worker executable, got %d", len(positional))
+		return c.usagef("conformance takes exactly one Code executable, got %d", len(positional))
 	}
-	// A worker that cannot be launched is a rejected invocation, not a
-	// failed contract: reporting eleven identical spawn failures would say
-	// nothing about the implementation.
+	// An executable that cannot be launched is a rejected invocation, not a
+	// failed contract: reporting identical spawn failures for every
+	// obligation would say nothing about the implementation.
 	binary, err := resolveWorkerBinary(c, positional[0])
 	if err != nil {
 		return err
 	}
+	var profile *worker.ProfileRef
+	if *profileFlag != "" {
+		ref, err := parseProfileRef(*profileFlag)
+		if err != nil {
+			return c.usagef("--profile: %v", err)
+		}
+		profile = &ref
+	}
+	if *inference && profile == nil {
+		return c.usagef("--allow-inference launches an engine and needs --profile to say which")
+	}
 
+	opts := worker.ConformanceOptions{
+		Binary:      binary,
+		Args:        workerArgs,
+		Profile:     profile,
+		Inference:   *inference,
+		Unsandboxed: *unsandboxed,
+	}
 	res := conformanceResult{
 		Worker:      Sanitize(binary),
 		WorkerArgs:  sanitizeAll(workerArgs),
+		Inference:   *inference,
 		Unsandboxed: *unsandboxed,
 	}
+	if profile != nil {
+		res.Profile = profile.String()
+	}
+	if *inference {
+		// The spend is disclosed before it happens, from the same describe
+		// the suite is about to grade. A profile Code cannot describe is
+		// not launched: the offline obligations will say why.
+		if err := a.discloseInference(ctx, binary, workerArgs, *profile); err != nil {
+			return err
+		}
+	}
 	grade := func(settled func(worker.ObligationResult)) []worker.ObligationResult {
-		return worker.StreamConformance(ctx, worker.ConformanceOptions{
-			Worker:      binary,
-			Args:        workerArgs,
-			Unsandboxed: *unsandboxed,
-		}, settled)
+		return worker.StreamConformance(ctx, opts, settled)
 	}
 	return a.reportConformance(res, *asJSON, grade)
+}
+
+// discloseInference prints what an engine launch will cost before the suite
+// launches it. It refuses when the profile cannot be described, because a
+// launch whose cost is unknown is a launch nobody authorized.
+func (a *app) discloseInference(ctx context.Context, binary string, args []string, profile worker.ProfileRef) error {
+	client, err := worker.New(worker.Config{Binary: binary, Args: args})
+	if err != nil {
+		return err
+	}
+	cfg, err := client.Configure(ctx, &profile)
+	if err != nil {
+		a.diagf("refusing to launch an engine: profile %s could not be described: %s\n",
+			Sanitize(profile.String()), Sanitize(err.Error()))
+		return errReported
+	}
+	a.diagf("launching one engine job under profile %s (%s, disclosure %s, estimated %.4f %s per run)\n",
+		Sanitize(cfg.Profile.String()), Sanitize(cfg.Metadata["model"]), Sanitize(cfg.Privacy.Disclosure),
+		cfg.Cost.EstimatedRun, Sanitize(cfg.Cost.Currency))
+	return nil
 }
 
 // reportConformance grades a worker through grade and reports the verdicts,
@@ -189,7 +213,7 @@ func (a *app) reportConformance(res conformanceResult, asJSON bool, grade func(s
 	// The report is the result document and it is already on stdout; the
 	// exit code is what an exam is for, so the failure gets a pointer to
 	// the contract rather than a second recital of it.
-	a.diagf("%d of %d %s failed; the worker does not yet implement the babel.analysis-worker contract\n",
+	a.diagf("%d of %d %s failed; this Code does not yet provide what babel explore needs from code engine\n",
 		res.Failed, res.Total, plural(res.Total, "obligation", "obligations"))
 	return errReported
 }
