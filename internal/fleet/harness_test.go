@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -96,6 +97,7 @@ func newDB(t *testing.T) *sql.DB {
 // and never deleted, so an in-memory map is a faithful stand-in for what the
 // read path asks of a store: put once, get by key.
 type memStore struct {
+	mu      sync.Mutex
 	objects map[string][]byte
 	// failGet, if set, decides whether a fetch fails, so a store outage can be
 	// exercised as the per-record failure it is rather than a fatal one.
@@ -105,11 +107,15 @@ type memStore struct {
 func newMemStore() *memStore { return &memStore{objects: map[string][]byte{}} }
 
 func (s *memStore) Put(ctx context.Context, key string, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.objects[key] = append([]byte(nil), data...)
 	return nil
 }
 
 func (s *memStore) Get(ctx context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.failGet != nil {
 		if err := s.failGet(key); err != nil {
 			return nil, err
