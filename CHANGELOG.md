@@ -11,11 +11,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
-- **Repository instructions follow one shared engineering contract (#193).**
-  Local archive and deployment boundaries remain Babel-owned; generated common
-  rules follow reviewed dotfiles changes through checked, guarded maintenance
-  PRs. Exact-byte checks reject drift, and renderer regression scenarios defend
-  local instructions against corruption or accidental replacement.
+- **Repository instructions separate shared policy from Babel-specific guidance (#193).**
+  The root keeps useful checks, generated-artifact ownership and operator-only archive,
+  custody and deployment boundaries, while routing detailed procedures to their owners
+  only for relevant tasks. Reusable engineering rules come from the harness-neutral
+  dotfiles source; checked maintenance PRs update only the generated block, with exact-byte
+  and outside-block preservation checks protecting the local instructions.
 
 - **Interrupted runs have durable checkpoints and explicit recovery commands
   (#176).** `babel runs interrupted`, `reconcile`, `resume` and `close` distinguish
