@@ -6,8 +6,10 @@ surface (`web/`), versioned analysis cookbook (`cookbook/`) and Manifold plugins
 
 The marked block is generated from
 [`dotfiles/modules/home/agents/engineering.md`](https://github.com/atyrode/dotfiles/blob/main/modules/home/agents/engineering.md).
-Edit Babel-specific rules outside it and reusable rules at that source; distribution mechanics
-belong to dotfiles' `docs/agent-tools.md`. No installed dotfiles or particular harness is required.
+Edit Babel-specific rules outside it and reusable rules at that source. `agent-policy` rejects
+drift in its common generated content; reviewed source changes arrive through generated-only
+maintenance PRs with required CI and maintainer holds. Details are in dotfiles'
+[`docs/agent-tools.md`](https://github.com/atyrode/dotfiles/blob/main/docs/agent-tools.md).
 
 <!-- BEGIN SHARED ENGINEERING: generated; do not edit -->
 
