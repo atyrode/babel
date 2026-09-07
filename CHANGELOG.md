@@ -11,6 +11,12 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **Repository instructions follow one shared engineering contract (#193).**
+  Local archive and deployment boundaries remain Babel-owned; generated common
+  rules follow reviewed dotfiles changes through checked, guarded maintenance
+  PRs. Exact-byte checks reject drift, and renderer regression scenarios defend
+  local instructions against corruption or accidental replacement.
+
 - **Interrupted runs have durable checkpoints and explicit recovery commands
   (#176).** `babel runs interrupted`, `reconcile`, `resume` and `close` distinguish
   observed interruption from unknown process loss, retain the producing run's
