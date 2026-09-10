@@ -306,6 +306,18 @@ type Config struct {
 	// precondition for exploring. See reference.go.
 	References reference.Appender
 
+	// Questions is where a run's unanswerable questions go: the Reality
+	// Ledger's inbox (§4.8). A run may raise one and may never answer one,
+	// which is why analysis reaches the ledger through this interface and
+	// through nothing wider — there is no path from here to a fact.
+	//
+	// Nil is the feature quietly absent on References' terms: a result's
+	// questions are dropped with a recorded note, no write path behaves
+	// differently, and no run is refused. A machine whose ledger holds no
+	// entities would refuse every question anyway, so requiring the store
+	// would turn an empty ledger into a broken run.
+	Questions QuestionLedger
+
 	// SessionKey derives the durable session key of one local session, which
 	// is what an evidence edge's session endpoint carries (#113). It is
 	// injected rather than computed here because the key is deployment- and
@@ -655,6 +667,12 @@ type Outcome struct {
 	// ones an operator should compare against something that already exists.
 	Duplicates []frontier.DuplicateWarning
 
+	// Questions are the Reality Ledger questions this run raised (§4.8).
+	// They are identifiers in that ledger rather than frontier records: a
+	// question is a request for authority Babel does not have, so it lives
+	// where answers are authorized and not where claims are developed.
+	Questions []string
+
 	// Retrieval is what the run's corpus search served, in service order.
 	Retrieval []Retrieval
 
@@ -688,6 +706,14 @@ type state struct {
 	// order, which is the set a finite run defers its remainder from.
 	touched []string
 	seen    map[string]bool
+
+	// statements are the candidate statements this attempt has persisted,
+	// with their durable identifiers, so the dedup probe can measure
+	// against work the frontier index cannot see yet (#87 item 4). It is
+	// per attempt rather than per stage because the commonest self-
+	// duplication is a challenger or synthesizer restating the explore
+	// stage's own candidate.
+	statements []writtenStatement
 
 	// promoted and rejected are the lifecycle transitions this attempt has
 	// already applied, so a second consolidation over the same candidate

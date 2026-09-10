@@ -236,6 +236,48 @@ func TestNearDuplicateCandidateIsRecordedWithAWarning(t *testing.T) {
 	})
 }
 
+// TestARunIsWarnedAboutRestatingItsOwnCandidate closes the gap the frontier
+// index cannot: it is refreshed before the run starts, so a run's second
+// candidate was measured against a snapshot that predates its first.
+//
+// The shape is the one the real store shows. On 2026-09-10 two runs each
+// restated their own explore-stage candidate in the challenge stage five
+// minutes later, at 0.61 and 0.71 overlap, and neither restatement carried a
+// warning: nothing had indexed the record in between. Nothing here is
+// dropped, as ever — the second candidate is durable, and the warning is what
+// tells an operator the two belong together.
+func TestARunIsWarnedAboutRestatingItsOwnCandidate(t *testing.T) {
+	h := newHarness(t)
+	result := explore.Result{Candidates: []explore.Candidate{
+		{
+			Ref:        "c-1",
+			Hypothesis: frontier.HypothesisPayload{Statement: "the release pipeline skips the integration suite it claims to run", Novelty: 0.5, Priority: 0.5},
+		},
+		{
+			Ref:        "c-2",
+			Hypothesis: frontier.HypothesisPayload{Statement: "release runs skip the integration suite they claim to run", Novelty: 0.5, Priority: 0.5},
+		},
+	}}
+	payload := h.writeResult("self.json", result)
+	controller := h.controller(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}))
+
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-self-dup"})
+	if err != nil {
+		t.Fatalf("Explore: %v (failures %+v)", err, outcome.Failures)
+	}
+	if len(outcome.Hypotheses) != 2 {
+		t.Fatalf("the run recorded %d candidates, want both kept", len(outcome.Hypotheses))
+	}
+	if len(outcome.Duplicates) != 1 {
+		t.Fatalf("warnings = %+v, want one against the run's own earlier candidate", outcome.Duplicates)
+	}
+	warning := outcome.Duplicates[0]
+	if warning.HypothesisID != outcome.Hypotheses[1] || warning.DuplicateOf != outcome.Hypotheses[0] {
+		t.Errorf("warning = %+v, want the second candidate warned against the first (%v)",
+			warning, outcome.Hypotheses)
+	}
+}
+
 // TestPromptCarriesTheRefineFirstContext is the injection half: a preparation
 // that names prior outputs puts them in the prompt with their ids and the
 // framing that says what they are, and the framing changes when the scope was

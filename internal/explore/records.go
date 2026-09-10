@@ -39,6 +39,7 @@ func (c *Controller) putHypothesis(st *state, stage Stage, runID string, committ
 	if id, reused, err := reuse(committed, cand.Ref, frontier.EntityHypothesis); reused || err != nil {
 		return id, reused, err
 	}
+	statement := cand.Hypothesis.Statement
 	record, err := c.cfg.Frontier.CreateHypothesis(st.commit, frontier.HypothesisInput{
 		RunID:   runID,
 		Payload: cand.Hypothesis,
@@ -47,11 +48,16 @@ func (c *Controller) putHypothesis(st *state, stage Stage, runID string, committ
 		// stored without the warning computed for it would be a suspicion
 		// that existed only in a log. The candidate is written whatever the
 		// heuristic said — never dropped, never reworded (#87).
-		NearDuplicates: c.nearDuplicates(st, cand.Hypothesis.Statement),
+		NearDuplicates: c.nearDuplicates(st, statement),
 	})
 	if err != nil {
 		return "", false, err
 	}
+	// The next candidate this run writes is measured against this one, in
+	// this stage and in the two that follow it. The index behind the probe
+	// was refreshed before the run began and will not see this record until
+	// long after the run that wrote it has ended.
+	st.statements = append(st.statements, writtenStatement{id: record.ID, statement: statement})
 	st.out.Duplicates = append(st.out.Duplicates, record.Duplicates...)
 	return record.ID, false, c.bind(st, stage, cand.Ref, frontier.EntityHypothesis, record.ID)
 }

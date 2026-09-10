@@ -41,6 +41,12 @@ type authority struct {
 	objections bool
 	// schedule permits the job to defer or reject its own candidates.
 	schedule bool
+	// Questions deliberately have no bit here, and the omission is the
+	// statement: §5.4 divides what a stage may *assert*, and a question
+	// asserts nothing. A challenger that cannot tell whether a claim holds
+	// and a synthesizer that cannot tell whether two findings are about the
+	// same service have met the same gap the explorer meets, and the stage
+	// they happened to be in has no bearing on who can answer it.
 }
 
 var authorities = map[Stage]authority{
@@ -360,6 +366,7 @@ func (c *Controller) persist(st *state, stage Stage, runID string, res *Result) 
 	c.object(st, stage, runID, committed, auth, res)
 	c.consolidate(st, stage, runID, committed, auth, res)
 	c.schedule(st, stage, auth, res)
+	c.ask(st, stage, res)
 }
 
 // remedy writes the value-claim half of one candidate, splitting the truth from

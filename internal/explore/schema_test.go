@@ -27,11 +27,13 @@ func TestOutputContractFollowsTheAuthorityTable(t *testing.T) {
 		root      []string
 		candidate []string
 	}{
-		{explore.StageExplore, []string{"candidates", "consolidations", "deferred", "rejected"},
+		// "questions" is offered to all three: §5.4 divides what a stage
+		// may assert, and a question asserts nothing.
+		{explore.StageExplore, []string{"candidates", "consolidations", "deferred", "rejected", "questions"},
 			[]string{"ref", "hypothesis", "observations", "remedy", "dispositions"}},
-		{explore.StageChallenge, []string{"candidates", "objections"},
+		{explore.StageChallenge, []string{"candidates", "objections", "questions"},
 			[]string{"ref", "hypothesis", "dispositions"}},
-		{explore.StageSynthesize, []string{"candidates", "consolidations"},
+		{explore.StageSynthesize, []string{"candidates", "consolidations", "questions"},
 			[]string{"ref", "hypothesis", "remedy", "dispositions"}},
 	}
 	for _, tc := range cases {

@@ -525,6 +525,88 @@ func TestACycleOverTheCeilingParksTheLoop(t *testing.T) {
 	}
 }
 
+// TestCyclesThatSpendNothingParkTheLoop pins the wall the loop stops at when
+// nothing can run: a provider window at its limit, a worker pin naming a
+// removed binary, an engine that refuses the profile. All three fail
+// instantly and cost nothing, and a loop that kept drawing would spend the
+// rest of its window marking candidates attempted against runs that never ran.
+//
+// The two failures before the third are the point of the threshold: one dead
+// launch is not evidence, so the loop must still be running after them.
+func TestCyclesThatSpendNothingParkTheLoop(t *testing.T) {
+	ctx := context.Background()
+	floor := &stubRung{name: conductor.RungSerendipity, work: &conductor.Assignment{
+		Authority: runstore.Authority{Kind: runstore.AuthoritySerendipity, Ref: "draw:d-1"},
+	}}
+	runner := &fakeRunner{err: errors.New("worker: engine closed its stdout before a ready frame")}
+	loop, err := conductor.New(conductor.Config{
+		Ceilings: conductor.Ceilings{Currency: "USD", PerCycle: 0.50, PerDay: 5.00},
+		Floor:    conductor.Floor{OneIn: 1},
+		Ladder:   []conductor.Rung{floor},
+		Runner:   runner,
+		Ledger:   fakeLedger{},
+		Journal:  testJournal(t),
+		Now:      (&clock{now: day}).Now,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for i := 1; i < 3; i++ {
+		cycle, err := loop.Once(ctx)
+		if err != nil {
+			t.Fatalf("Once %d: %v", i, err)
+		}
+		if cycle.Outcome != conductor.OutcomeFailed {
+			t.Fatalf("cycle %d = %+v, want a degraded cycle the loop continues past", i, cycle)
+		}
+	}
+	cycle, err := loop.Once(ctx)
+	if err != nil {
+		t.Fatalf("Once 3: %v", err)
+	}
+	if cycle.Outcome != conductor.OutcomeParked {
+		t.Fatalf("cycle = %+v, want the third barren cycle to park the loop", cycle)
+	}
+	if !strings.Contains(cycle.Reason, "without spending anything") {
+		t.Errorf("park reason = %q, which does not say why the loop stopped", cycle.Reason)
+	}
+}
+
+// TestASpendingFailureDoesNotParkTheLoop is the other half: a cycle that
+// reached the model and then failed did work badly rather than not at all, and
+// the loop it belongs to is still able to run.
+func TestASpendingFailureDoesNotParkTheLoop(t *testing.T) {
+	ctx := context.Background()
+	floor := &stubRung{name: conductor.RungSerendipity, work: &conductor.Assignment{
+		Authority: runstore.Authority{Kind: runstore.AuthoritySerendipity, Ref: "draw:d-1"},
+	}}
+	runner := &fakeRunner{
+		result: conductor.Result{Cost: 0.10, Currency: "USD", ReceiptID: "rcpt-1"},
+		err:    errors.New("explore: synthesize job: worker: no result"),
+	}
+	loop, err := conductor.New(conductor.Config{
+		Ceilings: conductor.Ceilings{Currency: "USD", PerCycle: 0.50, PerDay: 5.00},
+		Floor:    conductor.Floor{OneIn: 1},
+		Ladder:   []conductor.Rung{floor},
+		Runner:   runner,
+		Ledger:   fakeLedger{},
+		Journal:  testJournal(t),
+		Now:      (&clock{now: day}).Now,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for i := 1; i <= 4; i++ {
+		cycle, err := loop.Once(ctx)
+		if err != nil {
+			t.Fatalf("Once %d: %v", i, err)
+		}
+		if cycle.Outcome != conductor.OutcomeFailed {
+			t.Fatalf("cycle %d = %+v, want a degraded cycle that keeps the loop running", i, cycle)
+		}
+	}
+}
+
 // A conductor refuses to exist without ceilings. Autonomy is budget-bounded,
 // not trust-bounded, and a default ceiling would be a limit nobody chose.
 func TestConductorRefusesWithoutCeilings(t *testing.T) {

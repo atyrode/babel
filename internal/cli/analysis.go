@@ -20,6 +20,7 @@ import (
 	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/disposition"
+	"github.com/atyrode/babel/internal/explore"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/reference"
@@ -1290,6 +1291,19 @@ func openReality() (*reality.Store, error) {
 		return nil, err
 	}
 	return reality.Open(d.durableDir(), reality.WithSync(hook))
+}
+
+// questionLedger hands a run the ledger's inbox, or nothing at all.
+//
+// The nil check is the whole point: a (*reality.Store)(nil) stored in an
+// interface field is not a nil interface, and internal/explore reads a
+// non-nil field as a facility that is present. A machine whose ledger did
+// not open must get the absent case, not a store that panics on first use.
+func questionLedger(store *reality.Store) explore.QuestionLedger {
+	if store == nil {
+		return nil
+	}
+	return store
 }
 
 // recordKinds maps the identifier prefixes internal/frontier mints onto the
