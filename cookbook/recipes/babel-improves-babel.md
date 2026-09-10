@@ -1,6 +1,6 @@
 ---
 id: babel-improves-babel
-version: 1
+version: 2
 kind: meta
 scope: [corpus, repository]
 stages: [investigate, challenge, synthesize]
@@ -198,6 +198,14 @@ established from.
   records show produced a repeatable failure;
 - `pipeline-defect` — the failure is in preparation, retrieval, scheduling,
   brokering, or storage rather than in guidance;
+- `contract-defect` — the behaviour the records show is the behaviour Babel's
+  own specification asks for, and the specification is what is wrong. This is
+  distinct from the two above on purpose: a recipe's prose can be reworded and
+  a pipeline can be repaired, but a defect in `SPEC.md` or in the repository's
+  own instructions is a decision that was made and needs remaking, and naming
+  it a guidance defect sends a reviewer to edit a lens that was faithfully
+  following its contract. Cite the section, quote the sentence, and say which
+  records show what it produced;
 - `duplicate-pressure` — one idea recorded several times, with the retrieval
   step that should have found the first;
 - `review-backlog` — outputs waiting, not declined, with the count and the age;

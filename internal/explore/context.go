@@ -188,6 +188,14 @@ const DuplicateOverlap = 0.6
 // not a duplicate.
 const maxDuplicateProbe = 10
 
+// writtenStatement is one candidate this run has already persisted, kept for
+// the dedup probe alone: the identifier a warning would name, and the wording
+// the overlap measure compares against.
+type writtenStatement struct {
+	id        string
+	statement string
+}
+
 // nearDuplicates reports the existing heads a statement resembles.
 //
 // It is an FTS overlap heuristic and it is named as one everywhere it appears:
@@ -196,13 +204,35 @@ const maxDuplicateProbe = 10
 // records say the same thing — vocabulary is not meaning, and two statements
 // sharing their words may assert opposite things about them.
 //
-// A frontier index that is absent, empty or failing produces no warnings and no
-// failure. Dedup is an improvement on the record, not a precondition for
-// writing one, and a run that could not check is a run whose candidates are
-// still worth keeping.
+// The index is refreshed once, before the run starts, so it cannot see what
+// this run has written since. That gap is not academic: a run's own challenge
+// and synthesis stages restate their explore stage's candidates, and eight
+// concurrent cycles write into a frontier none of them can read. So the
+// probe measures against two things — the indexed heads, and the statements
+// this run has already persisted — and the second needs no index at all.
+//
+// A frontier index that is absent, empty or failing produces no index
+// warnings and no failure. Dedup is an improvement on the record, not a
+// precondition for writing one, and a run that could not check is a run whose
+// candidates are still worth keeping.
 func (c *Controller) nearDuplicates(st *state, statement string) []frontier.NearDuplicate {
-	if c.cfg.Index == nil || statement == "" {
+	if statement == "" {
 		return nil
+	}
+	var found []frontier.NearDuplicate
+	seen := map[string]bool{}
+	add := func(id string, overlap float64) {
+		if overlap < DuplicateOverlap || seen[id] {
+			return
+		}
+		seen[id] = true
+		found = append(found, frontier.NearDuplicate{HypothesisID: id, Overlap: overlap})
+	}
+	for _, written := range st.statements {
+		add(written.id, index.TermOverlap(statement, written.statement))
+	}
+	if c.cfg.Index == nil {
+		return found
 	}
 	hits, err := c.cfg.Index.FrontierSearch(st.commit, index.FrontierQuery{
 		Match: statement,
@@ -213,15 +243,10 @@ func (c *Controller) nearDuplicates(st *state, statement string) []frontier.Near
 		// An unsearchable statement — no term a tokenizer could match — is
 		// not a failure of anything: it is a candidate whose wording the
 		// heuristic has nothing to say about.
-		return nil
+		return found
 	}
-	var found []frontier.NearDuplicate
 	for _, hit := range hits {
-		overlap := index.TermOverlap(statement, hit.Text)
-		if overlap < DuplicateOverlap {
-			continue
-		}
-		found = append(found, frontier.NearDuplicate{HypothesisID: hit.ID, Overlap: overlap})
+		add(hit.ID, index.TermOverlap(statement, hit.Text))
 	}
 	return found
 }

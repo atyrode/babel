@@ -341,6 +341,16 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		return exploreResult{}, nil, err
 	}
 	defer ledger.Close()
+	// §4.8's inbox, opened for the one thing a run may do with it: raise a
+	// question. A machine whose ledger will not open explores exactly as it
+	// did before and drops any question with a recorded note, because an
+	// unanswerable question is not worth failing an exploration over.
+	realityStore, realityErr := openReality()
+	if realityErr != nil {
+		a.diagf("reality: %v; questions this run raises will be dropped\n", Sanitize(realityErr.Error()))
+	} else {
+		defer realityStore.Close()
+	}
 
 	wcfg := p.worker
 	wcfg.Diagnostics = &sanitizingWriter{w: a.stderr, prefix: "worker: "}
@@ -388,8 +398,9 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		// in. It is on the same terms as the two above: a presence write can
 		// never fail or delay this run, so an absent announcer changes nothing
 		// except who can see the run happening.
-		Presence: p.presence,
-		Inputs:   inputs,
+		Presence:  p.presence,
+		Questions: questionLedger(realityStore),
+		Inputs:    inputs,
 	}
 	if err := grantResearch(&cfg, p.research); err != nil {
 		return exploreResult{}, nil, err

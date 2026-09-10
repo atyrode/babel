@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -386,6 +387,43 @@ func (s *Store) Aliases(ctx context.Context, entityID string) ([]Alias, error) {
 		out = append(out, record)
 	}
 	return out, rows.Err()
+}
+
+// ResolveSubject finds the canonical entity an untyped name refers to.
+//
+// It exists for the callers who did not choose the word. A run reading a
+// transcript meets "dev-01" as a hostname in one session, a path fragment in
+// another and a bare term in a third, and it cannot be asked which alias kind
+// the ledger filed it under — the operator decided that, possibly after the
+// session was written. So every kind is tried and the answers are compared.
+//
+// Ambiguity is refused for ResolveAlias's reason, and here the bar is higher
+// rather than lower: a name that means one entity as a hostname and a
+// different one as a repository is precisely the confusion §4.8 raises a
+// resolve-entity Question about, and a caller that guessed would bury it.
+func (s *Store) ResolveSubject(ctx context.Context, value string) (string, error) {
+	found := make([]string, 0, 2)
+	for _, kind := range AliasKinds() {
+		id, err := s.ResolveAlias(ctx, kind, value)
+		switch {
+		case errors.Is(err, ErrUnknownRecord):
+			continue
+		case err != nil:
+			return "", err
+		}
+		if !slices.Contains(found, id) {
+			found = append(found, id)
+		}
+	}
+	switch len(found) {
+	case 0:
+		// The name stays out of the error for §9's reason: an alias value
+		// is operator vocabulary and belongs in the ledger, not the log.
+		return "", fmt.Errorf("%w: no entity answers to that name", ErrUnknownRecord)
+	case 1:
+		return found[0], nil
+	}
+	return "", fmt.Errorf("%w: the name resolves to %d entities", ErrAmbiguousAlias, len(found))
 }
 
 // AddRelationship asserts a typed edge between two entities.

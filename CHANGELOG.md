@@ -11,6 +11,33 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **A run can ask.** A stage's result may now carry questions, and Babel
+  resolves each subject through the ledger's aliases and raises it into the
+  prioritized inbox — the third way a fact can come into existence, after an
+  operator's own edit and a trusted source's batch. It is the narrowest seam
+  that is useful: a question authorizes nothing, so a run may raise one and
+  may never answer one, and a subject the operator has not declared is a
+  recorded refusal rather than a new identity. `TestARunRaisesAQuestionInto
+  TheInbox` runs the real path against a real ledger and asserts the ledger
+  gained no facts.
+- **A loop that cannot run stops running.** Three consecutive cycles that
+  fail without spending anything park the conductor instead of drawing more
+  work. Cost is the evidence rather than the failure's text: a provider
+  window at its limit, a worker pin naming a binary a system rebuild removed
+  and an engine refusing the profile all look identical from here, and all of
+  them otherwise spin at several cycles a minute for the rest of the window.
+  A cycle that reached the model and then failed resets the count.
+- **The dedup probe can see the run's own work.** The frontier index is
+  refreshed before a run starts, so a candidate written by this run's explore
+  stage was invisible to its challenge stage's duplicate check — measured on
+  the real store, two runs restated their own candidate at 0.61 and 0.71
+  overlap and neither restatement carried a warning. The probe now measures
+  against the statements this attempt has already persisted as well as the
+  indexed heads.
+- **The self-improvement recipe can name a contract defect.** Its
+  classifications covered recipe prose, plumbing and code, so a defect in
+  `SPEC.md` itself had to be filed as one of the three things it is not.
+  `babel-improves-babel` version 2 adds `contract-defect`.
 - **The Reality Ledger has a way in.** Entities, facts, trusted sources,
   Questions, the interpreter plan gate and the prioritized inbox all shipped
   and were tested, and every `reality_*` table on every machine held zero

@@ -315,6 +315,11 @@ type Conductor struct {
 	// reconciliation cannot mistake a sibling cycle's in-flight journal entry
 	// for work a dead conductor left behind.
 	owned map[int]bool
+	// barren counts consecutive cycles that failed without spending
+	// anything, across every worker in this invocation. It is guarded by mu
+	// with the rest of the loop's arithmetic, because concurrent workers
+	// meeting the same dead engine must count one wall and not N.
+	barren int
 	// publishing serializes the cycle-boundary publication. It is separate
 	// from mu because publication is a network call that must not stall
 	// another cycle's decision, and one at a time because every attempt
@@ -758,7 +763,53 @@ func (c *Conductor) finish(ctx context.Context, presenceID presence.PresenceID, 
 	if over, reason := c.cfg.Ceilings.overrun(cycle); over {
 		return c.park(c.cfg.Now(), reason)
 	}
+	if reason, exhausted := c.wall(cycle, runErr); exhausted {
+		return c.park(c.cfg.Now(), reason)
+	}
 	return cycle, nil
+}
+
+// barrenLimit is how many consecutive cycles may fail without spending
+// anything before the loop parks.
+//
+// Three rather than one: a single engine launch can fail for a reason the next
+// one does not meet — a transient socket, a machine briefly out of memory, one
+// malformed session — and parking on the first would make the loop fragile in
+// exchange for nothing. Three in a row is no longer a coincidence.
+const barrenLimit = 3
+
+// wall reports whether the loop has stopped being able to work at all.
+//
+// A cycle that failed having spent nothing did not do work badly: it never
+// started. A provider window at its limit, a worker pin naming a binary a
+// system rebuild removed, a profile the engine refuses — all of them look
+// exactly like this, and all of them repeat for as long as the loop keeps
+// drawing. Left alone the loop spends the rest of its --until burning through
+// the frontier at several cycles a minute, marking candidates attempted
+// against runs that never ran.
+//
+// Cost is the evidence rather than the failure's text. Babel does not read the
+// engine's error prose to guess at quota — internal/run's lifecycle refuses
+// exactly that inference — but a receipt that accounts for no spend is Babel's
+// own record that nothing was bought, and it is true whatever the far side's
+// reason was.
+//
+// A failed cycle that did spend resets the counter with the successes: it
+// reached the model, so the wall is not up, and its failure is the ordinary
+// degradation the journal already records.
+func (c *Conductor) wall(cycle Cycle, runErr error) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if runErr == nil || cycle.Cost > 0 {
+		c.barren = 0
+		return "", false
+	}
+	c.barren++
+	if c.barren < barrenLimit {
+		return "", false
+	}
+	return fmt.Sprintf("%d consecutive cycles failed without spending anything, "+
+		"so the loop is parked rather than drawing more work: %s", c.barren, TrimNote(cycle.Reason)), true
 }
 
 // publish hands this cycle's now-durable records to the shared backend and

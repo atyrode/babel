@@ -32,6 +32,7 @@ func stageInstructions(stage Stage, auth authority) string {
 	if auth.remedies || auth.consolidate {
 		b.WriteString(instructionsProposals)
 	}
+	b.WriteString(instructionsQuestions)
 	b.WriteString(instructionsDispositions)
 	return b.String()
 }
@@ -76,6 +77,13 @@ You cannot develop observations or object in this stage, and the schema offers n
 
 const instructionsProposals = `A proposal is a suggested change and is never required. Attach one to a consolidation as "proposal" when the finding justifies it, or to a candidate as "remedy" when the candidate says what should change as well as what is the case; a candidate that only states what is the case emits no remedy. A proposal names its problem, its outcome, its impact, its classification ("private", "redaction-required" or "public-safe"), and any risks, open questions, prerequisites and verification criteria. Its "supporting" and "conflicting" material are evidence citations under the same rule as every other locator. Babel renders proposals for an operator to review; nothing you propose is applied.
 
+`
+
+const instructionsQuestions = `"questions" are the things the corpus cannot settle and a person can. Raise one when an answer would change what you conclude and no amount of further searching would produce it: which of two machines a service actually runs on, whether a convention the transcripts disagree about is still in force, what a repository is for. Each names its "subjects" — the machines, repositories, services or projects it is about, written the way the material names them — states its "prompt" and its "why_asked", and names under "hypothesis" the candidate it holds up, when it holds one up.
+
+Babel resolves each subject against the operator's own record of their world. A subject that record has never heard of is a refused question, and refusing it is correct: nothing you write creates a machine or a repository, and a question about a thing nobody has declared has nobody to route it to. Ask about what the material names, not about what you would like to exist.
+
+A question is a request that someone else settle something, so it is the one output here that carries no claim: it asserts nothing, decides nothing, and is answered only by the operator. Never answer one yourself, never treat an answer you imagine as evidence, and never raise one in place of a search you could have run.
 `
 
 const instructionsDispositions = `"dispositions" propose what an operator could do next with a record: "draft-issue" (which requires "workspace", the local checkout the issue is about), "propose-reality-fact", "store-memory", "ask-question" or "develop-further". They render as choices, never as actions, and are optional everywhere they appear.

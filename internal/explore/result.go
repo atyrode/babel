@@ -41,6 +41,15 @@ type Result struct {
 	// record: §5.2 requires a finite run to defer its remainder.
 	Deferred []Disposal `json:"deferred,omitempty"`
 	Rejected []Disposal `json:"rejected,omitempty"`
+	// Questions are the things this job could not settle from the corpus and
+	// needs a person or a trusted source to answer (§4.8).
+	//
+	// A run may raise one and may never answer one. A Question authorizes
+	// nothing — it is a request that somebody else authorize something — so
+	// unlike a fact it costs the ledger no authority to accept from a model.
+	// That asymmetry is the whole reason this field can exist beside §4.8's
+	// rule that Babel analysis is observation rather than authority.
+	Questions []QuestionDraft `json:"questions,omitempty"`
 }
 
 // Candidate is one emitted hypothesis and the claims developed against it.
@@ -89,6 +98,40 @@ type Candidate struct {
 type Remedy struct {
 	Ref      string                   `json:"ref"`
 	Proposal frontier.ProposalPayload `json:"proposal"`
+}
+
+// QuestionDraft is one thing a job could not settle and wants answered.
+//
+// The subjects are named the way the corpus named them — a hostname, a
+// repository, a path, whatever the transcript actually said — and Babel
+// resolves each through the Reality Ledger's typed aliases. A run does not
+// get to mint an identity: a subject that resolves to no entity is a refused
+// item recorded against the run, because a question about a thing the ledger
+// has never heard of has nobody to route it to and no fact to refresh.
+//
+// What a run may not supply is anything that would make the question
+// authoritative. There is no expected-authority field and no answer field:
+// the ledger sets the first from the facts the question targets, and only
+// the operator supplies the second.
+type QuestionDraft struct {
+	// Ref is the worker's reference for this question within the result.
+	Ref string `json:"ref"`
+	// Subjects name the entities the question is about, by alias.
+	Subjects []string `json:"subjects"`
+	// Predicates narrow it to the claims at issue, when it is about claims
+	// the ledger has a vocabulary for. It is optional: "what is this
+	// machine for" targets an entity and no predicate.
+	Predicates []string `json:"predicates,omitempty"`
+	// Hypothesis is the candidate whose development this question blocks,
+	// by the ref this same result gave it. §4.8 ranks a question that holds
+	// up real work above one that satisfies curiosity, and this is how a
+	// run says which it is.
+	Hypothesis string `json:"hypothesis,omitempty"`
+	// Prompt is what to ask, in the model's own words, and WhyAsked is what
+	// made it worth asking. Both reach a person unedited, so both are
+	// required: a prompt with no reason cannot be judged worth answering.
+	Prompt   string `json:"prompt"`
+	WhyAsked string `json:"why_asked"`
 }
 
 // Observation is one provenance-bearing claim a job developed.
