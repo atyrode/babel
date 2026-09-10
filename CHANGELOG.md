@@ -11,6 +11,16 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **A stage's prompt is ordered so a provider can cache it.** The parameter
+  block naming the run sat in front of the recipe bodies, so the prefix two
+  runs shared ended at the first run identifier and every stage paid to write
+  the whole cookbook into cache again: a real overnight batch spent 5.2M
+  cache-write tokens against 27M reads, and cache writes are the expensive
+  half. The run-invariant half — stage instructions, tools, then the recipes,
+  which are already sorted by id — now precedes the run's own parameters,
+  sources and prior records, which moves the cache-eligible prefix of a
+  default explore prompt from 5,598 to 84,556 bytes of 84,832.
+
 - **The conductor draws from the fleet's corpus.** `sessions fetch-all` and
   `--fetched` let a person scope another machine's sessions, but the
   unattended loop still sliced only its own host's sources: 343 fetched
