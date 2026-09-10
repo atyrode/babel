@@ -131,6 +131,9 @@ Commands:
   export ID                   render one record to stdout or a file
   reality inbox               list the prioritized Question inbox
   reality entity ID           show one entity, its aliases and its facts
+  reality entity create       create one entity the ledger can hold facts about
+  reality source register     register a trusted source and its authoring scope
+  reality refresh             expire lapsed facts and ask about them
   reality answer QUESTION_ID  record an attributed answer
   reality accept PLAN_ID      accept one interpreter plan
   reality import --source ID  apply one trusted source's versioned fact batch

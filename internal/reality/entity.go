@@ -35,6 +35,16 @@ func (k EntityKind) valid() bool {
 	return false
 }
 
+// EntityKinds lists the known kinds in a stable order. A caller creating an
+// entity or scoping a trusted source has to name one, so the vocabulary is
+// readable rather than private lore — the same reason Predicates is.
+func EntityKinds() []EntityKind {
+	return []EntityKind{
+		EntityEnvironment, EntityMachine, EntityOrganization, EntityProject,
+		EntityProvider, EntityRepository, EntityService, EntitySubject,
+	}
+}
+
 // EntityRole is what the resolution history currently says an entity is.
 //
 // It is derived from an append-only membership history rather than stored as a
@@ -127,6 +137,15 @@ func (k AliasKind) valid() bool {
 		return true
 	}
 	return false
+}
+
+// AliasKinds lists the known alias kinds in a stable order, for the same
+// reason EntityKinds does.
+func AliasKinds() []AliasKind {
+	return []AliasKind{
+		AliasChatTerm, AliasHostname, AliasIdentifier, AliasName,
+		AliasPath, AliasRepository, AliasURL,
+	}
 }
 
 // AttachmentState is the append-only lifecycle of an alias or a relationship.

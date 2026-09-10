@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -390,5 +391,185 @@ func TestRealityImportRejectsAnIncompleteInvocation(t *testing.T) {
 		if !strings.Contains(stderr, "Usage: babel reality import") {
 			t.Errorf("babel %s did not print its usage: %q", strings.Join(args, " "), stderr)
 		}
+	}
+}
+
+// An empty ledger can be seeded with the shipped commands alone.
+//
+// This is the gap that kept the Reality Ledger at zero rows since it was
+// built: a fact names a subject that must already exist and an import names a
+// source that must already be registered, but nothing outside this package's
+// own tests could create either. The storage, the lifecycle and the inbox
+// were complete and the front door was missing, so §4.8's "versioned
+// inventory import" had never been performed on any machine.
+//
+// What this drives is the whole seeding order through the command surface —
+// entities, then the source and its scope, then the batch — and what it
+// asserts is that the ledger holds the imported fact at the end of it. No
+// store handle is lent to the commands: they open the same ledger themselves.
+func TestRealitySeedsAnEmptyLedgerThroughTheCommandSurface(t *testing.T) {
+	f := newFixture(t)
+
+	machineOut, _ := f.ok("reality", "entity", "create", "--kind", "machine",
+		"--name", "dev-01", "--alias", "hostname=dev-01.local", "--json")
+	machine := decodeJSON[entityCreateResult](t, machineOut)
+	if machine.ID == "" || machine.Kind != "machine" {
+		t.Fatalf("created machine = %+v", machine)
+	}
+	if len(machine.Aliases) != 1 || machine.Aliases[0].Value != "dev-01.local" {
+		t.Errorf("the machine's aliases = %+v", machine.Aliases)
+	}
+
+	serviceOut, _ := f.ok("reality", "entity", "create", "--kind", "service",
+		"--name", "babel-archive", "--json")
+	service := decodeJSON[entityCreateResult](t, serviceOut)
+	if service.ID == "" {
+		t.Fatalf("created service = %+v", service)
+	}
+
+	// The scope is the operator's authorization, and it is declared once.
+	registration := fmt.Sprintf(`{"id": %q,
+		"version": 1,
+		"description": "versioned inventory of services and their placement",
+		"predicates": ["service-placement"],
+		"entity_kinds": ["service"],
+		"entity_ids": []}`, importSourceID)
+	sourceOut, stderr, code := f.runStdin(registration,
+		"reality", "source", "register", "--from-json", "-", "--json")
+	if code != exitOK {
+		t.Fatalf("register exited %d: %s", code, stderr)
+	}
+	source := decodeJSON[sourceResult](t, sourceOut)
+	if source.ID != importSourceID || source.Version != 1 {
+		t.Fatalf("registered source = %+v", source)
+	}
+	if !slices.Contains(source.Predicates, string(reality.PredicateServicePlacement)) {
+		t.Errorf("the source's scope does not carry the predicate it declared: %+v", source)
+	}
+
+	// And now the import, which is what the whole seeding order exists for.
+	document := batch("inventory-2026-09-10", placementFact(service.ID, machine.ID))
+	importOut, stderr, code := f.runStdin(document,
+		"reality", "import", "--source", importSourceID, "--from-json", "-", "--json")
+	if code != exitOK {
+		t.Fatalf("import exited %d: %s", code, stderr)
+	}
+	imported := decodeJSON[importResult](t, importOut)
+	if len(imported.Facts) != 1 {
+		t.Fatalf("imported %d facts, want the one the batch carried", len(imported.Facts))
+	}
+
+	// The ledger, read back through its own reader, is the only proof that
+	// counts: a command that reported a fact it did not store would pass
+	// every assertion above.
+	entityOut, _ := f.ok("reality", "entity", service.ID, "--json")
+	held := decodeJSON[entityResult](t, entityOut)
+	if len(held.Facts) != 1 {
+		t.Fatalf("the service holds %d facts after the import", len(held.Facts))
+	}
+	if held.Facts[0].ObjectID != machine.ID {
+		t.Errorf("the placement points at %q, want the machine %q",
+			held.Facts[0].ObjectID, machine.ID)
+	}
+	if !strings.HasPrefix(held.Facts[0].Authority, "trusted-source") {
+		t.Errorf("the imported fact carries authority %q, want the source's",
+			held.Facts[0].Authority)
+	}
+}
+
+// A source may not be registered for a predicate that does not exist.
+//
+// The refusal belongs at the authorization rather than at the batch: a source
+// registered for a misspelled predicate is authorized for nothing, and the
+// operator would learn that from an import failing days later.
+func TestRealitySourceRegisterRefusesAnUnknownPredicate(t *testing.T) {
+	f := newFixture(t)
+	document := `{"id": "typo-inventory",
+		"version": 1,
+		"description": "an inventory with a misspelled predicate",
+		"predicates": ["service-placment"],
+		"entity_kinds": ["service"],
+		"entity_ids": []}`
+	stdout, stderr, code := f.runStdin(document,
+		"reality", "source", "register", "--from-json", "-")
+	if code != exitUsage {
+		t.Fatalf("register exited %d, want a usage refusal: %s", code, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("the refusal wrote to stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "service-placment") ||
+		!strings.Contains(stderr, string(reality.PredicateServicePlacement)) {
+		t.Errorf("the refusal names neither the typo nor the vocabulary: %q", stderr)
+	}
+}
+
+// A Question reaches the inbox without anyone writing one.
+//
+// This is the half of §4.8 that was never built. The inbox, the scoring, the
+// state machine, the answer retention and the plan gate all shipped and were
+// tested, and the ledger held zero questions on every machine — because the
+// only ways one could exist were an operator typing it or an interpreter
+// proposing a follow-up to an answer that no question had asked for. A
+// predicate's refresh expectation is the one signal Babel owns outright, and
+// nothing was reading it.
+//
+// The pass is driven through the shipped commands over a real imported fact,
+// and what it asserts is the observable end state: the operator opens their
+// inbox and finds a question naming the subject and the predicate that went
+// stale, with the lapsed fact attached as the reason.
+func TestRealityRefreshAsksAboutAFactThatWentStale(t *testing.T) {
+	f := newFixture(t)
+	inv := f.seedInventory()
+
+	document := batch("inventory-2026-08-01", placementFact(inv.service, inv.machine))
+	if _, stderr, code := f.runStdin(document,
+		"reality", "import", "--source", importSourceID, "--from-json", "-", "--json"); code != exitOK {
+		t.Fatalf("import exited %d: %s", code, stderr)
+	}
+
+	// service-placement expects a refresh every 30 days, and the fact was
+	// observed on 2026-08-01, so nothing has lapsed the day after.
+	fresh, _ := f.ok("reality", "refresh", "--as-of", "2026-08-02T00:00:00Z", "--json")
+	if pass := decodeJSON[refreshResult](t, fresh); pass.Expired != 0 || len(pass.Questions) != 0 {
+		t.Fatalf("a fact one day old was treated as stale: %+v", pass)
+	}
+	if inbox, _ := f.ok("reality", "inbox", "--json"); len(decodeJSON[inboxResult](t, inbox).Items) != 0 {
+		t.Fatal("the inbox holds a question nobody has a reason to ask yet")
+	}
+
+	// Two months later it has.
+	stale, _ := f.ok("reality", "refresh", "--as-of", "2026-10-01T00:00:00Z", "--json")
+	pass := decodeJSON[refreshResult](t, stale)
+	if pass.Expired != 1 || len(pass.Questions) != 1 {
+		t.Fatalf("the lapsed fact produced %+v", pass)
+	}
+	asked := pass.Questions[0]
+	if asked.Kind != string(reality.KindRefreshStale) || asked.Class != string(reality.ClassMaintenance) {
+		t.Errorf("the question is %s/%s, want a stale refresh in maintenance", asked.Kind, asked.Class)
+	}
+	if !slices.Contains(asked.Entities, inv.service) {
+		t.Errorf("the question targets %v, want the service whose fact lapsed", asked.Entities)
+	}
+	if asked.Prompt == "" || !strings.Contains(asked.Prompt, "service-placement") {
+		t.Errorf("the prompt does not say what went stale: %q", asked.Prompt)
+	}
+
+	// The operator's own surface is the one that matters.
+	inboxOut, _ := f.ok("reality", "inbox", "--json")
+	inbox := decodeJSON[inboxResult](t, inboxOut)
+	if len(inbox.Items) != 1 || inbox.Items[0].ID != asked.ID {
+		t.Fatalf("the inbox holds %+v, want the question the pass raised", inbox.Items)
+	}
+
+	// Running it again asks nothing: the question is already waiting, and a
+	// producer that re-asked every pass would bury the inbox it feeds.
+	againOut, _ := f.ok("reality", "refresh", "--as-of", "2026-11-01T00:00:00Z", "--json")
+	again := decodeJSON[refreshResult](t, againOut)
+	if len(again.Questions) != 0 {
+		t.Errorf("a second pass asked again: %+v", again.Questions)
+	}
+	if inboxOut, _ = f.ok("reality", "inbox", "--json"); len(decodeJSON[inboxResult](t, inboxOut).Items) != 1 {
+		t.Error("the inbox grew on a pass that had nothing new to ask")
 	}
 }

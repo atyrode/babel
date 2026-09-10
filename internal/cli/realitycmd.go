@@ -27,6 +27,9 @@ const realityUsage = `Usage: babel reality <command> [flags]
 Commands:
   inbox                list the prioritized Question inbox
   entity ID            show one entity, its aliases, edges, and facts
+  entity create        create one entity the ledger can hold facts about
+  source register      register a trusted source and the scope it may author
+  refresh              expire lapsed facts and ask about them
   answer QUESTION_ID   record an attributed answer, retained verbatim
   accept PLAN_ID       accept one Answer Interpreter plan
   import --source ID   apply one trusted source's versioned fact batch
@@ -40,6 +43,10 @@ An import is the one write that is not the operator's own act: its facts are
 authored on the trusted source's authority, which the ledger assigns itself.
 The operator's authorization lives in the source's registration, where the
 predicates and entities it may author were declared.
+
+Seeding runs in that order: entities first, because a fact and a Question
+both name one and neither creates it; then the source, whose scope may name
+the kinds or the entities it may author; then the batch.
 
 Run "babel reality <command> -h" for a command's flags.
 `
@@ -69,6 +76,88 @@ Flags:
   --predicate P    narrow the facts to one predicate
   --as-of TIME     facts whose valid time covers this RFC3339 instant
   --json           emit the record as JSON on stdout
+`
+
+const realityEntityCreateUsage = `Usage: babel reality entity create --kind KIND --name NAME [flags]
+
+Creates one entity: a project, repository, machine, service, provider,
+environment, organization, or other operator-defined subject the ledger can
+then hold facts and Questions about. Nothing else creates one — a fact names
+a subject that must already exist, and a Question names target entities the
+ledger resolves rather than mints — so this is where a Reality Ledger starts.
+
+Creating an entity is an operator's own act (§4.8): identity is something a
+person asserts, not something inferred from a transcript, and no analysis run
+may perform it.
+
+An alias may be given repeatedly as KIND=VALUE. Aliases are typed because a
+rename, a path change and a conversational term are different kinds of
+evidence that two names mean one thing; they are how a later import or answer
+finds this entity without knowing the identifier Babel minted for it.
+
+Flags:
+  --kind KIND        project, repository, machine, service, provider,
+                     environment, organization, or subject
+  --name NAME        the display name
+  --note TEXT        what this entity is, in the operator's words
+  --alias KIND=VALUE typed alias; repeatable. Kinds: name, path, repository,
+                     hostname, chat-term, url, identifier
+  --json             emit the entity as JSON on stdout
+`
+
+const realitySourceRegisterUsage = `Usage: babel reality source register --from-json FILE|- [--json]
+
+Registers a trusted source and the scope it may author within, reading the
+document from FILE or from stdin when FILE is "-". This is the authorization
+"babel reality import" spends: the operator declares here, once, which
+predicates and which entities a source may assert facts about, and every
+later batch from it is refused whole if it reaches outside that scope.
+
+A source is identified by a stable id the operator chooses, so the same
+dotfiles inventory is the same source across machines and reinstalls. The
+registration is immutable: the ledger refuses to rewrite a scope, because a
+widened scope applied retroactively would change what past imports were
+allowed to say.
+
+The document is one JSON object. A scope may name entity kinds, specific
+entity ids, or both; entities named here must already exist:
+
+  {"id": "dotfiles-inventory",
+   "version": 1,
+   "description": "versioned inventory of machines and service placement",
+   "predicates": ["service-placement", "deployment-state"],
+   "entity_kinds": ["machine", "service"],
+   "entity_ids": []}
+
+An unrecognized field is an error rather than an ignored key: a misspelled
+"predicates" would register a source authorized for nothing, and the refusal
+would arrive later at the batch instead of here at the authorization.
+
+Flags:
+  --from-json FILE|-   the registration document, or "-" for stdin
+  --json               emit the registration as JSON on stdout
+`
+
+const realityRefreshUsage = `Usage: babel reality refresh [--as-of TIME] [--json]
+
+Marks every fact whose refresh expectation has lapsed as stale, and asks one
+maintenance Question about each. §4.8 gives each predicate an expectation —
+where a service runs is worth doubting after a month, whether it is deployed
+after a week — and a stale fact nobody is told about is a belief the ledger
+quietly keeps holding.
+
+This is the one Question producer that needs no model and no operator: it
+derives what to ask from facts Babel already holds. It writes no fact. A
+Question is a request for someone else to authorize something, which is why
+it may be raised this way and answered only by the authority the fact names.
+
+Asking is idempotent. A stale fact whose subject and predicate already have a
+live question adds nothing, and one an operator declined stays declined until
+newer evidence arrives, so this is safe to run on a schedule.
+
+Flags:
+  --as-of TIME   evaluate expectations at this RFC3339 instant, not now
+  --json         emit the pass as JSON on stdout
 `
 
 const realityAnswerUsage = `Usage: babel reality answer QUESTION_ID --text T [flags]
@@ -314,6 +403,51 @@ type importResult struct {
 	Facts    []factRow `json:"facts"`
 }
 
+// sourceDocument is `babel reality source register --from-json`. The scope is
+// declared as data rather than as flags because it is the durable half of the
+// authorization: an operator reviews this document, and the same document
+// registers the same source on another machine.
+type sourceDocument struct {
+	ID          string   `json:"id"`
+	Version     int      `json:"version"`
+	Description string   `json:"description"`
+	Note        string   `json:"note"`
+	Predicates  []string `json:"predicates"`
+	EntityKinds []string `json:"entity_kinds"`
+	EntityIDs   []string `json:"entity_ids"`
+}
+
+// sourceResult is what the ledger stored, not what the document asked for.
+type sourceResult struct {
+	ID           string   `json:"id"`
+	Version      int      `json:"version"`
+	RegisteredAt string   `json:"registered_at"`
+	Description  string   `json:"description,omitempty"`
+	Predicates   []string `json:"predicates"`
+	EntityKinds  []string `json:"entity_kinds,omitempty"`
+	EntityIDs    []string `json:"entity_ids,omitempty"`
+}
+
+// entityCreateResult reports the identifier the ledger minted, which is the
+// one a later fact or Question has to name.
+type entityCreateResult struct {
+	ID          string     `json:"id"`
+	Kind        string     `json:"kind"`
+	DisplayName string     `json:"display_name"`
+	CreatedAt   string     `json:"created_at"`
+	Aliases     []aliasRow `json:"aliases,omitempty"`
+}
+
+// refreshResult is `babel reality refresh --json`. The three counts are
+// separate because a pass that expires ten facts and asks nothing is a
+// working pass, not a failed one: the questions were already waiting.
+type refreshResult struct {
+	Expired    int           `json:"expired"`
+	Existing   int           `json:"already_open"`
+	Suppressed int           `json:"suppressed"`
+	Questions  []questionRow `json:"questions"`
+}
+
 // reality routes `babel reality <verb>`.
 func (a *app) reality(ctx context.Context, args []string) error {
 	if len(args) == 0 {
@@ -326,11 +460,24 @@ func (a *app) reality(ctx context.Context, args []string) error {
 	case "inbox":
 		return a.realityInbox(ctx, args[1:])
 	case "entity":
+		// "entity create" is a write and "entity ID" is a read, so the verb
+		// is disambiguated here rather than by a flag: an identifier that
+		// happened to be spelled "create" is not a thing this ledger mints.
+		if len(args) > 1 && args[1] == "create" {
+			return a.realityEntityCreate(ctx, args[2:])
+		}
 		return a.realityEntity(ctx, args[1:])
+	case "source":
+		if len(args) > 1 && args[1] == "register" {
+			return a.realitySourceRegister(ctx, args[2:])
+		}
+		return &usageError{msg: "reality source requires the register subcommand", usage: realityUsage}
 	case "answer":
 		return a.realityAnswer(ctx, args[1:])
 	case "accept":
 		return a.realityAccept(ctx, args[1:])
+	case "refresh":
+		return a.realityRefresh(ctx, args[1:])
 	case "import":
 		return a.realityImport(ctx, args[1:])
 	default:
@@ -677,6 +824,269 @@ func (a *app) realityAccept(ctx context.Context, args []string) error {
 	})
 }
 
+// realityEntityCreate mints one entity.
+//
+// Nothing else in Babel does. A fact's subject and a Question's targets are
+// both required to exist already, so an empty ledger cannot be written into
+// by any path — which is why the ledger has held zero rows: the storage and
+// the lifecycle were complete and the front door was missing.
+func (a *app) realityEntityCreate(ctx context.Context, args []string) error {
+	c := newCmd("reality entity create", realityEntityCreateUsage)
+	kind := c.fs.String("kind", "", "the entity kind")
+	name := c.fs.String("name", "", "the display name")
+	note := c.fs.String("note", "", "what this entity is, in the operator's words")
+	var aliases stringList
+	c.fs.Var(&aliases, "alias", "typed alias as KIND=VALUE; repeatable")
+	asJSON := c.fs.Bool("json", false, "emit the entity as JSON")
+	if err := c.parse(a, args); err != nil {
+		return err
+	}
+	if err := c.noArgs(); err != nil {
+		return err
+	}
+	if *kind == "" {
+		return c.usagef("reality entity create requires --kind KIND")
+	}
+	if *name == "" {
+		return c.usagef("reality entity create requires --name NAME")
+	}
+	entityKind, err := parseEntityKind(c, *kind)
+	if err != nil {
+		return err
+	}
+	// Every alias is parsed before the ledger is opened, so a typo in the
+	// third one does not leave an entity created with the first two.
+	parsed := make([]reality.AliasInput, 0, len(aliases))
+	for _, spec := range aliases {
+		alias, err := parseAliasSpec(c, spec)
+		if err != nil {
+			return err
+		}
+		parsed = append(parsed, alias)
+	}
+
+	store, err := openReality()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	entity, err := store.CreateEntity(ctx, reality.EntityInput{
+		Kind:    entityKind,
+		Payload: reality.EntityPayload{DisplayName: *name, Notes: *note},
+	})
+	if err != nil {
+		return fmt.Errorf("create entity: %w", err)
+	}
+	res := entityCreateResult{
+		ID:          Sanitize(entity.ID),
+		Kind:        Sanitize(string(entity.Kind)),
+		DisplayName: Sanitize(entity.Payload.DisplayName),
+		CreatedAt:   formatTime(entity.CreatedAt),
+	}
+	// An alias that fails after the entity exists is reported against the
+	// entity rather than rolled back into it: the identity is real and
+	// naming it again would mint a second one.
+	for _, alias := range parsed {
+		alias.EntityID = entity.ID
+		added, err := store.AddAlias(ctx, alias)
+		if err != nil {
+			return fmt.Errorf("entity %s created; add alias %s: %w", entity.ID, alias.Kind, err)
+		}
+		res.Aliases = append(res.Aliases, aliasRow{
+			Kind:  Sanitize(string(added.Kind)),
+			Value: Sanitize(added.Payload.Value),
+		})
+	}
+
+	if *asJSON {
+		return a.emitJSON(res)
+	}
+	rows := [][2]string{
+		{"entity", res.ID},
+		{"kind", res.Kind},
+		{"name", res.DisplayName},
+		{"created", res.CreatedAt},
+	}
+	for _, alias := range res.Aliases {
+		rows = append(rows, [2]string{"alias", alias.Kind + " " + alias.Value})
+	}
+	return writeDetail(a.stdout, rows)
+}
+
+// realitySourceRegister records what a trusted source may author.
+//
+// This is the authorization an import spends, and it is deliberately a
+// separate act from the import: §4.8 puts the operator's decision here, once,
+// rather than in every batch, so a source that later ships a fact outside its
+// declared scope is refused by a rule the operator wrote earlier.
+func (a *app) realitySourceRegister(ctx context.Context, args []string) error {
+	c := newCmd("reality source register", realitySourceRegisterUsage)
+	fromJSON := c.fs.String("from-json", "", "the registration document, or \"-\" for stdin")
+	asJSON := c.fs.Bool("json", false, "emit the registration as JSON")
+	if err := c.parse(a, args); err != nil {
+		return err
+	}
+	if err := c.noArgs(); err != nil {
+		return err
+	}
+	if *fromJSON == "" {
+		return c.usagef("reality source register requires --from-json FILE|-")
+	}
+	doc, err := decodeOneJSON[sourceDocument](a, *fromJSON, "registration document")
+	if err != nil {
+		return err
+	}
+	if doc.ID == "" {
+		return c.usagef("the registration document needs an \"id\"")
+	}
+	if len(doc.Predicates) == 0 {
+		return c.usagef("the registration document needs at least one predicate in \"predicates\"")
+	}
+
+	kinds := make([]reality.EntityKind, 0, len(doc.EntityKinds))
+	for _, raw := range doc.EntityKinds {
+		kind, err := parseEntityKind(c, raw)
+		if err != nil {
+			return err
+		}
+		kinds = append(kinds, kind)
+	}
+	predicates := make([]reality.Predicate, 0, len(doc.Predicates))
+	for _, raw := range doc.Predicates {
+		predicate, err := parsePredicate(c, raw)
+		if err != nil {
+			return err
+		}
+		predicates = append(predicates, predicate)
+	}
+
+	store, err := openReality()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	source, err := store.RegisterTrustedSource(ctx, reality.TrustedSourceInput{
+		ID:          doc.ID,
+		Version:     doc.Version,
+		Predicates:  predicates,
+		EntityIDs:   doc.EntityIDs,
+		EntityKinds: kinds,
+		Payload: reality.TrustedSourcePayload{
+			Description: doc.Description,
+			Note:        doc.Note,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("register trusted source %s: %w", doc.ID, err)
+	}
+
+	res := sourceResult{
+		ID:           Sanitize(source.ID),
+		Version:      source.Version,
+		RegisteredAt: formatTime(source.RegisteredAt),
+		Description:  Sanitize(source.Payload.Description),
+	}
+	for _, p := range source.Predicates {
+		res.Predicates = append(res.Predicates, Sanitize(string(p)))
+	}
+	for _, k := range source.EntityKinds {
+		res.EntityKinds = append(res.EntityKinds, Sanitize(string(k)))
+	}
+	for _, id := range source.EntityIDs {
+		res.EntityIDs = append(res.EntityIDs, Sanitize(id))
+	}
+	if *asJSON {
+		return a.emitJSON(res)
+	}
+	rows := [][2]string{
+		{"source", res.ID},
+		{"version", strconv.Itoa(res.Version)},
+		{"registered", res.RegisteredAt},
+		{"description", res.Description},
+		{"predicates", strings.Join(res.Predicates, ", ")},
+	}
+	if len(res.EntityKinds) > 0 {
+		rows = append(rows, [2]string{"entity kinds", strings.Join(res.EntityKinds, ", ")})
+	}
+	if len(res.EntityIDs) > 0 {
+		rows = append(rows, [2]string{"entities", strings.Join(res.EntityIDs, ", ")})
+	}
+	return writeDetail(a.stdout, rows)
+}
+
+// realityRefresh runs the one Question producer that needs nobody.
+//
+// Every other way a Question could come into existence needs an author: an
+// operator typing one, or an interpreter plan proposing a follow-up. This one
+// reads the ledger's own aging and asks about it, which is why the inbox
+// could be built, tested and shipped and still hold nothing.
+func (a *app) realityRefresh(ctx context.Context, args []string) error {
+	c := newCmd("reality refresh", realityRefreshUsage)
+	asOf := c.fs.String("as-of", "", "evaluate expectations at this RFC3339 instant")
+	asJSON := c.fs.Bool("json", false, "emit the pass as JSON")
+	if err := c.parse(a, args); err != nil {
+		return err
+	}
+	if err := c.noArgs(); err != nil {
+		return err
+	}
+	var at time.Time
+	if *asOf != "" {
+		parsed, err := time.Parse(time.RFC3339, *asOf)
+		if err != nil {
+			return c.usagef("--as-of %q is not an RFC3339 timestamp", *asOf)
+		}
+		at = parsed
+	}
+
+	store, err := openReality()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	pass, err := store.RefreshStale(ctx, at)
+	if err != nil {
+		return fmt.Errorf("refresh stale facts: %w", err)
+	}
+
+	res := refreshResult{
+		Expired:    len(pass.ExpiredFactIDs),
+		Existing:   pass.Existing,
+		Suppressed: pass.Suppressed,
+		Questions:  make([]questionRow, 0, len(pass.Asked)),
+	}
+	for _, question := range pass.Asked {
+		res.Questions = append(res.Questions, renderQuestion(question))
+	}
+	if *asJSON {
+		return a.emitJSON(res)
+	}
+	if err := writeDetail(a.stdout, [][2]string{
+		{"expired", strconv.Itoa(res.Expired) + " " + plural(res.Expired, "fact", "facts")},
+		{"asked", strconv.Itoa(len(res.Questions))},
+		{"already open", strconv.Itoa(res.Existing)},
+		{"suppressed", strconv.Itoa(res.Suppressed)},
+	}); err != nil {
+		return err
+	}
+	if len(res.Questions) == 0 {
+		return nil
+	}
+	// The questions are listed rather than counted, because the identifier
+	// is what "babel reality answer" takes.
+	fmt.Fprint(a.stdout, "\nquestions\n")
+	table := make([][]string, 0, len(res.Questions))
+	for _, question := range res.Questions {
+		table = append(table, []string{
+			question.ID, question.Kind, question.Class, question.Prompt,
+		})
+	}
+	return writeTable(a.stdout, []string{"QUESTION", "KIND", "CLASS", "PROMPT"}, table)
+}
+
 func (a *app) realityImport(ctx context.Context, args []string) error {
 	c := newCmd("reality import", realityImportUsage)
 	source := c.fs.String("source", "", "the registered trusted source this batch comes from")
@@ -697,7 +1107,7 @@ func (a *app) realityImport(ctx context.Context, args []string) error {
 
 	// The whole document is decoded before the ledger is opened, so a
 	// malformed batch is refused without a transaction ever starting.
-	doc, err := a.decodeImportDocument(*fromJSON)
+	doc, err := decodeOneJSON[importDocument](a, *fromJSON, "import document")
 	if err != nil {
 		return err
 	}
@@ -771,37 +1181,38 @@ func (a *app) realityImport(ctx context.Context, args []string) error {
 		[]string{"FACT", "SUBJECT", "PREDICATE", "VALUE", "STATUS", "AUTHORITY"}, table)
 }
 
-// decodeImportDocument reads exactly one batch document from a file or stdin.
+// decodeOneJSON reads exactly one document of type T from a file or stdin.
 //
 // Trailing data is rejected, and so is an unrecognized field: a misspelled
 // "valid_until" that was silently dropped would import an open-ended fact the
-// source never asserted, and a silently dropped "provenance" would turn a
-// scoped assertion into one the ledger refuses for a reason the operator
-// cannot see in their own document. The document is never echoed, because an
-// inventory names hosts and paths.
-func (a *app) decodeImportDocument(from string) (importDocument, error) {
+// source never asserted, and a misspelled "predicates" would register a
+// source authorized for nothing. The document is never echoed back, because
+// an inventory names hosts and paths.
+func decodeOneJSON[T any](a *app, from, what string) (T, error) {
+	var doc T
 	in := a.stdin
 	if from != "-" {
 		f, err := os.Open(from)
 		if err != nil {
-			return importDocument{}, fmt.Errorf("open import document %s: %w", from, err)
+			return doc, fmt.Errorf("open %s %s: %w", what, from, err)
 		}
 		defer f.Close()
 		in = f
 	}
 
-	var doc importDocument
 	dec := json.NewDecoder(in)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&doc); err != nil {
-		return importDocument{}, fmt.Errorf("decode import document: %w", err)
+		var zero T
+		return zero, fmt.Errorf("decode %s: %w", what, err)
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("multiple JSON values")
 		}
-		return importDocument{}, fmt.Errorf("decode import document: %w", err)
+		var zero T
+		return zero, fmt.Errorf("decode %s: %w", what, err)
 	}
 	return doc, nil
 }
@@ -902,4 +1313,40 @@ func parsePredicate(c *cmd, value string) (reality.Predicate, error) {
 		names = append(names, string(k))
 	}
 	return "", c.usagef("unknown --predicate %q (want one of %s)", value, strings.Join(names, ", "))
+}
+
+func parseEntityKind(c *cmd, value string) (reality.EntityKind, error) {
+	known := reality.EntityKinds()
+	if slices.Contains(known, reality.EntityKind(value)) {
+		return reality.EntityKind(value), nil
+	}
+	names := make([]string, 0, len(known))
+	for _, k := range known {
+		names = append(names, string(k))
+	}
+	return "", c.usagef("unknown entity kind %q (want one of %s)", value, strings.Join(names, ", "))
+}
+
+// parseAliasSpec reads one KIND=VALUE alias.
+//
+// The value keeps every "=" after the first, because a URL alias is a normal
+// thing to record and splitting on all of them would silently truncate one.
+func parseAliasSpec(c *cmd, spec string) (reality.AliasInput, error) {
+	rawKind, value, ok := strings.Cut(spec, "=")
+	if !ok || rawKind == "" || value == "" {
+		return reality.AliasInput{}, c.usagef("--alias %q is not KIND=VALUE", spec)
+	}
+	known := reality.AliasKinds()
+	if !slices.Contains(known, reality.AliasKind(rawKind)) {
+		names := make([]string, 0, len(known))
+		for _, k := range known {
+			names = append(names, string(k))
+		}
+		return reality.AliasInput{}, c.usagef("unknown alias kind %q (want one of %s)",
+			rawKind, strings.Join(names, ", "))
+	}
+	return reality.AliasInput{
+		Kind:    reality.AliasKind(rawKind),
+		Payload: reality.AliasPayload{Value: value},
+	}, nil
 }
