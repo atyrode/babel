@@ -11,6 +11,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **`babel conductor run --challenge --synthesize` lets the loop consolidate
+  what it explores.** A cycle ran the discovery pass and nothing else, with no
+  way to authorize otherwise, so an unattended loop could only grow the
+  hypothesis frontier: the synthesizer is the sole writer of findings and
+  proposals, and it was unreachable from the conductor at any setting. Both
+  stages stay off by default because each is a separate worker job billed
+  against the same ceiling, and `--synthesize` without `--challenge` is
+  refused — §5.4 promotes nothing a skeptical pass has not attacked first. An
+  authorized cycle against the synthetic engine runs three worker jobs where
+  an unauthorized one runs one.
+
 - **Repository instructions separate shared policy from Babel-specific guidance (#193).**
   The root keeps useful checks, generated-artifact ownership and operator-only archive,
   custody and deployment boundaries, while routing detailed procedures to their owners
@@ -92,6 +103,30 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `TestSynthesizerConsolidatesServedObservationsUnderItsContract` pin it.
 
 ### Fixed
+
+- **Receipts written before the native-engine cutover are readable again, and
+  the conductor with them.** The cutover reshaped a receipt body's worker half
+  without moving `ReceiptSchema`, so strict decoding rejected every receipt
+  those runs recorded — and because the budget ledger walks the newest
+  receipts before checking any date, one such row failed `babel conductor
+  status` and every fresh `babel conductor run` cycle outright. Schema 1 now
+  names the pre-cutover shape and schema 2 today's; the retired
+  `ProtocolVersion` and `ResolvedCapabilities` are read and deliberately not
+  carried forward, `UnknownFields` carries forward as `UnknownFrames`, and
+  decoding stays strict so an altered row is still refused. Verified against
+  dev-01's own store: 202 of 202 stored receipts decode, and `conductor
+  status` reports its 26 recorded cycles, spend and ladder again.
+
+- **`babel fleet records` opens the citation edges it committed.** The reader
+  handed every shared-catalog `link` record to the frontier decoder, whose
+  narrower vocabulary has no `inspired_by`, so 92 of dev-01's 100 committed
+  records listed as unopened errors. Opening now routes on the record's own
+  discriminator: `internal/reference` owns the read half of the shape it
+  publishes, frontier's typed links keep their path, and a `link` in neither
+  vocabulary still surfaces as unopened with a reason. The CLI and web
+  listings render the edge's own line. No catalog mutation was needed — the
+  records were always valid; the live listing now reports 100 records, none
+  unopened.
 
 - **`babel sync --restage` recovers locally durable records that predate the
   publication journal or payload ring (#170).** Recovery uses the owning

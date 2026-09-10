@@ -15,7 +15,15 @@ import (
 // ReceiptSchema is the version of the run receipt's stored shape. Every
 // receipt records it, so a build that meets a record it cannot fully
 // understand says so instead of reading it optimistically.
-const ReceiptSchema = 1
+const ReceiptSchema = 2
+
+// legacyReceiptSchema is the shape receipts were written in before #182
+// replaced the `babel.analysis-worker` wire protocol with `code engine` and
+// native OMP RPC. That change reshaped the body's worker half without
+// changing this number, which is the reason the number now moves: schema 1
+// names the pre-cutover shape, schema 2 names today's, and each is decoded
+// as what it is instead of both being read as the newer one and failing.
+const legacyReceiptSchema = 1
 
 // Sync states of a durable record. A Phase B output is durable locally the
 // moment it is written, and globally committed only once its PostgreSQL rows
@@ -902,6 +910,48 @@ func unmarshalBody(raw []byte) (Body, error) {
 	if err := dec.Decode(&b); err != nil {
 		return Body{}, fmt.Errorf("receipt: decode body: %w", err)
 	}
+	if err := validateBody(b); err != nil {
+		return Body{}, err
+	}
+	return b, nil
+}
+
+// unmarshalStoredBody parses a stored body as the shape its schema names.
+// A receipt is immutable, so the bytes on disk stay in the shape the build
+// that wrote them used; reading them is where the two shapes meet.
+func unmarshalStoredBody(schema int, raw []byte) (Body, error) {
+	switch schema {
+	case ReceiptSchema:
+		return unmarshalBody(raw)
+	case legacyReceiptSchema:
+		return unmarshalLegacyBody(raw)
+	}
+	return Body{}, fmt.Errorf("run: stored receipt schema %d is not supported by this build", schema)
+}
+
+// unmarshalLegacyBody parses a body written before #182. Only the worker half
+// changed shape across that cutover, so the rest is decoded as today's Body
+// and the worker half is translated by the boundary that owns it.
+func unmarshalLegacyBody(raw []byte) (Body, error) {
+	// The outer Worker shadows the embedded Body's field of the same name:
+	// encoding/json resolves a conflict in favour of the shallower field, so
+	// "worker" lands here as bytes and every other key decodes as it does
+	// today.
+	var legacy struct {
+		Body
+		Worker json.RawMessage `json:"worker"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&legacy); err != nil {
+		return Body{}, fmt.Errorf("receipt: decode body: %w", err)
+	}
+	w, err := worker.DecodeLegacyReceipt(legacy.Worker)
+	if err != nil {
+		return Body{}, fmt.Errorf("receipt: decode body: %w", err)
+	}
+	b := legacy.Body
+	b.Worker = w
 	if err := validateBody(b); err != nil {
 		return Body{}, err
 	}

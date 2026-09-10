@@ -639,6 +639,12 @@ func markFleetRecord(record fleet.Record, localHost string) (fleetMark, string) 
 	if record.CommittedAt != nil {
 		mark.CommittedAt = timeText(*record.CommittedAt)
 	}
+	if record.Edge != nil {
+		// A citation edge shares the `link` kind with internal/frontier and
+		// not its derivation: the line is internal/reference's, so this view
+		// and the CLI listing render one citation identically.
+		return mark, record.Edge.Summary()
+	}
 	if record.Published == nil {
 		// Producer-owned JSON can be open without a frontier projection.
 		// Its lack of a searchable summary must not mark the row unopened.

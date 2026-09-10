@@ -92,9 +92,20 @@ Flags:
   --once               run exactly one cycle and stop
   --stop-file PATH     stop before the next cycle when this file exists
   --until TIME         stop at RFC 3339 time, HH:MM today, or after a duration
+  --challenge          run the challenger over each cycle's exploration
+  --synthesize         run the synthesizer, which is what promotes findings
   --worker PATH        the Code executable that speaks the worker protocol
   --worker-arg ARG     extra argument for the worker; repeatable
   --json               emit the cycles this invocation ran as JSON
+
+A cycle explores by default and stops there, so a loop left alone grows the
+hypothesis frontier and consolidates none of it: only the synthesizer writes
+findings and proposals. --challenge and --synthesize authorize those stages for
+every cycle this invocation runs. They are separate worker jobs, so each cycle
+costs more than the ceiling was set against for discovery alone — set the
+ceilings for the shape of cycle being asked for. --synthesize without
+--challenge is refused: §5.4 promotes nothing that a deliberately skeptical
+pass has not attacked first.
 
 There is no daemon mode. Supervision, restart policy and wall-clock scheduling
 belong to the OS, which already owns them.
@@ -480,12 +491,17 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	once := c.fs.Bool("once", false, "run exactly one cycle and stop")
 	until := c.fs.String("until", "", "stop at this time, or after this duration")
 	stopFile := c.fs.String("stop-file", "", "stop at the cycle boundary when this file exists")
+	challenge := c.fs.Bool("challenge", false, "run the challenger over each cycle's exploration")
+	synthesize := c.fs.Bool("synthesize", false, "run the synthesizer, which is what promotes findings")
 	asJSON := c.fs.Bool("json", false, "emit the cycles this invocation ran as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
 	}
 	if err := c.noArgs(); err != nil {
 		return err
+	}
+	if *synthesize && !*challenge {
+		return c.usagef("--synthesize needs --challenge: a finding is promoted from exploration and critique together, never from exploration alone")
 	}
 
 	settings, err := loadConductorSettings()
@@ -557,15 +573,17 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 				embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 		),
 		Runner: &conductorRunner{
-			app:       a,
-			cmd:       c,
-			state:     state,
-			worker:    wcfg,
-			profile:   profileRef,
-			host:      host,
-			adapters:  adapters(),
-			scanRoots: sf.rootList(),
-			presence:  announcer,
+			app:        a,
+			cmd:        c,
+			state:      state,
+			worker:     wcfg,
+			profile:    profileRef,
+			host:       host,
+			adapters:   adapters(),
+			scanRoots:  sf.rootList(),
+			challenge:  *challenge,
+			synthesize: *synthesize,
+			presence:   announcer,
 		},
 		Ledger:   conductor.NewReceiptLedger(state.runs),
 		Journal:  journal,
@@ -793,6 +811,11 @@ type conductorRunner struct {
 	host      string
 	adapters  []adapter.Adapter
 	scanRoots []string
+	// challenge and synthesize are the stages this invocation authorized for
+	// every cycle. They are off unless the operator asked, because they are
+	// extra worker jobs billed against the same ceiling.
+	challenge  bool
+	synthesize bool
 	// presence is the loop's announcer, handed on to every cycle's run so a
 	// cycle's two rows - the loop's and the run's - come from one connection
 	// (#118). Nil on a machine with no fleet.
@@ -847,20 +870,23 @@ func (r *conductorRunner) Run(ctx context.Context, runID string,
 		return conductor.Result{}, err
 	}
 
-	// A cycle runs the discovery pass alone. §5.4's challenger and synthesizer
-	// are separate jobs with their own worker invocations, so scheduling them
-	// unasked would multiply a cycle's cost against a ceiling the operator set
-	// for one run; they stay operator choices on `babel explore`.
+	// A cycle runs the discovery pass alone unless this invocation authorized
+	// more. §5.4's challenger and synthesizer are separate jobs with their own
+	// worker invocations, so scheduling them unasked would multiply a cycle's
+	// cost against a ceiling the operator set for one run; the operator turns
+	// them on for the loop the same way they do for a single `babel explore`.
 	return r.execute(ctx, explorePlan{
-		prep:      scoped.prep,
-		profile:   r.profile,
-		recipes:   set,
-		worker:    r.worker,
-		runID:     runID,
-		authority: a.Authority,
-		roots:     a.Roots,
-		scanRoots: r.scanRoots,
-		presence:  r.presence,
+		prep:       scoped.prep,
+		profile:    r.profile,
+		recipes:    set,
+		worker:     r.worker,
+		runID:      runID,
+		authority:  a.Authority,
+		roots:      a.Roots,
+		scanRoots:  r.scanRoots,
+		challenge:  r.challenge,
+		synthesize: r.synthesize,
+		presence:   r.presence,
 	}, false)
 }
 

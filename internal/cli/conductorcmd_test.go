@@ -32,6 +32,20 @@ func TestConductorRunRefusesWithoutCeilings(t *testing.T) {
 	}
 }
 
+// The loop may be told to consolidate, but not to promote on exploration
+// alone: §5.4 requires the challenger between a hypothesis and a finding, and
+// a flag pair that let an operator skip it would quietly relax the one rule
+// that keeps promotion adversarial.
+func TestConductorRunRefusesSynthesisWithoutTheChallenger(t *testing.T) {
+	f := newFixture(t)
+	f.ok("conductor", "configure", "--per-cycle", "0.50", "--per-day", "5.00", "--json")
+
+	_, stderr := f.mustExit(exitUsage, "conductor", "run", "--once", "--synthesize")
+	if !strings.Contains(stderr, "--challenge") {
+		t.Errorf("the refusal does not say what is missing:\n%s", stderr)
+	}
+}
+
 // configure stores both ceilings or refuses. Neither has a default, because a
 // default ceiling is a limit nobody chose.
 func TestConductorConfigureRequiresBothCeilings(t *testing.T) {
