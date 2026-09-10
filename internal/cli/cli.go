@@ -99,6 +99,7 @@ Commands:
   sessions title infer        have a model write titles for untitled sessions
   sessions title clear        withdraw model-written titles
   sessions fetch SELECTOR     restore one session's files from a snapshot
+  sessions fetch-all          restore every session a host or the fleet archived
   sessions prune --local      remove locally fetched session directories
   prepare [SELECTOR...]       fix an exploration's corpus scope
   explore --preparation ID    run one exploration through Code

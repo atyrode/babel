@@ -25,6 +25,8 @@ type conductorConfigDoc struct {
 	Floor              int     `json:"serendipity_floor"`
 	IntervalSeconds    int     `json:"interval_seconds"`
 	SliceSessions      int     `json:"slice_sessions"`
+	ConsolidateOneIn   int     `json:"consolidate_one_in"`
+	ConsolidateRoots   int     `json:"consolidate_roots"`
 	BabelImprovesBabel bool    `json:"babel_improves_babel"`
 	BabelTunesItself   bool    `json:"babel_tunes_itself"`
 	ConfiguredAt       string  `json:"configured_at"`
@@ -644,9 +646,14 @@ func plantSpentDay(t *testing.T, p *phaseB, cost float64) {
 // assertLadderShape checks that the ladder a status view reports is the ladder
 // #96 describes: the operator's invitations, then the policy rung holding #88's
 // and #94's standing duties, then the serendipity floor.
+//
+// Consolidation is reported after all three and not inside them. It is a
+// protected share rather than a rung: below the invitations a busy operator
+// would starve it, and above them it would outrank a person asking for
+// something.
 func assertLadderShape(t *testing.T, rungs []conductorRungDoc) {
 	t.Helper()
-	want := []string{"invitation", "policy", "serendipity"}
+	want := []string{"invitation", "policy", "serendipity", "consolidation"}
 	if len(rungs) != len(want) {
 		t.Fatalf("ladder = %+v, want %v", rungs, want)
 	}

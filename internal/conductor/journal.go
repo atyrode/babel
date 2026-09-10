@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -43,8 +44,20 @@ const journalSchema = 1
 // truncation, its own partial-line recovery and its own tail reader, to save
 // microseconds on a file a minutes-long cycle writes twice.
 type Journal struct {
-	path   string
+	path string
+	// mu guards everything below it. The journal was single-writer until one
+	// invocation could run several cycles at once; now the loop's own
+	// bookkeeping is the one piece of state every concurrent cycle touches,
+	// and two cycles rewriting the file from two goroutines would lose one of
+	// them entirely rather than merely interleaving.
+	mu     sync.Mutex
 	cycles []Cycle
+	// reserved is the highest sequence number handed out by Reserve but not
+	// yet recorded. Concurrent cycles claim their number before they draw and
+	// record it minutes later, so "the next number" cannot be read off the
+	// stored cycles alone: two cycles that started together would take the
+	// same one, and the second would overwrite the first's entry.
+	reserved int
 }
 
 // journalFile is the stored shape.
@@ -97,6 +110,8 @@ func (j *Journal) Path() string { return j.path }
 // instant the journal holds exactly one entry per cycle and the last entry says
 // whether a run is happening right now.
 func (j *Journal) Record(c Cycle) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	c.Note = TrimNote(c.Note)
 	c.Reason = TrimNote(c.Reason)
 	if i := slices.IndexFunc(j.cycles, func(existing Cycle) bool { return existing.Seq == c.Seq }); i >= 0 {
@@ -131,16 +146,45 @@ func (j *Journal) save() error {
 	return nil
 }
 
-// NextSeq is the sequence number the next cycle takes.
+// NextSeq is the sequence number the next cycle takes. It is what a reader
+// asks; a cycle that is about to run claims its number with Reserve.
 func (j *Journal) NextSeq() int {
-	if len(j.cycles) == 0 {
-		return 1
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.nextSeq()
+}
+
+// Reserve claims the next sequence number for a cycle that has not recorded
+// itself yet, so two concurrent cycles cannot take the same one.
+//
+// A reservation that is never recorded — a draw that found no work, a process
+// that died between the claim and the journal entry — leaves a gap in the
+// numbering and nothing else. A gap is the honest record: the loop did start
+// deciding a cycle under that number, and reusing it would make two different
+// decisions share one identity.
+func (j *Journal) Reserve() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.reserved = j.nextSeq()
+	return j.reserved
+}
+
+// nextSeq reports the next free sequence number. The caller holds the lock.
+func (j *Journal) nextSeq() int {
+	next := 1
+	if len(j.cycles) > 0 {
+		next = j.cycles[len(j.cycles)-1].Seq + 1
 	}
-	return j.cycles[len(j.cycles)-1].Seq + 1
+	if j.reserved >= next {
+		next = j.reserved + 1
+	}
+	return next
 }
 
 // Last returns the most recent cycle.
 func (j *Journal) Last() (Cycle, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	if len(j.cycles) == 0 {
 		return Cycle{}, false
 	}
@@ -150,6 +194,8 @@ func (j *Journal) Last() (Cycle, bool) {
 // Recent returns the last n cycles, newest first. A zero or negative n returns
 // them all, bounded by the cap the file is already held to.
 func (j *Journal) Recent(n int) []Cycle {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	if n <= 0 || n > len(j.cycles) {
 		n = len(j.cycles)
 	}
@@ -219,6 +265,8 @@ func (j *Journal) Observe() (State, Cycle) {
 // loop believes it spent, and a status view showing both would show a real
 // disagreement rather than a rounding difference.
 func (j *Journal) SpentToday(now time.Time, currency string) float64 {
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	day := StartOfDay(now)
 	var total float64
 	for _, c := range j.cycles {

@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -104,10 +105,17 @@ func testJournal(t *testing.T) *conductor.Journal {
 }
 
 // clock is a hand-advanced clock, so a test can place cycles in a day without
-// waiting for one.
-type clock struct{ now time.Time }
+// waiting for one. It is guarded because concurrent cycles read it from
+// several goroutines, which is the loop's own behaviour rather than the
+// test's convenience.
+type clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
 
 func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.now = c.now.Add(time.Minute)
 	return c.now
 }

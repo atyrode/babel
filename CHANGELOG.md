@@ -11,6 +11,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The conductor consolidates, runs cycles concurrently, and publishes at the
+  cycle boundary.** A loop left alone grew the frontier and never returned to
+  it, ran one cycle at a time whatever the ceilings afforded, and kept every
+  record local until it was stopped — so a machine running for days was
+  invisible to the fleet and its accumulated candidates were never developed.
+  `--consolidate N` draws the unexplored candidates one cycle in N as a
+  protected share reported after the ladder, `--concurrent N` runs cycles
+  against one serialized budget claim so the day's ceiling binds on what is
+  committed rather than on what has already reported, and each cycle publishes
+  its own records when it ends.
+
+- **Analysis can read the fleet's corpus, not just this machine's sessions.**
+  `babel sessions fetch-all (--host HOST | --all-hosts)` restores every session
+  a host archived — concurrently, resumably, and recording one failure per
+  selector rather than abandoning the batch — and `--fetched` widens
+  `sessions list`, `sessions inspect` and `prepare` to that corpus. A fetched
+  session is attributed to the machine whose snapshot it came from rather than
+  to the machine that restored it, so a cross-host scope reports where its
+  material was actually produced.
+
 - **`babel conductor run --challenge --synthesize` lets the loop consolidate
   what it explores.** A cycle ran the discovery pass and nothing else, with no
   way to authorize otherwise, so an unattended loop could only grow the

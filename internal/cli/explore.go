@@ -576,7 +576,15 @@ func recipeSet(chosen []string) (*cookbook.Set, error) {
 // preparation names that this machine cannot see is an error naming it
 // rather than a quietly smaller run.
 func (a *app) preflightInputs(ctx context.Context, prep runstore.Preparation, roots []string) ([]preflight.Input, error) {
-	sessions, _ := a.scan(ctx, adapters(), roots)
+	// The fetched corpus is always searched, with no flag to withhold it.
+	// Rediscovery answers "where are this scope's bytes on this machine",
+	// and a session restored from another host's snapshot is one of the
+	// answers: it lives under Babel's data directory, so a preparation that
+	// legitimately names it would otherwise be reported as unseeable here.
+	// Widening where bytes may be found cannot widen the scope, because only
+	// the sessions the preparation already selected are looked up below, and
+	// local discovery still wins every collision.
+	sessions, _ := a.scanCorpus(ctx, adapters(), roots, true)
 	byKey := make(map[string]localSession, len(sessions))
 	for _, s := range sessions {
 		byKey[s.key()] = s

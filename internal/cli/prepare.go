@@ -48,7 +48,10 @@ local files and writes local state only.
 Flags:
   --harness NAME       restrict to one harness: omp, codex, or claude
   --roots DIR[,DIR]    scan these roots instead of the adapter defaults
-  --host ID            archive host identity recorded in the selection
+  --fetched            also scope the sessions fetched from other hosts,
+                       each attributed to the machine that archived it
+  --host ID            archive host identity recorded in the selection for
+                       the sessions this machine holds itself
                        (default $BABEL_HOST_ID, else storage.json, else this
                        machine's hostname)
   --serendipitous      mark the scope as drawn for exploration, so the
@@ -112,6 +115,7 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 	var rf repoFlags
 	sf.bindHarness(c)
 	sf.bindRoots(c)
+	sf.bindFetched(c)
 	c.fs.StringVar(&rf.host, "host", "", "archive host identity recorded in the selection")
 	serendipitous := c.fs.Bool("serendipitous", false,
 		"mark the scope as drawn for exploration rather than to answer something")
@@ -128,7 +132,7 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sessions, _ := a.scan(ctx, ads, sf.rootList())
+	sessions, _ := a.scanCorpus(ctx, ads, sf.rootList(), sf.fetched)
 	chosen, err := selectSessions(c, sessions, c.args())
 	if err != nil {
 		return err
@@ -273,8 +277,18 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 			return scopedCorpus{}, fmt.Errorf("index %s: %w", s.key(), err)
 		}
 		out.indexed += result.Events
+		// A fetched session is attributed to the machine whose snapshot it
+		// came from, not to the machine that restored it. --host names the
+		// identity for sessions this host actually holds, and stays the
+		// answer when discovery reports no origin; overriding a known
+		// origin with it would record a preparation that says the corpus
+		// was read somewhere it never existed.
+		attributed := host
+		if s.origin != "" {
+			attributed = s.origin
+		}
 		selection = append(selection, runstore.Selected{
-			Host:          host,
+			Host:          attributed,
 			Harness:       s.src.Harness,
 			SourceID:      s.src.SourceID,
 			CaptureDigest: capture,
@@ -289,7 +303,7 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 			Harness:       Sanitize(s.src.Harness),
 			SourceID:      Sanitize(s.src.SourceID),
 			Selector:      Sanitize(s.key()),
-			Host:          Sanitize(host),
+			Host:          Sanitize(attributed),
 			CaptureDigest: string(capture),
 			SourceDigest:  string(source),
 			Bytes:         size,

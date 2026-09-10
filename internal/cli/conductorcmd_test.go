@@ -230,11 +230,14 @@ func TestConductorStatusReportsPlantedStateTruthfully(t *testing.T) {
 
 	// The ladder is the ladder #96 describes, and rung two is implemented now:
 	// it holds the standing duties of #88 and #94, none of them authorized on
-	// this machine, which is a depth of zero rather than an absence.
-	if len(status.Rungs) != 3 {
+	// this machine, which is a depth of zero rather than an absence. The
+	// consolidation share is reported after them: it is not a rung the others
+	// outrank, and its depth is the frontier's own backlog.
+	if len(status.Rungs) != 4 {
 		t.Fatalf("ladder = %+v", status.Rungs)
 	}
-	names := []string{conductor.RungInvitation, conductor.RungPolicy, conductor.RungSerendipity}
+	names := []string{conductor.RungInvitation, conductor.RungPolicy,
+		conductor.RungSerendipity, conductor.RungConsolidation}
 	for i, name := range names {
 		if status.Rungs[i].Name != name {
 			t.Errorf("rung %d = %q, want %q", i, status.Rungs[i].Name, name)
