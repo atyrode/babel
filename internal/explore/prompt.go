@@ -17,14 +17,19 @@ import (
 //
 // Order is load-bearing for cost, not for meaning. Everything a provider can
 // serve from its prompt cache has to be a byte-identical prefix, so this
-// composes the run-invariant half first — stage instructions, the tool list,
-// then the recipe bodies, which are the largest stable block and are sorted
-// by id upstream — and the run's own half after it: parameters naming this
-// run, the sessions it was prepared over, and the prior records it may
-// refine. Two runs of the same stage over the same recipes now share that
-// prefix, and three stages of one run share it with each other, where before
-// the parameter block sat in front of the recipes and every run paid to
-// write the whole thing again.
+// composes the invariant part first — the recipe bodies, which are by far
+// the largest block and are sorted by id upstream, then the answering
+// protocol — and everything that varies after it: the stage's own
+// instructions, its tools, the parameters naming this run, the sessions it
+// was prepared over, and the prior records it may refine.
+//
+// Stage last is why the whole run shares one prefix. A default cookbook
+// selects the same fourteen recipes for all three stages, so explore,
+// challenge and synthesize carry ~215 KB of identical text; while the stage
+// header opened the prompt they shared eight bytes of it and each stage paid
+// to write the cookbook into cache again. It reads no worse in that order:
+// the reference material comes first and the task the model is being asked
+// to do sits closest to its turn.
 //
 // Two of its sections are machine-readable on purpose. The `[babel-params]`
 // block lists the run's parameters one per line, which is how a result can
@@ -42,9 +47,15 @@ const (
 func composePrompt(stage Stage, contract worker.OutputContract, recipes []*cookbook.Recipe,
 	sources []worker.Source, params map[string]string, related *RelatedContext, tools []worker.HostTool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Babel %s stage\n\n", stage)
-	b.WriteString(contract.Instructions)
-	b.WriteString("\n")
+	b.WriteString("# Babel analysis\n\n")
+
+	b.WriteString("## Recipes\n\n")
+	b.WriteString("The cookbook recipes selected for this stage, verbatim. Cite one by its id and version in every claim.\n\n")
+	for _, recipe := range recipes {
+		fmt.Fprintf(&b, "### %s (id %s, version %d)\n\n", recipe.Title, recipe.ID, recipe.Version)
+		b.WriteString(strings.TrimSpace(recipe.Body))
+		b.WriteString("\n\n")
+	}
 
 	b.WriteString("## How to answer\n\n")
 	b.WriteString("Work with the tools below, then call `" + worker.ToolSubmit + "` with the complete result. ")
@@ -56,20 +67,16 @@ func composePrompt(stage Stage, contract worker.OutputContract, recipes []*cookb
 	b.WriteString("the result after your turn: an item this stage has no authority for is dropped and recorded, and the ")
 	b.WriteString("items beside it are kept. End your turn once the submission is accepted. Do not write the result as prose.\n\n")
 
+	fmt.Fprintf(&b, "## The %s stage\n\n", stage)
+	b.WriteString(contract.Instructions)
+	b.WriteString("\n")
+
 	if len(tools) > 0 {
 		b.WriteString("## Tools\n\n")
 		for _, tool := range tools {
 			fmt.Fprintf(&b, "- `%s`: %s\n", tool.Name, tool.Description)
 		}
 		b.WriteString("\n")
-	}
-
-	b.WriteString("## Recipes\n\n")
-	b.WriteString("The cookbook recipes selected for this stage, verbatim. Cite one by its id and version in every claim.\n\n")
-	for _, recipe := range recipes {
-		fmt.Fprintf(&b, "### %s (id %s, version %d)\n\n", recipe.Title, recipe.ID, recipe.Version)
-		b.WriteString(strings.TrimSpace(recipe.Body))
-		b.WriteString("\n\n")
 	}
 
 	b.WriteString("## Parameters\n\n")

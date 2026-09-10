@@ -75,3 +75,51 @@ func commonPrefix(a, b string) string {
 	}
 	return a[:n]
 }
+
+// The three stages of one run share their prefix too.
+//
+// A default cookbook declares most lenses for all three stages, so explore,
+// challenge and synthesize carry the same recipe bodies — ~215 KB of
+// identical text. While the stage header opened the prompt they shared eight
+// bytes of it, and a run paid to write that text into cache three times
+// rather than once.
+func TestTheThreeStagesOfARunShareTheirPrefix(t *testing.T) {
+	set, err := cookbook.Embedded()
+	if err != nil {
+		t.Fatalf("Embedded: %v", err)
+	}
+	c := &Controller{cfg: Config{Recipes: set}}
+	stages := []Stage{StageExplore, StageChallenge, StageSynthesize}
+
+	prompts := make([]string, 0, len(stages))
+	for _, stage := range stages {
+		recipes := c.stageRecipes(stage)
+		if len(recipes) == 0 {
+			t.Fatalf("stage %s selected no recipe", stage)
+		}
+		prompts = append(prompts, composePrompt(stage, OutputContract(stage), recipes,
+			[]worker.Source{{Kind: "session", Selector: "omp/x"}},
+			map[string]string{"run_id": "run-A"}, nil, nil))
+	}
+
+	shared := prompts[0]
+	for _, p := range prompts[1:] {
+		shared = commonPrefix(shared, p)
+	}
+	t.Logf("prefix shared by all three stages: %d bytes of %d", len(shared), len(prompts[0]))
+
+	// Whatever the three stages hold in common has to be inside it, and for a
+	// default cookbook that is every recipe they were all selected for.
+	for _, recipe := range c.stageRecipes(StageExplore) {
+		body := strings.TrimSpace(recipe.Body)
+		shownToAll := strings.Contains(prompts[1], body) && strings.Contains(prompts[2], body)
+		if shownToAll && !strings.Contains(shared, body) {
+			t.Errorf("recipe %s is served to all three stages but sits outside their shared prefix", recipe.ID)
+		}
+	}
+	// Each stage's own instructions must stay outside it, or they would be
+	// the same instructions.
+	if strings.Contains(shared, "## The "+string(StageChallenge)+" stage") {
+		t.Error("a stage heading leaked into the shared prefix")
+	}
+}
