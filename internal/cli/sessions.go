@@ -44,6 +44,7 @@ Commands:
   inspect SELECTOR     show one local session in full
   title <command>      infer or withdraw model-written titles
   fetch SELECTOR       restore one session's files from a snapshot
+  fetch-all --host ID  restore every session a host, or the fleet, archived
   prune --local        remove locally fetched session directories
 
 A selector is "HARNESS/SOURCE-ID", or any unambiguous suffix of one, and may
@@ -67,6 +68,12 @@ log's recorded size are all a listing can know, so title, workspace,
 timestamps, continuation grade, and recorded usage are absent rather than
 guessed.
 
+With --fetched, the listing also covers the sessions this machine has
+fetched out of other hosts' archives, each shown under the host that
+archived it rather than under this one. A HOST column appears then, naming
+every row's machine including this one's. Fetch that corpus with
+"babel sessions fetch-all".
+
 A COST column appears when at least one listed session records what it cost.
 That figure is the harness's own per-turn pricing, summed from the session's
 transcript; --json carries it alongside the token, turn and tool-error counts
@@ -77,6 +84,7 @@ Flags:
   --harness NAME       restrict to one harness: omp, codex, or claude
   --roots DIR[,DIR]    scan these roots instead of the adapters' defaults
   --no-cache           bypass the catalog and describe every session
+  --fetched            also list the sessions fetched from other hosts
   --host ID            list that host's archived sessions instead of this
                        machine's; requires --repo and --password-file
   --snapshot ID        with --host: snapshot id, short id, or prefix
@@ -86,9 +94,9 @@ Flags:
   --restic-binary PATH restic executable (default "restic" from $PATH)
   --json               emit the listing as JSON on stdout
 
---roots and --no-cache describe a local scan, and --snapshot a point in the
-archive, so mixing either side with the other is rejected by name rather
-than resolved by precedence.
+--roots, --no-cache and --fetched describe a local scan, and --snapshot a
+point in the archive, so mixing either side with the other is rejected by
+name rather than resolved by precedence.
 
 Absent nullable fields are displayed as "-": Babel never synthesizes a
 value to satisfy a shape (SPEC.md §3).
@@ -108,6 +116,7 @@ part of the selector rather than as a flag.
 
 Flags:
   --roots DIR[,DIR]    scan these roots instead of the adapters' defaults
+  --fetched            also inspect sessions fetched from other hosts
   --json               emit the description as JSON on stdout
 `
 
@@ -140,6 +149,12 @@ Flags:
 Fetching is idempotent: an already materialized target is reported and
 left untouched. A closure the snapshot does not fully hold is reported as
 incomplete rather than silently partial.
+
+Each fetched session records the machine whose snapshot it came out of, so
+"sessions list --fetched" attributes it to that machine rather than to this
+one. Fetching again over a materialized target writes that record without
+downloading anything, which is how a corpus fetched by an older build is
+attributed. "sessions fetch-all" does the same for a whole host.
 `
 
 const sessionsPruneUsage = `Usage: babel sessions prune --local --yes (--all | SELECTOR...)
@@ -174,6 +189,8 @@ func (a *app) sessions(ctx context.Context, args []string) error {
 		return a.sessionsTitle(ctx, args[1:])
 	case "fetch":
 		return a.sessionsFetch(ctx, args[1:])
+	case "fetch-all":
+		return a.sessionsFetchAll(ctx, args[1:])
 	case "prune":
 		return a.sessionsPrune(args[1:])
 	default:
@@ -187,6 +204,12 @@ func (a *app) sessions(ctx context.Context, args []string) error {
 type localSession struct {
 	owner adapter.Adapter
 	src   adapter.SourceSession
+	// origin is the machine that archived this session, and is set only for a
+	// session this machine fetched out of another host's archive. Empty means
+	// discovery found the session on this machine's own source trees, which is
+	// the one case where attributing it to the local host is an observation
+	// rather than a guess.
+	origin string
 }
 
 // key is a session's canonical selector: "<harness>/<source id>".
@@ -196,6 +219,7 @@ func (s localSession) key() string { return s.src.Harness + "/" + s.src.SourceID
 type scanFlags struct {
 	harness string
 	roots   string
+	fetched bool
 }
 
 func (sf *scanFlags) bindRoots(c *cmd) {
@@ -204,6 +228,15 @@ func (sf *scanFlags) bindRoots(c *cmd) {
 
 func (sf *scanFlags) bindHarness(c *cmd) {
 	c.fs.StringVar(&sf.harness, "harness", "", "restrict to one harness: omp, codex, or claude")
+}
+
+// bindFetched binds --fetched, which widens a scan from this machine's source
+// trees to the fleet corpus this machine has fetched. It is a separate binder
+// because most commands have no business reading another machine's sessions:
+// `archive push` captures local source trees, and a fetched tree is Babel's own
+// rebuildable copy of something another machine already archived.
+func (sf *scanFlags) bindFetched(c *cmd) {
+	c.fs.BoolVar(&sf.fetched, "fetched", false, "also discover the sessions fetched from other hosts")
 }
 
 // selected resolves the adapters this invocation scans.
@@ -239,12 +272,35 @@ func (sf *scanFlags) rootList() []string {
 	return out
 }
 
-// scan discovers every local session the selected adapters can see and
-// reports which harnesses discovery actually covered. A harness whose
+// scan discovers every session the selected adapters can see on this machine
+// and reports which harnesses discovery actually covered. A harness whose
 // discovery fails is reported on stderr and skipped: one broken harness
 // never hides the rest of the machine (SPEC.md §11), and it is left out of
 // the covered set so nothing prunes rows it was unable to look at.
+//
+// It is this machine only. A command that means the fleet corpus says so, by
+// calling scanCorpus.
 func (a *app) scan(ctx context.Context, ads []adapter.Adapter, roots []string) ([]localSession, []string) {
+	return a.scanCorpus(ctx, ads, roots, false)
+}
+
+// scanCorpus discovers this machine's own sessions and, when fleet is set, the
+// fleet corpus this machine has fetched alongside them.
+//
+// Local discovery goes first and wins every collision. That ordering is the
+// whole rule: a session whose source files are here is the live one, and a
+// fetched copy of it is a snapshot of the same identity taken at some earlier
+// moment. Collisions are not hypothetical either — Codex names one session per
+// machine after that machine's own shell history, so one selector legitimately
+// names a different session on every host, and a fleet corpus holds several of
+// them. The shadowed ones are reported rather than silently dropped: Babel's
+// selector vocabulary has no host dimension, so this is a real limit of the
+// addressing scheme and not something to resolve by picking a winner quietly.
+//
+// A fetched corpus that cannot be read is a warning and contributes nothing,
+// for the same reason a broken harness is: one unreadable tree must not hide
+// the rest of the machine (SPEC.md §11).
+func (a *app) scanCorpus(ctx context.Context, ads []adapter.Adapter, roots []string, fleet bool) ([]localSession, []string) {
 	var found []localSession
 	var covered []string
 	seen := make(map[string]struct{})
@@ -269,8 +325,49 @@ func (a *app) scan(ctx context.Context, ads []adapter.Adapter, roots []string) (
 			found = append(found, s)
 		}
 	}
+	if fleet {
+		found = append(found, a.fleetSessions(ctx, ads, seen)...)
+	}
 	sort.Slice(found, func(i, j int) bool { return found[i].key() < found[j].key() })
 	return found, covered
+}
+
+// fleetSessions discovers the fetched corpus, skipping any identity discovery
+// has already claimed and recording what that cost.
+func (a *app) fleetSessions(ctx context.Context, ads []adapter.Adapter, seen map[string]struct{}) []localSession {
+	d, err := babelDirs()
+	if err != nil {
+		a.diagf("warning: locate the fetched sessions: %s\n", Sanitize(err.Error()))
+		return nil
+	}
+	fetched, unattributed, err := fetchedCorpus(ctx, d.sessionsRoot(), ads)
+	if err != nil {
+		a.diagf("warning: discover the fetched sessions: %s\n", Sanitize(err.Error()))
+		return nil
+	}
+	if unattributed > 0 {
+		a.diagf("warning: %d fetched session %s %s no origin host and %s left out; "+
+			"run `babel sessions fetch-all --host ID` again to record it, which downloads nothing already here\n",
+			unattributed, plural(unattributed, "tree", "trees"),
+			plural(unattributed, "records", "record"), plural(unattributed, "was", "were"))
+	}
+	var kept []localSession
+	shadowed := 0
+	for _, s := range fetched {
+		k := s.key()
+		if _, dup := seen[k]; dup {
+			shadowed++
+			continue
+		}
+		seen[k] = struct{}{}
+		kept = append(kept, s)
+	}
+	if shadowed > 0 {
+		a.diagf("note: %d fetched %s %s an identity already discovered and %s not listed again\n",
+			shadowed, plural(shadowed, "session", "sessions"),
+			plural(shadowed, "shares", "share"), plural(shadowed, "is", "are"))
+	}
+	return kept
 }
 
 // refreshScope is the set of harnesses a catalog refresh may prune. Complete
@@ -363,9 +460,15 @@ func describe(ctx context.Context, s localSession) (*adapter.Description, error)
 // there would assert that the session falls short of continuation grade
 // rather than that nothing looked.
 type sessionRow struct {
-	Harness  string  `json:"harness"`
-	SourceID string  `json:"source_id"`
-	Selector string  `json:"selector"`
+	Harness  string `json:"harness"`
+	SourceID string `json:"source_id"`
+	Selector string `json:"selector"`
+	// Host is the machine this session belongs to, and is present only in a
+	// listing that covers more than one: a fleet listing states every row's
+	// machine, including this one's, because naming only the foreign sessions
+	// would leave the rest to be read off an absence — and an absence in this
+	// document means nothing looked (SPEC.md §3).
+	Host     *string `json:"host,omitempty"`
 	Size     int64   `json:"size"`
 	Modified *string `json:"modified"`
 	Title    *string `json:"title"`
@@ -402,6 +505,9 @@ type sessionsResult struct {
 // which is what lets a second Babel instance discover a selector it can
 // then fetch: no local scan happens, and the catalog is not consulted,
 // because nothing being listed is expected to exist here.
+//
+// With --fetched the local scan additionally covers the fleet corpus this
+// machine has fetched, and every row then states its machine.
 func (a *app) sessionsList(ctx context.Context, args []string) error {
 	c := newCmd("sessions list", sessionsListUsage)
 	var rf repoFlags
@@ -409,6 +515,7 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 	rf.bind(c.fs)
 	sf.bindHarness(c)
 	sf.bindRoots(c)
+	sf.bindFetched(c)
 	snapshot := c.fs.String("snapshot", "", "with --host: snapshot id, short id, or prefix; default that host's newest")
 	noCache := c.fs.Bool("no-cache", false, "bypass the catalog and describe every session")
 	asJSON := c.fs.Bool("json", false, "emit the listing as JSON")
@@ -422,7 +529,7 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkListSource(c, rf.host, sf.roots, *snapshot, *noCache); err != nil {
+	if err := checkListSource(c, rf.host, sf.roots, *snapshot, *noCache, sf.fetched); err != nil {
 		return err
 	}
 
@@ -440,7 +547,7 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 			Sanitize(rf.host), Sanitize(shortID(chosen)))
 	} else {
 		roots := sf.rootList()
-		sessions, covered := a.scan(ctx, ads, roots)
+		sessions, covered := a.scanCorpus(ctx, ads, roots, sf.fetched)
 		dataDir := ""
 		if !*noCache {
 			d, err := babelDirs()
@@ -455,6 +562,12 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 		rows, err = a.listSessionRows(ctx, sessions, refreshScope(covered, roots), dataDir, *noCache, describe, a.scanProgress().report)
 		if err != nil {
 			return err
+		}
+		if sf.fetched {
+			if err := nameHosts(rows); err != nil {
+				return err
+			}
+			empty = "no local sessions and nothing fetched\n"
 		}
 	}
 
@@ -480,7 +593,14 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 	}
 	tableRows := make([][]string, 0, len(res.Sessions))
 	for _, s := range res.Sessions {
-		row := []string{
+		var row []string
+		// HOST leads a fleet listing, because the first question about a
+		// corpus drawn from five machines is which machine a session is
+		// from, and it is the column an operator scans down.
+		if sf.fetched {
+			row = append(row, derefOrMissing(s.Host))
+		}
+		row = append(row,
 			s.Harness,
 			s.SourceID,
 			fmt.Sprint(s.Size),
@@ -488,7 +608,7 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 			derefOrMissing(s.Title),
 			derefOrMissing(s.TitleProvenance),
 			derefOrMissing(s.Workspace),
-		}
+		)
 		if priced {
 			row = append(row, costCell(s.CostUSD))
 		}
@@ -499,10 +619,34 @@ func (a *app) sessionsList(ctx context.Context, args []string) error {
 	// degraded one, and a listing that hides it makes the operator inspect
 	// each session to find out.
 	header := []string{"HARNESS", "SOURCE ID", "SIZE", "MODIFIED", "TITLE", "TITLE FROM", "WORKSPACE"}
+	if sf.fetched {
+		header = append([]string{"HOST"}, header...)
+	}
 	if priced {
 		header = append(header, "COST")
 	}
 	return writeTable(a.stdout, append(header, "GRADE"), tableRows)
+}
+
+// nameHosts completes the machine column of a fleet listing.
+//
+// A fetched session already carries the host its origin record named. Every
+// other row was discovered on this machine's own source trees, so it is this
+// machine's session, and saying so is what makes the column complete: a blank
+// there would report that nothing established where the session came from,
+// which is false for a session sitting in this machine's own adapter root.
+func nameHosts(rows []sessionRow) error {
+	local, err := localHostID()
+	if err != nil {
+		return err
+	}
+	here := Sanitize(local)
+	for i := range rows {
+		if rows[i].Host == nil {
+			rows[i].Host = &here
+		}
+	}
+	return nil
 }
 
 type sessionDescribeFunc func(context.Context, localSession) (*adapter.Description, error)
@@ -605,20 +749,23 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 // harness-restricted or root-restricted invocation reports exactly what it
 // scanned even though the catalog holds the whole machine.
 //
-// The title, its provenance and the usage summary are taken from the cached
-// columns rather than from RowJSON, and then the inferred overlay is applied.
-// Both matter. The columns are what the publish path reads, so a listing that
-// showed a different value than a push would send is a listing that lies about
-// what other machines will see; and the overlay is applied here rather than at
-// describe time so a title inferred a minute ago appears immediately, without
-// waiting for the session's files to change and force a re-describe.
+// The title, its provenance, the usage summary and the origin host are taken
+// from discovery and from the cached columns rather than from RowJSON, and then
+// the inferred overlay is applied. All of it matters. The columns are what the
+// publish path reads, so a listing that showed a different value than a push
+// would send is a listing that lies about what other machines will see; the
+// overlay is applied here rather than at describe time so a title inferred a
+// minute ago appears immediately, without waiting for the session's files to
+// change and force a re-describe; and the host comes from this scan's own
+// discovery because a cached row outlives the tree it was described from — a
+// session fetched from another machine yesterday and living in this machine's
+// adapter root today must be attributed to where it was found now.
 func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession, overlay inferredOverlay) ([]sessionRow, error) {
 	rows := make([]sessionRow, 0, len(cached))
 	for _, cachedRow := range cached {
-		if keep != nil {
-			if _, ok := keep[cachedRow.Selector]; !ok {
-				continue
-			}
+		session, discovered := keep[cachedRow.Selector]
+		if keep != nil && !discovered {
+			continue
 		}
 		var row sessionRow
 		if err := json.Unmarshal(cachedRow.RowJSON, &row); err != nil {
@@ -630,6 +777,7 @@ func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession, overl
 		row.TotalTokens = cachedRow.TotalTokens
 		row.Turns = cachedRow.Turns
 		row.ToolErrors = cachedRow.ToolErrors
+		row.Host = originPtr(session)
 		row.Title, row.TitleProvenance = overlay.apply(cachedRow.Selector, row.Title, row.TitleProvenance)
 		rows = append(rows, row)
 	}
@@ -646,6 +794,7 @@ func rowFromDescription(session localSession, desc *adapter.Description) session
 		Harness:         Sanitize(session.src.Harness),
 		SourceID:        Sanitize(session.src.SourceID),
 		Selector:        Sanitize(session.key()),
+		Host:            originPtr(session),
 		Size:            desc.PrimarySize,
 		Modified:        timePtr(desc.Meta.ModifiedAt),
 		Title:           sanitizePtr(desc.Meta.Title),
@@ -669,6 +818,17 @@ func rowFromDescription(session localSession, desc *adapter.Description) session
 	return row
 }
 
+// originPtr names the machine a fetched session was archived by, and nothing
+// at all for a session discovered on this machine: only a fleet listing has a
+// second machine to distinguish, and it completes the column itself.
+func originPtr(session localSession) *string {
+	if session.origin == "" {
+		return nil
+	}
+	host := Sanitize(session.origin)
+	return &host
+}
+
 // rowFromArchived states one archived session in the same row vocabulary a
 // local listing uses, so one selector addresses a session whether its files
 // are here or only in the archive.
@@ -689,11 +849,11 @@ func rowFromArchived(s archivedSession) sessionRow {
 }
 
 // checkListSource refuses invocations that mix the two listing sources.
-// --roots and --no-cache are local-scan concepts and --snapshot names a
-// point in the archive, so each combination is rejected by name: resolving
-// one against the other by precedence would silently report a listing the
-// operator did not ask for.
-func checkListSource(c *cmd, host, roots, snapshot string, noCache bool) error {
+// --roots, --no-cache and --fetched are local-scan concepts and --snapshot
+// names a point in the archive, so each combination is rejected by name:
+// resolving one against the other by precedence would silently report a
+// listing the operator did not ask for.
+func checkListSource(c *cmd, host, roots, snapshot string, noCache, fetched bool) error {
 	if host == "" {
 		if snapshot != "" {
 			return c.usagef("--snapshot names a snapshot in the archive, which only --host reads; drop it or add --host ID")
@@ -705,6 +865,9 @@ func checkListSource(c *cmd, host, roots, snapshot string, noCache bool) error {
 	}
 	if noCache {
 		return c.usagef("--no-cache controls the local description cache, which --host does not use; use one or the other")
+	}
+	if fetched {
+		return c.usagef("--fetched lists the sessions already materialized here, and --host lists what one machine's snapshot holds; use one or the other")
 	}
 	return nil
 }
@@ -774,6 +937,7 @@ func (a *app) sessionsInspect(ctx context.Context, args []string) error {
 	c := newCmd("sessions inspect", sessionsInspectUsage)
 	var sf scanFlags
 	sf.bindRoots(c)
+	sf.bindFetched(c)
 	asJSON := c.fs.Bool("json", false, "emit the description as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -783,7 +947,7 @@ func (a *app) sessionsInspect(ctx context.Context, args []string) error {
 		return err
 	}
 
-	sessions, _ := a.scan(ctx, adapters(), sf.rootList())
+	sessions, _ := a.scanCorpus(ctx, adapters(), sf.rootList(), sf.fetched)
 	target, err := resolveSelector(c, sessions, selector)
 	if err != nil {
 		return err
@@ -1026,7 +1190,7 @@ func (a *app) sessionsFetch(ctx context.Context, args []string) error {
 		return fmt.Errorf("session %s has no restorable file closure", key)
 	}
 
-	dir := filepath.Join(d.sessionsRoot(), safeSessionDir(key), shortID(chosen))
+	dir := fetchTree(d.sessionsRoot(), key, chosen)
 	res := fetchResult{
 		Selector:        Sanitize(key),
 		SnapshotID:      Sanitize(chosen.ID),
@@ -1035,44 +1199,16 @@ func (a *app) sessionsFetch(ctx context.Context, args []string) error {
 		Target:          Sanitize(dir),
 		Included:        sanitizeAll(includes),
 	}
-	if files, bytes, err := treeSize(dir); err == nil {
+	got, err := materialize(ctx, repo, d.sessionsRoot(), key, chosen, includes)
+	if err != nil {
+		return err
+	}
+	res.Files, res.Bytes, res.AlreadyPresent = got.files, got.bytes, got.resumed
+	if got.resumed {
 		// A materialized target is left exactly as it is: a fetch is
 		// idempotent, and a restored tree is never partially rewritten.
-		res.Files, res.Bytes, res.AlreadyPresent = files, bytes, true
 		a.diagf("note: %s is already materialized; leaving it untouched\n", Sanitize(dir))
-		return a.finishFetch(res, dir, includes, *asJSON)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
 	}
-
-	// Restoring into a sibling and renaming on success means the target
-	// directory exists only when its contents are complete, which is what
-	// makes the idempotence check above trustworthy.
-	staging := dir + ".partial"
-	if err := os.RemoveAll(staging); err != nil {
-		return fmt.Errorf("clear %s: %w", staging, err)
-	}
-	if err := ensureDir(staging); err != nil {
-		return err
-	}
-	if err := repo.Restore(ctx, chosen.ID, includes, staging); err != nil {
-		os.RemoveAll(staging)
-		return fmt.Errorf("restore %s: %w", key, err)
-	}
-	files, bytes, err := treeSize(staging)
-	if err != nil {
-		os.RemoveAll(staging)
-		return err
-	}
-	if files == 0 {
-		os.RemoveAll(staging)
-		return fmt.Errorf("restore %s: snapshot %s holds none of the session's files", key, shortID(chosen))
-	}
-	if err := os.Rename(staging, dir); err != nil {
-		os.RemoveAll(staging)
-		return fmt.Errorf("publish %s: %w", dir, err)
-	}
-	res.Files, res.Bytes = files, bytes
 	return a.finishFetch(res, dir, includes, *asJSON)
 }
 

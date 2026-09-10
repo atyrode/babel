@@ -27,6 +27,11 @@ const (
 	// investigation. DutyRung is this build's implementation of the first
 	// half, and it says so about the second.
 	RungPolicy = "policy"
+	// RungConsolidation is the loop's own backlog: the candidates already on
+	// the frontier that no run has attacked yet. It is not a ladder position
+	// but a protected fraction, so the name reaches the journal and the
+	// status view without appearing between two rungs it does not outrank.
+	RungConsolidation = "consolidation"
 	// RungSerendipity is the protected chaotic fraction: a random corpus slice
 	// crossed with a random default-enabled recipe, with no aim.
 	RungSerendipity = "serendipity"

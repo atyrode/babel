@@ -48,6 +48,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"sync"
 	"syscall"
 	"time"
 
@@ -114,6 +115,18 @@ type Cycle struct {
 	Currency      string  `json:"currency,omitempty"`
 	Failures      int     `json:"failures,omitempty"`
 	Cancelled     bool    `json:"cancelled,omitempty"`
+	// Published and PendingRecords are what this cycle's publication moved
+	// and what the machine still owes the fleet afterwards. They are on the
+	// cycle rather than in a report of their own because a cycle that
+	// produced records nobody else can see has only half happened, and the
+	// place an operator asks what a cycle did is the place that has to say
+	// so.
+	Published      int `json:"published,omitempty"`
+	PendingRecords int `json:"pending_records,omitempty"`
+	// PublishNote is why publication moved nothing: a local-only deployment,
+	// an unreachable catalog, a keyring that has not arrived. It is a note
+	// rather than a failure, because the records are durable here either way.
+	PublishNote string `json:"publish_note,omitempty"`
 	// PID is the conductor process that owns this cycle, so a status view can
 	// tell a loop that is still working from one that died holding the record.
 	PID int `json:"pid,omitempty"`
@@ -186,6 +199,34 @@ type Ledger interface {
 	SpentSince(ctx context.Context, since time.Time, currency string) (Spend, error)
 }
 
+// Publisher hands a finished cycle's durable records to the shared backend.
+//
+// It is an interface for the same reason Runner and Ledger are: publication is
+// SPEC.md §9's machinery, it lives in the command layer beside `babel sync`,
+// and the loop is only allowed to ask for it at the one moment it is owed —
+// the cycle boundary, once the records are durable.
+//
+// Nil is publication quietly absent, which is what a local-only deployment
+// and a test both are.
+type Publisher interface {
+	Publish(ctx context.Context) (Publication, error)
+}
+
+// Publication is what one cycle-boundary attempt moved, and what it did not.
+//
+// Both halves are reported, because a document naming only what it committed
+// would leave "and what is still stuck" to be inferred from silence — the same
+// reason `babel sync` reports both.
+type Publication struct {
+	Published int
+	Pending   int
+	// Runs counts the run closures that reached the backend this attempt.
+	Runs int
+	// Note explains an attempt that moved nothing for a reason that is not a
+	// failure, and is empty when there is nothing to explain.
+	Note string
+}
+
 // Config is a conductor's whole configuration.
 type Config struct {
 	// Ceilings bound autonomy. Both are mandatory: a loop that may spend
@@ -231,6 +272,16 @@ type Config struct {
 	// work that does not exist.
 	Presence presence.Announcer
 
+	// Consolidation is the protected share of cycles spent turning the
+	// frontier into findings rather than growing it, and the rung that draws
+	// them. Off unless the operator asked for it.
+	Consolidation Consolidation
+
+	// Publisher publishes each cycle's durable records once they are durable.
+	// Nil publishes nothing, which is a local-only deployment and not a
+	// degraded one.
+	Publisher Publisher
+
 	// Log narrates the loop on the operator's diagnostic stream. A silent
 	// autonomous process is the opaque model #96 exists to replace, so this is
 	// wired in normal operation and nil only in tests.
@@ -240,6 +291,36 @@ type Config struct {
 // Conductor is the scheduling loop.
 type Conductor struct {
 	cfg Config
+
+	// mu serializes the deciding half of a cycle: reconciling what the last
+	// conductor left, enforcing the budget, drawing from the ladder and
+	// writing the journal entry. Only the run itself is concurrent.
+	//
+	// Serializing the decision is what makes concurrent cycles safe rather
+	// than merely parallel. Every quantity the loop reasons with — the day's
+	// spend, the serendipity floor's ratio, the consolidation share, the
+	// sequence number, an invitation's single claim — is computed from the
+	// record and then written back to it, and two cycles interleaving there
+	// would each decide against a history that omitted the other. It costs a
+	// few database round-trips per cycle, against runs that take minutes.
+	mu sync.Mutex
+	// reserved is the budget the cycles in flight have been admitted against
+	// but not yet spent. A receipt is what the ledger can see, and a cycle
+	// writes one only when it ends, so N concurrent cycles reading the same
+	// ledger would each be told the whole day's ceiling was free. Holding one
+	// per-cycle ceiling per cycle in flight is what makes them draw against
+	// one budget instead of N copies of it.
+	reserved float64
+	// owned is the sequence numbers this process is running right now, so
+	// reconciliation cannot mistake a sibling cycle's in-flight journal entry
+	// for work a dead conductor left behind.
+	owned map[int]bool
+	// publishing serializes the cycle-boundary publication. It is separate
+	// from mu because publication is a network call that must not stall
+	// another cycle's decision, and one at a time because every attempt
+	// publishes the whole machine's pending journal: two at once would race
+	// over the same rows to do the same work twice.
+	publishing sync.Mutex
 }
 
 // New validates cfg and returns a conductor. It performs no I/O: every reason
@@ -273,10 +354,13 @@ func New(cfg Config) (*Conductor, error) {
 	if cfg.PID == 0 {
 		cfg.PID = os.Getpid()
 	}
+	if err := cfg.Consolidation.validate(); err != nil {
+		return nil, err
+	}
 	if cfg.Log == nil {
 		cfg.Log = func(string, ...any) {}
 	}
-	return &Conductor{cfg: cfg}, nil
+	return &Conductor{cfg: cfg, owned: map[int]bool{}}, nil
 }
 
 // RunOptions bound one foreground loop.
@@ -294,6 +378,11 @@ type RunOptions struct {
 	// committed and the receipt records the cancellation.
 	Stop     <-chan struct{}
 	StopFile string
+	// Concurrency is how many cycles this invocation runs at a time. Zero and
+	// one are the same single-cycle loop. Concurrent cycles share one budget,
+	// one journal and one stop: what they do not share is a run identity, so
+	// each is receipted on its own.
+	Concurrency int
 }
 
 // ErrParked reports that the loop stopped because the budget refused the next
@@ -313,6 +402,65 @@ func (c *Conductor) Run(ctx context.Context, opt RunOptions) error {
 	if err := c.refuseConcurrent(); err != nil {
 		return err
 	}
+	workers := opt.Concurrency
+	if workers < 1 || opt.Once {
+		// --once means one cycle, whatever the concurrency dial says. A dial
+		// that silently turned it into N would make the flag that exists to
+		// run exactly one cycle the flag that runs several.
+		workers = 1
+	}
+	if workers == 1 {
+		return c.cycles(ctx, opt, nil)
+	}
+
+	// halt is how one worker's park or failure reaches the others. It stops
+	// them at their own cycle boundary rather than cancelling them, which is
+	// the same promise --stop-file makes: a ceiling reached by one cycle is
+	// not a reason to throw away the work another has already paid for.
+	halt := make(chan struct{})
+	var once sync.Once
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	c.cfg.Log("conductor: running %d cycles at a time against one budget\n", workers)
+	for i := range workers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = c.cycles(ctx, opt, halt)
+			if errs[i] != nil {
+				once.Do(func() { close(halt) })
+			}
+		}(i)
+	}
+	wg.Wait()
+	return firstFailure(errs)
+}
+
+// firstFailure picks the error one invocation reports for many workers.
+//
+// A real failure outranks a park, because parking is the ceilings working and
+// a worker that failed has something an operator has to read. Among equals the
+// first is reported: they are concurrent, so any order is arbitrary, and a
+// stable choice is worth more than an arbitrary one that changes per run.
+func firstFailure(errs []error) error {
+	var parked error
+	for _, err := range errs {
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrParked):
+			if parked == nil {
+				parked = err
+			}
+		default:
+			return err
+		}
+	}
+	return parked
+}
+
+// cycles is one worker's loop: draw, run, record, wait, until something asks
+// it to stop.
+func (c *Conductor) cycles(ctx context.Context, opt RunOptions, halt <-chan struct{}) error {
 	for {
 		if opt.StopFile != "" {
 			_, err := os.Stat(opt.StopFile)
@@ -331,6 +479,9 @@ func (c *Conductor) Run(ctx context.Context, opt RunOptions) error {
 			c.cfg.Log("conductor: stopping at the cycle boundary\n")
 			return nil
 		}
+		if stopped(halt) {
+			return nil
+		}
 		if !opt.Until.IsZero() && !c.cfg.Now().Before(opt.Until) {
 			c.cfg.Log("conductor: the requested end time has passed\n")
 			return nil
@@ -346,7 +497,7 @@ func (c *Conductor) Run(ctx context.Context, opt RunOptions) error {
 		if opt.Once {
 			return nil
 		}
-		if err := c.wait(ctx, opt); err != nil {
+		if err := c.wait(ctx, opt, halt); err != nil {
 			return err
 		}
 	}
@@ -355,7 +506,7 @@ func (c *Conductor) Run(ctx context.Context, opt RunOptions) error {
 // wait pauses between cycles, and is interruptible by every way the loop can be
 // asked to stop. A sleep that ignored a stop request would make "clean at the
 // cycle boundary" mean "clean within one interval".
-func (c *Conductor) wait(ctx context.Context, opt RunOptions) error {
+func (c *Conductor) wait(ctx context.Context, opt RunOptions, halt <-chan struct{}) error {
 	if c.cfg.Interval <= 0 {
 		return nil
 	}
@@ -368,6 +519,8 @@ func (c *Conductor) wait(ctx context.Context, opt RunOptions) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-opt.Stop:
+			return nil
+		case <-halt:
 			return nil
 		case <-timer.C:
 			return nil
@@ -404,53 +557,127 @@ func stopped(ch <-chan struct{}) bool {
 // outcome, because a loop that only journalled its successes would be exactly as
 // opaque as no loop at all.
 func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
+	claim, err := c.claim(ctx)
+	if err != nil || claim.settled {
+		return claim.cycle, err
+	}
+	if claim.release != nil {
+		defer claim.release()
+	}
+	if claim.recovered != nil {
+		// The run finished before the cycle that paid for it could be
+		// finalized. Recording it is not optional and not conditional: the
+		// work is done and the receipt exists, so the only question left is
+		// what the journal says about it.
+		var runErr error
+		if claim.recovered.Failure != "" {
+			runErr = errors.New(claim.recovered.Failure)
+		}
+		return c.finish(ctx, "", claim.cycle, claim.recovered.Result, claim.recovered.FinishedAt, runErr)
+	}
+
+	// The cycle becomes visible to the fleet here, between the journal entry
+	// and the run: the journal is this machine's own record and presence is
+	// every other machine's, and both are written before the work rather than
+	// after it, for the same reason - a conductor that died mid-cycle must
+	// leave the fact behind rather than leaving no trace of what it was paying
+	// for.
+	//
+	// Nothing below can fail this cycle. Announce returns an empty id when the
+	// catalog was unreachable, which makes the heartbeat loop and the finalize
+	// no-ops, and the errors it swallowed have already reached the store's own
+	// diagnostic sink. So the loop runs identically on a machine whose
+	// PostgreSQL is down; it is only invisible.
+	presenceID := c.announce(ctx, claim.cycle)
+	stopBeat := presence.Beat(ctx, c.cfg.Presence, presenceID)
+
+	result, runErr := c.cfg.Runner.Run(ctx, claim.cycle.RunID, claim.assignment)
+	// The heartbeat stops before the row is finalized, so the last thing the
+	// fleet sees about this cycle is how it ended rather than a heartbeat that
+	// raced past it.
+	stopBeat()
+
+	return c.finish(ctx, presenceID, claim.cycle, result, c.cfg.Now(), runErr)
+}
+
+// cycleClaim is what the deciding half of a cycle produced: a cycle that
+// settled without reaching a runner, a run that finished before its cycle
+// could be recorded, or a claim to run one now.
+type cycleClaim struct {
+	cycle      Cycle
+	assignment Assignment
+	// settled is a cycle that is already over: parked, idle, or recorded by
+	// the reconciliation that found it.
+	settled bool
+	// recovered is the durable result of a run that outlived the cycle which
+	// launched it.
+	recovered *CompletedRun
+	// release returns this cycle's budget reservation and its ownership of a
+	// sequence number, and is nil when nothing was claimed.
+	release func()
+}
+
+// claim is the deciding half of a cycle, and the half concurrent cycles take
+// in turn.
+//
+// The order inside it is the whole design. Reconciliation comes first so an
+// interrupted run is resumed rather than duplicated. The budget comes before
+// the draw so a refused cycle cannot have consumed an operator's invitation on
+// the way to being refused. The journal entry is written before the run so a
+// conductor that dies mid-run leaves the fact behind. And the cycle is
+// recorded whatever the outcome, because a loop that only journalled its
+// successes would be exactly as opaque as no loop at all.
+func (c *Conductor) claim(ctx context.Context) (cycleClaim, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	now := c.cfg.Now()
 	resume, resuming, err := c.reconcile(now)
 	if err != nil {
-		return Cycle{}, err
+		return cycleClaim{}, err
 	}
 	if resuming {
 		if reader, ok := c.cfg.Runner.(CompletionReader); ok {
 			completed, found, err := reader.Completed(ctx, resume.RunID)
 			if err != nil {
-				return Cycle{}, fmt.Errorf("conductor: read completed run: %w", err)
+				return cycleClaim{}, fmt.Errorf("conductor: read completed run: %w", err)
 			}
 			if found {
-				var runErr error
-				if completed.Failure != "" {
-					runErr = errors.New(completed.Failure)
-				}
 				// No budget or corpus read may prevent recording work that
 				// is already complete. The next cycle enforces the budget.
-				return c.finish(ctx, "", resume, completed.Result, completed.FinishedAt, runErr)
+				c.owned[resume.Seq] = true
+				seq := resume.Seq
+				return cycleClaim{cycle: resume, recovered: &completed,
+					release: func() { c.disown(seq, 0) }}, nil
 			}
 		}
 	}
 
 	spend, err := c.cfg.Ledger.SpentSince(ctx, StartOfDay(now), c.cfg.Ceilings.Currency)
 	if err != nil {
-		return Cycle{}, fmt.Errorf("conductor: read today's spend: %w", err)
+		return cycleClaim{}, fmt.Errorf("conductor: read today's spend: %w", err)
 	}
+	spend.Amount += c.reserved
 	if reason, over := c.cfg.Ceilings.refuse(spend); over {
-		return c.park(now, reason)
+		cycle, err := c.park(now, reason)
+		return cycleClaim{cycle: cycle, settled: true}, err
 	}
 
 	// The run identity is minted before the draw, because taking work is part
 	// of the draw: rung one claims an operator's invitation in the name of the
 	// run that is about to happen, and a claim that named no run could not be
 	// checked against what ran.
-	seq := c.cfg.Journal.NextSeq()
-	runID := newRunID(now, seq)
+	seq, runID := resume.Seq, resume.RunID
 	assignment := resume.assignment()
-	if resuming {
-		seq, runID = resume.Seq, resume.RunID
-	} else {
+	if !resuming {
+		seq = c.cfg.Journal.Reserve()
+		runID = newRunID(now, seq)
 		assignment, err = c.draw(ctx, DrawRequest{RunID: runID, At: now})
 		if err != nil {
-			return Cycle{}, err
+			return cycleClaim{}, err
 		}
 		if assignment.Rung == "" {
-			return c.idle(now, assignment.Note)
+			cycle, err := c.idle(seq, now, assignment.Note)
+			return cycleClaim{cycle: cycle, settled: true}, err
 		}
 	}
 
@@ -470,33 +697,27 @@ func (c *Conductor) Once(ctx context.Context) (Cycle, error) {
 		PID:        c.cfg.PID,
 	}
 	if err := c.cfg.Journal.Record(cycle); err != nil {
-		return Cycle{}, err
+		return cycleClaim{}, err
 	}
+	c.owned[seq] = true
+	c.reserved += c.cfg.Ceilings.PerCycle
+	reserved := c.cfg.Ceilings.PerCycle
 	c.cfg.Log("conductor: cycle %d on the %s rung, authority %s: %s\n",
 		cycle.Seq, cycle.Rung, cycle.Authority, cycle.Note)
+	return cycleClaim{cycle: cycle, assignment: assignment,
+		release: func() { c.disown(seq, reserved) }}, nil
+}
 
-	// The cycle becomes visible to the fleet here, between the journal entry
-	// and the run: the journal is this machine's own record and presence is
-	// every other machine's, and both are written before the work rather than
-	// after it, for the same reason - a conductor that died mid-cycle must
-	// leave the fact behind rather than leaving no trace of what it was paying
-	// for.
-	//
-	// Nothing below can fail this cycle. Announce returns an empty id when the
-	// catalog was unreachable, which makes the heartbeat loop and the finalize
-	// no-ops, and the errors it swallowed have already reached the store's own
-	// diagnostic sink. So the loop runs identically on a machine whose
-	// PostgreSQL is down; it is only invisible.
-	presenceID := c.announce(ctx, cycle)
-	stopBeat := presence.Beat(ctx, c.cfg.Presence, presenceID)
-
-	result, runErr := c.cfg.Runner.Run(ctx, runID, assignment)
-	// The heartbeat stops before the row is finalized, so the last thing the
-	// fleet sees about this cycle is how it ended rather than a heartbeat that
-	// raced past it.
-	stopBeat()
-
-	return c.finish(ctx, presenceID, cycle, result, c.cfg.Now(), runErr)
+// disown releases a finished cycle's sequence number and its share of the
+// day's budget, which the receipt it just wrote now accounts for.
+func (c *Conductor) disown(seq int, reserved float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.owned, seq)
+	c.reserved -= reserved
+	if c.reserved < 0 {
+		c.reserved = 0
+	}
 }
 
 // finish is shared by live runs and recovery of a completed receipt, so the
@@ -520,6 +741,7 @@ func (c *Conductor) finish(ctx context.Context, presenceID presence.PresenceID, 
 		cycle.Outcome = OutcomeRan
 	}
 	c.finalize(ctx, presenceID, cycle)
+	c.publish(ctx, &cycle)
 	if err := c.cfg.Journal.Record(cycle); err != nil {
 		return Cycle{}, err
 	}
@@ -537,6 +759,40 @@ func (c *Conductor) finish(ctx context.Context, presenceID presence.PresenceID, 
 		return c.park(c.cfg.Now(), reason)
 	}
 	return cycle, nil
+}
+
+// publish hands this cycle's now-durable records to the shared backend and
+// records what moved on the cycle itself.
+//
+// It cannot fail the cycle, and that is sync's own contract rather than a
+// leniency invented here: the records are durable locally and staged as owed,
+// so a backend outage costs a later `babel sync` and nothing else. A cycle
+// that reported itself failed because PostgreSQL blinked would teach an
+// operator to distrust the outcome column of the one loop that has to stay
+// legible.
+//
+// It runs after the receipt and before the journal entry, so the entry an
+// operator reads carries both halves of what the cycle did: what it produced
+// and whether anyone else can see it yet.
+func (c *Conductor) publish(ctx context.Context, cycle *Cycle) {
+	if c.cfg.Publisher == nil {
+		return
+	}
+	c.publishing.Lock()
+	defer c.publishing.Unlock()
+	report, err := c.cfg.Publisher.Publish(ctx)
+	if err != nil {
+		cycle.PublishNote = TrimNote(err.Error())
+		c.cfg.Log("conductor: cycle %d could not publish: %v; its records stay durable and pending\n",
+			cycle.Seq, err)
+		return
+	}
+	cycle.Published, cycle.PendingRecords, cycle.PublishNote = report.Published, report.Pending, report.Note
+	if report.Published > 0 || report.Pending > 0 {
+		c.cfg.Log("conductor: cycle %d published %d %s in %d %s; %d still pending\n",
+			cycle.Seq, report.Published, plural(report.Published, "record", "records"),
+			report.Runs, plural(report.Runs, "run", "runs"), report.Pending)
+	}
 }
 
 // announce makes this cycle visible to the fleet and returns the row's id, or
@@ -603,19 +859,30 @@ func (c *Conductor) finalize(ctx context.Context, id presence.PresenceID, cycle 
 // replaying it amends that run's receipt chain instead of starting a second run
 // over work an operator's invitation has already been spent on.
 func (c *Conductor) reconcile(now time.Time) (Cycle, bool, error) {
-	last, ok := c.cfg.Journal.Last()
-	if !ok || last.Outcome != OutcomeRunning {
-		return Cycle{}, false, nil
+	// Newest first, skipping the cycles this process is running: with
+	// concurrent cycles the newest journal entry is usually a live sibling,
+	// and resuming that would run one piece of work twice under one identity.
+	// A cycle another *live* conductor owns is skipped for the same reason,
+	// which the startup refusal only covers for the entry that happened to be
+	// last when this loop began.
+	for _, last := range c.cfg.Journal.Reverse() {
+		if last.Outcome != OutcomeRunning || c.owned[last.Seq] {
+			continue
+		}
+		if last.PID != 0 && last.PID != c.cfg.PID && processAlive(last.PID) {
+			continue
+		}
+		if last.RunID == "" {
+			// Nothing to resume under: record the interruption and move on.
+			last.Outcome = OutcomeInterrupted
+			last.Reason = "the conductor stopped before the run had an identity"
+			last.FinishedAt = now
+			return Cycle{}, false, c.cfg.Journal.Record(last)
+		}
+		c.cfg.Log("conductor: resuming interrupted cycle %d as run %s\n", last.Seq, last.RunID)
+		return last, true, nil
 	}
-	if last.RunID == "" {
-		// Nothing to resume under: record the interruption and move on.
-		last.Outcome = OutcomeInterrupted
-		last.Reason = "the conductor stopped before the run had an identity"
-		last.FinishedAt = now
-		return Cycle{}, false, c.cfg.Journal.Record(last)
-	}
-	c.cfg.Log("conductor: resuming interrupted cycle %d as run %s\n", last.Seq, last.RunID)
-	return last, true, nil
+	return Cycle{}, false, nil
 }
 
 // refuseConcurrent refuses to start beside a conductor that is still working.
@@ -653,6 +920,29 @@ func (c *Conductor) draw(ctx context.Context, d DrawRequest) (Assignment, error)
 			// status view reports the floor's own emptiness.
 		default:
 			return Assignment{}, fmt.Errorf("conductor: draw from the %s rung: %w", floor.Name(), err)
+		}
+	}
+
+	// The consolidation share is checked after the floor and before the
+	// ladder. After the floor because chaos is the one thing nothing else on
+	// the loop will ever ask for, so it keeps its precedence; before the
+	// ladder because consolidation is not a queue that can wait its turn —
+	// the frontier only ever grows, and a share that yielded to every dutiful
+	// rung would be the same silent backlog this rung exists to drain. Both
+	// due at once costs consolidation one cycle: its own count is unchanged,
+	// so it is due again immediately.
+	if c.cfg.Consolidation.due(c.cfg.Journal) {
+		a, err := c.cfg.Consolidation.Rung.Draw(ctx, d)
+		switch {
+		case err == nil:
+			a.Note = "the consolidation share is due: " + a.Note
+			return a, nil
+		case errors.Is(err, ErrNoWork):
+			// An empty frontier is a loop that has consolidated everything it
+			// discovered, which is the state this share exists to reach. The
+			// ladder below draws the discovery that refills it.
+		default:
+			return Assignment{}, fmt.Errorf("conductor: draw from the %s rung: %w", RungConsolidation, err)
 		}
 	}
 	var empty []string
@@ -709,7 +999,7 @@ func (c Cycle) counts() bool {
 
 func (c *Conductor) park(now time.Time, reason string) (Cycle, error) {
 	cycle := Cycle{
-		Seq:        c.cfg.Journal.NextSeq(),
+		Seq:        c.cfg.Journal.Reserve(),
 		StartedAt:  now,
 		FinishedAt: now,
 		Outcome:    OutcomeParked,
@@ -723,9 +1013,13 @@ func (c *Conductor) park(now time.Time, reason string) (Cycle, error) {
 	return cycle, nil
 }
 
-func (c *Conductor) idle(now time.Time, reason string) (Cycle, error) {
+// idle records a cycle no rung could draw work for, under the sequence number
+// the draw was already made in the name of. Reserving a second one would leave
+// a hole in the journal for every quiet cycle, and the numbering is what a
+// resumed cycle is found by.
+func (c *Conductor) idle(seq int, now time.Time, reason string) (Cycle, error) {
 	cycle := Cycle{
-		Seq:        c.cfg.Journal.NextSeq(),
+		Seq:        seq,
 		StartedAt:  now,
 		FinishedAt: now,
 		Outcome:    OutcomeIdle,

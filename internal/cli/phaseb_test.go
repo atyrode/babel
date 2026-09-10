@@ -449,6 +449,42 @@ func TestPrepareRegistersTheSessionsItScoped(t *testing.T) {
 	}
 }
 
+// TestPrepareAttributesAFetchedSessionToItsOriginHost keeps a preparation an
+// honest statement of which corpus a run read. --host names the identity for
+// sessions this machine holds, and a fetched session's bytes came out of
+// another machine's snapshot: recording it as this host's would say the
+// corpus was read somewhere it never existed, and would collide with the
+// origin host's own row for the same session.
+func TestPrepareAttributesAFetchedSessionToItsOriginHost(t *testing.T) {
+	f := newFixture(t)
+	f.writeSession(sessionSpec{
+		project: "-local", stem: "2026-01-02T03-04-05-000Z_" + testUUID(1),
+		id: testUUID(1), title: "local", workspace: "/synthetic/local",
+	})
+	fetched := f.plantFetched("macbook", "38c51a7d", "Users/alex", sessionSpec{
+		project: "-remote", stem: "2026-01-02T06-04-05-000Z_" + testUUID(4),
+		id: testUUID(4), title: "remote", workspace: "/synthetic/remote",
+	})
+
+	stdout, _ := f.ok("prepare", "--fetched", "--host", "dev-01", "--json")
+	res := decodeJSON[prepareResult](t, stdout)
+	hosts := map[string]string{}
+	for _, row := range res.Sessions {
+		hosts[row.Selector] = row.Host
+	}
+	if len(hosts) != 2 {
+		t.Fatalf("prepared %d sessions, want the local one and the fetched one", len(hosts))
+	}
+	if got := hosts[fetched]; got != "macbook" {
+		t.Errorf("the fetched session is attributed to %q, want the host whose snapshot it came from", got)
+	}
+	for selector, host := range hosts {
+		if selector != fetched && host != "dev-01" {
+			t.Errorf("locally discovered %s is attributed to %q, want --host's answer", selector, host)
+		}
+	}
+}
+
 // TestPrepareRejectsAnUnmatchedSelector keeps a preparation an exact
 // statement of intent: a selector that matches nothing must not silently
 // yield a smaller scope.

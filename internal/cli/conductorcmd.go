@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -58,11 +59,19 @@ Flags:
   --floor N            guarantee one serendipity cycle in every N (default 4)
   --interval DURATION   wait this long between cycles (default 1h)
   --slice-sessions N   bound a serendipity draw to N sessions (default 3)
+  --consolidate N      guarantee one consolidation cycle in every N (0 is off)
+  --consolidate-roots N   seed a consolidation cycle from N candidates (default 5)
   --babel-improves-babel      schedule the product self-improvement duties
   --no-babel-improves-babel   withdraw them
   --babel-tunes-itself        schedule the personal tuning duty
   --no-babel-tunes-itself     withdraw it
   --json               emit the stored configuration as JSON
+
+A consolidation cycle draws candidates the frontier is still holding
+unexplored and runs over them instead of over fresh sessions, so a loop left
+alone stops being a machine that only ever grows its own backlog. It is off
+until you set a share, because it runs the challenger and the synthesizer and
+those are worker jobs the ceilings have to cover.
 
 Both duties are off until you turn them on, and each takes an explicit --no-
 form: an invocation that adjusts one dial leaves everything it does not name
@@ -92,6 +101,8 @@ Flags:
   --once               run exactly one cycle and stop
   --stop-file PATH     stop before the next cycle when this file exists
   --until TIME         stop at RFC 3339 time, HH:MM today, or after a duration
+  --concurrent N       run N cycles at a time (default 1)
+  --consolidate N      consolidate one cycle in every N for this invocation
   --challenge          run the challenger over each cycle's exploration
   --synthesize         run the synthesizer, which is what promotes findings
   --worker PATH        the Code executable that speaks the worker protocol
@@ -106,6 +117,23 @@ costs more than the ceiling was set against for discovery alone — set the
 ceilings for the shape of cycle being asked for. --synthesize without
 --challenge is refused: §5.4 promotes nothing that a deliberately skeptical
 pass has not attacked first.
+
+--consolidate overrides the stored share for this invocation: one cycle in
+every N draws candidates the frontier is still holding unexplored and explores
+them as seeded roots rather than opening fresh sessions. It needs --challenge
+and --synthesize for the same §5.4 reason, and is refused without them rather
+than quietly running as another discovery cycle.
+
+--concurrent runs N cycles at a time against one budget: the ceilings are
+shared rather than multiplied, each cycle carries its own run identity and
+receipt, and the first stop still lets every cycle in flight finish. It is how
+one invocation saturates a provider's rate-limit window without becoming N
+loops that cannot see each other's spend.
+
+Each cycle publishes its own records once they are durable, so a loop keeps
+the fleet current without a second timer. A publication that fails does not
+fail the cycle: the records stay durable here and visibly pending, which is
+what "babel sync" would carry on the next attempt.
 
 There is no daemon mode. Supervision, restart policy and wall-clock scheduling
 belong to the OS, which already owns them.
@@ -152,6 +180,13 @@ type conductorSettings struct {
 	Floor           int            `json:"serendipity_floor,omitempty"`
 	IntervalSeconds int            `json:"interval_seconds,omitempty"`
 	SliceSessions   int            `json:"slice_sessions,omitempty"`
+	// ConsolidateOneIn is the protected share of cycles spent turning the
+	// frontier into findings, and ConsolidateRoots bounds how many candidates
+	// one of them seeds itself from. Absent is off: consolidation runs the
+	// challenger and the synthesizer, so a build that started scheduling it
+	// on upgrade would spend against a ceiling set for something else.
+	ConsolidateOneIn int `json:"consolidate_one_in,omitempty"`
+	ConsolidateRoots int `json:"consolidate_roots,omitempty"`
 	// BabelImprovesBabel and BabelTunesItself are #88's two self-improvement
 	// dimensions. Both are absent from the document until the operator turns
 	// one on, which is the same statement as off: a duty nobody authorized is
@@ -193,6 +228,19 @@ func (s conductorSettings) duties() conductor.Duties {
 		ImprovesBabel: s.BabelImprovesBabel,
 		TunesItself:   s.BabelTunesItself,
 	}
+}
+
+// consolidation is the protected consolidation share, and the rung that draws
+// it when the operator asked for one. The rung is built only when the share is
+// set, because building it opens nothing but naming it would claim the loop
+// consolidates when it does not.
+func (s conductorSettings) consolidation(oneIn int, state *analysisState) conductor.Consolidation {
+	c := conductor.Consolidation{OneIn: oneIn}
+	if oneIn > 0 {
+		c.Rung = conductor.NewConsolidationRung(state.frontier,
+			conductor.NewRecordOrigins(state.frontier, state.runs), s.ConsolidateRoots)
+	}
+	return c
 }
 
 func conductorPath() (string, error) {
@@ -287,6 +335,8 @@ type conductorConfigResult struct {
 	Floor              int     `json:"serendipity_floor"`
 	IntervalSeconds    int     `json:"interval_seconds"`
 	SliceSessions      int     `json:"slice_sessions"`
+	ConsolidateOneIn   int     `json:"consolidate_one_in"`
+	ConsolidateRoots   int     `json:"consolidate_roots"`
 	BabelImprovesBabel bool    `json:"babel_improves_babel"`
 	BabelTunesItself   bool    `json:"babel_tunes_itself"`
 	ConfiguredAt       string  `json:"configured_at,omitempty"`
@@ -317,6 +367,8 @@ func (a *app) conductorConfigure(args []string) error {
 	floor := c.fs.Int("floor", 0, "guarantee one serendipity cycle in every N")
 	interval := c.fs.Duration("interval", 0, "wait this long between cycles")
 	slice := c.fs.Int("slice-sessions", 0, "bound a serendipity draw to N sessions")
+	consolidate := c.fs.Int("consolidate", 0, "guarantee one consolidation cycle in every N")
+	consolidateRoots := c.fs.Int("consolidate-roots", 0, "seed a consolidation cycle from N candidates")
 	// The flag names are the duty names, taken from the constants a receipt's
 	// authority reference is built from, so a renamed duty cannot leave a flag
 	// authorizing something the loop no longer knows.
@@ -373,6 +425,12 @@ func (a *app) conductorConfigure(args []string) error {
 	if *slice < 0 {
 		return c.usagef("--slice-sessions cannot be negative")
 	}
+	if *consolidate < 0 {
+		return c.usagef("--consolidate cannot be negative")
+	}
+	if *consolidateRoots < 0 {
+		return c.usagef("--consolidate-roots cannot be negative")
+	}
 	improvesBabel, err := resolveDutyToggle(c, conductor.DutyImprovesBabel,
 		settings.BabelImprovesBabel, *improves, *noImproves)
 	if err != nil {
@@ -394,6 +452,17 @@ func (a *app) conductorConfigure(args []string) error {
 	if *slice > 0 {
 		settings.SliceSessions = *slice
 	}
+	// --consolidate 0 is the operator turning consolidation off, not an
+	// absent flag, so the zero is stored when the flag was named. The other
+	// dials have a default that makes zero mean "unset"; this one's default
+	// is off, and a share that could be raised but never withdrawn would be a
+	// dial that only turns one way.
+	if flagNamed(c, "consolidate") {
+		settings.ConsolidateOneIn = *consolidate
+	}
+	if *consolidateRoots > 0 {
+		settings.ConsolidateRoots = *consolidateRoots
+	}
 	settings.BabelImprovesBabel = improvesBabel
 	settings.BabelTunesItself = tunesItself
 	settings.ConfiguredAt = formatTime(time.Now().UTC())
@@ -413,6 +482,9 @@ func (a *app) conductorConfigure(args []string) error {
 		{"interval", (time.Duration(res.IntervalSeconds) * time.Second).String()},
 		{"serendipity slice", fmt.Sprintf("up to %d %s", res.SliceSessions,
 			plural(res.SliceSessions, "session", "sessions"))},
+		{"consolidation", consolidationLabel(res.ConsolidateOneIn)},
+		{"consolidation roots", fmt.Sprintf("up to %d %s", res.ConsolidateRoots,
+			plural(res.ConsolidateRoots, "candidate", "candidates"))},
 		{"babel improves babel", onOrOff(res.BabelImprovesBabel)},
 		{"babel tunes itself", onOrOff(res.BabelTunesItself)},
 		{"stored in", Sanitize(res.Path)},
@@ -426,6 +498,8 @@ func conductorConfigDocument(s conductorSettings, path string) conductorConfigRe
 		Floor:              conductor.Floor{OneIn: s.Floor}.OneIn,
 		IntervalSeconds:    int(s.interval().Seconds()),
 		SliceSessions:      s.SliceSessions,
+		ConsolidateOneIn:   s.ConsolidateOneIn,
+		ConsolidateRoots:   s.ConsolidateRoots,
 		ConfiguredAt:       s.ConfiguredAt,
 		BabelImprovesBabel: s.BabelImprovesBabel,
 		BabelTunesItself:   s.BabelTunesItself,
@@ -436,6 +510,9 @@ func conductorConfigDocument(s conductorSettings, path string) conductorConfigRe
 	}
 	if res.SliceSessions <= 0 {
 		res.SliceSessions = conductor.DefaultSliceSessions
+	}
+	if res.ConsolidateRoots <= 0 {
+		res.ConsolidateRoots = conductor.DefaultConsolidationRoots
 	}
 	if s.Ceilings != nil {
 		res.Currency = s.Ceilings.Currency
@@ -466,6 +543,27 @@ func resolveDutyToggle(c *cmd, name string, stored, on, off bool) (bool, error) 
 	}
 }
 
+// flagNamed reports whether this invocation named a flag, which is how a dial
+// whose default is off distinguishes "leave it alone" from "turn it off".
+func flagNamed(c *cmd, name string) bool {
+	named := false
+	c.fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			named = true
+		}
+	})
+	return named
+}
+
+// consolidationLabel renders the consolidation share for a terminal, and says
+// off rather than quoting a fraction of nothing.
+func consolidationLabel(oneIn int) string {
+	if oneIn <= 0 {
+		return "off"
+	}
+	return fmt.Sprintf("one cycle in %d", oneIn)
+}
+
 // onOrOff renders a toggle for a terminal.
 func onOrOff(enabled bool) string {
 	if enabled {
@@ -491,6 +589,8 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	once := c.fs.Bool("once", false, "run exactly one cycle and stop")
 	until := c.fs.String("until", "", "stop at this time, or after this duration")
 	stopFile := c.fs.String("stop-file", "", "stop at the cycle boundary when this file exists")
+	concurrent := c.fs.Int("concurrent", 1, "run this many cycles at a time")
+	consolidate := c.fs.Int("consolidate", 0, "consolidate one cycle in every N")
 	challenge := c.fs.Bool("challenge", false, "run the challenger over each cycle's exploration")
 	synthesize := c.fs.Bool("synthesize", false, "run the synthesizer, which is what promotes findings")
 	asJSON := c.fs.Bool("json", false, "emit the cycles this invocation ran as JSON")
@@ -503,6 +603,12 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	if *synthesize && !*challenge {
 		return c.usagef("--synthesize needs --challenge: a finding is promoted from exploration and critique together, never from exploration alone")
 	}
+	if *concurrent < 1 {
+		return c.usagef("--concurrent %d is not a number of cycles to run at a time", *concurrent)
+	}
+	if *consolidate < 0 {
+		return c.usagef("--consolidate cannot be negative")
+	}
 
 	settings, err := loadConductorSettings()
 	if err != nil {
@@ -510,6 +616,25 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	}
 	if settings.Ceilings == nil {
 		return a.reportUnconfiguredConductor()
+	}
+	// The stored share is what a loop nobody flagged runs on, and the flag
+	// overrides it for this invocation only. Naming --consolidate 0 is how an
+	// operator runs a pure discovery loop on a machine configured to
+	// consolidate, which is why the flag is read as named rather than as
+	// non-zero.
+	consolidateOneIn := settings.ConsolidateOneIn
+	if flagNamed(c, "consolidate") {
+		consolidateOneIn = *consolidate
+	}
+	if consolidateOneIn > 0 && !(*challenge && *synthesize) {
+		// §5.4 promotes nothing a skeptical pass has not attacked, and a
+		// consolidation cycle exists to promote. Degrading it into another
+		// discovery cycle would answer the operator's request for
+		// consolidation by growing the frontier they asked to have drained,
+		// so the refusal names the share and both stages it needs.
+		return c.usagef("consolidating one cycle in %d needs --challenge and --synthesize: "+
+			"a consolidation cycle that could neither attack nor promote what it drew "+
+			"would defer the same candidates again", consolidateOneIn)
 	}
 	analysis, err := loadAnalysisSettings()
 	if err != nil {
@@ -561,6 +686,21 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	announcer, closePresence := a.openPresence(ctx)
 	defer closePresence()
 
+	// Publication is decided once, here, rather than asked per cycle: a
+	// local-only deployment owes the fleet nothing, and a note on every cycle
+	// row saying so would be a hundred lines about a state that cannot change
+	// while the loop runs.
+	reason, err := syncUnavailable()
+	if err != nil {
+		return err
+	}
+	var publisher conductor.Publisher
+	if reason == "" {
+		publisher = &conductorPublisher{app: a, dirs: d}
+	} else {
+		a.diagf("conductor: %s; each cycle's records stay durable and pending\n", reason)
+	}
+
 	loop, err := conductor.New(conductor.Config{
 		Ceilings: settings.ceilings(),
 		Floor:    conductor.Floor{OneIn: settings.Floor},
@@ -572,6 +712,8 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			conductor.NewSerendipityRung(&hostCorpus{app: a, adapters: adapters(), roots: sf.rootList()},
 				embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 		),
+		Consolidation: settings.consolidation(consolidateOneIn, state),
+		Publisher:     publisher,
 		Runner: &conductorRunner{
 			app:        a,
 			cmd:        c,
@@ -606,8 +748,13 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	a.diagf("conductor: ceilings %.2f per cycle, %.2f per day %s; profile %s\n",
 		settings.Ceilings.PerCycle, settings.Ceilings.PerDay, settings.Ceilings.Currency,
 		Sanitize(profileRef.String()))
+	if consolidateOneIn > 0 {
+		a.diagf("conductor: consolidating one cycle in %d, seeded from the unexplored frontier\n",
+			consolidateOneIn)
+	}
 	before := journal.NextSeq()
-	runErr := loop.Run(ctx, conductor.RunOptions{Until: deadline, Once: *once, Stop: stop.soft, StopFile: *stopFile})
+	runErr := loop.Run(ctx, conductor.RunOptions{Until: deadline, Once: *once, Stop: stop.soft,
+		StopFile: *stopFile, Concurrency: *concurrent})
 
 	res := conductorRunResult{Cycles: []conductorCycleRow{}}
 	for _, cycle := range journal.Recent(0) {
@@ -795,6 +942,53 @@ func (embeddedRecipes) Defaults(context.Context) ([]string, error) {
 	return ids, nil
 }
 
+// conductorPublisher publishes a cycle's durable records through the same
+// machinery `babel sync` holds, at the moment the cycle ends.
+//
+// It opens the publisher per attempt rather than holding one for the whole
+// loop, which is what `babel archive push` already does for the same job. A
+// loop runs for hours, and a PostgreSQL handle held open across all of them
+// would have to survive every restart of the far end; opening one per cycle
+// costs a dial against a cycle that just spent minutes in inference.
+type conductorPublisher struct {
+	app  *app
+	dirs dirs
+}
+
+// Publish carries everything this machine still owes the fleet and reports
+// what moved.
+//
+// A nil publisher is a configuration that stopped naming a backend while the
+// loop ran, which is a note rather than a failure on exactly the terms
+// `babel sync` states: the records are durable here and staged as owed.
+func (p *conductorPublisher) Publish(ctx context.Context) (conductor.Publication, error) {
+	pub, cleanup, err := p.app.openPublisher(ctx, p.dirs)
+	defer cleanup()
+	if err != nil {
+		return conductor.Publication{}, err
+	}
+	if pub == nil {
+		return conductor.Publication{Note: "this deployment publishes nothing"}, nil
+	}
+	rep, err := pub.Retry(ctx)
+	if err != nil {
+		return conductor.Publication{}, fmt.Errorf("read the sync journal: %w", err)
+	}
+	res := syncReport(rep)
+	out := conductor.Publication{
+		Published: syncTotal(res.Committed),
+		Pending:   syncTotal(res.Pending),
+		Runs:      res.RunsCommitted,
+	}
+	if len(res.Failures) > 0 {
+		// The count and not the reasons: the publisher's own diagnostic sink
+		// has already put each one on stderr, and a journal note is one line.
+		out.Note = fmt.Sprintf("%d run %s not publish",
+			len(res.Failures), plural(len(res.Failures), "closure did", "closures did"))
+	}
+	return out, nil
+}
+
 // conductorRunner turns one cycle's assignment into an ordinary run.
 //
 // It is the whole of what scheduling may ask for, and it asks for it through the
@@ -825,6 +1019,17 @@ type conductorRunner struct {
 // Run prepares the assignment's corpus slice and explores it.
 func (r *conductorRunner) Run(ctx context.Context, runID string,
 	a conductor.Assignment) (conductor.Result, error) {
+	if a.Rung == conductor.RungConsolidation && !(r.challenge && r.synthesize) {
+		// A consolidation cycle drawn from a stored share, or resumed by an
+		// invocation that did not authorize the stages, refuses by name. §5.4
+		// promotes nothing a skeptical pass has not attacked, and running the
+		// discovery pass instead would answer "consolidate the frontier" by
+		// adding to it — the candidates would be explored, deferred again,
+		// and the operator would read a successful cycle.
+		return conductor.Result{}, errors.New(
+			"a consolidation cycle needs the challenger and the synthesizer: " +
+				"run \"babel conductor run --challenge --synthesize\"")
+	}
 	receipt, err := r.state.runs.Latest(ctx, runID)
 	if err == nil {
 		if cp := receipt.Body.Checkpoint; cp == nil || cp.State == runstore.Closed {
@@ -973,8 +1178,15 @@ type conductorCycleRow struct {
 	Cost          float64  `json:"cost,omitempty"`
 	Currency      string   `json:"currency,omitempty"`
 	Failures      int      `json:"failures,omitempty"`
-	StartedAt     string   `json:"started_at"`
-	FinishedAt    string   `json:"finished_at,omitempty"`
+	// Published and Pending are what this cycle's own publication moved and
+	// what the machine still owes afterwards. They are on the cycle because a
+	// cycle whose records nobody else can see has only half happened, and the
+	// place an operator asks what a cycle did has to be able to say so.
+	Published   int    `json:"published,omitempty"`
+	Pending     int    `json:"pending_records,omitempty"`
+	PublishNote string `json:"publish_note,omitempty"`
+	StartedAt   string `json:"started_at"`
+	FinishedAt  string `json:"finished_at,omitempty"`
 }
 
 func conductorCycleDocument(c conductor.Cycle) conductorCycleRow {
@@ -996,6 +1208,9 @@ func conductorCycleDocument(c conductor.Cycle) conductorCycleRow {
 		Cost:          c.Cost,
 		Currency:      Sanitize(c.Currency),
 		Failures:      c.Failures,
+		Published:     c.Published,
+		Pending:       c.PendingRecords,
+		PublishNote:   Sanitize(c.PublishNote),
 		StartedAt:     formatTime(c.StartedAt),
 	}
 	if !c.FinishedAt.IsZero() {
@@ -1144,6 +1359,12 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 	}
 
 	dutyRung := conductor.NewDutyRung(settings.duties(), journal, func() time.Time { return now }, 0)
+	// The consolidation rung is described last and always, whether or not a
+	// share is configured. Its depth is the frontier's own backlog, which is
+	// the number an operator deciding whether to turn consolidation on has to
+	// see; reporting it only once it was already on would hide the state that
+	// argues for it. It is described after the ladder rather than inside it
+	// because it is a protected share, not a rung the others outrank.
 	ladder := conductor.DefaultLadder(
 		conductor.NewInvitationRung(state.dispositions,
 			conductor.NewRecordOrigins(state.frontier, state.runs)),
@@ -1151,6 +1372,8 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 		conductor.NewSerendipityRung(&hostCorpus{app: a, adapters: adapters()},
 			embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 	)
+	ladder = append(ladder, conductor.NewConsolidationRung(state.frontier,
+		conductor.NewRecordOrigins(state.frontier, state.runs), settings.ConsolidateRoots))
 	rungs, err := conductor.Describe(ctx, ladder)
 	if err != nil {
 		return err
@@ -1222,7 +1445,8 @@ func (a *app) writeConductorStatus(res conductorStatusResult) {
 		rows = append(rows,
 			[2]string{"ceilings", fmt.Sprintf("%.2f per cycle, %.2f per day %s",
 				res.Config.PerCycle, res.Config.PerDay, res.Config.Currency)},
-			[2]string{"serendipity floor", fmt.Sprintf("one cycle in %d", res.Config.Floor)})
+			[2]string{"serendipity floor", fmt.Sprintf("one cycle in %d", res.Config.Floor)},
+			[2]string{"consolidation", consolidationLabel(res.Config.ConsolidateOneIn)})
 	} else {
 		rows = append(rows, [2]string{"ceilings",
 			"none; run \"babel conductor configure --per-cycle AMOUNT --per-day AMOUNT\""})
@@ -1241,10 +1465,10 @@ func (a *app) writeConductorStatus(res conductorStatusResult) {
 	fmt.Fprintf(a.stdout, "\nladder\n")
 	for _, rung := range res.Rungs {
 		if !rung.Implemented {
-			fmt.Fprintf(a.stdout, "  %-12s not implemented — %s\n", rung.Name, rung.Note)
+			fmt.Fprintf(a.stdout, "  %-13s not implemented — %s\n", rung.Name, rung.Note)
 			continue
 		}
-		fmt.Fprintf(a.stdout, "  %-12s %d — %s\n", rung.Name, rung.Waiting, rung.Note)
+		fmt.Fprintf(a.stdout, "  %-13s %d — %s\n", rung.Name, rung.Waiting, rung.Note)
 	}
 
 	// The duties are printed whatever their state, and printed after the rung
@@ -1283,10 +1507,31 @@ func (a *app) writeConductorCycles(cycles []conductorCycleRow) {
 			orMissing(c.Rung),
 			authorityLabel(c.AuthorityKind, c.AuthorityRef),
 			orMissing(c.ReceiptID),
+			publishedLabel(c),
 			firstLine(c.Note, c.Reason),
 		})
 	}
-	writeTable(a.stdout, []string{"CYCLE", "OUTCOME", "RUNG", "AUTHORITY", "RECEIPT", "WHY"}, table)
+	writeTable(a.stdout, []string{"CYCLE", "OUTCOME", "RUNG", "AUTHORITY", "RECEIPT", "PUBLISHED", "WHY"}, table)
+}
+
+// publishedLabel renders what a cycle published and what it still owes.
+//
+// The two numbers are one cell because they are one answer: "4" is a cycle
+// whose records are on the fleet, "4, 2 owed" is one whose are not all there
+// yet, and a dash is a loop that publishes nothing at all. Reporting only the
+// first would make a machine that has silently stopped publishing look
+// identical to one that never had anything to send.
+func publishedLabel(c conductorCycleRow) string {
+	switch {
+	case c.Published == 0 && c.Pending == 0 && c.PublishNote != "":
+		return c.PublishNote
+	case c.Published == 0 && c.Pending == 0:
+		return "-"
+	case c.Pending == 0:
+		return strconv.Itoa(c.Published)
+	default:
+		return fmt.Sprintf("%d, %d owed", c.Published, c.Pending)
+	}
 }
 
 // authorityLabel renders a recorded authority, and says so when there is none.

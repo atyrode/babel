@@ -476,6 +476,8 @@ The session catalog is built from live local source trees, not decoded from remo
 
 `babel sessions fetch SELECTOR [--snapshot ID]` restores the selected session's file closure—primary log, sibling artifacts, resolved blobs—from the chosen snapshot into the private local data store. Today the closure is resolved from live local sources, so fetch covers sessions this machine has (or had at capture time under the same paths). Cross-host fetch works, and `--host` selects it: source-file paths never enter PostgreSQL, so a second instance resolves another host's selector by listing the snapshot's own encrypted file tree (`restic ls`) and deriving session identity from those paths with the same deterministic adapter rules used at discovery. `babel sessions list --host HOST` is the listing counterpart, without which a selector could not be discovered to fetch; it reads the same file tree, so it reports identity and size and leaves title, workspace, timestamps, and grade absent. The two-instance acceptance in §10 exercises that path against a local-path repository; the real-provider leg remains §14's. Fetched sessions persist until explicit prune, are never modified, and local prune never touches the repository.
 
+`babel sessions fetch-all (--host HOST | --all-hosts)` is the corpus-shaped form of the same recovery, because analysis takes a corpus rather than a session: it identifies every session a host's snapshot holds and restores them concurrently, since the cost of a small session is restic's startup and not its bytes. It is resumable by construction — the target directory of one session in one snapshot is derived from the selector and the snapshot's short id, so an already materialized session is reported and left untouched — and one session's failure is recorded against its selector while the batch continues, so a transient repository lock costs one session rather than the operator's place in a corpus of hundreds. Each fetched tree records the machine whose snapshot it came out of, taken from restic's own recorded snapshot host, and `babel sessions list --fetched` and `babel sessions inspect --fetched` then discover that corpus as sessions — under the identity the origin machine assigns them and attributed to that machine, never to the machine that fetched them. That attribution is what makes fleet-wide analysis honest: a preparation is a per-session record of host, harness and identity (§6.5), and stamping another machine's session with the scanning machine's identity would be a false claim in an immutable record. A tree fetched by a build that kept no such record is left out of discovery and named, rather than attributed by guess; fetching again writes the record without downloading anything.
+
 The legacy pre-Babel namespace is ignored. There is no range-read probing or best-effort legacy import in the product path.
 
 ### 6.3 Ingest and normalize
@@ -516,6 +518,8 @@ Normal preparation indexes new or changed material. Exploration may start from n
 
 When nobody typed a command, the conductor (`babel conductor run`, a foreground loop the OS supervises) decides what deserves a run, and every cycle is an ordinary run carrying an authority the receipt records. Its ladder is ordered — the operator's invitations first, then watches, then standing duties — with the serendipity floor as a protected fraction rather than a last resort. The watches rung (operator direction 2026-09-02) sits between invitations and duties: it draws a standing operator interest in a subject (§4.9) when that subject's material-change fingerprint has moved since the watch last ran, and the floor draws across every subject kind rather than the archive alone. Watch storms are bounded twice: by a per-subject cadence — one draw per subject per cadence, however many changes arrived within it — and by the per-cycle and per-day ceilings the conductor already refuses to run without. A cycle's journal row, presence and receipt are the same run facts the runs interface renders (§8.3).
 
+Three properties keep an unattended loop from being merely a fast producer. **A consolidation share** (`--consolidate N`, one cycle in N) draws the frontier's unexplored candidates instead of a fresh corpus slice, so a loop left running turns what it has already found into findings and proposals rather than only accumulating more hypotheses; it is reported after the ladder and drawn as a protected share, because below the invitations a busy operator would starve it and above them it would outrank a person asking for something. **Concurrent cycles** (`--concurrent N`) draw against one budget rather than a copy each: the claim is serialized and reserves the cycle's ceiling before the run starts, so the day's limit binds on what is committed rather than on what completed runs have already reported. **Publication happens at the cycle boundary** rather than when the loop stops, because a loop is supposed to run for days and records that only a stopped machine publishes are records the fleet cannot see.
+
 Every run records:
 
 - normalized source and capture digests;
@@ -552,9 +556,10 @@ babel archive status [--json]
 babel archive fleet [--expect HOST[,HOST...]] [--every DURATION] [--json]
 babel archive verify [--deep] [--json]
 babel archive unlock [--remove LOCKID[,LOCKID...]] [--json]
-babel sessions list [--harness omp|codex|claude] [--host HOST [--snapshot ID]] [--json]
-babel sessions inspect SESSION [--json]
+babel sessions list [--harness omp|codex|claude] [--host HOST [--snapshot ID]] [--fetched] [--json]
+babel sessions inspect SESSION [--fetched] [--json]
 babel sessions fetch SESSION [--host HOST] [--snapshot ID] [--json]
+babel sessions fetch-all (--host HOST | --all-hosts) [--snapshot ID] [--concurrency N] [--json]
 babel sessions prune --local [selection flags] [--yes]
 babel recall search QUERY [--harness omp|codex|claude] [--host HOST] [--workspace PATH|--repo LOCATOR] [--since TIME] [--until TIME] [--limit N] [--json]
 babel recall show LOCATOR [--around N|--turns A-B|--session] [--max-bytes N] [--json]
