@@ -213,16 +213,23 @@ func (x *Index) FrontierOrigins(ctx context.Context) (map[string]int, error) {
 // two origins on alternate reconciles.
 func (x *Index) indexFrontier(ctx context.Context, origin string, outputs []frontier.Output) (FrontierResult, error) {
 	var res FrontierResult
-	stored, owners, err := x.frontierFingerprints(ctx)
-	if err != nil {
-		return res, err
-	}
-
 	tx, err := x.db.BeginTx(ctx, nil)
 	if err != nil {
 		return res, fmt.Errorf("begin frontier index transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	// The snapshot is read inside the transaction, and the transaction is
+	// IMMEDIATE (durable.DSN), so the write lock is already held when the
+	// read happens. Reading it before BEGIN was a time-of-check race that
+	// concurrency made routine rather than theoretical: three cycles each
+	// open their own handle on this file, so two reconciles could both see
+	// a record absent, and the second insert failed the record_id UNIQUE
+	// constraint and degraded a cycle that had already paid for its work.
+	stored, owners, err := frontierFingerprints(ctx, tx)
+	if err != nil {
+		return res, err
+	}
 
 	offered := make(map[string]struct{}, len(outputs))
 	for _, output := range outputs {
@@ -288,8 +295,11 @@ func (x *Index) indexFrontier(ctx context.Context, origin string, outputs []fron
 // read and they come from the same row. Keeping them separate rather than
 // returning a struct keeps the caller's two questions — "has this changed" and
 // "is this mine to change" — visibly distinct at the point they are asked.
-func (x *Index) frontierFingerprints(ctx context.Context) (stored, owners map[string]string, err error) {
-	rows, err := x.db.QueryContext(ctx,
+//
+// It reads through the caller's transaction rather than the handle, because
+// the answer is only true for as long as that transaction's write lock is.
+func frontierFingerprints(ctx context.Context, tx *sql.Tx) (stored, owners map[string]string, err error) {
+	rows, err := tx.QueryContext(ctx,
 		`SELECT record_id, origin, fingerprint FROM frontier_records`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read indexed frontier records: %w", err)
