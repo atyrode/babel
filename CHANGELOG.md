@@ -11,6 +11,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The conductor draws from the fleet's corpus.** `sessions fetch-all` and
+  `--fetched` let a person scope another machine's sessions, but the
+  unattended loop still sliced only its own host's sources: 343 fetched
+  sessions sat on disk while every cycle redrew the same 88 local ones. The
+  serendipity floor and the resolver that turns a draw into a run now read the
+  same fleet-wide corpus, so an overnight loop covers the archive rather than
+  the machine it happens to run on.
+
 - **The conductor consolidates, runs cycles concurrently, and publishes at the
   cycle boundary.** A loop left alone grew the frontier and never returned to
   it, ran one cycle at a time whatever the ceilings afforded, and kept every

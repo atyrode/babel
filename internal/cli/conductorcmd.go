@@ -709,7 +709,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			conductor.NewInvitationRung(state.dispositions,
 				conductor.NewRecordOrigins(state.frontier, state.runs)),
 			conductor.NewDutyRung(settings.duties(), journal, nil, 0),
-			conductor.NewSerendipityRung(&hostCorpus{app: a, adapters: adapters(), roots: sf.rootList()},
+			conductor.NewSerendipityRung(&fleetCorpus{app: a, adapters: adapters(), roots: sf.rootList()},
 				embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 		),
 		Consolidation: settings.consolidation(consolidateOneIn, state),
@@ -903,20 +903,28 @@ func drawGenerator() *rand.Rand {
 	return rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
 }
 
-// hostCorpus is the local session inventory the serendipity floor slices.
-type hostCorpus struct {
+// fleetCorpus is the session inventory the serendipity floor slices: every
+// session this machine can reach, which is its own sources plus whatever the
+// fleet's snapshots have been fetched into Babel's own area.
+//
+// The fetched half is not optional and has no flag. A loop nobody is watching
+// draws to find something worth knowing, and the machine that happened to type
+// the command is not a meaningful boundary on where an idea can come from; a
+// conductor that could only ever read one host's sessions would rediscover
+// that host's habits forever.
+type fleetCorpus struct {
 	app      *app
 	adapters []adapter.Adapter
 	roots    []string
 }
 
-// Sessions reports every session this host can see, in a stable order.
+// Sessions reports every session this host can reach, in a stable order.
 //
 // The order is the scan's, which is stable for a given tree, and the list is
 // sorted so a seeded draw is reproducible across two conductors that scanned
 // the same corpus in a different filesystem order.
-func (h *hostCorpus) Sessions(ctx context.Context) ([]string, error) {
-	sessions, _ := h.app.scan(ctx, h.adapters, h.roots)
+func (h *fleetCorpus) Sessions(ctx context.Context) ([]string, error) {
+	sessions, _ := h.app.scanCorpus(ctx, h.adapters, h.roots, true)
 	keys := make([]string, 0, len(sessions))
 	for _, s := range sessions {
 		keys = append(keys, s.key())
@@ -1049,7 +1057,9 @@ func (r *conductorRunner) Run(ctx context.Context, runID string,
 	if !errors.Is(err, runstore.ErrNotFound) {
 		return conductor.Result{}, fmt.Errorf("%w: read the original run: %v", conductor.ErrRecoveryPending, err)
 	}
-	sessions, _ := r.app.scan(ctx, r.adapters, r.scanRoots)
+	// The same corpus the draw ran over, or a cycle that legitimately drew a
+	// fetched session would report it missing and run over what is left.
+	sessions, _ := r.app.scanCorpus(ctx, r.adapters, r.scanRoots, true)
 	chosen, missing := sliceSessions(sessions, a.Sessions)
 	if len(missing) > 0 {
 		// A session the assignment named is gone from this host. The cycle
@@ -1369,7 +1379,7 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 		conductor.NewInvitationRung(state.dispositions,
 			conductor.NewRecordOrigins(state.frontier, state.runs)),
 		dutyRung,
-		conductor.NewSerendipityRung(&hostCorpus{app: a, adapters: adapters()},
+		conductor.NewSerendipityRung(&fleetCorpus{app: a, adapters: adapters()},
 			embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 	)
 	ladder = append(ladder, conductor.NewConsolidationRung(state.frontier,
