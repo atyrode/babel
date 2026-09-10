@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/atyrode/babel/internal/sharedcatalog"
 	babelsync "github.com/atyrode/babel/internal/sync"
@@ -130,7 +132,9 @@ const (
 	ActorSystem = "system"
 )
 
-// publishedEdge is the canonical publication shape of one edge.
+// PublishedEdge is the canonical publication shape of one edge, and it is that
+// shape in both directions: this file marshals it on the way out, and
+// DecodePublishedEdge reads it back on whichever host opens the object.
 //
 // It carries the endpoints and the actor as well as the note, even though the
 // endpoints also travel as plaintext columns, and the duplication is deliberate:
@@ -143,7 +147,7 @@ const (
 // published bytes and the row agree literally; timestampLayout keeps a
 // nine-digit fraction precisely so text order and time order cannot disagree,
 // and encoding/json's default time rendering trims it.
-type publishedEdge struct {
+type PublishedEdge struct {
 	Schema int    `json:"schema"`
 	ID     string `json:"id"`
 	Kind   Kind   `json:"kind"`
@@ -174,12 +178,20 @@ type publishedEdge struct {
 // and a malformed one cannot be corrected there - 0003's analysis_records is
 // insert-only - so the only place a refusal costs nothing is before the
 // transaction that stages it.
-func (p publishedEdge) validate() error {
+func (p PublishedEdge) validate() error {
 	switch {
 	case p.Schema < 1:
 		return fmt.Errorf("%w: a published edge carries its schema version", ErrInvalidValue)
 	case p.ID == "":
 		return fmt.Errorf("%w: a published edge carries its id", ErrInvalidValue)
+	case p.Schema > RecordSchema:
+		// Only the read direction can meet this, and it is the reason
+		// validation is shared: an edge published by a build whose shape has
+		// moved on is authentic and still not decodable here, and a refusal
+		// naming both versions sends an operator to their binaries rather
+		// than to their object store.
+		return fmt.Errorf("%w: published edge %s is schema %d and this build reads %d",
+			ErrInvalidValue, p.ID, p.Schema, RecordSchema)
 	case !p.Kind.Valid():
 		return fmt.Errorf("%w: edge kind %q", ErrInvalidValue, p.Kind)
 	case p.From.Kind == "" || p.From.ID == "" || p.To.Kind == "" || p.To.ID == "":
@@ -197,14 +209,100 @@ func (p publishedEdge) validate() error {
 }
 
 // MarshalJSON encodes the edge after validating it.
-func (p publishedEdge) MarshalJSON() ([]byte, error) {
+func (p PublishedEdge) MarshalJSON() ([]byte, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
 	// The local type drops the method, which is what keeps this from recursing
 	// into itself.
-	type wire publishedEdge
+	type wire PublishedEdge
 	return json.Marshal(wire(p))
+}
+
+// IsPublishedEdge reports whether decrypted plaintext committed under the
+// shared catalog's `link` kind is one of this package's citation edges rather
+// than one of internal/frontier's typed links.
+//
+// A reader needs this because the two share that kind slot by design (see
+// edgeRecordKind) and both spell their discriminator `kind`, so the
+// authenticated catalog row alone cannot say which decoder owns the bytes. The
+// two vocabularies are disjoint - a frontier link says `link`, and every edge
+// here says one of the six relation kinds - which makes the answer a lookup
+// rather than a guess, and makes it the same answer on every host.
+//
+// Bytes that declare neither are not this package's. They are reported by the
+// frontier decoder, which is the one that can say what it expected and did not
+// find; answering "not mine" here and nothing else would lose the record with
+// no reason attached.
+func IsPublishedEdge(plaintext []byte) bool {
+	var declared struct {
+		Kind Kind `json:"kind"`
+	}
+	if err := json.Unmarshal(plaintext, &declared); err != nil {
+		return false
+	}
+	return declared.Kind.Valid()
+}
+
+// DecodePublishedEdge reads a published edge back out of decrypted plaintext.
+//
+// It validates rather than trusting, because these bytes arrived from another
+// machine. They are authenticated - the envelope binds them to the record's
+// global id and catalog kind, so a swapped object does not open at all - but
+// authentication proves origin and not shape, and what is left is whether this
+// build can act on the edge it claims to be.
+func DecodePublishedEdge(plaintext []byte) (PublishedEdge, error) {
+	var p PublishedEdge
+	if err := json.Unmarshal(plaintext, &p); err != nil {
+		return PublishedEdge{}, fmt.Errorf("decode published edge: %w", err)
+	}
+	if err := p.validate(); err != nil {
+		return PublishedEdge{}, err
+	}
+	return p, nil
+}
+
+// Summary renders one published edge as the single line a listing shows: what
+// cites what, under which relation, and the note when the edge carries one.
+//
+// The derivation lives here for the reason internal/frontier's describe
+// functions give for living there: the CLI's fleet listing and the web fleet
+// view both render this line, and a second phrasing would make one citation
+// read differently depending on which surface an operator opened.
+//
+// The relation sits between the endpoints as the sentence's verb, so direction
+// is legible without a reader knowing which end the catalog columns call
+// `from`. Every kind here is asymmetric, and a line that lost which end was
+// which would read a citation backwards.
+func (p PublishedEdge) Summary() string {
+	line := p.From.String() + " " + string(p.Kind) + " " + p.To.String()
+	if p.Note != "" {
+		line += ": " + p.Note
+	}
+	return summarize(line)
+}
+
+// maxSummaryBytes bounds a rendered edge line, and is internal/frontier's bound
+// restated rather than shared: frontier imports this package, so the constant
+// cannot travel the other way without a cycle. Both exist for one reason - a
+// note may run to maxNoteLen, and a summary column that wrapped on citations
+// while every other kind stayed on one line would be a listing whose rows
+// disagree about how tall a row is.
+const maxSummaryBytes = 240
+
+// summarize collapses a rendered line to one bounded line. The cut lands on a
+// rune boundary because a note is model-authored prose and half a rune is not a
+// character.
+func summarize(text string) string {
+	line := strings.Join(strings.Fields(text), " ")
+	if len(line) <= maxSummaryBytes {
+		return line
+	}
+	cut := maxSummaryBytes
+	for cut > 0 && !utf8.RuneStart(line[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(line[:cut]) + "…"
 }
 
 // marshalPayload encodes the §9 encryption-bound half of an edge, which is also
@@ -216,7 +314,7 @@ func (p publishedEdge) MarshalJSON() ([]byte, error) {
 // validating marshaller therefore also guards the local write - a malformed
 // edge never becomes a durable row either.
 func marshalPayload(e Edge) ([]byte, error) {
-	encoded, err := json.Marshal(publishedEdge{
+	encoded, err := json.Marshal(PublishedEdge{
 		Schema:    RecordSchema,
 		ID:        e.ID,
 		Kind:      e.Kind,

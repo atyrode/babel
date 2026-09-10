@@ -244,6 +244,119 @@ func TestReceiptPreservesEveryToolDecision(t *testing.T) {
 	}
 }
 
+// preCutoverBody rewrites a body's worker half into the shape the retired
+// `babel.analysis-worker` protocol wrote: the three fields the native cutover
+// removed are put back, the fields it added are taken away, and the two
+// renames are undone. Building the fixture from today's body rather than
+// pasting a captured one keeps it honest about everything the two shapes
+// still share.
+func preCutoverBody(t *testing.T, encoded []byte) []byte {
+	t.Helper()
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatalf("unmarshal body: %v", err)
+	}
+	var w map[string]any
+	if err := json.Unmarshal(body["worker"], &w); err != nil {
+		t.Fatalf("unmarshal worker: %v", err)
+	}
+	for _, added := range []string{"Tools", "Submissions", "Usage", "AssistantMessages", "Fallbacks", "UnknownFrames"} {
+		delete(w, added)
+	}
+	w["ProtocolVersion"] = 2
+	w["ResolvedCapabilities"] = []string{"corpus-search", "repo-read"}
+	w["UnknownFields"] = []string{"future_frame"}
+	for _, p := range w["Progress"].([]any) {
+		p.(map[string]any)["Fraction"] = 0.4
+	}
+	w["Resources"].(map[string]any)["tool_calls"] = 4
+	rewritten, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal worker: %v", err)
+	}
+	body["worker"] = rewritten
+	out, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	return out
+}
+
+// A receipt recorded before #182 replaced the `babel.analysis-worker` protocol
+// stays readable. The cutover reshaped the body's worker half without moving
+// the schema number, so strict decoding rejected every receipt written by
+// those runs — and with them the spend the conductor's ceilings are enforced
+// against, the authority saying why each run was allowed to start, and the
+// tool decisions review reads.
+func TestPreCutoverReceiptBodyStaysReadable(t *testing.T) {
+	encoded, err := json.Marshal(testBody(t))
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	legacy := preCutoverBody(t, encoded)
+	if _, err := unmarshalStoredBody(ReceiptSchema, legacy); err == nil {
+		t.Fatal("a pre-cutover body decoded as today's shape; the fixture no longer describes the old one")
+	}
+
+	got, err := unmarshalStoredBody(legacyReceiptSchema, legacy)
+	if err != nil {
+		t.Fatalf("unmarshalStoredBody(legacy): %v", err)
+	}
+	want := testWorkerReceipt()
+	if got.Worker == nil {
+		t.Fatal("the worker half was dropped")
+	}
+	if got.Worker.Profile != want.Profile || got.Worker.Worker != want.Worker {
+		t.Errorf("provenance decoded as %+v/%+v, want %+v/%+v",
+			got.Worker.Profile, got.Worker.Worker, want.Profile, want.Worker)
+	}
+	if got.Worker.Cost != want.Cost || got.Worker.Containment != want.Containment {
+		t.Errorf("cost/containment decoded as %+v/%+v, want %+v/%+v",
+			got.Worker.Cost, got.Worker.Containment, want.Cost, want.Containment)
+	}
+	if len(got.Worker.ToolRequests) != len(want.ToolRequests) || got.Worker.Denied() != want.Denied() {
+		t.Errorf("kept %d tool requests with %d denied, want %d with %d",
+			len(got.Worker.ToolRequests), got.Worker.Denied(), len(want.ToolRequests), want.Denied())
+	}
+	if len(got.Worker.Progress) != len(want.Progress) || got.Worker.Progress[0] != want.Progress[0] {
+		t.Errorf("progress decoded as %+v, want %+v", got.Worker.Progress, want.Progress)
+	}
+	if got.Worker.Resources == nil || *got.Worker.Resources.CPUSeconds != *want.Resources.CPUSeconds ||
+		*got.Worker.Resources.MaxRSSBytes != *want.Resources.MaxRSSBytes ||
+		*got.Worker.Resources.SandboxBytesWritten != *want.Resources.SandboxBytesWritten ||
+		got.Worker.Resources.Provenance != want.Resources.Provenance {
+		t.Errorf("resources decoded as %+v, want %+v", got.Worker.Resources, want.Resources)
+	}
+
+	// The retired capability list is not the registered tool names. Reading
+	// one as the other would put "corpus-search" where "search" belongs and
+	// make a translated record look like a recorded one.
+	if len(got.Worker.Tools) != 0 {
+		t.Errorf("pre-cutover receipt reports registered tools %v; it never recorded any", got.Worker.Tools)
+	}
+	if len(got.Worker.UnknownFrames) != 1 || got.Worker.UnknownFrames[0] != "future_frame" {
+		t.Errorf("uninterpreted frames decoded as %v, want [future_frame]", got.Worker.UnknownFrames)
+	}
+
+	// Reading the shape this build's own history was written in is not the
+	// same as reading anything: a row altered outside Babel is still refused.
+	var altered map[string]any
+	if err := json.Unmarshal(legacy, &altered); err != nil {
+		t.Fatalf("unmarshal legacy body: %v", err)
+	}
+	altered["smuggled"] = "value"
+	tampered, err := json.Marshal(altered)
+	if err != nil {
+		t.Fatalf("marshal tampered body: %v", err)
+	}
+	if _, err := unmarshalStoredBody(legacyReceiptSchema, tampered); err == nil {
+		t.Error("a body carrying a field neither shape defines was accepted")
+	}
+	if _, err := unmarshalStoredBody(99, legacy); err == nil {
+		t.Error("a body stored under an unknown schema was accepted")
+	}
+}
+
 // A run that never reached the worker has no Code version, no profile and no
 // resolved provider metadata, so it must say why rather than look like a run
 // with nothing to report.

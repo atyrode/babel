@@ -15,6 +15,7 @@ import (
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
+	"github.com/atyrode/babel/internal/reference"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
@@ -547,5 +548,108 @@ func TestHostsAndLocalHost(t *testing.T) {
 	}
 	if _, present := got["h2"]; present {
 		t.Error("a host that has committed nothing was offered as a filter option")
+	}
+}
+
+// A citation edge commits under the shared catalog's `link` kind, which
+// internal/reference reuses on purpose rather than widening migrations/0003's
+// closed vocabulary, and both packages spell their discriminator `kind`. So the
+// authenticated catalog row cannot say which decoder owns the bytes, and a
+// reader that assumed internal/frontier refused every edge in the fleet as
+// `record ref_x is kind "inspired_by"`: a correctly committed record lost to
+// the wrong decoder.
+//
+// The record is written by the real edge store and published through the real
+// staging hook, so what the reader opens is what a producing host would have
+// sealed rather than a second definition of edge JSON maintained here.
+func TestOpenRoutesACitationEdgeToItsOwnDecoder(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+
+	registry := reference.NewRegistry()
+	for _, namespace := range []string{"finding", "hypothesis"} {
+		if err := registry.Register(namespace, reference.ResolverFunc(
+			func(context.Context, string) (bool, error) { return true, nil })); err != nil {
+			t.Fatalf("register %s: %v", namespace, err)
+		}
+	}
+	capture := &publicationCapture{}
+	edges, err := reference.Open(t.TempDir(),
+		reference.WithResolvers(registry), reference.WithSync(capture))
+	if err != nil {
+		t.Fatalf("open edge store: %v", err)
+	}
+	t.Cleanup(func() { edges.Close() })
+	if _, err := edges.Append(ctx, reference.Edge{
+		Kind:      reference.KindInspiredBy,
+		From:      reference.RecordRef{Kind: "finding", ID: "fnd-cited"},
+		To:        reference.RecordRef{Kind: "hypothesis", ID: "hyp-source"},
+		ActorKind: reference.ActorRun,
+		ActorRef:  "run-edge",
+		Note:      "retrieval surfaced it " + sentinel,
+	}); err != nil {
+		t.Fatalf("append edge: %v", err)
+	}
+	if len(capture.records) != 1 {
+		t.Fatalf("the edge store staged %d records, want 1", len(capture.records))
+	}
+	staged := capture.records[0]
+
+	closure := sharedcatalog.RunClosure{
+		RunID: "run-edge", DeploymentID: "d1", OriginInstanceID: "inst-b",
+		Records: []sharedcatalog.StagedRecord{{
+			RecordID: staged.EntityID, Kind: staged.Kind, Schema: staged.Schema,
+			Payload: staged.Payload, Edge: staged.Edge,
+		}, {
+			// A `link` object in neither vocabulary. The routing must not
+			// swallow it: a record no decoder claims is still a record this
+			// instance could not open, and it has to say so.
+			RecordID: "link-alien", Kind: sharedcatalog.KindLink, Schema: 1, Ordinal: 1,
+			Payload: []byte(`{"schema":1,"kind":"cites","id":"link-alien"}`),
+		}},
+	}
+	closure.RecordCount = len(closure.Records)
+	if _, err := sharedcatalog.SyncRun(ctx, h.db, h.store, h.ring, closure); err != nil {
+		t.Fatalf("commit the edge closure: %v", err)
+	}
+
+	rows, err := h.reader.RecordsWithContent(ctx, sharedcatalog.RecordFilter{})
+	if err != nil {
+		t.Fatalf("RecordsWithContent: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("read %d records, want 2", len(rows))
+	}
+	for _, row := range rows {
+		if row.Record.RecordID == "link-alien" {
+			if row.Unopened == "" || row.Edge != nil || row.Published != nil {
+				t.Fatalf("a link in neither vocabulary opened: %+v", row)
+			}
+			continue
+		}
+		if row.Unopened != "" {
+			t.Fatalf("edge %s did not open: %s", row.Record.RecordID, row.Unopened)
+		}
+		if row.Edge == nil {
+			t.Fatalf("edge %s opened without its citation projection", row.Record.RecordID)
+		}
+		if row.Published != nil {
+			t.Errorf("edge %s acquired a frontier projection", row.Record.RecordID)
+		}
+		if row.Edge.Kind != reference.KindInspiredBy {
+			t.Errorf("edge kind = %q, want %q", row.Edge.Kind, reference.KindInspiredBy)
+		}
+		if row.Edge.From.ID != "fnd-cited" || row.Edge.To.ID != "hyp-source" {
+			t.Errorf("endpoints = %s -> %s, want fnd-cited -> hyp-source",
+				row.Edge.From, row.Edge.To)
+		}
+		// The note is the sealed half, so a summary carrying the sentinel is
+		// proof the line was derived from a decrypted object rather than from
+		// the plaintext citation columns.
+		summary := row.Edge.Summary()
+		if !strings.Contains(summary, "finding:fnd-cited inspired_by hypothesis:hyp-source") ||
+			!strings.Contains(summary, sentinel) {
+			t.Errorf("summary = %q; it must name the citation and come from the sealed note", summary)
+		}
 	}
 }

@@ -399,16 +399,20 @@ func fleetHostLabel(rec sharedcatalog.FleetRecord) (label string, attributed boo
 // recordSummary derives one record's one-line summary, or the reason it has
 // none.
 //
-// Three outcomes, and each is a different fact. A record this instance could
-// not open reports why. A record whose kind has no searchable output — a
-// receipt, a preparation, a proposal, a link, an operator context note — has
-// no summary and no failure, which is normal rather than exceptional and so is
-// absence rather than a reason. Anything else is the summary the local
-// retrieval index would show for the identical record, because it comes from
-// the same derivation.
+// Four outcomes, and each is a different fact. A record this instance could
+// not open reports why. A citation edge is the line internal/reference renders
+// it as, which is the same line the web fleet view shows. A record whose kind
+// has no searchable output — a receipt, a preparation, a proposal, a frontier
+// link, an operator context note — has no summary and no failure, which is
+// normal rather than exceptional and so is absence rather than a reason.
+// Anything else is the summary the local retrieval index would show for the
+// identical record, because it comes from the same derivation.
 func recordSummary(rec fleet.Record) (summary, unopened string) {
 	if rec.Unopened != "" {
 		return "", Sanitize(rec.Unopened)
+	}
+	if rec.Edge != nil {
+		return Sanitize(rec.Edge.Summary()), ""
 	}
 	if rec.Published == nil {
 		// Successfully opened producer-owned JSON (preparation, receipt,

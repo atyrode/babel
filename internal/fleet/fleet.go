@@ -45,6 +45,7 @@ import (
 	"github.com/atyrode/babel/internal/envelope"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
+	"github.com/atyrode/babel/internal/reference"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
@@ -154,6 +155,17 @@ type Record struct {
 	// Published is the validated frontier projection, nil for non-frontier
 	// kinds even when Content was successfully opened.
 	Published *frontier.PublishedRecord
+	// Edge is the validated reference-graph projection, nil for everything
+	// but a citation edge (internal/reference) even when Content was
+	// successfully opened.
+	//
+	// It is a second field rather than a variant of Published because the two
+	// are different records that share one catalog kind: a frontier link is a
+	// typed assertion between two of that package's records, and an edge is
+	// the corpus-wide citation graph's. Folding them would mean one of the
+	// two arrived with fields that are always empty, which is how a reader
+	// learns to ignore fields.
+	Edge *reference.PublishedEdge
 	// Unopened says why content could not be opened, empty on success. It carries a
 	// reason rather than a boolean because the reasons call for different
 	// responses - a missing key is a key to install, a newer schema is a
@@ -206,7 +218,8 @@ func (r *Reader) RecordsWithContent(ctx context.Context, filter sharedcatalog.Re
 }
 
 // Open fetches, verifies and decrypts one record's sealed object. Content keeps
-// the original JSON; only frontier kinds receive a typed Published projection.
+// the original JSON; frontier kinds receive a typed Published projection and a
+// citation edge receives a typed Edge one.
 //
 // sharedcatalog.OpenRecord checks the digest and authenticates both the record
 // identity and catalog kind before that kind selects a decoder. Preparations,
@@ -240,6 +253,29 @@ func (r *Reader) Open(ctx context.Context, rec sharedcatalog.FleetRecord) (Recor
 	case sharedcatalog.KindProposal:
 		kind = frontier.PublishedProposal
 	case sharedcatalog.KindLink:
+		// Two packages publish under this kind by design: internal/frontier's
+		// typed links, and internal/reference's citation edges, which reuse
+		// the slot rather than widening migrations/0003's closed vocabulary
+		// (see internal/reference's edgeRecordKind). Both spell their
+		// discriminator `kind`, so the authenticated row says `link` and
+		// nothing more, and the bytes themselves have to say which decoder
+		// owns them. The two vocabularies are disjoint, which is what makes
+		// this a routing decision rather than a guess - and bytes that
+		// declare neither fall through to frontier, which reports what it
+		// expected rather than losing the record silently.
+		if reference.IsPublishedEdge(plaintext) {
+			edge, err := reference.DecodePublishedEdge(plaintext)
+			if err != nil {
+				return Record{}, err
+			}
+			if edge.ID != rec.Record.RecordID {
+				return Record{}, fmt.Errorf(
+					"record %s citation identity disagrees with authenticated catalog row",
+					rec.Record.RecordID)
+			}
+			opened.Edge = &edge
+			return opened, nil
+		}
 		kind = frontier.PublishedLink
 	case sharedcatalog.KindDisposition:
 		kind = frontier.PublishedReviewAnswer

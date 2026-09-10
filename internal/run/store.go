@@ -716,10 +716,7 @@ func decodeReceipt(row scanner) (Receipt, error) {
 	if err := json.Unmarshal(counts, &h.Counts); err != nil {
 		return Receipt{}, fmt.Errorf("run: decode receipt counts: %w", err)
 	}
-	if h.Schema != ReceiptSchema {
-		return Receipt{}, fmt.Errorf("run: stored receipt schema %d is not supported by this build", h.Schema)
-	}
-	body, err := unmarshalBody(payload)
+	body, err := unmarshalStoredBody(h.Schema, payload)
 	if err != nil {
 		return Receipt{}, err
 	}
