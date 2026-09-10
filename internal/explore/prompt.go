@@ -15,6 +15,17 @@ import (
 // context and the tools. Nothing about how to prompt lives in Code; Code
 // forwards the engine and the engine reads this.
 //
+// Order is load-bearing for cost, not for meaning. Everything a provider can
+// serve from its prompt cache has to be a byte-identical prefix, so this
+// composes the run-invariant half first — stage instructions, the tool list,
+// then the recipe bodies, which are the largest stable block and are sorted
+// by id upstream — and the run's own half after it: parameters naming this
+// run, the sessions it was prepared over, and the prior records it may
+// refine. Two runs of the same stage over the same recipes now share that
+// prefix, and three stages of one run share it with each other, where before
+// the parameter block sat in front of the recipes and every run paid to
+// write the whole thing again.
+//
 // Two of its sections are machine-readable on purpose. The `[babel-params]`
 // block lists the run's parameters one per line, which is how a result can
 // name the identifiers Babel minted for the brief, and the sources section
@@ -51,6 +62,14 @@ func composePrompt(stage Stage, contract worker.OutputContract, recipes []*cookb
 			fmt.Fprintf(&b, "- `%s`: %s\n", tool.Name, tool.Description)
 		}
 		b.WriteString("\n")
+	}
+
+	b.WriteString("## Recipes\n\n")
+	b.WriteString("The cookbook recipes selected for this stage, verbatim. Cite one by its id and version in every claim.\n\n")
+	for _, recipe := range recipes {
+		fmt.Fprintf(&b, "### %s (id %s, version %d)\n\n", recipe.Title, recipe.ID, recipe.Version)
+		b.WriteString(strings.TrimSpace(recipe.Body))
+		b.WriteString("\n\n")
 	}
 
 	b.WriteString("## Parameters\n\n")
@@ -92,12 +111,5 @@ func composePrompt(stage Stage, contract worker.OutputContract, recipes []*cookb
 		b.WriteString("\n")
 	}
 
-	b.WriteString("## Recipes\n\n")
-	b.WriteString("The cookbook recipes selected for this stage, verbatim. Cite one by its id and version in every claim.\n\n")
-	for _, recipe := range recipes {
-		fmt.Fprintf(&b, "### %s (id %s, version %d)\n\n", recipe.Title, recipe.ID, recipe.Version)
-		b.WriteString(strings.TrimSpace(recipe.Body))
-		b.WriteString("\n\n")
-	}
 	return b.String()
 }
