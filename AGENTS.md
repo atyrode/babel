@@ -127,11 +127,19 @@ may supply missing capability proof, but a local skip is not a pass.
 
 ## Boundaries
 
-- **The real shared archive/catalog and deployed systems are operator-only mutation surfaces.**
-  Never run live `restic backup`, `forget`, `prune`, `unlock`, `init`, `repair`, catalog
-  inserts or other live writes outside the operator's own hand. A documented operator step
-  does not authorize archive mutation, analysis restart or fleet apply. Production plugin
-  installation is also by the operator, by hand; never automate it.
+- **Destructive and irreversible archive, custody and fleet operations are operator-only.**
+  Never run live `restic backup`, `forget`, `prune`, `unlock`, `init` or `repair`, never
+  rewrite or delete shared catalog rows, and never apply fleet or deployment changes. A
+  documented operator step does not authorize archive mutation, analysis restart or fleet
+  apply. Production plugin installation is also by the operator, by hand; never automate it.
+- **`babel sync` is ordinary record publication, not archive mutation, and is permitted**
+  within the authorized scope of the analysis work that produced the records. It appends
+  this host's already-durable Phase B records to the shared backend; it deletes nothing,
+  rewrites nothing and touches no snapshot. Leaving analysis unsynced is the riskier
+  default, because the restic archive holds session transcripts and not Babel's own
+  hypotheses, findings and receipts, so unpublished records exist on exactly one disk.
+  `--generate-key` mints custody and stays operator-only; report what published and what
+  remains owed.
 - Disposable synthetic temporary fixtures may be created, mutated and cleaned up for tests.
   Isolate HOME, XDG configuration/state and repository selection; never inherit production
   endpoints, credentials or storage documents from the environment or real home.
