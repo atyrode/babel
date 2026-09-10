@@ -679,6 +679,40 @@ func TestResultSkippingTheDevelopmentPathIsRefused(t *testing.T) {
 	}
 }
 
+// TestStrayDisposalHandleDoesNotFailTheRun pins the severity split §5.2 needs.
+// A disposal naming a handle the result never declared is a note about a
+// candidate that does not exist, so there is nothing durable to contradict:
+// it is recorded and dropped, exactly as an unwritable reference edge is.
+// The regression it defends is a real one - one stray handle in the discovery
+// pass reported the whole three-stage run as failed on 2026-09-10, discarding
+// the verdict of a synthesizer that had already written a finding.
+func TestStrayDisposalHandleDoesNotFailTheRun(t *testing.T) {
+	h := newHarness(t)
+	result := h.discovery()
+	result.Rejected = append(result.Rejected, explore.Disposal{
+		Hypothesis: "c-a-handle-this-result-never-declared",
+		Reason:     "the worker disposed of something it never emitted",
+	})
+	result.Deferred = append(result.Deferred, explore.Disposal{
+		Hypothesis: "c-another-one",
+		Reason:     "budget exhausted",
+	})
+	payload := h.writeResult("stray.json", result)
+	controller := h.controller(payloadArgs(map[explore.Stage]string{explore.StageExplore: payload}))
+
+	outcome, err := controller.Explore(context.Background(), explore.Options{Authority: testAuthority, RunID: "r-stray"})
+	if err != nil {
+		t.Fatalf("Explore = %v, want a run that survives a stray disposal handle", err)
+	}
+	if len(outcome.Hypotheses) != 3 {
+		t.Errorf("persisted %d candidates, want 3: a dropped note does not discard the result",
+			len(outcome.Hypotheses))
+	}
+	if !hasFailure(outcome.Receipt.Body.Failures, explore.FailureUnknownRecord) {
+		t.Errorf("the receipt does not record the dropped disposals: %+v", outcome.Receipt.Body.Failures)
+	}
+}
+
 // TestDeniedCapabilityDoesNotEndTheRun covers the boundary §6.5 draws: Babel
 // authorizes every request, a facility it cannot broker is denied cleanly
 // rather than answered with fabricated evidence, and the worker keeps working.

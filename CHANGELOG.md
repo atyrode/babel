@@ -104,6 +104,27 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **One stray disposal handle no longer fails a whole run.** A result that
+  deferred or rejected a candidate handle it never declared was recorded with
+  `state.fail`, and the first failure anywhere becomes the run's verdict, so a
+  three-stage run whose challenger closed clean and whose synthesizer had
+  already written a durable finding still reported that the worker could not
+  run the exploration. It is a recorded warning now, on the precedent an
+  unwritable reference edge already set: the candidate the note was about does
+  not exist, so nothing durable is contradicted and only the note is lost.
+
+- **A session Babel scoped is one it can cite.** `babel prepare` fixed a scope
+  without registering its sessions in the local catalog, while the reference
+  graph checks session endpoints against exactly that catalog — and minting an
+  endpoint is a pure digest that always succeeds. Every evidence edge drawn
+  from a session reachable only through `--roots` was therefore refused by the
+  same resolver that minted it, silently costing those observations their
+  navigable provenance. Sessions restored from another host's snapshot live
+  outside every adapter default root, so the fleet's corpus lost all of it.
+  The catalog refresh runs with an empty scope, which is its no-deletion mode:
+  a preparation looked at the sessions it selected, not at every session of
+  their harnesses.
+
 - **Receipts written before the native-engine cutover are readable again, and
   the conductor with them.** The cutover reshaped a receipt body's worker half
   without moving `ReceiptSchema`, so strict decoding rejected every receipt

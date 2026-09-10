@@ -247,6 +247,11 @@ func (f *fixture) collab(name, content string) string {
 
 // sessionSpec describes one synthetic OMP session to materialize.
 type sessionSpec struct {
+	// root overrides the sessions root the log is written under, so a test
+	// can plant a session no adapter default root contains. That is how a
+	// session restored from another host's snapshot arrives: it lives under
+	// Babel's data directory and is only reachable with --roots.
+	root      string
 	project   string
 	stem      string
 	id        string
@@ -268,7 +273,11 @@ type sessionSpec struct {
 // log plus a sibling "<stem>/" directory for its artifact tree.
 func (f *fixture) writeSession(spec sessionSpec) string {
 	f.t.Helper()
-	dir := filepath.Join(f.sessionsDir, spec.project)
+	root := spec.root
+	if root == "" {
+		root = f.sessionsDir
+	}
+	dir := filepath.Join(root, spec.project)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		f.t.Fatal(err)
 	}
