@@ -701,10 +701,18 @@ func (c *Controller) schedule(st *state, stage Stage, auth authority, res *Resul
 			"%w: the %s stage cannot schedule the frontier", ErrStageAuthority, stage))
 		return
 	}
+	// A disposal naming a handle the same result never declared is recorded
+	// and dropped, not fatal. It is the same shape of degradation as an
+	// unwritable reference edge (FailureReference): the candidate the note
+	// was about does not exist, so nothing durable is corrupted or
+	// contradicted and only the scheduling note is lost. Failing the run
+	// instead would discard a verdict that every other stage earned - a
+	// synthesized finding included - over one stray handle in the
+	// discovery pass.
 	for _, d := range res.Deferred {
 		id, ok := st.hypotheses[d.Hypothesis]
 		if !ok {
-			st.fail(stage, FailureUnknownRecord, c.now(), fmt.Errorf(
+			st.warn(stage, FailureUnknownRecord, c.now(), fmt.Errorf(
 				"%w: deferral names %q", ErrUnknownReference, d.Hypothesis))
 			continue
 		}
@@ -715,7 +723,7 @@ func (c *Controller) schedule(st *state, stage Stage, auth authority, res *Resul
 	for _, d := range res.Rejected {
 		id, ok := st.hypotheses[d.Hypothesis]
 		if !ok {
-			st.fail(stage, FailureUnknownRecord, c.now(), fmt.Errorf(
+			st.warn(stage, FailureUnknownRecord, c.now(), fmt.Errorf(
 				"%w: rejection names %q", ErrUnknownReference, d.Hypothesis))
 			continue
 		}

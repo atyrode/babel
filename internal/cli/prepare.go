@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
+	"github.com/atyrode/babel/internal/catalog"
 	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/digest"
 	"github.com/atyrode/babel/internal/event"
@@ -295,6 +296,29 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 			Records:       result.Records,
 			Events:        result.Events,
 		})
+	}
+
+	// Every scoped session is registered in the local catalog, because the
+	// reference graph's session endpoints are checked against it: minting
+	// `session:<hex>` is a pure digest that always succeeds, while the
+	// existence check reads the catalog, so a session this command scoped
+	// but never cached mints an endpoint the same resolver then refuses and
+	// the run loses its evidence edges. That is not a hypothetical: a scope
+	// fixed with --roots is exactly how a session fetched out of another
+	// host's snapshot is analysed, and no adapter default root contains one.
+	//
+	// The scope passed is empty on purpose. Scope is Refresh's only deletion
+	// authority, and a preparation looked at the sessions it selected rather
+	// than at every session of their harnesses: claiming that harness would
+	// let a narrow preparation prune rows it never examined.
+	cache, err := catalog.Open(d.data)
+	if err != nil {
+		return scopedCorpus{}, fmt.Errorf("open session catalog: %w", err)
+	}
+	defer cache.Close()
+	scoped, bySelector := catalogRefs(chosen)
+	if _, err := cache.Refresh(ctx, nil, scoped, a.catalogDescriber(ctx, bySelector, describe), nil); err != nil {
+		return scopedCorpus{}, fmt.Errorf("register the scoped sessions: %w", err)
 	}
 
 	// The frontier's own retrieval surface is reconciled here, with the

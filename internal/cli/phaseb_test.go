@@ -7,12 +7,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	cookbookassets "github.com/atyrode/babel/cookbook"
+	"github.com/atyrode/babel/internal/catalog"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
@@ -403,6 +405,47 @@ func TestPrepareFixesAScopeAndRecordsItDurably(t *testing.T) {
 	}
 	if len(stored.Selection) != 2 {
 		t.Errorf("stored selection holds %d sessions, want 2", len(stored.Selection))
+	}
+}
+
+// TestPrepareRegistersTheSessionsItScoped pins what makes a scoped session
+// citable. The reference graph mints a session endpoint with a pure digest
+// that always succeeds, and checks the endpoint against the local catalog, so
+// a session this command scoped but never registered is one the same resolver
+// mints a key for and then refuses - and every evidence edge drawn from it is
+// dropped, leaving observations with no navigable provenance.
+//
+// The scope here is --roots over a directory no adapter default root contains,
+// which is exactly how a session restored from another host's snapshot is
+// analysed: it lives under Babel's data directory, not under ~/.omp.
+func TestPrepareRegistersTheSessionsItScoped(t *testing.T) {
+	f := newFixture(t)
+	outside := filepath.Join(t.TempDir(), "restored", "Users", "someone", ".omp", "agent", "sessions")
+	f.writeSession(sessionSpec{
+		root: outside, project: "-fetched", stem: "2026-01-02T05-04-05-000Z_" + testUUID(3),
+		id: testUUID(3), title: "fetched from another host", workspace: "/synthetic/fetched",
+	})
+
+	stdout, _ := f.ok("prepare", "--roots", outside, "--json")
+	res := decodeJSON[prepareResult](t, stdout)
+	if len(res.Sessions) != 1 {
+		t.Fatalf("prepared %d sessions, want the one under --roots", len(res.Sessions))
+	}
+
+	cache, err := catalog.Open(f.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	known, err := cache.SessionIdentities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(known, func(id catalog.SessionIdentity) bool {
+		return id.Harness == res.Sessions[0].Harness && id.SourceID == res.Sessions[0].SourceID
+	}) {
+		t.Errorf("prepare scoped %s but the catalog holds %d other identities, so its evidence edges resolve nowhere",
+			res.Sessions[0].Selector, len(known))
 	}
 }
 
