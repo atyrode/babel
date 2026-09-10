@@ -2,8 +2,10 @@ package index_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,6 +158,76 @@ func TestFrontierSearchRefusesAnUnknownKind(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("an unknown frontier kind was accepted")
+	}
+}
+
+// TestConcurrentReconcilesDoNotCollide is the property `--concurrent N` needs
+// and did not have. Every cycle opens its own handle on this file, so two
+// reconciles of the same records overlap routinely; when the snapshot of what
+// the index already holds was read before the write transaction began, both
+// handles saw a record absent and the second insert failed the record_id
+// UNIQUE constraint — degrading a cycle whose model work was already paid for.
+//
+// The records are indexed by both handles at once rather than in sequence,
+// because sequence is precisely what the broken ordering got right.
+func TestConcurrentReconcilesDoNotCollide(t *testing.T) {
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "state")
+	open := func() *index.Index {
+		t.Helper()
+		idx, err := index.Open(dir)
+		if err != nil {
+			t.Fatalf("index.Open: %v", err)
+		}
+		t.Cleanup(func() { idx.Close() })
+		return idx
+	}
+
+	outputs := make([]frontier.Output, 0, 200)
+	for i := range 200 {
+		out := frontierOutput(frontier.OutputHypothesis,
+			fmt.Sprintf("hyp-%03d", i), fmt.Sprintf("candidate number %d about deployment verification", i))
+		out.Status = frontier.StatusUntriaged
+		outputs = append(outputs, out)
+	}
+
+	handles := []*index.Index{open(), open()}
+	start := make(chan struct{})
+	errs := make(chan error, len(handles))
+	var wg sync.WaitGroup
+	for _, idx := range handles {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := idx.IndexFrontier(ctx, outputs)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent IndexFrontier: %v", err)
+		}
+	}
+
+	// Both passes offered the same records, so exactly one copy of each
+	// survives whichever order they landed in.
+	hits, err := handles[0].FrontierSearch(ctx, index.FrontierQuery{Match: "deployment", Limit: 500})
+	if err != nil {
+		t.Fatalf("FrontierSearch: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, hit := range hits {
+		if seen[hit.ID] {
+			t.Fatalf("record %s indexed twice", hit.ID)
+		}
+		seen[hit.ID] = true
+	}
+	if len(seen) != len(outputs) {
+		t.Errorf("index holds %d of %d records", len(seen), len(outputs))
 	}
 }
 

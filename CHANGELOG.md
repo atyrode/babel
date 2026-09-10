@@ -11,6 +11,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **Concurrent cycles stop colliding in the frontier index.** Each cycle opens
+  its own handle on the index, and the reconcile read what the index already
+  held *before* opening its write transaction, so two cycles could both see a
+  record absent and the second insert failed `frontier_records.record_id`'s
+  UNIQUE constraint. The cycle was reported degraded after its model work was
+  already paid for; observed live under `--concurrent 3`. The snapshot is now
+  read inside the transaction, which `durable.DSN` already begins IMMEDIATE,
+  so the write lock is held before the check.
 - **A run can ask.** A stage's result may now carry questions, and Babel
   resolves each subject through the ledger's aliases and raises it into the
   prioritized inbox — the third way a fact can come into existence, after an
