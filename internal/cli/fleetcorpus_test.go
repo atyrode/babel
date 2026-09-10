@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
+	"github.com/atyrode/babel/internal/conductor"
 
 	"github.com/atyrode/babel/internal/restic"
 )
@@ -485,5 +486,37 @@ func TestFetchAllMaterializesAnotherMachinesCorpus(t *testing.T) {
 	}
 	if after := treeDigest(t, filepath.Join(f.dataDir, "sessions")); !reflect.DeepEqual(before, after) {
 		t.Error("resuming rewrote the materialized corpus")
+	}
+}
+
+// The loop draws from the fleet's corpus, not the machine it runs on.
+//
+// Fetching another host's sessions only pays off if an unattended run can
+// reach them: the operator's dev machine holds a small fraction of the
+// sessions the fleet produced, and a conductor that drew only local ones
+// would rediscover that one machine's habits every night while the fetched
+// corpus sat on disk unread. The serendipity rung's depth is where that is
+// observable, because it reports what the next draw may choose from.
+func TestConductorDrawsFromTheFetchedCorpus(t *testing.T) {
+	f := newFixture(t)
+	f.writeSession(sessionSpec{project: "local-project", stem: "2026-01-02T03-04-05-000Z_" + testUUID(1)})
+	f.plantFetched("macbook", "ab", "/Users/alex",
+		sessionSpec{project: "remote-project", stem: "2026-01-03T03-04-05-000Z_" + testUUID(2)})
+
+	stdout, _ := f.ok("conductor", "status", "--json")
+	status := decodeJSON[conductorStatusResult](t, stdout)
+
+	var serendipity *conductorRungRow
+	for i, rung := range status.Rungs {
+		if rung.Name == string(conductor.RungSerendipity) {
+			serendipity = &status.Rungs[i]
+		}
+	}
+	if serendipity == nil {
+		t.Fatalf("no serendipity rung in %+v", status.Rungs)
+	}
+	if serendipity.Waiting != 2 {
+		t.Errorf("the floor may draw from %d sessions, want the local one and the fetched one: %q",
+			serendipity.Waiting, serendipity.Note)
 	}
 }

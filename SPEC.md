@@ -520,6 +520,8 @@ When nobody typed a command, the conductor (`babel conductor run`, a foreground 
 
 Three properties keep an unattended loop from being merely a fast producer. **A consolidation share** (`--consolidate N`, one cycle in N) draws the frontier's unexplored candidates instead of a fresh corpus slice, so a loop left running turns what it has already found into findings and proposals rather than only accumulating more hypotheses; it is reported after the ladder and drawn as a protected share, because below the invitations a busy operator would starve it and above them it would outrank a person asking for something. **Concurrent cycles** (`--concurrent N`) draw against one budget rather than a copy each: the claim is serialized and reserves the cycle's ceiling before the run starts, so the day's limit binds on what is committed rather than on what completed runs have already reported. **Publication happens at the cycle boundary** rather than when the loop stops, because a loop is supposed to run for days and records that only a stopped machine publishes are records the fleet cannot see.
 
+The corpus a cycle draws from is the fleet's, not the machine's: the serendipity floor slices every session this host can reach, which is its own sources plus whatever the fleet's snapshots have been fetched into Babel's own area (§6.2), and a drawn session resolves out of that same corpus when the cycle runs. There is no flag to withhold the fetched half. The machine that happened to type the command is not a meaningful boundary on where an idea can come from, and a loop that could only read one host's sessions would rediscover that host's habits nightly while the rest of the archive sat unread.
+
 Every run records:
 
 - normalized source and capture digests;
