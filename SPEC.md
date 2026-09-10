@@ -318,6 +318,8 @@ Only attributed operator actions and configured trusted sources may authorize fa
 
 Facts enter through direct edits, trusted imports, or prioritized **Reality Questions**. Questions acquire missing context, refresh stale facts, resolve source conflicts, resolve entity aliases/merges, set focus policy, clarify ambiguous answers, or fact-check suspected drift. Each durable question records its target entities/predicates, why it was asked, dependent hypotheses/work, existing/conflicting facts, sensitivity, expected authority, and state: `open`, `answered-uninterpreted`, `interpreting`, `plan-ready`, `answered`, `snoozed`, `declined`, `obsolete`, or `superseded`.
 
+Entities are created by an attributed operator act and nothing else creates one: a fact names a subject that must already exist, and a question names targets the ledger resolves rather than mints. Seeding a ledger therefore runs entities, then the source registration that declares an authoring scope, then that source's first batch. Raising a question is the one Reality write that needs no author, because a question authorizes nothing — it is a request that someone else authorize something, which is why analysis may raise one and may not answer it. Babel raises the questions its own records already imply: a predicate's refresh expectation lapsing is a stale fact that becomes a maintenance question naming the subject, the predicate and the lapsed fact, deduplicated by target so a claim stale for a month is one question rather than thirty, and suppressed while a declined predecessor stands unless newer evidence arrives.
+
 Every answer is retained verbatim as an attributed immutable event and sent through a versioned Code→OMP **Answer Interpreter** with the question, relevant context snapshot, conflicts, and provenance. The interpreter emits a structured multi-action plan that may propose fact assertion/supersession/dispute, entity merge/split, focus-policy change, hypothesis creation, a request to investigate an issue-shaped output through the normal evidence pipeline, refinement, follow-up question, or no action. It never creates a proposal that bypasses **hypothesis → observation → finding → proposal**, and it can never publish an issue. If interpretation is unavailable or fails, the raw answer remains `answered-uninterpreted` for retry.
 
 Agent interpretation never silently becomes authoritative reality. Non-authoritative descendants such as hypotheses and follow-up questions may be retained immediately; any fact, entity-resolution, or focus-policy mutation requires one explicit operator acceptance of the displayed plan and commits atomically with the question disposition. The original question, answer, plan, acceptance/rejection, and resulting revisions remain linked. Freeform text is preserved as provenance but is never used as an unparsed global memory prompt.
@@ -591,6 +593,9 @@ babel export raw ENTITY_ID [--format markdown|json] OUTPUT
 babel export projection PROPOSAL_ID --destination issue|brief|operator-note|skill|investigation|pattern|cookbook|security|agent-brief [--format markdown|json] OUTPUT
 babel reality entities list [--type TYPE] [--json]
 babel reality inspect ENTITY_ID [--as-of TIME] [--json]
+babel reality entity create --kind KIND --name NAME [--note TEXT] [--alias KIND=VALUE]... [--json]
+babel reality source register --from-json FILE|- [--json]
+babel reality refresh [--as-of TIME] [--json]
 babel reality import --source SOURCE_ID --from-json FILE|-
 babel reality questions list [--state STATE] [--json]
 babel reality questions answer QUESTION_ID --from-file FILE|-

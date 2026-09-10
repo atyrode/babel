@@ -11,6 +11,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The Reality Ledger has a way in.** Entities, facts, trusted sources,
+  Questions, the interpreter plan gate and the prioritized inbox all shipped
+  and were tested, and every `reality_*` table on every machine held zero
+  rows: `CreateEntity` and `RegisterTrustedSource` had no caller outside the
+  package's own tests, so a fact could not be imported because its subject
+  could not exist, and §4.8's "one versioned inventory import" had never been
+  performed. `babel reality entity create` and `babel reality source
+  register` are the missing acts, in the order seeding needs them.
+
+- **Babel asks its first Questions.** A predicate carries a refresh
+  expectation — where a service runs is worth doubting after a month — and
+  the ledger marked facts stale without telling anyone, because a Question
+  could only exist if an operator typed one. `babel reality refresh` expires
+  what has lapsed and raises one maintenance Question per stale fact, naming
+  the subject, the predicate and the lapsed fact as its evidence. It writes
+  no fact and needs no model: a Question authorizes nothing, which is why
+  analysis may raise one and only the named authority may answer it. Repeated
+  passes add nothing while a question is already open, and a declined one
+  stays declined until newer evidence arrives.
+
 - **A stage's prompt is ordered so a provider can cache it.** The parameter
   block naming the run sat in front of the recipe bodies, and the stage
   heading sat in front of everything, so a prompt shared almost nothing with
