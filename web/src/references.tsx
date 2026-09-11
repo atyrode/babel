@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getRecordLinks, type RecordReferences, type ReferenceDirection, type ReferenceEdge, type ReferenceEndpoint } from "./api";
-import { Badge, UnopenedNote, type Tone } from "./analysis";
+import { Badge, type Tone } from "./analysis";
 import { formatTime } from "./format";
 
 // Issue #113's citation section, shared by every record surface.
@@ -137,12 +137,6 @@ export function RecordLinks({
             direction={links.cited_by}
             outgoing={false}
           />
-          {links.host && (
-            <p className="secondary references-host">
-              Read from <span className="mono">{links.host}</span>'s catalog. Another host's
-              citations of this record are not in this list.
-            </p>
-          )}
         </>
       )}
     </article>
@@ -237,12 +231,10 @@ function CitationTarget({ endpoint }: { endpoint: ReferenceEndpoint }) {
       <span className="citation-target inert">
         <span className="kind-label">{endpoint.kind}</span>
         <span className="mono">{name}</span>
-        <UnopenedNote
-          reason={
-            endpoint.reason ??
-            `No page in this build opens a ${endpoint.kind}, so this reference is recorded but not followable here.`
-          }
-        />
+        <span className="unopened-note untrusted-inline">
+          {endpoint.reason ??
+            `No page in this build opens a ${endpoint.kind}, so this reference is recorded but not followable here.`}
+        </span>
       </span>
     );
   }
@@ -273,8 +265,12 @@ export function CitationCount({
       title="Typed references out of and into this record."
       data-citations={`${citations.cites}/${citations.cited_by}`}
     >
-      <span className="citation-out">↗ {citations.cites}</span>
-      <span className="citation-in">↘ {citations.cited_by}</span>
+      <span className="citation-out" title="Typed references this record makes.">
+        ↗ {citations.cites} cites
+      </span>
+      <span className="citation-in" title="Typed references that name this record.">
+        ↘ {citations.cited_by} cited by
+      </span>
     </span>
   );
 }

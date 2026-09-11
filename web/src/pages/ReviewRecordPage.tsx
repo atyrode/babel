@@ -61,12 +61,17 @@ function ReviewRecordPage() {
     );
   }
 
+  // Where the record itself is read. Every reviewable kind has a page now, so
+  // a reviewer never has to decide from an identifier: the proposals route
+  // completes the set.
   const recordHref =
     type === "hypothesis"
       ? `/hypotheses/${encodeURIComponent(id)}`
       : type === "finding"
         ? `/findings/${encodeURIComponent(id)}`
-        : null;
+        : type === "proposal"
+          ? `/proposals/${encodeURIComponent(id)}`
+          : null;
 
   return (
     <section className="page detail-page review-record-page">

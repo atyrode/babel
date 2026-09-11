@@ -115,6 +115,13 @@ a {
   color: var(--accent-bright);
 }
 
+/* The wordmark is a link to the overview, so it must not look like body
+   prose that happens to be blue. */
+.topbar a.brand-block {
+  color: inherit;
+  text-decoration: none;
+}
+
 code,
 .mono {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -955,6 +962,16 @@ tbody tr:last-child td {
   gap: 1rem;
 }
 
+/* A count belongs to the word it counts. Pinned to the far right of a
+   1400px panel it was a digit no scan connected to the heading, and a lone
+   "0" over there read as an empty label rather than as an answer. So it sits
+   beside the heading and anything after it -- the link into the owning page --
+   still takes the right edge. */
+.section-heading > .count-label {
+  margin-right: auto;
+  align-self: center;
+}
+
 .file-card,
 .warning-card,
 .transcript-card,
@@ -1635,66 +1652,6 @@ select:focus {
   background: rgba(157, 140, 255, 0.055);
 }
 
-/* Fleet attribution (issue #109 item 4).
-
-   A pending-sync row is marked on the row and not only in its badge. SPEC.md
-   §6.5 requires staged output to be visibly pending, and a reviewer scanning
-   twenty rows reads rows rather than badge text: the left edge is what makes
-   "not reviewable from anywhere else yet" legible at a glance. The unknown
-   marker is a different colour for a different claim -- this machine could not
-   find out -- and a remote row is dimmed at its edge because it is not this
-   machine's work and cannot be decided here. */
-.frontier-table tbody tr.row-pending-sync {
-  box-shadow: inset 0.2rem 0 0 var(--amber);
-}
-
-.frontier-table tbody tr.row-pending-sync td:first-child {
-  padding-left: 0.85rem;
-}
-
-.frontier-table tbody tr.row-sync-unknown {
-  box-shadow: inset 0.2rem 0 0 rgba(157, 140, 255, 0.75);
-}
-
-.frontier-table tbody tr.row-sync-unknown td:first-child {
-  padding-left: 0.85rem;
-}
-
-/* A row from another host is not navigable: the detail routes read this
-   machine's durable store. The cursor says so rather than inviting a click
-   that does nothing. */
-.frontier-table tbody tr.row-remote-host {
-  cursor: default;
-  background: rgba(255, 255, 255, 0.016);
-}
-
-.host-label {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.35rem;
-  max-width: 16rem;
-}
-
-.host-label .mono {
-  overflow-wrap: anywhere;
-}
-
-.host-label .secondary {
-  font-size: 0.72rem;
-  white-space: nowrap;
-}
-
-/* The absence is styled as an absence: muted and italic, so it never reads as
-   a machine called "unattributed". */
-.unattributed-host {
-  font-style: italic;
-}
-
-.sync-mark {
-  display: inline-flex;
-}
-
 .unopened-note,
 .no-summary {
   display: block;
@@ -1704,27 +1661,14 @@ select:focus {
   overflow-wrap: anywhere;
 }
 
-.chip-pending {
-  margin-left: 0.35rem;
-  font-size: 0.7rem;
-  color: var(--amber);
+/* A model grading renders as the word the model chose. Never a bar, never a
+   percentage: SPEC.md §10 warns that confidence does not substitute for
+   evidence, and a meter in a listing column would invite exactly that
+   reading. It is weighted enough to scan and nothing more. */
+.grading-word {
+  font-weight: 620;
+  color: var(--text);
   white-space: nowrap;
-}
-
-.host-chips {
-  margin-top: 0.4rem;
-}
-
-.fleet-count {
-  white-space: nowrap;
-}
-
-.fleet-card .filter-chips {
-  margin-bottom: 0.6rem;
-}
-
-.fleet-table .statement-cell {
-  min-width: 16rem;
 }
 
 .statement-cell {
@@ -1937,6 +1881,31 @@ select:focus {
 
 .target-list {
   margin-top: 0.7rem;
+}
+
+/* A proposal's sections are prose a reader works down: prerequisites, then
+   how you would know it worked, then the risks, then what is still open. They
+   are headed rather than tabulated because each item is a sentence, not a
+   cell. */
+.proposal-points + .proposal-points {
+  margin-top: 1.1rem;
+}
+
+.proposal-points h3 {
+  margin: 0 0 0.3rem;
+  font-size: 0.86rem;
+  letter-spacing: 0.01em;
+}
+
+.proposal-points ul {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.proposal-points li {
+  line-height: 1.5;
 }
 
 .link-list {

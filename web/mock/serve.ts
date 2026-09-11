@@ -398,6 +398,7 @@ const unwired = new Set(
 const routeServices: Array<{ prefix: string; service: string; label: string }> = [
   { prefix: "/api/hypothes", service: "frontier", label: "the hypothesis frontier" },
   { prefix: "/api/finding", service: "frontier", label: "the hypothesis frontier" },
+  { prefix: "/api/proposals", service: "frontier", label: "the hypothesis frontier" },
   { prefix: "/api/review/", service: "review", label: "the review service" },
   { prefix: "/api/reality/", service: "reality", label: "the reality ledger" },
   { prefix: "/api/search", service: "search", label: "the retrieval index" },

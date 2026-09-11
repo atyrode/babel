@@ -31,9 +31,7 @@ const chrome = resolveChrome({
     "that every control is reachable by keyboard, and that no route overflows at either 390px or 1440px",
     "that recording a disposition, accepting a plan and answering a question are explicit acts that persist and read back",
     "that no record content reaches a request URL or the location hash",
-    "that the host filter appears, narrows an already-merged list, and offers the unattributed group",
-    "that a pending-sync row is visibly staged and an unknown sync state never reads as local",
-    "that a machine with no shared backend says so instead of rendering an empty fleet as a bug",
+    "that a listing whose catalog read came back partial says the list may be incomplete, in terms of the list",
   ],
 });
 
@@ -253,14 +251,13 @@ test.skipIf(!chrome)("counter-evidence renders where the claim is", async () => 
 });
 
 test.skipIf(!chrome)("hostile fixtures render inert everywhere they appear", async () => {
-  // `explore` is in the list because its fleet card renders another host's
-  // record summary, which is the least trusted string on any page here: it was
-  // authored by a model on a machine this one does not control and decrypted
-  // locally.
+  // `explore` is in the list because a search hit renders archive bytes: the
+  // least trusted string on any page here, authored by whatever wrote the
+  // transcript.
   for (const route of ["hypotheses", "hypotheses/hyp_hostile-content", "reality", "reality/entities/ent_atlas", "explore"]) {
     await open(route);
     await page.waitForFunction(
-      () => document.querySelector(".frontier-table, .frontier-detail, .question-card, .entity-page, .fleet-table") !== null,
+      () => document.querySelector(".frontier-table, .frontier-detail, .question-card, .entity-page, .runs-card") !== null,
       { timeout: 15_000 },
     );
     const state = await page.evaluate(() => ({
@@ -481,265 +478,6 @@ test.skipIf(!chrome)("record content never enters a request URL or the location 
   }
 });
 
-// ---------------------------------------------------------------------------
-// The fleet surfaces (issue #109 item 4).
-//
-// What only a browser can prove here is that the attribution is legible: that
-// the chips exist and narrow, that a staged row looks staged while scanning,
-// that an absent host reads as an absence rather than as this machine, and that
-// another host's record content is inert in the DOM it lands in.
-// ---------------------------------------------------------------------------
-
-// syncBadges reads the sync column's rendered labels, which is the vocabulary
-// under test: four values, each meaning something different.
-function syncBadges(): Promise<string[]> {
-  return page.evaluate(() =>
-    Array.from(document.querySelectorAll(".frontier-table tbody .sync-mark .badge"))
-      .map((badge) => badge.textContent ?? ""));
-}
-
-function rowCount(): Promise<number> {
-  return page.evaluate(() => document.querySelectorAll(".frontier-table tbody tr").length);
-}
-
-test.skipIf(!chrome)("the host filter appears and narrows an already-merged list", async () => {
-  await open("hypotheses");
-  await page.waitForSelector(".host-chips button", { timeout: 15_000 });
-  const chips = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".host-chips button")).map((chip) => chip.textContent ?? ""));
-  // This host, All hosts, then one chip per machine that holds records --
-  // including the group whose origin instances registered no host, without
-  // which its records could not be reached at all.
-  expect(chips[0]).toContain("This host");
-  expect(chips[1]).toContain("All hosts");
-  expect(chips.some((chip) => chip.includes("build-server"))).toBe(true);
-  expect(chips.some((chip) => chip.includes("unattributed"))).toBe(true);
-
-  // The default is this machine alone, which is what every other listing shows.
-  const local = await rowCount();
-  expect(local).toBe(6);
-
-  // All hosts widens.
-  const buttons = await page.$$(".host-chips button");
-  await buttons[1].click();
-  await page.waitForFunction(
-    (before: number) => document.querySelectorAll(".frontier-table tbody tr").length > before,
-    { timeout: 15_000 },
-    local,
-  );
-  const everything = await rowCount();
-
-  // And one host narrows the already-merged list, without losing the chips:
-  // a filter that narrowed its own options would leave no way back.
-  const remoteIndex = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".host-chips button"))
-      .findIndex((chip) => (chip.textContent ?? "").includes("build-server")));
-  expect(remoteIndex).toBeGreaterThan(1);
-  const widened = await page.$$(".host-chips button");
-  await widened[remoteIndex].click();
-  await page.waitForFunction(
-    (before: number) => document.querySelectorAll(".frontier-table tbody tr").length < before
-      && document.querySelectorAll(".host-chips button").length >= 4,
-    { timeout: 15_000 },
-    everything,
-  );
-  const narrowed = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".frontier-table tbody .host-label")).map((label) => label.textContent ?? ""));
-  expect(narrowed.length).toBeGreaterThan(0);
-  for (const label of narrowed) expect(label).toContain("build-server");
-
-  // Back to this host: the chip row is a filter, not a one-way door.
-  const backButtons = await page.$$(".host-chips button");
-  await backButtons[0].click();
-  await page.waitForFunction(
-    () => document.querySelectorAll(".frontier-table tbody tr").length === 6,
-    { timeout: 15_000 },
-  );
-});
-
-test.skipIf(!chrome)("a pending-sync row is visibly staged and an absent host reads as absent", async () => {
-  await open("hypotheses");
-  await page.waitForSelector(".frontier-table tbody tr", { timeout: 15_000 });
-
-  // Staged output is marked on the row, not only in the badge's text: a
-  // reviewer scanning twenty rows reads rows.
-  const staged = await page.evaluate(() => {
-    const rows = Array.from(document.querySelectorAll(".frontier-table tbody tr.row-pending-sync"));
-    return {
-      count: rows.length,
-      badge: rows[0]?.querySelector(".sync-mark .badge")?.textContent,
-      marked: rows[0] ? getComputedStyle(rows[0]).boxShadow !== "none" : false,
-    };
-  });
-  expect(staged.count).toBeGreaterThanOrEqual(1);
-  expect(staged.badge).toBe("pending-sync");
-  expect(staged.marked).toBe(true);
-
-  // Three of the four sync states are reachable from this machine's own rows,
-  // and none of them is blank.
-  const badges = await syncBadges();
-  expect(new Set(badges)).toEqual(new Set(["committed", "pending-sync", "local"]));
-
-  // A record no host can be named for says so, and is never labelled with this
-  // machine. The receipt strip carries one too.
-  const chips = await page.$$(".host-chips button");
-  await chips[1].click();
-  await page.waitForFunction(
-    () => Array.from(document.querySelectorAll(".frontier-table tbody .host-label"))
-      .some((label) => (label.textContent ?? "").includes("unattributed")),
-    { timeout: 15_000 },
-  );
-  const attribution = await page.evaluate(() => {
-    const rows = Array.from(document.querySelectorAll(".frontier-table tbody tr"));
-    const unattributed = rows.find((row) =>
-      (row.querySelector(".host-label")?.textContent ?? "").includes("unattributed"));
-    return {
-      muted: unattributed?.querySelector(".unattributed-host") !== null,
-      // The absence must not carry this machine's name anywhere on the row.
-      namesLocalHost: (unattributed?.textContent ?? "").includes("demo-laptop"),
-      // A row from another host is not a link: the detail routes read this
-      // machine's durable store, which does not hold it.
-      remoteNotLinked: rows
-        .filter((row) => row.classList.contains("row-remote-host"))
-        .every((row) => row.getAttribute("role") === null && row.getAttribute("tabindex") === null),
-    };
-  });
-  expect(attribution.muted).toBe(true);
-  expect(attribution.namesLocalHost).toBe(false);
-  expect(attribution.remoteNotLinked).toBe(true);
-});
-
-test.skipIf(!chrome)("the review inbox renders fleet-wide with its proposals intact", async () => {
-  await open("review");
-  await page.waitForSelector(".host-chips button", { timeout: 15_000 });
-  const chips = await page.$$(".host-chips button");
-  await chips[1].click();
-  await page.waitForFunction(
-    () => document.querySelectorAll(".frontier-table tbody tr.row-remote-host").length > 0,
-    { timeout: 15_000 },
-  );
-  const inbox = await page.evaluate(() => {
-    const rows = Array.from(document.querySelectorAll(".frontier-table tbody tr.row-remote-host"));
-    return {
-      hosts: rows.map((row) => row.querySelector(".host-label")?.textContent ?? ""),
-      // A proposal has no searchable summary at all. It must still be here --
-      // an inbox that dropped proposals would withhold records from the
-      // reviewer whose inbox it is -- and it must say why it has no excerpt
-      // rather than claiming the record is untitled.
-      proposals: rows.filter((row) => (row.textContent ?? "").includes("proposal")).length,
-      noSummary: rows.some((row) => row.querySelector(".no-summary") !== null),
-      untitled: rows.some((row) => (row.textContent ?? "").includes("Untitled record")),
-      // The review status and the counts are the owning host's derivations, so
-      // a remote row shows an absence rather than a decided-nothing.
-      dashes: rows.every((row) => (row.textContent ?? "").includes("\u2014")),
-    };
-  });
-  expect(inbox.proposals).toBeGreaterThanOrEqual(1);
-  expect(inbox.noSummary).toBe(true);
-  expect(inbox.untitled).toBe(false);
-  expect(inbox.dashes).toBe(true);
-  for (const host of inbox.hosts) expect(host).toContain("build-server");
-});
-
-test.skipIf(!chrome)("another host's record content is inert in the DOM it lands in", async () => {
-  await open("explore");
-  await page.waitForSelector(".fleet-table tbody tr", { timeout: 15_000 });
-  const state = await page.evaluate(() => ({
-    pwned: String(Reflect.get(globalThis, "__babel_pwned")),
-    injected: document.querySelector(".fleet-table img, .fleet-table script") !== null,
-    scriptURL: Array.from(document.querySelectorAll(".fleet-table a"))
-      .some((anchor) => (anchor as HTMLAnchorElement).href.startsWith("javascript:")),
-    // The reason a record could not be opened is rendered rather than
-    // swallowed: a blank row would send an operator looking in the wrong place.
-    unopened: document.querySelector(".fleet-table .unopened-note")?.textContent ?? "",
-    // An unattributed row and a staged row are both on this card.
-    unattributed: document.querySelectorAll(".fleet-table .unattributed-host").length,
-    staged: document.querySelectorAll(".fleet-table tbody tr.row-pending-sync").length,
-  }));
-  expect(state.pwned).toBe("undefined");
-  expect(state.injected).toBe(false);
-  expect(state.scriptURL).toBe(false);
-  expect(state.unopened).toContain("does not hold");
-  expect(state.unattributed).toBeGreaterThanOrEqual(1);
-  expect(state.staged).toBeGreaterThanOrEqual(1);
-
-  // The literal markup is visible as escaped text inside the row, so a reader
-  // sees exactly what the other machine emitted -- neutralized, not dropped.
-  const literal = await page.evaluate(
-    (needle: string) => document.body.innerText.includes(needle),
-    HOSTILE_HTML,
-  );
-  expect(literal).toBe(true);
-});
-
-test.skipIf(!chrome)("a machine with no shared backend says so", async () => {
-  await open("hypotheses", emptyMock?.base);
-  await visible("This machine has no shared backend configured");
-  const state = await page.evaluate(() => ({
-    notice: document.querySelectorAll(".fleet-notice").length,
-    // No chips, because there is no vocabulary: there are no other hosts.
-    chips: document.querySelectorAll(".host-chips button").length,
-    // And no claim that these records are anywhere else.
-    unattributedAsLocal: document.body.innerText.includes("demo-laptop"),
-  }));
-  expect(state.notice).toBe(1);
-  expect(state.chips).toBe(0);
-  expect(state.unattributedAsLocal).toBe(false);
-
-  await open("explore", emptyMock?.base);
-  await visible("This machine has no shared backend configured");
-});
-
-test.skipIf(!chrome)("an unreachable catalog reads as unknown, never as local", async () => {
-  await open("hypotheses", degradedMock?.base);
-  await visible("Global sync state is not known for these records");
-  const badges = await syncBadges();
-  expect(badges.length).toBeGreaterThan(0);
-  // The whole point: not one row claims "local". A catalog that did not answer
-  // did not observe that nothing is carrying these records anywhere.
-  expect(new Set(badges)).toEqual(new Set(["unknown"]));
-  const state = await page.evaluate(() => ({
-    notice: document.querySelectorAll(".sync-degraded-notice").length,
-    marked: document.querySelectorAll(".frontier-table tbody tr.row-sync-unknown").length,
-    rows: document.querySelectorAll(".frontier-table tbody tr").length,
-  }));
-  expect(state.notice).toBe(1);
-  // The rows are still this machine's own records and still render in full.
-  expect(state.rows).toBe(6);
-  expect(state.marked).toBe(6);
-
-  await open("review", degradedMock?.base);
-  await visible("Global sync state is not known for these records");
-});
-
-test.skipIf(!chrome)("the fleet-engaged listings lay out without overflow", async () => {
-  // The overflow audit walks routes without interacting, so the widened lists
-  // -- longer host labels, an extra two columns, a wrapped unopened reason --
-  // need their own pass at both widths.
-  for (const viewport of [WIDE, NARROW]) {
-    await page.setViewport(viewport);
-    for (const route of ["hypotheses", "findings", "review"]) {
-      await open(route);
-      await page.waitForSelector(".host-chips button", { timeout: 15_000 });
-      const chips = await page.$$(".host-chips button");
-      await chips[1].click();
-      await page.waitForFunction(
-        () => document.querySelector(".state-card .spinner") === null,
-        { timeout: 15_000 },
-      );
-      const width = await page.evaluate(() => ({
-        document: document.documentElement.scrollWidth,
-        body: document.body.scrollWidth,
-        inner: window.innerWidth,
-      }));
-      expect(`${route}@${viewport.width}:${width.document <= width.inner + 1}`)
-        .toBe(`${route}@${viewport.width}:true`);
-      expect(width.body).toBeLessThanOrEqual(width.inner + 1);
-    }
-  }
-  await page.setViewport(WIDE);
-});
-
 test.skipIf(!chrome)("a refusal banner is scoped to the route that earned it", async () => {
   // A launch that could not open its durable store still serves Phase A, so
   // the operator's Sessions and Archive pages work while the Phase B pages
@@ -794,4 +532,28 @@ test.skipIf(!chrome)("a refusal banner is scoped to the route that earned it", a
   // navigation has not simply silenced it.
   await page.click('a[href="#/review"]');
   await visible("the review service is not available in this session");
+});
+
+// A listing that could not resolve the whole catalog is the one state a reader
+// cannot check for himself: the rows look complete because rows always look
+// complete. What must be on screen is that the list may be short -- and what
+// must not be on screen, here least of all, is an explanation in terms of
+// machines and publication state. The catalog is one body of work; which
+// computer holds what is not a question this interface asks or answers.
+test.skipIf(!chrome)("a partial catalog read says the list may be incomplete, and names no machine", async () => {
+  await open("hypotheses", degradedMock?.base);
+  await visible("This list may be incomplete");
+  const state = await page.evaluate(() => ({
+    rows: document.querySelectorAll(".frontier-table tbody tr").length,
+    text: document.body.innerText,
+  }));
+  // The records still render in full: a partial read costs the rows it could
+  // not reach and nothing else.
+  expect(state.rows).toBeGreaterThan(0);
+  for (const word of ["this machine", "this host", "All hosts", "pending-sync", "unattributed", "demo-laptop", "build-server"]) {
+    expect(state.text).not.toContain(word);
+  }
+
+  await open("review", degradedMock?.base);
+  await visible("This list may be incomplete");
 });

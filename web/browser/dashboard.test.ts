@@ -135,7 +135,7 @@ test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel ans
     hash: window.location.hash,
     panels: Array.from(document.querySelectorAll(".panel h2")).map((h) => h.textContent),
     notes: document.querySelectorAll(".panel-note").length,
-    hosts: document.querySelectorAll(".host-list li").length,
+    heading: document.querySelector(".page-heading h1")?.textContent ?? "",
     queue: document.querySelectorAll(".queue-list li").length,
     questions: document.querySelectorAll(".question-rows li").length,
     receipts: document.querySelectorAll(".receipt-list li").length,
@@ -159,7 +159,9 @@ test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel ans
   expect(state.notes).toBe(0);
   // Non-vacuity, list by list: the panels are showing records, not empty
   // frames, and each list is the shape its panel owns.
-  expect(state.hosts).toBe(2);
+  // The landing page is the deployment's overview, not a computer's: the
+  // heading says so, and no panel breaks its subject down by machine.
+  expect(state.heading).toBe("Overview");
   expect(state.queue).toBe(4);
   expect(state.questions).toBe(3);
   expect(state.receipts).toBe(2);
@@ -343,7 +345,7 @@ test.skipIf(!chrome)("the Help guide explains the lifecycle and maps the command
   expect(state.badges).toContain("rejected");
   expect(state.badges).toContain("refine-requested");
   for (const href of state.links) {
-    expect(href).toMatch(/^#\/(|help|sessions|archive|explore|fleet|hypotheses|findings|reality|review)$/u);
+    expect(href).toMatch(/^#\/(|help|sessions|archive|explore|fleet|hypotheses|findings|proposals|reality|review)$/u);
   }
 
   // The guide is a page, not a request: nothing on it reads the API, so it

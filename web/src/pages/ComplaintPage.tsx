@@ -87,8 +87,7 @@ function ComplaintPage() {
       </div>
 
       <p className="secondary complaint-attribution">
-        Told by <span className="mono">{complaint.by}</span> on{" "}
-        <span className="mono">{complaint.host}</span>
+        Told by <span className="mono">{complaint.by}</span>
         {told ? ` · ${told.relative} · ${told.absolute}` : ` · ${complaint.at}`}
       </p>
 

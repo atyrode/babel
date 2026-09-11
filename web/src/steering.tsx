@@ -223,7 +223,6 @@ function ComplaintListing({
               <tr>
                 <th>Complaint</th>
                 <th>Told by</th>
-                <th>Host</th>
                 <th>Told</th>
                 <th className="numeric">Addressed by</th>
               </tr>
@@ -246,7 +245,6 @@ function ComplaintListing({
                       <span className="secondary mono">{item.id}</span>
                     </td>
                     <td>{item.by}</td>
-                    <td className="mono">{item.host}</td>
                     <td>
                       {told ? <span title={told.absolute}>{told.relative}</span> : item.at}
                     </td>

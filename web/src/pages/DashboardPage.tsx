@@ -26,7 +26,7 @@ import { AuthorityMark, Badge, FallibilityNote, statusTone, reviewTone, type Ton
 //     the one panel that lists analytical records in full, because it is the
 //     queue the operator works from.
 //   - Runs is a receipt strip: what each exploration recorded, as a stub.
-//   - Activity is a feed: what this machine's harnesses touched, newest first.
+//   - Activity is a feed: which sessions were touched, newest first.
 //
 // Color is a status vocabulary, not decoration: hypothesis statuses keep the
 // tones the Badge vocabulary already gives them, harnesses each hold one hue
@@ -180,7 +180,10 @@ function Hero({
     >
       <strong className="stat-value">
         {dot && <span className={`pulse-dot tone-${dot}`} aria-hidden="true" />}
-        {value}
+        {/* Four digits without a separator is a number a reader has to count:
+            1939 and 19390 look alike at a glance, and this page is nothing
+            but glances. Grouping is the locale's, never a rounding. */}
+        {typeof value === "number" ? value.toLocaleString() : value}
       </strong>
       <span className="stat-label">{label}</span>
     </div>
@@ -393,6 +396,28 @@ function DashboardPage() {
   const frontierListed = (data?.frontier.rows.length ?? 0) > 0;
   const receiptRows = data?.runs.rows.slice(0, receiptFit) ?? [];
 
+  // The frontier's own distribution, re-presented rather than recomputed: the
+  // server sends every §4.2 status with its count, and these are two sums over
+  // it. "Live" is what the lifecycle has not parked — a candidate that is
+  // untriaged, queued or being investigated is one something can still happen
+  // to — where deferred, rejected and promoted have each already had their
+  // decision.
+  const statusCount = (name: string) =>
+    data?.frontier.statuses.find((entry) => entry.status === name)?.count ?? 0;
+  const live = statusCount("untriaged") + statusCount("queued") + statusCount("investigating");
+  const deferred = statusCount("deferred");
+
+  // The preview leads with what a reader can decide rather than with whatever
+  // enrolled first. A proposal says what to do and a finding says what the
+  // claim is; a hypothesis is raw material, and a queue whose first screen was
+  // five deferred candidates -- the same five the frontier panel is showing --
+  // read as a queue with nothing in it. The sort is stable, so enrolment order
+  // survives inside each kind and no row is dropped.
+  const KIND_ORDER: Record<string, number> = { proposal: 0, finding: 1, hypothesis: 2 };
+  const reviewRows = [...(data?.review.rows ?? [])].sort(
+    (left, right) => (KIND_ORDER[left.type] ?? 3) - (KIND_ORDER[right.type] ?? 3),
+  );
+
   return (
     <section className="page dashboard-page">
       {guide && (
@@ -409,12 +434,11 @@ function DashboardPage() {
 
       <div className="page-heading">
         <div>
-          <p className="eyebrow">This machine</p>
-          <h1>Dashboard</h1>
+          <h1>Overview</h1>
           <p className="subtitle">
-            What Babel holds right now: the archive it can reach, the corpus it has described, and
-            the analytical records waiting for a human. Nothing here starts work — exploration runs
-            from a terminal, and this page reads what it left behind.
+            Everything Babel has archived, described and found, as it stands now. Findings and
+            proposals are the output; this page is the glance and the way in. Nothing here starts
+            work — exploration runs from a terminal, and this page reads what it left behind.
           </p>
         </div>
         <div className="heading-meta">
@@ -431,7 +455,7 @@ function DashboardPage() {
       </div>
 
       {loading && !data && (
-        <div className="state-card"><span className="spinner" /> Reading this machine's state…</div>
+        <div className="state-card"><span className="spinner" /> Reading the deployment's state…</div>
       )}
       {error && !data && (
         <div className="state-card error-state">
@@ -462,7 +486,6 @@ function DashboardPage() {
                 small
               />
               <Hero value={data.archive.snapshots} label="snapshots" />
-              <Hero value={data.archive.hosts_total} label="hosts" small />
             </div>
             <Facts
               items={[
@@ -485,38 +508,17 @@ function DashboardPage() {
                   ? "Uncatalogued snapshots are durable but unrecorded; the next push records them."
                   : "The shared catalog did not answer, so the lag is unknown rather than zero."}
             </p>
-            {data.archive.hosts.length === 0 ? (
+            {data.archive.snapshots === 0 && (
               <p className="muted">This repository holds no snapshots yet.</p>
-            ) : (
-              <ul className="panel-rows host-list">
-                {data.archive.hosts.map((host) => (
-                  <li key={host.host}>
-                    <span
-                      className={`pulse-dot tone-${freshnessTone(host.latest_time)}`}
-                      aria-hidden="true"
-                    />
-                    <div className="panel-row-main">
-                      <strong className="untrusted-inline">{host.host}</strong>
-                      <span className="panel-row-meta">
-                        <span className="mono">{host.latest_short_id || "no snapshot"}</span>
-                        <span>
-                          {host.snapshots} {host.snapshots === 1 ? "snapshot" : "snapshots"}
-                        </span>
-                        <Relative at={host.latest_time} />
-                      </span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
             )}
             <p className="panel-caption mono-caption panel-bottom">
-              {data.archive.repository || "no repository"} · host {data.archive.host_id || "unknown"}
+              {data.archive.repository || "no repository"}
             </p>
           </Panel>
 
           <Panel
             flavor="corpus"
-            eyebrow="Local catalog"
+            eyebrow="Described sessions"
             title="Corpus"
             section={data.corpus}
             to="/sessions"
@@ -552,7 +554,7 @@ function DashboardPage() {
               </p>
             )}
             {data.corpus.harnesses.length === 0 ? (
-              <p className="muted">No sessions are catalogued on this machine yet.</p>
+              <p className="muted">No sessions are catalogued yet.</p>
             ) : (
               <>
                 <DistributionBar
@@ -602,15 +604,36 @@ function DashboardPage() {
             to="/hypotheses"
             linkLabel="Hypotheses"
           >
+            {/* The headline is what is still live, not the pile. Deferral
+                dominates a frontier that has run for a while, and a total
+                dominated by parked candidates reads as an impossible amount of
+                work while saying nothing about what to do next. The number an
+                operator can act on leads, deferred is named beside it as the
+                backlog it is, and the total follows as context — so no reading
+                of this panel makes the review inbox's count look like a subset
+                of a smaller number. */}
             <div className="hero-strip">
               <Hero
+                value={live}
+                label="live candidates"
+                title="Untriaged, queued or investigating — the candidates exploration has not parked."
+                tone={live > 0 ? "amber" : undefined}
+              />
+              <Hero
+                value={deferred}
+                label="deferred backlog"
+                title="Set aside rather than rejected. The frontier keeps them and nothing removes them."
+                small
+              />
+              <Hero
                 value={data.frontier.hypotheses}
-                label={data.frontier.truncated ? "candidates at least" : "candidates"}
+                label={data.frontier.truncated ? "recorded, at least" : "recorded in all"}
                 title={
                   data.frontier.truncated
                     ? "Enumeration reached its bound, so this is a floor rather than a total."
-                    : undefined
+                    : "Every candidate ever recorded, decided or not."
                 }
+                small
               />
             </div>
             {/* The frontier is a shape, not a list: how candidates distribute
@@ -632,7 +655,7 @@ function DashboardPage() {
               {data.frontier.statuses.map((entry) => (
                 <span className={`panel-chip${entry.count === 0 ? " zero" : ""}`} key={entry.status}>
                   <Badge label={entry.status} tone={statusTone(entry.status)} />
-                  <span className="mono">{entry.count}</span>
+                  <span className="mono">{entry.count ?? 0}</span>
                 </span>
               ))}
             </div>
@@ -739,9 +762,15 @@ function DashboardPage() {
             }
           >
             <div className="hero-strip">
+              {/* Named as records, not as candidates: the queue enrols
+                  hypotheses, findings and proposals alike, so this number is
+                  legitimately larger than the frontier's and a label saying
+                  only "awaiting" invited the reading that more candidates
+                  await review than exist. */}
               <Hero
                 value={data.review.awaiting}
-                label="awaiting a decision"
+                label="records awaiting a decision"
+                title="Hypotheses, findings and proposals enrolled for review and not yet decided."
                 tone={data.review.awaiting > 0 ? "amber" : undefined}
               />
               <Hero
@@ -770,7 +799,7 @@ function DashboardPage() {
                 small
               />
             </div>
-            {data.review.rows.length === 0 ? (
+            {reviewRows.length === 0 ? (
               <p className="quiet-line">
                 <span className="quiet-mark" aria-hidden="true">✓</span>
                 Nothing awaits a decision. Records enter this queue when exploration develops them
@@ -779,11 +808,11 @@ function DashboardPage() {
             ) : (
               <>
                 <ul className="panel-rows queue-list">
-                  {data.review.rows.map((row) => (
+                  {reviewRows.map((row) => (
                     <QueueRow key={`${row.type}-${row.id}`} row={row} />
                   ))}
                 </ul>
-                {data.review.awaiting > data.review.rows.length && (
+                {data.review.awaiting > reviewRows.length && (
                   <p className="panel-caption">
                     <Link className="more-link" to="/review">
                       {data.review.awaiting - data.review.rows.length} more await in Review{" "}
@@ -824,11 +853,6 @@ function DashboardPage() {
                   {receiptRows.map((row) => (
                     <li key={row.receipt_id}>
                       <span className="receipt-head">
-                        <span
-                          className={`sync-dot tone-${row.sync === "committed" ? "green" : "amber"}`}
-                          aria-hidden="true"
-                        />
-                        <span className="receipt-sync">{row.sync}</span>
                         <span className="receipt-time">
                           <Relative at={row.recorded_at} />
                         </span>
@@ -889,7 +913,7 @@ function DashboardPage() {
           >
             {data.activity.rows.length === 0 ? (
               <p className="muted">
-                The catalog is empty. Sessions appear as Babel describes what this machine's
+                The catalog is empty. Sessions appear as Babel describes the transcripts its
                 harnesses have written.
               </p>
             ) : (

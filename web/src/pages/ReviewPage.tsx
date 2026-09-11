@@ -2,25 +2,18 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getReviewQueue, type QueueItem, type ReviewQueueResponse } from "../api";
 import { errorMessage, formatTime } from "../format";
-import {
-  Badge,
-  FleetNotice,
-  HostChips,
-  HostLabel,
-  LOCAL_SCOPE,
-  SyncBadge,
-  SyncDegradedNotice,
-  UnopenedNote,
-  inHostScope,
-  reviewTone,
-  syncRowClass,
-  useFleetHosts,
-  type HostScope,
-} from "../analysis";
+import { Badge, PartialListNotice, reviewTone } from "../analysis";
 import { CitationCount } from "../references";
 import { SteeringSection } from "../steering";
 
-const TYPES = ["hypothesis", "finding", "proposal"];
+// The type chips lead with what a reader can decide in one sitting. A proposal
+// says what to do about a claim and a finding says what the claim is; a
+// hypothesis is still raw material, and thousands of them enrolled for triage
+// bury the handful of records worth a verdict. Which is why the queue opens on
+// proposals rather than on everything: an inbox whose first screen is the same
+// deferred candidates the frontier already shows reads as an inbox with nothing
+// in it.
+const TYPES = ["proposal", "finding", "hypothesis"];
 const STATUSES = ["accepted", "rejected", "deferred", "duplicate", "refine-requested"];
 
 function ReviewPage() {
@@ -28,45 +21,28 @@ function ReviewPage() {
   const [data, setData] = useState<ReviewQueueResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [type, setType] = useState<string | null>(null);
+  const [type, setType] = useState<string | null>("proposal");
   const [status, setStatus] = useState<string | null>(null);
 
-  // The host scope is the fleet chip row's selection, separate from the type
-  // and status filters because it narrows a different thing: which machine
-  // produced the record rather than what the record is or where it stands.
-  const [scope, setScope] = useState<HostScope>(LOCAL_SCOPE);
-  const fleet = useFleetHosts();
+  const load = useCallback((typeFilter: string | null, statusFilter: string | null) => {
+    setLoading(true);
+    setError(null);
+    getReviewQueue({
+      type: typeFilter ?? undefined,
+      status: statusFilter ?? undefined,
+    })
+      .then((value) => setData(value))
+      .catch((reason) => setError(errorMessage(reason)))
+      .finally(() => setLoading(false));
+  }, []);
 
-  const load = useCallback(
-    (typeFilter: string | null, statusFilter: string | null, hostScope: HostScope) => {
-      setLoading(true);
-      setError(null);
-      getReviewQueue({
-        type: typeFilter ?? undefined,
-        status: statusFilter ?? undefined,
-        fleet: hostScope.fleet,
-      })
-        .then((value) => setData(value))
-        .catch((reason) => setError(errorMessage(reason)))
-        .finally(() => setLoading(false));
-    },
-    [],
-  );
-
-  useEffect(() => load(type, status, scope), [load, type, status, scope]);
+  useEffect(() => load(type, status), [load, type, status]);
 
   function openItem(item: QueueItem) {
-    // A decision is recorded against a record in this machine's durable store,
-    // and another host's record is not in it. Such a row is not a link: a
-    // control that led nowhere -- or worse, invited a decision this machine
-    // cannot append -- would be this page claiming an authority it lacks.
-    if (item.local_host === false) return;
     navigate(`/review/${encodeURIComponent(item.subject.type)}/${encodeURIComponent(item.subject.id)}`);
   }
 
-  // Narrowed client-side over the merged list, so selecting a host hides rows
-  // the browser already holds rather than costing a round trip.
-  const items = (data?.items ?? []).filter((item) => inHostScope(item, scope));
+  const items = data?.items ?? [];
 
   return (
     <section className="page review-page">
@@ -82,7 +58,9 @@ function ReviewPage() {
         {data && (
           <div className="heading-meta">
             <span className="count-label">
-              {items.length} {items.length === 1 ? "record" : "records"}
+              {data.total !== undefined && items.length < data.total
+                ? `${items.length.toLocaleString()} of ${data.total.toLocaleString()} records`
+                : `${items.length.toLocaleString()} ${items.length === 1 ? "record" : "records"}`}
             </span>
           </div>
         )}
@@ -96,9 +74,6 @@ function ReviewPage() {
 
       <div className="toolbar card review-toolbar">
         <div className="filter-chips" aria-label="Filter by record type">
-          <button type="button" className={!type ? "chip active" : "chip"} onClick={() => setType(null)}>
-            All types
-          </button>
           {TYPES.map((name) => (
             <button
               type="button"
@@ -109,6 +84,9 @@ function ReviewPage() {
               {name}
             </button>
           ))}
+          <button type="button" className={!type ? "chip active" : "chip"} onClick={() => setType(null)}>
+            All types
+          </button>
         </div>
         <div className="filter-chips" aria-label="Filter by review status">
           <button type="button" className={!status ? "chip active" : "chip"} onClick={() => setStatus(null)}>
@@ -132,16 +110,9 @@ function ReviewPage() {
             </button>
           ))}
         </div>
-        <HostChips
-          hosts={fleet.hosts}
-          scope={scope}
-          localHost={fleet.localHost}
-          onSelect={setScope}
-        />
       </div>
 
-      {fleet.configured === false && <FleetNotice />}
-      {data?.sync_degraded && <SyncDegradedNotice detail={data.sync_detail} />}
+      {data?.sync_degraded && <PartialListNotice />}
 
       {loading && !data && (
         <div className="state-card"><span className="spinner" /> Reading the review queue…</div>
@@ -150,7 +121,7 @@ function ReviewPage() {
         <div className="state-card error-state">
           <strong>The review queue could not be loaded.</strong>
           <span>{error}</span>
-          <button type="button" onClick={() => load(type, status, scope)}>Try again</button>
+          <button type="button" onClick={() => load(type, status)}>Try again</button>
         </div>
       )}
       {!loading && !error && items.length === 0 && (
@@ -173,9 +144,11 @@ function ReviewPage() {
                 <tr>
                   <th>Record</th>
                   <th>Type</th>
-                  <th>Status</th>
-                  <th>Host</th>
-                  <th>Sync</th>
+                  {/* The review disposition, which is a different vocabulary
+                      from a candidate's exploration status: a record can be
+                      "new" here and "deferred" on the frontier, and one column
+                      named "status" for both read as a contradiction. */}
+                  <th title="The last review decision recorded against this record.">Decision</th>
                   <th className="numeric">Decisions</th>
                   <th>Last decided</th>
                   <th className="numeric">Refinements</th>
@@ -184,12 +157,16 @@ function ReviewPage() {
               <tbody>
                 {items.map((item) => {
                   const lastDecided = formatTime(item.last_decided_at);
+                  // The status, the decision count, the last decision and the
+                  // refinement count are derived from the record's append-only
+                  // history. A merged row arrives without it, so those cells
+                  // say nothing rather than reporting a decided-nothing.
+                  const derived = item.local_host !== false;
                   return (
                     <tr
                       key={`${item.subject.type}-${item.subject.id}`}
-                      className={syncRowClass(item)}
-                      tabIndex={item.local_host === false ? undefined : 0}
-                      role={item.local_host === false ? undefined : "link"}
+                      tabIndex={0}
+                      role="link"
                       onClick={() => openItem(item)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") openItem(item);
@@ -202,15 +179,12 @@ function ReviewPage() {
                             which would claim the record has no title. */}
                         {item.excerpt ? (
                           <strong className="untrusted-inline">{item.excerpt}</strong>
-                        ) : item.local_host === false ? (
-                          <span className="muted no-summary">
-                            no summary for this {item.subject.type} on this machine
-                          </span>
                         ) : (
-                          <strong className="untrusted-inline">Untitled record</strong>
+                          <span className="muted no-summary">
+                            no summary recorded for this {item.subject.type}
+                          </span>
                         )}
                         <span className="secondary mono">{item.subject.id}</span>
-                        <UnopenedNote reason={item.unopened} />
                         {/* #113's compact form of the record's citations: how
                             many typed references leave it and arrive at it,
                             which is what makes an isolated candidate
@@ -220,23 +194,16 @@ function ReviewPage() {
                         <CitationCount citations={item.citations} />
                       </td>
                       <td><Badge label={item.subject.type} tone="neutral" /></td>
-                      {/* The review status, the decision count, the last
-                          decision and the refinement count are derived from the
-                          owning host's append-only history. This machine holds
-                          none of it for another host's record, so it says
-                          nothing rather than reporting a decided-nothing. */}
                       <td>
-                        {item.local_host === false
-                          ? <span className="muted">—</span>
-                          : <Badge label={item.status} tone={reviewTone(item.status)} />}
+                        {derived
+                          ? <Badge label={item.status} tone={reviewTone(item.status)} />
+                          : <span className="muted">—</span>}
                       </td>
-                      <td><HostLabel mark={item} /></td>
-                      <td><SyncBadge sync={item.sync} /></td>
                       <td className="numeric mono">
-                        {item.local_host === false ? <span className="muted">—</span> : item.decisions}
+                        {derived ? item.decisions : <span className="muted">—</span>}
                       </td>
                       <td>
-                        {item.local_host === false ? (
+                        {!derived ? (
                           <span className="muted">—</span>
                         ) : lastDecided ? (
                           <span title={lastDecided.absolute}>{lastDecided.relative}</span>
@@ -245,7 +212,7 @@ function ReviewPage() {
                         )}
                       </td>
                       <td className="numeric mono">
-                        {item.local_host === false ? <span className="muted">—</span> : item.refinements}
+                        {derived ? item.refinements : <span className="muted">—</span>}
                       </td>
                     </tr>
                   );

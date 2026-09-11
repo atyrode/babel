@@ -5,11 +5,9 @@ import {
   type EvidenceRef,
   type FleetHost,
   type FleetHostsResponse,
-  type FleetMark,
   type HypothesisStatus,
   type ReviewStatus,
   type RunAuthority,
-  type SyncState,
 } from "./api";
 import { formatTime } from "./format";
 
@@ -261,248 +259,42 @@ export function AuthorityMark({ authority }: { authority: RunAuthority | undefin
   );
 }
 
-// ---------------------------------------------------------------------------
-// Fleet attribution (issue #109 item 4).
+// PartialListNotice says a listing may be short.
 //
-// Three rules from SPEC.md live here rather than in any one page, so a row
-// reads the same way on the review inbox, the frontier and the receipt strip.
-//
-//   - Staged output is visibly staged (§6.5, §9). A pending-sync row is marked
-//     on the row itself and not only in a badge's text, because "not yet
-//     reviewable anywhere else" is a property of the record a reader has to be
-//     able to see while scanning.
-//   - Absence is absence (§3). A record whose origin instance registered no
-//     host renders as "unattributed", never as this machine. Attributing one
-//     machine's analysis to another is the failure this whole vocabulary
-//     exists to prevent.
-//   - Unknown is not a state of the record. When the shared catalog could not
-//     be reached, a row's sync state is "unknown" — this machine did not find
-//     out — which is a different claim from "local" and reads differently.
-// ---------------------------------------------------------------------------
-
-// SYNC_TONES colours the four frozen sync states. Committed is green because
-// the record is globally durable and reviewable; pending-sync is amber because
-// it is not yet, and that is a state to notice rather than an error; local is
-// neutral because a machine that publishes nowhere is not in a lesser state;
-// unknown is violet because it is about this machine's reach and not about the
-// record at all.
-const SYNC_TONES: Record<string, Tone> = {
-  committed: "green",
-  "pending-sync": "amber",
-  local: "neutral",
-  unknown: "violet",
-};
-
-// SYNC_TITLES say what each state means, because the words alone do not. An
-// operator reading "local" has to be able to learn that nothing is going to
-// carry the record anywhere, which is the one thing that distinguishes it from
-// "pending-sync".
-const SYNC_TITLES: Record<string, string> = {
-  committed: "Committed to the shared catalog: globally durable and reviewable from any host.",
-  "pending-sync":
-    "Staged, not yet committed to the shared catalog. It is not reviewable from another host yet.",
-  local:
-    "Held only on this machine. No shared catalog row and nothing staged for one, so nothing is going to carry it anywhere.",
-  unknown:
-    "The shared catalog could not be reached, so whether this record has committed globally is not known.",
-};
-
-// SyncBadge renders one row's sync state. An absent value renders as an
-// absence rather than as a guess: a row whose state the server did not send is
-// not a local row.
-export function SyncBadge({ sync }: { sync: SyncState | string | undefined }) {
-  if (!sync) return <span className="muted">—</span>;
+// The listings answer with the rows they could reach and mark the response
+// when part of the catalog did not. Saying nothing would present an incomplete
+// list as the whole of Babel's work — the one thing a reader cannot check for
+// himself — and saying it in terms of publication state would describe
+// plumbing instead of the list he is reading. So this is about the list: some
+// records are missing from it, the ones shown are unaffected, and a reload is
+// the retry.
+export function PartialListNotice() {
   return (
-    <span className="sync-mark" title={SYNC_TITLES[sync] ?? "This record's sync state."}>
-      <Badge label={sync} tone={SYNC_TONES[sync] ?? "neutral"} />
-    </span>
-  );
-}
-
-// syncRowClass marks a row beyond its badge's text. A reviewer scanning an
-// inbox reads rows, not badges, and §6.5 asks for staged output to be visible
-// rather than merely reported.
-export function syncRowClass(mark: FleetMark): string {
-  const classes: string[] = [];
-  if (mark.sync === "pending-sync") classes.push("row-pending-sync");
-  if (mark.sync === "unknown") classes.push("row-sync-unknown");
-  if (mark.local_host === false) classes.push("row-remote-host");
-  return classes.join(" ");
-}
-
-// UNATTRIBUTED is the one word this interface uses for a record no host can be
-// named for. It is exported so a test asserts the string the UI renders rather
-// than a copy of it.
-export const UNATTRIBUTED = "unattributed";
-
-// HostLabel renders which machine a row came from.
-//
-// Three cases and they read differently on purpose. This machine's own row says
-// so, because an operator scanning a fleet-wide list needs to find his own work
-// without comparing identifiers. Another machine's row names it. And a row with
-// no host at all says "unattributed" in a muted style — the absence stated,
-// never filled in with the local machine.
-export function HostLabel({ mark }: { mark: FleetMark }) {
-  if (!mark.host_attributed) {
-    return (
-      <span
-        className="host-label muted unattributed-host"
-        title="This record's origin instance registered no host, so which machine produced it is not recorded. It is not attributed to this one."
-      >
-        {UNATTRIBUTED}
-      </span>
-    );
-  }
-  return (
-    <span className={mark.local_host ? "host-label local-host" : "host-label"}>
-      <span className="mono untrusted-inline">{mark.host}</span>
-      {mark.local_host && <span className="secondary">this host</span>}
-    </span>
-  );
-}
-
-// UnopenedNote says why a row has no content. The reasons call for different
-// responses — a key to install, a binary to update, a store to check — so the
-// server's own reason is rendered rather than a generic "unavailable".
-export function UnopenedNote({ reason }: { reason: string | undefined }) {
-  if (!reason) return null;
-  return (
-    <span className="unopened-note untrusted-inline" title="This machine could not open the record's content.">
-      {reason}
-    </span>
-  );
-}
-
-// FleetNotice is what a machine with no shared backend says on a fleet-wide
-// surface. It is a statement about the deployment rather than an empty state
-// that reads like a bug, in ScopeNotice's style: the operator is told what the
-// list is, whose it is, and that there is nothing else to see.
-export function FleetNotice() {
-  return (
-    <div className="state-card scope-notice fleet-notice">
-      <strong>This machine has no shared backend configured</strong>
+    <div className="state-card scope-notice" role="status">
+      <strong>This list may be incomplete</strong>
       <span>
-        Only its own records are shown, and there are no other hosts for Babel to read. That is
-        this deployment's shape, not a failure to load anything.
-      </span>
-      <span className="secondary">
-        Run <code>babel storage configure</code> to join a shared deployment.
+        Part of the catalog did not answer, so records it holds are missing here. Everything
+        shown is a real record; reload to try the rest again.
       </span>
     </div>
   );
 }
 
-// SyncDegradedNotice is what a listing says when the shared catalog could not
-// be reached. The rows are still this machine's own durable records and still
-// render; what is missing is whether they have committed anywhere else, and
-// saying so is what keeps their "unknown" badges meaningful.
-export function SyncDegradedNotice({ detail }: { detail: string | undefined }) {
-  return (
-    <div className="state-card scope-notice sync-degraded-notice" role="status">
-      <strong>Global sync state is not known for these records</strong>
-      <span>{detail || SYNC_TITLES.unknown}</span>
-      <span className="secondary">
-        These are this machine's own records and they are shown in full. Only whether they have
-        committed to the shared catalog is unknown.
-      </span>
-    </div>
-  );
-}
-
-// HostScope is what a host chip row selects.
+// ---------------------------------------------------------------------------
+// The host vocabulary below serves the fleet diagnostic only.
 //
-// `fleet` is false for this machine alone, which is the default: the server's
-// fleet-wide read is opt-in, and a list that silently became deployment-wide
-// would make an operator's own backlog look like someone else's work. `host` is
-// the machine an already-merged list is narrowed to — null for every machine,
-// and the empty string for the group with no host attribution, which is a real
-// selection rather than the absence of one.
-export interface HostScope {
-  fleet: boolean;
-  host: string | null;
-}
+// Nothing in the reading path renders which instance produced a record, or
+// whether it has published anywhere: the catalog is one body of work, and a
+// reader asking "what has Babel found" is not asking about computers. The
+// remaining hook exists because the fleet page's subject genuinely is the
+// machines, and it names them there.
+// ---------------------------------------------------------------------------
 
-export const LOCAL_SCOPE: HostScope = { fleet: false, host: null };
-
-// inHostScope narrows an already-merged list. Narrowing happens here rather
-// than on the server because the merge is what the request asked for: a chip
-// that re-fetched would make the operator wait to hide rows he already has.
+// useFleetHosts loads the deployment's host vocabulary once per mount.
 //
-// The match is on host identity, never on the display name (see FleetMark).
-export function inHostScope(mark: FleetMark, scope: HostScope): boolean {
-  if (!scope.fleet || scope.host === null) return true;
-  if (scope.host === "") return !mark.host_attributed;
-  return mark.host_id === scope.host;
-}
-
-// HostChips is the host filter: this machine, every machine, then one chip per
-// machine that holds records.
-//
-// The vocabulary is the server's rather than the current page's, so the options
-// do not change as the operator pages through a list, and the unattributed group
-// gets a chip of its own whenever it holds anything — a group with no chip is a
-// group whose records cannot be reached.
-export function HostChips({
-  hosts,
-  scope,
-  localHost,
-  onSelect,
-}: {
-  hosts: FleetHost[];
-  scope: HostScope;
-  localHost: string | undefined;
-  onSelect: (scope: HostScope) => void;
-}) {
-  if (hosts.length === 0) return null;
-  return (
-    <div className="filter-chips host-chips" aria-label="Filter by host">
-      <button
-        type="button"
-        className={scope.fleet ? "chip" : "chip active"}
-        onClick={() => onSelect(LOCAL_SCOPE)}
-        title="Only this machine's own records, which is what every other Babel listing shows."
-      >
-        This host
-      </button>
-      <button
-        type="button"
-        className={scope.fleet && scope.host === null ? "chip active" : "chip"}
-        onClick={() => onSelect({ fleet: true, host: null })}
-      >
-        All hosts
-      </button>
-      {hosts.map((host) => (
-        <button
-          type="button"
-          className={scope.fleet && scope.host === host.host_id ? "chip active" : "chip"}
-          onClick={() => onSelect({ fleet: true, host: host.host_id })}
-          key={host.host_id || UNATTRIBUTED}
-          title={
-            host.attributed
-              ? `${host.records} record${host.records === 1 ? "" : "s"}${host.pending > 0 ? `, ${host.pending} staged` : ""}`
-              : "Records whose origin instance registered no host. Which machine produced them is not recorded."
-          }
-        >
-          <span className="untrusted-inline">
-            {host.attributed ? host.host || host.host_id : UNATTRIBUTED}
-          </span>
-          {host.attributed && host.host_id === localHost && (
-            <span className="secondary">this host</span>
-          )}
-          {host.pending > 0 && <span className="chip-pending">{host.pending} staged</span>}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// useFleetHosts loads the host filter's vocabulary once per mount.
-//
-// It never fails a page. A machine with no shared backend answers
-// `configured: false`, which the page states as a fact about the deployment; a
-// catalog that did not answer leaves `configured` unknown and the chips absent,
-// and the page's own rows still render. The filter is chrome; the records are
-// the content, and losing the chrome must not lose them.
+// It never fails a page. A deployment with no shared backend answers
+// `configured: false`, which the page states as a fact; a catalog that did not
+// answer leaves `configured` unknown, and the page's own rows still render.
 export function useFleetHosts(): {
   hosts: FleetHost[];
   localHost: string | undefined;

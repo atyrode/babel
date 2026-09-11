@@ -35,7 +35,7 @@ const COMMANDS: Array<[string, string, string, string]> = [
   ["babel archive push", "Backs this host's sessions into the restic repository.", "/archive", "Archive"],
   ["babel archive status", "Reports snapshots per host and the catalog's lag.", "/archive", "Archive"],
   ["babel archive verify", "Checks repository integrity, standard or deep.", "/archive", "Archive"],
-  ["babel sessions list", "Lists what this machine's harnesses have written.", "/sessions", "Sessions"],
+  ["babel sessions list", "Lists the session transcripts the harnesses have written.", "/sessions", "Sessions"],
   ["babel sessions inspect", "Shows one session whole, with its transcript.", "/sessions", "Sessions"],
   ["babel sessions fetch", "Restores one archived session's files locally.", "/sessions", "Sessions"],
   ["babel prepare", "Fixes an exploration's corpus scope and builds its index.", "/explore", "Explore"],
@@ -450,8 +450,16 @@ function HelpPage() {
           <li>
             <strong>Hypotheses</strong> — every emergent candidate is preserved in a resumable
             frontier, in the model's own wording, with the observations and evidence locators that
-            develop it. Consolidated candidates become findings and proposals.
+            develop it.
             <Link className="panel-link" to="/hypotheses">Hypotheses →</Link>
+          </li>
+          <li>
+            <strong>Findings and proposals</strong> — developed candidates are consolidated into
+            findings, and a finding or a strong claim can carry proposals: what to do about it,
+            with prerequisites, verification criteria, risks and open questions. This is Babel's
+            output, and it is the first two entries in the row above.
+            <Link className="panel-link" to="/findings">Findings →</Link>
+            <Link className="panel-link" to="/proposals">Proposals →</Link>
           </li>
           <li>
             <strong>Review</strong> — a human decides. Each decision is an appended, attributed
