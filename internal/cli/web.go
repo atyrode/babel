@@ -251,6 +251,7 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	opts.Frontier = services.frontier()
 	opts.Runs = services.runs()
 	opts.Reality = services.realityService()
+	opts.Focus = services.focusPolicy()
 	opts.Search = services.search()
 	opts.Dispositions = services.dispositions()
 	opts.Reviver = services.reviver()
@@ -472,6 +473,18 @@ func (s *webServices) realityService() web.RealityService {
 		return nil
 	}
 	return s.reality
+}
+
+// focusPolicy is §4.8's expenditure policy, over the same open ledger. It is
+// its own accessor because internal/web takes it as its own field: the browser
+// surface that states an operator's analysis policy holds a type that can
+// write one predicate and install the rules this build ships, and nothing that
+// could reach the rest of the ledger's writers.
+func (s *webServices) focusPolicy() web.FocusPolicyService {
+	if s.reality == nil {
+		return nil
+	}
+	return s.reality.Focus()
 }
 
 func (s *webServices) search() web.SearchIndex {

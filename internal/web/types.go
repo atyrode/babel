@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"time"
 
 	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/cookbook"
@@ -62,6 +63,20 @@ type Options struct {
 	Reality  RealityService
 	Runs     RunLister
 	Search   SearchIndex
+	// Focus is §4.8's expenditure policy: the versioned mapping from ledger
+	// state to what analysis may spend, and the operator's own statement of
+	// intent about one subject.
+	//
+	// It is separate from Reality even though both are the same store,
+	// exactly as Reviver is separate from Frontier. Reality is a read
+	// surface plus the two acts a recorded plan gives an operator; this is
+	// the one place a browser request asserts a fact of its own, so the
+	// authority it carries is a named field holding a narrow type rather
+	// than two more methods on the surface every reality page already
+	// holds. A build can wire either without the other, and a nil Focus
+	// leaves the focus routes reporting that this session has no ledger
+	// while every reality read keeps answering.
+	Focus FocusPolicyService
 	// Dispositions and Reviver are #87's record actions. They are two
 	// fields rather than one because they are two stores: the proposed
 	// actions and their ledger live beside the frontier in internal/
@@ -271,12 +286,21 @@ type DispositionService interface {
 // *reality.Store, which is the ledger's service layer.
 //
 // Exactly two mutations are listed, and they are the two §4.8 gives an
-// operator: retaining an answer, and the single explicit acceptance that lets a
-// plan's authoritative actions touch reality. Everything that could make a
-// fact authoritative by another route — AssertFact, SupersedeFact,
-// MergeEntities, ImportFacts, PutFocusRules — is deliberately absent, so no
-// browser request can reach authority the operator did not exercise through
-// the plan the ledger recorded.
+// operator over a *model's* proposals: retaining an answer, and the single
+// explicit acceptance that lets an interpretation's authoritative actions
+// touch reality. Everything that could make a fact authoritative by another
+// route — AssertFact, SupersedeFact, MergeEntities, ImportFacts,
+// PutFocusRules — is deliberately absent, so no browser request can reach
+// authority the operator did not exercise through the plan the ledger
+// recorded.
+//
+// FocusPolicyService below is the one deliberate exception, and it is a
+// different type rather than a widening of this one. The distinction it keeps
+// is the distinction §4.8 draws: an interpretation's fact needs an acceptance
+// because a model proposed it, while an operator's own statement about what
+// his machines are worth spending on is an attributed operator action — the
+// authority itself. Keeping them apart is what makes this interface's promise
+// still literally true.
 type RealityService interface {
 	Inbox(context.Context, reality.InboxQuery) ([]reality.InboxItem, error)
 	Question(context.Context, string) (reality.Question, error)
@@ -289,6 +313,41 @@ type RealityService interface {
 	Facts(context.Context, reality.FactQuery) ([]reality.Fact, error)
 	RecordAnswer(context.Context, reality.AnswerInput) (reality.Answer, error)
 	AcceptPlan(context.Context, reality.AcceptanceInput) (reality.Acceptance, reality.Application, error)
+}
+
+// FocusPolicyService is §4.8's focus surface the web API may reach, satisfied
+// by *reality.FocusPolicy.
+//
+// This is the only surface in this package holding a ledger write that is not
+// mediated by a recorded plan, and every line of its authority is in its
+// method set. Assert writes the analysis-policy predicate and no other;
+// Supersede replaces an analysis-policy fact and refuses anything else;
+// Install stores the rule set this build ships and cannot store one that
+// arrived in a request. There is no method here that merges an entity,
+// imports a batch, opens or resolves a dispute, asserts a lifecycle, creates
+// an entity, or closes the store — not by convention, but because
+// reality.FocusPolicy has none, which is why the concrete type exists.
+//
+// The reads are here rather than borrowed from RealityService because they
+// are the write's own preconditions. InForce is what a mutation confirms it
+// was shown, Resolve is how an operator's word becomes a subject, and Decide
+// is how a consequence is stated in the same arithmetic a run's deferral came
+// from; a handler that read them through a second surface could be shown one
+// thing by the page and write against another.
+type FocusPolicyService interface {
+	Shipped() reality.FocusRuleSet
+	Rules(context.Context, int) (reality.FocusRuleSet, error)
+	Install(context.Context) (reality.FocusRuleSet, error)
+	Decide(context.Context, reality.FocusQuery) (reality.FocusDecision, error)
+	Resolve(context.Context, string) (string, error)
+	Entity(context.Context, string) (reality.Entity, error)
+	Aliases(context.Context, string) ([]reality.Alias, error)
+	Subjects(context.Context) ([]string, error)
+	InForce(context.Context, string, time.Time) (reality.Fact, bool, error)
+	History(context.Context, string) ([]reality.Fact, error)
+	Fact(context.Context, string) (reality.Fact, error)
+	Assert(context.Context, reality.FocusPolicyInput) (reality.Fact, reality.Dispute, error)
+	Supersede(context.Context, reality.FocusPolicyRevision) (reality.Fact, error)
 }
 
 // ComplaintService is issue #115's operator-steering surface the web API may
@@ -419,6 +478,7 @@ var (
 	_ FrontierReader     = (*frontier.Store)(nil)
 	_ FrontierReviver    = (*frontier.Store)(nil)
 	_ RealityService     = (*reality.Store)(nil)
+	_ FocusPolicyService = (*reality.FocusPolicy)(nil)
 	_ DispositionService = (*disposition.Store)(nil)
 	_ ComplaintService   = (*complaint.Store)(nil)
 	_ SearchIndex        = (*index.Index)(nil)

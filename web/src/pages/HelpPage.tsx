@@ -3,8 +3,8 @@ import { Link } from "react-router-dom";
 import { Badge, statusTone, reviewTone } from "../analysis";
 
 // The concepts page. It is documentation rather than a view: nothing here reads
-// the API, so it renders identically on a machine with no archive, no analysis
-// state, and no network. That is deliberate — the page an operator reaches when
+// the API, so it renders identically with no archive, no analysis state and no
+// network. That is deliberate — the page an operator reaches when
 // nothing works must not depend on anything working.
 //
 // The vocabulary is Babel's own, and the framing is the one every analytical

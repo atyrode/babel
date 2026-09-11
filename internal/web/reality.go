@@ -8,9 +8,17 @@ package web
 // the state machine, the atomic commit, and the rule that an accepted plan's
 // facts are attributed to the accepting operator rather than to the
 // interpretation that proposed them. No route here asserts a fact, supersedes
-// one, merges an entity, or installs a focus rule; those are reachable only
-// through a plan the ledger recorded and an operator accepted, which is what
-// §4.8 means by no model-authorized fact mutation.
+// one, merges an entity, or installs a focus rule; nothing a model proposed
+// becomes reality except through a plan the ledger recorded and an operator
+// accepted, which is what §4.8 means by no model-authorized fact mutation.
+//
+// One thing this file used to be the whole answer to has moved next door.
+// internal/web/focus.go states an operator's own analysis policy for a
+// subject, which is an attributed operator action rather than a model
+// interpretation — the authority §4.8 admits, exercised deliberately, from the
+// surface the operator is already looking at. It is a separate file with a
+// separate service surface for that reason: what it may write is one
+// predicate, and no route in this file can reach it.
 
 import (
 	"context"
@@ -375,34 +383,42 @@ func (s *Server) handleRealityEntity(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	for _, fact := range facts {
-		detail.Facts = append(detail.Facts, factView{
-			ID:        fact.ID,
-			SubjectID: fact.SubjectID,
-			Predicate: string(fact.Predicate),
-			Value: factValueView{
-				Kind:     string(fact.Value.Kind),
-				Enum:     fact.Value.Enum,
-				Text:     fact.Value.Text,
-				ObjectID: fact.Value.ObjectID,
-			},
-			ValidFrom:  timeText(fact.ValidFrom),
-			ValidUntil: timeText(fact.ValidUntil),
-			ObservedAt: timeText(fact.ObservedAt),
-			RecordedAt: timeText(fact.RecordedAt),
-			ExpiresAt:  timeText(fact.ExpiresAt),
-			Authority: factAuthorityView{
-				Kind: string(fact.Authority.Kind),
-				ID:   fact.Authority.ID,
-				At:   timeText(fact.Authority.At),
-			},
-			Confidence:  string(fact.Confidence),
-			Sensitivity: string(fact.Sensitivity),
-			Status:      string(fact.Status),
-			Supersedes:  fact.Supersedes,
-			Note:        fact.Payload.Note,
-		})
+		detail.Facts = append(detail.Facts, viewFact(fact))
 	}
 	s.writeJSON(w, http.StatusOK, detail)
+}
+
+// viewFact renders one immutable revision whole, every field the ledger
+// stores and nothing derived. It is shared with the focus surface, which names
+// the fact a restriction derives from: two renderers over one record would
+// eventually disagree about which timestamp "asserted" means.
+func viewFact(fact reality.Fact) factView {
+	return factView{
+		ID:        fact.ID,
+		SubjectID: fact.SubjectID,
+		Predicate: string(fact.Predicate),
+		Value: factValueView{
+			Kind:     string(fact.Value.Kind),
+			Enum:     fact.Value.Enum,
+			Text:     fact.Value.Text,
+			ObjectID: fact.Value.ObjectID,
+		},
+		ValidFrom:  timeText(fact.ValidFrom),
+		ValidUntil: timeText(fact.ValidUntil),
+		ObservedAt: timeText(fact.ObservedAt),
+		RecordedAt: timeText(fact.RecordedAt),
+		ExpiresAt:  timeText(fact.ExpiresAt),
+		Authority: factAuthorityView{
+			Kind: string(fact.Authority.Kind),
+			ID:   fact.Authority.ID,
+			At:   timeText(fact.Authority.At),
+		},
+		Confidence:  string(fact.Confidence),
+		Sensitivity: string(fact.Sensitivity),
+		Status:      string(fact.Status),
+		Supersedes:  fact.Supersedes,
+		Note:        fact.Payload.Note,
+	}
 }
 
 // relationshipEnd names one end of an edge, resolving the far entity's display

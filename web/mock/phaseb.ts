@@ -24,7 +24,6 @@ import type {
   FindingSummary,
   FleetHost,
   FleetMark,
-  FleetRecord,
   HypothesisDetail,
   HypothesisStatus,
   HypothesisSummary,
@@ -46,6 +45,7 @@ import type {
   ReviewStatus,
   RefinementView,
   RunAuthority,
+  RunSummary,
   SearchHit,
   StatusEvent,
 } from "../src/api";
@@ -54,6 +54,18 @@ import type {
 // vocabulary to build rows that exercise every one of them; the browser's own
 // types no longer carry it, because no page reads a record's publication state.
 type SyncState = "committed" | "pending-sync" | "local" | "unknown";
+
+// The host attribution the Go DTOs still put on the wire beside every
+// analytical record. The browser's own types no longer carry it -- no page
+// renders which machine produced a record -- so the fixtures name it here and
+// go on sending exactly what the server sends. That is what makes "no page
+// names a machine" a measurement the browser tests can take rather than a
+// promise the types made for them.
+type HostAttribution = {
+  host: string;
+  host_id: string;
+  host_attributed: boolean;
+};
 
 const phasebMode = Bun.env.MOCK_PHASEB ?? "rich";
 const empty = phasebMode === "empty";
@@ -106,26 +118,12 @@ const FLEET_REMOTE_HOST = "build-server";
 
 const fleetHosts: FleetHost[] = fleetConfigured
   ? [
-      {
-        host: "build-server",
-        host_id: FLEET_REMOTE_HOST,
-        attributed: true,
-        records: 4,
-        pending: 1,
-        newest_commit: "2026-08-29T06:20:00Z",
-      },
-      {
-        host: "demo-laptop",
-        host_id: FLEET_LOCAL_HOST,
-        attributed: true,
-        records: 6,
-        pending: 1,
-        newest_commit: "2026-08-29T07:40:00Z",
-      },
-      // The group whose origin instances registered before hosts were recorded.
-      // It is offered as a chip rather than hidden: an operator who cannot
-      // select it cannot reach the records it holds.
-      { host: "", host_id: "", attributed: false, records: 1, pending: 0, newest_commit: "2026-08-27T11:05:00Z" },
+      { host: "build-server", host_id: FLEET_REMOTE_HOST, attributed: true },
+      { host: "demo-laptop", host_id: FLEET_LOCAL_HOST, attributed: true },
+      // The group whose origin instances registered before hosts were
+      // recorded. It is named rather than dropped: rows with no name at all
+      // would read as rows nobody produced.
+      { host: "", host_id: "", attributed: false },
     ]
   : [];
 
@@ -133,7 +131,7 @@ const fleetHosts: FleetHost[] = fleetConfigured
 // state of this machine's own rows, and the degraded variant overrides all of
 // them with "unknown", because a catalog that did not answer did not answer
 // about any of them.
-function mark(hostID: string, sync: SyncState, committedAt?: string): FleetMark {
+function mark(hostID: string, sync: SyncState, committedAt?: string): FleetMark & HostAttribution {
   const host = fleetHosts.find((candidate) => candidate.host_id === hostID);
   const resolved = fleetDegraded ? "unknown" : sync;
   return {
@@ -150,7 +148,7 @@ function mark(hostID: string, sync: SyncState, committedAt?: string): FleetMark 
 // has registered no host, so the label is absent rather than invented -- which
 // is exactly what the real server sends, and what keeps "unattributed" from
 // ever meaning "this one".
-function localMark(sync: SyncState, committedAt?: string): FleetMark {
+function localMark(sync: SyncState, committedAt?: string): FleetMark & HostAttribution {
   if (!fleetConfigured) {
     return { host: "", host_id: "", host_attributed: false, local_host: true, sync: fleetDegraded ? "unknown" : sync };
   }
@@ -170,6 +168,17 @@ const localSync: Record<string, SyncState> = {
   "hyp_dense-token": "local",
   "fnd_conflicting-evidence": "committed",
   "prp_criteria-template": "pending-sync",
+};
+
+// One record as GET /api/fleet/records lists it. The route stays served and the
+// fixture keeps its shape; the type is the mock's own, because the browser
+// reads no listing organised by machine.
+type FleetRecord = FleetMark & HostAttribution & {
+  record_id: string;
+  run_id: string;
+  kind: string;
+  actor: string;
+  summary?: string;
 };
 
 // The other hosts' committed records, as GET /api/fleet/records lists them and
@@ -504,6 +513,60 @@ function runEvents(events: Array<Omit<StatusEvent, "actor">>): StatusEvent[] {
 // Analysis state
 // ---------------------------------------------------------------------------
 
+// The receipts, carrying the host attribution the wire carries and no page
+// reads: a fixture that omitted it could not prove the runs strip ignores it.
+const receipts: Array<RunSummary & HostAttribution> = [
+  {
+    receipt_id: "rcp_01synthetic0001",
+    run_id: "run_discovery-07",
+    preparation_id: "prep_corpus-2026-08",
+    revision: 1,
+    recorded_at: "2026-08-28T22:14:00Z",
+    sync: "committed",
+    counts: {
+      tool_requests: 41,
+      tools_denied: 3,
+      retrieval: 17,
+      deferred: 4,
+      rejected: 1,
+      failures: 0,
+      redactions: 2,
+    },
+    // One receipt carries an authority and one deliberately does not, so
+    // both renderings are previewable: a run the conductor started under a
+    // policy, and an older receipt written before receipts recorded why.
+    authority: { kind: "policy", ref: "nightly-frontier" },
+    // The host is the shared catalog's, so a machine in local mode leaves it
+    // absent rather than naming itself.
+    host: fleetConfigured ? "demo-laptop" : "",
+    host_id: fleetConfigured ? FLEET_LOCAL_HOST : "",
+    host_attributed: fleetConfigured,
+  },
+  {
+    receipt_id: "rcp_01synthetic0002",
+    run_id: "run_challenge-08",
+    preparation_id: "prep_corpus-2026-08",
+    revision: 1,
+    recorded_at: "2026-08-29T07:40:00Z",
+    sync: "pending-sync",
+    counts: {
+      tool_requests: 12,
+      tools_denied: 0,
+      retrieval: 6,
+      deferred: 0,
+      rejected: 0,
+      failures: 1,
+      redactions: 0,
+    },
+    authority: { kind: "", ref: "" },
+    // A run the catalog cannot attribute: the receipt exists, the origin
+    // instance's registration does not, and the strip says so.
+    host: "",
+    host_id: "",
+    host_attributed: false,
+  },
+];
+
 const analysisState: AnalysisState = {
   configured: true,
   worker: {
@@ -514,55 +577,7 @@ const analysisState: AnalysisState = {
       "this deployment yet: Code has not implemented its half of the worker protocol, so " +
       "there is no analysis worker to launch.",
   },
-  runs: empty ? [] : [
-    {
-      receipt_id: "rcp_01synthetic0001",
-      run_id: "run_discovery-07",
-      preparation_id: "prep_corpus-2026-08",
-      revision: 1,
-      recorded_at: "2026-08-28T22:14:00Z",
-      sync: "committed",
-      counts: {
-        tool_requests: 41,
-        tools_denied: 3,
-        retrieval: 17,
-        deferred: 4,
-        rejected: 1,
-        failures: 0,
-        redactions: 2,
-      },
-      // One receipt carries an authority and one deliberately does not, so
-      // both renderings are previewable: a run the conductor started under a
-      // policy, and an older receipt written before receipts recorded why.
-      authority: { kind: "policy", ref: "nightly-frontier" },
-      // The host is the shared catalog's, so a machine in local mode leaves it
-      // absent rather than naming itself.
-      host: fleetConfigured ? "demo-laptop" : "",
-      host_attributed: fleetConfigured,
-    },
-    {
-      receipt_id: "rcp_01synthetic0002",
-      run_id: "run_challenge-08",
-      preparation_id: "prep_corpus-2026-08",
-      revision: 1,
-      recorded_at: "2026-08-29T07:40:00Z",
-      sync: "pending-sync",
-      counts: {
-        tool_requests: 12,
-        tools_denied: 0,
-        retrieval: 6,
-        deferred: 0,
-        rejected: 0,
-        failures: 1,
-        redactions: 0,
-      },
-      authority: { kind: "", ref: "" },
-      // A run the catalog cannot attribute: the receipt exists, the origin
-      // instance's registration does not, and the strip says so.
-      host: "",
-      host_attributed: false,
-    },
-  ],
+  runs: empty ? [] : receipts,
   cookbook: [
     { id: "outcome-integrity", version: 2, kind: "lens", title: "Outcome integrity and unresolved state", default: true, scope: ["session", "corpus"], stages: ["investigate", "challenge", "synthesize"], capabilities: ["corpus-search"] },
     { id: "security-privacy", version: 1, kind: "lens", title: "Security, privacy, and trust boundaries", default: true, scope: ["session", "corpus", "repository"], stages: ["investigate", "challenge"], capabilities: ["corpus-search", "repo-read"] },
@@ -2545,8 +2560,6 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
     return json({
       configured: fleetConfigured,
       items: slice,
-      // The vocabulary is not narrowed by the host filter, so the chips beside
-      // a narrowed list still offer every machine.
       hosts: fleetHosts,
       pending: slice.filter((record) => record.sync !== "committed").length,
     });
@@ -2586,7 +2599,7 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
       url.searchParams.get("fleet") !== "0"
         ? remoteMerged("hypothesis")
             .filter((record) => !status || remoteStatus(record) === status)
-            .map((record): HypothesisSummary => ({
+            .map((record): HypothesisSummary & HostAttribution => ({
               id: record.record_id,
               run_id: record.run_id,
               created_at: record.committed_at ?? "",
@@ -2629,7 +2642,7 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
     const { slice, total } = paged(url, all);
     const fleetRows =
       url.searchParams.get("fleet") !== "0"
-        ? remoteMerged("finding").map((record): FindingSummary => ({
+        ? remoteMerged("finding").map((record): FindingSummary & HostAttribution => ({
             id: record.record_id,
             run_id: record.run_id,
             created_at: record.committed_at ?? "",
@@ -2749,7 +2762,7 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
         ? fleetRecords
             .filter((record) => !record.local_host && record.sync === "committed"
               && (record.kind === "proposal" || record.kind === "disposition"))
-            .map((record): QueueItem => ({
+            .map((record): QueueItem & HostAttribution => ({
               subject: { type: record.kind as QueueItem["subject"]["type"], id: record.record_id },
               enrolled_at: "",
               status: "" as ReviewStatus,

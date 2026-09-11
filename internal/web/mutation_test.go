@@ -357,15 +357,35 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			concrete: reflect.TypeOf((*reality.Store)(nil)),
 			permitted: []string{"AcceptPlan", "Aliases", "Answers", "Entity", "Facts", "Inbox",
 				"Plan", "Question", "QuestionHistory", "RecordAnswer", "Relationships"},
-			// The ledger's authoritative writes. §4.8 reaches them through
-			// a plan an operator accepted, never directly, so a browser
-			// request cannot assert, supersede, merge, import, or install
-			// anything.
+			// The ledger's authoritative writes. This surface reaches
+			// them only through a plan an operator accepted, so nothing
+			// a model proposed becomes reality by passing through a
+			// browser. The focus surface below reaches two of them
+			// deliberately, through a type that can only ever write the
+			// one predicate that carries operator intent — which is why
+			// they are still forbidden here: a reality *page* must not
+			// be able to assert a lifecycle, and this entry is what
+			// stops that from being re-added by widening the interface
+			// every reality read already holds.
 			forbidden: []string{"AssertFact", "SupersedeFact", "DisputeFacts", "ResolveDispute",
 				"MergeEntities", "SplitEntity", "UndoResolution", "ImportFacts", "PutFocusRules",
 				"RegisterTrustedSource", "CreateEntity", "AddAlias", "AddRelationship",
 				"RetractAlias", "RetractRelationship", "Ask", "RecordPlan", "RejectPlan",
 				"SetQuestionState", "BeginInterpretation", "ExpireStale", "CaptureSnapshot", "Close"},
+		},
+		{
+			name:     "focus policy",
+			surface:  reflect.TypeOf((*FocusPolicyService)(nil)).Elem(),
+			concrete: reflect.TypeOf((*reality.FocusPolicy)(nil)),
+			permitted: []string{"Aliases", "Assert", "Decide", "Entity", "Fact", "History",
+				"InForce", "Install", "Resolve", "Rules", "Shipped", "Subjects", "Supersede"},
+			// There is no forbidden list, and its absence is the property
+			// rather than an omission. Every other row here names store
+			// methods the surface must not reach; *reality.FocusPolicy has
+			// no such method to name, because its entire method set is the
+			// thirteen above. TestFocusSurfaceCarriesNoOtherAuthority
+			// asserts exactly that, which is the check this table cannot
+			// express: the concrete type is the boundary.
 		},
 		{
 			name:      "complaints",

@@ -485,6 +485,37 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleRealityPlanAccept(w, r)
+	// §4.8's focus policy: what analysis is allowed to spend on a subject.
+	// The read answers cleanly on a deployment that has installed no policy
+	// version, because that is a state rather than a fault; the three POSTs
+	// are the operator's own attributed statements of intent, and
+	// internal/web/focus.go states why they are the one write on this
+	// surface that is not mediated by a recorded plan.
+	case "/api/reality/focus":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFocus(w, r)
+	case "/api/reality/focus/subject":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFocusSubject(w, r)
+	case "/api/reality/focus/install":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleFocusInstall(w, r)
+	case "/api/reality/focus/assert":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleFocusAssert(w, r)
+	case "/api/reality/focus/supersede":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleFocusSupersede(w, r)
 	// Issue #87's record actions. The three POSTs are the browser's first
 	// writes against the frontier's own state, and each carries the chain
 	// head the page was rendered against; internal/web/records.go states

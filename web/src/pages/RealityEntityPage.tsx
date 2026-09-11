@@ -76,6 +76,17 @@ function RealityEntityPage() {
           <h1 className="untrusted-inline entity-name">{entity.display_name}</h1>
           <p className="subtitle mono">{entity.id}</p>
         </div>
+        {/* The way to "stop spending on this" from the record it is about.
+            The subject travels as the entity id rather than as its display
+            name: an id is an identifier this build minted, while a name is
+            operator vocabulary that may mean two things, and the focus page
+            has to be able to report that ambiguity rather than be handed a
+            guess. */}
+        <div className="heading-meta">
+          <Link className="secondary-button" to={`/reality/focus?subject=${encodeURIComponent(entity.id)}`}>
+            Analysis policy
+          </Link>
+        </div>
       </div>
 
       {merged && (

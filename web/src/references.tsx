@@ -13,7 +13,7 @@ import { formatTime } from "./format";
 // builds none from anything a record says. A namespace with no page here renders
 // as identified text with the reason, which is exactly what the lineage panel has
 // always done for a kind it cannot open — and what the server does for a record
-// this host does not hold.
+// this instance does not hold.
 //
 // A note is somebody's prose. It is rendered as attributed untrusted text, on the
 // same terms as a model claim or a reviewer's guidance, and it is never a title,
@@ -21,7 +21,7 @@ import { formatTime } from "./format";
 //
 // An absent graph is absent, not broken. A build with no reference store answers
 // `available: false`, and this section then renders nothing at all: a record page
-// on a machine that records no citations is a page with one fewer panel, not a
+// in a build that records no citations is a page with one fewer panel, not a
 // page with an error on it.
 
 // EDGE_TONES gives each edge kind its own chip colour, matching the palette the

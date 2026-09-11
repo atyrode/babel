@@ -184,6 +184,12 @@ func classifyService(err error) (int, string) {
 		return http.StatusConflict, "this plan cannot be applied without a frontier to retain its candidate"
 	case errors.Is(err, reality.ErrConflict), errors.Is(err, reality.ErrNotReversible):
 		return http.StatusConflict, "this record has already been superseded or reversed"
+	case errors.Is(err, reality.ErrAmbiguousAlias):
+		// A name meaning two entities is §4.8's own resolve-entity
+		// question, so it is a conflict rather than a bad request: the
+		// word the operator used is fine, and the ledger holds two
+		// answers to it.
+		return http.StatusConflict, "that name resolves to more than one entity in this ledger"
 	case errors.Is(err, review.ErrInvalidValue),
 		errors.Is(err, reality.ErrInvalidValue),
 		errors.Is(err, complaint.ErrInvalidValue),
