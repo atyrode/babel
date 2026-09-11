@@ -18,6 +18,7 @@ import (
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
+	"github.com/atyrode/babel/internal/reality"
 	runstore "github.com/atyrode/babel/internal/run"
 )
 
@@ -103,9 +104,15 @@ type prepareResult struct {
 	FrontierRecords int          `json:"frontier_records"`
 	SalientTerms    []string     `json:"salient_terms,omitempty"`
 	Related         []relatedRow `json:"related,omitempty"`
-	Serendipitous   bool         `json:"serendipitous,omitempty"`
-	Database        string       `json:"database"`
-	Index           string       `json:"index"`
+	// Withheld is every session the recorded focus policy kept out of this
+	// scope, with the reason. It is reported rather than left to silence
+	// for the same reason an unmatched selector is refused: a preparation
+	// records what an operator meant to explore, and a scope that quietly
+	// shrank would make the next run's coverage a mystery.
+	Withheld      []withheldRow `json:"withheld,omitempty"`
+	Serendipitous bool          `json:"serendipitous,omitempty"`
+	Database      string        `json:"database"`
+	Index         string        `json:"index"`
 }
 
 // prepare implements `babel prepare`.
@@ -172,6 +179,7 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 		FrontierRecords: scoped.frontierRecords,
 		SalientTerms:    sanitizeAll(scoped.terms),
 		Related:         scoped.related,
+		Withheld:        scoped.withheld,
 		Serendipitous:   scoped.prep.Serendipitous,
 		Database:        Sanitize(runs.Path()),
 		Index:           Sanitize(scoped.index),
@@ -189,6 +197,13 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 	fmt.Fprintf(a.stdout, "\npreparation %s over %d %s\n", res.PreparationID,
 		len(scoped.rows), plural(len(scoped.rows), "session", "sessions"))
 	fmt.Fprintf(a.stdout, "explore it with: babel explore --preparation %s\n", res.PreparationID)
+	if len(res.Withheld) > 0 {
+		fmt.Fprintf(a.stdout, "\n%d %s withheld by recorded focus, and still on disk:\n",
+			len(res.Withheld), plural(len(res.Withheld), "session", "sessions"))
+		for _, row := range res.Withheld {
+			fmt.Fprintf(a.stdout, "  %s  %s\n", row.Selector, row.Reason)
+		}
+	}
 	if len(res.Related) > 0 {
 		framing := "to refine, revive, or amend rather than duplicate"
 		if res.Serendipitous {
@@ -205,15 +220,29 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 
 // scopedCorpus is what fixing one exploration's corpus scope produced: the
 // immutable preparation record, the per-session rows a caller reports, how many
-// events reached the retrieval index, and where that index lives.
+// events reached the retrieval index, where that index lives, and the sessions
+// the recorded expenditure policy kept out of the scope.
 type scopedCorpus struct {
 	prep            runstore.Preparation
 	rows            []preparedRow
+	withheld        []withheldRow
 	indexed         int
 	frontierRecords int
 	terms           []string
 	related         []relatedRow
 	index           string
+}
+
+// withheldRow is one session the recorded focus policy kept out of a scope.
+//
+// The selector is reported and the subject is not: a selector is a harness
+// and a source identity, which §9's plaintext allowlist admits, while the
+// alias value that resolved it — a workspace path, a repository remote — is
+// exactly what §9 keeps out of anything printed. The reason names the entity,
+// the rule, and the fact, which is what "why was this skipped" needs.
+type withheldRow struct {
+	Selector string `json:"selector"`
+	Reason   string `json:"reason"`
 }
 
 // fixScope digests and indexes the chosen sessions, derives the preparation
@@ -229,6 +258,20 @@ type scopedCorpus struct {
 // (§8), so a repeated scope is the same record rather than a second one, and a
 // caller that fixed a scope without recording it would hold an identity nothing
 // could later resolve.
+//
+// Corpus eligibility is decided here too, and this is the only place it can
+// be: a session's subject is its workspace and its repository remote, and an
+// adapter only reports those once Describe has read the transcript. §4.8's
+// allowance says whether the subject's sessions may be drawn into a new
+// scope at all — `learn-only` says yes, which is the entire content of the
+// value, because a project nobody maintains is still material for
+// cross-cutting lessons. What it withholds is subject-specific work, and
+// that is withheld where such work is chosen rather than here.
+//
+// A withheld session is left on disk, in the catalog, and in whatever the
+// index already holds. Nothing is deleted and nothing is rewritten; the
+// scope is simply smaller, and superseding the fact makes the next
+// preparation whole again.
 func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 	chosen []localSession, host string, serendipitous bool) (scopedCorpus, error) {
 	d, err := babelDirs()
@@ -240,6 +283,19 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 		return scopedCorpus{}, err
 	}
 	defer idx.Close()
+
+	// The recorded expenditure policy is read once for the whole pass. A
+	// ledger that will not open has stated nothing, and every session stays
+	// eligible — the behaviour this command had before §4.8's policy was
+	// reachable at all.
+	ledger, ledgerErr := openReality()
+	if ledgerErr != nil {
+		a.diagf("prepare: %v; no recorded focus policy will be consulted\n",
+			Sanitize(ledgerErr.Error()))
+	} else {
+		defer ledger.Close()
+	}
+	focus := recordedFocus(ledger)
 
 	version := readBuildIdentity().Version
 	out := scopedCorpus{
@@ -261,6 +317,21 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 		desc, err := describe(ctx, s)
 		if err != nil {
 			return scopedCorpus{}, err
+		}
+		admission, err := focus.Admit(ctx, reality.AdmitRequest{
+			Names: sessionSubjects(desc),
+			Work:  reality.WorkCorpusReading,
+		})
+		if err != nil {
+			return scopedCorpus{}, fmt.Errorf("consult focus for %s: %w", s.key(), err)
+		}
+		if !admission.Permitted {
+			out.withheld = append(out.withheld, withheldRow{
+				Selector: Sanitize(s.key()),
+				Reason:   Sanitize(admission.Reason()),
+			})
+			a.diagf("withholding %s: %s\n", Sanitize(s.key()), Sanitize(admission.Reason()))
+			continue
 		}
 		stream := event.Stream{
 			Harness:       s.src.Harness,
@@ -310,6 +381,17 @@ func (a *app) fixScope(ctx context.Context, runs *runstore.Store,
 			Records:       result.Records,
 			Events:        result.Events,
 		})
+	}
+	// An entirely withheld scope is a refusal with a reason rather than the
+	// "a preparation selects nothing" NewPreparation would otherwise raise:
+	// the operator asked for a corpus and the policy they themselves
+	// recorded emptied it, and saying so names the one action that undoes
+	// it.
+	if len(selection) == 0 && len(out.withheld) > 0 {
+		return scopedCorpus{}, fmt.Errorf(
+			"the recorded focus policy withholds every session in this scope (%d %s); "+
+				"supersede the analysis-policy fact to bring them back",
+			len(out.withheld), plural(len(out.withheld), "session", "sessions"))
 	}
 
 	// Every scoped session is registered in the local catalog, because the
@@ -417,6 +499,30 @@ func selectSessions(c *cmd, sessions []localSession, selectors []string) ([]loca
 		chosen = append(chosen, s)
 	}
 	return chosen, nil
+}
+
+// sessionSubjects reports the names a session is known by, for the ledger to
+// resolve to a subject.
+//
+// It is the workspace the harness recorded and the repository remote it
+// observed, and nothing else. Both are things the adapter read out of the
+// transcript rather than inferred — no adapter shells out to git — so a
+// session that named neither names no subject and is withheld by nothing,
+// which is the correct answer: §4.8's aliases are the operator's own record
+// of which spellings mean which entity, and a scope that guessed from a
+// title would drop sessions on a resemblance.
+func sessionSubjects(desc *adapter.Description) []string {
+	if desc == nil {
+		return nil
+	}
+	names := make([]string, 0, 2)
+	if desc.Meta.Workspace != nil && *desc.Meta.Workspace != "" {
+		names = append(names, *desc.Meta.Workspace)
+	}
+	if desc.Meta.Repo != nil && desc.Meta.Repo.Remote != "" {
+		names = append(names, desc.Meta.Repo.Remote)
+	}
+	return names
 }
 
 // relatedOutputs reconciles the frontier surface of the retrieval index and

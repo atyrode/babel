@@ -11,6 +11,27 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Recorded focus reaches the loop.** The ledger has been able to hold "stop
+  spending on this project" since §4.8's focus rules were implemented, and
+  nothing read them: the conductor picked candidates straight off the
+  frontier and `babel prepare` scoped every session it found, so an operator
+  could record the intent and watch it have no effect. Selection now
+  evaluates the allowance for each candidate's subjects, and preparation for
+  each session's. The four values stay four: `excluded` permits nothing,
+  `no-code-investigation` permits only synthesis over material already held,
+  `learn-only` keeps the subject's sessions in the corpus so it can still be
+  mined for cross-cutting lessons while withholding work about the subject
+  itself, and `full` is unchanged. `babel reality focus install` installs the
+  rule set this build ships, without which nothing is withheld because
+  nothing has been stated.
+- **A skipped candidate says why.** Withholding a consolidation cycle writes
+  the immutable context snapshot §4.8 requires a deterministic deferral to
+  leave behind — the policy version, the resolved entity, the rule and the
+  facts it matched — and `reality.Snapshots` reads them back by candidate.
+  Nothing is deleted and nothing is rewritten: the candidate keeps its place
+  on the frontier and its wording, `conductor status` reports how much of the
+  backlog focus is holding, and superseding the fact makes it drawable again
+  on the next cycle with nothing to restore.
 - **Findings and proposals have a front door.** Both are the first entries in
   the navigation, proposals being an entirely new listing — before this,
   Babel's committed output was reachable only by guessing a URL. The dashboard

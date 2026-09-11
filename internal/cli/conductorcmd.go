@@ -20,6 +20,7 @@ import (
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/presence"
+	"github.com/atyrode/babel/internal/reality"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
 )
@@ -234,13 +235,23 @@ func (s conductorSettings) duties() conductor.Duties {
 // it when the operator asked for one. The rung is built only when the share is
 // set, because building it opens nothing but naming it would claim the loop
 // consolidates when it does not.
-func (s conductorSettings) consolidation(oneIn int, state *analysisState) conductor.Consolidation {
+func (s conductorSettings) consolidation(oneIn int, state *analysisState, focus conductor.Focus) conductor.Consolidation {
 	c := conductor.Consolidation{OneIn: oneIn}
 	if oneIn > 0 {
 		c.Rung = conductor.NewConsolidationRung(state.frontier,
-			conductor.NewRecordOrigins(state.frontier, state.runs), s.ConsolidateRoots)
+			conductor.NewRecordOrigins(state.frontier, state.runs), focus, s.ConsolidateRoots)
 	}
 	return c
+}
+
+// conductorFocus adapts the recorded expenditure policy to the conductor's
+// seam, keeping the typed-nil hazard recordedFocus documents in one place.
+func conductorFocus(store *reality.Store) conductor.Focus {
+	attention := recordedFocus(store)
+	if attention == nil {
+		return nil
+	}
+	return attention
 }
 
 func conductorPath() (string, error) {
@@ -678,6 +689,21 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// The recorded expenditure policy binds the loop's own candidate
+	// selection (§4.8). It is a separate handle on the durable file for
+	// openReality's reason — the analysis state opens the frontier and the
+	// receipts, and this opens the ledger — and a ledger that will not open
+	// degrades the loop to the behaviour it had before the policy could be
+	// read, rather than stopping it: a machine that cannot reach its policy
+	// has not been told to withhold anything.
+	ledger, ledgerErr := openReality()
+	if ledgerErr != nil {
+		a.diagf("conductor: %v; no recorded focus policy will be consulted\n",
+			Sanitize(ledgerErr.Error()))
+	} else {
+		defer ledger.Close()
+	}
+
 	// One store for the whole loop, shared by the conductor's own cycle rows
 	// and by every run inside them (#118). Opening it per cycle would dial
 	// PostgreSQL once a cycle for a table whose writes are best-effort, and
@@ -712,7 +738,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			conductor.NewSerendipityRung(&fleetCorpus{app: a, adapters: adapters(), roots: sf.rootList()},
 				embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 		),
-		Consolidation: settings.consolidation(consolidateOneIn, state),
+		Consolidation: settings.consolidation(consolidateOneIn, state, conductorFocus(ledger)),
 		Publisher:     publisher,
 		Runner: &conductorRunner{
 			app:        a,
@@ -1338,6 +1364,18 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 		return err
 	}
 	defer state.Close()
+	// The consolidation depth reported below is the drawable backlog, so
+	// this view has to read the same policy the loop draws under. A ledger
+	// that will not open reports the unfiltered backlog, which is what the
+	// loop would then draw against too — the two stay in agreement either
+	// way, which is the property that matters here.
+	statusLedger, statusLedgerErr := openReality()
+	if statusLedgerErr != nil {
+		a.diagf("conductor: %v; the consolidation depth ignores recorded focus\n",
+			Sanitize(statusLedgerErr.Error()))
+	} else {
+		defer statusLedger.Close()
+	}
 
 	now := time.Now()
 	res := conductorStatusResult{
@@ -1383,7 +1421,8 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 			embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 	)
 	ladder = append(ladder, conductor.NewConsolidationRung(state.frontier,
-		conductor.NewRecordOrigins(state.frontier, state.runs), settings.ConsolidateRoots))
+		conductor.NewRecordOrigins(state.frontier, state.runs),
+		conductorFocus(statusLedger), settings.ConsolidateRoots))
 	rungs, err := conductor.Describe(ctx, ladder)
 	if err != nil {
 		return err

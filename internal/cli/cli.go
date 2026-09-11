@@ -137,6 +137,7 @@ Commands:
   reality answer QUESTION_ID  record an attributed answer
   reality accept PLAN_ID      accept one interpreter plan
   reality import --source ID  apply one trusted source's versioned fact batch
+  reality focus               show or install the expenditure policy
   cookbook list               list the analysis recipes
   cookbook check              check recipe versions against their bodies
   analysis profile configure  hand this terminal to Code's configuration

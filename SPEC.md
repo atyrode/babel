@@ -599,6 +599,8 @@ babel reality entity create --kind KIND --name NAME [--note TEXT] [--alias KIND=
 babel reality source register --from-json FILE|- [--json]
 babel reality refresh [--as-of TIME] [--json]
 babel reality import --source SOURCE_ID --from-json FILE|-
+babel reality focus [VERSION] [--json]
+babel reality focus install [--json]
 babel reality questions list [--state STATE] [--json]
 babel reality questions answer QUESTION_ID --from-file FILE|-
 babel reality plans decide PLAN_ID --accept|--reject

@@ -61,7 +61,7 @@ func TestConsolidationSeedsRootsFromOneCorpusOfUnexploredCandidates(t *testing.T
 		Ladder: []conductor.Rung{&stubRung{name: conductor.RungInvitation, work: &conductor.Assignment{Note: "an operator asked"}}},
 		Consolidation: conductor.Consolidation{
 			OneIn: 1,
-			Rung:  conductor.NewConsolidationRung(candidates, origins, 5),
+			Rung:  conductor.NewConsolidationRung(candidates, origins, nil, 5),
 		},
 		Runner: runner, Ledger: fakeLedger{}, Journal: testJournal(t), Now: (&clock{now: day}).Now,
 	})
@@ -106,7 +106,7 @@ func TestConsolidationTakesItsShareAndNoMore(t *testing.T) {
 		Ladder:   []conductor.Rung{&stubRung{name: conductor.RungInvitation, work: &conductor.Assignment{Note: "an operator asked"}}},
 		Consolidation: conductor.Consolidation{
 			OneIn: 2,
-			Rung:  conductor.NewConsolidationRung(candidates, fakeOrigins{}, 1),
+			Rung:  conductor.NewConsolidationRung(candidates, fakeOrigins{}, nil, 1),
 		},
 		Runner: runner, Ledger: fakeLedger{}, Journal: testJournal(t), Now: (&clock{now: day}).Now,
 	})
@@ -139,7 +139,7 @@ func TestConsolidationIsOffUntilTheOperatorSetsAShare(t *testing.T) {
 		Floor:    conductor.Floor{OneIn: 100},
 		Ladder:   []conductor.Rung{&stubRung{name: conductor.RungInvitation, work: &conductor.Assignment{Note: "an operator asked"}}},
 		Consolidation: conductor.Consolidation{
-			Rung: conductor.NewConsolidationRung(candidates, fakeOrigins{}, 0),
+			Rung: conductor.NewConsolidationRung(candidates, fakeOrigins{}, nil, 0),
 		},
 		Runner: runner, Ledger: fakeLedger{}, Journal: testJournal(t), Now: (&clock{now: day}).Now,
 	})

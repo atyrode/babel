@@ -33,6 +33,8 @@ Commands:
   answer QUESTION_ID   record an attributed answer, retained verbatim
   accept PLAN_ID       accept one Answer Interpreter plan
   import --source ID   apply one trusted source's versioned fact batch
+  focus [VERSION]      show the installed expenditure policy
+  focus install        install the policy version this build ships
 
 The Reality Ledger holds what is true about the operator's world (SPEC.md
 §4.8). A raw answer is a durable input; an authoritative fact requires an
@@ -136,6 +138,39 @@ would arrive later at the batch instead of here at the authorization.
 Flags:
   --from-json FILE|-   the registration document, or "-" for stdin
   --json               emit the registration as JSON on stdout
+`
+
+const realityFocusUsage = `Usage: babel reality focus [VERSION] [--json]
+
+Shows the versioned focus rule set that maps ledger state to what analysis
+may spend on a subject (SPEC.md §4.8). With no version it shows the one this
+build's consumers evaluate against.
+
+The rules are what turns a recorded analysis-policy fact into a decision the
+conductor and "babel prepare" act on: excluded permits nothing, learn-only
+keeps the subject's sessions in the corpus while withholding work about the
+subject itself, and no-code-investigation permits only synthesis over
+material Babel already holds. No allowance ever deletes a record.
+
+Flags:
+  --json    emit the rule set as JSON on stdout
+`
+
+const realityFocusInstallUsage = `Usage: babel reality focus install [--json]
+
+Installs the focus rule set version this build ships, which maps the stated
+analysis-policy predicate — and nothing else — onto an expenditure decision.
+Lifecycle and ownership carry no such meaning in it: §4.8's own example of
+the failure mode is treating a dormant project as one analysis may not spend
+on, so an operator who wants that mapping installs a version that says so.
+
+Until a version is installed nothing is withheld, because no policy has been
+stated. A version is immutable once installed, so this refuses to replace
+one: deciding differently means storing a new version, which is what makes
+two decisions over one unchanged ledger comparable.
+
+Flags:
+  --json    emit the installed rule set as JSON on stdout
 `
 
 const realityRefreshUsage = `Usage: babel reality refresh [--as-of TIME] [--json]
@@ -480,6 +515,8 @@ func (a *app) reality(ctx context.Context, args []string) error {
 		return a.realityRefresh(ctx, args[1:])
 	case "import":
 		return a.realityImport(ctx, args[1:])
+	case "focus":
+		return a.realityFocus(ctx, args[1:])
 	default:
 		return &usageError{msg: fmt.Sprintf("unknown reality subcommand %q", args[0]), usage: realityUsage}
 	}
@@ -1014,6 +1051,138 @@ func (a *app) realitySourceRegister(ctx context.Context, args []string) error {
 		rows = append(rows, [2]string{"entities", strings.Join(res.EntityIDs, ", ")})
 	}
 	return writeDetail(a.stdout, rows)
+}
+
+// realityFocus routes `babel reality focus`.
+func (a *app) realityFocus(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] == "install" {
+		return a.realityFocusInstall(ctx, args[1:])
+	}
+	return a.realityFocusShow(ctx, args)
+}
+
+// realityFocusInstall installs the focus rule set version this build ships.
+//
+// Until something installs one, §4.8's mapping has no artifact and every
+// consultation answers "no policy is installed, so nothing is withheld" —
+// which is correct and also means an operator who recorded an analysis
+// policy against a subject would watch it have no effect. This is the act
+// that turns the predicate into an expenditure decision, and it is the
+// operator's own: the mapping from a stated policy to what analysis may
+// spend is exactly the thing §4.8 refuses to leave implied.
+//
+// A version is immutable once installed, so this refuses rather than
+// replaces. Deciding differently means a new version, which is what makes
+// two decisions over one unchanged ledger comparable.
+func (a *app) realityFocusInstall(ctx context.Context, args []string) error {
+	c := newCmd("reality focus install", realityFocusInstallUsage)
+	asJSON := c.fs.Bool("json", false, "emit the installed rule set as JSON")
+	if err := c.parse(a, args); err != nil {
+		return err
+	}
+	if err := c.noArgs(); err != nil {
+		return err
+	}
+	store, err := openReality()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	rules, err := store.PutFocusRules(ctx, reality.DefaultFocusRules())
+	if err != nil {
+		return fmt.Errorf("install focus rule set: %w", err)
+	}
+	return a.emitFocusRules(rules, *asJSON)
+}
+
+// realityFocusShow reads one installed policy version back.
+func (a *app) realityFocusShow(ctx context.Context, args []string) error {
+	c := newCmd("reality focus", realityFocusUsage)
+	asJSON := c.fs.Bool("json", false, "emit the rule set as JSON")
+	if err := c.parse(a, args); err != nil {
+		return err
+	}
+	version := reality.DefaultFocusRules().Version
+	switch rest := c.args(); len(rest) {
+	case 0:
+	case 1:
+		parsed, err := strconv.Atoi(rest[0])
+		if err != nil || parsed <= 0 {
+			return c.usagef("a focus rule set version is a positive integer, not %q", rest[0])
+		}
+		version = parsed
+	default:
+		return c.usagef("reality focus takes at most one version")
+	}
+	store, err := openReality()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	rules, err := store.FocusRules(ctx, version)
+	if errors.Is(err, reality.ErrUnknownRecord) {
+		return fmt.Errorf("focus rule set version %d is not installed; "+
+			"install the version this build ships with: babel reality focus install", version)
+	}
+	if err != nil {
+		return err
+	}
+	return a.emitFocusRules(rules, *asJSON)
+}
+
+func (a *app) emitFocusRules(rules reality.FocusRuleSet, asJSON bool) error {
+	res := focusRulesResult{
+		Version:     rules.Version,
+		Default:     Sanitize(string(rules.Default)),
+		Note:        Sanitize(rules.Note),
+		InstalledAt: formatTime(rules.CreatedAt),
+	}
+	for _, rule := range rules.Rules {
+		row := focusRuleRow{
+			Name:    Sanitize(rule.Name),
+			Allows:  Sanitize(string(rule.Then)),
+			Because: Sanitize(rule.Because),
+		}
+		for _, cond := range rule.When {
+			row.When = append(row.When,
+				Sanitize(string(cond.Predicate))+"="+Sanitize(cond.Equals))
+		}
+		res.Rules = append(res.Rules, row)
+	}
+	if asJSON {
+		return a.emitJSON(res)
+	}
+	rows := [][2]string{
+		{"version", strconv.Itoa(res.Version)},
+		{"default", res.Default},
+		{"installed", res.InstalledAt},
+	}
+	if res.Note != "" {
+		rows = append(rows, [2]string{"note", res.Note})
+	}
+	for _, rule := range res.Rules {
+		rows = append(rows, [2]string{"rule",
+			fmt.Sprintf("%s: %s -> %s", rule.Name, strings.Join(rule.When, " and "), rule.Allows)})
+	}
+	return writeDetail(a.stdout, rows)
+}
+
+// focusRulesResult is `babel reality focus --json`.
+type focusRulesResult struct {
+	Version     int            `json:"version"`
+	Default     string         `json:"default"`
+	Note        string         `json:"note,omitempty"`
+	InstalledAt string         `json:"installed_at"`
+	Rules       []focusRuleRow `json:"rules"`
+}
+
+type focusRuleRow struct {
+	Name    string   `json:"name"`
+	When    []string `json:"when,omitempty"`
+	Allows  string   `json:"allows"`
+	Because string   `json:"because"`
 }
 
 // realityRefresh runs the one Question producer that needs nobody.

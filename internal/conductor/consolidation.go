@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/run"
 )
 
@@ -57,39 +59,76 @@ type Candidates interface {
 type ConsolidationRung struct {
 	candidates Candidates
 	origins    Origins
+	focus      Focus
 	maxRoots   int
 }
 
-// NewConsolidationRung builds the rung over the unexplored frontier and the
-// resolver that says which sessions a candidate came out of. A non-positive
-// bound is DefaultConsolidationRoots.
-func NewConsolidationRung(candidates Candidates, origins Origins, maxRoots int) *ConsolidationRung {
+// NewConsolidationRung builds the rung over the unexplored frontier, the
+// resolver that says which sessions a candidate came out of, and the recorded
+// expenditure policy the draw is bound by. A non-positive bound is
+// DefaultConsolidationRoots, and a nil focus is a machine with no stated
+// policy, which withholds nothing.
+func NewConsolidationRung(candidates Candidates, origins Origins, focus Focus, maxRoots int) *ConsolidationRung {
 	if maxRoots <= 0 {
 		maxRoots = DefaultConsolidationRoots
 	}
-	return &ConsolidationRung{candidates: candidates, origins: origins, maxRoots: maxRoots}
+	return &ConsolidationRung{candidates: candidates, origins: origins, focus: focus, maxRoots: maxRoots}
 }
 
 // Name reports this rung's stable name.
 func (r *ConsolidationRung) Name() string { return RungConsolidation }
 
-// Depth reports how many candidates the frontier is still holding unexplored.
+// Depth reports how many candidates the frontier is still holding unexplored
+// and could still be drawn from.
 //
 // The number is the backlog rather than the number of cycles it would take,
 // because the backlog is the thing an operator is deciding about: a frontier of
 // two is a loop that is keeping up, and one of two thousand is the state this
 // rung exists for.
+//
+// It is the drawable backlog, and it has to be: a status view reporting five
+// waiting beside a loop that draws nothing would be the kind of quiet
+// disagreement this package is built to avoid. So the same policy Draw is
+// bound by is applied here, and the note carries the two numbers behind the
+// difference — how many candidates the recorded focus keeps a consolidation
+// cycle off, and how many of those are subjects nothing at all may be spent
+// on. The second is not the first: a subject at learn-only is one Babel may
+// still mine for cross-cutting lessons, and reporting it as dead would hide
+// the distinction the allowance exists to draw.
+//
+// Nothing is recorded here. A depth report spends nothing, so it has no
+// deferral to justify.
 func (r *ConsolidationRung) Depth(ctx context.Context) (Depth, error) {
 	open, err := r.candidates.Unexplored(ctx, 0)
 	if err != nil {
 		return Depth{}, fmt.Errorf("conductor: read the unexplored frontier: %w", err)
 	}
-	return Depth{
-		Waiting:     len(open),
-		Implemented: true,
-		Note: fmt.Sprintf("%d unexplored %s", len(open),
-			plural(len(open), "candidate", "candidates")),
-	}, nil
+	pass := newFocusPass(r.focus, time.Time{})
+	drawable, spendable := 0, 0
+	for _, candidate := range open {
+		anything, err := pass.permits(ctx, candidate, reality.WorkSynthesis)
+		if err != nil {
+			return Depth{}, err
+		}
+		if !anything.Permitted {
+			continue
+		}
+		spendable++
+		seeding, err := pass.permits(ctx, candidate, reality.WorkSubjectSpecific)
+		if err != nil {
+			return Depth{}, err
+		}
+		if seeding.Permitted {
+			drawable++
+		}
+	}
+	note := fmt.Sprintf("%d unexplored %s", len(open),
+		plural(len(open), "candidate", "candidates"))
+	if withheld := len(open) - drawable; withheld > 0 {
+		note += fmt.Sprintf(", %d withheld by recorded focus (%d excluded from analysis entirely)",
+			withheld, len(open)-spendable)
+	}
+	return Depth{Waiting: drawable, Implemented: true, Note: note}, nil
 }
 
 // Draw takes the frontier's head and seeds a cycle from the candidates around
@@ -105,6 +144,24 @@ func (r *ConsolidationRung) Depth(ctx context.Context) (Depth, error) {
 // Nothing is consumed. A candidate stays unexplored until a run explores it,
 // which is what makes an interrupted consolidation cycle resumable under its
 // own run identity rather than a piece of work that has to be found again.
+//
+// Focus is consulted before a candidate can lead or join a cycle, because a
+// consolidation cycle is subject-specific work: it seeds an ordinary
+// exploration rooted at the candidate, with the same recipes, which is
+// exactly the expenditure §4.8's deferral list is about. A candidate the
+// policy withholds is passed over and left where it is — §4.8 and §5.2 both
+// forbid removing it, so the frontier is byte-identical afterwards and the
+// refusal lives in an immutable context snapshot beside the candidate it was
+// taken about. Superseding the fact, or installing a rule set version that
+// decides differently, makes the same candidate drawable on the next cycle
+// with nothing to undo.
+//
+// The window is walked once and the walk stops as soon as the roots are full,
+// so a draw that fills immediately records no refusals it never reached. A
+// draw that reaches the end of the window recorded one per candidate it
+// actually considered and could not use, which is the number worth having:
+// it is the cycle that found nothing to consolidate, and the snapshots are
+// the answer to why.
 func (r *ConsolidationRung) Draw(ctx context.Context, d DrawRequest) (Assignment, error) {
 	open, err := r.candidates.Unexplored(ctx, consolidationWindow)
 	if err != nil {
@@ -114,33 +171,56 @@ func (r *ConsolidationRung) Draw(ctx context.Context, d DrawRequest) (Assignment
 		return Assignment{}, ErrNoWork
 	}
 
-	lead := open[0]
-	scope, err := r.corpusOf(ctx, lead)
-	if err != nil {
-		return Assignment{}, err
-	}
-	roots := []string{lead.ID}
-	for _, candidate := range open[1:] {
+	pass := newFocusPass(r.focus, d.At)
+	var (
+		lead     frontier.Hypothesis
+		scope    []string
+		roots    []string
+		withheld int
+	)
+	for _, candidate := range open {
 		if len(roots) >= r.maxRoots {
 			break
 		}
-		other, err := r.corpusOf(ctx, candidate)
+		admission, err := pass.spend(ctx, candidate, reality.WorkSubjectSpecific,
+			"a consolidation cycle would have been seeded from this candidate")
+		if err != nil {
+			return Assignment{}, fmt.Errorf("conductor: consult focus for %s: %w", candidate.ID, err)
+		}
+		if !admission.Permitted {
+			withheld++
+			continue
+		}
+		corpus, err := r.corpusOf(ctx, candidate)
 		if err != nil {
 			return Assignment{}, err
 		}
-		if !slices.Equal(other, scope) {
+		if len(roots) == 0 {
+			lead, scope = candidate, corpus
+			roots = append(roots, candidate.ID)
+			continue
+		}
+		if !slices.Equal(corpus, scope) {
 			continue
 		}
 		roots = append(roots, candidate.ID)
 	}
+	if len(roots) == 0 {
+		return Assignment{}, ErrNoWork
+	}
 
+	note := fmt.Sprintf("consolidating %d unexplored %s over %s",
+		len(roots), plural(len(roots), "candidate", "candidates"), corpusPhrase(scope))
+	if withheld > 0 {
+		note += fmt.Sprintf("; %d %s withheld by recorded focus",
+			withheld, plural(withheld, "candidate", "candidates"))
+	}
 	return Assignment{
 		Rung:      RungConsolidation,
 		Authority: run.Authority{Kind: run.AuthorityPolicy, Ref: consolidationPrefix + lead.ID},
 		Sessions:  scope,
 		Roots:     roots,
-		Note: fmt.Sprintf("consolidating %d unexplored %s over %s",
-			len(roots), plural(len(roots), "candidate", "candidates"), corpusPhrase(scope)),
+		Note:      note,
 	}, nil
 }
 
