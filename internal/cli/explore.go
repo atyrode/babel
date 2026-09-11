@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/adapter"
+	"github.com/atyrode/babel/internal/adapter/babelself"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/explore"
@@ -401,6 +402,12 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 		Presence:  p.presence,
 		Questions: questionLedger(realityStore),
 		Inputs:    inputs,
+		// Babel's own conversations, archived as sessions of the "babel"
+		// harness under the root babelself.New() discovers and `archive
+		// push` captures. The redactor is the facility's, not the writer's:
+		// a served corpus excerpt is reduced to its locators before a byte
+		// of it is written (SPEC.md §9).
+		Transcript: a.analysisTranscripts(p),
 	}
 	if err := grantResearch(&cfg, p.research); err != nil {
 		return exploreResult{}, nil, err
@@ -444,6 +451,55 @@ func (a *app) runExploration(ctx context.Context, state *analysisState,
 	}
 	enrolled := a.enrol(ctx, state.review, outcome)
 	return exploreOutcome(p.prep, p.profile, p.recipes, outcome, enrolled), outcome, runErr
+}
+
+// analysisTranscripts opens the session log of each supervised job of one
+// exploration, or nil when this machine can name nowhere to put them.
+//
+// A machine with no resolvable data directory explores exactly as it did
+// before and archives no conversation: internal/explore documents a nil
+// factory as the feature quietly absent, and refusing an operator's analysis
+// because neither XDG_DATA_HOME nor a home directory resolves would trade
+// the run for the record of it. A root that cannot be created or a log that
+// cannot be opened is a different matter and fails the stage that hit it,
+// where internal/explore records it against the run.
+//
+// The store is built once for the whole exploration because its facts are
+// fixed for the whole exploration: one profile applies to every recipe in a
+// run (SPEC.md §2.6), and the selected recipes and the workspace do not move
+// between stages.
+func (a *app) analysisTranscripts(p explorePlan) func(runID, job string) (explore.TranscriptWriter, error) {
+	root, ok := babelself.Root()
+	if !ok {
+		a.diagf("transcript: no data directory resolves, so this run's conversation is not archived\n")
+		return nil
+	}
+	// The workspace is recorded for the same reason every adapter records
+	// one: it says where the work happened. An unreadable working directory
+	// leaves it absent rather than guessed, which Describe reports as an
+	// explicit completeness reason.
+	workspace, err := os.Getwd()
+	if err != nil {
+		workspace = ""
+	}
+	store, err := babelself.NewStore(babelself.StoreConfig{
+		Root:      root,
+		Redact:    explore.RedactServedResult,
+		Workspace: workspace,
+		Profile:   p.profile.String(),
+		Recipes:   p.recipes.IDs(),
+	})
+	if err != nil {
+		a.diagf("transcript: %s, so this run's conversation is not archived\n", Sanitize(err.Error()))
+		return nil
+	}
+	return func(runID, job string) (explore.TranscriptWriter, error) {
+		log, err := store.Open(runID, job)
+		if err != nil {
+			return nil, err
+		}
+		return log, nil
+	}
 }
 
 // grantResearch turns the operator's --public-research URLs into the run's

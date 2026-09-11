@@ -20,6 +20,7 @@ import (
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/presence"
+	"github.com/atyrode/babel/internal/reality"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
 )
@@ -65,6 +66,8 @@ Flags:
   --no-babel-improves-babel   withdraw them
   --babel-tunes-itself        schedule the personal tuning duty
   --no-babel-tunes-itself     withdraw it
+  --babel-triages-the-queue      advise on proposals waiting for your ruling
+  --no-babel-triages-the-queue   withdraw it
   --json               emit the stored configuration as JSON
 
 A consolidation cycle draws candidates the frontier is still holding
@@ -187,14 +190,16 @@ type conductorSettings struct {
 	// on upgrade would spend against a ceiling set for something else.
 	ConsolidateOneIn int `json:"consolidate_one_in,omitempty"`
 	ConsolidateRoots int `json:"consolidate_roots,omitempty"`
-	// BabelImprovesBabel and BabelTunesItself are #88's two self-improvement
-	// dimensions. Both are absent from the document until the operator turns
-	// one on, which is the same statement as off: a duty nobody authorized is
-	// never scheduled, and a settings file that recorded `false` for it would
-	// look like a decision rather than the default.
-	BabelImprovesBabel bool   `json:"babel_improves_babel,omitempty"`
-	BabelTunesItself   bool   `json:"babel_tunes_itself,omitempty"`
-	ConfiguredAt       string `json:"configured_at,omitempty"`
+	// BabelImprovesBabel, BabelTunesItself and BabelTriagesTheQueue are the
+	// standing-duty authorizations. Each is absent from the document until
+	// the operator turns it on, which is the same statement as off: a duty
+	// nobody authorized is never scheduled, and a settings file that
+	// recorded `false` for one would look like a decision rather than the
+	// default.
+	BabelImprovesBabel   bool   `json:"babel_improves_babel,omitempty"`
+	BabelTunesItself     bool   `json:"babel_tunes_itself,omitempty"`
+	BabelTriagesTheQueue bool   `json:"babel_triages_the_queue,omitempty"`
+	ConfiguredAt         string `json:"configured_at,omitempty"`
 }
 
 // ceilingRecord is the operator's stated limits on autonomy.
@@ -225,8 +230,9 @@ func (s conductorSettings) interval() time.Duration {
 // duties is the standing-duty authorization the duty rung reads.
 func (s conductorSettings) duties() conductor.Duties {
 	return conductor.Duties{
-		ImprovesBabel: s.BabelImprovesBabel,
-		TunesItself:   s.BabelTunesItself,
+		ImprovesBabel:   s.BabelImprovesBabel,
+		TunesItself:     s.BabelTunesItself,
+		TriagesTheQueue: s.BabelTriagesTheQueue,
 	}
 }
 
@@ -234,13 +240,23 @@ func (s conductorSettings) duties() conductor.Duties {
 // it when the operator asked for one. The rung is built only when the share is
 // set, because building it opens nothing but naming it would claim the loop
 // consolidates when it does not.
-func (s conductorSettings) consolidation(oneIn int, state *analysisState) conductor.Consolidation {
+func (s conductorSettings) consolidation(oneIn int, state *analysisState, focus conductor.Focus) conductor.Consolidation {
 	c := conductor.Consolidation{OneIn: oneIn}
 	if oneIn > 0 {
 		c.Rung = conductor.NewConsolidationRung(state.frontier,
-			conductor.NewRecordOrigins(state.frontier, state.runs), s.ConsolidateRoots)
+			conductor.NewRecordOrigins(state.frontier, state.runs), focus, s.ConsolidateRoots)
 	}
 	return c
+}
+
+// conductorFocus adapts the recorded expenditure policy to the conductor's
+// seam, keeping the typed-nil hazard recordedFocus documents in one place.
+func conductorFocus(store *reality.Store) conductor.Focus {
+	attention := recordedFocus(store)
+	if attention == nil {
+		return nil
+	}
+	return attention
 }
 
 func conductorPath() (string, error) {
@@ -329,18 +345,19 @@ func (a *app) conductorCmd(ctx context.Context, args []string) error {
 // conductorConfigResult is the machine-readable configuration document, shared
 // by configure and status so a script sees one shape whichever produced it.
 type conductorConfigResult struct {
-	Currency           string  `json:"currency"`
-	PerCycle           float64 `json:"per_cycle"`
-	PerDay             float64 `json:"per_day"`
-	Floor              int     `json:"serendipity_floor"`
-	IntervalSeconds    int     `json:"interval_seconds"`
-	SliceSessions      int     `json:"slice_sessions"`
-	ConsolidateOneIn   int     `json:"consolidate_one_in"`
-	ConsolidateRoots   int     `json:"consolidate_roots"`
-	BabelImprovesBabel bool    `json:"babel_improves_babel"`
-	BabelTunesItself   bool    `json:"babel_tunes_itself"`
-	ConfiguredAt       string  `json:"configured_at,omitempty"`
-	Path               string  `json:"path"`
+	Currency             string  `json:"currency"`
+	PerCycle             float64 `json:"per_cycle"`
+	PerDay               float64 `json:"per_day"`
+	Floor                int     `json:"serendipity_floor"`
+	IntervalSeconds      int     `json:"interval_seconds"`
+	SliceSessions        int     `json:"slice_sessions"`
+	ConsolidateOneIn     int     `json:"consolidate_one_in"`
+	ConsolidateRoots     int     `json:"consolidate_roots"`
+	BabelImprovesBabel   bool    `json:"babel_improves_babel"`
+	BabelTunesItself     bool    `json:"babel_tunes_itself"`
+	BabelTriagesTheQueue bool    `json:"babel_triages_the_queue"`
+	ConfiguredAt         string  `json:"configured_at,omitempty"`
+	Path                 string  `json:"path"`
 }
 
 // conductorConfigure implements `babel conductor configure`.
@@ -380,6 +397,10 @@ func (a *app) conductorConfigure(args []string) error {
 		"authorize the personal tuning duty")
 	noTunes := c.fs.Bool("no-"+conductor.DutyTunesItself, false,
 		"withdraw the personal tuning duty")
+	triages := c.fs.Bool(conductor.DutyTriagesTheQueue, false,
+		"authorize the review triage duty")
+	noTriages := c.fs.Bool("no-"+conductor.DutyTriagesTheQueue, false,
+		"withdraw the review triage duty")
 	asJSON := c.fs.Bool("json", false, "emit the stored configuration as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -441,6 +462,11 @@ func (a *app) conductorConfigure(args []string) error {
 	if err != nil {
 		return err
 	}
+	triagesTheQueue, err := resolveDutyToggle(c, conductor.DutyTriagesTheQueue,
+		settings.BabelTriagesTheQueue, *triages, *noTriages)
+	if err != nil {
+		return err
+	}
 
 	settings.Ceilings = &next
 	if *floor > 0 {
@@ -465,6 +491,7 @@ func (a *app) conductorConfigure(args []string) error {
 	}
 	settings.BabelImprovesBabel = improvesBabel
 	settings.BabelTunesItself = tunesItself
+	settings.BabelTriagesTheQueue = triagesTheQueue
 	settings.ConfiguredAt = formatTime(time.Now().UTC())
 	path, err := saveConductorSettings(settings)
 	if err != nil {
@@ -487,6 +514,7 @@ func (a *app) conductorConfigure(args []string) error {
 			plural(res.ConsolidateRoots, "candidate", "candidates"))},
 		{"babel improves babel", onOrOff(res.BabelImprovesBabel)},
 		{"babel tunes itself", onOrOff(res.BabelTunesItself)},
+		{"babel triages the queue", onOrOff(res.BabelTriagesTheQueue)},
 		{"stored in", Sanitize(res.Path)},
 	})
 	fmt.Fprintf(a.stdout, "\nrun the loop with: babel conductor run\n")
@@ -495,15 +523,16 @@ func (a *app) conductorConfigure(args []string) error {
 
 func conductorConfigDocument(s conductorSettings, path string) conductorConfigResult {
 	res := conductorConfigResult{
-		Floor:              conductor.Floor{OneIn: s.Floor}.OneIn,
-		IntervalSeconds:    int(s.interval().Seconds()),
-		SliceSessions:      s.SliceSessions,
-		ConsolidateOneIn:   s.ConsolidateOneIn,
-		ConsolidateRoots:   s.ConsolidateRoots,
-		ConfiguredAt:       s.ConfiguredAt,
-		BabelImprovesBabel: s.BabelImprovesBabel,
-		BabelTunesItself:   s.BabelTunesItself,
-		Path:               path,
+		Floor:                conductor.Floor{OneIn: s.Floor}.OneIn,
+		IntervalSeconds:      int(s.interval().Seconds()),
+		SliceSessions:        s.SliceSessions,
+		ConsolidateOneIn:     s.ConsolidateOneIn,
+		ConsolidateRoots:     s.ConsolidateRoots,
+		ConfiguredAt:         s.ConfiguredAt,
+		BabelImprovesBabel:   s.BabelImprovesBabel,
+		BabelTunesItself:     s.BabelTunesItself,
+		BabelTriagesTheQueue: s.BabelTriagesTheQueue,
+		Path:                 path,
 	}
 	if res.Floor <= 0 {
 		res.Floor = conductor.DefaultFloor
@@ -678,6 +707,21 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// The recorded expenditure policy binds the loop's own candidate
+	// selection (§4.8). It is a separate handle on the durable file for
+	// openReality's reason — the analysis state opens the frontier and the
+	// receipts, and this opens the ledger — and a ledger that will not open
+	// degrades the loop to the behaviour it had before the policy could be
+	// read, rather than stopping it: a machine that cannot reach its policy
+	// has not been told to withhold anything.
+	ledger, ledgerErr := openReality()
+	if ledgerErr != nil {
+		a.diagf("conductor: %v; no recorded focus policy will be consulted\n",
+			Sanitize(ledgerErr.Error()))
+	} else {
+		defer ledger.Close()
+	}
+
 	// One store for the whole loop, shared by the conductor's own cycle rows
 	// and by every run inside them (#118). Opening it per cycle would dial
 	// PostgreSQL once a cycle for a table whose writes are best-effort, and
@@ -712,7 +756,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			conductor.NewSerendipityRung(&fleetCorpus{app: a, adapters: adapters(), roots: sf.rootList()},
 				embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 		),
-		Consolidation: settings.consolidation(consolidateOneIn, state),
+		Consolidation: settings.consolidation(consolidateOneIn, state, conductorFocus(ledger)),
 		Publisher:     publisher,
 		Runner: &conductorRunner{
 			app:        a,
@@ -1338,6 +1382,18 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 		return err
 	}
 	defer state.Close()
+	// The consolidation depth reported below is the drawable backlog, so
+	// this view has to read the same policy the loop draws under. A ledger
+	// that will not open reports the unfiltered backlog, which is what the
+	// loop would then draw against too — the two stay in agreement either
+	// way, which is the property that matters here.
+	statusLedger, statusLedgerErr := openReality()
+	if statusLedgerErr != nil {
+		a.diagf("conductor: %v; the consolidation depth ignores recorded focus\n",
+			Sanitize(statusLedgerErr.Error()))
+	} else {
+		defer statusLedger.Close()
+	}
 
 	now := time.Now()
 	res := conductorStatusResult{
@@ -1383,7 +1439,8 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 			embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 	)
 	ladder = append(ladder, conductor.NewConsolidationRung(state.frontier,
-		conductor.NewRecordOrigins(state.frontier, state.runs), settings.ConsolidateRoots))
+		conductor.NewRecordOrigins(state.frontier, state.runs),
+		conductorFocus(statusLedger), settings.ConsolidateRoots))
 	rungs, err := conductor.Describe(ctx, ladder)
 	if err != nil {
 		return err

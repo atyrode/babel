@@ -11,6 +11,73 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Recorded focus reaches the loop.** The ledger has been able to hold "stop
+  spending on this project" since §4.8's focus rules were implemented, and
+  nothing read them: the conductor picked candidates straight off the
+  frontier and `babel prepare` scoped every session it found, so an operator
+  could record the intent and watch it have no effect. Selection now
+  evaluates the allowance for each candidate's subjects, and preparation for
+  each session's. The four values stay four: `excluded` permits nothing,
+  `no-code-investigation` permits only synthesis over material already held,
+  `learn-only` keeps the subject's sessions in the corpus so it can still be
+  mined for cross-cutting lessons while withholding work about the subject
+  itself, and `full` is unchanged. `babel reality focus install` installs the
+  rule set this build ships, without which nothing is withheld because
+  nothing has been stated.
+- **A skipped candidate says why.** Withholding a consolidation cycle writes
+  the immutable context snapshot §4.8 requires a deterministic deferral to
+  leave behind — the policy version, the resolved entity, the rule and the
+  facts it matched — and `reality.Snapshots` reads them back by candidate.
+  Nothing is deleted and nothing is rewritten: the candidate keeps its place
+  on the frontier and its wording, `conductor status` reports how much of the
+  backlog focus is holding, and superseding the fact makes it drawable again
+  on the next cycle with nothing to restore.
+- **Babel records its own analysis runs as sessions.** An exploration's
+  reasoning used to live only as long as the process that produced it: the
+  receipt records the profile, the grant, every tool call and Babel's decision
+  on it, and deliberately not the transcript, so a finding could be reopened
+  through its locators months later while the argument for it was gone. Each
+  supervised job now writes its conversation to
+  `$XDG_DATA_HOME/babel/analysis/<run>/<job>.babel.jsonl`, and a fourth source
+  adapter (`babel`) discovers, describes and renders those logs exactly as the
+  three harnesses' — so `babel sessions list --harness babel`,
+  `sessions inspect`, the web session view and `archive push` all carry them
+  with no storage configuration change on any machine.
+
+  What a session log may *not* hold is the corpus. A retrieved excerpt reaches
+  the model because a model that cannot read a record cannot form an
+  observation about it, and it comes straight back in the engine's own
+  `agent_end` message list; persisted verbatim it would be a second plaintext
+  copy of the archive under Babel's data directory, which SPEC.md §9 forbids
+  of every durable record. So the writer reduces every served tool result to
+  the locators that recover its bytes and the reason the content is absent —
+  the asymmetry the receipt's retrieval trace already keeps — while the job
+  document, the model's reasoning, its tool calls and its conclusions are kept
+  verbatim. It is fail-closed in both directions: a writer cannot be
+  constructed without a redactor, and a payload the facility does not
+  recognise is withheld rather than copied. A real run over a synthetic corpus
+  proves it, and the guard fails if the reduction is removed.
+
+- **Babel reads its own proposals before you do.** A new off-by-default meta
+  recipe, `babel-triages-the-queue`, takes the proposals nobody has ruled on
+  and records advice beside each one: which of them say the same thing, which
+  is worth reading first and why, the case against acting on it, and — where
+  it has one — a better-stated alternative. The advice appears on the review
+  page, directly above the decision it is for, because advice a person has to
+  go and find arrives after the decision it was written for. Authorize it with
+  `babel conductor configure --babel-triages-the-queue`.
+
+  It may rank, cluster, weigh and re-propose. It may not rule. That is a
+  property of the types rather than a promise in a comment: the triage pass
+  holds a narrow `*frontier.Triage` handle with three methods and no path to
+  `Decide`, `RejectAndRefine`, `SetStatus` or `DeferFrontier`, and the store
+  refuses advice on a proposal a ruling has already been recorded against. An
+  alternative is a new proposal record resting on exactly what the original
+  rests on — same support, same claims, different wording — so the original
+  keeps its id, its wording and its place in the queue, and the operator
+  chooses between two records. Whether Babel may ever accept or reject on its
+  own is deliberately still unanswered, and nothing here anticipates an answer.
+
 - **Findings and proposals have a front door.** Both are the first entries in
   the navigation, proposals being an entirely new listing — before this,
   Babel's committed output was reachable only by guessing a URL. The dashboard

@@ -1306,6 +1306,27 @@ func questionLedger(store *reality.Store) explore.QuestionLedger {
 	return store
 }
 
+// recordedFocus hands a caller the expenditure policy §4.8 lets an operator
+// record against a subject, or nothing at all.
+//
+// The nil check is questionLedger's and for the same reason: a
+// (*reality.Store)(nil) in an interface field is not a nil interface, and a
+// consumer reading one as a present facility would panic on the first
+// subject it gated. A machine whose ledger did not open has recorded no
+// policy, so the honest degradation is that nothing is withheld — the
+// behaviour every machine has until an operator says otherwise.
+//
+// The version is named here, once, rather than at each call site. §4.8's
+// mapping is versioned precisely so two decisions over one unchanged ledger
+// are comparable, and a build whose surfaces each picked their own version
+// would make the comparison meaningless.
+func recordedFocus(store *reality.Store) *reality.Attention {
+	if store == nil {
+		return nil
+	}
+	return reality.NewAttention(store, reality.DefaultFocusRules().Version)
+}
+
 // recordKinds maps the identifier prefixes internal/frontier mints onto the
 // record kinds review and export address.
 //

@@ -687,6 +687,31 @@ export interface ProposalsResponse extends SyncNotice {
   total: number;
 }
 
+// TriageAdvice is what Babel said about a proposal before anybody ruled on it:
+// where to read it in the pile, which records say the same thing, the case
+// against acting on it, and the id of a proposal offered instead.
+//
+// None of it is a decision, and nothing here can become one. A rank is a
+// reading order rather than a score, a cluster is an invitation to compare
+// rather than a duplicate ruling, and the alternative is a second record in
+// the queue rather than an edit of the first — the original keeps its wording
+// and its place. The disposition stays the operator's, and the only surface
+// that records one is the review page's own decide action.
+export interface TriageAdvice {
+  id: string;
+  // The proposal the advice is about, which on an alternative's page is the
+  // record it was offered instead of.
+  proposal_id: string;
+  alternative_id?: string;
+  cluster: string[];
+  run_id: string;
+  recorded_at: string;
+  rank: number;
+  cohort: number;
+  ranking?: string;
+  counter_argument: string;
+}
+
 // ProposalDetail is one proposal whole: the row's own fields, the records it
 // was written against, and the stored payload verbatim. `form` is #114's
 // provenance — `consolidated` for a finding-backed artifact, `candidate` for a
@@ -700,6 +725,9 @@ export interface ProposalDetail extends ProposalRow {
   hypothesis_ids: string[];
   form: string;
   payload: ProposalPayload;
+  // Absent when no pass has read this proposal. An untriaged record is not a
+  // record with empty advice, so there is no block to render for one.
+  triage?: TriageAdvice[];
 }
 
 export interface FindingDetail {

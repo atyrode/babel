@@ -112,6 +112,15 @@ func parse(line []byte, harness string) (Event, bool) {
 		return parseCodex(line)
 	case "claude":
 		return parseClaude(line)
+	case "babel":
+		// Babel's own analysis sessions parse as OMP records because they
+		// are written in OMP's record language: the messages they hold are
+		// the engine's own message objects, reported verbatim in its
+		// agent_end frames, so an envelope of Babel's own design would be a
+		// schema asserted over content Babel does not own
+		// (internal/adapter/babelself). Without this case they would decode
+		// as unparseable and render as raw JSON in the session view.
+		return parseOMP(line)
 	default:
 		return Event{}, false
 	}

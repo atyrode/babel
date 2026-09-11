@@ -944,12 +944,21 @@ func TestPlaintextColumnsMatchAllowlist(t *testing.T) {
 			"actor_kind", "actor_id", "recorded_at",
 		},
 		"frontier_duplicate_warning": {"id", "hypothesis_id", "duplicate_of", "recorded_at"},
+		// Triage advice: the record ids it relates, the pass that wrote it,
+		// and when. The rank and the counter-argument are a judgement about
+		// what the proposals say, so they stay in the payload for the reason
+		// the warning's overlap does.
+		"frontier_triage_advice": {
+			"id", "proposal_id", "alternative_id", "run_id", "recorded_at",
+		},
+		"frontier_triage_cluster": {"advice_id", "proposal_id", "position"},
 	}
 	// Join tables are pure relationship IDs and carry no payload at all.
 	payloadFree := map[string]bool{
 		"frontier_finding_observation": true,
 		"frontier_proposal_finding":    true,
 		"frontier_proposal_hypothesis": true,
+		"frontier_triage_cluster":      true,
 	}
 
 	tables := frontierTables(t, store)
@@ -1052,6 +1061,21 @@ func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create candidate proposal: %v", err)
 	}
+	// Triage advice on the remedy, clustered with the consolidation, fills
+	// the last two tables. The remedy is the subject because nobody has
+	// ruled on it: advice on the rejected consolidation is refused, which is
+	// its own property and TestTriagePassCannotRecordADisposition's.
+	if _, err := store.Triage().Advise(ctx, TriageInput{
+		ProposalID: remedy.ID,
+		RunID:      "run-1",
+		Cluster:    []string{proposal.ID},
+		Payload: TriageAdvicePayload{
+			Rank: 1, Cohort: 2,
+			CounterArgument: "the constraint may already be stated elsewhere",
+		},
+	}); err != nil {
+		t.Fatalf("advise the remedy: %v", err)
+	}
 
 	// set is the mutation a future caller might plausibly write, and where
 	// selects the row it would aim at. The delete and the row count reuse
@@ -1075,6 +1099,8 @@ func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
 		"frontier_refinement_request":  {`payload_json = '{}'`, `subject_id = ?`, []any{proposal.ID}},
 		"frontier_revision":            {`actor_id = 'forged'`, `entity_id = ?`, []any{hypothesis.ID}},
 		"frontier_duplicate_warning":   {`payload_json = '{}'`, `hypothesis_id = ?`, []any{warned.ID}},
+		"frontier_triage_advice":       {`payload_json = '{}'`, `proposal_id = ?`, []any{remedy.ID}},
+		"frontier_triage_cluster":      {`position = 7`, `proposal_id = ?`, []any{proposal.ID}},
 	}
 
 	tables := frontierTables(t, store)

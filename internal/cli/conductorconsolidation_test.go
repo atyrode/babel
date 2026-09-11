@@ -122,7 +122,7 @@ func TestConsolidationCycleSeedsFromTheFrontierAndReachesTheSynthesizer(t *testi
 		Ladder: []conductor.Rung{conductor.NewAbsentRung(conductor.RungInvitation, "planted empty")},
 		Consolidation: conductor.Consolidation{OneIn: 1,
 			Rung: conductor.NewConsolidationRung(state.frontier,
-				conductor.NewRecordOrigins(state.frontier, state.runs), 5)},
+				conductor.NewRecordOrigins(state.frontier, state.runs), nil, 5)},
 		Runner: runner, Ledger: completionAllowedLedger{}, Journal: journal,
 	})
 	if err != nil {

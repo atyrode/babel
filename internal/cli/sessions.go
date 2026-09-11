@@ -81,7 +81,8 @@ as "cost_usd", "total_tokens", "turns" and "tool_errors", each null for a
 session whose transcript records no usage rather than zero.
 
 Flags:
-  --harness NAME       restrict to one harness: omp, codex, or claude
+  --harness NAME       restrict to one harness: omp, codex, claude, or babel
+                       ("babel" is Babel's own analysis sessions)
   --roots DIR[,DIR]    scan these roots instead of the adapters' defaults
   --no-cache           bypass the catalog and describe every session
   --fetched            also list the sessions fetched from other hosts
@@ -227,7 +228,7 @@ func (sf *scanFlags) bindRoots(c *cmd) {
 }
 
 func (sf *scanFlags) bindHarness(c *cmd) {
-	c.fs.StringVar(&sf.harness, "harness", "", "restrict to one harness: omp, codex, or claude")
+	c.fs.StringVar(&sf.harness, "harness", "", "restrict to one harness: omp, codex, claude, or babel")
 }
 
 // bindFetched binds --fetched, which widens a scan from this machine's source

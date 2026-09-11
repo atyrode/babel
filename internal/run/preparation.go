@@ -319,7 +319,7 @@ func canonicalRelated(related []RelatedOutput) ([]RelatedOutput, error) {
 // selector would be one more surface for that output to escape through.
 func (s *Selected) canonicalize() error {
 	switch s.Harness {
-	case event.HarnessOMP, event.HarnessCodex, event.HarnessClaude:
+	case event.HarnessOMP, event.HarnessCodex, event.HarnessClaude, event.HarnessBabel:
 	default:
 		return fmt.Errorf("unknown harness")
 	}

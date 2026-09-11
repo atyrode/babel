@@ -1590,3 +1590,35 @@ func (s *Store) Snapshot(ctx context.Context, id string) (Snapshot, error) {
 	}
 	return record, nil
 }
+
+// Snapshots reads every context snapshot taken against one candidate,
+// oldest first.
+//
+// It is the read side of a deferral. §4.8 has a deterministic deferral
+// record the context that caused it, and a record nobody can find from the
+// candidate is not a record anyone can act on — the operator's question is
+// "why was this skipped", and the candidate identifier is the only thing
+// they have to ask it with. The whole chain is returned rather than the
+// newest: two refusals under two policy versions are exactly what makes the
+// versioning worth having, and hiding the older one would leave a change of
+// mind looking like a change of ledger.
+func (s *Store) Snapshots(ctx context.Context, hypothesisID string) ([]Snapshot, error) {
+	if hypothesisID == "" {
+		return nil, fmt.Errorf("%w: snapshot query names no hypothesis", ErrInvalidValue)
+	}
+	ids, err := queryStrings(ctx, s.db,
+		`SELECT id FROM reality_snapshot WHERE hypothesis_id = ? ORDER BY created_at, id`,
+		hypothesisID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Snapshot, 0, len(ids))
+	for _, id := range ids {
+		record, err := s.Snapshot(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, nil
+}

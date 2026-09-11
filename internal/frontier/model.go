@@ -101,6 +101,12 @@ var (
 	// in one: reviving a candidate a run is still investigating would
 	// silently rewrite that run's lifecycle underneath it.
 	ErrNotResting = errors.New("hypothesis is not in a resting status")
+	// ErrAlreadyRuled reports triage advice aimed at a proposal an operator
+	// has already ruled on. Advice exists to reach a reviewer before they
+	// decide; attached after a ruling it would read as a second opinion on
+	// a decision that has been made, which is the one thing a triage pass
+	// has no standing to offer.
+	ErrAlreadyRuled = errors.New("proposal has already been ruled on")
 )
 
 // Status is a candidate hypothesis's exploration lifecycle from §4.2. It is

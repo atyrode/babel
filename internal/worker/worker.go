@@ -270,6 +270,39 @@ type Config struct {
 	// §2.6). It runs on the supervision goroutine and must not block: a slow
 	// callback delays the next tool authorization.
 	OnProgress func(ProgressRecord)
+
+	// Transcript archives the run's conversation as a session log, so the
+	// reasoning behind a finding outlives the process that produced it.
+	//
+	// It is separate from the receipt and cannot be folded into it. A
+	// receipt is the audit record of this boundary — the profile, the
+	// grant, every tool call and Babel's decision on it — and §9 forbids it
+	// holding archive content, which is why a progress record keeps a stage
+	// name rather than the message that produced it (receipt.go). A
+	// transcript is the conversation itself, and the sink is the component
+	// that decides what a durable copy of it may contain.
+	//
+	// Nil writes nothing, which is a supported deployment: a run with no
+	// transcript produces exactly the records it produced before, and the
+	// receipt is unchanged either way.
+	Transcript Transcript
+}
+
+// Transcript receives the conversation of the run it was opened for.
+//
+// The engine reports the whole message list with every agent_end, so an
+// implementation is handed that list once per ended turn and decides for
+// itself what is new. Babel passes the bytes through untouched: the list is
+// OMP's own message objects, and this package asserts no schema over them.
+//
+// A sink must reduce whatever a facility served before persisting it. The
+// pipe carries content to the model because a model that cannot read a
+// record cannot form an observation about it; a durable copy of the same
+// bytes is what §9 forbids, and the asymmetry is the sink's to keep.
+type Transcript interface {
+	// Turn records one ended turn. at is the instant the turn ended, for a
+	// message that carries no timestamp of its own.
+	Turn(messages json.RawMessage, at time.Time) error
 }
 
 // Client supervises engine processes. One Client may run many jobs; each Run
@@ -762,6 +795,9 @@ func (r *runner) handle(ctx context.Context, in inbound) error {
 		if f.IsTerminal == nil || *f.IsTerminal {
 			r.ended = true
 		}
+		if err := r.archive(f.Messages, at); err != nil {
+			return err
+		}
 		r.recordProgress("agent", "turn ended"+lastStop(f.Messages), at)
 		return nil
 	case framePromptResult:
@@ -843,6 +879,25 @@ func (r *runner) recordProgress(stage, message string, at time.Time) {
 	if r.client.cfg.OnProgress != nil {
 		r.client.cfg.OnProgress(record)
 	}
+}
+
+// archive hands one ended turn to the configured transcript.
+//
+// A write failure ends the run rather than being noted and passed over, and
+// that is the same answer every other durable write in an analysis gets: the
+// frontier, the receipt store and the resume ledger all fail a run when the
+// disk refuses them, and a transcript is the same one local append onto the
+// same disk. A run that quietly lost its own conversation would leave an
+// archive that claims to hold Babel's reasoning and does not, which is worse
+// than a run the operator can retry.
+func (r *runner) archive(messages json.RawMessage, at time.Time) error {
+	if r.client.cfg.Transcript == nil {
+		return nil
+	}
+	if err := r.client.cfg.Transcript.Turn(messages, at); err != nil {
+		return fmt.Errorf("worker: record the turn in the run's transcript: %w", err)
+	}
+	return nil
 }
 
 // handleToolCall answers one host_tool_call: a submission is validated and

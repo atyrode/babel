@@ -11,6 +11,11 @@
       "digest": "sha256:1a110fa3ec544b6a54ff2c39c24d618e31ccd555390655b1bb204e43f278d8f6"
     },
     {
+      "id": "babel-triages-the-queue",
+      "version": 1,
+      "digest": "sha256:dd2a1314dafa51a3b9a2e9bd00c84c3d95d9597baea9d603febcfa32384acca8"
+    },
+    {
       "id": "babel-tunes-itself",
       "version": 1,
       "digest": "sha256:28122909e57c25715aa18d4bc775129f585f02e3ee872e6dcc8a75d6cc5b9b19"

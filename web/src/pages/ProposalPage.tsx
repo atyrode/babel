@@ -5,6 +5,7 @@ import { errorMessage, formatTime } from "../format";
 import { Badge, EvidenceItems, FallibilityNote, Quoted, reviewTone } from "../analysis";
 import { RecordActions } from "../records";
 import { RecordLinks } from "../references";
+import { TriageAdvice } from "../triage";
 
 // One proposal, whole.
 //
@@ -234,6 +235,7 @@ function ProposalPage() {
               </div>
             )}
           </article>
+          <TriageAdvice advice={detail.triage} subject={detail.id} />
           <RecordActions record={{ type: "proposal", id: detail.id }} />
         </div>
 

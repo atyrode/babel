@@ -343,6 +343,25 @@ type Config struct {
 	// internal/presence is built so that this holds without a branch here.
 	Presence presence.Announcer
 
+	// Transcript opens the session log one supervised job's conversation is
+	// archived into, named by the job's own run id and stage. It is called
+	// once per job, and the writer it returns is closed when that job ends.
+	//
+	// A run's reasoning used to live only as long as the process: §6.5's
+	// receipt records the boundary — the profile, the grant, every tool call
+	// and its decision — and deliberately not the transcript, so a finding
+	// six months old could be reopened through its locators while the
+	// argument that produced it was gone. Writing it as a session puts it
+	// where every other harness's conversations already are, and the archive
+	// carries it with no further arrangement.
+	//
+	// Nil is the feature quietly absent, on the terms Sync, References and
+	// Presence are: nothing is written, no write path behaves differently,
+	// and no run is refused. An error from it does fail the stage, because a
+	// factory that cannot open a file has found something wrong with the
+	// machine rather than with the feature.
+	Transcript func(runID, job string) (TranscriptWriter, error)
+
 	// Inputs are the sessions preflight checks, one per preparation entry.
 	Inputs []preflight.Input
 
@@ -477,6 +496,24 @@ type ResearchBroker interface {
 	Catalog() research.Catalog
 	// Fetch reads one fixed source by the identifier the catalog gave it.
 	Fetch(ctx context.Context, id string) (research.Document, error)
+}
+
+// TranscriptWriter is one job's session log as this package uses it: the
+// sink internal/worker hands each ended turn to, plus the close that ends
+// the file.
+//
+// It is declared here rather than in the adapter that implements it for the
+// reason ResearchBroker is: this is the consumer's view. What makes a
+// transcript safe to keep — that a served corpus excerpt is reduced to its
+// locators before anything is written (SPEC.md §9) — belongs to the writer
+// and is not this package's to restate, and a controller that could only be
+// tested against the real one would be harder to hold to its own contract.
+type TranscriptWriter interface {
+	worker.Transcript
+	// Close ends the log. It is called once per job, on the failure path as
+	// well as the success one, because a job that died mid-turn is exactly
+	// the run whose conversation is worth reading.
+	Close() error
 }
 
 // validateResearchGrant refuses a run whose research grant and research broker

@@ -407,6 +407,71 @@ CREATE TRIGGER frontier_proposal_hypothesis_immutable BEFORE UPDATE ON frontier_
 BEGIN SELECT RAISE(ABORT, 'the addressed claims of a proposal are immutable; revise the proposal instead'); END;
 CREATE TRIGGER frontier_proposal_hypothesis_kept BEFORE DELETE ON frontier_proposal_hypothesis
 BEGIN SELECT RAISE(ABORT, 'the addressed claims of a proposal are never deleted; a remedy that can be detached from its claim is a want about nothing'); END;
+`,
+	// Migration 6 gives a triage pass somewhere to put what it thinks of a
+	// proposal, without giving it anywhere to put a decision.
+	//
+	// The table is the duplicate warning's shape rather than the
+	// disposition's, and that is the whole design. A disposition is an
+	// operator's ruling and settles a record; this is Babel's own reading of
+	// its own output, offered to the person who will rule, and it settles
+	// nothing. So it carries no ruling column, no reviewer, and no sequence
+	// within a subject's review history: there is nothing here for a later
+	// event to supersede, because advice is a statement about the moment it
+	// was written and several passes may each leave one.
+	//
+	// A refinement request was the other candidate shape and does not fit,
+	// for one reason that is structural rather than stylistic: §4.7 makes
+	// frontier_refinement_request.disposition_id mandatory and unique, so a
+	// refinement cannot exist without the rejection that authorized it.
+	// Triage advice must exist precisely when no disposition has been
+	// recorded at all. Reusing that table would mean making its one
+	// load-bearing column optional, which would also let a refinement float
+	// free of any rejection — the state that column exists to forbid.
+	//
+	// alternative_id is the better proposal the pass offered instead, and it
+	// is a foreign key to frontier_proposal rather than a payload field
+	// because that is what makes the alternative a record: a new proposal an
+	// operator reviews on its own terms, beside the original, which stays
+	// exactly as it was. Nothing here can edit a proposal; the table has no
+	// path to one.
+	//
+	// The rank and the counter-argument sit in payload_json, on the terms
+	// migration 4 settled for a duplicate warning's overlap: §9's plaintext
+	// allowlist admits identifiers, counts and timestamps, and not a
+	// judgement derived from what records say. A place in an ordering is
+	// derived from reading the proposals, so it travels sealed, and the
+	// record ids beside it travel in the clear.
+	`
+CREATE TABLE frontier_triage_advice(
+	id             TEXT PRIMARY KEY,
+	proposal_id    TEXT NOT NULL REFERENCES frontier_proposal(id),
+	alternative_id TEXT REFERENCES frontier_proposal(id),
+	run_id         TEXT NOT NULL,
+	recorded_at    TEXT NOT NULL,
+	payload_json   TEXT NOT NULL,
+	CHECK(alternative_id IS NULL OR alternative_id <> proposal_id)
+);
+CREATE INDEX frontier_triage_advice_proposal ON frontier_triage_advice(proposal_id);
+CREATE INDEX frontier_triage_advice_alternative ON frontier_triage_advice(alternative_id);
+
+CREATE TRIGGER frontier_triage_advice_immutable BEFORE UPDATE ON frontier_triage_advice
+BEGIN SELECT RAISE(ABORT, 'triage advice is immutable; it records what a pass thought before anybody ruled, and a later pass leaves its own'); END;
+CREATE TRIGGER frontier_triage_advice_kept BEFORE DELETE ON frontier_triage_advice
+BEGIN SELECT RAISE(ABORT, 'triage advice is never deleted; advice that can be withdrawn is advice nobody has to answer'); END;
+
+CREATE TABLE frontier_triage_cluster(
+	advice_id   TEXT NOT NULL REFERENCES frontier_triage_advice(id),
+	proposal_id TEXT NOT NULL REFERENCES frontier_proposal(id),
+	position    INTEGER NOT NULL,
+	PRIMARY KEY(advice_id, position)
+);
+CREATE INDEX frontier_triage_cluster_proposal ON frontier_triage_cluster(proposal_id);
+
+CREATE TRIGGER frontier_triage_cluster_immutable BEFORE UPDATE ON frontier_triage_cluster
+BEGIN SELECT RAISE(ABORT, 'the cluster of one piece of triage advice is immutable; a later pass records its own advice'); END;
+CREATE TRIGGER frontier_triage_cluster_kept BEFORE DELETE ON frontier_triage_cluster
+BEGIN SELECT RAISE(ABORT, 'the cluster of one piece of triage advice is never deleted; an advice whose peers vanished could not be read'); END;
 `}
 
 // Store is the durable hypothesis frontier. It exposes no operation that
@@ -1595,23 +1660,58 @@ type proposalWrite struct {
 // closure and its `addresses` edges happen, and the two answers would drift
 // exactly once and never be noticed.
 func (s *Store) createProposal(ctx context.Context, in proposalWrite) (Proposal, error) {
+	var (
+		record Proposal
+		actor  Actor
+		pub    publication
+	)
+	err := s.transact(ctx, func(tx *sql.Tx) error {
+		var err error
+		record, actor, pub, err = s.appendProposal(ctx, tx, in)
+		return err
+	})
+	if err != nil {
+		return Proposal{}, err
+	}
+	if err := s.commit(ctx, pub); err != nil {
+		return Proposal{}, err
+	}
+	s.mintProposalEdges(ctx, record, in.ancestorID, actor)
+	return record, nil
+}
+
+// appendProposal writes one proposal revision inside the caller's transaction.
+//
+// It is separated from createProposal for the reason appendDisposition is
+// separated from Decide: a second operation needs a proposal and something
+// else to exist together or not at all. There the pair is §4.7's rejection and
+// the refinement it authorizes; here it is a triage pass's alternative and the
+// advice that explains why it was offered, and an alternative that arrived in
+// the review queue without its explanation would be a proposal nobody could
+// account for.
+//
+// The caller owns what happens after the commit: the returned actor and
+// publication are what mintProposalEdges and commit need, and neither may run
+// inside the transaction.
+func (s *Store) appendProposal(ctx context.Context, tx *sql.Tx,
+	in proposalWrite) (Proposal, Actor, publication, error) {
 	if in.runID == "" {
-		return Proposal{}, fmt.Errorf("%w: proposal run id is empty", ErrInvalidValue)
+		return Proposal{}, Actor{}, publication{}, fmt.Errorf("%w: proposal run id is empty", ErrInvalidValue)
 	}
 	if err := in.payload.validate(); err != nil {
-		return Proposal{}, err
+		return Proposal{}, Actor{}, publication{}, err
 	}
 	actor, err := revisionActor(in.actor, in.runID, in.ancestorID, in.reason)
 	if err != nil {
-		return Proposal{}, err
+		return Proposal{}, Actor{}, publication{}, err
 	}
 	payload, err := marshalPayload(in.payload)
 	if err != nil {
-		return Proposal{}, err
+		return Proposal{}, Actor{}, publication{}, err
 	}
 	id, err := newID("pro")
 	if err != nil {
-		return Proposal{}, err
+		return Proposal{}, Actor{}, publication{}, err
 	}
 	created := s.now()
 	record := Proposal{
@@ -1625,73 +1725,74 @@ func (s *Store) createProposal(ctx context.Context, in proposalWrite) (Proposal,
 		ReviewStatus:  ReviewNew,
 		Payload:       in.payload,
 	}
-	var pub publication
-	err = s.transact(ctx, func(tx *sql.Tx) error {
-		if in.ancestorID != "" {
-			if err := requireRow(ctx, tx, "frontier_proposal", in.ancestorID); err != nil {
-				return fmt.Errorf("proposal ancestor: %w", err)
-			}
+	fail := func(err error) (Proposal, Actor, publication, error) {
+		return Proposal{}, Actor{}, publication{}, err
+	}
+	if in.ancestorID != "" {
+		if err := requireRow(ctx, tx, "frontier_proposal", in.ancestorID); err != nil {
+			return fail(fmt.Errorf("proposal ancestor: %w", err))
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_proposal(
-			id, ancestor_id, run_id, schema_version, created_at, payload_json) VALUES(?, ?, ?, ?, ?, ?)`,
-			id, nullableID(in.ancestorID), in.runID, RecordSchema, formatTime(created), payload); err != nil {
-			return fmt.Errorf("insert proposal: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_proposal(
+		id, ancestor_id, run_id, schema_version, created_at, payload_json) VALUES(?, ?, ?, ?, ?, ?)`,
+		id, nullableID(in.ancestorID), in.runID, RecordSchema, formatTime(created), payload); err != nil {
+		return fail(fmt.Errorf("insert proposal: %w", err))
+	}
+	for position, findingID := range in.findingIDs {
+		if err := requireRow(ctx, tx, "frontier_finding", findingID); err != nil {
+			return fail(fmt.Errorf("proposal finding: %w", err))
 		}
-		for position, findingID := range in.findingIDs {
-			if err := requireRow(ctx, tx, "frontier_finding", findingID); err != nil {
-				return fmt.Errorf("proposal finding: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_proposal_finding(
-				proposal_id, finding_id, position) VALUES(?, ?, ?)`, id, findingID, position); err != nil {
-				return fmt.Errorf("link proposal finding: %w", err)
-			}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_proposal_finding(
+			proposal_id, finding_id, position) VALUES(?, ?, ?)`, id, findingID, position); err != nil {
+			return fail(fmt.Errorf("link proposal finding: %w", err))
 		}
-		// The addressed claims are validated one at a time against stored
-		// hypotheses. #113's rule that a link may only bind to a record
-		// that demonstrably exists is the same rule, applied here at the
-		// row that will produce the edge rather than at the edge: a remedy
-		// answering a hallucinated claim is refused before it is durable,
-		// not warned about afterwards.
-		for position, hypothesisID := range in.addressed {
-			if err := requireRow(ctx, tx, "frontier_hypothesis", hypothesisID); err != nil {
-				return fmt.Errorf("addressed hypothesis: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_proposal_hypothesis(
-				proposal_id, hypothesis_id, position) VALUES(?, ?, ?)`, id, hypothesisID, position); err != nil {
-				return fmt.Errorf("link addressed hypothesis: %w", err)
-			}
+	}
+	// The addressed claims are validated one at a time against stored
+	// hypotheses. #113's rule that a link may only bind to a record
+	// that demonstrably exists is the same rule, applied here at the
+	// row that will produce the edge rather than at the edge: a remedy
+	// answering a hallucinated claim is refused before it is durable,
+	// not warned about afterwards.
+	for position, hypothesisID := range in.addressed {
+		if err := requireRow(ctx, tx, "frontier_hypothesis", hypothesisID); err != nil {
+			return fail(fmt.Errorf("addressed hypothesis: %w", err))
 		}
-		revision, err := s.appendRevision(ctx, tx, revisionWrite{
-			entity:     Ref{Type: EntityProposal, ID: id},
-			supersedes: in.ancestorID,
-			actor:      actor,
-			reason:     in.reason,
-			recordedAt: created,
-		})
-		if err != nil {
-			return err
+		if _, err := tx.ExecContext(ctx, `INSERT INTO frontier_proposal_hypothesis(
+			proposal_id, hypothesis_id, position) VALUES(?, ?, ?)`, id, hypothesisID, position); err != nil {
+			return fail(fmt.Errorf("link addressed hypothesis: %w", err))
 		}
-		hypotheses, err := proposalHypotheses(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		record.HypothesisIDs = hypotheses
-		staged, err := stagedProposal(record, revision.RootID, payload)
-		if err != nil {
-			return err
-		}
-		pub, err = s.stage(ctx, tx, in.runID, staged)
-		return err
+	}
+	revision, err := s.appendRevision(ctx, tx, revisionWrite{
+		entity:     Ref{Type: EntityProposal, ID: id},
+		supersedes: in.ancestorID,
+		actor:      actor,
+		reason:     in.reason,
+		recordedAt: created,
 	})
 	if err != nil {
-		return Proposal{}, err
+		return fail(err)
 	}
-	if err := s.commit(ctx, pub); err != nil {
-		return Proposal{}, err
+	if record.HypothesisIDs, err = proposalHypotheses(ctx, tx, id); err != nil {
+		return fail(err)
 	}
-	s.mintSupersedes(ctx, EntityProposal, id, in.ancestorID, actor)
-	s.mintAddresses(ctx, id, record.HypothesisIDs, actor)
-	return record, nil
+	staged, err := stagedProposal(record, revision.RootID, payload)
+	if err != nil {
+		return fail(err)
+	}
+	pub, err := s.stage(ctx, tx, in.runID, staged)
+	if err != nil {
+		return fail(err)
+	}
+	return record, actor, pub, nil
+}
+
+// mintProposalEdges records #113's graph shadow of one proposal write, after
+// the transaction that wrote it committed. Both emissions are best-effort and
+// neither may run inside the transaction, so every path that writes a proposal
+// ends here rather than repeating the pair.
+func (s *Store) mintProposalEdges(ctx context.Context, record Proposal, ancestorID string, actor Actor) {
+	s.mintSupersedes(ctx, EntityProposal, record.ID, ancestorID, actor)
+	s.mintAddresses(ctx, record.ID, record.HypothesisIDs, actor)
 }
 
 // Proposal reads one review artifact with its derived lineage, its form, and
