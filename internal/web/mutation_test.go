@@ -307,7 +307,7 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			concrete: reflect.TypeOf((*frontier.Store)(nil)),
 			permitted: []string{"Finding", "Head", "Hypotheses", "Hypothesis", "LinksFrom", "LinksTo",
 				"Observation", "ObservationsFor", "Proposal", "Proposals", "ProposalsAddressing",
-				"ReviewStatus", "Revisions", "StatusHistory"},
+				"ReviewStatus", "Revisions", "StatusHistory", "TriageAdvice"},
 			// Every frontier write, including its own Decide and the
 			// revive transition #87 added: one disposition log exists and
 			// internal/review is the only way this surface may append to
@@ -317,9 +317,16 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			// constructor and is forbidden on exactly the terms
 			// CreateProposal is: a browser GET that could mint a remedy
 			// would be a durable record written by a page view.
+			//
+			// Triage is forbidden for the same reason and one more. It
+			// hands out the handle a triage pass writes advice through, so
+			// a browser holding it could attach Babel's own opinion to a
+			// record from a page view — and mint the alternative proposal
+			// that comes with it. Reading advice is TriageAdvice and is
+			// permitted above; writing it belongs to a run.
 			forbidden: []string{"CreateHypothesis", "CreateObservation", "CreateFinding", "CreateProposal",
 				"CreateCandidateProposal", "Decide", "RejectAndRefine", "SetStatus", "Link",
-				"DeferFrontier", "Revive", "Close"},
+				"DeferFrontier", "Revive", "Triage", "Close"},
 		},
 		{
 			name:      "frontier reviver",

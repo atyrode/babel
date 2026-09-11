@@ -103,8 +103,8 @@ func TestUnauthorizedDutiesAreNeverDrawn(t *testing.T) {
 	// Every duty is reported, off, naming the flag that would turn it on. An
 	// absent line and an unauthorized one would otherwise read the same.
 	states := d.duties.States(day)
-	if len(states) != 3 {
-		t.Fatalf("States reports %d duties, want the three this build knows", len(states))
+	if len(states) != 4 {
+		t.Fatalf("States reports %d duties, want the four this build knows", len(states))
 	}
 	for _, s := range states {
 		if s.Enabled || s.Due {
@@ -158,15 +158,16 @@ func TestAuthorizedDutyIsDrawnOncePerCadence(t *testing.T) {
 	if second.Authority.Ref != conductor.DutyRef(conductor.DutyImprovesBabel) {
 		t.Fatalf("second cycle authority = %+v, want the output-quality duty", second.Authority)
 	}
-	// Both are inside their cadence now, and the personal duty is unauthorized,
-	// so there is nothing left to draw: the rung does not repeat a duty within
-	// the day just because it is the only rung with anything to offer.
+	// Both are inside their cadence now, and the personal and triage duties
+	// are unauthorized, so there is nothing left to draw: the rung does not
+	// repeat a duty within the day just because it is the only rung with
+	// anything to offer.
 	third := d.once(t)
 	if third.Outcome != conductor.OutcomeIdle {
 		t.Fatalf("third cycle = %+v, want idle: both authorized duties ran today", third)
 	}
 	for _, s := range d.duties.States(d.clk.now) {
-		if s.Name == conductor.DutyTunesItself {
+		if s.Name == conductor.DutyTunesItself || s.Name == conductor.DutyTriagesTheQueue {
 			continue
 		}
 		if s.Due {

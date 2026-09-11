@@ -66,6 +66,8 @@ Flags:
   --no-babel-improves-babel   withdraw them
   --babel-tunes-itself        schedule the personal tuning duty
   --no-babel-tunes-itself     withdraw it
+  --babel-triages-the-queue      advise on proposals waiting for your ruling
+  --no-babel-triages-the-queue   withdraw it
   --json               emit the stored configuration as JSON
 
 A consolidation cycle draws candidates the frontier is still holding
@@ -188,14 +190,16 @@ type conductorSettings struct {
 	// on upgrade would spend against a ceiling set for something else.
 	ConsolidateOneIn int `json:"consolidate_one_in,omitempty"`
 	ConsolidateRoots int `json:"consolidate_roots,omitempty"`
-	// BabelImprovesBabel and BabelTunesItself are #88's two self-improvement
-	// dimensions. Both are absent from the document until the operator turns
-	// one on, which is the same statement as off: a duty nobody authorized is
-	// never scheduled, and a settings file that recorded `false` for it would
-	// look like a decision rather than the default.
-	BabelImprovesBabel bool   `json:"babel_improves_babel,omitempty"`
-	BabelTunesItself   bool   `json:"babel_tunes_itself,omitempty"`
-	ConfiguredAt       string `json:"configured_at,omitempty"`
+	// BabelImprovesBabel, BabelTunesItself and BabelTriagesTheQueue are the
+	// standing-duty authorizations. Each is absent from the document until
+	// the operator turns it on, which is the same statement as off: a duty
+	// nobody authorized is never scheduled, and a settings file that
+	// recorded `false` for one would look like a decision rather than the
+	// default.
+	BabelImprovesBabel   bool   `json:"babel_improves_babel,omitempty"`
+	BabelTunesItself     bool   `json:"babel_tunes_itself,omitempty"`
+	BabelTriagesTheQueue bool   `json:"babel_triages_the_queue,omitempty"`
+	ConfiguredAt         string `json:"configured_at,omitempty"`
 }
 
 // ceilingRecord is the operator's stated limits on autonomy.
@@ -226,8 +230,9 @@ func (s conductorSettings) interval() time.Duration {
 // duties is the standing-duty authorization the duty rung reads.
 func (s conductorSettings) duties() conductor.Duties {
 	return conductor.Duties{
-		ImprovesBabel: s.BabelImprovesBabel,
-		TunesItself:   s.BabelTunesItself,
+		ImprovesBabel:   s.BabelImprovesBabel,
+		TunesItself:     s.BabelTunesItself,
+		TriagesTheQueue: s.BabelTriagesTheQueue,
 	}
 }
 
@@ -340,18 +345,19 @@ func (a *app) conductorCmd(ctx context.Context, args []string) error {
 // conductorConfigResult is the machine-readable configuration document, shared
 // by configure and status so a script sees one shape whichever produced it.
 type conductorConfigResult struct {
-	Currency           string  `json:"currency"`
-	PerCycle           float64 `json:"per_cycle"`
-	PerDay             float64 `json:"per_day"`
-	Floor              int     `json:"serendipity_floor"`
-	IntervalSeconds    int     `json:"interval_seconds"`
-	SliceSessions      int     `json:"slice_sessions"`
-	ConsolidateOneIn   int     `json:"consolidate_one_in"`
-	ConsolidateRoots   int     `json:"consolidate_roots"`
-	BabelImprovesBabel bool    `json:"babel_improves_babel"`
-	BabelTunesItself   bool    `json:"babel_tunes_itself"`
-	ConfiguredAt       string  `json:"configured_at,omitempty"`
-	Path               string  `json:"path"`
+	Currency             string  `json:"currency"`
+	PerCycle             float64 `json:"per_cycle"`
+	PerDay               float64 `json:"per_day"`
+	Floor                int     `json:"serendipity_floor"`
+	IntervalSeconds      int     `json:"interval_seconds"`
+	SliceSessions        int     `json:"slice_sessions"`
+	ConsolidateOneIn     int     `json:"consolidate_one_in"`
+	ConsolidateRoots     int     `json:"consolidate_roots"`
+	BabelImprovesBabel   bool    `json:"babel_improves_babel"`
+	BabelTunesItself     bool    `json:"babel_tunes_itself"`
+	BabelTriagesTheQueue bool    `json:"babel_triages_the_queue"`
+	ConfiguredAt         string  `json:"configured_at,omitempty"`
+	Path                 string  `json:"path"`
 }
 
 // conductorConfigure implements `babel conductor configure`.
@@ -391,6 +397,10 @@ func (a *app) conductorConfigure(args []string) error {
 		"authorize the personal tuning duty")
 	noTunes := c.fs.Bool("no-"+conductor.DutyTunesItself, false,
 		"withdraw the personal tuning duty")
+	triages := c.fs.Bool(conductor.DutyTriagesTheQueue, false,
+		"authorize the review triage duty")
+	noTriages := c.fs.Bool("no-"+conductor.DutyTriagesTheQueue, false,
+		"withdraw the review triage duty")
 	asJSON := c.fs.Bool("json", false, "emit the stored configuration as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -452,6 +462,11 @@ func (a *app) conductorConfigure(args []string) error {
 	if err != nil {
 		return err
 	}
+	triagesTheQueue, err := resolveDutyToggle(c, conductor.DutyTriagesTheQueue,
+		settings.BabelTriagesTheQueue, *triages, *noTriages)
+	if err != nil {
+		return err
+	}
 
 	settings.Ceilings = &next
 	if *floor > 0 {
@@ -476,6 +491,7 @@ func (a *app) conductorConfigure(args []string) error {
 	}
 	settings.BabelImprovesBabel = improvesBabel
 	settings.BabelTunesItself = tunesItself
+	settings.BabelTriagesTheQueue = triagesTheQueue
 	settings.ConfiguredAt = formatTime(time.Now().UTC())
 	path, err := saveConductorSettings(settings)
 	if err != nil {
@@ -498,6 +514,7 @@ func (a *app) conductorConfigure(args []string) error {
 			plural(res.ConsolidateRoots, "candidate", "candidates"))},
 		{"babel improves babel", onOrOff(res.BabelImprovesBabel)},
 		{"babel tunes itself", onOrOff(res.BabelTunesItself)},
+		{"babel triages the queue", onOrOff(res.BabelTriagesTheQueue)},
 		{"stored in", Sanitize(res.Path)},
 	})
 	fmt.Fprintf(a.stdout, "\nrun the loop with: babel conductor run\n")
@@ -506,15 +523,16 @@ func (a *app) conductorConfigure(args []string) error {
 
 func conductorConfigDocument(s conductorSettings, path string) conductorConfigResult {
 	res := conductorConfigResult{
-		Floor:              conductor.Floor{OneIn: s.Floor}.OneIn,
-		IntervalSeconds:    int(s.interval().Seconds()),
-		SliceSessions:      s.SliceSessions,
-		ConsolidateOneIn:   s.ConsolidateOneIn,
-		ConsolidateRoots:   s.ConsolidateRoots,
-		ConfiguredAt:       s.ConfiguredAt,
-		BabelImprovesBabel: s.BabelImprovesBabel,
-		BabelTunesItself:   s.BabelTunesItself,
-		Path:               path,
+		Floor:                conductor.Floor{OneIn: s.Floor}.OneIn,
+		IntervalSeconds:      int(s.interval().Seconds()),
+		SliceSessions:        s.SliceSessions,
+		ConsolidateOneIn:     s.ConsolidateOneIn,
+		ConsolidateRoots:     s.ConsolidateRoots,
+		ConfiguredAt:         s.ConfiguredAt,
+		BabelImprovesBabel:   s.BabelImprovesBabel,
+		BabelTunesItself:     s.BabelTunesItself,
+		BabelTriagesTheQueue: s.BabelTriagesTheQueue,
+		Path:                 path,
 	}
 	if res.Floor <= 0 {
 		res.Floor = conductor.DefaultFloor

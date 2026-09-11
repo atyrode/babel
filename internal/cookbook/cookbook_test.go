@@ -24,6 +24,7 @@ var shipped = []struct {
 	minScope int
 }{
 	{id: "babel-improves-babel", kind: KindMeta, enabled: false, minScope: 2},
+	{id: "babel-triages-the-queue", kind: KindMeta, enabled: false, minScope: 2},
 	{id: "babel-tunes-itself", kind: KindMeta, enabled: false, minScope: 2},
 	{id: "code-health-comprehensibility", kind: KindLens, enabled: true, minScope: 3},
 	{id: "decision-quality-operational-risk", kind: KindLens, enabled: false, minScope: 3},
@@ -63,6 +64,7 @@ var drafts = []string{
 // #94), which is exactly the set of meta recipes this build ships.
 var duties = []string{
 	"babel-improves-babel",
+	"babel-triages-the-queue",
 	"babel-tunes-itself",
 	"mechanization-audit",
 }

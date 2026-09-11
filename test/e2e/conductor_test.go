@@ -392,8 +392,8 @@ func TestConductorDrawsAnAuthorizedDuty(t *testing.T) {
 	if depth := rungDepth(t, cold.Rungs, "policy"); depth != 0 {
 		t.Fatalf("policy rung depth = %d with no duty authorized", depth)
 	}
-	if len(cold.Duties) != 3 {
-		t.Fatalf("status reports %d duties, want the three this build knows: %+v",
+	if len(cold.Duties) != 4 {
+		t.Fatalf("status reports %d duties, want the four this build knows: %+v",
 			len(cold.Duties), cold.Duties)
 	}
 	for _, duty := range cold.Duties {

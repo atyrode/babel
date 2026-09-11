@@ -14,15 +14,16 @@ import (
 )
 
 // shippedRecipes and defaultRecipes are what the embedded cookbook holds:
-// SPEC.md §5.5's five-of-eight lens split, the three self-improvement duty
-// recipes of #88 and #94, and the three draft lenses of 2026-08-31 (document
-// ceremony, test economics, time and spend) — none of the drafts or duties is
-// default-enabled. They are written out here as counts rather than derived
-// from the cookbook. A run's implicit scope is the thing being defended: if
-// default-enablement quietly became "everything" again, deriving the
-// expectation from the same source would make this file agree with the bug.
+// SPEC.md §5.5's five-of-eight lens split, the four self-improvement duty
+// recipes of #88, #94 and the review triage duty, and the three draft lenses
+// of 2026-08-31 (document ceremony, test economics, time and spend) — none of
+// the drafts or duties is default-enabled. They are written out here as counts
+// rather than derived from the cookbook. A run's implicit scope is the thing
+// being defended: if default-enablement quietly became "everything" again,
+// deriving the expectation from the same source would make this file agree
+// with the bug.
 const (
-	shippedRecipes = 14
+	shippedRecipes = 15
 	defaultRecipes = 5
 )
 

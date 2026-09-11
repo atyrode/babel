@@ -28,6 +28,7 @@ import {
 } from "../analysis";
 import { ObservationCard } from "./HypothesisPage";
 import { RecordLinks } from "../references";
+import { TriageAdvice } from "../triage";
 
 // The page that asks for a decision shows what is being decided.
 //
@@ -390,6 +391,7 @@ function ProposalSubstance({ detail }: { detail: ProposalDetail }) {
   const addresses = detail.finding_ids ?? [];
   const restsOn = detail.hypothesis_ids ?? [];
   return (
+    <>
     <article className="card statement-card">
       <Quoted
         label="Proposal — a suggestion for review, with no external effect"
@@ -490,6 +492,11 @@ function ProposalSubstance({ detail }: { detail: ProposalDetail }) {
         </div>
       </dl>
     </article>
+    {/* Babel's own reading of the record, on the page where the ruling is
+        made: advice an operator has to go and find is advice that arrives
+        after the decision it was written for. */}
+    <TriageAdvice advice={detail.triage} subject={detail.id} />
+    </>
   );
 }
 

@@ -27,6 +27,21 @@ const (
 	// operator-specific relevance and memory amendments, including revisiting
 	// recorded facts against fresh archive state.
 	DutyTunesItself = "babel-tunes-itself"
+	// DutyTriagesTheQueue is the review-triage duty: Babel reading the
+	// proposals nobody has ruled on yet and leaving advice beside them —
+	// what duplicates what, what to read first, the case against acting,
+	// and a better-stated alternative where there is one.
+	//
+	// It has a toggle of its own rather than sharing DutyImprovesBabel's,
+	// because it authorizes a different act on a different surface. The
+	// product dimension authorizes analysis of Babel's own record, whose
+	// output is proposals an operator reads at leisure; this authorizes
+	// Babel to speak on the page where the operator decides, about records
+	// they have not ruled on yet. An operator may reasonably want the first
+	// and not the second, and folding them into one switch would take that
+	// choice away by treating "analyze yourself" as consent to "advise me
+	// while I rule".
+	DutyTriagesTheQueue = "babel-triages-the-queue"
 )
 
 // dutyPrefix is what a duty's authority reference begins with, so a receipt's
@@ -86,8 +101,8 @@ type Duty struct {
 // StandingDuties returns every duty this build knows, in draw order.
 //
 // The list is written out here rather than derived from the cookbook. A recipe
-// existing is not an obligation to run it: the duties are the three the
-// operator authorized dimensions for, and a build that grew a self-analysis
+// existing is not an obligation to run it: the duties are the four the
+// operator authorizes toggles for, and a build that grew a self-analysis
 // recipe would otherwise start scheduling it by accident.
 //
 // Friction lenses are drawn first (#120). Inside this rung, order is the only
@@ -131,13 +146,26 @@ func StandingDuties() []Duty {
 			Dimension: DimensionPersonal,
 			About:     "this operator's relevance and memory, revisited against the archive",
 		},
+		{
+			Name:      DutyTriagesTheQueue,
+			Recipe:    DutyTriagesTheQueue,
+			Toggle:    DutyTriagesTheQueue,
+			Dimension: DimensionProduct,
+			// The subject is Babel's own output, which is the product
+			// dimension's, even though nothing this duty writes is
+			// published: advice stays on the machine that wrote it,
+			// beside the record it is about. The dimension says what the
+			// duty reads, and the toggle beside it is what says who
+			// authorized Babel to say it out loud during review.
+			About: "what duplicates what in the review queue, and the case against each",
+		},
 	}
 	sort.SliceStable(duties, func(i, j int) bool { return duties[i].Friction && !duties[j].Friction })
 	return duties
 }
 
-// Duties is the operator's standing-duty authorization: which dimensions the
-// loop may schedule duty cycles for. Both default off.
+// Duties is the operator's standing-duty authorization: which recipes the
+// loop may schedule duty cycles for. All three default off.
 //
 // They are flags on `conductor configure` rather than #86-style ceremonies, and
 // that is a statement about what they authorize. A ceremony exists where the
@@ -148,17 +176,20 @@ func StandingDuties() []Duty {
 // mints a profile, so a terminal handover would add ritual without adding
 // intent — the same reasoning that made the ceilings flags.
 type Duties struct {
-	ImprovesBabel bool
-	TunesItself   bool
+	ImprovesBabel   bool
+	TunesItself     bool
+	TriagesTheQueue bool
 }
 
-// authorizes reports whether the operator has authorized d's dimension.
+// authorizes reports whether the operator has authorized d's toggle.
 func (t Duties) authorizes(d Duty) bool {
 	switch d.Toggle {
 	case DutyImprovesBabel:
 		return t.ImprovesBabel
 	case DutyTunesItself:
 		return t.TunesItself
+	case DutyTriagesTheQueue:
+		return t.TriagesTheQueue
 	default:
 		return false
 	}

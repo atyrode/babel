@@ -189,6 +189,13 @@ type FrontierReader interface {
 	// them: ProposalsAddressing answers about one claim, and Proposal
 	// answers about one id.
 	Proposals(context.Context, frontier.ListFilter) ([]frontier.Proposal, int, error)
+	// TriageAdvice reads what a triage pass said about one proposal before
+	// anybody ruled on it, which the review page shows beside the record it
+	// is about. It is a read like every other name here, and that is the
+	// half of the authority line this interface can carry: a pass writes its
+	// advice through internal/frontier's narrow triage handle, and a browser
+	// reaches neither that handle nor a disposition.
+	TriageAdvice(context.Context, string) ([]frontier.TriageAdvice, error)
 	LinksFrom(context.Context, string) ([]frontier.Link, error)
 	LinksTo(context.Context, string) ([]frontier.Link, error)
 	StatusHistory(context.Context, string) ([]frontier.StatusEvent, error)

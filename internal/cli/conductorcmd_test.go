@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -254,8 +255,8 @@ func TestConductorStatusReportsPlantedStateTruthfully(t *testing.T) {
 	// Every duty is reported with its own state, including the ones nobody
 	// authorized: an unauthorized duty and a duty this build does not have must
 	// not read the same.
-	if len(status.Duties) != 3 {
-		t.Fatalf("duties = %+v, want the three this build knows", status.Duties)
+	if len(status.Duties) != 4 {
+		t.Fatalf("duties = %+v, want the four this build knows", status.Duties)
 	}
 	for _, duty := range status.Duties {
 		if duty.Enabled || duty.Due {
@@ -382,6 +383,7 @@ func TestConductorConfigureStoresTheDutyToggles(t *testing.T) {
 		conductor.DutyImprovesBabel:      false,
 		conductor.DutyMechanizationAudit: false,
 		conductor.DutyTunesItself:        true,
+		conductor.DutyTriagesTheQueue:    false,
 	}
 	if len(status.Duties) != len(want) {
 		t.Fatalf("status reports %d duties, want %d", len(status.Duties), len(want))
@@ -430,9 +432,25 @@ func TestConductorConfigureStoresTheDutyToggles(t *testing.T) {
 
 	stdout, _ = f.ok("conductor", "status", "--json")
 	status = decodeJSON[conductorStatusResult](t, stdout)
-	tunes := status.Duties[len(status.Duties)-1]
-	if tunes.Name != conductor.DutyTunesItself {
-		t.Fatalf("duties are out of draw order: %+v", status.Duties)
+	// Draw order, written out: the friction lens leads (#120) and the rest
+	// follow as declared. Reading the duty under test off a fixed index
+	// would make a duty added at the end look like a reordering.
+	var order []string
+	for _, duty := range status.Duties {
+		order = append(order, duty.Name)
+	}
+	wantOrder := []string{
+		conductor.DutyMechanizationAudit, conductor.DutyImprovesBabel,
+		conductor.DutyTunesItself, conductor.DutyTriagesTheQueue,
+	}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("duties are out of draw order: %v, want %v", order, wantOrder)
+	}
+	var tunes conductorDutyRow
+	for _, duty := range status.Duties {
+		if duty.Name == conductor.DutyTunesItself {
+			tunes = duty
+		}
 	}
 	if !tunes.Enabled || tunes.Due || tunes.LastDrawn == "" {
 		t.Errorf("duty after a journalled draw = %+v, want it on, not due, and dated", tunes)

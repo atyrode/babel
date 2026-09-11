@@ -58,6 +58,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   recognise is withheld rather than copied. A real run over a synthetic corpus
   proves it, and the guard fails if the reduction is removed.
 
+- **Babel reads its own proposals before you do.** A new off-by-default meta
+  recipe, `babel-triages-the-queue`, takes the proposals nobody has ruled on
+  and records advice beside each one: which of them say the same thing, which
+  is worth reading first and why, the case against acting on it, and — where
+  it has one — a better-stated alternative. The advice appears on the review
+  page, directly above the decision it is for, because advice a person has to
+  go and find arrives after the decision it was written for. Authorize it with
+  `babel conductor configure --babel-triages-the-queue`.
+
+  It may rank, cluster, weigh and re-propose. It may not rule. That is a
+  property of the types rather than a promise in a comment: the triage pass
+  holds a narrow `*frontier.Triage` handle with three methods and no path to
+  `Decide`, `RejectAndRefine`, `SetStatus` or `DeferFrontier`, and the store
+  refuses advice on a proposal a ruling has already been recorded against. An
+  alternative is a new proposal record resting on exactly what the original
+  rests on — same support, same claims, different wording — so the original
+  keeps its id, its wording and its place in the queue, and the operator
+  chooses between two records. Whether Babel may ever accept or reject on its
+  own is deliberately still unanswered, and nothing here anticipates an answer.
+
 - **Findings and proposals have a front door.** Both are the first entries in
   the navigation, proposals being an entirely new listing — before this,
   Babel's committed output was reachable only by guessing a URL. The dashboard

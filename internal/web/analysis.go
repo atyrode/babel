@@ -949,6 +949,71 @@ type proposalDetail struct {
 	// exists to prevent.
 	Form    string                   `json:"form"`
 	Payload frontier.ProposalPayload `json:"payload"`
+	// Triage is what Babel said about this proposal before anybody ruled on
+	// it, and it is served on the detail route because this is the document
+	// the review page reads: advice an operator has to go and look for is
+	// advice that arrives after the decision it was written for.
+	//
+	// Omitted when empty rather than served as a null field, so an
+	// untriaged proposal renders as one.
+	Triage []triageAdviceView `json:"triage,omitempty"`
+}
+
+// triageAdviceView is one piece of Babel's advice about a proposal, as the
+// page an operator decides on shows it.
+//
+// Every field is either a record identifier or the pass's own words. There is
+// no disposition here and no field a client could mistake for one: the whole
+// content is a reading order, the peers worth comparing, the case against
+// acting, and the id of a proposal offered instead — each of which leaves the
+// ruling to the person reading it.
+type triageAdviceView struct {
+	ID string `json:"id"`
+	// ProposalID is the proposal the advice is about, which is not always
+	// the proposal being rendered: read from an alternative, this names the
+	// record it was offered instead of, and that is the only account of
+	// where the alternative came from.
+	ProposalID string `json:"proposal_id"`
+	// AlternativeID is the proposal the pass offered instead, absent when it
+	// offered none.
+	AlternativeID string `json:"alternative_id,omitempty"`
+	// Cluster names the peers the pass reads as saying the same thing. It is
+	// an invitation to compare and never a duplicate ruling, which is the
+	// operator's.
+	Cluster    []string `json:"cluster"`
+	RunID      string   `json:"run_id"`
+	RecordedAt string   `json:"recorded_at"`
+	// Rank and Cohort are a suggested reading order and its size, so a
+	// position is read as one rather than as a score.
+	Rank   int `json:"rank"`
+	Cohort int `json:"cohort"`
+	// Ranking is why that place, and CounterArgument is the case against
+	// acting on the proposal at all. The second is always present: a pass
+	// that cannot argue against a proposal records no advice about it.
+	Ranking         string `json:"ranking,omitempty"`
+	CounterArgument string `json:"counter_argument"`
+}
+
+func viewTriageAdvice(records []frontier.TriageAdvice) []triageAdviceView {
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]triageAdviceView, 0, len(records))
+	for _, record := range records {
+		out = append(out, triageAdviceView{
+			ID:              record.ID,
+			ProposalID:      record.ProposalID,
+			AlternativeID:   record.AlternativeID,
+			Cluster:         idList(record.Cluster),
+			RunID:           record.RunID,
+			RecordedAt:      timeText(record.RecordedAt),
+			Rank:            record.Payload.Rank,
+			Cohort:          record.Payload.Cohort,
+			Ranking:         record.Payload.Ranking,
+			CounterArgument: record.Payload.CounterArgument,
+		})
+	}
+	return out
 }
 
 // handleProposal serves one proposal by id.
@@ -994,6 +1059,12 @@ func (s *Server) handleProposal(w http.ResponseWriter, r *http.Request, id strin
 		Form:            string(record.Form),
 		Payload:         record.Payload,
 	}
+	advice, err := s.opts.Frontier.TriageAdvice(r.Context(), record.ID)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	detail.Triage = viewTriageAdvice(advice)
 	states, degraded := s.syncStates(r.Context(), r, []string{record.ID})
 	if degraded {
 		detail.syncNotice = degradedNotice()
