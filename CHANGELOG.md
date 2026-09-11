@@ -11,6 +11,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **The dashboard loads on a machine that did not produce the records.** A
+  merged listing opened the deployment's records one at a time, and dropping
+  this machine's share before opening hid what that cost: the instance that
+  made the records skipped nearly all of them, while an instance that made
+  none skipped nothing and paid an object-store round trip, a digest check
+  and a decrypt for every row, in sequence. The deployment's 1,958-candidate
+  frontier took 31.7s read that way, against the browser's own 20-second
+  abort, so the dashboard said it could not be loaded on every machine except
+  the one that happened to have made the records. The records a listing keeps
+  are now opened together, bounded by the publisher's own worker count, which
+  took the same read to 6.2s; a cancelled request is reported once instead of
+  as a page of records each claiming to be sealed. Measured against the live
+  catalog with `BABEL_HOST_ID` naming a machine that owns none of it.
+
 - **Babel releases its own binary and nothing else.** The manifold plugins are
   paused: Babel is a standalone product whose interface is `babel web`, whose
   storage is PostgreSQL and restic, and nothing it does depends on a hub. The
