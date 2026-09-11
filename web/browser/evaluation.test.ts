@@ -98,6 +98,32 @@ function visible(text: string): Promise<unknown> {
     text,
   );
 }
+// openRow clicks a listing row's link and waits for the navigation it causes.
+//
+// A click is retried when the row is replaced under it: React re-renders the
+// listing when an answer lands, which detaches the node Puppeteer just
+// scrolled to, and a test that treated that as a failure would be reporting
+// the harness rather than the surface. A click that never navigates is still
+// a failure, which is what the loop's exit says.
+async function openRow(item: string): Promise<void> {
+  const selector = `[data-item='${item}'] a`;
+  const before = page.url();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await page.waitForSelector(selector);
+    try {
+      await page.click(selector);
+    } catch (error) {
+      if (!String(error).includes("detached")) throw error;
+    }
+    try {
+      await page.waitForFunction((url: string) => window.location.href !== url, { timeout: 2_000 }, before);
+      return;
+    } catch {
+      continue;
+    }
+  }
+  throw new Error(`clicking ${selector} never navigated away from ${before}`);
+}
 
 function bodyText(): Promise<string> {
   return page.evaluate(() => document.body.innerText);
@@ -145,8 +171,7 @@ test.skipIf(!chrome)("the whole surface is reachable by navigation, without a gu
   // And back down into one record, from the listing rather than by id.
   await page.click("a[href='#/evaluation']");
   await visible("Backlog");
-  await page.waitForSelector("[data-item='prp_bare-vote'] a");
-  await page.click("[data-item='prp_bare-vote'] a");
+  await openRow("prp_bare-vote");
   await visible("The revision under evaluation");
   expect(page.url()).toContain("/evaluation/proposal/prp_bare-vote");
 });
@@ -272,7 +297,8 @@ test.skipIf(!chrome)("a never-reviewed record is found and is not rendered as un
   expect(listing).toContain("hyp_never-reviewed");
 
   // Navigated to, not typed: the inventory's rows are links to the record.
-  await page.click("[data-item='hyp_never-reviewed'] a");
+  await openRow("hyp_never-reviewed");
+  await page.waitForFunction(() => window.location.hash.includes("hyp_never-reviewed"));
   await visible("Reception");
   const text = await bodyText();
   // The absence is stated as an absence. Three zeroes would read as a record

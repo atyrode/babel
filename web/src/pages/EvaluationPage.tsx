@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   getEvaluationList,
@@ -60,16 +60,34 @@ function EvaluationPage() {
   const snapshot = params.get("snapshot") ?? "";
   const offset = Math.max(0, Number(params.get("offset") ?? 0) || 0);
 
+  // fetched is the query the rows on screen came from. It exists because
+  // pinning the snapshot below rewrites the URL, and without it that rewrite
+  // would re-request the identical page: the server answered from a snapshot,
+  // the client wrote that snapshot into the query, and the query changed. The
+  // second request returned the same rows and replaced every one of them,
+  // which cost a round trip and detached whatever the operator was about to
+  // click.
+  const fetched = useRef("");
+  const requested = JSON.stringify({ sort, lane, kind, coverage, role, snapshot, offset });
+
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
     getEvaluationList({ sort, lane, kind, coverage, role, snapshot, limit: PAGE_SIZE, offset })
-      .then(setData)
+      .then((answer) => {
+        fetched.current = JSON.stringify({
+          sort, lane, kind, coverage, role, snapshot: answer.snapshot || snapshot, offset,
+        });
+        setData(answer);
+      })
       .catch((reason) => setError(errorMessage(reason)))
       .finally(() => setLoading(false));
   }, [sort, lane, kind, coverage, role, snapshot, offset]);
 
-  useEffect(load, [load]);
+  useEffect(() => {
+    if (fetched.current === requested) return;
+    load();
+  }, [load, requested]);
 
   // The first answer pins the ordering the rest of the paging walks. It is a
   // replacing navigation: pinning is not something the operator did, so it
