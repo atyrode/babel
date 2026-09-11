@@ -40,7 +40,7 @@ import (
 
 	"github.com/atyrode/babel/internal/adapter"
 	"github.com/atyrode/babel/internal/digest"
-	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/harness"
 )
 
 // PreparationSchema is the version of the preparation record's stored shape.
@@ -317,10 +317,12 @@ func canonicalRelated(related []RelatedOutput) ([]RelatedOutput, error) {
 // order. Validation quotes field names and never field values: a preparation
 // is built from Babel's own discovery output, but an error that echoed a
 // selector would be one more surface for that output to escape through.
+//
+// The harness is checked against the one declaration of the set
+// (internal/harness) rather than a list kept here, so a harness Babel can
+// read is a harness a preparation can name, with no second edit.
 func (s *Selected) canonicalize() error {
-	switch s.Harness {
-	case event.HarnessOMP, event.HarnessCodex, event.HarnessClaude, event.HarnessBabel:
-	default:
+	if _, known := harness.Lookup(s.Harness); !known {
 		return fmt.Errorf("unknown harness")
 	}
 	if s.Host == "" {

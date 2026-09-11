@@ -48,20 +48,20 @@ func (failingJournal) SyncState(context.Context, string) (string, error) {
 	return "", errors.New("journal unreadable")
 }
 
-type harness struct {
+type deployment struct {
 	reader *fleet.Reader
 	db     *sql.DB
 	store  *memStore
 	ring   *envelope.Keyring
 }
 
-// newHarness builds a deployment with two attributed hosts and one instance
+// newDeployment builds a deployment with two attributed hosts and one instance
 // that has no registered host, and a reader whose local host is h1.
 //
 // It hands back the connection as well as the reader. A test that seeds
 // committed runs is a publisher for the length of that write, and the read
 // surface has no business exposing its own connection to make that possible.
-func newHarness(t *testing.T) harness {
+func newDeployment(t *testing.T) deployment {
 	t.Helper()
 	ctx := t.Context()
 	db := newDB(t)
@@ -84,13 +84,13 @@ func newHarness(t *testing.T) harness {
 	if err != nil {
 		t.Fatalf("NewReader: %v", err)
 	}
-	return harness{reader: reader, db: db, store: store, ring: ring}
+	return deployment{reader: reader, db: db, store: store, ring: ring}
 }
 
 // commit publishes one run through the same object-first, database-last
 // protocol a real publisher uses, so what the read path reads is what a
 // publisher would have written.
-func (h harness) commit(t *testing.T, runID, instance string, records ...staged) {
+func (h deployment) commit(t *testing.T, runID, instance string, records ...staged) {
 	t.Helper()
 	closure := sharedcatalog.RunClosure{
 		RunID:            runID,
@@ -149,7 +149,7 @@ func hypothesis(id, statement string) staged {
 // the interesting failure: rendering a record as pending-sync when nothing will
 // ever carry it is a promise the system cannot keep.
 func TestSyncStatesResolvesAllFourCases(t *testing.T) {
-	h := newHarness(t)
+	h := newDeployment(t)
 	reader, store, ring := h.reader, h.store, h.ring
 	ctx := t.Context()
 	db := h.db
@@ -245,7 +245,7 @@ func TestSyncStatesResolvesAllFourCases(t *testing.T) {
 // because one host published something this binary cannot decrypt would make
 // every machine hostage to every other machine's keys.
 func TestRecordsWithContentReportsPerRecordFailure(t *testing.T) {
-	h := newHarness(t)
+	h := newDeployment(t)
 	reader, store, ring := h.reader, h.store, h.ring
 	ctx := t.Context()
 	db := h.db
@@ -357,7 +357,7 @@ func TestRecordsWithContentReportsPerRecordFailure(t *testing.T) {
 // only to the rebuildable index, and every property below is about that being
 // enough.
 func TestIngestBuildsPerHostPartitions(t *testing.T) {
-	h := newHarness(t)
+	h := newDeployment(t)
 	reader := h.reader
 	ctx := t.Context()
 	db := h.db
@@ -474,7 +474,7 @@ func TestIngestBuildsPerHostPartitions(t *testing.T) {
 // because of one. A payload from a build whose shape has moved on is authentic
 // and undecodable, which is a version problem reported per record.
 func TestIngestSurvivesAnUndecodableRecord(t *testing.T) {
-	h := newHarness(t)
+	h := newDeployment(t)
 	reader, store, ring := h.reader, h.store, h.ring
 	ctx := t.Context()
 	db := h.db
@@ -523,7 +523,7 @@ func TestIngestSurvivesAnUndecodableRecord(t *testing.T) {
 // The host vocabulary a filter offers, and the local host label a renderer needs
 // in order to mark its own rows as its own.
 func TestHostsAndLocalHost(t *testing.T) {
-	h := newHarness(t)
+	h := newDeployment(t)
 	reader := h.reader
 	ctx := t.Context()
 
@@ -564,7 +564,7 @@ func TestHostsAndLocalHost(t *testing.T) {
 // staging hook, so what the reader opens is what a producing host would have
 // sealed rather than a second definition of edge JSON maintained here.
 func TestOpenRoutesACitationEdgeToItsOwnDecoder(t *testing.T) {
-	h := newHarness(t)
+	h := newDeployment(t)
 	ctx := t.Context()
 
 	registry := reference.NewRegistry()
@@ -672,7 +672,7 @@ func TestOpenRoutesACitationEdgeToItsOwnDecoder(t *testing.T) {
 // maintained here. A frontier review answer rides along in the same closure,
 // because the routing has to keep answering for the publisher it already had.
 func TestOpenRoutesADispositionToItsOwnDecoder(t *testing.T) {
-	h := newHarness(t)
+	h := newDeployment(t)
 	ctx := t.Context()
 
 	dir := t.TempDir()

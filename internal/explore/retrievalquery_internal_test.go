@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/harness"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
@@ -51,7 +52,7 @@ func newRetrievalBroker(t *testing.T, budget int) *retrieval {
 	t.Cleanup(func() { idx.Close() })
 
 	stream := event.Stream{
-		Harness:       event.HarnessOMP,
+		Harness:       harness.OMP,
 		AdapterSchema: 1,
 		SourceID:      fixtureSourceID,
 		Path:          path,
@@ -66,7 +67,7 @@ func newRetrievalBroker(t *testing.T, budget int) *retrieval {
 	at := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	return &retrieval{
 		index:     idx,
-		harnesses: []string{event.HarnessOMP},
+		harnesses: []string{harness.OMP},
 		sourceIDs: []string{fixtureSourceID},
 		limit:     budget,
 		now: func() time.Time {

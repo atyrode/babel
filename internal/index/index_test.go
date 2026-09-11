@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/harness"
 	"github.com/atyrode/babel/internal/index"
 
 	_ "modernc.org/sqlite"
@@ -37,9 +38,9 @@ var fixtures = []struct {
 	sourceID string
 	file     string
 }{
-	{event.HarnessOMP, "omp-alpha", "omp-session.jsonl"},
-	{event.HarnessCodex, "codex-beta", "codex-session.jsonl"},
-	{event.HarnessClaude, "claude-gamma", "claude-session.jsonl"},
+	{harness.OMP, "omp-alpha", "omp-session.jsonl"},
+	{harness.Codex, "codex-beta", "codex-session.jsonl"},
+	{harness.Claude, "claude-gamma", "claude-session.jsonl"},
 }
 
 // corpus copies the fixtures into a private directory and returns the
@@ -158,7 +159,7 @@ func TestSearchFindsByText(t *testing.T) {
 		t.Errorf("best-ranked hits = %v, want %v (in some order)", best, want)
 	}
 	for _, h := range hits {
-		if h.Harness != event.HarnessOMP || h.SourceID != "omp-alpha" {
+		if h.Harness != harness.OMP || h.SourceID != "omp-alpha" {
 			t.Errorf("hit %s: identity = %s/%s, want omp/omp-alpha", key(h), h.Harness, h.SourceID)
 		}
 		if h.AdapterSchema != 1 {
@@ -183,14 +184,14 @@ func TestSearchStructuredFilters(t *testing.T) {
 		want  []string
 	}{{
 		name:  "harness",
-		query: index.Query{Harnesses: []string{event.HarnessClaude}},
+		query: index.Query{Harnesses: []string{harness.Claude}},
 		want:  []string{"claude:0", "claude:1", "claude:2", "claude:3", "claude:4", "claude:5"},
 	}, {
 		name: "several harnesses",
 		// "fixture" alone reaches each session's opening record, because
 		// the terms are optional; the harness filter is what excludes
 		// claude, and that is what this case is about.
-		query: index.Query{Match: "fixture request", Harnesses: []string{event.HarnessOMP, event.HarnessCodex}},
+		query: index.Query{Match: "fixture request", Harnesses: []string{harness.OMP, harness.Codex}},
 		want:  []string{"codex:1", "omp:0", "omp:1"},
 	}, {
 		name:  "session",
@@ -264,7 +265,7 @@ func TestSearchStructuredFilters(t *testing.T) {
 		query: index.Query{
 			Match:     "synthetic",
 			Kinds:     []event.Kind{event.KindVerificationEvidence},
-			Harnesses: []string{event.HarnessOMP, event.HarnessCodex},
+			Harnesses: []string{harness.OMP, harness.Codex},
 		},
 		want: []string{"codex:4", "omp:4", "omp:8"},
 	}, {
@@ -285,7 +286,7 @@ func TestSearchStructuredFilters(t *testing.T) {
 		want: []string{"omp:7", "omp:8"},
 	}, {
 		name:  "filters that intersect to nothing",
-		query: index.Query{Match: "zeppelin", Harnesses: []string{event.HarnessClaude}},
+		query: index.Query{Match: "zeppelin", Harnesses: []string{harness.Claude}},
 		want:  nil,
 	}}
 
@@ -682,7 +683,7 @@ func TestOversizedRecordIsFindableByMetadataAndLocator(t *testing.T) {
 		t.Fatalf("open index: %v", err)
 	}
 	defer idx.Close()
-	stream := event.Stream{Harness: event.HarnessOMP, AdapterSchema: 1, SourceID: "omp-oversized", Path: path}
+	stream := event.Stream{Harness: harness.OMP, AdapterSchema: 1, SourceID: "omp-oversized", Path: path}
 	if _, err := idx.IndexSession(ctx, stream); err != nil {
 		t.Fatalf("index oversized log: %v", err)
 	}
@@ -748,7 +749,7 @@ func TestUnstorableTimestampsAreNotIndexedAsTimes(t *testing.T) {
 	}
 	defer idx.Close()
 	if _, err := idx.IndexSession(ctx, event.Stream{
-		Harness:       event.HarnessOMP,
+		Harness:       harness.OMP,
 		AdapterSchema: 1,
 		SourceID:      "omp-timestamps",
 		Path:          path,

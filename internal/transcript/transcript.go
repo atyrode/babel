@@ -1,4 +1,7 @@
-// Package transcript presents harness session logs as a common stream of events.
+// Package transcript presents harness session logs as a common stream of
+// events. Which harnesses exist, and which record language each writes, is
+// internal/harness's single declaration (SPEC.md §6.8); this package holds
+// one display parser per language.
 package transcript
 
 import (
@@ -11,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/atyrode/babel/internal/harness"
 )
 
 const (
@@ -31,7 +36,13 @@ type Event struct {
 // Events reads a primary session log and returns the requested event window.
 // Malformed and unrecognized records are retained as raw events; only opening
 // or reading the file can fail.
-func Events(path, harness string, offset, limit int) (total int, events []Event, err error) {
+//
+// An unregistered harness name is not an error here, unlike in
+// internal/event: the session view degrades to raw records, because showing
+// an operator the bytes of a log Babel cannot yet classify is the honest
+// rendering of it. The record language is resolved once per session rather
+// than per record, so the per-record cost is the record's own decoding.
+func Events(path, harnessName string, offset, limit int) (total int, events []Event, err error) {
 	if offset < 0 {
 		return 0, nil, fmt.Errorf("offset must not be negative")
 	}
@@ -44,13 +55,14 @@ func Events(path, harness string, offset, limit int) (total int, events []Event,
 	}
 	defer f.Close()
 
+	declared, known := harness.Lookup(harnessName)
 	reader := bufio.NewReaderSize(f, 64<<10)
 	for {
 		line, oversized, present, readErr := readRecordLine(reader)
 		if present {
 			event, ok := Event{}, false
-			if !oversized {
-				event, ok = parse(line, harness)
+			if !oversized && known {
+				event, ok = parse(line, declared.Format)
 			}
 			if !ok {
 				event = rawEvent(line)
@@ -104,23 +116,20 @@ func trimLine(line []byte) []byte {
 	return bytes.TrimSuffix(line, []byte{'\r'})
 }
 
-func parse(line []byte, harness string) (Event, bool) {
-	switch harness {
-	case "omp":
+// parse reads one record in the display language of its harness. A harness
+// registered with a language already listed here needs no edit: Babel's own
+// analysis sessions parse as OMP records because that is what they are, the
+// engine's own message objects reported verbatim in its agent_end frames,
+// and an envelope of Babel's design would assert a schema over content
+// Babel does not own (internal/adapter/babelself).
+func parse(line []byte, format harness.Format) (Event, bool) {
+	switch format {
+	case harness.FormatOMP:
 		return parseOMP(line)
-	case "codex":
+	case harness.FormatCodex:
 		return parseCodex(line)
-	case "claude":
+	case harness.FormatClaude:
 		return parseClaude(line)
-	case "babel":
-		// Babel's own analysis sessions parse as OMP records because they
-		// are written in OMP's record language: the messages they hold are
-		// the engine's own message objects, reported verbatim in its
-		// agent_end frames, so an envelope of Babel's own design would be a
-		// schema asserted over content Babel does not own
-		// (internal/adapter/babelself). Without this case they would decode
-		// as unparseable and render as raw JSON in the session view.
-		return parseOMP(line)
 	default:
 		return Event{}, false
 	}

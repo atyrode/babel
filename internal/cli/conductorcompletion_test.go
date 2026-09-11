@@ -8,8 +8,8 @@ import (
 
 	"github.com/atyrode/babel/internal/conductor"
 	"github.com/atyrode/babel/internal/digest"
-	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/explore"
+	"github.com/atyrode/babel/internal/harness"
 	runstore "github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/worker"
 )
@@ -49,7 +49,7 @@ func TestConductorRecoversReceiptBeforeCycleFinalizationWithoutInference(t *test
 			}
 			defer store.Close()
 			prep, err := runstore.NewPreparation(started, []runstore.Selected{{
-				Host: "test-host", Harness: event.HarnessOMP, SourceID: "test-session",
+				Host: "test-host", Harness: harness.OMP, SourceID: "test-session",
 				CaptureDigest: digest.Bytes([]byte("capture")), SourceDigest: digest.Bytes([]byte("source")),
 				Adapter: runstore.AdapterRef{Schema: 1, Version: "test"},
 			}}, runstore.PreparationContext{})

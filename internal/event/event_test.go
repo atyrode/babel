@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/atyrode/babel/internal/harness"
 )
 
 // want is one expected event. Exactly one of text and textPrefix is set:
@@ -102,9 +104,9 @@ func TestScanClassifiesFixtures(t *testing.T) {
 		file    string
 		want    []want
 	}{
-		"omp":    {harness: HarnessOMP, file: "omp-session.jsonl", want: ompWant},
-		"codex":  {harness: HarnessCodex, file: "codex-session.jsonl", want: codexWant},
-		"claude": {harness: HarnessClaude, file: "claude-session.jsonl", want: claudeWant},
+		"omp":    {harness: harness.OMP, file: "omp-session.jsonl", want: ompWant},
+		"codex":  {harness: harness.Codex, file: "codex-session.jsonl", want: codexWant},
+		"claude": {harness: harness.Claude, file: "claude-session.jsonl", want: claudeWant},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -160,9 +162,9 @@ func TestScanClassifiesFixtures(t *testing.T) {
 func TestScanKindCoverage(t *testing.T) {
 	all := []Kind{KindUserReport, KindAgentClaim, KindToolObservation, KindRepositoryChange, KindVerificationEvidence, KindOpaque}
 	cases := map[string]string{
-		HarnessOMP:    "omp-session.jsonl",
-		HarnessCodex:  "codex-session.jsonl",
-		HarnessClaude: "claude-session.jsonl",
+		harness.OMP:    "omp-session.jsonl",
+		harness.Codex:  "codex-session.jsonl",
+		harness.Claude: "claude-session.jsonl",
 	}
 	for harness, file := range cases {
 		t.Run(harness, func(t *testing.T) {
@@ -238,7 +240,7 @@ func TestScanOversizedRecordDoesNotAbort(t *testing.T) {
 	log := oversized + "\n" + after + "\n"
 
 	var got []Event
-	err := Scan(strings.NewReader(log), Stream{Harness: HarnessOMP, Path: "synthetic.jsonl"}, func(e Event) error {
+	err := Scan(strings.NewReader(log), Stream{Harness: harness.OMP, Path: "synthetic.jsonl"}, func(e Event) error {
 		got = append(got, e)
 		return nil
 	})
@@ -287,7 +289,7 @@ func TestScanCRLF(t *testing.T) {
 	log := straddling + "\r\n" + short + "\r\n"
 
 	var got []Event
-	err := Scan(strings.NewReader(log), Stream{Harness: HarnessOMP, Path: "synthetic.jsonl"}, func(e Event) error {
+	err := Scan(strings.NewReader(log), Stream{Harness: harness.OMP, Path: "synthetic.jsonl"}, func(e Event) error {
 		got = append(got, e)
 		return nil
 	})
@@ -317,7 +319,7 @@ func TestScanCRLF(t *testing.T) {
 func TestScanTrailingCarriageReturnIsContent(t *testing.T) {
 	record := `{"type":"message","message":{"role":"user"}}` + "\r"
 	var got []Event
-	if err := Scan(strings.NewReader(record), Stream{Harness: HarnessOMP, Path: "synthetic.jsonl"}, func(e Event) error {
+	if err := Scan(strings.NewReader(record), Stream{Harness: harness.OMP, Path: "synthetic.jsonl"}, func(e Event) error {
 		got = append(got, e)
 		return nil
 	}); err != nil {
@@ -334,7 +336,7 @@ func TestScanTrailingCarriageReturnIsContent(t *testing.T) {
 
 func TestScanEmptyInput(t *testing.T) {
 	count := 0
-	if err := Scan(strings.NewReader(""), Stream{Harness: HarnessOMP}, func(Event) error {
+	if err := Scan(strings.NewReader(""), Stream{Harness: harness.OMP}, func(Event) error {
 		count++
 		return nil
 	}); err != nil {
@@ -361,7 +363,7 @@ func TestScanUnknownHarness(t *testing.T) {
 func TestScanPropagatesCallbackError(t *testing.T) {
 	sentinel := errors.New("synthetic callback failure")
 	seen := 0
-	err := Scan(strings.NewReader("{}\n{}\n{}\n"), Stream{Harness: HarnessOMP}, func(Event) error {
+	err := Scan(strings.NewReader("{}\n{}\n{}\n"), Stream{Harness: harness.OMP}, func(Event) error {
 		seen++
 		return sentinel
 	})
@@ -399,7 +401,7 @@ func TestScanBoundedMemory(t *testing.T) {
 	runtime.ReadMemStats(&before)
 
 	count, peak := 0, uint64(0)
-	err = Scan(f, Stream{Harness: HarnessOMP, Path: path}, func(e Event) error {
+	err = Scan(f, Stream{Harness: harness.OMP, Path: path}, func(e Event) error {
 		count++
 		if count%20000 == 0 {
 			var m runtime.MemStats
@@ -537,7 +539,7 @@ func TestScanRecordsTimes(t *testing.T) {
 		`{"type":"message","timestamp":"not-a-timestamp","message":{"role":"user","content":[{"type":"text","text":"synthetic untimed"}]}}` + "\n" +
 		`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"synthetic undated"}]}}` + "\n"
 	var got []Event
-	if err := Scan(strings.NewReader(log), Stream{Harness: HarnessOMP}, func(e Event) error {
+	if err := Scan(strings.NewReader(log), Stream{Harness: harness.OMP}, func(e Event) error {
 		got = append(got, e)
 		return nil
 	}); err != nil {

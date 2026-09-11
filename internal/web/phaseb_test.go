@@ -25,6 +25,7 @@ import (
 	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/harness"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/review"
@@ -601,7 +602,7 @@ func (h *phaseB) indexSession(text string) {
 		h.t.Fatalf("write synthetic session: %v", err)
 	}
 	result, err := h.index.IndexSession(h.ctx, event.Stream{
-		Harness:       event.HarnessOMP,
+		Harness:       harness.OMP,
 		AdapterSchema: 1,
 		SourceID:      "synthetic-session",
 		Path:          path,

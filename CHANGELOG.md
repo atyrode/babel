@@ -86,6 +86,34 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Changed
 
+- **A harness is declared once.** Teaching Babel a fourth harness took five
+  unrelated edits — the event scanner's classifier, the transcript view's
+  parser, the preparation validator's name list, the CLI's adapter list, and
+  the adapter port's documentation — and a missed one failed at run time
+  rather than at build time: that is how `unknown harness "babel"` reached a
+  running conductor cycle and ended it. `internal/harness` now holds the set,
+  and a harness is a name plus the record language its primary log is written
+  in; the scanner, the session view, the preparation validator and the
+  adapter list all resolve it there instead of each keeping a list of names.
+  Registering a harness whose records are in a language Babel already reads
+  is one line and no second edit, and a declared harness that no reader or
+  source adapter covers is a failing test rather than a refusal mid-run.
+
+  SPEC.md gains the rule the locator has always implemented. §4.11 states it:
+  derived output carries locators, never copied text, so every stored
+  artifact is a statement about bytes that exist elsewhere — resolving down
+  to a commit, a file and line, a repository, or a located excerpt of a
+  transcript — which is why Babel analysing its own output cannot amplify
+  duplicated material and why an archive of everything stays proportional to
+  what was observed. §6.8 specifies the pipeline as harness-agnostic in both
+  directions, original log through forward transformer to canonical model and
+  back, with omp, codex and claude named as the first adapters rather than
+  the set; a resume must rehydrate from the retained capture rather than
+  synthesize a log from the canonical model, since the canonical model drops
+  harness-specific structure by design and a 95%-faithful resume is worse
+  than none. Reverse transformers are specified and unimplemented, gated in
+  §14.
+
 - **The review page shows what it is asking about.** Deciding on a proposal
   meant reading a hex id and pressing a button labelled RAW PRIVATE VIEW; the
   record itself is now the page, headed by its title and broken into the

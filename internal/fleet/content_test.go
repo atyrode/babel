@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/digest"
-	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/fleet"
+	"github.com/atyrode/babel/internal/harness"
 	"github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 	babelsync "github.com/atyrode/babel/internal/sync"
@@ -33,11 +33,11 @@ func (*publicationCapture) DeclareTx(context.Context, *sql.Tx, babelsync.Closure
 func (*publicationCapture) CommitInline(context.Context, babelsync.Closure) error       { return nil }
 
 func TestCanonicalContentAcrossHosts(t *testing.T) {
-	h := newHarness(t)
+	h := newDeployment(t)
 	ctx := t.Context()
 	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	prep, err := run.NewPreparation(at, []run.Selected{{
-		Host: "h2", Harness: event.HarnessOMP, SourceID: "session-opening",
+		Host: "h2", Harness: harness.OMP, SourceID: "session-opening",
 		CaptureDigest: digest.Bytes([]byte("capture")), SourceDigest: digest.Bytes([]byte("source")),
 		Adapter: run.AdapterRef{Schema: 1, Version: "fixture/1"},
 	}}, run.PreparationContext{})

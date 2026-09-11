@@ -7,7 +7,35 @@ import (
 	"testing"
 
 	"github.com/atyrode/babel/internal/adapter/babelself"
+	"github.com/atyrode/babel/internal/harness"
 )
+
+// TestEveryDeclaredHarnessHasASourceAdapter closes the loop the declaration
+// cannot close by itself.
+//
+// internal/harness makes a harness scannable, parseable and preparable by
+// registration alone, but discovery is filesystem knowledge no declaration
+// supplies, so adapters() maps each declared name to a constructor. A
+// declared harness missing from that map is readable and never collected —
+// its sessions are in no snapshot on any machine, silently — and every
+// harness Babel ships is meant to be collected. A deliberately fetch-only
+// harness is the only reason to change this test, and changing it is the
+// statement that the omission was intended.
+func TestEveryDeclaredHarnessHasASourceAdapter(t *testing.T) {
+	discovered := make(map[string]bool)
+	for _, a := range adapters() {
+		discovered[a.Harness()] = true
+	}
+	for _, h := range harness.All() {
+		if !discovered[h.Name] {
+			t.Errorf("harness %q is declared but no source adapter discovers its sessions, "+
+				"so `archive push` captures none of them", h.Name)
+		}
+	}
+	if len(discovered) != len(harness.All()) {
+		t.Errorf("adapters() reported %d harnesses for %d declared", len(discovered), len(harness.All()))
+	}
+}
 
 // TestArchivePushCapturesBabelsOwnSessions is the whole of what registering
 // the adapter had to achieve on the storage side.

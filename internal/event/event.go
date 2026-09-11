@@ -27,6 +27,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/atyrode/babel/internal/harness"
 )
 
 // Kind is the analysis category of an event. The five evidence kinds are
@@ -91,21 +93,6 @@ type Stream struct {
 	Path          string
 }
 
-// Harness names, matching internal/adapter's SourceSession.Harness values.
-const (
-	HarnessOMP    = "omp"
-	HarnessCodex  = "codex"
-	HarnessClaude = "claude"
-	// HarnessBabel is Babel's own analysis log. The records are OMP's own
-	// message objects, because an envelope of Babel's design would assert a
-	// schema over content Babel does not own, so it classifies identically.
-	// It is listed rather than folded into HarnessOMP because provenance is
-	// what decides whether a session may be analysed at all, and a reader
-	// that could not tell Babel's reasoning from the corpus it reasoned over
-	// could not enforce that.
-	HarnessBabel = "babel"
-)
-
 const (
 	// MaxRecordBytes is the line budget: the bytes retained for one
 	// record. A longer record is reported as an oversized opaque event
@@ -148,7 +135,8 @@ const (
 // order. It never materializes the whole file.
 //
 // An unrecognized Stream.Harness is a caller error and fails immediately:
-// format drift is a record-level condition handled by degrading to
+// it names something Babel does not read (internal/harness), which format
+// drift is not: drift is a record-level condition handled by degrading to
 // KindOpaque, not a reason to accept an unknown adapter name and silently
 // return an all-opaque stream. A read error aborts the scan with context;
 // an error from fn is returned unwrapped so callers can compare it.
@@ -172,16 +160,23 @@ func Scan(r io.Reader, s Stream, fn func(Event) error) error {
 // means "not mine": the record is emitted as opaque instead.
 type classifier func(sc *scanner, rec []byte) (bool, error)
 
-func classifierFor(harness string) classifier {
-	switch harness {
-	case HarnessOMP:
+// classifierFor resolves the reader for a harness through the one
+// declaration of the set: the harness names its record language, and the
+// language names the classifier. A harness registered with a language this
+// package already reads therefore needs no edit here, which is the whole
+// point of the indirection.
+func classifierFor(name string) classifier {
+	h, ok := harness.Lookup(name)
+	if !ok {
+		return nil
+	}
+	switch h.Format {
+	case harness.FormatOMP:
 		return classifyOMP
-	case HarnessCodex:
+	case harness.FormatCodex:
 		return classifyCodex
-	case HarnessClaude:
+	case harness.FormatClaude:
 		return classifyClaude
-	case HarnessBabel:
-		return classifyOMP
 	default:
 		return nil
 	}

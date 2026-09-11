@@ -7,7 +7,7 @@ import (
 
 	"github.com/atyrode/babel/internal/adapter"
 	"github.com/atyrode/babel/internal/digest"
-	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/harness"
 )
 
 var preparedAt = time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
@@ -20,7 +20,7 @@ func testSelection() []Selected {
 	return []Selected{
 		{
 			Host:          "host-a",
-			Harness:       event.HarnessOMP,
+			Harness:       harness.OMP,
 			SourceID:      "session-0001",
 			Snapshot:      "0a1b2c3d",
 			CaptureDigest: testDigest("omp-capture"),
@@ -29,7 +29,7 @@ func testSelection() []Selected {
 		},
 		{
 			Host:          "host-a",
-			Harness:       event.HarnessCodex,
+			Harness:       harness.Codex,
 			SourceID:      "rollout-0002",
 			CaptureDigest: testDigest("codex-capture"),
 			SourceDigest:  testDigest("codex-normalized"),
@@ -39,7 +39,7 @@ func testSelection() []Selected {
 		},
 		{
 			Host:          "host-b",
-			Harness:       event.HarnessClaude,
+			Harness:       harness.Claude,
 			SourceID:      "project/session-0003",
 			Snapshot:      "ff00aa11",
 			CaptureDigest: testDigest("claude-capture"),
@@ -103,7 +103,7 @@ func TestPreparationIDChangesWithEveryContentChange(t *testing.T) {
 		{name: "prepared at", at: preparedAt.Add(time.Nanosecond)},
 		{name: "host", mutate: func(s []Selected) []Selected { s[0].Host = "host-c"; return s }},
 		{name: "harness", mutate: func(s []Selected) []Selected {
-			s[0].Harness = event.HarnessCodex
+			s[0].Harness = harness.Codex
 			return s
 		}},
 		{name: "source id", mutate: func(s []Selected) []Selected { s[0].SourceID = "session-9999"; return s }},
