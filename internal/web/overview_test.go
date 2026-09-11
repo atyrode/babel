@@ -123,11 +123,16 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 		t.Errorf("an undescribed session claimed a title or a time: %+v", got.Activity.Rows[4])
 	}
 
-	// Three candidates are enumerable: the two the development path enrolled
-	// and the head of the operator-revised chain. The chain's superseded
-	// original and the rejected candidate the revive fixture needs are
-	// neither enrolled nor unexplored, so neither reaches this enumeration.
-	if !got.Frontier.Available || got.Frontier.Hypotheses != 3 || got.Frontier.Truncated {
+	// Five candidates are enumerable, and the dashboard counts the
+	// deployment rather than the machine. Three are this machine's: the two
+	// the development path enrolled and the head of the operator-revised
+	// chain, the chain's superseded original and the rejected candidate the
+	// revive fixture needs being neither enrolled nor unexplored. Two more
+	// are the fleet's committed candidates — the other laptop's and the
+	// unattributed one — where the staged candidate is not globally
+	// reviewable and the sealed one this instance cannot open has no status
+	// to count.
+	if !got.Frontier.Available || got.Frontier.Hypotheses != 5 || got.Frontier.Truncated {
 		t.Errorf("frontier section = %+v", got.Frontier)
 	}
 	// All six exploration statuses, in §4.2 order, zeros included: a
@@ -144,7 +149,7 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 	if got.Frontier.Statuses[0].Count != 3 {
 		t.Errorf("untriaged count = %d, want 3", got.Frontier.Statuses[0].Count)
 	}
-	if len(got.Frontier.Rows) != 3 {
+	if len(got.Frontier.Rows) != 5 {
 		t.Fatalf("frontier rows = %+v", got.Frontier.Rows)
 	}
 	// The candidate arrives in the model's own wording, whole. Which row it
@@ -156,6 +161,20 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 	}
 	if !carried {
 		t.Errorf("no row carries the fixture's statement: %+v", got.Frontier.Rows)
+	}
+	// A fleet row is attributed to the machine that produced it and is not
+	// marked as this one. The dashboard showing another host's candidate is
+	// the point of the deployment-wide default; showing it as this machine's
+	// would be the attribution failure migrations/0007 exists to prevent.
+	var attributed bool
+	for _, row := range got.Frontier.Rows {
+		if row.ID == "frec-remote" {
+			attributed = row.HostAttributed && !row.LocalHost &&
+				row.HostID == remoteFleetHost
+		}
+	}
+	if !attributed {
+		t.Errorf("the other host's candidate is missing or misattributed: %+v", got.Frontier.Rows)
 	}
 
 	if !got.Review.Available || got.Review.Awaiting != 4 || len(got.Review.Rows) != 4 {

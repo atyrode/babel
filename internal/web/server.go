@@ -311,7 +311,24 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	s.serveStatic(w, r)
 }
 
+// proposalPathPrefix is the one API path that carries its selector in the
+// path rather than the query string.
+//
+// The switch below matches whole paths, which is what keeps this router a
+// table an operator can read top to bottom, so a path parameter has to be cut
+// off before it. One prefix is cheap; a second convention spreading through
+// the table would not be, so this is a single named exception rather than the
+// beginning of a pattern-matching router.
+const proposalPathPrefix = "/api/proposals/"
+
 func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
+	if id, found := strings.CutPrefix(r.URL.Path, proposalPathPrefix); found {
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleProposal(w, r, id)
+		return
+	}
 	switch r.URL.Path {
 	// The §2.7 bootstrap exchange comes first because it is what every other
 	// case below requires: no session exists until this one runs.
@@ -418,6 +435,11 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFinding(w, r)
+	case "/api/proposals":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleProposals(w, r)
 	case "/api/review/queue":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return

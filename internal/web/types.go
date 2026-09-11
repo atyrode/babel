@@ -184,6 +184,11 @@ type FrontierReader interface {
 	// (#114). It is a read of the asserted relation, so a candidate page can
 	// show the competing suggestions somebody has offered against it.
 	ProposalsAddressing(context.Context, string) ([]frontier.Proposal, error)
+	// Proposals enumerates §4.5's review artifacts, which is what the
+	// proposals listing pages. The frontier offers no other enumeration of
+	// them: ProposalsAddressing answers about one claim, and Proposal
+	// answers about one id.
+	Proposals(context.Context, frontier.ListFilter) ([]frontier.Proposal, int, error)
 	LinksFrom(context.Context, string) ([]frontier.Link, error)
 	LinksTo(context.Context, string) ([]frontier.Link, error)
 	StatusHistory(context.Context, string) ([]frontier.StatusEvent, error)

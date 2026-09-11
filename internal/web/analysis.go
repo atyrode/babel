@@ -208,7 +208,7 @@ func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	fleetWide, ok := s.fleetRequested(w, r)
+	fleetWide, ok := s.fleetScope(w, r)
 	if !ok {
 		return
 	}
@@ -253,14 +253,25 @@ func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
 		result.syncNotice = degradedNotice()
 	}
 	if fleetWide {
-		records, err := s.otherHosts(r.Context(), pg.limit, sharedcatalog.KindHypothesis)
-		if err != nil {
-			s.fleetError(w, r, err)
-			return
+		records, degraded := s.mergeOtherHosts(r, pg.limit, sharedcatalog.KindHypothesis)
+		if degraded {
+			result.syncNotice = degradedNotice()
 		}
 		host := s.opts.Fleet.LocalHost()
 		for _, record := range records {
-			result.Items = append(result.Items, fleetHypothesis(record, host))
+			row := fleetHypothesis(record, host)
+			// The status narrowing applies to the whole deployment, not only
+			// to this machine. A fleet block that ignored it would answer
+			// "which candidates are promoted" with every candidate every
+			// other host holds, which is a filter the page silently does not
+			// have. A remote row's status is the snapshot taken when the
+			// record was staged, which is the only answer available without
+			// asking the owning host, and a row this instance could not open
+			// has no status to match at all.
+			if status != "" && row.Status != string(status) {
+				continue
+			}
+			result.Items = append(result.Items, row)
 		}
 	}
 	s.writeJSON(w, http.StatusOK, result)
@@ -679,7 +690,7 @@ func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	fleetWide, ok := s.fleetRequested(w, r)
+	fleetWide, ok := s.fleetScope(w, r)
 	if !ok {
 		return
 	}
@@ -720,10 +731,9 @@ func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 		result.Items[i].fleetMark = s.localMark(states[result.Items[i].ID])
 	}
 	if fleetWide {
-		records, err := s.otherHosts(r.Context(), pg.limit, sharedcatalog.KindFinding)
-		if err != nil {
-			s.fleetError(w, r, err)
-			return
+		records, unreachable := s.mergeOtherHosts(r, pg.limit, sharedcatalog.KindFinding)
+		if unreachable {
+			result.syncNotice = degradedNotice()
 		}
 		host := s.opts.Fleet.LocalHost()
 		for _, record := range records {
@@ -804,6 +814,192 @@ func viewProposal(record frontier.Proposal) proposalView {
 		ReviewStatus:  string(record.ReviewStatus),
 		Payload:       record.Payload,
 	}
+}
+
+// ProposalSummary is one §4.5 review artifact as a listing shows it.
+//
+// Five payload fields travel with the row rather than only a title, and the
+// choice is what makes the listing usable rather than an index of
+// identifiers: a proposal is read to decide whether to act on it, and problem,
+// outcome, impact and classification are the four things that decision needs
+// before opening anything. The rest of §4.5's material - prerequisites,
+// verification criteria, risks, the evidence either way - is the detail
+// route's, because it is read once a reader has chosen this proposal over its
+// neighbours.
+//
+// The embedded fleetMark attributes the row and reports whether it is globally
+// reviewable, on FindingSummary's terms. A proposal another host committed
+// carries no ReviewStatus, which is the owning host's derivation rather than
+// this machine's.
+type ProposalSummary struct {
+	fleetMark
+	ID        string `json:"id"`
+	RunID     string `json:"run_id"`
+	CreatedAt string `json:"created_at"`
+	Title     string `json:"title"`
+	Problem   string `json:"problem"`
+	Outcome   string `json:"outcome"`
+	// Impact and Classification are §4.5's vocabularies, served as their
+	// stored strings so a client renders the value the record carries rather
+	// than one this surface re-spelled.
+	Impact         string `json:"impact"`
+	Classification string `json:"classification"`
+	ReviewStatus   string `json:"review_status"`
+}
+
+type proposalList struct {
+	syncNotice
+	Items []ProposalSummary `json:"items"`
+	Total int               `json:"total"`
+}
+
+// handleProposals lists §4.5's review artifacts, deployment-wide by default.
+//
+// It exists because the proposals were the one Phase B output with no listing
+// at all: internal/frontier has enumerated them since it had a Proposals
+// query, the review inbox showed them only once somebody had enrolled them,
+// and a deployment's consolidated suggestions were reachable only by already
+// knowing an id. The other hosts' rows append after this machine's on
+// handleHypotheses' terms, and Total stays this machine's count for its
+// reason.
+func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Frontier != nil, "the hypothesis frontier") {
+		return
+	}
+	pg, ok := s.requirePage(w, r)
+	if !ok {
+		return
+	}
+	fleetWide, ok := s.fleetScope(w, r)
+	if !ok {
+		return
+	}
+	records, total, err := s.opts.Frontier.Proposals(r.Context(), frontier.ListFilter{
+		Limit: pg.limit, Offset: pg.offset,
+	})
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	result := proposalList{Items: []ProposalSummary{}, Total: total}
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		ids = append(ids, record.ID)
+		result.Items = append(result.Items, summarizeProposal(record))
+	}
+	states, degraded := s.syncStates(r.Context(), r, ids)
+	if degraded {
+		result.syncNotice = degradedNotice()
+	}
+	for i := range result.Items {
+		result.Items[i].fleetMark = s.localMark(states[result.Items[i].ID])
+	}
+	if fleetWide {
+		remote, unreachable := s.mergeOtherHosts(r, pg.limit, sharedcatalog.KindProposal)
+		if unreachable {
+			result.syncNotice = degradedNotice()
+		}
+		host := s.opts.Fleet.LocalHost()
+		for _, record := range remote {
+			result.Items = append(result.Items, fleetProposal(record, host))
+		}
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+func summarizeProposal(record frontier.Proposal) ProposalSummary {
+	return ProposalSummary{
+		ID:             record.ID,
+		RunID:          record.RunID,
+		CreatedAt:      timeText(record.CreatedAt),
+		Title:          record.Payload.Title,
+		Problem:        record.Payload.Problem,
+		Outcome:        record.Payload.Outcome,
+		Impact:         string(record.Payload.Impact),
+		Classification: string(record.Payload.Classification),
+		ReviewStatus:   string(record.ReviewStatus),
+	}
+}
+
+// fleetProposal renders another host's committed proposal as a listing row.
+//
+// Only the title crosses, and the four other payload fields stay empty. That
+// is not a gap this surface could close by decoding harder: a fleet listing
+// carries one bounded summary line per record on purpose (see
+// fleetRecordView), because a page of fifty rows that shipped whole proposals
+// would decrypt another host's analysis in order to render prose nobody has
+// scrolled to. A client tells the two apart by local_host, which it already
+// does for every other merged listing.
+func fleetProposal(record fleet.Record, localHost string) ProposalSummary {
+	mark, summary := markFleetRecord(record, localHost)
+	out := ProposalSummary{
+		fleetMark: mark,
+		ID:        record.Record.RecordID,
+		RunID:     record.Record.RunID,
+		CreatedAt: timeText(record.Record.CreatedAt),
+		Title:     summary,
+	}
+	if record.Published != nil {
+		out.CreatedAt = timeText(record.Published.CreatedAt)
+	}
+	return out
+}
+
+// proposalDetail is one proposal's whole record: the listing row a reader
+// arrived from, plus §4.5's remaining material.
+//
+// The row is embedded rather than restated so the page a reader opens says the
+// same things about the proposal the row said, in the same fields. Payload
+// carries the whole stored document, which is where prerequisites,
+// verification criteria, risks, evidence and destinations live.
+type proposalDetail struct {
+	syncNotice
+	ProposalSummary
+	AncestorID    string   `json:"ancestor_id,omitempty"`
+	SchemaVersion int      `json:"schema_version"`
+	FindingIDs    []string `json:"finding_ids"`
+	HypothesisIDs []string `json:"hypothesis_ids"`
+	// Form is #114's provenance, served for proposalView's reason: a want
+	// rendered with a consolidation's authority is the failure the split
+	// exists to prevent.
+	Form    string                   `json:"form"`
+	Payload frontier.ProposalPayload `json:"payload"`
+}
+
+// handleProposal serves one proposal by id.
+//
+// The id comes from the path rather than the query string, which is this
+// surface's first of those and is deliberate: a proposal is the record an
+// operator links to and returns to, and a path is what a browser history, a
+// bookmark and a pasted message all carry intact.
+func (s *Server) handleProposal(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.requireService(w, s.opts.Frontier != nil, "the hypothesis frontier") {
+		return
+	}
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	record, err := s.opts.Frontier.Proposal(r.Context(), id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	detail := proposalDetail{
+		ProposalSummary: summarizeProposal(record),
+		AncestorID:      record.AncestorID,
+		SchemaVersion:   record.SchemaVersion,
+		FindingIDs:      record.FindingIDs,
+		HypothesisIDs:   record.HypothesisIDs,
+		Form:            string(record.Form),
+		Payload:         record.Payload,
+	}
+	states, degraded := s.syncStates(r.Context(), r, []string{record.ID})
+	if degraded {
+		detail.syncNotice = degradedNotice()
+	}
+	detail.fleetMark = s.localMark(states[record.ID])
+	s.writeJSON(w, http.StatusOK, detail)
 }
 
 type findingDetail struct {

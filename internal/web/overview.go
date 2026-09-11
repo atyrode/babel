@@ -24,9 +24,11 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/disposition"
+	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/review"
+	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
 const (
@@ -155,7 +157,11 @@ type overviewStatusCount struct {
 	Count  int    `json:"count"`
 }
 
+// overviewHypothesis is one candidate as the dashboard lists it, from whichever
+// machine in the deployment produced it. The embedded mark carries that
+// attribution and never substitutes the local host for an absent one.
 type overviewHypothesis struct {
+	fleetMark
 	ID        string `json:"id"`
 	RunID     string `json:"run_id"`
 	Status    string `json:"status"`
@@ -496,30 +502,92 @@ func (s *Server) overviewFrontier(r *http.Request) (overviewFrontier, map[string
 		records = append(records, record)
 	}
 	section.overviewSection = sectionReady()
-	section.Hypotheses = len(records)
-	section.Truncated = len(ids) >= listScanCap
+	// The deployment's other machines, on the same terms as the listing
+	// pages: committed records only, because §9 makes staged output not
+	// globally reviewable, and a status that is the snapshot taken when the
+	// record was staged. A dashboard that counted only this machine would
+	// report a private backlog where the deployment has one shared body of
+	// work, and on a machine that runs no explorations it would report none.
+	remote, remoteErr := s.overviewOtherHosts(r)
+	for _, record := range remote {
+		byStatus[frontier.Status(record.Published.Status)]++
+	}
+	section.Hypotheses = len(records) + len(remote)
+	section.Truncated = len(ids) >= listScanCap || remoteErr != nil
 	for i := range section.Statuses {
 		section.Statuses[i].Count = byStatus[frontier.Status(section.Statuses[i].Status)]
 	}
-	sort.SliceStable(records, func(i, j int) bool {
-		if !records[i].CreatedAt.Equal(records[j].CreatedAt) {
-			return records[i].CreatedAt.After(records[j].CreatedAt)
-		}
-		return records[i].ID < records[j].ID
-	})
+	type row struct {
+		at   time.Time
+		item overviewHypothesis
+	}
+	rows := make([]row, 0, len(records)+len(remote))
 	for _, record := range records {
-		if len(section.Rows) >= overviewRows {
-			break
-		}
-		section.Rows = append(section.Rows, overviewHypothesis{
+		rows = append(rows, row{record.CreatedAt, overviewHypothesis{
+			fleetMark: s.localMark(""),
 			ID:        record.ID,
 			RunID:     record.RunID,
 			Status:    string(record.Status),
 			CreatedAt: timeText(record.CreatedAt),
 			Statement: record.Payload.Statement,
-		})
+		}})
+	}
+	host := ""
+	if s.opts.Fleet != nil {
+		host = s.opts.Fleet.LocalHost()
+	}
+	for _, record := range remote {
+		mark, summary := markFleetRecord(record, host)
+		rows = append(rows, row{record.Published.CreatedAt, overviewHypothesis{
+			fleetMark: mark,
+			ID:        record.Record.RecordID,
+			RunID:     record.Record.RunID,
+			Status:    string(record.Published.Status),
+			CreatedAt: timeText(record.Published.CreatedAt),
+			Statement: summary,
+		}})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if !rows[i].at.Equal(rows[j].at) {
+			return rows[i].at.After(rows[j].at)
+		}
+		return rows[i].item.ID < rows[j].item.ID
+	})
+	for _, r := range rows {
+		if len(section.Rows) >= overviewRows {
+			break
+		}
+		section.Rows = append(section.Rows, r.item)
 	}
 	return section, byRun
+}
+
+// overviewOtherHosts reads the other machines' committed candidates for the
+// dashboard, with their content, so a row carries the wording and not just an
+// identifier.
+//
+// A failure is returned rather than raised: the dashboard is a glance at six
+// services and one unreachable shared catalog must not blank the five that
+// answered. The caller reports the gap by marking the count a floor, which is
+// the same thing it already does when local enumeration hits its bound.
+func (s *Server) overviewOtherHosts(r *http.Request) ([]fleet.Record, error) {
+	if s.opts.Fleet == nil || s.opts.FleetError != nil {
+		return nil, nil
+	}
+	records, err := s.otherHosts(r.Context(), listScanCap, sharedcatalog.KindHypothesis)
+	if err != nil {
+		s.logf("GET %s: fleet frontier unavailable", r.URL.Path)
+		return nil, err
+	}
+	out := records[:0]
+	for _, record := range records {
+		// A record this machine cannot open has no status and no wording,
+		// and counting it would report a number the page cannot show.
+		if record.Published != nil {
+			out = append(out, record)
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) overviewRuns(r *http.Request, byRun map[string][]string) overviewRuns {

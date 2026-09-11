@@ -673,6 +673,13 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{name: "hypothesis", method: http.MethodGet, path: "/api/hypothesis?id=" + h.hypothesis.ID},
 		{name: "findings", method: http.MethodGet, path: "/api/findings"},
 		{name: "finding", method: http.MethodGet, path: "/api/finding?id=" + h.finding.ID},
+		// #114's review artifacts. The listing is enrolled for the session,
+		// origin, no-store, read-only and escaping coverage every other read
+		// gets, and the detail route additionally for the one thing no other
+		// route on this surface does: it carries its selector in the path,
+		// so a hostile id reaches the router rather than the query parser.
+		{name: "proposals", method: http.MethodGet, path: "/api/proposals"},
+		{name: "proposal", method: http.MethodGet, path: "/api/proposals/" + h.proposal.ID},
 		{name: "review queue", method: http.MethodGet, path: "/api/review/queue?status=all"},
 		{name: "review history", method: http.MethodGet, path: "/api/review/history?type=proposal&id=" + h.proposal.ID},
 		{name: "export json", method: http.MethodGet, path: "/api/export?type=proposal&id=" + h.proposal.ID + "&format=json"},
@@ -701,6 +708,7 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{name: "fleet hosts", method: http.MethodGet, path: "/api/fleet/hosts?pending=1"},
 		{name: "fleet hypotheses", method: http.MethodGet, path: "/api/hypotheses?fleet=1"},
 		{name: "fleet findings", method: http.MethodGet, path: "/api/findings?fleet=1"},
+		{name: "fleet proposals", method: http.MethodGet, path: "/api/proposals?fleet=1"},
 		{name: "fleet review queue", method: http.MethodGet, path: "/api/review/queue?status=all&fleet=1"},
 		// Issue #118's fleet presence. It is the most exposed read on this
 		// surface: every field on a remote row — the recipe, the preparation
@@ -878,9 +886,13 @@ func TestPhaseBReadRoutes(t *testing.T) {
 		}
 	})
 
+	// This machine's own listing, narrowed to it: the fields checked below —
+	// the observation count, the exploration status, the derived review
+	// status — are derivations only the owning host holds, and the merged
+	// deployment-wide shape has its own test in fleet_test.go.
 	t.Run("hypotheses list every status", func(t *testing.T) {
 		var got hypothesisList
-		decodeResponse(t, h.get("/api/hypotheses"), &got)
+		decodeResponse(t, h.get("/api/hypotheses?fleet=0"), &got)
 		if got.Total != 3 || len(got.Items) != 3 {
 			t.Fatalf("hypotheses = %+v", got)
 		}
@@ -907,10 +919,25 @@ func TestPhaseBReadRoutes(t *testing.T) {
 		if filtered.Total != 3 {
 			t.Fatalf("filtered = %+v", filtered)
 		}
+		// The narrowing reaches the fleet block too. This machine has no
+		// promoted candidate and no investigating one, and the deployment
+		// has two investigating: a filter that stopped at the local rows
+		// would answer "promoted" with every candidate every other host
+		// holds, which is a filter the page silently does not have.
 		var none hypothesisList
 		decodeResponse(t, h.get("/api/hypotheses?status=promoted"), &none)
 		if none.Total != 0 || len(none.Items) != 0 {
 			t.Fatalf("promoted = %+v", none)
+		}
+		var investigating hypothesisList
+		decodeResponse(t, h.get("/api/hypotheses?status=investigating"), &investigating)
+		if investigating.Total != 0 || len(investigating.Items) != 2 {
+			t.Fatalf("investigating = %+v", investigating)
+		}
+		for _, item := range investigating.Items {
+			if item.LocalHost || item.Status != string(frontier.StatusInvestigating) {
+				t.Errorf("investigating row = %+v", item)
+			}
 		}
 	})
 
@@ -935,8 +962,10 @@ func TestPhaseBReadRoutes(t *testing.T) {
 	})
 
 	t.Run("findings and finding detail", func(t *testing.T) {
+		// Narrowed to this machine for the reason the hypotheses subtest is:
+		// the observation count is the owning host's derivation.
 		var list findingList
-		decodeResponse(t, h.get("/api/findings"), &list)
+		decodeResponse(t, h.get("/api/findings?fleet=0"), &list)
 		if list.Total != 1 || len(list.Items) != 1 || list.Items[0].Observations != 1 {
 			t.Fatalf("findings = %+v", list)
 		}
@@ -945,6 +974,73 @@ func TestPhaseBReadRoutes(t *testing.T) {
 		if len(detail.Observations) != 1 || len(detail.Proposals) != 1 ||
 			detail.Proposals[0].ID != h.proposal.ID {
 			t.Fatalf("finding detail = %+v", detail)
+		}
+	})
+
+	// #114's review artifacts, which had no listing before this route and
+	// were reachable only by already knowing an id.
+	t.Run("proposals and proposal detail", func(t *testing.T) {
+		var list proposalList
+		decodeResponse(t, h.get("/api/proposals"), &list)
+		if list.Total != 1 {
+			t.Fatalf("proposals = %+v", list)
+		}
+		// This machine's proposal carries the four fields a reader decides
+		// from, and the other host's carries its title and its attribution.
+		// A listing that shipped only ids would be a front door onto a wall.
+		var local, remote ProposalSummary
+		for _, item := range list.Items {
+			if item.ID == h.proposal.ID {
+				local = item
+			}
+			if item.ID == "frec-remote-proposal" {
+				remote = item
+			}
+		}
+		if local.Title == "" || local.Problem == "" || local.Outcome == "" ||
+			local.Impact != string(frontier.ImpactModerate) || !local.LocalHost {
+			t.Fatalf("local proposal row = %+v", local)
+		}
+		if remote.Title != "retire the duplicated manifest read plain" ||
+			remote.LocalHost || !remote.HostAttributed {
+			t.Fatalf("fleet proposal row = %+v", remote)
+		}
+
+		// ?fleet=0 is the narrowing, and it drops the deployment's rows
+		// rather than reordering them.
+		var mine proposalList
+		decodeResponse(t, h.get("/api/proposals?fleet=0"), &mine)
+		if len(mine.Items) != 1 || mine.Items[0].ID != h.proposal.ID {
+			t.Fatalf("narrowed proposals = %+v", mine)
+		}
+
+		// The detail route takes its id from the path and carries §4.5's
+		// remaining material, which is the half a listing deliberately
+		// does not ship.
+		var detail proposalDetail
+		decodeResponse(t, h.get("/api/proposals/"+h.proposal.ID), &detail)
+		if detail.ID != h.proposal.ID || detail.Form != string(frontier.ProposalConsolidated) {
+			t.Fatalf("proposal detail = %+v", detail)
+		}
+		if len(detail.FindingIDs) != 1 || detail.FindingIDs[0] != h.finding.ID {
+			t.Errorf("proposal detail lost its backing: %+v", detail.FindingIDs)
+		}
+		if detail.Payload.Uncertainty == "" || len(detail.Payload.Risks) != 1 ||
+			len(detail.Payload.Targets) != 1 {
+			t.Errorf("proposal detail lost the payload the listing omits: %+v", detail.Payload)
+		}
+		// An id no store holds is refused rather than answered with an
+		// empty proposal, and a missing id is a bad request rather than a
+		// listing.
+		for path, want := range map[string]int{
+			"/api/proposals/prp_missing": http.StatusNotFound,
+			"/api/proposals/":            http.StatusBadRequest,
+		} {
+			response := h.get(path)
+			response.Body.Close()
+			if response.StatusCode != want {
+				t.Errorf("GET %s status = %d, want %d", path, response.StatusCode, want)
+			}
 		}
 	})
 
@@ -1376,8 +1472,14 @@ func TestPhaseBPaginationBoundsALargeResult(t *testing.T) {
 	total := extra + 3
 
 	// The default page is bounded even though the caller named no limit.
+	//
+	// Paging is this machine's, so the requests narrow to it. The fleet
+	// block is an attributed appendix rather than more pages of this
+	// machine's backlog — handleHypotheses says why — so it rides along on
+	// every page, and a completeness walk that counted it would be counting
+	// the appendix once per page.
 	var first hypothesisList
-	decodeResponse(t, h.get("/api/hypotheses"), &first)
+	decodeResponse(t, h.get("/api/hypotheses?fleet=0"), &first)
 	if first.Total != total || len(first.Items) != defaultPageLimit {
 		t.Fatalf("default page: total %d items %d", first.Total, len(first.Items))
 	}
@@ -1386,7 +1488,7 @@ func TestPhaseBPaginationBoundsALargeResult(t *testing.T) {
 	seen := map[string]int{}
 	for offset := 0; offset < total; offset += 40 {
 		var page hypothesisList
-		decodeResponse(t, h.get(fmt.Sprintf("/api/hypotheses?limit=40&offset=%d", offset)), &page)
+		decodeResponse(t, h.get(fmt.Sprintf("/api/hypotheses?fleet=0&limit=40&offset=%d", offset)), &page)
 		if page.Total != total {
 			t.Fatalf("offset %d: total %d, want %d", offset, page.Total, total)
 		}
@@ -1411,9 +1513,11 @@ func TestPhaseBPaginationBoundsALargeResult(t *testing.T) {
 	}
 
 	// An offset past the end is an empty page rather than an error: records
-	// are added while an operator reads.
+	// are added while an operator reads. The question is again this
+	// machine's, because the fleet appendix is not part of the page the
+	// offset walks.
 	var beyond hypothesisList
-	decodeResponse(t, h.get("/api/hypotheses?offset=10000"), &beyond)
+	decodeResponse(t, h.get("/api/hypotheses?fleet=0&offset=10000"), &beyond)
 	if beyond.Total != total || len(beyond.Items) != 0 {
 		t.Fatalf("page past the end = %+v", beyond)
 	}
@@ -1444,11 +1548,13 @@ func TestPhaseBPaginationBoundsALargeResult(t *testing.T) {
 }
 
 // TestPhaseBQueueAndInboxPaginate walks the two routes whose pages the contract
-// did not originally bound.
+// did not originally bound. Both questions are this machine's: the fleet block
+// is an appendix rather than part of the page, so a walk that counted it would
+// be measuring the appendix rather than the bound.
 func TestPhaseBQueueAndInboxPaginate(t *testing.T) {
 	h := newPhaseB(t, "plain", nil)
 	var queue queueResult
-	decodeResponse(t, h.get("/api/review/queue?status=all&limit=2&offset=1"), &queue)
+	decodeResponse(t, h.get("/api/review/queue?fleet=0&status=all&limit=2&offset=1"), &queue)
 	if queue.Total != 4 || len(queue.Items) != 2 {
 		t.Fatalf("queue page = %+v", queue)
 	}

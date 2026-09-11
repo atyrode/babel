@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/envelope"
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
@@ -651,5 +652,145 @@ func TestOpenRoutesACitationEdgeToItsOwnDecoder(t *testing.T) {
 			!strings.Contains(summary, sentinel) {
 			t.Errorf("summary = %q; it must name the citation and come from the sealed note", summary)
 		}
+	}
+}
+
+// A proposed next action and an operator's ruling on one commit under the
+// shared catalog's `disposition` kind, which internal/disposition reuses on
+// purpose rather than widening migrations/0003's closed vocabulary. So does
+// internal/frontier's review answer, and the authenticated catalog row says
+// `disposition` and nothing more.
+//
+// A reader that sent every one of them to frontier refused this package's own
+// records as `carries no schema version`: a correctly committed record lost to
+// the wrong decoder, rendering in every listing as a row with no content and
+// no explanation an operator could act on.
+//
+// The records are written by the real disposition store and published through
+// the real staging hook, so what the reader opens is what a producing host
+// would have sealed rather than a second definition of the wire form
+// maintained here. A frontier review answer rides along in the same closure,
+// because the routing has to keep answering for the publisher it already had.
+func TestOpenRoutesADispositionToItsOwnDecoder(t *testing.T) {
+	h := newHarness(t)
+	ctx := t.Context()
+
+	dir := t.TempDir()
+	front, err := frontier.Open(dir)
+	if err != nil {
+		t.Fatalf("open frontier: %v", err)
+	}
+	t.Cleanup(func() { front.Close() })
+	subject, err := front.CreateHypothesis(ctx, frontier.HypothesisInput{
+		RunID:   "run-disposition",
+		Payload: frontier.HypothesisPayload{Statement: "the manifest is read twice", Novelty: 0.3, Priority: 0.3},
+	})
+	if err != nil {
+		t.Fatalf("create hypothesis: %v", err)
+	}
+	capture := &publicationCapture{}
+	actions, err := disposition.Open(dir, front, disposition.WithSync(capture))
+	if err != nil {
+		t.Fatalf("open dispositions: %v", err)
+	}
+	t.Cleanup(func() { actions.Close() })
+	action, err := actions.Propose(ctx, disposition.ProposeInput{
+		Record:     frontier.Ref{Type: frontier.EntityHypothesis, ID: subject.ID},
+		Kind:       disposition.KindDevelopFurther,
+		ProposedBy: frontier.Run("run-disposition"),
+		Ref:        "act-1",
+		Payload:    disposition.Payload{Summary: "read the other deploy manifests " + sentinel},
+	})
+	if err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+	if _, err := actions.Decide(ctx, disposition.DecideInput{
+		DispositionID: action.ID, Ruling: disposition.RulingAccepted,
+		By: "alex", Note: "the pattern recurred " + sentinel,
+	}); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if len(capture.records) != 2 {
+		t.Fatalf("the disposition store staged %d records, want 2", len(capture.records))
+	}
+
+	answer, err := json.Marshal(frontier.PublishedRecord{
+		Schema: frontier.RecordSchema, Kind: frontier.PublishedReviewAnswer,
+		ID: "dis-frontier", RootID: "dis-frontier",
+		Subject:   frontier.Ref{Type: frontier.EntityHypothesis, ID: subject.ID},
+		Answer:    &frontier.PublishedAnswer{Decision: frontier.DispositionAccept, Reviewer: "alex"},
+		CreatedAt: time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC),
+		Payload:   json.RawMessage(`{"note":"reviewed"}`),
+	})
+	if err != nil {
+		t.Fatalf("encode the frontier review answer: %v", err)
+	}
+	closure := sharedcatalog.RunClosure{
+		RunID: "run-disposition", DeploymentID: "d1", OriginInstanceID: "inst-b",
+		Records: []sharedcatalog.StagedRecord{{
+			RecordID: "dis-frontier", Kind: sharedcatalog.KindDisposition,
+			Schema: frontier.RecordSchema, Payload: answer,
+		}},
+	}
+	for i, staged := range capture.records {
+		closure.Records = append(closure.Records, sharedcatalog.StagedRecord{
+			RecordID: staged.EntityID, Kind: staged.Kind, Schema: staged.Schema,
+			Payload: staged.Payload, Ordinal: int64(i + 1),
+		})
+	}
+	closure.RecordCount = len(closure.Records)
+	if _, err := sharedcatalog.SyncRun(ctx, h.db, h.store, h.ring, closure); err != nil {
+		t.Fatalf("commit the disposition closure: %v", err)
+	}
+
+	rows, err := h.reader.RecordsWithContent(ctx, sharedcatalog.RecordFilter{})
+	if err != nil {
+		t.Fatalf("RecordsWithContent: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("read %d records, want 3", len(rows))
+	}
+	summaries := map[string]string{}
+	for _, row := range rows {
+		if row.Unopened != "" {
+			t.Fatalf("record %s did not open: %s", row.Record.RecordID, row.Unopened)
+		}
+		summary, err := row.Summary()
+		if err != nil {
+			t.Fatalf("summarize %s: %v", row.Record.RecordID, err)
+		}
+		summaries[row.Record.RecordID] = summary
+		switch row.Record.RecordID {
+		case "dis-frontier":
+			if row.Disposition != nil || row.Published == nil {
+				t.Fatalf("a frontier review answer left its own decoder: %+v", row)
+			}
+		default:
+			if row.Disposition == nil || row.Published != nil {
+				t.Fatalf("disposition %s opened without its own projection: %+v",
+					row.Record.RecordID, row)
+			}
+		}
+	}
+	// The summary and the note are the sealed halves, so a line carrying the
+	// sentinel is proof it was derived from a decrypted object rather than
+	// from the plaintext catalog columns.
+	proposed := summaries[action.ID]
+	if !strings.Contains(proposed, "develop-further on hypothesis "+subject.ID) ||
+		!strings.Contains(proposed, sentinel) {
+		t.Errorf("proposed action summary = %q; it must name the action, the record and the sealed prose", proposed)
+	}
+	var ruled string
+	for id, summary := range summaries {
+		if id != action.ID && id != "dis-frontier" {
+			ruled = summary
+		}
+	}
+	if !strings.Contains(ruled, "accepted disposition "+action.ID) ||
+		!strings.Contains(ruled, sentinel) {
+		t.Errorf("ruling summary = %q; it must name the ruling, the action and the sealed note", ruled)
+	}
+	if !strings.Contains(summaries["dis-frontier"], "accept on hypothesis "+subject.ID) {
+		t.Errorf("frontier review answer summary = %q", summaries["dis-frontier"])
 	}
 }

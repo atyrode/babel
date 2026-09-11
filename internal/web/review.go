@@ -78,7 +78,7 @@ func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	fleetWide, ok := s.fleetRequested(w, r)
+	fleetWide, ok := s.fleetScope(w, r)
 	if !ok {
 		return
 	}
@@ -145,11 +145,10 @@ func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if fleetWide {
-		records, err := s.otherHosts(r.Context(), pg.limit,
+		records, unreachable := s.mergeOtherHosts(r, pg.limit,
 			sharedcatalog.KindDisposition, sharedcatalog.KindProposal)
-		if err != nil {
-			s.fleetError(w, r, err)
-			return
+		if unreachable {
+			result.syncNotice = degradedNotice()
 		}
 		host := s.opts.Fleet.LocalHost()
 		for _, record := range records {
@@ -175,14 +174,29 @@ func fleetQueueItem(record fleet.Record, localHost string) QueueItem {
 
 // fleetQueueSubject names the record a fleet queue row is about.
 //
-// A committed disposition names the record it decided, which is the row a
-// reviewer wants to see; a proposal is its own subject. A record this instance
-// could not open can only name itself under its catalog kind, which is the
-// honest answer: this machine knows the row exists and cannot yet say what it
-// says about anything else.
+// A committed review answer names the record it decided, which is the row a
+// reviewer wants to see; a proposal is its own subject. #87's proposed action
+// names the record it was proposed against, and its operator ruling names the
+// action it answers, because those are the rows a reviewer would open next. A
+// record this instance could not open can only name itself under its catalog
+// kind, which is the honest answer: this machine knows the row exists and
+// cannot yet say what it says about anything else.
 func fleetQueueSubject(record fleet.Record) refView {
 	if record.Published != nil && record.Published.Subject.ID != "" {
 		return viewRef(record.Published.Subject)
+	}
+	if action := record.Disposition; action != nil {
+		switch {
+		case action.Action != nil:
+			return viewRef(frontier.Ref{
+				Type: action.Action.RecordType, ID: action.Action.RecordID,
+			})
+		case action.Answer != nil:
+			return refView{
+				Type: string(sharedcatalog.KindDisposition),
+				ID:   action.Answer.DispositionID,
+			}
+		}
 	}
 	return refView{Type: string(record.Record.Kind), ID: record.Record.RecordID}
 }

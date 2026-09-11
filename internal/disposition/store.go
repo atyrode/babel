@@ -363,7 +363,7 @@ func (s *Store) Propose(ctx context.Context, in ProposeInput) (Disposition, erro
 		if s.sync == nil {
 			return nil
 		}
-		wire, err := marshalPayload(publishedDisposition{
+		wire, err := marshalPayload(PublishedDisposition{
 			ID:           id,
 			RecordType:   in.Record.Type,
 			RecordID:     in.Record.ID,
@@ -685,7 +685,7 @@ func (s *Store) Decide(ctx context.Context, in DecideInput) (LedgerEntry, error)
 		if s.sync == nil {
 			return nil
 		}
-		wire, err := marshalPayload(publishedLedgerEntry{
+		wire, err := marshalPayload(PublishedLedgerEntry{
 			ID:            id,
 			DispositionID: in.DispositionID,
 			Sequence:      entry.Sequence,
