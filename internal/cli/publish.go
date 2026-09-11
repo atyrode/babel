@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atyrode/babel/internal/adapter"
 	"github.com/atyrode/babel/internal/catalog"
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/restic"
@@ -86,25 +88,50 @@ const (
 // instance's takeover if this process died mid-write.
 const publicationLeaseTTL = 2 * time.Minute
 
-// publishToCatalog records a committed snapshot and this host's session
-// identity in the shared catalog.
+// catalogOutcome is what one push's catalog phase did.
 //
-// It returns the catalog state to report and the number of session rows
-// published. A returned error is a genuine failure; an outage is not one, and
-// reports catalogUncatalogued instead.
+// It carries more than this snapshot's own state because a push is also when
+// the archive drains itself (SPEC.md 9.1): publication is the product's
+// responsibility, so the two states an outage or a rebuild can leave behind are
+// resolved by the work already scheduled rather than by an operator
+// remembering a command. Both drains report what they achieved, because a drain
+// nobody can see is indistinguishable from one that never ran.
+type catalogOutcome struct {
+	// state is the catalog state of the snapshot this push created.
+	state string
+	// published counts the session identity rows this push recorded for it.
+	published int
+	// adopted counts snapshots this push gave the catalog a row for that it
+	// had none for at all - this host's and every other host's alike.
+	adopted int
+	// completed counts catalog-pending snapshots a restore-and-rescan
+	// completed, and recovered the session rows those completions wrote.
+	completed int
+	recovered int
+	// unrecovered counts catalog-pending snapshots this push attempted and
+	// could not complete, so a count that did not fall is visible rather than
+	// inferred from its absence.
+	unrecovered int
+}
+
+// publishToCatalog records a committed snapshot and this host's session
+// identity in the shared catalog, and drains what the catalog is still missing.
+//
+// It returns what happened, per catalogOutcome. A returned error is a genuine
+// failure; an outage is not one, and reports catalogUncatalogued instead.
 func (a *app) publishToCatalog(
 	ctx context.Context,
 	d dirs,
 	host string,
 	repo *restic.Repo,
 	summary *restic.BackupSummary,
-) (state string, published int, err error) {
+) (out catalogOutcome, err error) {
 	cfg, found, err := config.Load()
 	if err != nil {
-		return "", 0, err
+		return catalogOutcome{}, err
 	}
 	if !found || storageMode(cfg) != config.ModeShared || cfg.Catalog == nil {
-		return catalogLocal, 0, nil
+		return catalogOutcome{state: catalogLocal}, nil
 	}
 
 	// Session identity is read through the same incremental cache `sessions
@@ -113,7 +140,7 @@ func (a *app) publishToCatalog(
 	sessions, covered := a.scan(ctx, adapters(), nil)
 	rows, err := a.publishableSessions(ctx, sessions, covered, d.data, cfg.DeploymentID, host)
 	if err != nil {
-		return "", 0, err
+		return catalogOutcome{}, err
 	}
 
 	db, err := sharedcatalog.Open(ctx, cfg.Catalog.DSN(), sharedcatalog.WithMaxConnections(cfg.Catalog.MaxConnections))
@@ -140,36 +167,42 @@ func (a *app) publishToCatalog(
 		}
 	}()
 
-	// One listing serves reconciliation and the snapshot's recorded time.
-	// snapshot_time is restic's, not this process's clock: the column records
-	// when the snapshot was made, and publication can happen much later after an
-	// outage. If the repository cannot be listed the time is unknown, so
-	// publication defers rather than substituting now().
+	// One listing serves reconciliation, both drains, and the snapshot's
+	// recorded time. snapshot_time is restic's, not this process's clock: the
+	// column records when the snapshot was made, and publication can happen
+	// much later after an outage. If the repository cannot be listed the time
+	// is unknown, so publication defers rather than substituting now().
 	listing, err := repo.Snapshots(ctx)
 	if err != nil {
 		return a.catalogDeferred(err, "list the repository's snapshots")
 	}
 
-	// Adopt any earlier snapshot the repository holds that the catalog does not,
-	// which is how a push catalogues snapshots that an outage stranded: SPEC.md
-	// 9 makes the owning host's next push one of the two recovery paths.
+	// Adopt any earlier snapshot of this host's that the repository holds and
+	// the catalog does not, which is how a push catalogues snapshots that an
+	// outage stranded: SPEC.md 9 makes the owning host's next push one of the
+	// recovery paths.
 	//
-	// This runs before publishing, and excludes the snapshot being published,
-	// for an ordering reason. Reconcile assigns each adopted snapshot the next
-	// order above the current maximum, so adopting afterwards would give a
-	// stranded OLDER snapshot a HIGHER publication_order than the one just
-	// published - and publication_order is what totally orders a host's
-	// snapshots so readers need not trust clock skew (migrations/0001_init.sql).
-	// Adopting first, then taking the next order, keeps time order and
-	// publication_order in agreement.
+	// This host's own snapshots are adopted here, before publishing and
+	// excluding the snapshot being published, for an ordering reason. Reconcile
+	// assigns each adopted snapshot the next order above the current maximum,
+	// so adopting afterwards would give a stranded OLDER snapshot a HIGHER
+	// publication_order than the one just published - and publication_order is
+	// what totally orders a host's snapshots so readers need not trust clock
+	// skew (migrations/0001_init.sql). Adopting first, then taking the next
+	// order, keeps time order and publication_order in agreement. Other hosts'
+	// snapshots are adopted after publication instead: they occupy their own
+	// hosts' order spaces, so nothing about this snapshot's number depends on
+	// them, and this push's own duty comes first.
 	//
 	// Adopted snapshots carry their real counts from restic's own summary but no
-	// session rows, so they stay catalog-pending until a push describes them.
+	// session rows, so they arrive catalog-pending and the rescan drain below is
+	// what completes them.
 	earlier := hostSnapshots(listing, host, summary.SnapshotID)
 	if rep, err := sharedcatalog.Reconcile(ctx, db, host, earlier); err != nil {
 		return a.catalogDeferred(err, "reconcile this host's earlier snapshots")
 	} else if rep.Added > 0 {
-		a.diagf("note: adopted %d earlier %s as catalog-pending\n",
+		out.adopted += rep.Added
+		a.diagf("note: adopted %d earlier %s of this host's as catalog-pending\n",
 			rep.Added, plural(rep.Added, "snapshot", "snapshots"))
 	}
 
@@ -207,7 +240,53 @@ func (a *app) publishToCatalog(
 		a.diagf("note: snapshot %s was already published; the catalog was left unchanged\n",
 			Sanitize(summary.SnapshotID))
 	}
-	return catalogCommitted, len(rows), nil
+	out.state, out.published = catalogCommitted, len(rows)
+
+	// The two drains. Neither can fail this push: the snapshot is published and
+	// its state is settled, and a neighbour's stranded row or an unrestorable
+	// snapshot is not this push's failure. Both report on stderr and in the
+	// summary instead.
+	out.adopted += a.adoptOtherHosts(ctx, db, cfg, host, listing)
+	rescanned := a.drainPending(ctx, d, db, repo, cfg, listing, lease)
+	out.completed, out.recovered, out.unrecovered = rescanned.completed, rescanned.recovered, rescanned.unrecovered
+	return out, nil
+}
+
+// adoptOtherHosts records every snapshot the repository holds for a machine
+// other than this one that the catalog has no row for, and reports what that
+// achieved.
+//
+// Without it the `uncatalogued` state is only self-healing for a host that
+// pushes again, so a snapshot stranded by a machine that was retired, died, or
+// is merely idle would stay outside the catalog indefinitely - which SPEC.md
+// 9.1 forbids in the same terms it forbids an unpublished analysis record.
+// Every count it returns is an adoption that actually committed.
+func (a *app) adoptOtherHosts(ctx context.Context, db *sql.DB, cfg config.Config,
+	host string, listing []restic.Snapshot) int {
+	rep, err := sharedcatalog.AdoptForeign(ctx, db, cfg.DeploymentID, cfg.InstanceID, host,
+		otherHostSnapshots(listing, host), publicationLeaseTTL)
+	if err != nil {
+		a.diagf("warning: could not adopt what other hosts left uncatalogued: %s\n",
+			Sanitize(err.Error()))
+	}
+	if rep.Adopted > 0 {
+		a.diagf("note: adopted %d uncatalogued %s from %s as catalog-pending\n",
+			rep.Adopted, plural(rep.Adopted, "snapshot", "snapshots"),
+			joinCell(sanitizeAll(rep.Hosts)))
+	}
+	if len(rep.Deferred) > 0 {
+		a.diagf("note: another instance is publishing for %s, so its snapshots are left to that push or the next one\n",
+			joinCell(sanitizeAll(rep.Deferred)))
+	}
+	for _, failure := range rep.Failed {
+		a.diagf("warning: could not adopt a host's snapshots: %s\n", Sanitize(failure))
+	}
+	if len(rep.Refused) > 0 {
+		a.diagf("warning: %d %s in this repository %s no host and cannot be attributed: %s\n",
+			len(rep.Refused), plural(len(rep.Refused), "snapshot", "snapshots"),
+			plural(len(rep.Refused), "names", "name"), joinCell(sanitizeAll(rep.Refused)))
+	}
+	return rep.Adopted
 }
 
 // snapshotTimeIn reads the recorded time of one snapshot from a listing.
@@ -234,9 +313,6 @@ func snapshotTimeIn(listing []restic.Snapshot, id string) (time.Time, error) {
 // must not be adopted first: adoption would record it as catalog-pending with a
 // lower publication order, and the publication that follows would then be
 // updating a row rather than creating one.
-//
-// Counts stay nil when restic recorded no summary: the catalog distinguishes an
-// unknown count from a count of zero.
 func hostSnapshots(listing []restic.Snapshot, host string, skip ...string) []sharedcatalog.RepoSnapshot {
 	skipped := make(map[string]bool, len(skip))
 	for _, id := range skip {
@@ -247,18 +323,46 @@ func hostSnapshots(listing []restic.Snapshot, host string, skip ...string) []sha
 		if s.Host != host || skipped[s.ID] {
 			continue
 		}
-		row := sharedcatalog.RepoSnapshot{SnapshotID: s.ID, Host: s.Host, Time: s.Time.UTC()}
-		if s.Summary != nil {
-			row.Counts = &sharedcatalog.SnapshotCounts{
-				FilesNew:        int64(s.Summary.FilesNew),
-				FilesChanged:    int64(s.Summary.FilesChanged),
-				FilesUnmodified: int64(s.Summary.FilesUnmodified),
-				BytesAdded:      s.Summary.DataAdded,
-			}
-		}
-		out = append(out, row)
+		out = append(out, catalogSnapshot(s))
 	}
 	return out
+}
+
+// otherHostSnapshots restates every snapshot in the repository that this host
+// did not produce.
+//
+// It is the complement of hostSnapshots because the two go to different
+// functions for a reason: one host's listing is reconciled under that host's
+// own numbering, and AdoptForeign splits this set by host to do the same for
+// each machine in it. Nothing is filtered by tag or by age - the question a
+// drain asks is only whether the catalog has a row for a snapshot the
+// repository holds.
+func otherHostSnapshots(listing []restic.Snapshot, host string) []sharedcatalog.RepoSnapshot {
+	out := make([]sharedcatalog.RepoSnapshot, 0, len(listing))
+	for _, s := range listing {
+		if s.Host == host {
+			continue
+		}
+		out = append(out, catalogSnapshot(s))
+	}
+	return out
+}
+
+// catalogSnapshot states one repository snapshot record in the catalog's terms.
+//
+// Counts stay nil when restic recorded no summary: the catalog distinguishes an
+// unknown count from a count of zero.
+func catalogSnapshot(s restic.Snapshot) sharedcatalog.RepoSnapshot {
+	row := sharedcatalog.RepoSnapshot{SnapshotID: s.ID, Host: s.Host, Time: s.Time.UTC()}
+	if s.Summary != nil {
+		row.Counts = &sharedcatalog.SnapshotCounts{
+			FilesNew:        int64(s.Summary.FilesNew),
+			FilesChanged:    int64(s.Summary.FilesChanged),
+			FilesUnmodified: int64(s.Summary.FilesUnmodified),
+			BytesAdded:      s.Summary.DataAdded,
+		}
+	}
+	return row
 }
 
 // catalogDeferred decides whether a catalog failure defers publication or fails
@@ -274,18 +378,18 @@ func hostSnapshots(listing []restic.Snapshot, host string, skip ...string) []sha
 // migration, a schema this binary cannot write - would defeat reconciliation in
 // exactly the same way, so reporting a state that appears to resolve itself
 // would hide a misconfiguration. Those fail.
-func (a *app) catalogDeferred(err error, what string) (string, int, error) {
+func (a *app) catalogDeferred(err error, what string) (catalogOutcome, error) {
 	switch {
 	case sharedcatalog.Unreachable(err):
 		a.diagf("warning: could not %s: %s\n", what, Sanitize(err.Error()))
-		a.diagf("note: the snapshot is durable; run `babel archive push` again or reconcile to catalogue it\n")
-		return catalogUncatalogued, 0, nil
+		a.diagf("note: the snapshot is durable; the next `babel archive push` from any host catalogues it\n")
+		return catalogOutcome{state: catalogUncatalogued}, nil
 	case errors.Is(err, sharedcatalog.ErrLeaseHeld), errors.Is(err, sharedcatalog.ErrLeaseLost):
 		a.diagf("warning: another instance is publishing for this host: %s\n", Sanitize(err.Error()))
-		a.diagf("note: the snapshot is durable and will be catalogued by the next push or reconciliation\n")
-		return catalogUncatalogued, 0, nil
+		a.diagf("note: the snapshot is durable and will be catalogued by that push or the next one from any host\n")
+		return catalogOutcome{state: catalogUncatalogued}, nil
 	}
-	return "", 0, fmt.Errorf("%s: %w", what, err)
+	return catalogOutcome{}, fmt.Errorf("%s: %w", what, err)
 }
 
 // publishableSessions turns this host's live sessions into catalog rows.
@@ -382,6 +486,54 @@ func (a *app) publishableSessions(
 		})
 	}
 	return rows, nil
+}
+
+// rescannedSessionRow states one session a restore-and-rescan described as the
+// catalog row that snapshot's own push would have published for it.
+//
+// It goes through rowFromDescription, the same statement of a description the
+// local listing and the describe cache are built from, so a recovered row
+// carries the values a push would have sent rather than a second reading of
+// the same bytes. Nothing here parses a transcript: the description was
+// produced by the owning adapter's Describe over the restored files
+// (internal/harness declares which adapters exist at all).
+//
+// The host is the snapshot's own, which restic recorded, never this machine's.
+// SessionUID is a digest over the deployment, host, harness and source id, so
+// attributing another machine's session to the instance that happened to
+// restore it would mint an identity that machine never published and can never
+// update (decision 9).
+//
+// This machine's inferred-title overlay is deliberately not applied. It is
+// keyed by selector, and a selector names a different session on every host -
+// Codex alone names one session per machine after that machine's shell history
+// - so applying it here would put this machine's guess about its own session
+// onto another machine's row.
+func rescannedSessionRow(s localSession, desc *adapter.Description,
+	deploymentID, host string) sharedcatalog.SessionRow {
+	listing := rowFromDescription(s, desc)
+	grade := desc.ContinuationGrade
+	return sharedcatalog.SessionRow{
+		SessionUID: sharedcatalog.SessionUID(
+			deploymentID, host, s.src.Harness, s.src.SourceID),
+		Harness:             s.src.Harness,
+		PrimarySize:         desc.PrimarySize,
+		ArtifactCount:       len(desc.Artifacts),
+		BlobCount:           len(desc.Blobs),
+		UnresolvedBlobCount: len(desc.UnresolvedBlobRefs),
+		SourceModifiedAt:    parseCatalogTime(listing.Modified),
+		Title:               listing.Title,
+		TitleProvenance:     listing.TitleProvenance,
+		Workspace:           listing.Workspace,
+		// The grade is an observation here for the same reason it is in a
+		// push: the restored closure is byte-identical to what the snapshot
+		// holds, so unresolved references in it are the session's own.
+		ContinuationGrade: &grade,
+		CostUSD:           listing.CostUSD,
+		TotalTokens:       listing.TotalTokens,
+		Turns:             listing.Turns,
+		ToolErrors:        listing.ToolErrors,
+	}
 }
 
 // parseCatalogTime restores a cached timestamp. An unparseable or absent value

@@ -2032,9 +2032,16 @@ export interface FocusResponse {
 // What a word the operator typed refers to. `resolved: false` is an answer
 // rather than a failure — a name the ledger does not know, or one that means
 // two entities — and `reason` is the server's sentence about which.
+//
+// `nameable` separates those two, because they call for opposite acts. A word
+// that reaches nothing can be given a subject, and the surface that said so is
+// where naming one belongs; a word that already means several subjects must
+// not be given a third, so the server answers false and no client has to infer
+// that from the wording of `reason`.
 export interface FocusSubjectResponse {
   term: string;
   resolved: boolean;
+  nameable: boolean;
   via?: string;
   subject: FocusSubject | null;
   rule: FocusRuleInForce | null;
@@ -2281,4 +2288,68 @@ export function getRealityFacts(status?: string): Promise<FactsResponse> {
 
 export function getRealityFact(id: string): Promise<FactDetail> {
   return request<FactDetail>(`/api/reality/fact?${query({ id })}`);
+}
+
+// ---------------------------------------------------------------------------
+// Naming a subject (SPEC.md §4.8, §8.4).
+//
+// Every call above this line is about a subject that already exists. These two
+// are how one starts existing from the browser: the vocabularies a subject has
+// to be described in, and the creation itself.
+//
+// The vocabularies are fetched rather than written down here. §4.8 keeps the
+// entity kinds and the alias kinds closed so that a typo is a refused write,
+// and a form holding its own copy of either list would offer the operator a
+// kind the ledger cannot store.
+//
+// A creation writes an identity and the typed names it answers to, and
+// nothing else. `believes` is the server's own sentence about that: no facts,
+// no questions, no analysis. It is rendered verbatim for the reason every
+// consequence sentence on the focus surface is — the operator has to be told
+// what he did and what he did not do, in the words the surface that did it
+// uses.
+//
+// A name the ledger already resolves is a refusal carrying the subject that
+// holds it, not a second subject. Nothing here deletes or renames: a mistaken
+// name is retracted and a mistaken identity is merged, both append-only, and
+// neither has a call on this surface.
+// ---------------------------------------------------------------------------
+
+export interface SubjectVocabulary {
+  kinds: string[];
+  alias_kinds: string[];
+}
+
+// One typed name, as it was recorded. The kind matters: §4.8 types aliases so
+// a hostname is never compared with a word somebody used in chat.
+export interface SubjectAlias {
+  kind: string;
+  value: string;
+}
+
+// What a creation answers with. `subject` is deliberately a FocusSubject —
+// the same shape the focus surface names a subject in — because that is where
+// the operator is going next: the page that named a subject in order to state
+// a policy about it hands this straight to the control that states one.
+export interface SubjectCreateResult {
+  subject: FocusSubject;
+  aliases: SubjectAlias[];
+  believes: string;
+}
+
+export function getSubjectVocabulary(): Promise<SubjectVocabulary> {
+  return request<SubjectVocabulary>("/api/reality/subject/vocabulary");
+}
+
+// createSubject names one subject. The fields are `babel reality entity
+// create`'s flags and nothing more, because the GUI and the CLI create the
+// same record: a kind, a display name, the operator's own note, and the typed
+// names it should answer to.
+export function createSubject(input: {
+  kind: string;
+  name: string;
+  notes: string;
+  aliases: SubjectAlias[];
+}): Promise<SubjectCreateResult> {
+  return postJSON<SubjectCreateResult>("/api/reality/subject/create", input);
 }

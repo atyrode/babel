@@ -189,13 +189,22 @@ func TestCatalogOutageDefersPublicationAndRecovers(t *testing.T) {
 	}
 
 	// The outage ends. The stranded snapshot is adopted from the repository's
-	// own listing rather than republished, and it stays catalog-pending because
-	// which sessions it held was never recorded and is not derivable (SPEC.md
-	// §9).
+	// own listing rather than republished, and the same push then recovers the
+	// session detail it never wrote by restoring and rescanning it - so the
+	// catalog ends with nothing stranded and nothing pending, with no operator
+	// action anywhere in this (SPEC.md §9.1).
 	a.installDocument(t, dep.catalogDoc())
 	recovered := instJSON[pushResult](t, a, a.with("archive", "push", "--json")...)
 	if recovered.Catalog != "committed" {
 		t.Fatalf("the recovery push did not publish: %+v", recovered)
+	}
+	if recovered.SnapshotsAdopted != 1 {
+		t.Fatalf("the recovery push adopted %d snapshots, want the stranded one: %+v",
+			recovered.SnapshotsAdopted, recovered)
+	}
+	if recovered.SnapshotsCompleted != 1 || recovered.SessionsRecovered == 0 {
+		t.Fatalf("the recovery push completed %d snapshots with %d sessions, want the adopted one recovered: %+v",
+			recovered.SnapshotsCompleted, recovered.SessionsRecovered, recovered)
 	}
 	after := instJSON[sharedStatusResult](t, a, a.with("archive", "status", "--json")...)
 	if after.Catalog == nil || !after.Catalog.Reachable {
@@ -204,11 +213,11 @@ func TestCatalogOutageDefersPublicationAndRecovers(t *testing.T) {
 	if after.Catalog.Uncatalogued == nil || *after.Catalog.Uncatalogued != 0 {
 		t.Fatalf("a snapshot is still uncatalogued after recovery: %+v", after.Catalog)
 	}
-	if after.Catalog.Pending == nil || *after.Catalog.Pending != 1 {
-		t.Fatalf("the adopted snapshot is not reported catalog-pending: %+v", after.Catalog)
+	if after.Catalog.Pending == nil || *after.Catalog.Pending != 0 {
+		t.Fatalf("the adopted snapshot was left catalog-pending: %+v", after.Catalog)
 	}
 	row := after.catalogHost(t, hostA)
-	if row.Snapshots != 3 || row.Pending != 1 || row.NewestOrder != 3 {
+	if row.Snapshots != 3 || row.Pending != 0 || row.NewestOrder != 3 {
 		t.Fatalf("host rows after outage recovery are wrong: %+v", row)
 	}
 }

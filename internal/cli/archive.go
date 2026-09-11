@@ -78,9 +78,36 @@ The reported catalog state is "local" with no shared catalog, "committed"
 once this snapshot and its session rows are visible fleet-wide, or
 "uncatalogued" when the snapshot is durable but the catalog holds no row
 for it - an outage, or another instance already publishing for this host.
-Both of those exit 0: the archive is intact, and the next push or a
-reconciliation records the snapshot. "babel archive status" reports what
-is still uncatalogued between pushes.
+Both of those exit 0: the archive is intact, and the next push from any
+host records the snapshot. "babel archive status" reports what is still
+uncatalogued between pushes.
+
+A push also drains what the catalog is still missing about the rest of the
+archive, because publication is Babel's responsibility and not a command
+the operator has to remember. Two counts report it:
+
+  snapshots adopted     snapshots the repository holds that the catalog had
+                        no row for, now recorded - this host's and every
+                        other host's, so a snapshot stranded by a machine
+                        that is retired, dead or idle is catalogued by
+                        whichever machine pushes next. Each row names the
+                        host restic recorded, never this one.
+
+  snapshots completed   catalog-pending snapshots whose session detail was
+                        recovered by restoring the snapshot to a private
+                        temporary area, rescanning it with the adapters that
+                        own its trees, and publishing what it actually held.
+                        "sessions recovered" counts those rows. The restore
+                        reads the repository and writes nothing to it, the
+                        area is removed whether it succeeds or fails, and at
+                        most two snapshots are restored per push so an
+                        hourly timer stays bounded.
+
+"snapshots unrecovered" appears when a snapshot could not be restored or
+described. That row is unchanged - still durable, still catalog-pending -
+and a later push tries again. Neither drain can fail a push: the snapshot
+it took is already committed, and a neighbour's stranded row is not this
+backup's failure.
 `
 
 const archiveStatusUsage = `Usage: babel archive status --repo REPOSITORY --password-file FILE [flags]
@@ -94,20 +121,21 @@ journal. The two counts mean different things:
 
   uncatalogued      snapshots the repository holds that the catalog has no
                     row for at all, which is what an outage leaves behind.
-                    The next "babel archive push" records them.
+                    The next "babel archive push" records them, from
+                    whichever host runs it: a snapshot does not wait for the
+                    machine that took it to come back.
 
   catalog-pending   snapshots the catalog has a row for, with real counts
                     from restic, but no record of which sessions they held.
-                    That record can only be written by the owning host at
-                    push time, and it is not derivable from the snapshot
-                    listing, so no command here resolves it: pushing again
-                    publishes the next snapshot rather than completing this
-                    one, and the count does not fall. Nothing is wrong with
-                    the archive - the snapshots remain durable and
+                    That record is not derivable from the snapshot listing,
+                    so recovering it means restoring the snapshot and
+                    rescanning it - which "babel archive push" now does, a
+                    bounded number per run, for any host's snapshots and not
+                    only its own. So this count falls as pushes happen and
+                    needs no operator action. Nothing is wrong with the
+                    archive meanwhile: the snapshots remain durable and
                     restorable, and only the catalog's session detail for
-                    them is missing. Recovering it would mean restoring the
-                    snapshot and rescanning it, which Babel does not
-                    implement yet.
+                    them is missing.
 
 An unreachable catalog reports both counts as unknown rather than zero.
 
@@ -123,8 +151,9 @@ and the difference between them is the subject of the counts above.
 
   SESSIONS          distinct sessions the host has ever published. A host
                     whose catalog rows were rebuilt from the repository
-                    listing reports 0 until it pushes again, because session
-                    detail is not in that listing.
+                    listing reports 0 until something supplies the detail
+                    that listing does not carry - that host's next push, or
+                    a restore-and-rescan by any host's push.
 
   PENDING           that host's share of the catalog-pending count above.
 
@@ -439,6 +468,26 @@ type pushResult struct {
 	Catalog string `json:"catalog"`
 	// SessionsPublished counts the session identity rows this push recorded.
 	SessionsPublished int `json:"sessions_published"`
+	// The two drains a push runs on the shared catalog's behalf, per SPEC.md
+	// §9.1: publication is the product's responsibility, so a push resolves
+	// what an outage or a rebuild stranded rather than waiting for an
+	// operator to remember a command. They describe the catalog and never the
+	// archive: every snapshot named in these counts was already durable.
+	//
+	// SnapshotsAdopted counts snapshots this push gave the catalog a row for
+	// that it had none for at all - this host's and other hosts' alike, since
+	// a snapshot stranded by a retired or idle machine would otherwise wait
+	// for a push that never comes.
+	SnapshotsAdopted int `json:"snapshots_adopted"`
+	// SnapshotsCompleted counts catalog-pending rows a restore-and-rescan
+	// completed, and SessionsRecovered the session rows it wrote for them.
+	SnapshotsCompleted int `json:"snapshots_completed"`
+	SessionsRecovered  int `json:"sessions_recovered"`
+	// SnapshotsUnrecovered counts catalog-pending rows this push tried to
+	// complete and could not, so a count that did not fall says whether
+	// nothing was attempted or something failed. Those rows are unchanged:
+	// still durable, still pending, still eligible for the next push.
+	SnapshotsUnrecovered int `json:"snapshots_unrecovered"`
 }
 
 // archivePush implements `babel archive push`.
@@ -509,8 +558,11 @@ func (a *app) archivePush(ctx context.Context, args []string) error {
 	// failure must not make a successful backup look failed, so an outage
 	// reports catalog-pending and a real misconfiguration is what fails.
 	if backupErr == nil {
-		state, published, pubErr := a.publishToCatalog(ctx, d, host, repo, summary)
-		res.Catalog, res.SessionsPublished = state, published
+		out, pubErr := a.publishToCatalog(ctx, d, host, repo, summary)
+		res.Catalog, res.SessionsPublished = out.state, out.published
+		res.SnapshotsAdopted = out.adopted
+		res.SnapshotsCompleted, res.SessionsRecovered = out.completed, out.recovered
+		res.SnapshotsUnrecovered = out.unrecovered
 		if pubErr != nil {
 			if reportErr := a.reportPush(res, *asJSON); reportErr != nil {
 				return reportErr
@@ -563,7 +615,22 @@ func (a *app) reportPush(res pushResult, asJSON bool) error {
 		rows = append(rows,
 			[2]string{"catalog", res.Catalog},
 			[2]string{"sessions published", fmt.Sprint(res.SessionsPublished)},
+			// The drains are reported on every shared-mode push, including the
+			// ordinary one where both are zero. A drain that only appears when
+			// it found work would leave an operator unable to tell "nothing was
+			// stranded" from "nothing looked", which is the distinction this
+			// whole area of the catalog is about.
+			[2]string{"snapshots adopted", fmt.Sprint(res.SnapshotsAdopted)},
+			[2]string{"snapshots completed", fmt.Sprint(res.SnapshotsCompleted)},
 		)
+		// These two refine the line above them, so they appear when that line
+		// has something to refine.
+		if res.SnapshotsCompleted > 0 {
+			rows = append(rows, [2]string{"sessions recovered", fmt.Sprint(res.SessionsRecovered)})
+		}
+		if res.SnapshotsUnrecovered > 0 {
+			rows = append(rows, [2]string{"snapshots unrecovered", fmt.Sprint(res.SnapshotsUnrecovered)})
+		}
 	}
 	for _, root := range res.Roots {
 		rows = append(rows, [2]string{"root", root})
@@ -804,21 +871,22 @@ func (a *app) catalogLag(ctx context.Context, snapshots []restic.Snapshot) *cata
 		}
 	}
 	// Two different conditions with two different meanings, deliberately not
-	// summed. An uncatalogued snapshot has no catalog row and a push records it.
-	// A catalog-pending row exists with real counts from restic but no record of
-	// which sessions the snapshot held, and only its owning host could have
-	// written that, at push time. No shipped command resolves it - pushing again
-	// publishes the next snapshot rather than completing this one - so the count
-	// does not fall, and saying so is kinder than leaving an operator looking
-	// for the command that clears it. A restore-and-rescan could complete it
-	// (SPEC.md 12, Phase C), which is why the note says "yet" rather than
-	// claiming the detail is unrecoverable in principle.
+	// summed, and each now with a remedy that runs by itself. An uncatalogued
+	// snapshot has no catalog row, and the next push from any host records it -
+	// not only the host that took it, which is what used to strand a retired
+	// machine's snapshot permanently. A catalog-pending row exists with real
+	// counts from restic and no record of which sessions the snapshot held;
+	// that record is not derivable from the listing, so a push restores the
+	// snapshot and rescans it, a bounded number per run (see
+	// internal/cli/archiverescan.go). Both counts therefore fall as pushes
+	// happen, and this report names the work rather than sending the operator
+	// looking for a command.
 	if uncatalogued > 0 {
-		a.diagf("note: %d %s archived but not catalogued; `babel archive push` records them\n",
+		a.diagf("note: %d %s archived but not catalogued; the next `babel archive push` from any host records them\n",
 			uncatalogued, plural(uncatalogued, "snapshot is", "snapshots are"))
 	}
 	if pending > 0 {
-		a.diagf("note: %d %s recorded without session detail, which only its owning host could write at push time; the %s durable and restorable, and no command resolves this yet, so the count does not fall\n",
+		a.diagf("note: %d %s recorded without session detail; the %s durable and restorable, and `babel archive push` recovers the detail by restoring and rescanning them, a few per run\n",
 			pending, plural(pending, "snapshot is", "snapshots are"),
 			plural(pending, "snapshot stays", "snapshots stay"))
 	}

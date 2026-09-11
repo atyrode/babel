@@ -749,15 +749,20 @@ func TestTwoInstanceAcceptance(t *testing.T) {
 	if final.Catalog.Uncatalogued == nil || *final.Catalog.Uncatalogued != 0 {
 		t.Fatalf("a snapshot is still uncatalogued after recovery: %+v", final.Catalog)
 	}
-	// Adopted from the repository listing, so restic's counts are restored but
-	// the record of which sessions it held was never written and is not
-	// derivable: that row stays catalog-pending, and no shipped command resolves
-	// it - §12 Phase C's restore-and-rescan is what would (SPEC.md §9).
-	if final.Catalog.Pending == nil || *final.Catalog.Pending != 1 {
-		t.Fatalf("the adopted snapshot is not reported catalog-pending: %+v", final.Catalog)
+	// Adopted from the repository listing, so restic's counts are restored; the
+	// record of which sessions it held was never written and is not derivable
+	// from the listing, so the same push restores the snapshot and rescans it
+	// to recover exactly that (SPEC.md §9.1). Nothing here is typed by an
+	// operator, which is the property being pinned.
+	if recovered.SnapshotsAdopted != 1 || recovered.SnapshotsCompleted != 1 {
+		t.Fatalf("the recovery push adopted %d and completed %d, want one of each: %+v",
+			recovered.SnapshotsAdopted, recovered.SnapshotsCompleted, recovered)
+	}
+	if final.Catalog.Pending == nil || *final.Catalog.Pending != 0 {
+		t.Fatalf("the adopted snapshot was left catalog-pending: %+v", final.Catalog)
 	}
 	finalA := final.catalogHost(t, hostA)
-	if finalA.Snapshots != 3 || finalA.Pending != 1 {
+	if finalA.Snapshots != 3 || finalA.Pending != 0 {
 		t.Fatalf("host A's catalog rows after recovery are wrong: %+v", finalA)
 	}
 	// Publication order is monotonic across the adoption: a reader selecting

@@ -11,6 +11,48 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **The archive drains itself, like every other record.** §9.1 requires every
+  record Babel produces to reach the shared catalog without an operator
+  action, and the archive half broke that in two places. `uncatalogued` — a
+  snapshot restic holds that the catalog has no row for — self-healed only if
+  the snapshot's own host pushed again, because adoption filtered the
+  repository listing to the pushing host and the catalog refused anything
+  else, so a snapshot stranded by a machine that was retired, died, or was
+  merely idle stayed outside the catalog indefinitely. `catalog-pending` — a
+  row carrying restic's real counts and no record of which sessions the
+  snapshot held — had no resolution at all: `archive status` told the operator
+  that no shipped command resolved it and that the count would not fall. Both
+  now drain as part of `babel archive push`, which the hourly timer already
+  runs, and neither is behind a new command. Any pushing host adopts every
+  unknown snapshot in the repository, recording each under the host restic
+  named and under that host's own `publication_order` — never mixed between
+  hosts, and written only while holding that host's publication lease, so two
+  instances pushing at once cannot number one snapshot twice. A snapshot that
+  names no host is still refused, because its identity is unknown rather than
+  absent. And a `catalog-pending` snapshot is completed by restoring it to a
+  disposable area under the cache directory, rescanning it with the same
+  adapter discovery and describe a normal push uses, publishing the session
+  rows it actually held, and marking it committed — recovering the same
+  session identities its owning host had published, since the digest is over
+  the owning host and not the restoring instance. The rescan is bounded at two
+  snapshots per push so the hourly timer stays bounded, spends that bound
+  round-robin across hosts so one machine's backlog cannot starve another's,
+  removes its restore area on success and on failure alike, isolates one
+  unrestorable snapshot from the rest, and writes nothing to the repository. A
+  session row a later push already wrote is never rewound to what an older
+  snapshot held. Both drains report themselves in the push summary and in
+  `--json`: `snapshots adopted`, `snapshots completed`, `sessions recovered`,
+  and `snapshots unrecovered` for the rows that could not be read and will be
+  retried. Two residues remain and are stated rather than implied, both about
+  harnesses. A snapshot holding only a harness this binary does not read
+  completes with none of its sessions, exactly as an ordinary push of that
+  machine would, because the harness set is `internal/harness`'s single
+  declaration. And a snapshot holding a session whose harness the catalog's
+  own `sessions.harness` enum does not admit is refused rather than completed
+  short of it — `babel` itself is such a harness today — because a
+  `session_count` that included a row the schema cannot store would be a
+  number no reader could reconcile; widening that enum is a migration against
+  a frozen schema, not a change here.
 - **Recorded focus reaches the loop.** The ledger has been able to hold "stop
   spending on this project" since §4.8's focus rules were implemented, and
   nothing read them: the conductor picked candidates straight off the
@@ -24,6 +66,33 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   itself, and `full` is unchanged. `babel reality focus install` installs the
   rule set this build ships, without which nothing is withheld because
   nothing has been stated.
+- **A subject can be named from the browser.** Every fact, Question and focus
+  policy is about an entity that already exists, and the only way to make one
+  exist was `babel reality entity create` — so the focus page's answer to a
+  name it did not recognize was a sentence telling the operator to go and use
+  a terminal, which §8.4 counts as a product that does not have the thing it
+  stores. `POST /api/reality/subject/create` writes the same record that
+  command writes: the entity, its first membership entry, the fleet's claim on
+  it, and each typed alias, with the ledger's own validation and the ledger's
+  own closed vocabularies served to the form by
+  `GET /api/reality/subject/vocabulary` rather than copied into it. It is
+  reachable from the Subjects listing, including its empty state, and directly
+  from the focus page's unresolved-name state — which now carries the word the
+  operator typed into the form, records it as a typed name, and re-resolves it
+  afterwards, so the dead end became the next step and the policy he came to
+  state is one click away.
+
+  The authority is the operator's own, resolved by the same launch identity
+  every §4.7 and §4.8 mutation on that surface uses, and a session that cannot
+  name an operator creates nothing. It is a third reality surface rather than
+  two more methods on the two that exist: `reality.SubjectNaming` can create an
+  identity and attach names to it and has no method that writes a fact, so a
+  page that can name a thing still cannot make Babel believe anything about
+  it — creating a subject asserts nothing, and the response says so. A name the
+  ledger already resolves is refused with the identifier of the subject that
+  holds it rather than duplicated, because two subjects for one thing is the
+  mistaken identity §4.8's merge history exists to undo; a name that already
+  means several subjects is refused without offering to name a third.
 - **A skipped candidate says why.** Withholding a consolidation cycle writes
   the immutable context snapshot §4.8 requires a deterministic deferral to
   leave behind — the policy version, the resolved entity, the rule and the

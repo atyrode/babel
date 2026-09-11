@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { getRealityEntities, type EntitiesResponse } from "../api";
+import { getRealityEntities, type EntitiesResponse, type SubjectCreateResult } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge } from "../analysis";
+import NameSubjectForm from "./NameSubject";
 
 // What Babel thinks exists (SPEC.md §4.8, §8.4).
 //
@@ -12,6 +13,13 @@ import { Badge } from "../analysis";
 // another entity, or from a URL somebody had memorized. §8.4 calls a record
 // only a URL reaches a record that is not in the product, so this is the way
 // in: the subjects, and how much the ledger has to say about each.
+//
+// It is also where a subject starts existing. The listing is where an operator
+// comes to see what Babel knows about, and the answer on a new deployment is
+// "nothing" — so the empty state is not a dead end here either: naming the
+// first subject is the act this page offers, and the operator lands on its
+// analysis policy afterwards, because deciding what Babel may spend on a thing
+// is the reason he had for naming it.
 function RealityEntitiesPage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -19,6 +27,20 @@ function RealityEntitiesPage() {
   const [data, setData] = useState<EntitiesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // naming is the form that mints a subject. It is closed by default on a
+  // populated ledger and opened from either the heading or the empty state,
+  // both of which are places an operator has just discovered that the thing
+  // he is looking for is not here.
+  const [naming, setNaming] = useState(false);
+
+  // named takes the operator to the policy surface for the subject he just
+  // created. Naming a thing is almost never the errand — deciding what Babel
+  // may spend on it is — and the focus page resolves a canonical identifier,
+  // which is exactly what a creation hands back.
+  function named(result: SubjectCreateResult) {
+    setNaming(false);
+    navigate(`/reality/focus?subject=${encodeURIComponent(result.subject.entity_id)}`);
+  }
 
   const load = useCallback(() => {
     setLoading(true);
@@ -54,8 +76,31 @@ function RealityEntitiesPage() {
                 : `${total.toLocaleString()} ${total === 1 ? "subject" : "subjects"}`}
             </span>
           )}
+          {!naming && (
+            <button type="button" className="primary-button" onClick={() => setNaming(true)}>
+              Name a subject
+            </button>
+          )}
         </div>
       </div>
+
+      {naming && (
+        <article className="card">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">A subject Babel does not know yet</p>
+              <h2>Name a subject</h2>
+            </div>
+          </div>
+          <p className="muted">
+            A subject is the thing facts are about: a project, a repository, a machine, a
+            service. Naming one records that it exists and what you call it, and nothing
+            else — the same record <span className="mono">babel reality entity create</span>
+            {" "}writes.
+          </p>
+          <NameSubjectForm onCreated={named} onCancel={() => setNaming(false)} />
+        </article>
+      )}
 
       {kinds.length > 0 && (
         <div className="toolbar card">
@@ -99,8 +144,13 @@ function RealityEntitiesPage() {
             {kind
               ? "The ledger holds no subject of that kind."
               : "Subjects appear as analysis recognizes the projects, repositories and machines " +
-                "your sessions talk about. Nothing has been recognized so far."}
+                "your sessions talk about, and you can name one yourself at any time."}
           </span>
+          {!naming && (
+            <button type="button" className="primary-button" onClick={() => setNaming(true)}>
+              Name the first subject
+            </button>
+          )}
         </div>
       )}
 
