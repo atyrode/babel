@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/sharedcatalog"
@@ -100,7 +102,7 @@ func (s *Store) stage(ctx context.Context, tx *sql.Tx, producedBy string, rec sy
 	return closure, publish, nil
 }
 
-// publishedDisposition is the canonical publication shape of one proposed next
+// PublishedDisposition is the canonical publication shape of one proposed next
 // action.
 //
 // It exists because disposition_proposal's payload_json holds only the §9
@@ -121,7 +123,7 @@ func (s *Store) stage(ctx context.Context, tx *sql.Tx, producedBy string, rec sy
 // entries behind it has two answers and no way to choose. The schema version is
 // absent for the same reason: migration 0003 carries it in
 // analysis_records.record_schema, beside the object these are the plaintext of.
-type publishedDisposition struct {
+type PublishedDisposition struct {
 	ID         string              `json:"id"`
 	RecordType frontier.EntityType `json:"record_type"`
 	RecordID   string              `json:"record_id"`
@@ -148,7 +150,7 @@ type publishedDisposition struct {
 // record out of the frontier, which is a stronger claim than a string
 // comparison, and a copy of frontier's vocabulary here would be a second one
 // with nothing keeping it in step.
-func (p publishedDisposition) validate() error {
+func (p PublishedDisposition) validate() error {
 	switch {
 	case p.ID == "":
 		return fmt.Errorf("%w: a published proposed action carries its id", ErrInvalidValue)
@@ -174,17 +176,17 @@ func (p publishedDisposition) validate() error {
 // shared catalog, and a malformed one cannot be corrected there — 0003's
 // analysis_records is insert-only — so the only place a refusal costs nothing
 // is before the transaction that stages it.
-func (p publishedDisposition) MarshalJSON() ([]byte, error) {
+func (p PublishedDisposition) MarshalJSON() ([]byte, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
 	// The local type drops the method, which is what keeps this from
 	// recursing into itself.
-	type wire publishedDisposition
+	type wire PublishedDisposition
 	return json.Marshal(wire(p))
 }
 
-// publishedLedgerEntry is the canonical publication shape of one operator
+// PublishedLedgerEntry is the canonical publication shape of one operator
 // answer to a proposed action.
 //
 // disposition_ledger's payload_json holds only the operator's own note, so
@@ -198,7 +200,7 @@ func (p publishedDisposition) MarshalJSON() ([]byte, error) {
 // predecessor would discard the reconsideration this ledger exists to keep.
 // 0003's analysis_records is insert-only, so the shared catalog would refuse
 // the amendment anyway.
-type publishedLedgerEntry struct {
+type PublishedLedgerEntry struct {
 	ID            string `json:"id"`
 	DispositionID string `json:"disposition_id"`
 	// Sequence is per-action and strictly increasing, so a reconsidered
@@ -212,7 +214,7 @@ type publishedLedgerEntry struct {
 }
 
 // validate refuses a published answer a reader could not place in a ledger.
-func (p publishedLedgerEntry) validate() error {
+func (p PublishedLedgerEntry) validate() error {
 	switch {
 	case p.ID == "":
 		return fmt.Errorf("%w: a published decision carries its id", ErrInvalidValue)
@@ -237,13 +239,176 @@ func (p publishedLedgerEntry) validate() error {
 }
 
 // MarshalJSON encodes the answer after validating it, on the same terms as
-// publishedDisposition's.
-func (p publishedLedgerEntry) MarshalJSON() ([]byte, error) {
+// PublishedDisposition's.
+func (p PublishedLedgerEntry) MarshalJSON() ([]byte, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
-	type wire publishedLedgerEntry
+	type wire PublishedLedgerEntry
 	return json.Marshal(wire(p))
+}
+
+// Published is one record this package committed under the shared catalog's
+// disposition kind, in whichever of its two forms the bytes carried.
+//
+// Exactly one field is set. The two are not folded into one struct for the
+// reason internal/fleet keeps a citation edge beside a frontier projection: a
+// proposed action and an operator's answer to one are different records that
+// share a kind slot, and folding them would mean one of the two always arrived
+// with half its fields empty, which is how a reader learns to ignore fields.
+type Published struct {
+	// Action is the proposed next action, nil when these bytes were an
+	// answer to one.
+	Action *PublishedDisposition
+	// Answer is the operator's ruling appended to a proposed action's
+	// ledger, nil when these bytes were the action itself.
+	Answer *PublishedLedgerEntry
+}
+
+// ID is the record's global identity, which is the value the authenticated
+// catalog row binds these bytes to.
+func (p Published) ID() string {
+	switch {
+	case p.Action != nil:
+		return p.Action.ID
+	case p.Answer != nil:
+		return p.Answer.ID
+	}
+	return ""
+}
+
+// Summary renders one published record as the single line a listing shows.
+//
+// The derivation lives here for internal/reference's reason: the CLI's fleet
+// listing and the web fleet view both render this line, and a second phrasing
+// would make one proposed action read differently depending on which surface
+// an operator opened. The shape is internal/frontier's review-answer line —
+// verb, then the record it is about, then the prose — so a disposition and the
+// frontier's own review answers read as one vocabulary in a merged listing.
+//
+// A payload this build cannot read loses the prose half and keeps the
+// structural one. That is the honest partial answer: the row still says what
+// was proposed about which record, by whom, which is what a listing is for.
+func (p Published) Summary() string {
+	switch {
+	case p.Action != nil:
+		var payload Payload
+		_ = json.Unmarshal(p.Action.Payload, &payload)
+		return summarize(fmt.Sprintf("%s on %s %s: %s", p.Action.Kind,
+			p.Action.RecordType, p.Action.RecordID, payload.Summary))
+	case p.Answer != nil:
+		var payload LedgerPayload
+		_ = json.Unmarshal(p.Answer.Payload, &payload)
+		return summarize(fmt.Sprintf("%s disposition %s: %s", p.Answer.Ruling,
+			p.Answer.DispositionID, payload.Note))
+	}
+	return ""
+}
+
+// IsPublished reports whether decrypted plaintext committed under the shared
+// catalog's `disposition` kind is one of this package's records rather than one
+// of internal/frontier's review answers.
+//
+// A reader needs this because the two share that kind slot by design (see
+// dispositionKind) and the authenticated catalog row says `disposition` and
+// nothing more, so the bytes themselves have to say which decoder owns them.
+//
+// The two vocabularies are disjoint, which makes the answer a lookup rather
+// than a guess and the same answer on every host. A proposed action spells
+// `kind` as one of the five next actions this package owns, where a frontier
+// review answer always spells it `review-answer`. An operator's ruling carries
+// no `kind` at all and is recognized by `ruling`, which is a field no frontier
+// record has: frontier keeps its decision inside `answer`, one level down.
+//
+// Bytes that declare neither are not this package's. They are reported by the
+// frontier decoder, which is the one that can say what it expected and did not
+// find; answering "not mine" here and nothing else would lose the record with
+// no reason attached.
+func IsPublished(plaintext []byte) bool {
+	var declared struct {
+		Kind   Kind   `json:"kind"`
+		Ruling Ruling `json:"ruling"`
+	}
+	if err := json.Unmarshal(plaintext, &declared); err != nil {
+		return false
+	}
+	return declared.Kind.valid() || declared.Ruling.valid()
+}
+
+// DecodePublished reads one of this package's published records back out of
+// decrypted plaintext, under the global id the catalog authenticated the bytes
+// against.
+//
+// It validates rather than trusting, because these bytes arrived from another
+// machine. They are authenticated - the envelope binds them to the record's
+// global id and catalog kind, so a swapped object does not open at all - but
+// authentication proves origin and not shape, and what is left is whether this
+// build can act on the record it claims to be.
+//
+// The catalog's id is a parameter rather than a check the caller repeats
+// afterwards, because which field carries the id depends on which of the two
+// forms decoded, and a caller performing the comparison would have to know
+// that. Here it cannot be skipped and cannot be done against the wrong field.
+func DecodePublished(plaintext []byte, recordID string) (Published, error) {
+	if !IsPublished(plaintext) {
+		return Published{}, fmt.Errorf(
+			"%w: record %s declares neither a disposition kind nor a ruling",
+			ErrInvalidValue, recordID)
+	}
+	var declared struct {
+		Kind Kind `json:"kind"`
+	}
+	if err := json.Unmarshal(plaintext, &declared); err != nil {
+		return Published{}, fmt.Errorf("decode published disposition: %w", err)
+	}
+	var published Published
+	if declared.Kind.valid() {
+		var action PublishedDisposition
+		if err := json.Unmarshal(plaintext, &action); err != nil {
+			return Published{}, fmt.Errorf("decode published proposed action: %w", err)
+		}
+		if err := action.validate(); err != nil {
+			return Published{}, err
+		}
+		published.Action = &action
+	} else {
+		var answer PublishedLedgerEntry
+		if err := json.Unmarshal(plaintext, &answer); err != nil {
+			return Published{}, fmt.Errorf("decode published decision: %w", err)
+		}
+		if err := answer.validate(); err != nil {
+			return Published{}, err
+		}
+		published.Answer = &answer
+	}
+	if published.ID() != recordID {
+		return Published{}, fmt.Errorf(
+			"%w: record %s carries disposition identity %q",
+			ErrInvalidValue, recordID, published.ID())
+	}
+	return published, nil
+}
+
+// maxSummaryBytes bounds a rendered disposition line, and is internal/
+// frontier's bound restated rather than shared for internal/reference's
+// reason: frontier's is unexported, and a listing whose disposition rows wrap
+// while every other kind stays on one line would be a listing whose rows
+// disagree about how tall a row is.
+const maxSummaryBytes = 240
+
+// summarize collapses a rendered line to one bounded line. The cut lands on a
+// rune boundary because a summary and a note are model- or operator-authored
+// prose and half a rune is not a character.
+func summarize(text string) string {
+	line := strings.Join(strings.Fields(text), " ")
+	if len(line) <= maxSummaryBytes {
+		return line
+	}
+	cut := maxSummaryBytes
+	for cut > 0 && !utf8.RuneStart(line[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(line[:cut]) + "…"
 }
 
 // publishedInvitation is the canonical publication shape of one
@@ -286,7 +451,7 @@ func (p publishedInvitation) validate() error {
 }
 
 // MarshalJSON encodes the invitation after validating it, on the same terms as
-// publishedDisposition's.
+// PublishedDisposition's.
 func (p publishedInvitation) MarshalJSON() ([]byte, error) {
 	if err := p.validate(); err != nil {
 		return nil, err
@@ -345,7 +510,7 @@ func (s *Store) restageRecord(ctx context.Context, tx *sql.Tx, table, id string)
 	)
 	switch table {
 	case "disposition_proposal":
-		var p publishedDisposition
+		var p PublishedDisposition
 		var payload []byte
 		if err := tx.QueryRowContext(ctx, `SELECT id, record_type, record_id, kind,
 			proposer_kind, proposer_id, emitted_ref, created_at, payload_json, schema_version
@@ -360,7 +525,7 @@ func (s *Store) restageRecord(ctx context.Context, tx *sql.Tx, table, id string)
 		}
 		body = p
 	case "disposition_ledger":
-		var p publishedLedgerEntry
+		var p PublishedLedgerEntry
 		var payload []byte
 		if err := tx.QueryRowContext(ctx, `SELECT id, disposition_id, seq, ruling,
 			operator_id, recorded_at, payload_json, schema_version

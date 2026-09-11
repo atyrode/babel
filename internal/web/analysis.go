@@ -7,6 +7,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/atyrode/babel/internal/cookbook"
@@ -191,13 +192,27 @@ type hypothesisList struct {
 // (§5.2, §4.7), so a listing that hid rejected candidates would misrepresent
 // the frontier as smaller than it is.
 //
+// The rows are internal/frontier's own enumeration, page and total together.
+// This route used to union internal/review's queue with the unexplored
+// frontier, because the store offered no listing; it now does, and the union
+// was a second definition of "the frontier" — it could not reach a superseded
+// revision or a rejected candidate nobody had enrolled, so the dashboard,
+// which tallies the store, counted records this page could not show. One
+// enumeration means the panel and the page that owns it cannot disagree, and
+// it is the same one `babel hypotheses` pages.
+//
+// Status narrowing is the store's as well: a candidate's status is the newest
+// entry of an append-only history rather than a column, and resolving it is
+// internal/frontier's work, which it does inside the query instead of making
+// this route read every record to find out.
+//
 // ?fleet=1 appends the other hosts' committed candidates after this machine's,
 // attributed. Total stays this machine's frontier count: the fleet block is
 // another deployment-wide fact beside the local one, not more of it, and a
 // count that silently spanned both would make "the frontier" mean two things on
 // one page.
 func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
-	if !s.requireService(w, s.opts.Frontier != nil && s.opts.Review != nil, "the hypothesis frontier") {
+	if !s.requireService(w, s.opts.Frontier != nil, "the hypothesis frontier") {
 		return
 	}
 	pg, ok := s.requirePage(w, r)
@@ -208,40 +223,21 @@ func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	fleetWide, ok := s.fleetRequested(w, r)
+	fleetWide, ok := s.fleetScope(w, r)
 	if !ok {
 		return
 	}
-	ids, err := s.hypothesisIDs(r.Context())
+	filter := frontier.ListFilter{Limit: pg.limit, Offset: pg.offset}
+	if status != "" {
+		filter.Statuses = []frontier.Status{status}
+	}
+	records, total, err := s.opts.Frontier.Hypotheses(r.Context(), filter)
 	if err != nil {
 		s.serviceError(w, r, err)
 		return
 	}
-	result := hypothesisList{Items: []HypothesisSummary{}}
-	// With no status filter the identifiers are the count, so only the
-	// requested page is read. With one, every candidate has to be read to
-	// know whether it matches, because status lives in an append-only event
-	// history rather than in a column a listing could filter on.
-	if status == "" {
-		result.Total = len(ids)
-		start, end := pg.window(len(ids))
-		ids = ids[start:end]
-	}
-	for _, id := range ids {
-		record, err := s.opts.Frontier.Hypothesis(r.Context(), id)
-		if err != nil {
-			s.serviceError(w, r, err)
-			return
-		}
-		if status != "" {
-			if record.Status != status {
-				continue
-			}
-			result.Total++
-			if result.Total <= pg.offset || len(result.Items) >= pg.limit {
-				continue
-			}
-		}
+	result := hypothesisList{Items: make([]HypothesisSummary, 0, len(records)), Total: total}
+	for _, record := range records {
 		summary, err := s.summarizeHypothesis(r.Context(), record)
 		if err != nil {
 			s.serviceError(w, r, err)
@@ -253,14 +249,25 @@ func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
 		result.syncNotice = degradedNotice()
 	}
 	if fleetWide {
-		records, err := s.otherHosts(r.Context(), pg.limit, sharedcatalog.KindHypothesis)
-		if err != nil {
-			s.fleetError(w, r, err)
-			return
+		records, degraded := s.mergeOtherHosts(r, pg.limit, sharedcatalog.KindHypothesis)
+		if degraded {
+			result.syncNotice = degradedNotice()
 		}
 		host := s.opts.Fleet.LocalHost()
 		for _, record := range records {
-			result.Items = append(result.Items, fleetHypothesis(record, host))
+			row := fleetHypothesis(record, host)
+			// The status narrowing applies to the whole deployment, not only
+			// to this machine. A fleet block that ignored it would answer
+			// "which candidates are promoted" with every candidate every
+			// other host holds, which is a filter the page silently does not
+			// have. A remote row's status is the snapshot taken when the
+			// record was staged, which is the only answer available without
+			// asking the owning host, and a row this instance could not open
+			// has no status to match at all.
+			if status != "" && row.Status != string(status) {
+				continue
+			}
+			result.Items = append(result.Items, row)
 		}
 	}
 	s.writeJSON(w, http.StatusOK, result)
@@ -320,51 +327,6 @@ func (s *Server) hypothesisStatus(w http.ResponseWriter, r *http.Request) (front
 	}
 	s.writeError(w, http.StatusBadRequest, "status is not an exploration status")
 	return "", false
-}
-
-// hypothesisIDs enumerates the candidates this server can list.
-//
-// It takes two queries because internal/frontier deliberately offers no
-// enumeration — it answers questions about a record you name, and its one
-// listing is the unexplored frontier — so the second source is internal/review's
-// queue, which is the set of records exploration and review have enrolled.
-// Their union is the same one `babel hypotheses` lists, so the two surfaces
-// agree; a candidate that is neither unexplored nor enrolled is reachable by
-// identifier and not by listing, which is a gap in the services rather than
-// one this route can close.
-func (s *Server) hypothesisIDs(ctx context.Context) ([]string, error) {
-	items, err := s.opts.Review.Queue(ctx, review.QueueFilter{
-		Type:        frontier.EntityHypothesis,
-		AllStatuses: true,
-		Limit:       listScanCap,
-	})
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(items))
-	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		if _, ok := seen[item.Subject.ID]; ok {
-			continue
-		}
-		seen[item.Subject.ID] = struct{}{}
-		ids = append(ids, item.Subject.ID)
-	}
-	unexplored, err := s.opts.Frontier.Unexplored(ctx, listScanCap)
-	if err != nil {
-		return nil, err
-	}
-	for _, record := range unexplored {
-		if _, ok := seen[record.ID]; ok {
-			continue
-		}
-		seen[record.ID] = struct{}{}
-		ids = append(ids, record.ID)
-	}
-	if len(ids) > listScanCap {
-		ids = ids[:listScanCap]
-	}
-	return ids, nil
 }
 
 func (s *Server) summarizeHypothesis(ctx context.Context, record frontier.Hypothesis) (HypothesisSummary, error) {
@@ -479,6 +441,10 @@ type lineageView struct {
 }
 
 type hypothesisDetail struct {
+	// The notice a record read from the shared catalog carries when it could
+	// not be read at all (detail.go). A candidate this machine holds never
+	// sets it: the fields below come from a store that answered.
+	syncNotice
 	Hypothesis    hypothesisView    `json:"hypothesis"`
 	StatusHistory []statusEventView `json:"statusHistory"`
 	Observations  []observationView `json:"observations"`
@@ -503,10 +469,26 @@ func (s *Server) handleHypothesis(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	wide, ok := s.fleetScope(w, r)
+	if !ok {
+		return
+	}
 	ctx := r.Context()
 	record, err := s.opts.Frontier.Hypothesis(ctx, id)
 	if err != nil {
-		s.serviceError(w, r, err)
+		// A candidate this machine has never held may still be one the
+		// frontier listing showed, because that listing reads the whole
+		// deployment (detail.go). Anything other than an absence is this
+		// store failing and is reported as one.
+		found := catalogLookup{}
+		if errors.Is(err, frontier.ErrUnknownEntity) {
+			found = s.catalogRecord(r, wide, id, sharedcatalog.KindHypothesis)
+		}
+		if !found.answerable() {
+			s.serviceError(w, r, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, catalogHypothesis(id, found))
 		return
 	}
 	reviewStatus, err := s.opts.Frontier.ReviewStatus(ctx, frontier.Ref{Type: frontier.EntityHypothesis, ID: id})
@@ -679,7 +661,7 @@ func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	fleetWide, ok := s.fleetRequested(w, r)
+	fleetWide, ok := s.fleetScope(w, r)
 	if !ok {
 		return
 	}
@@ -720,10 +702,9 @@ func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 		result.Items[i].fleetMark = s.localMark(states[result.Items[i].ID])
 	}
 	if fleetWide {
-		records, err := s.otherHosts(r.Context(), pg.limit, sharedcatalog.KindFinding)
-		if err != nil {
-			s.fleetError(w, r, err)
-			return
+		records, unreachable := s.mergeOtherHosts(r, pg.limit, sharedcatalog.KindFinding)
+		if unreachable {
+			result.syncNotice = degradedNotice()
 		}
 		host := s.opts.Fleet.LocalHost()
 		for _, record := range records {
@@ -798,15 +779,233 @@ func viewProposal(record frontier.Proposal) proposalView {
 		RunID:         record.RunID,
 		SchemaVersion: record.SchemaVersion,
 		CreatedAt:     timeText(record.CreatedAt),
-		FindingIDs:    record.FindingIDs,
-		HypothesisIDs: record.HypothesisIDs,
+		// A candidate proposal rests on a hypothesis and answers no
+		// finding, so one of these is routinely empty. An empty Go slice
+		// marshals as JSON null, which is not a list a reader can count,
+		// and a client that treated it as one rendered nothing at all for
+		// the whole record. The wire form of "no ids" is an empty array.
+		FindingIDs:    idList(record.FindingIDs),
+		HypothesisIDs: idList(record.HypothesisIDs),
 		Form:          string(record.Form),
 		ReviewStatus:  string(record.ReviewStatus),
 		Payload:       record.Payload,
 	}
 }
 
+// idList is the wire form of a possibly absent id list: always an array, so
+// every consumer can count it without first testing it for null.
+func idList(ids []string) []string {
+	if ids == nil {
+		return []string{}
+	}
+	return ids
+}
+
+// ProposalSummary is one §4.5 review artifact as a listing shows it.
+//
+// Five payload fields travel with the row rather than only a title, and the
+// choice is what makes the listing usable rather than an index of
+// identifiers: a proposal is read to decide whether to act on it, and problem,
+// outcome, impact and classification are the four things that decision needs
+// before opening anything. The rest of §4.5's material - prerequisites,
+// verification criteria, risks, the evidence either way - is the detail
+// route's, because it is read once a reader has chosen this proposal over its
+// neighbours.
+//
+// The embedded fleetMark attributes the row and reports whether it is globally
+// reviewable, on FindingSummary's terms. A proposal another host committed
+// carries no ReviewStatus, which is the owning host's derivation rather than
+// this machine's.
+type ProposalSummary struct {
+	fleetMark
+	ID        string `json:"id"`
+	RunID     string `json:"run_id"`
+	CreatedAt string `json:"created_at"`
+	Title     string `json:"title"`
+	Problem   string `json:"problem"`
+	Outcome   string `json:"outcome"`
+	// Impact and Classification are §4.5's vocabularies, served as their
+	// stored strings so a client renders the value the record carries rather
+	// than one this surface re-spelled.
+	Impact         string `json:"impact"`
+	Classification string `json:"classification"`
+	ReviewStatus   string `json:"review_status"`
+}
+
+type proposalList struct {
+	syncNotice
+	Items []ProposalSummary `json:"items"`
+	Total int               `json:"total"`
+}
+
+// handleProposals lists §4.5's review artifacts, deployment-wide by default.
+//
+// It exists because the proposals were the one Phase B output with no listing
+// at all: internal/frontier has enumerated them since it had a Proposals
+// query, the review inbox showed them only once somebody had enrolled them,
+// and a deployment's consolidated suggestions were reachable only by already
+// knowing an id. The other hosts' rows append after this machine's on
+// handleHypotheses' terms, and Total stays this machine's count for its
+// reason.
+func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Frontier != nil, "the hypothesis frontier") {
+		return
+	}
+	pg, ok := s.requirePage(w, r)
+	if !ok {
+		return
+	}
+	fleetWide, ok := s.fleetScope(w, r)
+	if !ok {
+		return
+	}
+	records, total, err := s.opts.Frontier.Proposals(r.Context(), frontier.ListFilter{
+		Limit: pg.limit, Offset: pg.offset,
+	})
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	result := proposalList{Items: []ProposalSummary{}, Total: total}
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		ids = append(ids, record.ID)
+		result.Items = append(result.Items, summarizeProposal(record))
+	}
+	states, degraded := s.syncStates(r.Context(), r, ids)
+	if degraded {
+		result.syncNotice = degradedNotice()
+	}
+	for i := range result.Items {
+		result.Items[i].fleetMark = s.localMark(states[result.Items[i].ID])
+	}
+	if fleetWide {
+		remote, unreachable := s.mergeOtherHosts(r, pg.limit, sharedcatalog.KindProposal)
+		if unreachable {
+			result.syncNotice = degradedNotice()
+		}
+		host := s.opts.Fleet.LocalHost()
+		for _, record := range remote {
+			result.Items = append(result.Items, fleetProposal(record, host))
+		}
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+func summarizeProposal(record frontier.Proposal) ProposalSummary {
+	return ProposalSummary{
+		ID:             record.ID,
+		RunID:          record.RunID,
+		CreatedAt:      timeText(record.CreatedAt),
+		Title:          record.Payload.Title,
+		Problem:        record.Payload.Problem,
+		Outcome:        record.Payload.Outcome,
+		Impact:         string(record.Payload.Impact),
+		Classification: string(record.Payload.Classification),
+		ReviewStatus:   string(record.ReviewStatus),
+	}
+}
+
+// fleetProposal renders another host's committed proposal as a listing row.
+//
+// Only the title crosses, and the four other payload fields stay empty. That
+// is not a gap this surface could close by decoding harder: a fleet listing
+// carries one bounded summary line per record on purpose (see
+// fleetRecordView), because a page of fifty rows that shipped whole proposals
+// would decrypt another host's analysis in order to render prose nobody has
+// scrolled to. A client tells the two apart by local_host, which it already
+// does for every other merged listing.
+func fleetProposal(record fleet.Record, localHost string) ProposalSummary {
+	mark, summary := markFleetRecord(record, localHost)
+	out := ProposalSummary{
+		fleetMark: mark,
+		ID:        record.Record.RecordID,
+		RunID:     record.Record.RunID,
+		CreatedAt: timeText(record.Record.CreatedAt),
+		Title:     summary,
+	}
+	if record.Published != nil {
+		out.CreatedAt = timeText(record.Published.CreatedAt)
+	}
+	return out
+}
+
+// proposalDetail is one proposal's whole record: the listing row a reader
+// arrived from, plus §4.5's remaining material.
+//
+// The row is embedded rather than restated so the page a reader opens says the
+// same things about the proposal the row said, in the same fields. Payload
+// carries the whole stored document, which is where prerequisites,
+// verification criteria, risks, evidence and destinations live.
+type proposalDetail struct {
+	syncNotice
+	ProposalSummary
+	AncestorID    string   `json:"ancestor_id,omitempty"`
+	SchemaVersion int      `json:"schema_version"`
+	FindingIDs    []string `json:"finding_ids"`
+	HypothesisIDs []string `json:"hypothesis_ids"`
+	// Form is #114's provenance, served for proposalView's reason: a want
+	// rendered with a consolidation's authority is the failure the split
+	// exists to prevent.
+	Form    string                   `json:"form"`
+	Payload frontier.ProposalPayload `json:"payload"`
+}
+
+// handleProposal serves one proposal by id.
+//
+// The id comes from the path rather than the query string, which is this
+// surface's first of those and is deliberate: a proposal is the record an
+// operator links to and returns to, and a path is what a browser history, a
+// bookmark and a pasted message all carry intact.
+func (s *Server) handleProposal(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.requireService(w, s.opts.Frontier != nil, "the hypothesis frontier") {
+		return
+	}
+	if id == "" {
+		s.writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	wide, ok := s.fleetScope(w, r)
+	if !ok {
+		return
+	}
+	record, err := s.opts.Frontier.Proposal(r.Context(), id)
+	if err != nil {
+		// The proposals listing reads the whole deployment, so a proposal
+		// this machine has never held is still a row an operator can click,
+		// and a link he bookmarked is still a link (detail.go).
+		found := catalogLookup{}
+		if errors.Is(err, frontier.ErrUnknownEntity) {
+			found = s.catalogRecord(r, wide, id, sharedcatalog.KindProposal)
+		}
+		if !found.answerable() {
+			s.serviceError(w, r, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, s.catalogProposal(id, found))
+		return
+	}
+	detail := proposalDetail{
+		ProposalSummary: summarizeProposal(record),
+		AncestorID:      record.AncestorID,
+		SchemaVersion:   record.SchemaVersion,
+		FindingIDs:      idList(record.FindingIDs),
+		HypothesisIDs:   idList(record.HypothesisIDs),
+		Form:            string(record.Form),
+		Payload:         record.Payload,
+	}
+	states, degraded := s.syncStates(r.Context(), r, []string{record.ID})
+	if degraded {
+		detail.syncNotice = degradedNotice()
+	}
+	detail.fleetMark = s.localMark(states[record.ID])
+	s.writeJSON(w, http.StatusOK, detail)
+}
+
 type findingDetail struct {
+	// The notice a record read from the shared catalog carries when it could
+	// not be read at all, on hypothesisDetail's terms (detail.go).
+	syncNotice
 	Finding      findingView       `json:"finding"`
 	Observations []observationView `json:"observations"`
 	Proposals    []proposalView    `json:"proposals"`
@@ -820,10 +1019,25 @@ func (s *Server) handleFinding(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	wide, ok := s.fleetScope(w, r)
+	if !ok {
+		return
+	}
 	ctx := r.Context()
 	record, err := s.opts.Frontier.Finding(ctx, id)
 	if err != nil {
-		s.serviceError(w, r, err)
+		// The findings listing reads the whole deployment, so a
+		// consolidation this machine has never held is still a row an
+		// operator can click (detail.go).
+		found := catalogLookup{}
+		if errors.Is(err, frontier.ErrUnknownEntity) {
+			found = s.catalogRecord(r, wide, id, sharedcatalog.KindFinding)
+		}
+		if !found.answerable() {
+			s.serviceError(w, r, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, catalogFinding(id, found))
 		return
 	}
 	status, err := s.opts.Frontier.ReviewStatus(ctx, frontier.Ref{Type: frontier.EntityFinding, ID: id})
@@ -853,7 +1067,7 @@ func (s *Server) handleFinding(w http.ResponseWriter, r *http.Request) {
 			SchemaVersion:  record.SchemaVersion,
 			CreatedAt:      timeText(record.CreatedAt),
 			ObservationIDs: record.ObservationIDs,
-			HypothesisIDs:  record.HypothesisIDs,
+			HypothesisIDs:  idList(record.HypothesisIDs),
 			ReviewStatus:   string(status),
 			Payload:        record.Payload,
 		},

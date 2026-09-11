@@ -1,19 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getFindings, type FindingsResponse, type FindingSummary } from "../api";
+import { getProposals, type ProposalsResponse } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge, PartialListNotice, reviewTone } from "../analysis";
 
-function FindingsPage() {
+// The proposals listing: what Babel suggests doing about what it found.
+//
+// It is a listing rather than a section of the findings page because a proposal
+// outlives the consolidation it came from — a run may propose against a claim it
+// never consolidated (#114's candidate form) — and because this is the list an
+// operator actually reads down. Impact and classification ride every row for
+// exactly that reason: they are what makes a suggestion worth opening, and they
+// are model gradings, so they render as the words the model chose and never as
+// a score.
+
+function ProposalsPage() {
   const navigate = useNavigate();
-  const [data, setData] = useState<FindingsResponse | null>(null);
+  const [data, setData] = useState<ProposalsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    getFindings()
+    getProposals()
       .then((value) => setData(value))
       .catch((reason) => setError(errorMessage(reason)))
       .finally(() => setLoading(false));
@@ -24,26 +34,22 @@ function FindingsPage() {
   const items = data?.items ?? [];
 
   return (
-    <section className="page findings-page">
+    <section className="page proposals-page">
       <div className="page-heading">
         <div>
-          <p className="eyebrow">Consolidated output</p>
-          <h1>Findings</h1>
+          <p className="eyebrow">Suggested improvements</p>
+          <h1>Proposals</h1>
           <p className="subtitle">
-            Consolidated observations — still interpretations for review, not verified facts.
-            Every finding keeps its supporting and conflicting evidence attached.
+            What Babel suggests doing about what it found. Every proposal is a suggestion for
+            review with no external effect: nothing here is applied, opened, or acted on.
           </p>
         </div>
         <div className="heading-meta">
-          {/* A count says one thing: how many rows are on screen, and out of
-              how many when the server paged. "50 findings" beside a catalog
-              holding more was the same word meaning two things on two
-              pages. */}
           {data && (
             <span className="count-label">
               {items.length < data.total
-                ? `${items.length.toLocaleString()} of ${data.total.toLocaleString()} findings`
-                : `${items.length.toLocaleString()} ${items.length === 1 ? "finding" : "findings"}`}
+                ? `${items.length.toLocaleString()} of ${data.total.toLocaleString()} proposals`
+                : `${items.length.toLocaleString()} ${items.length === 1 ? "proposal" : "proposals"}`}
             </span>
           )}
         </div>
@@ -52,11 +58,11 @@ function FindingsPage() {
       {data?.sync_degraded && <PartialListNotice />}
 
       {loading && !data && (
-        <div className="state-card"><span className="spinner" /> Reading findings…</div>
+        <div className="state-card"><span className="spinner" /> Reading proposals…</div>
       )}
       {error && (
         <div className="state-card error-state">
-          <strong>Findings could not be loaded.</strong>
+          <strong>Proposals could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={load}>Try again</button>
         </div>
@@ -64,10 +70,10 @@ function FindingsPage() {
       {!loading && !error && items.length === 0 && (
         <div className="state-card empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
-          <strong>No findings yet</strong>
+          <strong>No proposals yet</strong>
           <span>
-            A finding is created only from developed observations. None have been consolidated —
-            the hypotheses list shows what exploration is still working through.
+            A proposal is written against a claim a run developed far enough to suggest something
+            about. Findings and hypotheses show what exploration has produced so far.
           </span>
         </div>
       )}
@@ -78,29 +84,27 @@ function FindingsPage() {
             <table className="frontier-table">
               <thead>
                 <tr>
-                  <th>Finding</th>
+                  <th>Proposal</th>
+                  <th title="The model's own grading of how much this would matter. A grading, never a measurement.">
+                    Impact
+                  </th>
+                  <th>Kind</th>
                   <th>Review</th>
-                  <th className="numeric">Observations</th>
-                  <th className="numeric">Hypotheses</th>
                   <th>Created</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((item) => {
                   const created = formatTime(item.created_at);
-                  // A merged row carries the record's own fields and none of
-                  // the review derivations, so those cells state an absence
-                  // rather than a zero that would read as a decided fact.
-                  const derived = item.local_host !== false;
                   return (
                     <tr
                       key={item.id}
                       tabIndex={0}
                       role="link"
-                      onClick={() => navigate(`/findings/${encodeURIComponent(item.id)}`)}
+                      onClick={() => navigate(`/proposals/${encodeURIComponent(item.id)}`)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
-                          navigate(`/findings/${encodeURIComponent(item.id)}`);
+                          navigate(`/proposals/${encodeURIComponent(item.id)}`);
                         }
                       }}
                     >
@@ -110,18 +114,25 @@ function FindingsPage() {
                         ) : (
                           <span className="muted no-summary">no title recorded</span>
                         )}
+                        {item.problem && (
+                          <span className="secondary untrusted-inline">{item.problem}</span>
+                        )}
                         <span className="secondary mono">{item.id}</span>
                       </td>
                       <td>
-                        {derived
-                          ? <Badge label={item.review_status} tone={reviewTone(item.review_status)} />
+                        {item.impact
+                          ? <span className="grading-word">{item.impact}</span>
                           : <span className="muted">—</span>}
                       </td>
-                      <td className="numeric mono">
-                        {derived ? item.observations : <span className="muted">—</span>}
+                      <td>
+                        {item.classification
+                          ? <Badge label={item.classification} tone="neutral" />
+                          : <span className="muted">—</span>}
                       </td>
-                      <td className="numeric mono">
-                        {derived ? item.hypotheses : <span className="muted">—</span>}
+                      <td>
+                        {item.review_status
+                          ? <Badge label={item.review_status} tone={reviewTone(item.review_status)} />
+                          : <span className="muted">—</span>}
                       </td>
                       <td>
                         {created
@@ -140,4 +151,4 @@ function FindingsPage() {
   );
 }
 
-export default FindingsPage;
+export default ProposalsPage;

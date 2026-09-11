@@ -58,6 +58,10 @@ type fakeFleet struct {
 	// deployment has no fleet" and "this deployment's fleet did not answer" is
 	// observable from the outside.
 	fail error
+	// opened records every id Open was called for, which is how a test
+	// distinguishes a caller that listed a page from one that also paid to
+	// fetch and decrypt every record on it.
+	opened []string
 
 	recordFilters []sharedcatalog.RecordFilter
 	hostFilters   []sharedcatalog.RecordFilter
@@ -90,6 +94,23 @@ func (f *fakeFleet) RecordsWithContent(_ context.Context,
 	return f.selected(filter), nil
 }
 
+// Open answers the content the fixture already carries. The fake records the
+// ids it was asked for, so a test can assert a caller opened only the records
+// it kept rather than the whole page it listed.
+func (f *fakeFleet) Open(_ context.Context,
+	rec sharedcatalog.FleetRecord) (fleet.Record, error) {
+	f.opened = append(f.opened, rec.Record.RecordID)
+	if f.fail != nil {
+		return fleet.Record{}, f.fail
+	}
+	for _, record := range f.records {
+		if record.Record.RecordID == rec.Record.RecordID {
+			return record, nil
+		}
+	}
+	return fleet.Record{FleetRecord: rec}, nil
+}
+
 func (f *fakeFleet) Hosts(_ context.Context,
 	filter sharedcatalog.RecordFilter) ([]sharedcatalog.RecordHost, error) {
 	f.hostFilters = append(f.hostFilters, filter)
@@ -118,8 +139,8 @@ func (f *fakeFleet) SyncStates(_ context.Context, journal fleet.SyncJournal,
 }
 
 // selected applies the narrowing the handlers rely on: the catalog's semantics
-// reduced to what these fixtures exercise — any-of on hosts and kinds,
-// committed-only unless staged output was admitted, then the page.
+// reduced to what these fixtures exercise — any-of on hosts, kinds, runs and
+// record ids, committed-only unless staged output was admitted, then the page.
 func (f *fakeFleet) selected(filter sharedcatalog.RecordFilter) []fleet.Record {
 	out := make([]fleet.Record, 0, len(f.records))
 	for _, record := range f.records {
@@ -127,6 +148,9 @@ func (f *fakeFleet) selected(filter sharedcatalog.RecordFilter) []fleet.Record {
 			continue
 		}
 		if len(filter.Kinds) > 0 && !containsKind(filter.Kinds, record.Record.Kind) {
+			continue
+		}
+		if len(filter.RecordIDs) > 0 && !contains(filter.RecordIDs, record.Record.RecordID) {
 			continue
 		}
 		if len(filter.RunIDs) > 0 && !contains(filter.RunIDs, record.Record.RunID) {
@@ -189,10 +213,11 @@ func fleetFixture(text string) *fakeFleet {
 				"the other laptop "+text, "inst-remote", &committed,
 				"sealed under key "+text+", which this instance does not hold"),
 			// The other host's consolidation, its recorded decision, and a
-			// proposal — the kinds the findings list and the review inbox merge.
-			// The proposal is the awkward one: it commits, it is the review
-			// inbox's main subject, and frontier.Output refuses it as
-			// unsearchable, so its row has to render without a summary.
+			// proposal — the kinds the findings list and the review inbox
+			// merge. The proposal is the awkward one: it commits, it is the
+			// review inbox's main subject, and internal/frontier refuses it a
+			// searchable output, so its listing line comes from its title
+			// rather than from the retrieval derivation every other kind uses.
 			fixtureFinding("frec-remote-finding", "frun-remote", remoteFleetHost,
 				"the other laptop "+text, "inst-remote", &committed, text),
 			fixtureDecision("frec-remote-decision", "frun-remote", remoteFleetHost,
@@ -294,10 +319,16 @@ func fixtureDecision(id, runID, hostID, display, instance string,
 	}
 }
 
-// fixtureProposal is the kind with no searchable output. Its payload is real —
-// this instance opened and decoded it — and frontier.Output still refuses it,
-// which is the case the review inbox has to render as a row without a summary
-// rather than drop.
+// fixtureProposal is the kind internal/frontier refuses a searchable output.
+// Its payload is real — this instance opened and decoded it — and the row's
+// line therefore comes from the title internal/fleet projects rather than from
+// the retrieval derivation, which is what stops the review inbox rendering the
+// deployment's proposals as blank rows.
+//
+// It rests on the fixture's consolidation, because a published proposal that
+// rests on nothing is neither of #114's two forms and internal/frontier
+// refuses to publish one: a fixture without it would let a reader of this
+// deployment render a want with a consolidation's authority.
 func fixtureProposal(id, runID, hostID, display, instance string,
 	committedAt *time.Time, text string) fleet.Record {
 	return fleet.Record{
@@ -306,8 +337,17 @@ func fixtureProposal(id, runID, hostID, display, instance string,
 		Published: &frontier.PublishedRecord{
 			Schema: frontier.RecordSchema, Kind: frontier.PublishedProposal,
 			ID: id, RootID: id, RunID: runID,
+			RestsOn: []frontier.PublishedSubject{{
+				Kind: frontier.EntityFinding, ID: "frec-remote-finding",
+			}},
 			CreatedAt: time.Date(2026, 3, 1, 9, 30, 0, 0, time.UTC),
-			Payload:   mustMarshalPayload(map[string]string{"summary": text}),
+			Payload: mustMarshalPayload(frontier.ProposalPayload{
+				Title:          "retire the duplicated manifest read " + text,
+				Problem:        "the manifest is read twice and the second read is stale",
+				Outcome:        "one read, threaded through the deploy steps",
+				Impact:         frontier.ImpactModerate,
+				Classification: frontier.ClassificationPrivate,
+			}),
 		},
 	}
 }
@@ -404,6 +444,12 @@ func TestFleetRoutesAnswerWithoutASharedBackend(t *testing.T) {
 // tells the operator. A catalog that is down must therefore never produce one:
 // on the fleet routes it produces an error, because there the fleet is the
 // payload and the request genuinely cannot be answered.
+//
+// Only those routes. The merged listings are the opposite decision and are
+// covered by TestUnresolvableSyncStateDegradesRatherThanRefusing: they render
+// this machine's own rows with a degraded notice, because the operator's
+// analysis is on this disk and a managed catalog's outage must not take it
+// away from him for the duration.
 func TestFleetReadFailureIsNotReportedAsAnAbsentFleet(t *testing.T) {
 	h := newPhaseB(t, "plain", nil)
 	h.fleetOf().fail = errors.New("dial tcp 10.0.0.9:5432: connect: connection refused")
@@ -411,12 +457,6 @@ func TestFleetReadFailureIsNotReportedAsAnAbsentFleet(t *testing.T) {
 	for _, path := range []string{
 		"/api/fleet/records",
 		"/api/fleet/hosts",
-		// The merged listings too: with ?fleet=1 the other hosts' records are
-		// what was asked for, so a catalog that cannot supply them has not
-		// answered the request.
-		"/api/hypotheses?fleet=1",
-		"/api/findings?fleet=1",
-		"/api/review/queue?status=all&fleet=1",
 	} {
 		response := h.get(path)
 		text := body(t, response)
@@ -437,16 +477,20 @@ func TestFleetReadFailureIsNotReportedAsAnAbsentFleet(t *testing.T) {
 	}
 }
 
+// TestMissingKeyCustodyPreservesConfiguredFleetFailure covers the custody half
+// of the same split: a key document this build cannot read is a configured
+// fleet that did not answer, never an absent one.
+//
+// The dedicated routes refuse it, naming the document an operator can go and
+// look at. The merged listings degrade instead, and the tail of this test is
+// the assertion that matters: missing custody costs the operator the fleet's
+// rows and the sync column, and must not cost him his own frontier.
 func TestMissingKeyCustodyPreservesConfiguredFleetFailure(t *testing.T) {
 	h := newPhaseB(t, "plain", func(opts *Options) {
 		opts.Fleet = nil
 		opts.FleetError = fmt.Errorf("%w: synthetic-private-detail", fleet.ErrPayloadKeysUnavailable)
 	})
-	for _, path := range []string{
-		"/api/fleet/records", "/api/fleet/hosts",
-		"/api/hypotheses?fleet=1", "/api/findings?fleet=1",
-		"/api/review/queue?status=all&fleet=1",
-	} {
+	for _, path := range []string{"/api/fleet/records", "/api/fleet/hosts"} {
 		response := h.get(path)
 		text := body(t, response)
 		if response.StatusCode != http.StatusServiceUnavailable {
@@ -652,15 +696,16 @@ func TestFleetRecordsReportAttributionAndSync(t *testing.T) {
 		t.Errorf("unopened record renders as %#v", sealed)
 	}
 
-	// A kind with no searchable output is a row with no summary and no fault.
-	// It is not an unopened record: this instance read it, and this build
-	// derives no one-line summary for it.
+	// A proposal has no searchable output and is still a readable row: the
+	// line is its title, projected by internal/fleet, because a listing of
+	// the deployment's proposals that showed only identifiers is a listing
+	// an operator cannot use.
 	proposal := byID["frec-remote-proposal"]
 	if proposal.RecordID == "" {
 		t.Fatalf("the proposal was dropped from the listing: %#v", result.Items)
 	}
-	if proposal.Summary != "" || proposal.Unopened != "" {
-		t.Errorf("proposal row summary = %q unopened = %q, want both absent",
+	if proposal.Summary != "retire the duplicated manifest read plain" || proposal.Unopened != "" {
+		t.Errorf("proposal row summary = %q unopened = %q, want its title",
 			proposal.Summary, proposal.Unopened)
 	}
 	if proposal.Kind != string(sharedcatalog.KindProposal) || proposal.Host == "" {
@@ -782,25 +827,30 @@ func TestFleetHostsOfferTheWholeVocabulary(t *testing.T) {
 	}
 }
 
-// TestFleetListingsMergeTheOtherHostsOnRequest is issue #109 item 4's merge:
-// with ?fleet=1 the review inbox, the frontier and the findings list carry the
-// other hosts' committed records, attributed, after this machine's own — and
-// without it they carry only this machine's.
-func TestFleetListingsMergeTheOtherHostsOnRequest(t *testing.T) {
+// TestFleetListingsMergeTheOtherHostsByDefault is issue #109 item 4's merge,
+// with the scope the operator's design asks for: the review inbox, the
+// frontier and the findings list carry the whole deployment's committed
+// records unless the caller narrows to this machine with ?fleet=0.
+//
+// Babel's analytical output is deployment state produced on a machine, not
+// machine state that happens to be published, so a reader arriving at any host
+// sees the same body of work. The narrowing stays because "what has this
+// machine not yet published" is a real question — just not the default one.
+func TestFleetListingsMergeTheOtherHostsByDefault(t *testing.T) {
 	h := newPhaseB(t, "plain", nil)
 
 	var localOnly hypothesisList
-	decodeResponse(t, h.get("/api/hypotheses"), &localOnly)
+	decodeResponse(t, h.get("/api/hypotheses?fleet=0"), &localOnly)
 	for _, item := range localOnly.Items {
 		if !item.LocalHost {
-			t.Errorf("candidate %s is another host's without ?fleet=1", item.ID)
+			t.Errorf("candidate %s is another host's under ?fleet=0", item.ID)
 		}
 	}
 
 	var merged hypothesisList
-	decodeResponse(t, h.get("/api/hypotheses?fleet=1"), &merged)
+	decodeResponse(t, h.get("/api/hypotheses"), &merged)
 	if len(merged.Items) <= len(localOnly.Items) {
-		t.Fatalf("?fleet=1 added no rows: %d vs %d", len(merged.Items), len(localOnly.Items))
+		t.Fatalf("the default scope added no rows: %d vs %d", len(merged.Items), len(localOnly.Items))
 	}
 	// Local first, and the local block is unchanged: a merge that reordered
 	// this machine's frontier would make an operator's own backlog move under
@@ -873,7 +923,7 @@ func TestFleetListingsMergeTheOtherHostsOnRequest(t *testing.T) {
 
 	// The findings list merges the other host's consolidation.
 	var findings findingList
-	decodeResponse(t, h.get("/api/findings?fleet=1"), &findings)
+	decodeResponse(t, h.get("/api/findings"), &findings)
 	var remoteFindings []FindingSummary
 	for _, item := range findings.Items {
 		if !item.LocalHost {
@@ -889,10 +939,11 @@ func TestFleetListingsMergeTheOtherHostsOnRequest(t *testing.T) {
 	}
 
 	// The review inbox merges the other host's recorded decision and its
-	// proposal. The proposal is the one that must not vanish: it is the inbox's
-	// main subject and it has no searchable summary at all.
+	// proposal. The proposal is the one that must not vanish: it is the
+	// inbox's main subject, and for as long as it rendered as a blank row it
+	// was withheld from the reviewer whose inbox it is.
 	var queue queueResult
-	decodeResponse(t, h.get("/api/review/queue?status=all&fleet=1"), &queue)
+	decodeResponse(t, h.get("/api/review/queue?status=all"), &queue)
 	remoteRows := map[string]QueueItem{}
 	for _, item := range queue.Items {
 		if item.LocalHost {
@@ -922,8 +973,8 @@ func TestFleetListingsMergeTheOtherHostsOnRequest(t *testing.T) {
 	if proposal.Subject.Type != string(sharedcatalog.KindProposal) {
 		t.Errorf("merged proposal subject = %#v", proposal.Subject)
 	}
-	if proposal.Excerpt != "" || proposal.Unopened != "" {
-		t.Errorf("merged proposal excerpt = %q unopened = %q, want an unsummarized row",
+	if proposal.Excerpt != "retire the duplicated manifest read plain" || proposal.Unopened != "" {
+		t.Errorf("merged proposal excerpt = %q unopened = %q, want its title",
 			proposal.Excerpt, proposal.Unopened)
 	}
 }
@@ -932,6 +983,11 @@ func TestFleetListingsMergeTheOtherHostsOnRequest(t *testing.T) {
 // the web surface share. The three states are three different facts, and the
 // one that must never be confused with another is "local": nothing is going to
 // carry that record anywhere, where "pending-sync" promises something will.
+//
+// The question is about this machine's own records, so the request narrows to
+// it. A record another host committed is committed by definition, and reading
+// the three-state resolution off a page that also held those rows would be
+// asserting the vocabulary against rows that never exercise it.
 func TestFleetListingsReportEveryFrozenSyncState(t *testing.T) {
 	h := newPhaseB(t, "plain", nil)
 
@@ -939,7 +995,7 @@ func TestFleetListingsReportEveryFrozenSyncState(t *testing.T) {
 	// the fixture's own records: a state named for a candidate this route does
 	// not list would assert nothing.
 	var listed hypothesisList
-	decodeResponse(t, h.get("/api/hypotheses"), &listed)
+	decodeResponse(t, h.get("/api/hypotheses?fleet=0"), &listed)
 	if len(listed.Items) < 3 {
 		t.Fatalf("the frontier lists %d candidates, want at least three", len(listed.Items))
 	}
@@ -955,7 +1011,7 @@ func TestFleetListingsReportEveryFrozenSyncState(t *testing.T) {
 	}
 
 	var result hypothesisList
-	decodeResponse(t, h.get("/api/hypotheses"), &result)
+	decodeResponse(t, h.get("/api/hypotheses?fleet=0"), &result)
 	for _, item := range result.Items {
 		if state, named := want[item.ID]; named && item.Sync != state {
 			t.Errorf("candidate %s sync = %q, want %q", item.ID, item.Sync, state)
@@ -1009,15 +1065,17 @@ func TestFleetRunsAreAttributedByTheCatalog(t *testing.T) {
 }
 
 // TestFleetReaderSurfaceHoldsNoWriter is the §14 property for issue #109's read
-// path: the whole authority a browser reaches over the fleet is these five
-// reads. Ingest is the one that matters — it writes this machine's retrieval
+// path: the whole authority a browser reaches over the fleet is these six
+// reads. Open joined them when the dashboard stopped opening a whole page of
+// records to keep part of it; fetching and decrypting one record is a read,
+// and the property this test defends is that no writer appears here. Ingest is the one that matters — it writes this machine's retrieval
 // index, and a GET route that could reach it would make the busiest writer in
 // the process a read.
 func TestFleetReaderSurfaceHoldsNoWriter(t *testing.T) {
 	surface := reflect.TypeOf((*FleetReader)(nil)).Elem()
 	permitted := map[string]bool{
 		"LocalHost": true, "Records": true, "RecordsWithContent": true,
-		"Hosts": true, "SyncStates": true,
+		"Open": true, "Hosts": true, "SyncStates": true,
 	}
 	for i := range surface.NumMethod() {
 		if name := surface.Method(i).Name; !permitted[name] {

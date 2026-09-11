@@ -9,8 +9,66 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Added
+
+- **Findings and proposals have a front door.** Both are the first entries in
+  the navigation, proposals being an entirely new listing — before this,
+  Babel's committed output was reachable only by guessing a URL. The dashboard
+  leads with what still needs a decision instead of a total that is 89%
+  deferred.
+
 ### Changed
 
+- **The review page shows what it is asking about.** Deciding on a proposal
+  meant reading a hex id and pressing a button labelled RAW PRIVATE VIEW; the
+  record itself is now the page, headed by its title and broken into the
+  problem, the proposed outcome, how you would know it worked, what could go
+  wrong, and what is still unanswered. Evidence locators resolve to anchors
+  that open the cited transcript *at* the citation rather than at record 1 of
+  several thousand, and stored whitespace escapes render as whitespace.
+- **The machine left the reading path.** Host columns, host filters, host
+  sorting and `local` / `pending-sync` / `committed` chips are gone from every
+  reading surface except Archive, where a snapshot genuinely is a backup of
+  one machine. Fleet keeps its route but leaves the primary navigation. The
+  Sessions page loses the last of it: no host in its heading, no scope
+  selector, and no cross-host archive table whose columns said only that
+  nothing had looked. It lists the corpus by time and by each session's own
+  attributes. Recovering a session out of another machine's snapshot stays
+  `babel sessions fetch --host`, and the Archive page still reports snapshots
+  per host.
+- **Rulings open.** Two packages publish `KindDisposition`, and the reader
+  handed both to the frontier decoder, which requires a `schema` field a
+  disposition's wire form does not carry — so every accept or reject read back
+  as `published record <id> carries no schema version`. Records now route to a
+  decoder on their own bytes, as published edges already did.
+- **Listings read the whole deployment by default.** A record published from
+  any instance appears in findings, proposals and hypotheses without asking;
+  `?fleet=0` narrows to this machine. A shared-catalog outage degrades a
+  listing with a notice instead of refusing it, so losing the network never
+  costs the operator the ability to read his own work.
+- **The dashboard stops reading the corpus to count it.** Its frontier panel
+  enumerated up to five thousand candidate identifiers and then read each
+  candidate individually, so on a 1,958-candidate store `GET /api/overview`
+  took 31.5 seconds — past the browser's 20-second abort, which discarded the
+  whole document and left every panel empty while the four sections behind it
+  logged `context canceled`. The panel now asks the frontier for what it
+  shows: one count per §4.2 status and one page of the newest candidates,
+  seven bounded queries whatever the corpus holds. The total is the store's
+  own aggregate, so it is `babel hypotheses`'s total and includes the
+  superseded revisions and resting candidates the old enumeration could not
+  reach.
+- **The frontier listing and the dashboard count one frontier.** The
+  hypotheses page enumerated internal/review's queue unioned with the
+  unexplored frontier, which was the only listing the store offered when the
+  route was written: a superseded revision and a candidate that came to rest
+  without being enrolled were reachable by identifier and by no listing at
+  all, so the page showed fewer candidates than the dashboard beside it
+  counted. The page now pages the store's own enumeration — the one `babel
+  hypotheses` lists — and narrows by status inside the query rather than by
+  reading every record to find out. A candidate another instance published
+  and this one cannot open is counted by the panel as well as listed by the
+  page, and is placed in no status, because it has none this instance has
+  read.
 - **Concurrent cycles stop colliding in the frontier index.** Each cycle opens
   its own handle on the index, and the reconcile read what the index already
   held *before* opening its write transaction, so two cycles could both see a

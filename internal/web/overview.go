@@ -21,12 +21,15 @@ import (
 	"context"
 	"net/http"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/atyrode/babel/internal/disposition"
+	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/review"
+	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
 const (
@@ -53,6 +56,16 @@ const (
 	// them, because a panel row needs the recipe's identity and not a
 	// census of it.
 	overviewRecipeProbe = 3
+
+	// overviewFrontierPage bounds the one page of candidates this document
+	// reads whole. The frontier panel itself shows overviewRows of them,
+	// but the runs panel needs the candidates each of its rows' runs put on
+	// the frontier and internal/frontier offers no read scoped to a run: a
+	// candidate is created by the run that recorded it, so the newest page
+	// answers the newest runs, which are the only ones a panel of
+	// overviewRows rows shows. It is the store's largest page, so the whole
+	// index is one query rather than a walk.
+	overviewFrontierPage = frontier.MaxListLimit
 )
 
 // overviewSection is one panel's availability. Available is false with a note
@@ -155,7 +168,11 @@ type overviewStatusCount struct {
 	Count  int    `json:"count"`
 }
 
+// overviewHypothesis is one candidate as the dashboard lists it, from whichever
+// machine in the deployment produced it. The embedded mark carries that
+// attribution and never substitutes the local host for an absent one.
 type overviewHypothesis struct {
+	fleetMark
 	ID        string `json:"id"`
 	RunID     string `json:"run_id"`
 	Status    string `json:"status"`
@@ -280,17 +297,67 @@ type overviewActivityRow struct {
 
 // handleOverview assembles the dashboard's snapshot.
 //
-// The order is deliberate: the frontier read produces the run-to-candidate
-// index the runs section needs, so the two are assembled together rather than
-// each enumerating the frontier for itself.
+// The sections are independent reads of different stores — a restic snapshot
+// listing, the shared catalog, the frontier, the receipt log, the review
+// queue — and assembling them one after another made the page cost their sum.
+// On the operator's own corpus that sum exceeded the client's request budget,
+// so the browser aborted, every section after the slow one logged a cancelled
+// context, and the dashboard rendered empty: the reader paid for the slowest
+// store twice over and saw nothing.
+//
+// They are assembled concurrently instead, so the page costs the slowest
+// single read rather than the total. Each section still degrades on its own,
+// which is what makes this safe: a store that does not answer costs its own
+// panel and nothing else.
+//
+// Runs is the one real dependency. The frontier read produces the
+// run-to-candidate index it needs, so it waits for that rather than
+// enumerating the frontier a second time for itself.
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	var out overview
-	out.Archive = s.overviewArchive(r)
-	out.Corpus, out.Activity = s.overviewCatalog(r)
 	var byRun map[string][]string
-	out.Frontier, byRun = s.overviewFrontier(r)
-	out.Runs = s.overviewRuns(r, byRun)
-	out.Review = s.overviewReview(r)
+
+	// A section slower than this is the page's cost, and naming it is the
+	// difference between an operator who can act and one staring at an
+	// empty dashboard. The threshold is well above a healthy read of any
+	// of these stores, so a quiet log means nothing is wrong.
+	const slowSection = 2 * time.Second
+	timed := func(name string, read func()) {
+		start := time.Now()
+		read()
+		if elapsed := time.Since(start); elapsed > slowSection {
+			s.logf("GET %s: %s took %s", r.URL.Path, name, elapsed.Round(time.Millisecond))
+		}
+	}
+
+	var first sync.WaitGroup
+	first.Add(3)
+	go func() {
+		defer first.Done()
+		timed("archive", func() { out.Archive = s.overviewArchive(r) })
+	}()
+	go func() {
+		defer first.Done()
+		timed("catalog", func() { out.Corpus, out.Activity = s.overviewCatalog(r) })
+	}()
+	go func() {
+		defer first.Done()
+		timed("frontier", func() { out.Frontier, byRun = s.overviewFrontier(r) })
+	}()
+	first.Wait()
+
+	var second sync.WaitGroup
+	second.Add(2)
+	go func() {
+		defer second.Done()
+		timed("runs", func() { out.Runs = s.overviewRuns(r, byRun) })
+	}()
+	go func() {
+		defer second.Done()
+		timed("review", func() { out.Review = s.overviewReview(r) })
+	}()
+	second.Wait()
+
 	s.writeJSON(w, http.StatusOK, out)
 }
 
@@ -457,11 +524,17 @@ func (s *Server) overviewCatalog(r *http.Request) (overviewCorpus, overviewActiv
 // overviewFrontier counts the frontier by status and returns the run-to-
 // candidate index the runs panel reads.
 //
-// Every candidate is read, because status is the newest entry of an
-// append-only history rather than a column a count could be pushed down to —
-// the same reason handleHypotheses reads records when a status filter is
-// asked for. The enumeration is the shared one, so the dashboard's total is
-// the Hypotheses page's total and neither can drift from `babel hypotheses`.
+// The counts are the store's own aggregates: one bounded query per §4.2
+// status, whose total is how many candidates the whole corpus holds in that
+// state, and then one page for the rows a panel shows. Status really is the
+// newest entry of an append-only history rather than a column, but resolving
+// it is internal/frontier's work and it does so per query; tallying here
+// instead meant one enumeration and then a read per identifier, which on the
+// deployment's own 1,958-candidate frontier took 31 seconds — past the
+// browser's own 20-second abort, so the whole document was discarded and
+// every panel rendered empty. The aggregate is the same enumeration `babel
+// hypotheses` pages, so the dashboard's total still cannot drift from the
+// command's.
 func (s *Server) overviewFrontier(r *http.Request) (overviewFrontier, map[string][]string) {
 	statuses := []frontier.Status{
 		frontier.StatusUntriaged, frontier.StatusQueued, frontier.StatusInvestigating,
@@ -471,55 +544,161 @@ func (s *Server) overviewFrontier(r *http.Request) (overviewFrontier, map[string
 	for _, status := range statuses {
 		section.Statuses = append(section.Statuses, overviewStatusCount{Status: string(status)})
 	}
-	if s.opts.Frontier == nil || s.opts.Review == nil {
+	if s.opts.Frontier == nil {
 		section.overviewSection = sectionMissing("The hypothesis frontier is not available in this session.")
 		return section, nil
 	}
-	ids, err := s.hypothesisIDs(r.Context())
-	if err != nil {
-		s.logf("GET %s: frontier enumeration refused", r.URL.Path)
-		section.overviewSection = sectionMissing("The hypothesis frontier could not be read.")
-		return section, nil
-	}
+	ctx := r.Context()
 	byStatus := make(map[frontier.Status]int, len(statuses))
-	byRun := make(map[string][]string, len(ids))
-	records := make([]frontier.Hypothesis, 0, len(ids))
-	for _, id := range ids {
-		record, err := s.opts.Frontier.Hypothesis(r.Context(), id)
+	counted := 0
+	for _, status := range statuses {
+		_, total, err := s.opts.Frontier.Hypotheses(ctx, frontier.ListFilter{
+			Statuses: []frontier.Status{status},
+			// One record is asked for because none is wanted: the
+			// answer this loop reads is the total beside the page,
+			// and a zero limit would fetch the store's default page
+			// six times over for nothing.
+			Limit: 1,
+		})
 		if err != nil {
-			s.logf("GET %s: frontier record unreadable", r.URL.Path)
+			s.logf("GET %s: frontier enumeration refused: %v", r.URL.Path, err)
 			section.overviewSection = sectionMissing("The hypothesis frontier could not be read.")
 			return section, nil
 		}
-		byStatus[record.Status]++
+		byStatus[status] = total
+		counted += total
+	}
+	// The newest page. Hypotheses orders by creation ascending — §5.4 keeps
+	// a list position from reading as strength, so there is no "newest
+	// first" to ask for — which makes the newest candidates the last page,
+	// and every candidate carries a status from the moment it is created so
+	// the tally above already counted the corpus this offset walks.
+	offset := counted - overviewFrontierPage
+	if offset < 0 {
+		offset = 0
+	}
+	recent, local, err := s.opts.Frontier.Hypotheses(ctx, frontier.ListFilter{
+		Limit:  overviewFrontierPage,
+		Offset: offset,
+	})
+	if err != nil {
+		s.logf("GET %s: frontier enumeration refused: %v", r.URL.Path, err)
+		section.overviewSection = sectionMissing("The hypothesis frontier could not be read.")
+		return section, nil
+	}
+	byRun := make(map[string][]string, len(recent))
+	for _, record := range recent {
 		byRun[record.RunID] = append(byRun[record.RunID], record.ID)
-		records = append(records, record)
 	}
 	section.overviewSection = sectionReady()
-	section.Hypotheses = len(records)
-	section.Truncated = len(ids) >= listScanCap
+	// The deployment's other machines, on the same terms as the listing
+	// pages: committed records only, because §9 makes staged output not
+	// globally reviewable, and a status that is the snapshot taken when the
+	// record was staged. A dashboard that counted only this machine would
+	// report a private backlog where the deployment has one shared body of
+	// work, and on a machine that runs no explorations it would report none.
+	remote, remoteErr := s.overviewOtherHosts(r)
+	for _, record := range remote {
+		// A record this instance could not open carries no status, so it
+		// is counted below and placed in no bucket: the distribution says
+		// where the candidates whose lifecycle this instance has read
+		// stand, and inventing a state for a sealed record would be this
+		// panel asserting something it did not observe.
+		if record.Published == nil {
+			continue
+		}
+		byStatus[frontier.Status(record.Published.Status)]++
+	}
+	section.Hypotheses = local + len(remote)
+	// The local count is now an aggregate over the whole corpus rather than
+	// a bounded scan, so the only floor left is an unreachable shared
+	// catalog: the machines that did not answer are candidates this number
+	// does not include.
+	section.Truncated = remoteErr != nil
 	for i := range section.Statuses {
 		section.Statuses[i].Count = byStatus[frontier.Status(section.Statuses[i].Status)]
 	}
-	sort.SliceStable(records, func(i, j int) bool {
-		if !records[i].CreatedAt.Equal(records[j].CreatedAt) {
-			return records[i].CreatedAt.After(records[j].CreatedAt)
-		}
-		return records[i].ID < records[j].ID
-	})
-	for _, record := range records {
-		if len(section.Rows) >= overviewRows {
-			break
-		}
-		section.Rows = append(section.Rows, overviewHypothesis{
+	type row struct {
+		at   time.Time
+		item overviewHypothesis
+	}
+	newest := recent
+	if len(newest) > overviewRows {
+		newest = newest[len(newest)-overviewRows:]
+	}
+	rows := make([]row, 0, len(newest)+len(remote))
+	for _, record := range newest {
+		rows = append(rows, row{record.CreatedAt, overviewHypothesis{
+			fleetMark: s.localMark(""),
 			ID:        record.ID,
 			RunID:     record.RunID,
 			Status:    string(record.Status),
 			CreatedAt: timeText(record.CreatedAt),
 			Statement: record.Payload.Statement,
-		})
+		}})
+	}
+	host := ""
+	if s.opts.Fleet != nil {
+		host = s.opts.Fleet.LocalHost()
+	}
+	for _, record := range remote {
+		// Counted, but not a row: a row is read for the candidate's own
+		// wording, and a sealed record has none. The frontier listing is
+		// where it appears as itself, with the reason it cannot be read.
+		if record.Published == nil {
+			continue
+		}
+		mark, summary := markFleetRecord(record, host)
+		rows = append(rows, row{record.Published.CreatedAt, overviewHypothesis{
+			fleetMark: mark,
+			ID:        record.Record.RecordID,
+			RunID:     record.Record.RunID,
+			Status:    string(record.Published.Status),
+			CreatedAt: timeText(record.Published.CreatedAt),
+			Statement: summary,
+		}})
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if !rows[i].at.Equal(rows[j].at) {
+			return rows[i].at.After(rows[j].at)
+		}
+		return rows[i].item.ID < rows[j].item.ID
+	})
+	for _, r := range rows {
+		if len(section.Rows) >= overviewRows {
+			break
+		}
+		section.Rows = append(section.Rows, r.item)
 	}
 	return section, byRun
+}
+
+// overviewOtherHosts reads the other machines' committed candidates for the
+// dashboard, with their content, so a row carries the wording and not just an
+// identifier.
+//
+// Every committed record is returned, including one this instance cannot open:
+// the frontier listing renders such a record as a row that says it exists and
+// why it cannot be read (internal/fleet's rule — never dropped, never
+// escalated), so a dashboard that left it out of the count would report fewer
+// candidates than the page it links to lists. The caller places it in no
+// status: a sealed record's lifecycle state is the owning host's and this
+// instance has not read it, so it is counted and not distributed.
+//
+// A failure is returned rather than raised: the dashboard is a glance at six
+// services and one unreachable shared catalog must not blank the five that
+// answered. The caller reports the gap by marking the count a floor, which is
+// the same thing it already does when local enumeration hits its bound.
+func (s *Server) overviewOtherHosts(r *http.Request) ([]fleet.Record, error) {
+	if s.opts.Fleet == nil || s.opts.FleetError != nil {
+		return nil, nil
+	}
+	records, err := s.otherHosts(r.Context(), listScanCap, sharedcatalog.KindHypothesis)
+	if err != nil {
+		s.logf("GET %s: fleet frontier unavailable", r.URL.Path)
+		return nil, err
+	}
+	return records, nil
 }
 
 func (s *Server) overviewRuns(r *http.Request, byRun map[string][]string) overviewRuns {
@@ -530,7 +709,7 @@ func (s *Server) overviewRuns(r *http.Request, byRun map[string][]string) overvi
 	}
 	summaries, total, err := s.opts.Runs.Runs(r.Context(), overviewRows, 0)
 	if err != nil {
-		s.logf("GET %s: run receipts refused", r.URL.Path)
+		s.logf("GET %s: run receipts refused: %v", r.URL.Path, err)
 		section.overviewSection = sectionMissing("Run receipts could not be read.")
 		return section
 	}
@@ -612,7 +791,7 @@ func (s *Server) overviewReview(r *http.Request) overviewReview {
 	// re-sorted here, for the reason handleReviewQueue states.
 	items, err := s.opts.Review.Queue(r.Context(), review.QueueFilter{Limit: listScanCap})
 	if err != nil {
-		s.logf("GET %s: review queue refused", r.URL.Path)
+		s.logf("GET %s: review queue refused: %v", r.URL.Path, err)
 		section.overviewSection = sectionMissing("The review queue could not be read.")
 		return section
 	}
@@ -660,7 +839,7 @@ func (s *Server) overviewDispositions(r *http.Request) overviewDispositions {
 		Limit:    1,
 	})
 	if err != nil {
-		s.logf("GET %s: proposed actions refused", r.URL.Path)
+		s.logf("GET %s: proposed actions refused: %v", r.URL.Path, err)
 		section.overviewSection = sectionMissing("Proposed next actions could not be read.")
 		return section
 	}
@@ -677,7 +856,7 @@ func (s *Server) overviewQuestions(r *http.Request) overviewQuestions {
 	}
 	items, err := s.opts.Reality.Inbox(r.Context(), reality.InboxQuery{Limit: listScanCap})
 	if err != nil {
-		s.logf("GET %s: reality inbox refused", r.URL.Path)
+		s.logf("GET %s: reality inbox refused: %v", r.URL.Path, err)
 		section.overviewSection = sectionMissing("The question inbox could not be read.")
 		return section
 	}

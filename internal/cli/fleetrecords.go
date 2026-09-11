@@ -399,34 +399,21 @@ func fleetHostLabel(rec sharedcatalog.FleetRecord) (label string, attributed boo
 // recordSummary derives one record's one-line summary, or the reason it has
 // none.
 //
-// Four outcomes, and each is a different fact. A record this instance could
-// not open reports why. A citation edge is the line internal/reference renders
-// it as, which is the same line the web fleet view shows. A record whose kind
-// has no searchable output — a receipt, a preparation, a proposal, a frontier
-// link, an operator context note — has no summary and no failure, which is
-// normal rather than exceptional and so is absence rather than a reason.
-// Anything else is the summary the local retrieval index would show for the
-// identical record, because it comes from the same derivation.
+// Three outcomes, and each is a different fact. A record this instance could
+// not open reports why. A record whose kind has no listing line — a receipt, a
+// preparation, a frontier link, an operator context note — has no summary and
+// no failure, which is normal rather than exceptional and so is absence rather
+// than a reason. Anything else is internal/fleet's line, which is the same
+// line the web fleet view shows because it is the same derivation.
 func recordSummary(rec fleet.Record) (summary, unopened string) {
 	if rec.Unopened != "" {
 		return "", Sanitize(rec.Unopened)
 	}
-	if rec.Edge != nil {
-		return Sanitize(rec.Edge.Summary()), ""
-	}
-	if rec.Published == nil {
-		// Successfully opened producer-owned JSON (preparation, receipt,
-		// context or complaint) has no frontier summary, not an opening error.
-		return "", ""
-	}
-	out, err := rec.Published.Output()
-	switch {
-	case errors.Is(err, frontier.ErrNotSearchable):
-		return "", ""
-	case err != nil:
+	line, err := rec.Summary()
+	if err != nil {
 		return "", Sanitize(err.Error())
 	}
-	return Sanitize(out.Summary), ""
+	return Sanitize(line), ""
 }
 
 // fleetRecordCounts is the one-line answer to "what does the fleet hold".

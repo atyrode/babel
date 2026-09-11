@@ -121,29 +121,25 @@ export interface ArchiveStatus {
   hosts: ArchiveHost[];
 }
 
-// ArchiveSessionRow is deliberately not a SessionSummary and shares no field
-// with it beyond the four a snapshot's file listing actually carries. Browsing
-// another host's archive downloads no transcript bytes, so title, workspace,
-// modified time, and continuation grade are not merely null there — they are
-// unobserved, and this type cannot express them at all. A component holding
-// one of these rows therefore cannot render an absent title as an empty cell;
-// it has to say the snapshot listing does not carry one.
+// ArchiveSessionRow is what GET /api/archive/sessions answers with: the four
+// fields a snapshot's file listing actually carries, and nothing else. Reading
+// a snapshot's listing downloads no transcript bytes, so title, workspace,
+// modified time and continuation grade are not merely null there — they are
+// unobserved, and this type cannot express them at all.
+//
+// No page in this build browses an archive's session listing. The type stays
+// because the route stays served and the mock server answers it against the
+// same shape the Go DTO sends; recovering a session out of a snapshot is
+// `babel sessions fetch`'s job.
 export interface ArchiveSessionRow {
   harness: string;
   source_id: string;
   selector: string;
   size: number;
-  // Whether this machine already holds a fetched materialization of the
-  // session, and where it landed.
+  // Whether the session's files have already been fetched out of the snapshot,
+  // and where they landed.
   fetched: boolean;
   fetched_path?: string;
-}
-
-export interface ArchiveSessionsResponse {
-  host: string;
-  // The snapshot the request named; empty means that host's newest.
-  snapshot: string;
-  sessions: ArchiveSessionRow[];
 }
 
 export interface VerifyResult {
@@ -207,56 +203,41 @@ export type ReviewSubjectType = "hypothesis" | "finding" | "proposal";
 export type Grading = "low" | "moderate" | "high";
 
 // ---------------------------------------------------------------------------
-// Fleet attribution (issue #109 items 3 and 4).
+// Catalog attribution, as the wire carries it.
 //
-// Every Phase B listing row carries these, and they mean exactly what the Go
-// DTOs mean. Two of them exist because one string cannot say what it has to.
+// The catalog is one body of work and the interface reads it as one: no page
+// renders which instance produced a record, offers it as a filter, or sorts by
+// it. These fields exist here because the Go DTOs send them, and exactly one of
+// them is read at all — `local_host`, which says whether the row arrived
+// already carrying this instance's own derivations. A row the catalog merged
+// has the record's own fields and none of the review history derived beside it,
+// and a renderer has to show that absence rather than a decided-nothing.
 //
-// `host` is empty for a record whose origin instance registered no host, and
-// `host_attributed` is what distinguishes that from a host whose display name
-// happens to be empty. The interface renders the absence as "unattributed" and
-// never as the local machine: filing one machine's analysis under another's is
-// the failure the pair exists to prevent.
-//
-// `sync` is one of exactly three values and they are three different facts.
-// "local" means no remote row and no journal claim — nothing is going to carry
-// this record anywhere — where "pending-sync" promises something will, and
-// "unknown" means the shared catalog could not be reached so this machine did
-// not find out. A renderer must never collapse any of them into another.
-//
-// "unknown" arrives with `sync_degraded` on the listing envelope, which is what
-// makes it a state rather than a shrug: the rows still render, and the page says
-// why their global state is not known.
+// The one place a machine is a legitimate subject is the archive, where a
+// snapshot is a backup *of* a machine. That vocabulary lives in ArchiveHost and
+// nowhere near an analytical record.
 // ---------------------------------------------------------------------------
 
-export type SyncState = "committed" | "pending-sync" | "local" | "unknown";
-
 // SyncNotice is the degraded marker a listing envelope carries when the shared
-// catalog could not answer. The rows still render — this machine's durable store
-// is local, and another machine's outage must not take away a local page — with
-// every unresolved row's `sync` as "unknown" and this saying why.
+// catalog could not answer part of a read. The rows still render, which is why
+// no page turns it into a banner: publication state is plumbing, and a record
+// either renders or it does not.
 export interface SyncNotice {
   sync_degraded?: boolean;
-  // Operator-facing prose from the server. Rendered verbatim; the browser
-  // claims nothing about the cause itself.
   sync_detail?: string;
 }
 
 export interface FleetMark {
-  // Optional only because a mock or an older server may omit them; the current
-  // server always sends them.
   host?: string;
-  // The machine's identity, as opposed to `host`'s label. A client narrowing a
-  // merged list matches on this and never on the display name: a display name
-  // is a label for reading, two machines may carry the same one, and a filter
-  // that matched labels would silently merge them.
   host_id?: string;
   host_attributed?: boolean;
   local_host?: boolean;
-  sync?: SyncState | string;
+  // The publication state the server reports, kept as the string it sends. No
+  // page renders it — a record either shows or it does not, and where it has
+  // replicated to is plumbing — so the interface holds no vocabulary of its
+  // own for the values.
+  sync?: string;
   committed_at?: string;
-  // Why this row has no content, when it has none: a key this machine does not
-  // hold, a payload shape this build does not read. Rendered, never swallowed.
   unopened?: string;
 }
 
@@ -272,7 +253,7 @@ export interface FleetRecord {
   // The origin instance: the actor that generated the run and committed the
   // record. Always present, which is why it has no "attributed" companion.
   actor: string;
-  sync: SyncState | string;
+  sync: string;
   committed_at?: string;
   summary?: string;
   unopened?: string;
@@ -291,7 +272,7 @@ export interface FleetHost {
 }
 
 export interface FleetRecordsResponse {
-  // False means this machine has no shared backend, which is a fact about the
+  // False means no shared backend is configured, which is a fact about the
   // deployment rather than a failure. A backend that exists and did not answer
   // arrives as an APIError instead, and the two read differently on screen.
   configured: boolean;
@@ -302,7 +283,7 @@ export interface FleetRecordsResponse {
 
 export interface FleetHostsResponse {
   configured: boolean;
-  // This machine's own host id, absent when it has registered none.
+  // The host id this instance registered, absent when it has registered none.
   local_host?: string;
   hosts: FleetHost[];
 }
@@ -414,15 +395,17 @@ export interface RunSummary {
   preparation_id: string;
   revision: number;
   recorded_at: string;
-  sync: string; // "pending-sync" | "committed"
+  // The receipt's publication state, on FleetMark's terms: carried, never
+  // rendered.
+  sync: string;
   counts: RunCounts;
   // Why the run happened, as its receipt recorded it. Empty on a receipt
   // written before receipts carried one.
   authority: RunAuthority;
   // Which machine produced the run, read from the shared catalog rather than
   // from the receipt (issue #109 item 4). Both are absent on a run the catalog
-  // cannot attribute, and the receipt strip renders that as "unattributed"
-  // rather than as this machine.
+  // cannot attribute. Nothing renders either one: a receipt is read for what
+  // the run did, and no surface asks which computer it ran on.
   host?: string;
   host_attributed?: boolean;
 }
@@ -468,17 +451,20 @@ export interface EvidenceRef {
   selector?: string;
 }
 
-// A candidate as a listing shows it. It extends FleetMark because a listing is
-// now fleet-wide: with ?fleet=1 the rows after this machine's own belong to
-// other hosts, and such a row carries no review_status and no observation count
-// at all — both are the owning host's derivations, and a zero rendered as a fact
-// would say a remote candidate rests on no evidence.
+// A candidate as a listing shows it. A row the catalog merged carries the
+// statement and no review_status and no observation count at all — both are
+// derived beside the record and travel separately, and a zero rendered as a
+// fact would say the candidate rests on no evidence.
 export interface HypothesisSummary extends FleetMark {
   id: string;
   run_id: string;
   ancestor_id?: string;
   created_at: string;
-  status: HypothesisStatus;
+  // Empty on a merged row this instance could not open: a candidate's status
+  // lives in an append-only history on the host that holds it, so a record
+  // that would not open has none to report and the server sends none rather
+  // than a plausible one.
+  status: HypothesisStatus | "";
   statement: string;
   provisional_labels?: string[];
   observations: number;
@@ -487,9 +473,8 @@ export interface HypothesisSummary extends FleetMark {
   review_status?: ReviewStatus;
 }
 
-// `total` is this machine's frontier count and stays that way under ?fleet=1:
-// the fleet rows are an attributed appendix, not more pages of the local
-// frontier, so a heading reading "N in the frontier" keeps one meaning.
+// `total` is the enumerated count the server paged over, which is not the
+// number of rows in `items` once merged rows follow them.
 export interface HypothesesResponse extends SyncNotice {
   items: HypothesisSummary[];
   total: number;
@@ -601,9 +586,8 @@ export interface HypothesisDetail {
   lineage: Lineage;
 }
 
-// A consolidation as a listing shows it, on HypothesisSummary's terms: a row
-// from another host carries the title and nothing this machine would have had to
-// derive.
+// A consolidation as a listing shows it, on HypothesisSummary's terms: a merged
+// row carries the title and none of the counts derived beside the record.
 export interface FindingSummary extends FleetMark {
   id: string;
   run_id: string;
@@ -679,6 +663,45 @@ export interface Proposal {
   payload: ProposalPayload;
 }
 
+// ProposalRow is one proposal as the listing shows it: the identifiers, the
+// wording a reader scans by, and the two model gradings that decide whether a
+// suggestion is worth opening. The server flattens them out of the stored
+// payload, so a row costs no per-record request.
+//
+// A merged row carries only the title — the catalog's bounded summary line —
+// and none of the rest, for FleetMark's reason.
+export interface ProposalRow extends FleetMark {
+  id: string;
+  run_id: string;
+  created_at: string;
+  title: string;
+  problem: string;
+  outcome: string;
+  impact: string;
+  classification: string;
+  review_status?: ReviewStatus;
+}
+
+export interface ProposalsResponse extends SyncNotice {
+  items: ProposalRow[];
+  total: number;
+}
+
+// ProposalDetail is one proposal whole: the row's own fields, the records it
+// was written against, and the stored payload verbatim. `form` is #114's
+// provenance — `consolidated` for a finding-backed artifact, `candidate` for a
+// remedy resting only on the claim it addresses — and it is served rather than
+// inferred, because a want rendered with a consolidation's authority is the
+// failure the split exists to prevent.
+export interface ProposalDetail extends ProposalRow {
+  ancestor_id?: string;
+  schema_version: number;
+  finding_ids: string[];
+  hypothesis_ids: string[];
+  form: string;
+  payload: ProposalPayload;
+}
+
 export interface FindingDetail {
   finding: Finding;
   observations: Observation[];
@@ -690,10 +713,10 @@ export interface ReviewSubject {
   id: string;
 }
 
-// One review-inbox row. A row from another host carries an empty status and
-// zero counts because this machine holds none of that host's append-only review
-// history; `local_host` is how a renderer tells the two apart and shows an
-// absence rather than a decided-nothing claim.
+// One review-inbox row. A merged row carries an empty status and zero counts
+// because the append-only decision history is derived beside the record and
+// does not travel with it; `local_host` is how a renderer tells the two apart
+// and shows an absence rather than a decided-nothing claim.
 export interface QueueItem extends FleetMark {
   subject: ReviewSubject;
   enrolled_at: string;
@@ -1357,35 +1380,21 @@ export function getArchiveStatus(): Promise<ArchiveStatus> {
   return request<ArchiveStatus>("/api/archive/status");
 }
 
-// getArchiveSessions reads one host's archived session listing. It goes over
-// the network to the repository, so it is slower than every other read on the
-// Sessions page and is never polled.
-export function getArchiveSessions(
-  host: string,
-  snapshot?: string,
-): Promise<ArchiveSessionsResponse> {
-  const values: Record<string, string> = { host };
-  if (snapshot?.trim()) values.snapshot = snapshot.trim();
-  return request<ArchiveSessionsResponse>(`/api/archive/sessions?${query(values)}`);
-}
-
 export function verifyArchive(deep: boolean): Promise<VerifyResult> {
   return request<VerifyResult>(`/api/archive/verify?${query({ deep: deep ? 1 : 0 })}`, {
     method: "POST",
   });
 }
 
-// fetchSession materializes one session's file closure locally. host is
-// required for a session this machine never had: without it the selector is
-// resolved against local source files, which by definition do not hold it.
+// fetchSession materializes one session's file closure out of a snapshot. The
+// selector is the catalog's own, and the snapshot is optional: without one the
+// newest snapshot holding the session is read.
 export function fetchSession(
   selector: string,
   snapshot?: string,
-  host?: string,
 ): Promise<FetchResult> {
   const values: Record<string, string> = { selector };
   if (snapshot?.trim()) values.snapshot = snapshot.trim();
-  if (host?.trim()) values.host = host.trim();
   return request<FetchResult>(`/api/fetch?${query(values)}`, { method: "POST" });
 }
 
@@ -1406,19 +1415,16 @@ export function getAnalysisState(): Promise<AnalysisState> {
   return request<AnalysisState>("/api/analysis/state");
 }
 
-// getHypotheses reads this machine's frontier, and with `fleet` the other hosts'
-// committed candidates after it. The flag is opt-in on the wire for the reason
-// the server states: "what is on my frontier" and "what has the deployment
-// produced" are two questions, and a list that silently became the second would
-// make an operator's own backlog look like someone else's work.
+// getHypotheses reads the frontier. The read is deployment-wide: the catalog is
+// one body of work, so there is no scope to ask about and no scope parameter to
+// send.
 export function getHypotheses(
-  filter: { status?: string; limit?: number; offset?: number; fleet?: boolean } = {},
+  filter: { status?: string; limit?: number; offset?: number } = {},
 ): Promise<HypothesesResponse> {
   const values: Record<string, string | number> = {};
   if (filter.status) values.status = filter.status;
   if (filter.limit !== undefined) values.limit = filter.limit;
   if (filter.offset !== undefined) values.offset = filter.offset;
-  if (filter.fleet) values.fleet = "1";
   const suffix = Object.keys(values).length ? `?${query(values)}` : "";
   return request<HypothesesResponse>(`/api/hypotheses${suffix}`);
 }
@@ -1427,21 +1433,36 @@ export function getHypothesis(id: string): Promise<HypothesisDetail> {
   return request<HypothesisDetail>(`/api/hypothesis?${query({ id })}`);
 }
 
-export function getFindings(filter: { fleet?: boolean } = {}): Promise<FindingsResponse> {
-  return request<FindingsResponse>(`/api/findings${filter.fleet ? "?fleet=1" : ""}`);
+export function getFindings(): Promise<FindingsResponse> {
+  return request<FindingsResponse>("/api/findings");
 }
 
 export function getFinding(id: string): Promise<FindingDetail> {
   return request<FindingDetail>(`/api/finding?${query({ id })}`);
 }
 
+export function getProposals(
+  filter: { limit?: number; offset?: number } = {},
+): Promise<ProposalsResponse> {
+  const values: Record<string, string | number> = {};
+  if (filter.limit !== undefined) values.limit = filter.limit;
+  if (filter.offset !== undefined) values.offset = filter.offset;
+  const suffix = Object.keys(values).length ? `?${query(values)}` : "";
+  return request<ProposalsResponse>(`/api/proposals${suffix}`);
+}
+
+// getProposal reads one proposal whole. The identifier travels in the path
+// rather than a query, which is the shape the listing's rows link to.
+export function getProposal(id: string): Promise<ProposalDetail> {
+  return request<ProposalDetail>(`/api/proposals/${encodeURIComponent(id)}`);
+}
+
 export function getReviewQueue(
-  filter: { type?: string; status?: string; fleet?: boolean } = {},
+  filter: { type?: string; status?: string } = {},
 ): Promise<ReviewQueueResponse> {
   const values: Record<string, string> = {};
   if (filter.type) values.type = filter.type;
   if (filter.status) values.status = filter.status;
-  if (filter.fleet) values.fleet = "1";
   const suffix = Object.keys(values).length ? `?${query(values)}` : "";
   return request<ReviewQueueResponse>(`/api/review/queue${suffix}`);
 }
@@ -1450,9 +1471,9 @@ export function getReviewQueue(
 // The fleet read (issue #109 item 4).
 //
 // Only identifiers travel in these URLs -- host ids, record kinds, a page --
-// and never a word of a record. Record content in a query string would put
-// another machine's analysis into this machine's browser history and into every
-// request log between them, which is the channel the leak acceptance guards.
+// and never a word of a record. Record content in a query string would put one
+// instance's analysis into another's browser history and into every request log
+// between them, which is the channel the leak acceptance guards.
 // ---------------------------------------------------------------------------
 
 export function getFleetRecords(filter: FleetRecordFilter = {}): Promise<FleetRecordsResponse> {

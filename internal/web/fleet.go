@@ -37,7 +37,6 @@ import (
 	"net/http"
 
 	"github.com/atyrode/babel/internal/fleet"
-	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 )
 
@@ -54,6 +53,12 @@ type FleetReader interface {
 	LocalHost() string
 	Records(ctx context.Context, filter sharedcatalog.RecordFilter) ([]fleet.Record, error)
 	RecordsWithContent(ctx context.Context, filter sharedcatalog.RecordFilter) ([]fleet.Record, error)
+	// Open reads one record's content. A caller that will discard part of a
+	// page must list first and open only what it keeps: opening is a fetch,
+	// a digest check and a decrypt per record, and paying it for rows that
+	// are about to be dropped is what made the dashboard exceed the
+	// client's budget.
+	Open(ctx context.Context, rec sharedcatalog.FleetRecord) (fleet.Record, error)
 	Hosts(ctx context.Context, filter sharedcatalog.RecordFilter) ([]sharedcatalog.RecordHost, error)
 	SyncStates(ctx context.Context, journal fleet.SyncJournal, ids []string) (map[string]string, error)
 }
@@ -474,22 +479,64 @@ func (s *Server) localMark(sync string) fleetMark {
 	return mark
 }
 
-// fleetRequested reads the ?fleet=1 opt-in the merged listings take.
+// fleetScope reads the ?fleet= narrowing the merged listings take.
 //
-// It is opt-in rather than default because the two lists answer different
-// questions. "What is on my frontier" and "what has the deployment produced"
-// are both worth asking, and a listing that silently became the second would
-// make an operator's own backlog look like someone else's work.
-func (s *Server) fleetRequested(w http.ResponseWriter, r *http.Request) (bool, bool) {
-	wanted, ok := s.requireFlag(w, r, "fleet")
-	if !ok {
-		return false, false
-	}
-	if wanted && s.opts.FleetError != nil {
-		s.fleetError(w, r, s.opts.FleetError)
+// Absent means the whole deployment. Babel's analytical output is deployment
+// state that happens to be produced on a machine: a machine lends its compute
+// and its session bytes, and every record it yields is published to the shared
+// catalog for the fleet to read. A surface whose default answered "what did
+// this laptop produce" would present that shared body of work as though each
+// machine owned a private one, which is the opposite of what the records are.
+//
+// `?fleet=0` is the narrowing, and it stays worth having: "what has this
+// machine not yet published" is a real question, asked by an operator standing
+// in front of that machine. It is just not the question a reader arrives with.
+//
+// A deployment with no shared backend has one host by definition, so local
+// mode answers the same either way and needs no special case.
+//
+// A shared backend that exists and did not answer is not a refusal either, and
+// that is the one decision this function no longer makes. The merged listings
+// render what they can reach and carry degradedNotice; only the dedicated
+// /api/fleet/* routes refuse, because there the fleet is the payload and there
+// is nothing else to return. An operator whose managed catalog is down still
+// owns every record on this disk, and a read surface that took his own
+// analysis away from him for the duration of someone else's outage would make
+// the fleet feature a liability rather than an addition.
+func (s *Server) fleetScope(w http.ResponseWriter, r *http.Request) (bool, bool) {
+	wanted := true
+	switch r.URL.Query().Get("fleet") {
+	case "":
+	case "0":
+		wanted = false
+	case "1":
+	default:
+		s.writeError(w, http.StatusBadRequest, "fleet must be 0 or 1")
 		return false, false
 	}
 	return wanted && s.opts.Fleet != nil, true
+}
+
+// mergeOtherHosts reads the other machines' committed records for a merged
+// listing, and reports that the read failed rather than failing the listing.
+//
+// It is the degrading half of fleetScope's decision, in one place because
+// three listings make the same call and a fourth is about to: the rows this
+// machine holds are already in hand, the other hosts' are an addition, and an
+// addition that could not be fetched is a notice on an answer rather than the
+// absence of one.
+func (s *Server) mergeOtherHosts(r *http.Request, limit int,
+	kinds ...sharedcatalog.RecordKind) ([]fleet.Record, bool) {
+	err := s.opts.FleetError
+	var records []fleet.Record
+	if err == nil {
+		records, err = s.otherHosts(r.Context(), limit, kinds...)
+	}
+	if err != nil {
+		s.logf("%s %s degraded: %s", r.Method, r.URL.Path, catalogUnreachable)
+		return nil, true
+	}
+	return records, false
 }
 
 // otherHosts reads the other machines' committed records of the given kinds.
@@ -507,7 +554,16 @@ func (s *Server) fleetRequested(w http.ResponseWriter, r *http.Request) (bool, b
 // inbox it is.
 func (s *Server) otherHosts(ctx context.Context, limit int,
 	kinds ...sharedcatalog.RecordKind) ([]fleet.Record, error) {
-	records, err := s.opts.Fleet.RecordsWithContent(ctx, sharedcatalog.RecordFilter{
+	// The catalog is asked for the rows first and the content afterwards,
+	// for the records that survive. Opening happens per record — a fetch
+	// from the object store, a digest check and a decrypt each — so reading
+	// content for the whole page and then discarding this machine's share of
+	// it paid that cost for rows nobody was ever going to see. On a
+	// deployment whose records were nearly all produced here that was the
+	// entire cost of the request: the dashboard spent longer opening records
+	// it would drop than the client was willing to wait, and rendered
+	// nothing at all.
+	records, err := s.opts.Fleet.Records(ctx, sharedcatalog.RecordFilter{
 		Kinds: kinds,
 		Limit: limit,
 	})
@@ -525,7 +581,16 @@ func (s *Server) otherHosts(ctx context.Context, limit int,
 		if local != "" && record.HostID == local {
 			continue
 		}
-		out = append(out, record)
+		// Open failures stay per-record: the reader's own rule is that a
+		// sealed record is reported as sealed, never dropped and never
+		// escalated into a failure of the whole listing.
+		opened, err := s.opts.Fleet.Open(ctx, record.FleetRecord)
+		if err != nil {
+			record.Unopened = err.Error()
+			out = append(out, record)
+			continue
+		}
+		out = append(out, opened)
 	}
 	return out, nil
 }
@@ -639,30 +704,17 @@ func markFleetRecord(record fleet.Record, localHost string) (fleetMark, string) 
 	if record.CommittedAt != nil {
 		mark.CommittedAt = timeText(*record.CommittedAt)
 	}
-	if record.Edge != nil {
-		// A citation edge shares the `link` kind with internal/frontier and
-		// not its derivation: the line is internal/reference's, so this view
-		// and the CLI listing render one citation identically.
-		return mark, record.Edge.Summary()
-	}
-	if record.Published == nil {
-		// Producer-owned JSON can be open without a frontier projection.
-		// Its lack of a searchable summary must not mark the row unopened.
-		return mark, ""
-	}
-	out, err := record.Published.Output()
-	switch {
-	case errors.Is(err, frontier.ErrNotSearchable):
-		// A frontier kind without a retrieval surface (proposal or link) has
-		// no summary by construction rather than by failure.
-		return mark, ""
-	case err != nil:
+	// The line itself is internal/fleet's, which is where every producing
+	// package's derivation is assembled, so this view and the CLI listing
+	// render one record identically.
+	summary, err := record.Summary()
+	if err != nil {
 		if mark.Unopened == "" {
 			mark.Unopened = summaryUnavailable
 		}
 		return mark, ""
 	}
-	return mark, out.Summary
+	return mark, summary
 }
 
 // viewFleetHost renders one host of the filter's vocabulary.

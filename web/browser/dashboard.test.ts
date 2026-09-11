@@ -135,7 +135,7 @@ test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel ans
     hash: window.location.hash,
     panels: Array.from(document.querySelectorAll(".panel h2")).map((h) => h.textContent),
     notes: document.querySelectorAll(".panel-note").length,
-    hosts: document.querySelectorAll(".host-list li").length,
+    heading: document.querySelector(".page-heading h1")?.textContent ?? "",
     queue: document.querySelectorAll(".queue-list li").length,
     questions: document.querySelectorAll(".question-rows li").length,
     receipts: document.querySelectorAll(".receipt-list li").length,
@@ -159,7 +159,9 @@ test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel ans
   expect(state.notes).toBe(0);
   // Non-vacuity, list by list: the panels are showing records, not empty
   // frames, and each list is the shape its panel owns.
-  expect(state.hosts).toBe(2);
+  // The landing page is the deployment's overview, not a computer's: the
+  // heading says so, and no panel breaks its subject down by machine.
+  expect(state.heading).toBe("Overview");
   expect(state.queue).toBe(4);
   expect(state.questions).toBe(3);
   expect(state.receipts).toBe(2);
@@ -176,7 +178,10 @@ test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel ans
   expect(state.frontierSegments).toBe(6);
 
   // The at-a-glance numbers are the owning services' own, rendered at hero
-  // size with their labels beneath — facts that lead, not decoration.
+  // size with their labels beneath — facts that lead, not decoration. The
+  // frontier leads with what is still live and names the recorded total
+  // beside it, so a backlog of parked candidates cannot read as work
+  // waiting; the label is what says which number a reader is looking at.
   const heroes = await page.evaluate(() =>
     Array.from(document.querySelectorAll(".stat-hero")).map((entry) => ({
       label: entry.querySelector(".stat-label")?.textContent ?? "",
@@ -184,8 +189,11 @@ test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel ans
     })));
   expect(heroes).toContainEqual({ label: "snapshots", value: "12" });
   expect(heroes).toContainEqual({ label: "sessions", value: "18" });
-  expect(heroes).toContainEqual({ label: "candidates", value: "6" });
-  expect(heroes).toContainEqual({ label: "awaiting a decision", value: "4" });
+  // Six candidates in this machine's store and three the catalog merged: the
+  // dashboard counts the deployment, which is what the listing lists.
+  expect(heroes).toContainEqual({ label: "recorded in all", value: "9" });
+  expect(heroes).toContainEqual({ label: "live candidates", value: "5" });
+  expect(heroes).toContainEqual({ label: "records awaiting a decision", value: "4" });
 
   // The whole exploration lifecycle is described, zeros included, so a
   // frontier with nothing rejected still shows that rejection is a state.
@@ -204,16 +212,29 @@ test.skipIf(!chrome)("the launch URL lands on the dashboard with every panel ans
 
 test.skipIf(!chrome)("the frontier panel's total agrees with the page that owns it", async () => {
   // A panel that disagreed with its own listing would be a second source of
-  // truth, which is the one thing an aggregate read must not become.
+  // truth, which is the one thing an aggregate read must not become. The
+  // total is the hero that says it is one — the panel leads with the live
+  // count — and it is read by its label rather than by position, because
+  // which number leads is a presentation decision and this is not a test
+  // about presentation.
   await open("");
   await page.waitForSelector(".panel--frontier .stat-value", { timeout: 15_000 });
-  const panelTotal = await page.evaluate(() =>
-    Number(document.querySelector(".panel--frontier .stat-value")?.textContent ?? "-1"));
+  const panelTotal = await page.evaluate(() => {
+    const hero = Array.from(document.querySelectorAll(".panel--frontier .stat-hero")).find(
+      (entry) => (entry.querySelector(".stat-label")?.textContent ?? "").startsWith("recorded"),
+    );
+    return Number(hero?.querySelector(".stat-value")?.textContent ?? "-1");
+  });
 
   await open("hypotheses");
   await page.waitForSelector(".frontier-table tbody tr", { timeout: 15_000 });
   const listed = await page.evaluate(() => document.querySelectorAll(".frontier-table tbody tr").length);
   expect(panelTotal).toBe(listed);
+  // And the page says the same number in its own words, so the agreement is
+  // between the two surfaces' claims rather than between one claim and a row
+  // count nobody reads.
+  const heading = await page.evaluate(() => document.querySelector(".count-label")?.textContent ?? "");
+  expect(heading).toContain(String(listed));
 });
 
 test.skipIf(!chrome)("every panel jump link lands where it says", async () => {
@@ -343,7 +364,7 @@ test.skipIf(!chrome)("the Help guide explains the lifecycle and maps the command
   expect(state.badges).toContain("rejected");
   expect(state.badges).toContain("refine-requested");
   for (const href of state.links) {
-    expect(href).toMatch(/^#\/(|help|sessions|archive|explore|fleet|hypotheses|findings|reality|review)$/u);
+    expect(href).toMatch(/^#\/(|help|sessions|archive|explore|fleet|hypotheses|findings|proposals|reality|review)$/u);
   }
 
   // The guide is a page, not a request: nothing on it reads the API, so it
@@ -501,15 +522,26 @@ test.skipIf(!chrome)("a queue row disclosure reveals the identifier without navi
 
   await page.click(".queue-list li:first-child .disclose-button");
   await page.waitForSelector(".queue-list li.expanded", { timeout: 15_000 });
-  const after = await page.evaluate(() => ({
-    hash: window.location.hash,
-    expanded: document.querySelectorAll(".queue-list li.expanded").length,
-    id: document.querySelector(".queue-list li.expanded .secondary.mono")?.textContent ?? "",
-    aria: document.querySelector(".queue-list li:first-child .disclose-button")?.getAttribute("aria-expanded"),
-  }));
+  const after = await page.evaluate(() => {
+    const row = document.querySelector(".queue-list li:first-child");
+    return {
+      hash: window.location.hash,
+      expanded: document.querySelectorAll(".queue-list li.expanded").length,
+      id: row?.querySelector(".secondary.mono")?.textContent ?? "",
+      // The record the row's own link opens. The disclosed identifier has to
+      // be this row's, and which kind of record leads the queue is the
+      // panel's ordering decision rather than a fact about disclosure —
+      // proposals lead it now, hypotheses did before.
+      linked: row?.querySelector("a")?.getAttribute("href") ?? "",
+      aria: row?.querySelector(".disclose-button")?.getAttribute("aria-expanded"),
+    };
+  });
   expect(after.hash).toBe(before.hash);
   expect(after.expanded).toBe(1);
-  expect(after.id).toMatch(/^hyp_/u);
+  // A record identifier, and the one the row's own link opens: disclosure
+  // reveals this row's record rather than the panel's first record.
+  expect(after.id).toMatch(/^[a-z]{3}_/u);
+  expect(after.linked).toMatch(new RegExp(`^#/review/[a-z]+/${after.id}$`, "u"));
   expect(after.aria).toBe("true");
 
   // Collapse restores the glance row.

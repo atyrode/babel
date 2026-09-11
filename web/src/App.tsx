@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import {
   APIError,
   dismissAPIError,
@@ -19,12 +19,15 @@ import FleetPage from "./pages/FleetPage";
 import HelpPage from "./pages/HelpPage";
 import HypothesesPage from "./pages/HypothesesPage";
 import HypothesisPage from "./pages/HypothesisPage";
+import ProposalPage from "./pages/ProposalPage";
+import ProposalsPage from "./pages/ProposalsPage";
 import RealityEntityPage from "./pages/RealityEntityPage";
 import RealityPage from "./pages/RealityPage";
 import ReviewPage from "./pages/ReviewPage";
 import ReviewRecordPage from "./pages/ReviewRecordPage";
 import SessionPage from "./pages/SessionPage";
 import SessionsPage from "./pages/SessionsPage";
+import RenderBoundary from "./boundary";
 
 const LOCK_PROMPT =
   "Lock and stop the server?\n\nThe session is revoked immediately and this " +
@@ -125,7 +128,11 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand-block">
+        {/* The wordmark is the way back to the overview, which is where a
+            launched session lands. It carries no nav entry of its own: the row
+            beside it is for what Babel found, and a second link to the page
+            the logo already reaches would cost an entry and answer nothing. */}
+        <Link className="brand-block" to="/" title="Overview">
           <span className="brand-mark" aria-hidden="true">B</span>
           <div>
             <div className="brand">Babel</div>
@@ -133,30 +140,29 @@ function App() {
               {versionLabel}
             </div>
           </div>
-        </div>
+        </Link>
         <div className="topbar-actions">
+          {/* The row reads as the product: what Babel found, then the material
+              it found it in. Findings and Proposals lead because they are the
+              output an operator comes here to read; Sessions and Explore are
+              the corpus and the machinery behind them.
+
+              Archive and the fleet diagnostic are deliberately not here. A
+              repository of snapshots and a list of which computer announced
+              which run are operational surfaces, not destinations in a product
+              whose subject is one body of work; both stay routed and are
+              reached from Help. */}
           <nav aria-label="Primary navigation">
-            {/* Home is the dashboard, so it is `end`: without it every route
-                would match "/" and two entries would read as active at once. */}
-            <NavLink to="/" end className={({ isActive }) => isActive ? "active" : undefined}>
-              Dashboard
-            </NavLink>
-            <NavLink to="/sessions" className={({ isActive }) => isActive ? "active" : undefined}>
-              Sessions
-            </NavLink>
-            <NavLink to="/archive" className={({ isActive }) => isActive ? "active" : undefined}>
-              Archive
-            </NavLink>
-            <NavLink to="/explore" className={({ isActive }) => isActive ? "active" : undefined}>
-              Explore
-            </NavLink>
-            {/* The findings routes belong to the Hypotheses area: candidates
-                and their consolidations are one frontier. */}
             <NavLink
-              to="/hypotheses"
-              className={({ isActive }) =>
-                isActive || location.pathname.startsWith("/findings") ? "active" : undefined}
+              to="/findings"
+              className={({ isActive }) => isActive ? "active" : undefined}
             >
+              Findings
+            </NavLink>
+            <NavLink to="/proposals" className={({ isActive }) => isActive ? "active" : undefined}>
+              Proposals
+            </NavLink>
+            <NavLink to="/hypotheses" className={({ isActive }) => isActive ? "active" : undefined}>
               Hypotheses
             </NavLink>
             <NavLink to="/reality" className={({ isActive }) => isActive ? "active" : undefined}>
@@ -165,12 +171,11 @@ function App() {
             <NavLink to="/review" className={({ isActive }) => isActive ? "active" : undefined}>
               Review
             </NavLink>
-            {/* Fleet is last of the destinations because it is the only one
-                whose subject is not this machine. The row reads "this machine,
-                then everywhere", and an entry placed among the local surfaces
-                would quietly suggest the pages beside it were fleet-wide too. */}
-            <NavLink to="/fleet" className={({ isActive }) => isActive ? "active" : undefined}>
-              Fleet
+            <NavLink to="/sessions" className={({ isActive }) => isActive ? "active" : undefined}>
+              Sessions
+            </NavLink>
+            <NavLink to="/explore" className={({ isActive }) => isActive ? "active" : undefined}>
+              Explore
             </NavLink>
             {/* Help is a destination, not a mode: one persistent character, at
                 the end of the row, reachable from every page including the
@@ -209,6 +214,9 @@ function App() {
       )}
 
       <main>
+        {/* Keyed by path so navigating away from a faulted page clears the
+            fault instead of stranding the reader on it. */}
+        <RenderBoundary key={location.pathname}>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/help" element={<HelpPage />} />
@@ -221,14 +229,16 @@ function App() {
           <Route path="/hypotheses/:id" element={<HypothesisPage />} />
           <Route path="/findings" element={<FindingsPage />} />
           <Route path="/findings/:id" element={<FindingPage />} />
+          <Route path="/proposals" element={<ProposalsPage />} />
+          <Route path="/proposals/:id" element={<ProposalPage />} />
           <Route path="/reality" element={<RealityPage />} />
           <Route path="/reality/entities/:id" element={<RealityEntityPage />} />
           <Route path="/review" element={<ReviewPage />} />
           <Route path="/review/:type/:id" element={<ReviewRecordPage />} />
           {/* #115's capture rides the review surface, so a complaint's record
-              page sits beside the review routes and the nav row deliberately
-              gains no seventh destination: the listing that reaches this page
-              lives on /review, above the queue. */}
+              page sits beside the review routes and gains no nav entry of its
+              own: the listing that reaches this page lives on /review, above
+              the queue. */}
           <Route path="/complaints/:id" element={<ComplaintPage />} />
           {/* `replace` is load-bearing, not styling: the launch URL's
               "#nonce=…" fragment matches no route and lands here, so a
@@ -237,6 +247,7 @@ function App() {
               asserts the property; see api.ts for the measurement. */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </RenderBoundary>
       </main>
     </div>
   );

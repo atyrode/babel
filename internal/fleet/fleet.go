@@ -41,7 +41,10 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
+	"unicode/utf8"
 
+	"github.com/atyrode/babel/internal/disposition"
 	"github.com/atyrode/babel/internal/envelope"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
@@ -166,6 +169,15 @@ type Record struct {
 	// two arrived with fields that are always empty, which is how a reader
 	// learns to ignore fields.
 	Edge *reference.PublishedEdge
+	// Disposition is the validated internal/disposition projection, nil for
+	// everything but a proposed next action or an operator's ruling on one,
+	// even when Content was successfully opened.
+	//
+	// It is a third field for Edge's reason, and the collision it answers is
+	// the same one: internal/frontier's review answers and this package's
+	// #87 ledger both commit under the catalog's `disposition` kind, and
+	// they are different records rather than two spellings of one.
+	Disposition *disposition.Published
 	// Unopened says why content could not be opened, empty on success. It carries a
 	// reason rather than a boolean because the reasons call for different
 	// responses - a missing key is a key to install, a newer schema is a
@@ -278,6 +290,22 @@ func (r *Reader) Open(ctx context.Context, rec sharedcatalog.FleetRecord) (Recor
 		}
 		kind = frontier.PublishedLink
 	case sharedcatalog.KindDisposition:
+		// The same two-publisher collision the `link` arm above answers, and
+		// answered the same way. internal/frontier's review answers and
+		// internal/disposition's #87 ledger both commit under this kind (see
+		// internal/disposition's dispositionKind), and the authenticated row
+		// says `disposition` and nothing more. Routing every one of them to
+		// frontier lost this package's own records to "carries no schema
+		// version", which is a decoder reporting that bytes it does not own
+		// are not shaped like its own.
+		if disposition.IsPublished(plaintext) {
+			action, err := disposition.DecodePublished(plaintext, rec.Record.RecordID)
+			if err != nil {
+				return Record{}, err
+			}
+			opened.Disposition = &action
+			return opened, nil
+		}
 		kind = frontier.PublishedReviewAnswer
 	case sharedcatalog.KindPreparation, sharedcatalog.KindReceipt,
 		sharedcatalog.KindContext, sharedcatalog.KindComplaint:
@@ -294,6 +322,86 @@ func (r *Reader) Open(ctx context.Context, rec sharedcatalog.FleetRecord) (Recor
 	}
 	opened.Published = &published
 	return opened, nil
+}
+
+// Summary is the one bounded line a listing shows for this record, and is the
+// one place that derivation lives.
+//
+// It is here rather than in each surface because the CLI's fleet listing and
+// the web's fleet-wide listings render the same row, and two derivations are
+// how one host's proposal reads as a title in one surface and as nothing in
+// the other. Each arm delegates to the package that owns the record's
+// vocabulary, so nothing here restates how a candidate or a citation reads.
+//
+// An empty summary and a nil error is a record that has none by construction -
+// a receipt, a preparation, an operator context note, a frontier link - which
+// is normal rather than exceptional and so is reported as absence rather than
+// as a reason. An error is a record this build opened and could not read,
+// which a row must say out loud.
+func (r Record) Summary() (string, error) {
+	switch {
+	case r.Edge != nil:
+		return r.Edge.Summary(), nil
+	case r.Disposition != nil:
+		return r.Disposition.Summary(), nil
+	case r.Published == nil:
+		// Producer-owned JSON that opened cleanly and belongs to no
+		// projection. Its lack of a summary is not a failure to report.
+		return "", nil
+	case r.Published.Kind == frontier.PublishedProposal:
+		return proposalSummary(*r.Published)
+	}
+	out, err := r.Published.Output()
+	if errors.Is(err, frontier.ErrNotSearchable) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return out.Summary, nil
+}
+
+// proposalSummary renders a published proposal as its title.
+//
+// internal/frontier refuses a proposal a searchable output, and that refusal
+// is right where it stands: a proposal's text is its findings' text restated
+// for a reviewer, and indexing both would make every consolidated finding
+// match twice (see searchableKinds). A listing line is the other question. A
+// proposal with no line at all rendered as a blank row an operator could
+// neither read nor tell apart from its neighbour, which is how 47 committed
+// proposals became a page with nothing on it.
+//
+// The title is the same field the local proposal page shows, read from the
+// payload this record carries rather than re-derived, and bounded to one line
+// so a proposal row is the height of every other row.
+func proposalSummary(published frontier.PublishedRecord) (string, error) {
+	var payload frontier.ProposalPayload
+	if err := json.Unmarshal(published.Payload, &payload); err != nil {
+		return "", fmt.Errorf("decode proposal %s payload: %w", published.ID, err)
+	}
+	return summarize(payload.Title), nil
+}
+
+// maxSummaryBytes bounds a rendered listing line, and is internal/frontier's
+// bound restated rather than shared for internal/reference's reason: that
+// package's is unexported, and a listing whose proposal rows wrapped while
+// every other kind stayed on one line would be a listing whose rows disagree
+// about how tall a row is.
+const maxSummaryBytes = 240
+
+// summarize collapses a rendered line to one bounded line. The cut lands on a
+// rune boundary because a title is model-authored prose and half a rune is not
+// a character.
+func summarize(text string) string {
+	line := strings.Join(strings.Fields(text), " ")
+	if len(line) <= maxSummaryBytes {
+		return line
+	}
+	cut := maxSummaryBytes
+	for cut > 0 && !utf8.RuneStart(line[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(line[:cut]) + "…"
 }
 
 // holdsKey reports whether this instance's ring can open a record sealed under

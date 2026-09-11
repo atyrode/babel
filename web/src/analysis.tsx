@@ -2,14 +2,15 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   getFleetHosts,
+  getSessions,
+  type EvidenceLocator,
   type EvidenceRef,
   type FleetHost,
   type FleetHostsResponse,
-  type FleetMark,
   type HypothesisStatus,
   type ReviewStatus,
   type RunAuthority,
-  type SyncState,
+  type SessionSummary,
 } from "./api";
 import { formatTime } from "./format";
 
@@ -82,10 +83,52 @@ export function FallibilityNote() {
   );
 }
 
+// unescapeWhitespace turns the server's escaped whitespace back into real
+// whitespace, for display only.
+//
+// Every string in every API response passes through internal/web's sanitize,
+// which rewrites control characters as a visible `\u{HEX}` so that no
+// model-authored byte can steer a terminal or a log line. That is the right
+// default and it stays: what arrives here is inert text. But a transcript
+// excerpt whose line breaks read `\u{A}` and whose indentation reads `\u{9}`
+// is unreadable prose, and the operator's job on these pages is to read.
+//
+// So exactly three escapes are undone — tab, newline, carriage return — and
+// nothing else. `\x{..}` stays escaped because an invalid byte has no display
+// form, and the bidi and zero-width runes stay escaped because making them
+// invisible again is the attack sanitize exists to stop. The result is still
+// text: it is handed to React as a string and never as markup, so restoring a
+// newline cannot restore an HTML tag.
+//
+// A literal two-character `\n` in the source bytes is deliberately left
+// alone. It is content — a shell command, a Go string, a regex — and a
+// display layer that rewrote it would be editing the evidence.
+export function unescapeWhitespace(text: string): string {
+  // The escape is three characters minimum and most strings hold none, so the
+  // common case costs one scan and no allocation.
+  if (!text.includes("\\u{")) return text;
+  return text.replace(/\\u\{0*([9adAD])\}/g, (match, hex: string) => {
+    switch (hex.toLowerCase()) {
+      case "9":
+        return "\t";
+      case "a":
+        return "\n";
+      case "d":
+        return "\r";
+      default:
+        return match;
+    }
+  });
+}
+
 // Quoted renders untrusted text: model wording, transcript excerpts, operator
 // answers. React escapes the text, and the frame makes the trust boundary
 // visible — a reader can always tell quoted material from Babel's own chrome.
 // The label names the speaker; the body is verbatim bytes shown as text.
+//
+// The body's whitespace escapes are undone here, at the one place every page
+// quotes model wording, so a claim's paragraphs are paragraphs. It remains a
+// string handed to a <pre>: nothing about restoring a newline makes it markup.
 export function Quoted({
   label,
   text,
@@ -98,7 +141,7 @@ export function Quoted({
   return (
     <figure className="quoted">
       <figcaption className="quoted-label">{label}</figcaption>
-      <pre className="quoted-text">{text}</pre>
+      <pre className="quoted-text">{unescapeWhitespace(text)}</pre>
       {children}
     </figure>
   );
@@ -134,32 +177,190 @@ export function GradingLine({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Following a locator.
+//
+// "Follow the evidence locators before believing a claim" is the sentence this
+// interface repeats on every analytical page, and until now it could not be
+// obeyed by clicking: a locator rendered as inert text naming an absolute path
+// nobody can open from a browser.
+//
+// A locator names a file and a 1-based record line. A route names a session
+// selector and a transcript position. The catalog is what connects them, and it
+// is the only thing consulted here: every described session carries the source
+// id its selector is built from, and a cited file's path ends in that source id.
+// No harness directory layout is parsed and no selector is assembled from a
+// path, so a file the catalog holds no session for resolves to nothing rather
+// than to a plausible guess that would 404.
+// ---------------------------------------------------------------------------
+
+// SessionIndex maps a cited file's own name onto the sessions that could own
+// it. The name is the key because it is the one part of the path that survives
+// materializing a session somewhere else; the candidate's full source id is
+// then checked against the path, so the key is a lookup and never the proof.
+type SessionIndex = Map<string, SessionSummary[]>;
+
+function fileKey(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+function withoutExtension(path: string): string {
+  const dot = path.lastIndexOf(".");
+  return dot > path.lastIndexOf("/") ? path.slice(0, dot) : path;
+}
+
+// One catalog read serves every locator on a page, and it is shared across
+// components rather than fetched per evidence list: a finding with four
+// observations renders a dozen locators, and a dozen identical requests for the
+// same listing would be this page's largest cost.
+let sessionIndexRead: Promise<SessionIndex> | null = null;
+
+function loadSessionIndex(): Promise<SessionIndex> {
+  if (!sessionIndexRead) {
+    sessionIndexRead = getSessions()
+      .then((response) => {
+        const index: SessionIndex = new Map();
+        for (const session of response.sessions) {
+          const key = fileKey(session.source_id);
+          const bucket = index.get(key);
+          if (bucket) bucket.push(session);
+          else index.set(key, [session]);
+        }
+        return index;
+      })
+      .catch((reason) => {
+        // A failed read is not cached. Locators render as text until the
+        // catalog answers, and the next claim on the page retries; caching the
+        // failure would make one slow moment permanent for the session.
+        sessionIndexRead = null;
+        throw reason;
+      });
+  }
+  return sessionIndexRead;
+}
+
+// useSessionIndex reads the catalog once per mount and never fails a page: an
+// unreachable listing leaves locators as the text they have always been.
+function useSessionIndex(): SessionIndex | null {
+  const [index, setIndex] = useState<SessionIndex | null>(null);
+  useEffect(() => {
+    let live = true;
+    loadSessionIndex()
+      .then((value) => {
+        if (live) setIndex(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+  return index;
+}
+
+// LocatorTarget is a resolved citation: the session it lives in, and the
+// transcript position to land on.
+interface LocatorTarget {
+  to: string;
+  title: string;
+}
+
+// locatorTarget resolves one locator against the catalog.
+//
+// The event index is the line minus one. internal/event stamps a locator with
+// a 1-based record line and internal/transcript numbers the same records from
+// zero, one record per line in both, so this is the two counts meeting rather
+// than an offset that happens to look right.
+function locatorTarget(
+  locator: EvidenceLocator,
+  selector: string | undefined,
+  index: SessionIndex | null,
+): LocatorTarget | null {
+  let session: SessionSummary | undefined;
+  if (!selector) {
+    const candidates = index?.get(fileKey(locator.path));
+    const stripped = withoutExtension(locator.path);
+    session = candidates?.find((candidate) => stripped.endsWith(candidate.source_id));
+    if (!session) return null;
+  }
+  const target = selector ?? session?.selector ?? "";
+  const event = locator.line > 0 ? locator.line - 1 : 0;
+  const name = session?.title || target;
+  return {
+    to: `/sessions/${encodeURIComponent(target)}?event=${event}`,
+    title: locator.line > 0 ? `${name} · line ${locator.line}` : name,
+  };
+}
+
 // EvidenceItems renders locator-bearing citations. The locator is the point:
-// an observation without its locator is not evidence (§4.3), so the path,
-// line, and digest render with every claim, and when the server resolved the
-// locator to a catalogued session the excerpt links straight to it.
-export function EvidenceItems({ items, kind }: { items: EvidenceRef[]; kind: "supporting" | "counter" }) {
-  if (!items.length) return null;
+// an observation without its locator is not evidence (§4.3), so the line and
+// the digest render with every claim, and a citation this catalog can open
+// renders as the link to the conversation it came from.
+//
+// A citation that cannot be opened renders as text, not as a link that would
+// fail, and the reason is stated once for the list rather than once per row:
+// what the reader needs to know is that the record still carries enough to
+// reopen it from the archive, and that is one fact about the citations, not a
+// property of each one.
+// A record that cites nothing sends a JSON null rather than an empty list, so
+// the list is read as possibly absent: a claim with no evidence is a real
+// state, and it must not take its page down.
+export function EvidenceItems({
+  items,
+  kind,
+}: {
+  items: EvidenceRef[] | null | undefined;
+  kind: "supporting" | "counter";
+}) {
+  const index = useSessionIndex();
+  const citations = items ?? [];
+  if (citations.length === 0) return null;
+  const targets = citations.map((item) => locatorTarget(item.locator, item.selector, index));
+  const unopened = targets.reduce((count, target) => (target ? count : count + 1), 0);
   return (
-    <ul className={kind === "counter" ? "evidence-list counter" : "evidence-list"}>
-      {items.map((item, index) => (
-        <li key={`${item.locator.path}-${item.locator.line}-${index}`}>
-          <span className="evidence-locator mono">
-            {item.locator.path}
-            {item.locator.line > 0 ? `:${item.locator.line}` : ""}
-            <span className="evidence-digest" title={item.locator.digest}>
-              {item.locator.digest.slice(0, 12) || "no digest"}
-            </span>
-          </span>
-          {item.note && <span className="evidence-note">{item.note}</span>}
-          {item.selector && (
-            <Link className="evidence-open" to={`/sessions/${encodeURIComponent(item.selector)}`}>
-              Open source session →
-            </Link>
-          )}
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className={kind === "counter" ? "evidence-list counter" : "evidence-list"}>
+        {citations.map((item, position) => {
+          const target = targets[position];
+          return (
+            <li key={`${item.locator.path}-${item.locator.line}-${position}`}>
+              {target ? (
+                <Link
+                  className="evidence-locator link-target"
+                  to={target.to}
+                  title={`${item.locator.path}${item.locator.line > 0 ? `:${item.locator.line}` : ""}`}
+                >
+                  <span className="untrusted-inline">{target.title}</span>
+                  <span className="evidence-open">open the cited line →</span>
+                </Link>
+              ) : (
+                <span className="evidence-locator mono">
+                  {item.locator.path}
+                  {item.locator.line > 0 ? `:${item.locator.line}` : ""}
+                </span>
+              )}
+              <span className="evidence-digest mono" title={item.locator.digest}>
+                {item.locator.digest.slice(0, 12) || "no digest"}
+              </span>
+              {item.note && (
+                <span className="evidence-note untrusted-inline">{unescapeWhitespace(item.note)}</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {unopened > 0 && (
+        <p className="secondary evidence-unopened">
+          {unopened === citations.length
+            ? "No session in the catalog matches the files these citations name"
+            : `${unopened} of these citations name a file no session in the catalog matches`}
+          {" — the run read them, nothing describes them here, so there is no conversation to " +
+            "open. Each still carries its path, line and content digest, which is what reopening " +
+            "it against the archive needs."}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -261,248 +462,42 @@ export function AuthorityMark({ authority }: { authority: RunAuthority | undefin
   );
 }
 
-// ---------------------------------------------------------------------------
-// Fleet attribution (issue #109 item 4).
+// PartialListNotice says a listing may be short.
 //
-// Three rules from SPEC.md live here rather than in any one page, so a row
-// reads the same way on the review inbox, the frontier and the receipt strip.
-//
-//   - Staged output is visibly staged (§6.5, §9). A pending-sync row is marked
-//     on the row itself and not only in a badge's text, because "not yet
-//     reviewable anywhere else" is a property of the record a reader has to be
-//     able to see while scanning.
-//   - Absence is absence (§3). A record whose origin instance registered no
-//     host renders as "unattributed", never as this machine. Attributing one
-//     machine's analysis to another is the failure this whole vocabulary
-//     exists to prevent.
-//   - Unknown is not a state of the record. When the shared catalog could not
-//     be reached, a row's sync state is "unknown" — this machine did not find
-//     out — which is a different claim from "local" and reads differently.
-// ---------------------------------------------------------------------------
-
-// SYNC_TONES colours the four frozen sync states. Committed is green because
-// the record is globally durable and reviewable; pending-sync is amber because
-// it is not yet, and that is a state to notice rather than an error; local is
-// neutral because a machine that publishes nowhere is not in a lesser state;
-// unknown is violet because it is about this machine's reach and not about the
-// record at all.
-const SYNC_TONES: Record<string, Tone> = {
-  committed: "green",
-  "pending-sync": "amber",
-  local: "neutral",
-  unknown: "violet",
-};
-
-// SYNC_TITLES say what each state means, because the words alone do not. An
-// operator reading "local" has to be able to learn that nothing is going to
-// carry the record anywhere, which is the one thing that distinguishes it from
-// "pending-sync".
-const SYNC_TITLES: Record<string, string> = {
-  committed: "Committed to the shared catalog: globally durable and reviewable from any host.",
-  "pending-sync":
-    "Staged, not yet committed to the shared catalog. It is not reviewable from another host yet.",
-  local:
-    "Held only on this machine. No shared catalog row and nothing staged for one, so nothing is going to carry it anywhere.",
-  unknown:
-    "The shared catalog could not be reached, so whether this record has committed globally is not known.",
-};
-
-// SyncBadge renders one row's sync state. An absent value renders as an
-// absence rather than as a guess: a row whose state the server did not send is
-// not a local row.
-export function SyncBadge({ sync }: { sync: SyncState | string | undefined }) {
-  if (!sync) return <span className="muted">—</span>;
+// The listings answer with the rows they could reach and mark the response
+// when part of the catalog did not. Saying nothing would present an incomplete
+// list as the whole of Babel's work — the one thing a reader cannot check for
+// himself — and saying it in terms of publication state would describe
+// plumbing instead of the list he is reading. So this is about the list: some
+// records are missing from it, the ones shown are unaffected, and a reload is
+// the retry.
+export function PartialListNotice() {
   return (
-    <span className="sync-mark" title={SYNC_TITLES[sync] ?? "This record's sync state."}>
-      <Badge label={sync} tone={SYNC_TONES[sync] ?? "neutral"} />
-    </span>
-  );
-}
-
-// syncRowClass marks a row beyond its badge's text. A reviewer scanning an
-// inbox reads rows, not badges, and §6.5 asks for staged output to be visible
-// rather than merely reported.
-export function syncRowClass(mark: FleetMark): string {
-  const classes: string[] = [];
-  if (mark.sync === "pending-sync") classes.push("row-pending-sync");
-  if (mark.sync === "unknown") classes.push("row-sync-unknown");
-  if (mark.local_host === false) classes.push("row-remote-host");
-  return classes.join(" ");
-}
-
-// UNATTRIBUTED is the one word this interface uses for a record no host can be
-// named for. It is exported so a test asserts the string the UI renders rather
-// than a copy of it.
-export const UNATTRIBUTED = "unattributed";
-
-// HostLabel renders which machine a row came from.
-//
-// Three cases and they read differently on purpose. This machine's own row says
-// so, because an operator scanning a fleet-wide list needs to find his own work
-// without comparing identifiers. Another machine's row names it. And a row with
-// no host at all says "unattributed" in a muted style — the absence stated,
-// never filled in with the local machine.
-export function HostLabel({ mark }: { mark: FleetMark }) {
-  if (!mark.host_attributed) {
-    return (
-      <span
-        className="host-label muted unattributed-host"
-        title="This record's origin instance registered no host, so which machine produced it is not recorded. It is not attributed to this one."
-      >
-        {UNATTRIBUTED}
-      </span>
-    );
-  }
-  return (
-    <span className={mark.local_host ? "host-label local-host" : "host-label"}>
-      <span className="mono untrusted-inline">{mark.host}</span>
-      {mark.local_host && <span className="secondary">this host</span>}
-    </span>
-  );
-}
-
-// UnopenedNote says why a row has no content. The reasons call for different
-// responses — a key to install, a binary to update, a store to check — so the
-// server's own reason is rendered rather than a generic "unavailable".
-export function UnopenedNote({ reason }: { reason: string | undefined }) {
-  if (!reason) return null;
-  return (
-    <span className="unopened-note untrusted-inline" title="This machine could not open the record's content.">
-      {reason}
-    </span>
-  );
-}
-
-// FleetNotice is what a machine with no shared backend says on a fleet-wide
-// surface. It is a statement about the deployment rather than an empty state
-// that reads like a bug, in ScopeNotice's style: the operator is told what the
-// list is, whose it is, and that there is nothing else to see.
-export function FleetNotice() {
-  return (
-    <div className="state-card scope-notice fleet-notice">
-      <strong>This machine has no shared backend configured</strong>
+    <div className="state-card scope-notice" role="status">
+      <strong>This list may be incomplete</strong>
       <span>
-        Only its own records are shown, and there are no other hosts for Babel to read. That is
-        this deployment's shape, not a failure to load anything.
-      </span>
-      <span className="secondary">
-        Run <code>babel storage configure</code> to join a shared deployment.
+        Part of the catalog did not answer, so records it holds are missing here. Everything
+        shown is a real record; reload to try the rest again.
       </span>
     </div>
   );
 }
 
-// SyncDegradedNotice is what a listing says when the shared catalog could not
-// be reached. The rows are still this machine's own durable records and still
-// render; what is missing is whether they have committed anywhere else, and
-// saying so is what keeps their "unknown" badges meaningful.
-export function SyncDegradedNotice({ detail }: { detail: string | undefined }) {
-  return (
-    <div className="state-card scope-notice sync-degraded-notice" role="status">
-      <strong>Global sync state is not known for these records</strong>
-      <span>{detail || SYNC_TITLES.unknown}</span>
-      <span className="secondary">
-        These are this machine's own records and they are shown in full. Only whether they have
-        committed to the shared catalog is unknown.
-      </span>
-    </div>
-  );
-}
-
-// HostScope is what a host chip row selects.
+// ---------------------------------------------------------------------------
+// The host vocabulary below serves the fleet diagnostic only.
 //
-// `fleet` is false for this machine alone, which is the default: the server's
-// fleet-wide read is opt-in, and a list that silently became deployment-wide
-// would make an operator's own backlog look like someone else's work. `host` is
-// the machine an already-merged list is narrowed to — null for every machine,
-// and the empty string for the group with no host attribution, which is a real
-// selection rather than the absence of one.
-export interface HostScope {
-  fleet: boolean;
-  host: string | null;
-}
+// Nothing in the reading path renders which instance produced a record, or
+// whether it has published anywhere: the catalog is one body of work, and a
+// reader asking "what has Babel found" is not asking about computers. The
+// remaining hook exists because the fleet page's subject genuinely is the
+// machines, and it names them there.
+// ---------------------------------------------------------------------------
 
-export const LOCAL_SCOPE: HostScope = { fleet: false, host: null };
-
-// inHostScope narrows an already-merged list. Narrowing happens here rather
-// than on the server because the merge is what the request asked for: a chip
-// that re-fetched would make the operator wait to hide rows he already has.
+// useFleetHosts loads the deployment's host vocabulary once per mount.
 //
-// The match is on host identity, never on the display name (see FleetMark).
-export function inHostScope(mark: FleetMark, scope: HostScope): boolean {
-  if (!scope.fleet || scope.host === null) return true;
-  if (scope.host === "") return !mark.host_attributed;
-  return mark.host_id === scope.host;
-}
-
-// HostChips is the host filter: this machine, every machine, then one chip per
-// machine that holds records.
-//
-// The vocabulary is the server's rather than the current page's, so the options
-// do not change as the operator pages through a list, and the unattributed group
-// gets a chip of its own whenever it holds anything — a group with no chip is a
-// group whose records cannot be reached.
-export function HostChips({
-  hosts,
-  scope,
-  localHost,
-  onSelect,
-}: {
-  hosts: FleetHost[];
-  scope: HostScope;
-  localHost: string | undefined;
-  onSelect: (scope: HostScope) => void;
-}) {
-  if (hosts.length === 0) return null;
-  return (
-    <div className="filter-chips host-chips" aria-label="Filter by host">
-      <button
-        type="button"
-        className={scope.fleet ? "chip" : "chip active"}
-        onClick={() => onSelect(LOCAL_SCOPE)}
-        title="Only this machine's own records, which is what every other Babel listing shows."
-      >
-        This host
-      </button>
-      <button
-        type="button"
-        className={scope.fleet && scope.host === null ? "chip active" : "chip"}
-        onClick={() => onSelect({ fleet: true, host: null })}
-      >
-        All hosts
-      </button>
-      {hosts.map((host) => (
-        <button
-          type="button"
-          className={scope.fleet && scope.host === host.host_id ? "chip active" : "chip"}
-          onClick={() => onSelect({ fleet: true, host: host.host_id })}
-          key={host.host_id || UNATTRIBUTED}
-          title={
-            host.attributed
-              ? `${host.records} record${host.records === 1 ? "" : "s"}${host.pending > 0 ? `, ${host.pending} staged` : ""}`
-              : "Records whose origin instance registered no host. Which machine produced them is not recorded."
-          }
-        >
-          <span className="untrusted-inline">
-            {host.attributed ? host.host || host.host_id : UNATTRIBUTED}
-          </span>
-          {host.attributed && host.host_id === localHost && (
-            <span className="secondary">this host</span>
-          )}
-          {host.pending > 0 && <span className="chip-pending">{host.pending} staged</span>}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// useFleetHosts loads the host filter's vocabulary once per mount.
-//
-// It never fails a page. A machine with no shared backend answers
-// `configured: false`, which the page states as a fact about the deployment; a
-// catalog that did not answer leaves `configured` unknown and the chips absent,
-// and the page's own rows still render. The filter is chrome; the records are
-// the content, and losing the chrome must not lose them.
+// It never fails a page. A deployment with no shared backend answers
+// `configured: false`, which the page states as a fact; a catalog that did not
+// answer leaves `configured` unknown, and the page's own rows still render.
 export function useFleetHosts(): {
   hosts: FleetHost[];
   localHost: string | undefined;

@@ -184,11 +184,32 @@ type FrontierReader interface {
 	// (#114). It is a read of the asserted relation, so a candidate page can
 	// show the competing suggestions somebody has offered against it.
 	ProposalsAddressing(context.Context, string) ([]frontier.Proposal, error)
+	// Proposals enumerates §4.5's review artifacts, which is what the
+	// proposals listing pages. The frontier offers no other enumeration of
+	// them: ProposalsAddressing answers about one claim, and Proposal
+	// answers about one id.
+	Proposals(context.Context, frontier.ListFilter) ([]frontier.Proposal, int, error)
 	LinksFrom(context.Context, string) ([]frontier.Link, error)
 	LinksTo(context.Context, string) ([]frontier.Link, error)
 	StatusHistory(context.Context, string) ([]frontier.StatusEvent, error)
 	ReviewStatus(context.Context, frontier.Ref) (frontier.ReviewStatus, error)
-	Unexplored(context.Context, int) ([]frontier.Hypothesis, error)
+	// Hypotheses enumerates §5.2's candidates with the store's own
+	// aggregate beside them, which is what both the dashboard and the
+	// frontier listing read. A landing page wants a distribution and the
+	// few newest rows, never the corpus: tallying by reading every
+	// candidate through Hypothesis cost a thirty-second response on a
+	// two-thousand-record frontier and the browser abandoned it, so the
+	// count is computed where the records are. It is the same enumeration
+	// `babel hypotheses` pages, so neither surface's total can drift from
+	// the command's or from the other's.
+	//
+	// It is also the only enumeration here: the listing used to union
+	// internal/review's queue with the unexplored frontier, which reached
+	// neither a superseded revision nor a candidate that came to rest
+	// without being enrolled, so this surface no longer needs Unexplored —
+	// that listing is exploration's triage order and answers a different
+	// question.
+	Hypotheses(context.Context, frontier.ListFilter) ([]frontier.Hypothesis, int, error)
 	// Revisions and Head are #87's chain reads. They are reads in the
 	// strictest sense — one is the whole append-only chain a record belongs
 	// to and the other is its last entry — so they belong here rather than

@@ -305,9 +305,9 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			name:     "frontier",
 			surface:  reflect.TypeOf((*FrontierReader)(nil)).Elem(),
 			concrete: reflect.TypeOf((*frontier.Store)(nil)),
-			permitted: []string{"Finding", "Head", "Hypothesis", "LinksFrom", "LinksTo", "Observation",
-				"ObservationsFor", "Proposal", "ProposalsAddressing", "ReviewStatus", "Revisions",
-				"StatusHistory", "Unexplored"},
+			permitted: []string{"Finding", "Head", "Hypotheses", "Hypothesis", "LinksFrom", "LinksTo",
+				"Observation", "ObservationsFor", "Proposal", "Proposals", "ProposalsAddressing",
+				"ReviewStatus", "Revisions", "StatusHistory"},
 			// Every frontier write, including its own Decide and the
 			// revive transition #87 added: one disposition log exists and
 			// internal/review is the only way this surface may append to
@@ -608,8 +608,8 @@ func (failingFrontier) ReviewStatus(context.Context, frontier.Ref) (frontier.Rev
 	return "", leakyError
 }
 
-func (failingFrontier) Unexplored(context.Context, int) ([]frontier.Hypothesis, error) {
-	return nil, leakyError
+func (failingFrontier) Hypotheses(context.Context, frontier.ListFilter) ([]frontier.Hypothesis, int, error) {
+	return nil, 0, leakyError
 }
 
 // TestServiceFailuresRevealNothing checks both directions a leak could take: the

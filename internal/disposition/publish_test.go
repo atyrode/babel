@@ -224,7 +224,7 @@ func TestStagedPayloadCarriesTheWholeRecord(t *testing.T) {
 		t.Fatalf("staged %d records, want 3", len(hook.staged))
 	}
 
-	var published publishedDisposition
+	var published PublishedDisposition
 	if err := json.Unmarshal(hook.staged[0].Payload, &published); err != nil {
 		t.Fatalf("decode published proposed action: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestStagedPayloadCarriesTheWholeRecord(t *testing.T) {
 		}
 	}
 
-	var decision publishedLedgerEntry
+	var decision PublishedLedgerEntry
 	if err := json.Unmarshal(hook.staged[1].Payload, &decision); err != nil {
 		t.Fatalf("decode published decision: %v", err)
 	}
@@ -424,8 +424,8 @@ func TestALocalOnlyStoreStagesNothing(t *testing.T) {
 	}
 }
 
-func validPublishedDisposition() publishedDisposition {
-	return publishedDisposition{
+func validPublishedDisposition() PublishedDisposition {
+	return PublishedDisposition{
 		ID:           "dis_01",
 		RecordType:   frontier.EntityHypothesis,
 		RecordID:     "hyp_01",
@@ -437,8 +437,8 @@ func validPublishedDisposition() publishedDisposition {
 	}
 }
 
-func validPublishedLedgerEntry() publishedLedgerEntry {
-	return publishedLedgerEntry{
+func validPublishedLedgerEntry() PublishedLedgerEntry {
+	return PublishedLedgerEntry{
 		ID:            "dld_01",
 		DispositionID: "dis_01",
 		Sequence:      1,
@@ -471,7 +471,7 @@ func TestPublishedRecordsRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encode: %v", err)
 		}
-		var decoded publishedDisposition
+		var decoded PublishedDisposition
 		if err := json.Unmarshal(encoded, &decoded); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
@@ -493,7 +493,7 @@ func TestPublishedRecordsRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encode: %v", err)
 		}
-		var decoded publishedLedgerEntry
+		var decoded PublishedLedgerEntry
 		if err := json.Unmarshal(encoded, &decoded); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
@@ -536,16 +536,16 @@ func TestPublishedRecordsRefuseWhatAReaderCannotUse(t *testing.T) {
 	t.Run("a proposed action", func(t *testing.T) {
 		for _, tc := range []struct {
 			rule   string
-			mutate func(*publishedDisposition)
+			mutate func(*PublishedDisposition)
 		}{
-			{"no id", func(p *publishedDisposition) { p.ID = "" }},
-			{"no record type", func(p *publishedDisposition) { p.RecordType = "" }},
-			{"no record id", func(p *publishedDisposition) { p.RecordID = "" }},
-			{"a kind outside the vocabulary", func(p *publishedDisposition) { p.Kind = "publish-it" }},
-			{"no proposer kind", func(p *publishedDisposition) { p.ProposerKind = "" }},
-			{"no proposer id", func(p *publishedDisposition) { p.ProposerID = "" }},
-			{"no payload", func(p *publishedDisposition) { p.Payload = nil }},
-			{"an unparseable time", func(p *publishedDisposition) { p.CreatedAt = "yesterday" }},
+			{"no id", func(p *PublishedDisposition) { p.ID = "" }},
+			{"no record type", func(p *PublishedDisposition) { p.RecordType = "" }},
+			{"no record id", func(p *PublishedDisposition) { p.RecordID = "" }},
+			{"a kind outside the vocabulary", func(p *PublishedDisposition) { p.Kind = "publish-it" }},
+			{"no proposer kind", func(p *PublishedDisposition) { p.ProposerKind = "" }},
+			{"no proposer id", func(p *PublishedDisposition) { p.ProposerID = "" }},
+			{"no payload", func(p *PublishedDisposition) { p.Payload = nil }},
+			{"an unparseable time", func(p *PublishedDisposition) { p.CreatedAt = "yesterday" }},
 		} {
 			t.Run(tc.rule, func(t *testing.T) {
 				record := validPublishedDisposition()
@@ -560,15 +560,15 @@ func TestPublishedRecordsRefuseWhatAReaderCannotUse(t *testing.T) {
 	t.Run("a decision", func(t *testing.T) {
 		for _, tc := range []struct {
 			rule   string
-			mutate func(*publishedLedgerEntry)
+			mutate func(*PublishedLedgerEntry)
 		}{
-			{"no id", func(p *publishedLedgerEntry) { p.ID = "" }},
-			{"no proposed action", func(p *publishedLedgerEntry) { p.DispositionID = "" }},
-			{"no position in the ledger", func(p *publishedLedgerEntry) { p.Sequence = 0 }},
-			{"a ruling outside the vocabulary", func(p *publishedLedgerEntry) { p.Ruling = "maybe" }},
-			{"no operator", func(p *publishedLedgerEntry) { p.OperatorID = "" }},
-			{"no payload", func(p *publishedLedgerEntry) { p.Payload = nil }},
-			{"an unparseable time", func(p *publishedLedgerEntry) { p.RecordedAt = "yesterday" }},
+			{"no id", func(p *PublishedLedgerEntry) { p.ID = "" }},
+			{"no proposed action", func(p *PublishedLedgerEntry) { p.DispositionID = "" }},
+			{"no position in the ledger", func(p *PublishedLedgerEntry) { p.Sequence = 0 }},
+			{"a ruling outside the vocabulary", func(p *PublishedLedgerEntry) { p.Ruling = "maybe" }},
+			{"no operator", func(p *PublishedLedgerEntry) { p.OperatorID = "" }},
+			{"no payload", func(p *PublishedLedgerEntry) { p.Payload = nil }},
+			{"an unparseable time", func(p *PublishedLedgerEntry) { p.RecordedAt = "yesterday" }},
 		} {
 			t.Run(tc.rule, func(t *testing.T) {
 				record := validPublishedLedgerEntry()

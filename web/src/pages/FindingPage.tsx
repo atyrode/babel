@@ -117,7 +117,7 @@ function FindingPage() {
           <div>
             <dt>Develops</dt>
             <dd>
-              {finding.hypothesis_ids.map((hid, index) => (
+              {(finding.hypothesis_ids ?? []).map((hid, index) => (
                 <span key={hid}>
                   {index > 0 && " · "}
                   <Link className="mono" to={`/hypotheses/${encodeURIComponent(hid)}`}>{hid}</Link>
