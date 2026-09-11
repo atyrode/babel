@@ -3918,3 +3918,290 @@ a.link-target:hover {
   white-space: pre-wrap;
   overflow-x: auto;
 }
+
+/* ---------------------------------------------------------------------------
+   The focus policy page (§4.8): what Babel is allowed to spend on a subject.
+
+   The one rule the styling carries is that a consequence is never smaller
+   than the vocabulary word that names it. `excluded` is a token an operator
+   might misread; "nothing is spent on this subject at all" is not, so the
+   sentence gets body-text size and the token gets a badge beside it.
+   --------------------------------------------------------------------------- */
+
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  color: var(--text);
+  background: var(--surface-inset);
+  font-size: 0.78rem;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.secondary-button:hover {
+  border-color: var(--accent, #7566d0);
+}
+
+.focus-install {
+  gap: 0.7rem;
+}
+
+.focus-install .primary-button {
+  justify-self: start;
+}
+
+.focus-stated ul,
+.focus-history ol,
+.focus-rule-source ol {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+}
+
+.focus-stated ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+.focus-lookup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-top: 0.4rem;
+}
+
+.focus-lookup label {
+  display: grid;
+  flex: 1 1 22rem;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.focus-found {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.65rem;
+  background: var(--surface-inset);
+}
+
+.focus-found-head,
+.focus-rule-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.focus-subject {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-weight: 650;
+}
+
+.focus-aliases {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.focus-rule-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+
+.focus-rule {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line-soft);
+  border-left-width: 3px;
+  border-radius: 0.65rem;
+  background: rgba(9, 12, 18, 0.62);
+}
+
+.focus-rule.allowance-excluded {
+  border-left-color: rgba(241, 120, 129, 0.7);
+}
+
+.focus-rule.allowance-no-code-investigation {
+  border-left-color: rgba(227, 175, 93, 0.7);
+}
+
+.focus-rule.allowance-learn-only {
+  border-left-color: rgba(112, 200, 224, 0.7);
+}
+
+.focus-rule.allowance-full {
+  border-left-color: rgba(103, 211, 145, 0.55);
+}
+
+.focus-rule button {
+  justify-self: start;
+}
+
+.focus-means,
+.focus-option-means,
+.focus-confirm {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.focus-because,
+.focus-provenance {
+  margin: 0;
+  font-size: 0.75rem;
+}
+
+.inline-warning {
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid rgba(227, 175, 93, 0.28);
+  border-radius: 0.5rem;
+  color: #f0d09a;
+  background: rgba(227, 175, 93, 0.08);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.focus-form {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.6rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+.focus-form label {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.focus-form fieldset {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.focus-form legend {
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.focus-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.6rem;
+  align-items: start;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.55rem;
+  background: var(--surface-inset);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.focus-option:hover {
+  border-color: var(--accent, #7566d0);
+}
+
+.focus-option-body {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.focus-option-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.focus-confirm {
+  padding: 0.6rem 0.7rem;
+  border: 1px solid rgba(117, 102, 208, 0.3);
+  border-radius: 0.5rem;
+  background: rgba(117, 102, 208, 0.08);
+}
+
+.focus-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.focus-choice-list {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.8rem;
+}
+
+.focus-choice {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.55rem;
+  background: var(--surface-inset);
+}
+
+.focus-choice p {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.focus-choice-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.focus-history summary,
+.focus-rule-source summary {
+  color: var(--muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.focus-history li,
+.focus-rule-source li {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.focus-history li > span,
+.focus-rule-source li > span {
+  display: inline;
+}
+
+.focus-history li p,
+.focus-rule-source li p {
+  margin: 0;
+  font-size: 0.75rem;
+}

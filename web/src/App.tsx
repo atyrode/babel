@@ -16,6 +16,7 @@ import ExplorePage from "./pages/ExplorePage";
 import FindingPage from "./pages/FindingPage";
 import FindingsPage from "./pages/FindingsPage";
 import FleetPage from "./pages/FleetPage";
+import FocusPage from "./pages/FocusPage";
 import HelpPage from "./pages/HelpPage";
 import HypothesesPage from "./pages/HypothesesPage";
 import HypothesisPage from "./pages/HypothesisPage";
@@ -168,6 +169,16 @@ function App() {
             <NavLink to="/reality" className={({ isActive }) => isActive ? "active" : undefined}>
               Reality
             </NavLink>
+            {/* Focus is its own entry rather than a tab inside Reality, and
+                the reason is the question it answers: "stop spending on this"
+                is a thing an operator comes here to *do*, on a page he has to
+                be able to find without being told where it is. Reality is the
+                ledger's inbox — questions Babel is asking — and burying the one
+                control that stops work inside it is how it stayed a CLI-only
+                act. */}
+            <NavLink to="/reality/focus" className={({ isActive }) => isActive ? "active" : undefined}>
+              Focus
+            </NavLink>
             <NavLink to="/review" className={({ isActive }) => isActive ? "active" : undefined}>
               Review
             </NavLink>
@@ -233,6 +244,10 @@ function App() {
           <Route path="/proposals/:id" element={<ProposalPage />} />
           <Route path="/reality" element={<RealityPage />} />
           <Route path="/reality/entities/:id" element={<RealityEntityPage />} />
+          {/* §4.8's expenditure policy. It sits under /reality because that is
+              what it edits — the ledger's own facts — while carrying its own
+              nav entry because it is an act rather than a record. */}
+          <Route path="/reality/focus" element={<FocusPage />} />
           <Route path="/review" element={<ReviewPage />} />
           <Route path="/review/:type/:id" element={<ReviewRecordPage />} />
           {/* #115's capture rides the review surface, so a complaint's record

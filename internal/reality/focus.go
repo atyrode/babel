@@ -71,6 +71,42 @@ func (a Allowance) MoreRestrictiveThan(other Allowance) bool {
 	return a.restriction() > other.restriction()
 }
 
+// Consequences says what an allowance actually does to the work, in one
+// sentence, in the terms the operator will feel it.
+//
+// It lives on the type rather than in whatever surface is rendering, because
+// the operator choosing a policy and the operator reading a deferral have to
+// be told the same thing. The alternative is every surface paraphrasing §4.8
+// on its own, and the paraphrases drifting: an operator who picked
+// `learn-only` from a page that called it "no analysis" chose something other
+// than what the rule does.
+//
+// The wording states the kept half as deliberately as the withheld half.
+// §4.8's and §5.2's rule is that a restriction never deletes a subject's
+// material — exclusion is a decision recorded against it, not its removal —
+// and a sentence that only listed what stops would read as deletion.
+func (a Allowance) Consequences() string {
+	switch a {
+	case AllowanceFull:
+		return "Nothing is withheld: this subject is worked on like any other, " +
+			"within whatever the run itself was granted."
+	case AllowanceLearnOnly:
+		return "Babel stops spending on this subject: no cloning, no test runs, " +
+			"and no proposals about its code. Its sessions stay in the corpus, so " +
+			"cross-cutting lessons can still be drawn from them — the subject is " +
+			"material to learn from rather than work to do."
+	case AllowanceNoCodeInvestigation:
+		return "No new code investigation at all. Babel may still reason over " +
+			"material it already holds about this subject, but it will not go and " +
+			"look at the code again."
+	case AllowanceExcluded:
+		return "Nothing is spent on this subject at all. Candidates already " +
+			"raised about it are kept and stay readable — exclusion is a decision " +
+			"recorded against them, never a deletion."
+	}
+	return ""
+}
+
 // FocusCondition is one requirement on the ledger: the entity's newest active
 // fact for Predicate must equal Value.
 //
@@ -260,21 +296,7 @@ type FocusDecision struct {
 // rule in this version mentions cannot move the decision, so it does not
 // contest it.
 func evaluateFocus(entityID string, rules FocusRuleSet, facts []Fact, asOf time.Time) FocusDecision {
-	current := make(map[Predicate]Fact, len(facts))
-	for _, fact := range facts {
-		if fact.Status == FactProposed || fact.Status == FactSuperseded {
-			// A proposal is not reality and a superseded revision is
-			// no longer it. Neither may move a decision.
-			continue
-		}
-		if !overlaps(fact.ValidFrom, fact.ValidUntil, asOf, asOf.Add(time.Nanosecond)) {
-			continue
-		}
-		best, seen := current[fact.Predicate]
-		if !seen || newer(fact, best) {
-			current[fact.Predicate] = fact
-		}
-	}
+	current := currentFacts(facts, asOf)
 
 	predicates := make([]Predicate, 0, len(current))
 	for p := range current {
@@ -337,6 +359,35 @@ func evaluateFocus(entityID string, rules FocusRuleSet, facts []Fact, asOf time.
 		return decision
 	}
 	return decision
+}
+
+// currentFacts is "what the ledger says right now", per predicate: the newest
+// fact in force at asOf for each predicate the subject has one for.
+//
+// It is a function rather than four lines inside evaluateFocus because two
+// callers need exactly one answer. A decision reads it to match rules, and the
+// focus surface reads it to name the fact a rule derives from — and a surface
+// that ranked revisions its own way could show an operator a fact that is not
+// the one deciding, which is the disagreement §4.8's single ledger exists to
+// make impossible.
+//
+// A proposal is not reality and a superseded revision is no longer it, so
+// neither may be current. Nothing here consults a clock: asOf is the caller's.
+func currentFacts(facts []Fact, asOf time.Time) map[Predicate]Fact {
+	current := make(map[Predicate]Fact, len(facts))
+	for _, fact := range facts {
+		if fact.Status == FactProposed || fact.Status == FactSuperseded {
+			continue
+		}
+		if !overlaps(fact.ValidFrom, fact.ValidUntil, asOf, asOf.Add(time.Nanosecond)) {
+			continue
+		}
+		best, seen := current[fact.Predicate]
+		if !seen || newer(fact, best) {
+			current[fact.Predicate] = fact
+		}
+	}
+	return current
 }
 
 // newer ranks two facts for "which one is current". Observed time first

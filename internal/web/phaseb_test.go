@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,6 +94,16 @@ type phaseB struct {
 	question reality.Question
 	answer   reality.Answer
 	plan     reality.Plan
+	// restricted is a subject the operator has already stated an analysis
+	// policy about, and policy is the fact stating it. They are a second
+	// entity rather than a fact on entity above because §4.8 makes a second
+	// active policy for one subject a contradiction rather than a change:
+	// asserting and revising need two subjects to both be reachable.
+	restricted reality.Entity
+	policy     reality.Fact
+	// term is the word an operator would actually type for restricted: its
+	// chat-term alias, which is what the focus surface resolves through.
+	term string
 	// complaint is one plain thing the operator said, and amended is the
 	// head of a two-wording chain whose first wording superseded is. The
 	// chain exists so the revision panel and the head/superseded
@@ -178,9 +189,15 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		State: StateProviderFunc(func(context.Context) (State, error) {
 			return State{Configured: true, HostID: hostUnderTest}, nil
 		}),
-		Review:       service,
-		Frontier:     front,
-		Reality:      ledger,
+		Review:   service,
+		Frontier: front,
+		Reality:  ledger,
+		// §4.8's focus policy, over the same ledger. It is wired by default
+		// because the focus routes are enrolled in the route sweeps like
+		// every other route, and because a policy note and an entity's
+		// display name are content somebody typed: the escaping sweep has
+		// to see them without a test remembering to ask.
+		Focus:        ledger.Focus(),
 		Search:       retrieval,
 		Cookbook:     recipes,
 		Dispositions: actions,
@@ -443,6 +460,43 @@ func (h *phaseB) writeReality(text string) {
 		h.t.Fatalf("AddRelationship: %v", err)
 	}
 
+	// The subject the operator has already given up on, with the policy
+	// fact that says so. It carries a chat term rather than a name, because
+	// the focus surface's resolution is the one place a word an operator
+	// used in conversation has to reach an entity.
+	restricted, err := h.reality.CreateEntity(h.ctx, reality.EntityInput{
+		Kind:    reality.EntityProject,
+		Payload: reality.EntityPayload{DisplayName: "an abandoned project " + text},
+	})
+	if err != nil {
+		h.t.Fatalf("CreateEntity: %v", err)
+	}
+	h.restricted = restricted
+	h.term = "the abandoned thing " + text
+	if _, err := h.reality.AddAlias(h.ctx, reality.AliasInput{
+		EntityID: restricted.ID,
+		Kind:     reality.AliasChatTerm,
+		Payload:  reality.AliasPayload{Value: h.term},
+	}); err != nil {
+		h.t.Fatalf("AddAlias: %v", err)
+	}
+	stated := time.Date(2026, 2, 1, 9, 0, 0, 0, time.UTC)
+	policy, _, err := h.reality.AssertFact(h.ctx, reality.FactInput{
+		SubjectID:   restricted.ID,
+		Predicate:   reality.PredicateAnalysisPolicy,
+		Value:       reality.FactValue{Kind: reality.ValueEnum, Enum: reality.PolicyExcluded},
+		ValidFrom:   stated,
+		ObservedAt:  stated,
+		Authority:   reality.Authority{Kind: reality.AuthorityOperator, ID: operatorID, At: stated},
+		Confidence:  reality.ConfidenceHigh,
+		Sensitivity: reality.SensitivityRoutine,
+		Note:        "nothing came of it " + text,
+	})
+	if err != nil {
+		h.t.Fatalf("AssertFact: %v", err)
+	}
+	h.policy = policy
+
 	question, err := h.reality.Ask(h.ctx, reality.QuestionInput{
 		Kind:              reality.KindAcquireContext,
 		Class:             reality.ClassBlocking,
@@ -687,6 +741,14 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{name: "export markdown", method: http.MethodGet, path: "/api/export?type=proposal&id=" + h.proposal.ID + "&format=markdown"},
 		{name: "reality inbox", method: http.MethodGet, path: "/api/reality/inbox"},
 		{name: "reality entity", method: http.MethodGet, path: "/api/reality/entity?id=" + h.entity.ID},
+		// §4.8's focus surface. The two reads answer on a deployment that
+		// has installed no policy version, which is the state this harness
+		// is in until a test installs one, and the subject lookup is
+		// enrolled with a word rather than an identifier because resolving
+		// an operator's own vocabulary is what the route is for.
+		{name: "focus policy", method: http.MethodGet, path: "/api/reality/focus"},
+		{name: "focus subject", method: http.MethodGet,
+			path: "/api/reality/focus/subject?subject=" + url.QueryEscape(h.term)},
 		{name: "search", method: http.MethodGet, path: "/api/search?q=verification"},
 		{name: "record revisions", method: http.MethodGet,
 			path: "/api/record/revisions?type=hypothesis&id=" + h.original.ID},
@@ -768,6 +830,23 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{
 			name: "complaint tell", method: http.MethodPost, path: "/api/complaint/tell", mutating: true,
 			body: `{"text":"the repository rules keep getting ignored"}`,
+		},
+		// The three focus writes. Install takes no body at all, which makes
+		// it the only mutation on this surface with nothing to send; the
+		// other two name a subject that has no policy in force and a fact
+		// that is the one in force, because those are the two states the
+		// handlers refuse a write against a stale view for. focus_test.go
+		// covers the refusals.
+		{
+			name: "focus install", method: http.MethodPost, path: "/api/reality/focus/install", mutating: true,
+		},
+		{
+			name: "focus assert", method: http.MethodPost, path: "/api/reality/focus/assert", mutating: true,
+			body: `{"subjectId":"` + h.entity.ID + `","policy":"learn-only","note":"one session was enough"}`,
+		},
+		{
+			name: "focus supersede", method: http.MethodPost, path: "/api/reality/focus/supersede", mutating: true,
+			body: `{"priorFactId":"` + h.policy.ID + `","policy":"normal","note":"it is worth a look again"}`,
 		},
 	}
 }

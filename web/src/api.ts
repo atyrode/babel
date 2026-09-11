@@ -207,11 +207,16 @@ export type Grading = "low" | "moderate" | "high";
 //
 // The catalog is one body of work and the interface reads it as one: no page
 // renders which instance produced a record, offers it as a filter, or sorts by
-// it. These fields exist here because the Go DTOs send them, and exactly one of
-// them is read at all — `local_host`, which says whether the row arrived
-// already carrying this instance's own derivations. A row the catalog merged
-// has the record's own fields and none of the review history derived beside it,
-// and a renderer has to show that absence rather than a decided-nothing.
+// it. Exactly one attribution field survives here — `local_host`, which says
+// whether the row arrived already carrying this instance's own derivations. A
+// row the catalog merged has the record's own fields and none of the review
+// history derived beside it, and a renderer has to show that absence rather
+// than a decided-nothing.
+//
+// The machine's name and id travel on the wire beside it and are deliberately
+// absent from these types. A field no page may render is a field a page
+// eventually renders, and which computer produced a candidate answers no
+// question a reader of it has.
 //
 // The one place a machine is a legitimate subject is the archive, where a
 // snapshot is a backup *of* a machine. That vocabulary lives in ArchiveHost and
@@ -228,9 +233,9 @@ export interface SyncNotice {
 }
 
 export interface FleetMark {
-  host?: string;
-  host_id?: string;
-  host_attributed?: boolean;
+  // Whether this instance holds the record itself rather than having read it
+  // out of the shared catalog. It is never rendered as a place: it is read to
+  // decide whether the derived state beside a row exists to be shown at all.
   local_host?: boolean;
   // The publication state the server reports, kept as the string it sends. No
   // page renders it — a record either shows or it does not, and where it has
@@ -241,59 +246,29 @@ export interface FleetMark {
   unopened?: string;
 }
 
-// One fleet record as GET /api/fleet/records lists it.
-export interface FleetRecord {
-  record_id: string;
-  run_id: string;
-  kind: string;
-  host: string;
-  host_id: string;
-  host_attributed: boolean;
-  local_host: boolean;
-  // The origin instance: the actor that generated the run and committed the
-  // record. Always present, which is why it has no "attributed" companion.
-  actor: string;
-  sync: string;
-  committed_at?: string;
-  summary?: string;
-  unopened?: string;
-}
-
-// One machine in the host filter's vocabulary. `attributed: false` is the group
-// of records with no host at all, offered as an option rather than hidden: a
-// dropped group looks like records that do not exist.
+// One machine the deployment has registered, and the only host vocabulary the
+// browser still reads: the fleet diagnostic joins it to presence rows, whose
+// subject is the machines themselves. `attributed: false` is the group whose
+// origin instances registered before hosts were recorded — a name for it,
+// rather than a set of rows with no name at all.
+//
+// It carries no per-machine record counts. A count of records per host is the
+// corpus organised by machine, which is the one thing this vocabulary must not
+// become.
 export interface FleetHost {
   host: string;
   host_id: string;
   attributed: boolean;
-  records: number;
-  pending: number;
-  newest_commit?: string;
 }
 
-export interface FleetRecordsResponse {
+export interface FleetHostsResponse {
   // False means no shared backend is configured, which is a fact about the
   // deployment rather than a failure. A backend that exists and did not answer
   // arrives as an APIError instead, and the two read differently on screen.
   configured: boolean;
-  items: FleetRecord[];
-  hosts: FleetHost[];
-  pending: number;
-}
-
-export interface FleetHostsResponse {
-  configured: boolean;
   // The host id this instance registered, absent when it has registered none.
   local_host?: string;
   hosts: FleetHost[];
-}
-
-export interface FleetRecordFilter {
-  hosts?: string[];
-  kinds?: string[];
-  pending?: boolean;
-  limit?: number;
-  offset?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,12 +377,6 @@ export interface RunSummary {
   // Why the run happened, as its receipt recorded it. Empty on a receipt
   // written before receipts carried one.
   authority: RunAuthority;
-  // Which machine produced the run, read from the shared catalog rather than
-  // from the receipt (issue #109 item 4). Both are absent on a run the catalog
-  // cannot attribute. Nothing renders either one: a receipt is read for what
-  // the run did, and no surface asks which computer it ran on.
-  host?: string;
-  host_attributed?: boolean;
 }
 
 export interface RecipeSummary {
@@ -461,9 +430,9 @@ export interface HypothesisSummary extends FleetMark {
   ancestor_id?: string;
   created_at: string;
   // Empty on a merged row this instance could not open: a candidate's status
-  // lives in an append-only history on the host that holds it, so a record
-  // that would not open has none to report and the server sends none rather
-  // than a plausible one.
+  // lives in an append-only history beside the record that holds it, so a
+  // record that would not open has none to report and the server sends none
+  // rather than a plausible one.
   status: HypothesisStatus | "";
   statement: string;
   provisional_labels?: string[];
@@ -1498,28 +1467,16 @@ export function getReviewQueue(
 // ---------------------------------------------------------------------------
 // The fleet read (issue #109 item 4).
 //
-// Only identifiers travel in these URLs -- host ids, record kinds, a page --
-// and never a word of a record. Record content in a query string would put one
+// Only identifiers travel in these URLs -- record kinds, a page -- and never a
+// word of a record. Record content in a query string would put one
 // instance's analysis into another's browser history and into every request log
 // between them, which is the channel the leak acceptance guards.
 // ---------------------------------------------------------------------------
 
-export function getFleetRecords(filter: FleetRecordFilter = {}): Promise<FleetRecordsResponse> {
-  const params = new URLSearchParams();
-  // Repeatable, because the server's host and kind filters are any-of. A comma
-  // list would make a host id containing a comma unaddressable.
-  for (const host of filter.hosts ?? []) params.append("host", host);
-  for (const kind of filter.kinds ?? []) params.append("kind", kind);
-  if (filter.pending) params.set("pending", "1");
-  if (filter.limit !== undefined) params.set("limit", String(filter.limit));
-  if (filter.offset !== undefined) params.set("offset", String(filter.offset));
-  const suffix = params.size ? `?${params.toString()}` : "";
-  return request<FleetRecordsResponse>(`/api/fleet/records${suffix}`);
-}
-
-// getFleetHosts reads the host filter's vocabulary. It takes no host of its
-// own: a vocabulary narrowed by the current selection could not offer the
-// machines the operator is trying to reach.
+// getFleetHosts reads the deployment's host vocabulary: the labels the fleet
+// diagnostic joins to presence rows. It takes no host of its own, because a
+// vocabulary narrowed by the current selection could not name the machine the
+// operator is trying to reach.
 export function getFleetHosts(
   filter: { kinds?: string[]; pending?: boolean } = {},
 ): Promise<FleetHostsResponse> {
@@ -1536,7 +1493,7 @@ export function getFleetHosts(
 // omission. The whole answer is bounded already — internal/presence returns only
 // rows inside its retention window, capped — and the question "what is happening
 // on my fleet" has no narrowing that would not risk hiding the row the operator
-// opened the page for. The host chips narrow what is already in the browser.
+// opened the page for.
 export function getPresence(): Promise<PresenceResponse> {
   return request<PresenceResponse>("/api/fleet/presence");
 }
@@ -1734,7 +1691,7 @@ export interface ReferenceEndpoint {
   label?: string;
   // inert marks an endpoint that must render as identified text rather than as
   // a link, and reason says why: a namespace with no page here, a service this
-  // session did not wire, a record this host does not hold, or a check that
+  // session did not wire, a record this instance does not hold, or a check that
   // could not be completed. The reason is rendered rather than replaced with a
   // generic message, on UnopenedNote's terms.
   inert?: boolean;
@@ -1774,9 +1731,6 @@ export interface RecordReferences {
   // all in that case: an absent feature is not a failed panel, which is why the
   // route answers 200 and says so rather than refusing.
   available: boolean;
-  // The machine whose catalog these edges were read from, absent when this
-  // instance cannot name itself.
-  host?: string;
   cites: ReferenceDirection;
   cited_by: ReferenceDirection;
 }
@@ -1851,7 +1805,6 @@ export interface ComplaintSummary {
   supersedes?: string;
   sequence: number;
   by: string;
-  host: string;
   summary: string;
   redacted: boolean;
   at: string;
@@ -1876,7 +1829,6 @@ export interface ComplaintWording {
   supersedes?: string;
   sequence: number;
   by: string;
-  host: string;
   text: string;
   redacted: boolean;
   at: string;
@@ -1891,7 +1843,6 @@ export interface ComplaintRevision {
   supersedes?: string;
   sequence: number;
   by: string;
-  host: string;
   summary: string;
   redacted: boolean;
   at: string;
@@ -1954,4 +1905,174 @@ export function getComplaint(id: string): Promise<ComplaintDetail> {
 // edit. The route refuses unknown fields, so nothing else can ride along.
 export function tellComplaint(text: string): Promise<CaptureResult> {
   return postJSON<CaptureResult>("/api/complaint/tell", { text });
+}
+
+
+// ---------------------------------------------------------------------------
+// Focus policy (SPEC.md §4.8).
+//
+// What Babel is allowed to spend on a subject, and the operator's own
+// statement of it. Three rules from the spec are visible in these shapes
+// rather than only in the page that renders them.
+//
+// A policy value is not an allowance. `policy` is the analysis-policy fact the
+// operator states; `allowance` is what the installed rule set version maps it
+// to. They are two fields because §4.8's whole point is that no fact value
+// implies an expenditure — the mapping is an explicit versioned artifact — so a
+// client that rendered one as the other would be asserting a mapping the
+// stored policy might not make.
+//
+// `means` always travels with an allowance. It is the server's sentence about
+// what is actually withheld, and it is rendered verbatim: an operator choosing
+// a policy and an operator reading a deferral have to be told the same thing,
+// and a paraphrase here would drift from the one the ledger uses.
+//
+// Nothing is deleted. Reversing a policy is `supersedeFocusPolicy`, which
+// writes a later revision and leaves the earlier one readable, so there is no
+// delete call to make and no field whose absence means "removed".
+// ---------------------------------------------------------------------------
+
+export interface FocusCondition {
+  predicate: string;
+  equals: string;
+}
+
+// One rule of an installed version, in the version's own order: rules are
+// first-match-wins, so a client that sorted them would be showing a policy
+// that decides differently from the one stored.
+export interface FocusRule {
+  name: string;
+  when: FocusCondition[];
+  allows: string;
+  because: string;
+  means: string;
+}
+
+export interface FocusPolicy {
+  version: number;
+  default: string;
+  default_means: string;
+  note?: string;
+  installed_at: string;
+  rules: FocusRule[];
+}
+
+// One policy an operator may state, and what stating it would withhold under
+// the installed version. `withholds` is false for the one choice that withholds
+// nothing, which is what lets "lift this" render as what it is rather than as a
+// fourth restriction.
+export interface FocusChoice {
+  policy: string;
+  allowance: string;
+  rule?: string;
+  means: string;
+  withholds: boolean;
+  conditional?: boolean;
+}
+
+// The subject a rule is about, by the names the operator actually uses for it.
+// The aliases travel because the canonical display name is frequently not the
+// word he would have typed.
+export interface FocusSubject {
+  entity_id: string;
+  kind: string;
+  display_name: string;
+  aliases: string[];
+}
+
+export interface FocusRuleInForce {
+  subject: FocusSubject;
+  allowance: string;
+  means: string;
+  withholds: boolean;
+  rule?: string;
+  because: string;
+  policy: string;
+  fact: FactView;
+  contested: boolean;
+  contested_fact_ids?: string[];
+}
+
+// A policy the operator stated that no installed version interprets. It is its
+// own shape rather than a rule with an empty allowance, because it is a
+// different state: the intent is recorded and nothing is withheld, which is
+// exactly the "I said stop and nothing stopped" case the page has to explain.
+export interface FocusStated {
+  subject: FocusSubject;
+  policy: string;
+  fact: FactView;
+}
+
+export interface FocusResponse {
+  installed: boolean;
+  shipped_version: number;
+  policy: FocusPolicy | null;
+  choices: FocusChoice[];
+  rules: FocusRuleInForce[];
+  stated: FocusStated[];
+  note: string;
+}
+
+// What a word the operator typed refers to. `resolved: false` is an answer
+// rather than a failure — a name the ledger does not know, or one that means
+// two entities — and `reason` is the server's sentence about which.
+export interface FocusSubjectResponse {
+  term: string;
+  resolved: boolean;
+  via?: string;
+  subject: FocusSubject | null;
+  rule: FocusRuleInForce | null;
+  reason?: string;
+  history: FactView[];
+}
+
+export interface FocusInstallResult {
+  policy: FocusPolicy | null;
+  applies: string;
+}
+
+export interface FocusWriteResult {
+  fact: FactView;
+  rule: FocusRuleInForce | null;
+  dispute_id?: string;
+  note?: string;
+}
+
+export function getFocus(): Promise<FocusResponse> {
+  return request<FocusResponse>("/api/reality/focus");
+}
+
+// getFocusSubject resolves an operator's own word through the ledger's
+// aliases. It takes a term rather than an identifier because that is the whole
+// point: nobody reading a candidate about "the Minecraft mod" is holding a
+// canonical entity id.
+export function getFocusSubject(subject: string): Promise<FocusSubjectResponse> {
+  return request<FocusSubjectResponse>(`/api/reality/focus/subject?${query({ subject })}`);
+}
+
+// installFocusPolicy stores the rule set version this build ships. It sends no
+// rules, and the absence is the invariant: policy authored in a request body
+// would make a past decision unexplainable from anything reviewable.
+export function installFocusPolicy(): Promise<FocusInstallResult> {
+  return request<FocusInstallResult>("/api/reality/focus/install", { method: "POST" });
+}
+
+export function assertFocusPolicy(
+  subjectId: string,
+  policy: string,
+  note: string,
+): Promise<FocusWriteResult> {
+  return postJSON<FocusWriteResult>("/api/reality/focus/assert", { subjectId, policy, note });
+}
+
+// supersedeFocusPolicy is how the operator reverses himself. `priorFactId` is
+// the fact the page showed as in force, and it is both the revision being
+// replaced and the confirmation that the page was current: a policy that moved
+// since is a 409 with an explanation rather than a write.
+export function supersedeFocusPolicy(
+  priorFactId: string,
+  policy: string,
+  note: string,
+): Promise<FocusWriteResult> {
+  return postJSON<FocusWriteResult>("/api/reality/focus/supersede", { priorFactId, policy, note });
 }

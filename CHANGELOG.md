@@ -351,6 +351,26 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `TestForgedCitationIsRefusedAtSubmissionAndTheCorrectionPersists` and
   `TestSynthesizerConsolidatesServedObservationsUnderItsContract` pin it.
 
+- **The GUI is where a capability lives.** SPEC.md gains §8.4, the shape the
+  operator's direction has been asking of Babel for a while: storage is the
+  product, everything Babel knows lives in the catalog, the objects it
+  references and the ledger, and a run is a stateless worker over that
+  storage — it reads what is stored, writes back what it concluded, and holds
+  no authority the storage does not already hold, which is why a worker can be
+  run anywhere, restarted or replaced. Every stored thing is reachable from
+  the GUI's navigation and actionable where it is read, and a capability that
+  exists only as a command the operator has to remember is unfinished; the CLI
+  stays for automation, for configuring a machine before any UI exists, for
+  recovery and for diagnosis, and §8.1 stops calling it a second home for
+  operational depth. That is §9.1's rule on the other surface: publication
+  must not depend on the operator's memory, and neither may interaction.
+  What is missing is named rather than implied — `internal/web/reality.go`'s
+  own package doc admits no route asserts a fact or installs a focus rule —
+  and starting runs from the GUI is deferred to the manifold migration on a
+  dependency, not a preference: the machine channel has no exec verb
+  (atyrode/manifold#156), so compute is launched on a machine by hand until it
+  does. §14 gains the matching gate and §13 decision 88 records the direction.
+
 ### Fixed
 
 - **Records from a run nothing will ever finish now publish themselves
