@@ -143,6 +143,31 @@ export function RecordLinks({
   );
 }
 
+// KIND_ABSENCE says where a cited kind is read when Babel has no page for it.
+//
+// It replaces the sentence that used to repeat under every such row — seven
+// times on a finding, in a paragraph beginning "No page in this build opens a
+// observation". A reader does not need to be told seven times, does not need
+// to be told about builds, and is owed something better than an absence: an
+// observation is not missing from Babel, it is read inside the candidate it
+// develops, and the candidates are in this same list.
+const KIND_ABSENCE: Record<string, string> = {
+  observation:
+    "an observation is read inside the candidate it develops, where its claim, its evidence " +
+    "and its counter-evidence render together",
+};
+
+// citationRoute derives where an endpoint opens, or nothing.
+//
+// The destination is built from the namespace and an identifier and from
+// nowhere else: ROUTES holds every page this app has, so a namespace missing
+// from it resolves to nothing rather than linking into the catch-all redirect,
+// and an endpoint the server marked inert never resolves at all.
+function citationRoute(endpoint: ReferenceEndpoint): string | undefined {
+  if (endpoint.inert) return undefined;
+  return ROUTES[endpoint.kind]?.(endpoint.route_id ?? endpoint.id);
+}
+
 function CitationDirection({
   label,
   empty,
@@ -155,6 +180,25 @@ function CitationDirection({
   outgoing: boolean;
 }) {
   const shown = direction.edges.length;
+  // What cannot be opened is counted for the whole direction and explained
+  // once underneath it, by kind. Which record is unreachable is on its own row;
+  // why a kind has no page is one fact about Babel and belongs in one sentence.
+  const unopened = new Map<string, number>();
+  for (const edge of direction.edges) {
+    if (citationRoute(edge.other) || edge.other.reason) continue;
+    unopened.set(edge.other.kind, (unopened.get(edge.other.kind) ?? 0) + 1);
+  }
+  // A run that asserts a dozen citations in one pass writes the same sentence
+  // on every one of them, and twelve identical notes are one note. Any note
+  // that repeats is said once above the rows and dropped from them; a note
+  // carried by exactly one citation keeps its own line, because then it is
+  // prose about that citation and a reader has to be able to tell which.
+  const noteCounts = new Map<string, number>();
+  for (const edge of direction.edges) {
+    if (edge.note) noteCounts.set(edge.note, (noteCounts.get(edge.note) ?? 0) + 1);
+  }
+  const repeated = [...noteCounts].filter(([, count]) => count > 1);
+  const hoisted = new Set(repeated.map(([note]) => note));
   return (
     <section className="citation-direction">
       <div className="citation-heading">
@@ -169,15 +213,32 @@ function CitationDirection({
           ))}
         </span>
       </div>
+      {repeated.map(([note, count]) => (
+        <p className="citation-note" key={note}>
+          <span className="secondary">{count} of these carry the same note: </span>
+          <span className="untrusted-inline">{note}</span>
+        </p>
+      ))}
       {direction.total === 0 ? (
         <p className="muted">{empty}</p>
       ) : (
         <ul className="link-list citation-list">
           {direction.edges.map((edge) => (
-            <CitationRow key={edge.id} edge={edge} outgoing={outgoing} />
+            <CitationRow
+              key={edge.id}
+              edge={edge}
+              outgoing={outgoing}
+              hideNote={edge.note !== undefined && hoisted.has(edge.note)}
+            />
           ))}
         </ul>
       )}
+      {[...unopened].map(([kind, count]) => (
+        <p className="secondary citation-absence" key={kind}>
+          {count === 1 ? `The ${kind} above has no page of its own` : `The ${count} ${kind} rows above have no page of their own`}
+          {KIND_ABSENCE[kind] ? ` — ${KIND_ABSENCE[kind]}.` : ". Its identifier is what reopens it from the record's own store."}
+        </p>
+      ))}
       {/* The store bounds its own answer and this page bounds it again, so a
           reader who is seeing part of a direction is told rather than left to
           infer it from a chip count that does not match the rows. */}
@@ -190,51 +251,68 @@ function CitationDirection({
   );
 }
 
-function CitationRow({ edge, outgoing }: { edge: ReferenceEdge; outgoing: boolean }) {
+// CitationRow is one citation, on one line: what the relation claims, the
+// record at the far end, and when it was asserted.
+//
+// It used to be three lines and a paragraph, thirteen times over, between a
+// reader and the decision control below. The provenance is still here — an
+// edge nobody is attributed for is not a citation — but "asserted by run
+// <id>" is what a reader checks once, so it rides the row's own tooltip
+// instead of a line of its own. A note keeps its line unless the direction
+// above already said it for every row.
+function CitationRow({
+  edge,
+  outgoing,
+  hideNote,
+}: {
+  edge: ReferenceEdge;
+  outgoing: boolean;
+  hideNote: boolean;
+}) {
   const phrasing = EDGE_PHRASING[edge.kind];
   const relation = phrasing ? (outgoing ? phrasing.out : phrasing.in) : edge.kind;
   const created = formatTime(edge.created_at);
+  const asserted = `Asserted by ${edge.actor.kind}${edge.actor.id ? ` ${edge.actor.id}` : ""}`;
   return (
-    <li className="citation-entry" data-citation={edge.id} data-citation-kind={edge.kind}>
+    <li
+      className="citation-entry"
+      data-citation={edge.id}
+      data-citation-kind={edge.kind}
+      title={asserted}
+    >
       <div className="citation-relation">
         <Badge label={edge.kind} tone={EDGE_TONES[edge.kind] ?? "neutral"} />
         <span className="citation-phrase">{relation}</span>
         <CitationTarget endpoint={edge.other} />
-      </div>
-      <div className="citation-provenance">
-        <span className="secondary">
-          asserted by {edge.actor.kind}
-          {edge.actor.id && <span className="mono"> {edge.actor.id}</span>}
-        </span>
         {created && (
-          <time dateTime={edge.created_at} title={created.absolute}>{created.relative}</time>
+          <time className="secondary" dateTime={edge.created_at} title={created.absolute}>
+            {created.relative}
+          </time>
         )}
       </div>
-      {edge.note && <span className="untrusted-inline citation-note">{edge.note}</span>}
+      {edge.note && !hideNote && (
+        <span className="untrusted-inline citation-note">{edge.note}</span>
+      )}
     </li>
   );
 }
 
-// CitationTarget is where the inert rule lands. An endpoint the server could not
-// resolve, and one whose namespace no page here opens, both render as identified
-// text with the reason beside them — the fleet read's sealed row, applied to a
-// citation.
+// CitationTarget is where the inert rule lands. An endpoint this app has no
+// page for renders as identified text rather than as a link that would fail,
+// and the server's own reason renders beside it when there is one: "this host
+// holds no finding with that identifier" is about one record and cannot be
+// hoisted into a sentence about a kind.
 function CitationTarget({ endpoint }: { endpoint: ReferenceEndpoint }) {
-  // The destination is built here from the namespace and an identifier, and
-  // from nowhere else: ROUTES holds every page this build has, so a namespace
-  // missing from it renders inert rather than linking into the catch-all.
-  const openRoute = endpoint.inert ? undefined : ROUTES[endpoint.kind];
-  const route = openRoute?.(endpoint.route_id ?? endpoint.id);
+  const route = citationRoute(endpoint);
   const name = endpoint.label ?? endpoint.id;
   if (!route) {
     return (
       <span className="citation-target inert">
         <span className="kind-label">{endpoint.kind}</span>
         <span className="mono">{name}</span>
-        <span className="unopened-note untrusted-inline">
-          {endpoint.reason ??
-            `No page in this build opens a ${endpoint.kind}, so this reference is recorded but not followable here.`}
-        </span>
+        {endpoint.reason && (
+          <span className="unopened-note untrusted-inline">{endpoint.reason}</span>
+        )}
       </span>
     );
   }

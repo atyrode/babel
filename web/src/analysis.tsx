@@ -2,12 +2,15 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   getFleetHosts,
+  getSessions,
+  type EvidenceLocator,
   type EvidenceRef,
   type FleetHost,
   type FleetHostsResponse,
   type HypothesisStatus,
   type ReviewStatus,
   type RunAuthority,
+  type SessionSummary,
 } from "./api";
 import { formatTime } from "./format";
 
@@ -80,10 +83,52 @@ export function FallibilityNote() {
   );
 }
 
+// unescapeWhitespace turns the server's escaped whitespace back into real
+// whitespace, for display only.
+//
+// Every string in every API response passes through internal/web's sanitize,
+// which rewrites control characters as a visible `\u{HEX}` so that no
+// model-authored byte can steer a terminal or a log line. That is the right
+// default and it stays: what arrives here is inert text. But a transcript
+// excerpt whose line breaks read `\u{A}` and whose indentation reads `\u{9}`
+// is unreadable prose, and the operator's job on these pages is to read.
+//
+// So exactly three escapes are undone — tab, newline, carriage return — and
+// nothing else. `\x{..}` stays escaped because an invalid byte has no display
+// form, and the bidi and zero-width runes stay escaped because making them
+// invisible again is the attack sanitize exists to stop. The result is still
+// text: it is handed to React as a string and never as markup, so restoring a
+// newline cannot restore an HTML tag.
+//
+// A literal two-character `\n` in the source bytes is deliberately left
+// alone. It is content — a shell command, a Go string, a regex — and a
+// display layer that rewrote it would be editing the evidence.
+export function unescapeWhitespace(text: string): string {
+  // The escape is three characters minimum and most strings hold none, so the
+  // common case costs one scan and no allocation.
+  if (!text.includes("\\u{")) return text;
+  return text.replace(/\\u\{0*([9adAD])\}/g, (match, hex: string) => {
+    switch (hex.toLowerCase()) {
+      case "9":
+        return "\t";
+      case "a":
+        return "\n";
+      case "d":
+        return "\r";
+      default:
+        return match;
+    }
+  });
+}
+
 // Quoted renders untrusted text: model wording, transcript excerpts, operator
 // answers. React escapes the text, and the frame makes the trust boundary
 // visible — a reader can always tell quoted material from Babel's own chrome.
 // The label names the speaker; the body is verbatim bytes shown as text.
+//
+// The body's whitespace escapes are undone here, at the one place every page
+// quotes model wording, so a claim's paragraphs are paragraphs. It remains a
+// string handed to a <pre>: nothing about restoring a newline makes it markup.
 export function Quoted({
   label,
   text,
@@ -96,7 +141,7 @@ export function Quoted({
   return (
     <figure className="quoted">
       <figcaption className="quoted-label">{label}</figcaption>
-      <pre className="quoted-text">{text}</pre>
+      <pre className="quoted-text">{unescapeWhitespace(text)}</pre>
       {children}
     </figure>
   );
@@ -132,32 +177,190 @@ export function GradingLine({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Following a locator.
+//
+// "Follow the evidence locators before believing a claim" is the sentence this
+// interface repeats on every analytical page, and until now it could not be
+// obeyed by clicking: a locator rendered as inert text naming an absolute path
+// nobody can open from a browser.
+//
+// A locator names a file and a 1-based record line. A route names a session
+// selector and a transcript position. The catalog is what connects them, and it
+// is the only thing consulted here: every described session carries the source
+// id its selector is built from, and a cited file's path ends in that source id.
+// No harness directory layout is parsed and no selector is assembled from a
+// path, so a file the catalog holds no session for resolves to nothing rather
+// than to a plausible guess that would 404.
+// ---------------------------------------------------------------------------
+
+// SessionIndex maps a cited file's own name onto the sessions that could own
+// it. The name is the key because it is the one part of the path that survives
+// materializing a session somewhere else; the candidate's full source id is
+// then checked against the path, so the key is a lookup and never the proof.
+type SessionIndex = Map<string, SessionSummary[]>;
+
+function fileKey(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+function withoutExtension(path: string): string {
+  const dot = path.lastIndexOf(".");
+  return dot > path.lastIndexOf("/") ? path.slice(0, dot) : path;
+}
+
+// One catalog read serves every locator on a page, and it is shared across
+// components rather than fetched per evidence list: a finding with four
+// observations renders a dozen locators, and a dozen identical requests for the
+// same listing would be this page's largest cost.
+let sessionIndexRead: Promise<SessionIndex> | null = null;
+
+function loadSessionIndex(): Promise<SessionIndex> {
+  if (!sessionIndexRead) {
+    sessionIndexRead = getSessions()
+      .then((response) => {
+        const index: SessionIndex = new Map();
+        for (const session of response.sessions) {
+          const key = fileKey(session.source_id);
+          const bucket = index.get(key);
+          if (bucket) bucket.push(session);
+          else index.set(key, [session]);
+        }
+        return index;
+      })
+      .catch((reason) => {
+        // A failed read is not cached. Locators render as text until the
+        // catalog answers, and the next claim on the page retries; caching the
+        // failure would make one slow moment permanent for the session.
+        sessionIndexRead = null;
+        throw reason;
+      });
+  }
+  return sessionIndexRead;
+}
+
+// useSessionIndex reads the catalog once per mount and never fails a page: an
+// unreachable listing leaves locators as the text they have always been.
+function useSessionIndex(): SessionIndex | null {
+  const [index, setIndex] = useState<SessionIndex | null>(null);
+  useEffect(() => {
+    let live = true;
+    loadSessionIndex()
+      .then((value) => {
+        if (live) setIndex(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+  return index;
+}
+
+// LocatorTarget is a resolved citation: the session it lives in, and the
+// transcript position to land on.
+interface LocatorTarget {
+  to: string;
+  title: string;
+}
+
+// locatorTarget resolves one locator against the catalog.
+//
+// The event index is the line minus one. internal/event stamps a locator with
+// a 1-based record line and internal/transcript numbers the same records from
+// zero, one record per line in both, so this is the two counts meeting rather
+// than an offset that happens to look right.
+function locatorTarget(
+  locator: EvidenceLocator,
+  selector: string | undefined,
+  index: SessionIndex | null,
+): LocatorTarget | null {
+  let session: SessionSummary | undefined;
+  if (!selector) {
+    const candidates = index?.get(fileKey(locator.path));
+    const stripped = withoutExtension(locator.path);
+    session = candidates?.find((candidate) => stripped.endsWith(candidate.source_id));
+    if (!session) return null;
+  }
+  const target = selector ?? session?.selector ?? "";
+  const event = locator.line > 0 ? locator.line - 1 : 0;
+  const name = session?.title || target;
+  return {
+    to: `/sessions/${encodeURIComponent(target)}?event=${event}`,
+    title: locator.line > 0 ? `${name} · line ${locator.line}` : name,
+  };
+}
+
 // EvidenceItems renders locator-bearing citations. The locator is the point:
-// an observation without its locator is not evidence (§4.3), so the path,
-// line, and digest render with every claim, and when the server resolved the
-// locator to a catalogued session the excerpt links straight to it.
-export function EvidenceItems({ items, kind }: { items: EvidenceRef[]; kind: "supporting" | "counter" }) {
-  if (!items.length) return null;
+// an observation without its locator is not evidence (§4.3), so the line and
+// the digest render with every claim, and a citation this catalog can open
+// renders as the link to the conversation it came from.
+//
+// A citation that cannot be opened renders as text, not as a link that would
+// fail, and the reason is stated once for the list rather than once per row:
+// what the reader needs to know is that the record still carries enough to
+// reopen it from the archive, and that is one fact about the citations, not a
+// property of each one.
+// A record that cites nothing sends a JSON null rather than an empty list, so
+// the list is read as possibly absent: a claim with no evidence is a real
+// state, and it must not take its page down.
+export function EvidenceItems({
+  items,
+  kind,
+}: {
+  items: EvidenceRef[] | null | undefined;
+  kind: "supporting" | "counter";
+}) {
+  const index = useSessionIndex();
+  const citations = items ?? [];
+  if (citations.length === 0) return null;
+  const targets = citations.map((item) => locatorTarget(item.locator, item.selector, index));
+  const unopened = targets.reduce((count, target) => (target ? count : count + 1), 0);
   return (
-    <ul className={kind === "counter" ? "evidence-list counter" : "evidence-list"}>
-      {items.map((item, index) => (
-        <li key={`${item.locator.path}-${item.locator.line}-${index}`}>
-          <span className="evidence-locator mono">
-            {item.locator.path}
-            {item.locator.line > 0 ? `:${item.locator.line}` : ""}
-            <span className="evidence-digest" title={item.locator.digest}>
-              {item.locator.digest.slice(0, 12) || "no digest"}
-            </span>
-          </span>
-          {item.note && <span className="evidence-note">{item.note}</span>}
-          {item.selector && (
-            <Link className="evidence-open" to={`/sessions/${encodeURIComponent(item.selector)}`}>
-              Open source session →
-            </Link>
-          )}
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className={kind === "counter" ? "evidence-list counter" : "evidence-list"}>
+        {citations.map((item, position) => {
+          const target = targets[position];
+          return (
+            <li key={`${item.locator.path}-${item.locator.line}-${position}`}>
+              {target ? (
+                <Link
+                  className="evidence-locator link-target"
+                  to={target.to}
+                  title={`${item.locator.path}${item.locator.line > 0 ? `:${item.locator.line}` : ""}`}
+                >
+                  <span className="untrusted-inline">{target.title}</span>
+                  <span className="evidence-open">open the cited line →</span>
+                </Link>
+              ) : (
+                <span className="evidence-locator mono">
+                  {item.locator.path}
+                  {item.locator.line > 0 ? `:${item.locator.line}` : ""}
+                </span>
+              )}
+              <span className="evidence-digest mono" title={item.locator.digest}>
+                {item.locator.digest.slice(0, 12) || "no digest"}
+              </span>
+              {item.note && (
+                <span className="evidence-note untrusted-inline">{unescapeWhitespace(item.note)}</span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {unopened > 0 && (
+        <p className="secondary evidence-unopened">
+          {unopened === citations.length
+            ? "No session in the catalog matches the files these citations name"
+            : `${unopened} of these citations name a file no session in the catalog matches`}
+          {" — the run read them, nothing describes them here, so there is no conversation to " +
+            "open. Each still carries its path, line and content digest, which is what reopening " +
+            "it against the archive needs."}
+        </p>
+      )}
+    </>
   );
 }
 

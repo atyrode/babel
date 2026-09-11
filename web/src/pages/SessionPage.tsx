@@ -1,5 +1,5 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   fetchSession,
   getSession,
@@ -9,9 +9,28 @@ import {
   type TranscriptEvent,
 } from "../api";
 import { errorMessage, formatBytes, formatTime } from "../format";
+import { Badge, unescapeWhitespace } from "../analysis";
 import { RecordLinks } from "../references";
 
-const TRANSCRIPT_PAGE_SIZE = 200;
+// The transcript is read as a moving window, not as a list with a cap.
+//
+// The bound is real and it is not the server's: one response materializes
+// every event it carries, and a session here runs to ten thousand records of
+// up to two thousand characters each, so a page that asked for all of them
+// would hold tens of megabytes of untrusted text in the document. Raising the
+// old constant would only move the wall.
+//
+// What was actually broken is that the window could only start at zero, so an
+// evidence locator naming record 2073 was fifteen "load more" presses away and
+// nothing said so. The window now starts where the reader is sent — see
+// CITED_LEAD — and moves in both directions from there, which makes any cited
+// position one request deep rather than one request per page before it.
+const TRANSCRIPT_WINDOW = 250;
+
+// How many records before a cited one the window opens on. A citation is read
+// in its conversation: the lines that led to it are the difference between
+// seeing the claim and seeing why the model made it.
+const CITED_LEAD = 20;
 
 // titleOriginLabel states a title's provenance in words rather than as a
 // vocabulary token. The three values are not interchangeable claims — one is
@@ -38,23 +57,39 @@ function titleOriginLabel(title: string | null, provenance: string | null): stri
 function SessionPage() {
   const { selector: routeSelector } = useParams();
   const selector = routeSelector ?? "";
+  const [params] = useSearchParams();
+  // ?event=N is where an evidence locator lands. It is read as a record
+  // position and nothing else: a value that is not a number names no record,
+  // so it opens the transcript at its beginning rather than at a guess.
+  const citedParam = params.get("event");
+  const cited = citedParam !== null && /^\d+$/.test(citedParam) ? Number(citedParam) : null;
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptEvent[]>([]);
+  // The index of the window's first event, which is not zero when a citation
+  // sent the reader into the middle of a conversation.
+  const [windowStart, setWindowStart] = useState(0);
   const [transcriptTotal, setTranscriptTotal] = useState(0);
   const [transcriptLoading, setTranscriptLoading] = useState(true);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [snapshot, setSnapshot] = useState("");
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [fetchResult, setFetchResult] = useState<FetchResult | null>(null);
+  // Scrolling to the cited record happens once per arrival. A later "load
+  // more" must not yank the reader back to where he came in.
+  const landed = useRef<string | null>(null);
+
+  const openAt = cited === null ? 0 : Math.max(0, cited - CITED_LEAD);
 
   useEffect(() => {
     let live = true;
     setSession(null);
     setSessionError(null);
     setTranscript([]);
+    setWindowStart(openAt);
     setTranscriptTotal(0);
     setTranscriptLoading(true);
     setTranscriptError(null);
@@ -67,7 +102,7 @@ function SessionPage() {
         if (live) setSessionError(errorMessage(reason));
       });
 
-    getTranscript(selector, 0, TRANSCRIPT_PAGE_SIZE)
+    getTranscript(selector, openAt, TRANSCRIPT_WINDOW)
       .then((value) => {
         if (!live) return;
         setTranscript(value.events);
@@ -83,19 +118,48 @@ function SessionPage() {
     return () => {
       live = false;
     };
-  }, [selector]);
+  }, [selector, openAt]);
+
+  // The cited record is scrolled to after its window has rendered, and the
+  // arrival is remembered by selector and position so that re-rendering the
+  // list does not repeat it.
+  useEffect(() => {
+    if (cited === null || transcript.length === 0) return;
+    const arrival = `${selector}#${cited}`;
+    if (landed.current === arrival) return;
+    const node = document.getElementById(`event-${cited}`);
+    if (!node) return;
+    landed.current = arrival;
+    node.scrollIntoView({ block: "center" });
+  }, [cited, selector, transcript]);
 
   async function loadMoreTranscript() {
     setLoadingMore(true);
     setTranscriptError(null);
     try {
-      const page = await getTranscript(selector, transcript.length, TRANSCRIPT_PAGE_SIZE);
+      const page = await getTranscript(selector, windowStart + transcript.length, TRANSCRIPT_WINDOW);
       setTranscript((current) => [...current, ...page.events]);
       setTranscriptTotal(page.total);
     } catch (reason) {
       setTranscriptError(errorMessage(reason));
     } finally {
       setLoadingMore(false);
+    }
+  }
+
+  async function loadEarlierTranscript() {
+    const start = Math.max(0, windowStart - TRANSCRIPT_WINDOW);
+    setLoadingEarlier(true);
+    setTranscriptError(null);
+    try {
+      const page = await getTranscript(selector, start, windowStart - start);
+      setTranscript((current) => [...page.events, ...current]);
+      setWindowStart(start);
+      setTranscriptTotal(page.total);
+    } catch (reason) {
+      setTranscriptError(errorMessage(reason));
+    } finally {
+      setLoadingEarlier(false);
     }
   }
 
@@ -260,19 +324,58 @@ function SessionPage() {
       <article className="card transcript-card">
         <div className="section-heading">
           <div><p className="eyebrow">Conversation</p><h2>Transcript</h2></div>
-          {!transcriptLoading && <span className="count-label">{transcript.length} of {transcriptTotal} events</span>}
+          {!transcriptLoading && (
+            <span className="count-label">
+              {transcript.length === 0
+                ? `${transcriptTotal} events`
+                : `records ${windowStart + 1}–${windowStart + transcript.length} of ${transcriptTotal}`}
+            </span>
+          )}
         </div>
+        {/* Arriving from a citation is stated, because the reader is looking at
+            the middle of a conversation and the reason is not otherwise on the
+            page. A cited record beyond the end is the more important case: it
+            means the citation and this transcript disagree, which is a fact
+            about the record and never something to round down silently. */}
+        {cited !== null && !transcriptLoading && (
+          <p className="muted">
+            {cited < transcriptTotal ? (
+              <>
+                Opened at record <strong>#{cited + 1}</strong>, the line the citation names. The
+                records before it are loaded for context.
+              </>
+            ) : (
+              <>
+                A citation names record <strong>#{cited + 1}</strong>, and this transcript holds{" "}
+                {transcriptTotal}. The cited line is not in this file: the citation was recorded
+                against different bytes, and its digest is what settles which.
+              </>
+            )}
+          </p>
+        )}
         {transcriptLoading && <div className="inline-state"><span className="spinner" /> Loading transcript…</div>}
         {transcriptError && transcript.length === 0 && <div className="inline-error" role="alert">Transcript could not be loaded: {transcriptError}</div>}
         {!transcriptLoading && !transcriptError && transcriptTotal === 0 && <div className="inline-state muted">No transcript events reported.</div>}
+        {windowStart > 0 && (
+          <button type="button" className="load-more" onClick={loadEarlierTranscript} disabled={loadingEarlier}>
+            {loadingEarlier && <span className="spinner small" />}
+            {loadingEarlier
+              ? "Loading…"
+              : `Load the ${Math.min(TRANSCRIPT_WINDOW, windowStart)} records before this`}
+          </button>
+        )}
         <div className="transcript-events">
-          {transcript.map((entry) => <TranscriptEntry key={entry.index} entry={entry} />)}
+          {transcript.map((entry) => (
+            <TranscriptEntry key={entry.index} entry={entry} cited={entry.index === cited} />
+          ))}
         </div>
         {transcriptError && transcript.length > 0 && <p className="inline-error" role="alert">More events could not be loaded: {transcriptError}</p>}
-        {transcript.length < transcriptTotal && (
+        {windowStart + transcript.length < transcriptTotal && (
           <button type="button" className="load-more" onClick={loadMoreTranscript} disabled={loadingMore}>
             {loadingMore && <span className="spinner small" />}
-            {loadingMore ? "Loading…" : `Load ${Math.min(TRANSCRIPT_PAGE_SIZE, transcriptTotal - transcript.length)} more`}
+            {loadingMore
+              ? "Loading…"
+              : `Load ${Math.min(TRANSCRIPT_WINDOW, transcriptTotal - windowStart - transcript.length)} more`}
           </button>
         )}
       </article>
@@ -314,22 +417,179 @@ function FileTable({ title, subtitle, empty, headers, rows }: FileTableProps) {
   );
 }
 
-function TranscriptEntry({ entry }: { entry: TranscriptEvent }) {
-  const raw = entry.kind.toLocaleLowerCase() === "raw" || entry.role.toLocaleLowerCase() === "raw";
-  const role = raw ? "raw" : ["user", "assistant"].includes(entry.role.toLocaleLowerCase()) ? entry.role.toLocaleLowerCase() : "other";
+// A "raw" event is a record internal/transcript declined to read as a message,
+// and two thirds of a long session's records are that. They are not empty:
+// they are tool calls, tool results, the harness's own notices, the injected
+// reminders a model actually saw. Rendering them all as one collapsed "Show
+// raw entry" row hid the half of the conversation an evidence locator is most
+// likely to name.
+//
+// So the record's envelope is read here, at the display layer, and nothing is
+// invented: the kind is the name the harness itself gave the record, the role
+// is the role it recorded, and the body is the record's own content. A record
+// whose shape this build does not recognize keeps its raw form rather than
+// being described wrongly.
+interface RawRecord {
+  type?: unknown;
+  customType?: unknown;
+  role?: unknown;
+  content?: unknown;
+  message?: { role?: unknown; content?: unknown };
+  payload?: { type?: unknown; role?: unknown; content?: unknown };
+  data?: unknown;
+}
+
+interface RawView {
+  role: string;
+  kind: string;
+  body: string;
+  // True when the record on the page is the beginning of a longer one, which
+  // the row has to say rather than presenting a fragment as the record.
+  partial: boolean;
+}
+
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+// contentText renders one content part as the prose a reader wants from it: a
+// tool call is its name and the arguments it was given, a result is its text.
+// The part is stringified whole when its shape is unfamiliar, which keeps the
+// bytes on the page instead of dropping a record nobody anticipated.
+function contentText(part: unknown): string {
+  if (typeof part === "string") return part;
+  if (!part || typeof part !== "object") return "";
+  const item = part as Record<string, unknown>;
+  const text = asText(item.text) || asText(item.thinking) || asText(item.content);
+  if (text) return text;
+  const name = asText(item.name) || asText(item.toolName);
+  if (name) {
+    const args = item.arguments ?? item.args ?? item.input;
+    const intent = asText(item.intent);
+    return `${name}${args === undefined ? "" : ` ${JSON.stringify(args)}`}${intent ? `\n${intent}` : ""}`;
+  }
+  return JSON.stringify(item, null, 2);
+}
+
+// truncatedField reads one field out of a record's first bytes.
+//
+// It exists for the records internal/transcript had to cut: a 40-kilobyte tool
+// result arrives as its first 2000 characters, which is not parseable JSON, and
+// those are exactly the records an evidence locator is most likely to name. So
+// the envelope's own fields — which a harness writes first, before the payload
+// — are read off the prefix. This is a display fallback for text that is
+// already known to be incomplete, never a way to read a whole record: a
+// complete record is parsed.
+function truncatedField(prefix: string, field: string): string {
+  const match = prefix.match(new RegExp(`"${field}"\\s*:\\s*"([^"\\\\]{1,80})"`));
+  return match ? match[1] : "";
+}
+
+function describeRaw(text: string): RawView | null {
+  let record: RawRecord;
+  try {
+    record = JSON.parse(text) as RawRecord;
+  } catch {
+    const prefix = text.slice(0, 600);
+    if (!prefix.startsWith("{")) return null;
+    const kind = truncatedField(prefix, "customType") || truncatedField(prefix, "type");
+    if (!kind) return null;
+    const tool = truncatedField(prefix, "toolName") || truncatedField(prefix, "name");
+    return {
+      role: truncatedField(prefix, "role"),
+      kind: tool ? `${kind} · ${tool}` : kind,
+      body: text,
+      partial: true,
+    };
+  }
+  if (!record || typeof record !== "object") return null;
+  const kind =
+    asText(record.customType) || asText(record.payload?.type) || asText(record.type) || "record";
+  const role = asText(record.message?.role) || asText(record.payload?.role) || asText(record.role);
+  // `content` is checked at the top level too: an injected notice — the
+  // reminders and advisories a model actually read — carries its text there
+  // rather than inside a message envelope.
+  const content = record.message?.content ?? record.payload?.content ?? record.content;
+  let body = "";
+  if (Array.isArray(content)) {
+    body = content.map(contentText).filter((part) => part !== "").join("\n\n");
+  } else if (typeof content === "string") {
+    body = content;
+  } else if (record.data !== undefined) {
+    body = contentText(record.data) || JSON.stringify(record.data, null, 2);
+  }
+  if (!body) {
+    // An envelope with no content of its own — a title change, a model
+    // change — is its own fields, which are short and worth reading.
+    body = JSON.stringify(record, null, 2);
+  }
+  return { role, kind, body, partial: false };
+}
+
+// How much decoded content renders open. Beyond it the row keeps its
+// disclosure: a 2000-character tool result inlined for every one of 250
+// records would bury the conversation it belongs to.
+const INLINE_BODY_LIMIT = 800;
+
+function TranscriptEntry({ entry, cited }: { entry: TranscriptEvent; cited: boolean }) {
+  const unreadable = entry.kind.toLocaleLowerCase() === "raw" || entry.role.toLocaleLowerCase() === "raw";
+  const decoded = unreadable ? describeRaw(entry.text) : null;
+  const roleName = decoded?.role || (unreadable ? "" : entry.role);
+  const role = unreadable && !decoded
+    ? "raw"
+    : ["user", "assistant"].includes(roleName.toLocaleLowerCase())
+      ? roleName.toLocaleLowerCase()
+      : "other";
+  const kind = decoded?.kind ?? entry.kind;
+  const body = unescapeWhitespace(decoded ? decoded.body : entry.text);
   const timestamp = formatTime(entry.time);
   const heading = (
     <div className="event-heading">
-      <span className={`role-label ${role}`}>{raw ? "raw" : entry.role || "other"}</span>
-      <span className="kind-label">{entry.kind}</span>
-      <span className="event-index">#{entry.index}</span>
+      {/* A record the harness wrote no role for is the harness's own, and
+          saying "record" is the truth; inventing a speaker for it would put
+          words in somebody's mouth. */}
+      <span className={`role-label ${role}`}>{roleName || (decoded ? "record" : "raw")}</span>
+      <span className="kind-label">{kind}</span>
+      {/* Records are numbered from one here and in the ?event= link, because a
+          locator's line is 1-based and a reader comparing the two must not have
+          to know that this list once counted from zero. */}
+      <span className="event-index">#{entry.index + 1}</span>
+      {cited && <Badge label="cited here" tone="violet" />}
       {timestamp && <time dateTime={entry.time ?? undefined} title={timestamp.absolute}>{timestamp.relative}</time>}
     </div>
   );
-  if (raw) {
-    return <details className="transcript-entry raw-entry"><summary>{heading}<span className="disclosure-label">Show raw entry</span></summary><pre>{entry.text}</pre></details>;
+  if (!decoded && unreadable) {
+    return (
+      <details className="transcript-entry raw-entry" id={`event-${entry.index}`} open={cited}>
+        <summary>
+          {heading}
+          <span className="disclosure-label">Show this record as it was stored</span>
+        </summary>
+        <pre>{body}</pre>
+      </details>
+    );
   }
-  return <article className={`transcript-entry ${role}-entry`}>{heading}<pre>{entry.text}</pre></article>;
+  if (decoded?.partial || body.length > INLINE_BODY_LIMIT) {
+    return (
+      <details className={`transcript-entry ${role}-entry`} id={`event-${entry.index}`} open={cited}>
+        <summary>
+          {heading}
+          <span className="disclosure-label">
+            {decoded?.partial
+              ? "Longer than the transcript reader keeps — its first 2000 characters are here"
+              : `${body.slice(0, 120)}…`}
+          </span>
+        </summary>
+        <pre>{body}</pre>
+      </details>
+    );
+  }
+  return (
+    <article className={`transcript-entry ${role}-entry`} id={`event-${entry.index}`}>
+      {heading}
+      <pre>{body}</pre>
+    </article>
+  );
 }
 
 function FetchOutcome({ result }: { result: FetchResult }) {
