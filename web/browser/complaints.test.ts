@@ -351,9 +351,12 @@ test.skipIf(!chrome)("neither steering surface offers a way to close a complaint
   expect(listing.offenders).toEqual([]);
   expect(listing.statusLabels).toEqual([]);
   expect(listing.statusLabelInText).toBe(false);
-  // The whole column vocabulary, so a Status column cannot arrive beside these
-  // and the "Addressed by" column cannot quietly become one.
-  expect(listing.headers).toEqual(["Complaint", "Told by", "Host", "Told", "Addressed by"]);
+  // The whole column vocabulary, so a Status column cannot arrive beside
+  // these and the "Addressed by" column cannot quietly become one. No Host
+  // column: everything unifies in one shared catalog, so which machine an
+  // operator was sitting at when they told Babel something answers no
+  // question a reader of the complaint has.
+  expect(listing.headers).toEqual(["Complaint", "Told by", "Told", "Addressed by"]);
 
   await open("complaints/cmp_rules");
   await complaintRendered();
@@ -556,7 +559,7 @@ test.skipIf(!chrome)("a complaint's citations render in both directions", async 
   expect(citations.elsewhere.tag).toBe("SPAN");
   expect(citations.elsewhere.href).toBeNull();
   expect(citations.elsewhere.text).toContain("fnd_absent-on-this-host");
-  expect(citations.elsewhere.reason).toContain("holds no finding with that identifier");
+  expect(citations.elsewhere.reason).toContain("no finding with that identifier could be read");
 
   await page.click("[data-citation='rle_hyp-addresses-rules'] .citation-target");
   await page.waitForFunction(

@@ -460,7 +460,11 @@ export interface HypothesisSummary extends FleetMark {
   run_id: string;
   ancestor_id?: string;
   created_at: string;
-  status: HypothesisStatus;
+  // Empty on a merged row this instance could not open: a candidate's status
+  // lives in an append-only history on the host that holds it, so a record
+  // that would not open has none to report and the server sends none rather
+  // than a plausible one.
+  status: HypothesisStatus | "";
   statement: string;
   provisional_labels?: string[];
   observations: number;

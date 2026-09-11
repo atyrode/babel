@@ -161,11 +161,21 @@ test.skipIf(!chrome)("every Phase B area renders against the mock", async () => 
   await open("explore");
   await visible("Exploration is not startable here");
   await visible("Outcome integrity and unresolved state");
-  await visible("pending-sync");
+  // The receipt strip says what a run recorded and under what authority. It
+  // carries no publication state and names no machine: a receipt is read for
+  // what the run did, and where its records have replicated to is plumbing
+  // the reading path dropped.
+  const receiptColumns = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".runs-card thead th")).map((cell) => cell.textContent ?? ""));
+  expect(receiptColumns).toEqual(["Receipt", "Run", "Recorded", "Authority", "Counts"]);
+  await visible("retrievals");
 
+  // Six candidates in this machine's store and the three the catalog merged:
+  // a listing reads the deployment by default, so the page a reader lands on
+  // is the whole body of work rather than one computer's share of it.
   await open("hypotheses");
   await page.waitForFunction(
-    () => document.querySelectorAll(".frontier-table tbody tr").length === 6,
+    () => document.querySelectorAll(".frontier-table tbody tr").length === 9,
     { timeout: 15_000 },
   );
 

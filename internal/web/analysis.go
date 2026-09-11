@@ -192,13 +192,27 @@ type hypothesisList struct {
 // (§5.2, §4.7), so a listing that hid rejected candidates would misrepresent
 // the frontier as smaller than it is.
 //
+// The rows are internal/frontier's own enumeration, page and total together.
+// This route used to union internal/review's queue with the unexplored
+// frontier, because the store offered no listing; it now does, and the union
+// was a second definition of "the frontier" — it could not reach a superseded
+// revision or a rejected candidate nobody had enrolled, so the dashboard,
+// which tallies the store, counted records this page could not show. One
+// enumeration means the panel and the page that owns it cannot disagree, and
+// it is the same one `babel hypotheses` pages.
+//
+// Status narrowing is the store's as well: a candidate's status is the newest
+// entry of an append-only history rather than a column, and resolving it is
+// internal/frontier's work, which it does inside the query instead of making
+// this route read every record to find out.
+//
 // ?fleet=1 appends the other hosts' committed candidates after this machine's,
 // attributed. Total stays this machine's frontier count: the fleet block is
 // another deployment-wide fact beside the local one, not more of it, and a
 // count that silently spanned both would make "the frontier" mean two things on
 // one page.
 func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
-	if !s.requireService(w, s.opts.Frontier != nil && s.opts.Review != nil, "the hypothesis frontier") {
+	if !s.requireService(w, s.opts.Frontier != nil, "the hypothesis frontier") {
 		return
 	}
 	pg, ok := s.requirePage(w, r)
@@ -213,36 +227,17 @@ func (s *Server) handleHypotheses(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ids, err := s.hypothesisIDs(r.Context())
+	filter := frontier.ListFilter{Limit: pg.limit, Offset: pg.offset}
+	if status != "" {
+		filter.Statuses = []frontier.Status{status}
+	}
+	records, total, err := s.opts.Frontier.Hypotheses(r.Context(), filter)
 	if err != nil {
 		s.serviceError(w, r, err)
 		return
 	}
-	result := hypothesisList{Items: []HypothesisSummary{}}
-	// With no status filter the identifiers are the count, so only the
-	// requested page is read. With one, every candidate has to be read to
-	// know whether it matches, because status lives in an append-only event
-	// history rather than in a column a listing could filter on.
-	if status == "" {
-		result.Total = len(ids)
-		start, end := pg.window(len(ids))
-		ids = ids[start:end]
-	}
-	for _, id := range ids {
-		record, err := s.opts.Frontier.Hypothesis(r.Context(), id)
-		if err != nil {
-			s.serviceError(w, r, err)
-			return
-		}
-		if status != "" {
-			if record.Status != status {
-				continue
-			}
-			result.Total++
-			if result.Total <= pg.offset || len(result.Items) >= pg.limit {
-				continue
-			}
-		}
+	result := hypothesisList{Items: make([]HypothesisSummary, 0, len(records)), Total: total}
+	for _, record := range records {
 		summary, err := s.summarizeHypothesis(r.Context(), record)
 		if err != nil {
 			s.serviceError(w, r, err)
@@ -332,51 +327,6 @@ func (s *Server) hypothesisStatus(w http.ResponseWriter, r *http.Request) (front
 	}
 	s.writeError(w, http.StatusBadRequest, "status is not an exploration status")
 	return "", false
-}
-
-// hypothesisIDs enumerates the candidates this server can list.
-//
-// It takes two queries because internal/frontier deliberately offers no
-// enumeration — it answers questions about a record you name, and its one
-// listing is the unexplored frontier — so the second source is internal/review's
-// queue, which is the set of records exploration and review have enrolled.
-// Their union is the same one `babel hypotheses` lists, so the two surfaces
-// agree; a candidate that is neither unexplored nor enrolled is reachable by
-// identifier and not by listing, which is a gap in the services rather than
-// one this route can close.
-func (s *Server) hypothesisIDs(ctx context.Context) ([]string, error) {
-	items, err := s.opts.Review.Queue(ctx, review.QueueFilter{
-		Type:        frontier.EntityHypothesis,
-		AllStatuses: true,
-		Limit:       listScanCap,
-	})
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(items))
-	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		if _, ok := seen[item.Subject.ID]; ok {
-			continue
-		}
-		seen[item.Subject.ID] = struct{}{}
-		ids = append(ids, item.Subject.ID)
-	}
-	unexplored, err := s.opts.Frontier.Unexplored(ctx, listScanCap)
-	if err != nil {
-		return nil, err
-	}
-	for _, record := range unexplored {
-		if _, ok := seen[record.ID]; ok {
-			continue
-		}
-		seen[record.ID] = struct{}{}
-		ids = append(ids, record.ID)
-	}
-	if len(ids) > listScanCap {
-		ids = ids[:listScanCap]
-	}
-	return ids, nil
 }
 
 func (s *Server) summarizeHypothesis(ctx context.Context, record frontier.Hypothesis) (HypothesisSummary, error) {

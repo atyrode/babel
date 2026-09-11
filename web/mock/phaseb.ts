@@ -255,6 +255,16 @@ function remoteMerged(kind: string): FleetRecord[] {
   );
 }
 
+// remoteStatus is the exploration status a merged candidate carries: the
+// snapshot taken when the record was staged, which is the only answer
+// available without asking the owning host. A record this instance could not
+// open carries none at all — its status lives in an append-only history on
+// the host that holds it — and the server renders exactly that: an empty
+// status beside an empty statement and the reason the record would not open.
+function remoteStatus(record: FleetRecord): HypothesisStatus | "" {
+  return record.unopened ? "" : "investigating";
+}
+
 // syncEnvelope is the degraded marker a listing carries when the catalog could
 // not answer. Its detail is the server's own sentence, so the mock previews the
 // same wording rather than a paraphrase.
@@ -1358,7 +1368,7 @@ const references: Record<string, ReferenceGraph> = {
           id: "rle_duplicates-absent-hyp", kind: "duplicates",
           other: {
             kind: "hypothesis", id: "hyp_absent-on-this-host", inert: true,
-            reason: "this host holds no hypothesis with that identifier: the edge's shape is visible here, the record it names is not",
+            reason: "no hypothesis with that identifier could be read: the edge's shape is visible here, the record it names is not",
           },
           actor: { kind: "operator", id: "operator" },
           created_at: "2026-08-29T22:10:00Z",
@@ -1405,7 +1415,7 @@ const references: Record<string, ReferenceGraph> = {
           id: "rle_evidence-absent-obs", kind: "evidence",
           other: {
             kind: "observation", id: "obs_absent-on-this-host", inert: true,
-            reason: "this host holds no observation with that identifier: the edge's shape is visible here, the record it names is not",
+            reason: "no observation with that identifier could be read: the edge's shape is visible here, the record it names is not",
           },
           actor: { kind: "run", id: "run_discovery-07" },
           created_at: "2026-08-29T20:30:00Z",
@@ -1496,7 +1506,7 @@ const references: Record<string, ReferenceGraph> = {
           id: "rle_absent-finding-addresses-rules", kind: "addresses",
           other: {
             kind: "finding", id: "fnd_absent-on-this-host", inert: true,
-            reason: "this host holds no finding with that identifier: the edge's shape is visible here, the record it names is not",
+            reason: "no finding with that identifier could be read: the edge's shape is visible here, the record it names is not",
           },
           actor: { kind: "run", id: "run_synthesize-09" },
           created_at: "2026-08-31T23:40:00Z",
@@ -2332,14 +2342,25 @@ export function overviewPhaseB(unwired: Set<string>): {
   runs: OverviewRuns;
 } {
   const details = Object.values(hypotheses);
+  // The panel is the deployment's, not this machine's: the server tallies its
+  // own store and adds the other hosts' committed candidates, so the number
+  // the dashboard shows is the number the frontier listing lists. A mock that
+  // counted only the local fixtures would preview a panel disagreeing with
+  // the page that owns it.
+  const merged = remoteMerged("hypothesis");
   const statuses: HypothesisStatus[] = [
     "untriaged", "queued", "investigating", "deferred", "rejected", "promoted",
   ];
   // Zeros included, in §4.2 order, exactly as internal/web serves them: the
-  // panel describes the lifecycle rather than only its populated half.
+  // panel describes the lifecycle rather than only its populated half. A
+  // merged record this instance could not open is counted above and placed in
+  // no status, because it has none to read.
   const lifecycle = statuses.map((status) => ({
     status,
-    count: unwired.has("frontier") ? 0 : details.filter((d) => d.hypothesis.status === status).length,
+    count: unwired.has("frontier")
+      ? 0
+      : details.filter((d) => d.hypothesis.status === status).length
+        + merged.filter((record) => remoteStatus(record) === status).length,
   }));
   const frontier: OverviewFrontier = unwired.has("frontier")
     ? {
@@ -2352,7 +2373,7 @@ export function overviewPhaseB(unwired: Set<string>): {
       }
     : {
         available: true,
-        hypotheses: details.length,
+        hypotheses: details.length + merged.length,
         statuses: lifecycle,
         truncated: false,
         rows: [...details]
@@ -2557,23 +2578,29 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
     // stays the enumeration's, exactly as the server does it. The read is
     // deployment-wide unless `fleet=0` narrows it: the catalog is one body of
     // work, so there is no scope for a reader to choose.
+    //
+    // The status narrowing reaches the merged rows too, on the server's
+    // terms: a filter that stopped at the local page would answer "which
+    // candidates are rejected" with every candidate every other host holds.
     const fleetRows =
       url.searchParams.get("fleet") !== "0"
-        ? remoteMerged("hypothesis").map((record): HypothesisSummary => ({
-            id: record.record_id,
-            run_id: record.run_id,
-            created_at: record.committed_at ?? "",
-            status: "investigating",
-            statement: record.summary ?? "",
-            observations: 0,
-            host: record.host,
-            host_id: record.host_id,
-            host_attributed: record.host_attributed,
-            local_host: record.local_host,
-            sync: record.sync,
-            committed_at: record.committed_at,
-            unopened: record.unopened,
-          }))
+        ? remoteMerged("hypothesis")
+            .filter((record) => !status || remoteStatus(record) === status)
+            .map((record): HypothesisSummary => ({
+              id: record.record_id,
+              run_id: record.run_id,
+              created_at: record.committed_at ?? "",
+              status: remoteStatus(record),
+              statement: record.summary ?? "",
+              observations: 0,
+              host: record.host,
+              host_id: record.host_id,
+              host_attributed: record.host_attributed,
+              local_host: record.local_host,
+              sync: record.sync,
+              committed_at: record.committed_at,
+              unopened: record.unopened,
+            }))
         : [];
     return json({ items: [...slice, ...fleetRows], total, ...syncEnvelope() });
   }

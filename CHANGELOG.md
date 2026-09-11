@@ -57,6 +57,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   own aggregate, so it is `babel hypotheses`'s total and includes the
   superseded revisions and resting candidates the old enumeration could not
   reach.
+- **The frontier listing and the dashboard count one frontier.** The
+  hypotheses page enumerated internal/review's queue unioned with the
+  unexplored frontier, which was the only listing the store offered when the
+  route was written: a superseded revision and a candidate that came to rest
+  without being enrolled were reachable by identifier and by no listing at
+  all, so the page showed fewer candidates than the dashboard beside it
+  counted. The page now pages the store's own enumeration — the one `babel
+  hypotheses` lists — and narrows by status inside the query rather than by
+  reading every record to find out. A candidate another instance published
+  and this one cannot open is counted by the panel as well as listed by the
+  page, and is placed in no status, because it has none this instance has
+  read.
 - **Concurrent cycles stop colliding in the frontier index.** Each cycle opens
   its own handle on the index, and the reconcile read what the index already
   held *before* opening its write transaction, so two cycles could both see a

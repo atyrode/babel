@@ -890,14 +890,23 @@ func TestPhaseBReadRoutes(t *testing.T) {
 	// the observation count, the exploration status, the derived review
 	// status — are derivations only the owning host holds, and the merged
 	// deployment-wide shape has its own test in fleet_test.go.
+	//
+	// The count is the store's enumeration, which is the whole point of the
+	// route reading it: the fixture's five candidates include one that came
+	// to rest without being enrolled and one superseded revision, and the
+	// queue-plus-unexplored union this listing used to take could reach
+	// neither. Both are asserted by name below, because "nothing is
+	// deleted" (§5.2) is only true if a listing can show them.
 	t.Run("hypotheses list every status", func(t *testing.T) {
 		var got hypothesisList
 		decodeResponse(t, h.get("/api/hypotheses?fleet=0"), &got)
-		if got.Total != 3 || len(got.Items) != 3 {
+		if got.Total != 5 || len(got.Items) != 5 {
 			t.Fatalf("hypotheses = %+v", got)
 		}
 		var found HypothesisSummary
+		listed := make(map[string]HypothesisSummary, len(got.Items))
 		for _, item := range got.Items {
+			listed[item.ID] = item
 			if item.ID == h.hypothesis.ID {
 				found = item
 			}
@@ -905,6 +914,12 @@ func TestPhaseBReadRoutes(t *testing.T) {
 		if found.Statement == "" || found.Observations != 1 || found.Status != string(frontier.StatusUntriaged) ||
 			found.ReviewStatus != string(frontier.ReviewNew) {
 			t.Fatalf("hypothesis summary = %+v", found)
+		}
+		if resting, ok := listed[h.resting.ID]; !ok || resting.Status != string(frontier.StatusRejected) {
+			t.Errorf("the rejected candidate is reachable by id and not by listing: %+v", resting)
+		}
+		if _, ok := listed[h.original.ID]; !ok {
+			t.Errorf("the superseded revision %s is not listed", h.original.ID)
 		}
 	})
 
@@ -914,10 +929,17 @@ func TestPhaseBReadRoutes(t *testing.T) {
 		if response.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d", response.StatusCode)
 		}
+		// Four of the five are untriaged; the fifth is the rejected one,
+		// which the filter has to exclude rather than merely not show.
 		var filtered hypothesisList
 		decodeResponse(t, h.get("/api/hypotheses?status=untriaged"), &filtered)
-		if filtered.Total != 3 {
+		if filtered.Total != 4 || len(filtered.Items) != 4 {
 			t.Fatalf("filtered = %+v", filtered)
+		}
+		var rejected hypothesisList
+		decodeResponse(t, h.get("/api/hypotheses?fleet=0&status=rejected"), &rejected)
+		if rejected.Total != 1 || len(rejected.Items) != 1 || rejected.Items[0].ID != h.resting.ID {
+			t.Fatalf("rejected = %+v", rejected)
 		}
 		// The narrowing reaches the fleet block too. This machine has no
 		// promoted candidate and no investigating one, and the deployment
@@ -1469,7 +1491,9 @@ func TestPhaseBPaginationBoundsALargeResult(t *testing.T) {
 			t.Fatalf("Enroll: %v", err)
 		}
 	}
-	total := extra + 3
+	// The fixture's own five candidates, which the store enumerates whether
+	// or not review enrolled them, plus the hundred and twenty written here.
+	total := extra + 5
 
 	// The default page is bounded even though the caller named no limit.
 	//
@@ -1505,10 +1529,13 @@ func TestPhaseBPaginationBoundsALargeResult(t *testing.T) {
 		}
 	}
 
-	// A filtered listing pages over the filtered set, not over the raw one.
+	// A filtered listing pages over the filtered set, not over the raw one:
+	// every candidate written above is untriaged, and the fixture's rejected
+	// one is the single record the filter removes.
+	untriaged := total - 1
 	var filtered hypothesisList
 	decodeResponse(t, h.get("/api/hypotheses?status=untriaged&limit=10&offset=115"), &filtered)
-	if filtered.Total != total || len(filtered.Items) != total-115 {
+	if filtered.Total != untriaged || len(filtered.Items) != untriaged-115 {
 		t.Fatalf("filtered page: total %d items %d", filtered.Total, len(filtered.Items))
 	}
 

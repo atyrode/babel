@@ -299,9 +299,9 @@ function CitationRow({
 
 // CitationTarget is where the inert rule lands. An endpoint this app has no
 // page for renders as identified text rather than as a link that would fail,
-// and the server's own reason renders beside it when there is one: "this host
-// holds no finding with that identifier" is about one record and cannot be
-// hoisted into a sentence about a kind.
+// and the server's own reason renders beside it when there is one: "no
+// finding with that identifier could be read" is about one record and cannot
+// be hoisted into a sentence about a kind.
 function CitationTarget({ endpoint }: { endpoint: ReferenceEndpoint }) {
   const route = citationRoute(endpoint);
   const name = endpoint.label ?? endpoint.id;

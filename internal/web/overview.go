@@ -599,6 +599,14 @@ func (s *Server) overviewFrontier(r *http.Request) (overviewFrontier, map[string
 	// work, and on a machine that runs no explorations it would report none.
 	remote, remoteErr := s.overviewOtherHosts(r)
 	for _, record := range remote {
+		// A record this instance could not open carries no status, so it
+		// is counted below and placed in no bucket: the distribution says
+		// where the candidates whose lifecycle this instance has read
+		// stand, and inventing a state for a sealed record would be this
+		// panel asserting something it did not observe.
+		if record.Published == nil {
+			continue
+		}
 		byStatus[frontier.Status(record.Published.Status)]++
 	}
 	section.Hypotheses = local + len(remote)
@@ -634,6 +642,12 @@ func (s *Server) overviewFrontier(r *http.Request) (overviewFrontier, map[string
 		host = s.opts.Fleet.LocalHost()
 	}
 	for _, record := range remote {
+		// Counted, but not a row: a row is read for the candidate's own
+		// wording, and a sealed record has none. The frontier listing is
+		// where it appears as itself, with the reason it cannot be read.
+		if record.Published == nil {
+			continue
+		}
 		mark, summary := markFleetRecord(record, host)
 		rows = append(rows, row{record.Published.CreatedAt, overviewHypothesis{
 			fleetMark: mark,
@@ -663,6 +677,14 @@ func (s *Server) overviewFrontier(r *http.Request) (overviewFrontier, map[string
 // dashboard, with their content, so a row carries the wording and not just an
 // identifier.
 //
+// Every committed record is returned, including one this instance cannot open:
+// the frontier listing renders such a record as a row that says it exists and
+// why it cannot be read (internal/fleet's rule — never dropped, never
+// escalated), so a dashboard that left it out of the count would report fewer
+// candidates than the page it links to lists. The caller places it in no
+// status: a sealed record's lifecycle state is the owning host's and this
+// instance has not read it, so it is counted and not distributed.
+//
 // A failure is returned rather than raised: the dashboard is a glance at six
 // services and one unreachable shared catalog must not blank the five that
 // answered. The caller reports the gap by marking the count a floor, which is
@@ -676,15 +698,7 @@ func (s *Server) overviewOtherHosts(r *http.Request) ([]fleet.Record, error) {
 		s.logf("GET %s: fleet frontier unavailable", r.URL.Path)
 		return nil, err
 	}
-	out := records[:0]
-	for _, record := range records {
-		// A record this machine cannot open has no status and no wording,
-		// and counting it would report a number the page cannot show.
-		if record.Published != nil {
-			out = append(out, record)
-		}
-	}
-	return out, nil
+	return records, nil
 }
 
 func (s *Server) overviewRuns(r *http.Request, byRun map[string][]string) overviewRuns {

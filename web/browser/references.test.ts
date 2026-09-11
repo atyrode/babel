@@ -181,6 +181,14 @@ test.skipIf(!chrome)("a record's citations render as two directions with edge-ki
         ),
       ),
       rows: directions.map((section) => section.querySelectorAll(".citation-entry").length),
+      // Who asserted each citation. It rides the row's own tooltip rather
+      // than a line of its own: thirteen "asserted by run <id>" lines sat
+      // between a reader and the decision controls below, and provenance is
+      // what a reader checks once. Every row must still carry it — an edge
+      // nobody is attributed for is not a citation.
+      attribution: Array.from(panel?.querySelectorAll(".citation-entry") ?? []).map(
+        (entry) => entry.getAttribute("title") ?? "",
+      ),
       // The count-label is the whole degree of the record: the panel is read
       // for "how connected is this", so the two directions have to add up in
       // the header rather than only in the rows.
@@ -204,8 +212,12 @@ test.skipIf(!chrome)("a record's citations render as two directions with edge-ki
   expect(state.framing).toContain("rests on");
   expect(state.framing).toContain("is refined by");
   // Attribution is on every row: who asserted the link, never just when.
-  expect(state.framing).toContain("asserted by run");
-  expect(state.framing).toContain("asserted by operator");
+  expect(state.attribution).toHaveLength(7);
+  for (const asserted of state.attribution) {
+    expect(asserted).toMatch(/^Asserted by (run|operator|system)\b/u);
+  }
+  expect(state.attribution).toContain("Asserted by run run_discovery-07");
+  expect(state.attribution).toContain("Asserted by operator operator");
 
   await shoot(".references-card", "record-citations.png");
 });
@@ -233,13 +245,16 @@ test.skipIf(!chrome)(
       targets.map((target) => [target.edge, target]),
     );
 
-    // A record this host does not hold. The row stays — that is the whole
+    // A record that could not be read. The row stays — that is the whole
     // point of a plaintext-eligible endpoint — and it is text, not a link.
+    // The reason says what could not be read rather than which machine does
+    // not hold it: the reading path names no machine, and an operator reading
+    // a citation cannot act on a hostname anyway.
     const absent = byEdge["rle_duplicates-absent-hyp"];
     expect(absent?.inert).toBe(true);
     expect(absent?.tag).toBe("SPAN");
     expect(absent?.href).toBeNull();
-    expect(absent?.reason).toContain("holds no hypothesis with that identifier");
+    expect(absent?.reason).toContain("no hypothesis with that identifier could be read");
 
     // A namespace with no page in this build. The reason names the namespace,
     // so a missing page is distinguishable from a missing record.
@@ -248,13 +263,15 @@ test.skipIf(!chrome)(
     expect(unknown?.href).toBeNull();
     expect(unknown?.reason).toContain('opens no page for the "complaint" namespace');
 
-    // A session on another machine, and a backlink from a record that is not
-    // here: the direction does not change what is knowable.
+    // A session the catalog does not carry, and a backlink from a record that
+    // could not be read: the direction does not change what is knowable. The
+    // session's reason still names the catalog, because a durable key is
+    // resolved against it rather than against a record store.
     expect(byEdge["rle_evidence-session-absent"]?.reason).toContain(
       "holds no session with that durable key",
     );
     expect(byEdge["rle_evidence-absent-obs"]?.reason).toContain(
-      "holds no observation with that identifier",
+      "no observation with that identifier could be read",
     );
 
     // Nothing on the panel points anywhere but this app. A citation's
@@ -355,7 +372,24 @@ test.skipIf(!chrome)("a record with no citations says so in both directions", as
 });
 
 test.skipIf(!chrome)("the disposition inbox reports each record's citation counts", async () => {
-  await open("review?status=all");
+  // The inbox opens on proposals: a first screen of enrolled candidates
+  // buried the handful of records worth a verdict. The counts are a property
+  // of every row whatever its kind, so the type filter is widened here to put
+  // a hypothesis and a proposal on one page. It is widened through the
+  // control an operator uses, because the page's filters are its own state
+  // and no route carries them.
+  await open("review");
+  await page.waitForSelector(".review-toolbar .filter-chips button", { timeout: 15_000 });
+  const widened = await page.evaluate(() => {
+    const chip = Array.from(
+      document.querySelectorAll(
+        '.review-toolbar .filter-chips[aria-label="Filter by record type"] button',
+      ),
+    ).find((button) => (button as HTMLElement).innerText.trim() === "All types");
+    (chip as HTMLElement | undefined)?.click();
+    return chip !== undefined;
+  });
+  expect(widened).toBe(true);
   await visible("hyp_unverified-closures");
 
   const counts = await page.evaluate(() => {

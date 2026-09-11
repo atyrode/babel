@@ -129,16 +129,21 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 		t.Errorf("an undescribed session claimed a title or a time: %+v", got.Activity.Rows[4])
 	}
 
-	// Seven candidates exist, and the dashboard counts the deployment
-	// rather than the machine. Five are this machine's — the whole frontier
-	// as §5.2 keeps it, including the superseded original of the
-	// operator-revised chain and the rejected candidate the revive fixture
-	// needs, neither of which is enrolled for review or unexplored. Two more
-	// are the fleet's committed candidates — the other laptop's and the
-	// unattributed one — where the staged candidate is not globally
-	// reviewable and the sealed one this instance cannot open has no status
-	// to count.
-	if !got.Frontier.Available || got.Frontier.Hypotheses != 7 || got.Frontier.Truncated {
+	// Eight candidates exist in the deployment, and the dashboard counts
+	// the deployment rather than the machine. Five are this machine's — the
+	// whole frontier as §5.2 keeps it, including the superseded original of
+	// the operator-revised chain and the rejected candidate the revive
+	// fixture needs, neither of which is enrolled for review or
+	// unexplored. Three are the fleet's committed candidates: the other
+	// laptop's, the unattributed one, and the sealed one this instance
+	// cannot open. The staged candidate is not counted at all, because §9
+	// makes staged output not globally reviewable.
+	//
+	// The sealed record is counted because the frontier listing shows it as
+	// a row — it says the record exists and why it cannot be read — and a
+	// panel that reported fewer candidates than the page it links to lists
+	// would be a second source of truth about the same corpus.
+	if !got.Frontier.Available || got.Frontier.Hypotheses != 8 || got.Frontier.Truncated {
 		t.Errorf("frontier section = %+v", got.Frontier)
 	}
 	// All six exploration statuses, in §4.2 order, zeros included: a
@@ -152,18 +157,27 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 			t.Errorf("status %d = %q, want %q", i, got.Frontier.Statuses[i].Status, want)
 		}
 	}
-	// The distribution adds up to the total, and it is a distribution over
-	// the deployment: this machine holds four untriaged candidates and one
-	// rejected, and the two investigating ones are the fleet's, a number
-	// this machine's own corpus cannot produce. A dashboard that counted
-	// only local records would report a private backlog where the
-	// deployment has one shared body of work.
+	// The distribution is over the deployment too: this machine holds four
+	// untriaged candidates and one rejected, and the two investigating ones
+	// are the fleet's, a number this machine's own corpus cannot produce. A
+	// dashboard that counted only local records would report a private
+	// backlog where the deployment has one shared body of work.
+	//
+	// It adds up to one less than the total, and the missing one is the
+	// sealed record: its lifecycle state lives on the host that holds it and
+	// this instance has not read it, so it is counted and placed in no
+	// bucket rather than assigned a status nobody observed.
 	counts := map[string]int{}
+	distributed := 0
 	for _, status := range got.Frontier.Statuses {
 		counts[status.Status] = status.Count
+		distributed += status.Count
 	}
 	if counts["untriaged"] != 4 || counts["rejected"] != 1 || counts["investigating"] != 2 {
 		t.Errorf("status distribution = %+v", got.Frontier.Statuses)
+	}
+	if distributed != got.Frontier.Hypotheses-1 {
+		t.Errorf("distribution totals %d of %d candidates", distributed, got.Frontier.Hypotheses)
 	}
 	if len(got.Frontier.Rows) != 5 {
 		t.Fatalf("frontier rows = %+v", got.Frontier.Rows)
@@ -372,10 +386,6 @@ func (f *countingFrontier) Hypothesis(_ context.Context, id string) (frontier.Hy
 		}
 	}
 	return frontier.Hypothesis{}, frontier.ErrUnknownEntity
-}
-
-func (f *countingFrontier) Unexplored(_ context.Context, limit int) ([]frontier.Hypothesis, error) {
-	return f.records[:min(limit, len(f.records))], nil
 }
 
 func (f *countingFrontier) ObservationsFor(context.Context, string) ([]frontier.Observation, error) {
