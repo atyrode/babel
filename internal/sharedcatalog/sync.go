@@ -49,6 +49,15 @@ type RecordKind string
 // internal/complaint's, and it is the only kind here the operator authored
 // unprompted (issue #115) - which is why it is not folded into Context: guidance
 // answers something Babel asked, and steering answers nothing.
+//
+// Evaluation is internal/evaluation's (SPEC.md 4.12, issue #219): Babel's
+// attributed judgement of its own output - a reception vote, an evidence
+// check, an outcome assessment, and the operator's criteria and feedback on
+// them. It is deliberately not Disposition, which is the operator's ruling: a
+// fleet of workers voting support decides nothing, and reading an aggregate of
+// machine opinion with the authority of an operator decision is the failure
+// SPEC.md 4.12 separates the two vocabularies to prevent. migrations/0012
+// carries the rest of the argument.
 const (
 	KindHypothesis  RecordKind = "hypothesis"
 	KindObservation RecordKind = "observation"
@@ -60,13 +69,14 @@ const (
 	KindPreparation RecordKind = "preparation"
 	KindReceipt     RecordKind = "receipt"
 	KindComplaint   RecordKind = "complaint"
+	KindEvaluation  RecordKind = "evaluation"
 )
 
 func (k RecordKind) valid() bool {
 	switch k {
 	case KindHypothesis, KindObservation, KindFinding, KindProposal,
 		KindLink, KindDisposition, KindContext, KindPreparation, KindReceipt,
-		KindComplaint:
+		KindComplaint, KindEvaluation:
 		return true
 	}
 	return false

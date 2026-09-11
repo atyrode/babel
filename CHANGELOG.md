@@ -9,20 +9,38 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Added
+
+- **Babel reviews its own backlog, and the browser reads what it found.** The
+  approved full-lifecycle evaluation system is now runtime behaviour: a worker
+  draws one claimed, role-bounded review at a time under a versioned operator
+  policy, forms a bare vote or a substantive contribution against one exact
+  revision, and records it as an attributed, append-only, published record.
+  Blinding is procedural — the served projection, the job parameters and the
+  tool schemas all withhold prior evaluations — and a run may correct its own
+  statement only through a follow-up assignment reserved before the second pass
+  runs. Coverage is a first-class inventory: never-reviewed, reassessment-due,
+  overdue, unsupported, blocked and not-applicable are distinct, a bare vote
+  cannot satisfy an evidence check or an outcome verification, and a skipped or
+  unpriced attempt stays a visible gap rather than becoming a negative vote.
+  The conductor gains a protected evaluation share (`--evaluate`,
+  `--evaluate-cadence`) beside `babel evaluate`, and `/evaluation` serves the
+  ranked backlog, the coverage inventory, the policy form and one record's
+  full history. Spending is fleet-wide: PostgreSQL now carries evaluation
+  claims and a per-day allowance, claims are fenced, unobserved spend is
+  charged at its reservation rather than assumed free, and a reconsideration
+  decision states `reopen` or `retain` explicitly — reopening writes the
+  disposition in the same transaction as the decision, and retaining changes
+  nothing about the earlier ruling.
+
 ### Changed
 
-- **Babel's next evaluation loop is specified around improving the backlog.**
-  A review may be just an upvote, downvote, or uncertainty; prose is optional.
-  The approved design separates the operator's recommended reading order from
-  a budgeted, weighted-random review queue and follows proposals through
-  implementation, observed outcomes, and reconsideration. Periodic coverage
-  checks surface unchecked artifacts; recommendations reflect current work,
-  recorded pain, and reality rather than popularity alone. The specification
-  and `docs/evaluation-lifecycle.md` define authority boundaries, shared
-  publication, revision-aware votes, and cross-instance acceptance scenarios.
-  This is a design delivery: runtime voting, scheduling, and lifecycle lanes
-  are not implemented or enabled by this change, and the existing version-1
-  triage recipe remains unchanged until its writer can enforce the new contract.
+- **Proposal triage is retired as a standing duty.** The version-1 duty ranked
+  unruled proposals within a cohort and demanded a counterargument for every
+  piece of advice. Its recipe is now version 2, its authorization toggle
+  (`--babel-triages-the-queue`) authorizes the evaluation share instead, and
+  historical v1 advice stays readable as advice: no rank is converted into a
+  vote, an exposure or a prediction.
 
 ## [0.2.5] - 2026-09-11
 

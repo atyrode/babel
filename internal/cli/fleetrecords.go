@@ -725,15 +725,15 @@ func parseHostIDs(c *cmd, flagName string, values []string) ([]string, error) {
 
 // recordKindVocabulary is the closed set of Phase B record kinds the shared
 // catalog carries. The values come from the package that owns them, so a
-// renamed kind cannot drift past the compiler; migrations/0003's CHECK is what
-// keeps the set closed, so a kind added there costs an entry here and the
-// review that comes with editing this list.
+// renamed kind cannot drift past the compiler. The catalog migrations keep the
+// set closed; extending it requires updating this explicit CLI vocabulary too.
 var recordKindVocabulary = []sharedcatalog.RecordKind{
 	sharedcatalog.KindHypothesis, sharedcatalog.KindObservation,
 	sharedcatalog.KindFinding, sharedcatalog.KindProposal,
 	sharedcatalog.KindLink, sharedcatalog.KindDisposition,
 	sharedcatalog.KindContext, sharedcatalog.KindPreparation,
 	sharedcatalog.KindReceipt, sharedcatalog.KindComplaint,
+	sharedcatalog.KindEvaluation,
 }
 
 // parseRecordKinds validates --kind against that vocabulary, reading the

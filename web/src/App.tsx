@@ -12,6 +12,10 @@ import {
 import ArchivePage from "./pages/ArchivePage";
 import ComplaintPage from "./pages/ComplaintPage";
 import DashboardPage from "./pages/DashboardPage";
+import EvaluationCoveragePage from "./pages/EvaluationCoveragePage";
+import EvaluationItemPage from "./pages/EvaluationItemPage";
+import EvaluationPage from "./pages/EvaluationPage";
+import EvaluationPolicyPage from "./pages/EvaluationPolicyPage";
 import ExplorePage from "./pages/ExplorePage";
 import FindingPage from "./pages/FindingPage";
 import FindingsPage from "./pages/FindingsPage";
@@ -185,6 +189,16 @@ function App() {
             <NavLink to="/reality/focus" className={({ isActive }) => isActive ? "active" : undefined}>
               Focus
             </NavLink>
+            {/* Evaluation is its own entry rather than a tab on Review, and
+                the difference is what each one is for. Review is the queue of
+                things enrolled for a decision, in enrolment order. This is
+                everything Babel has produced, ordered by a recorded policy,
+                with coverage of what nobody has read yet — and §8.5 requires
+                it to be reachable by navigation rather than by a URL the
+                operator already knew. */}
+            <NavLink to="/evaluation" className={({ isActive }) => isActive ? "active" : undefined}>
+              Evaluation
+            </NavLink>
             <NavLink to="/review" className={({ isActive }) => isActive ? "active" : undefined}>
               Review
             </NavLink>
@@ -270,6 +284,15 @@ function App() {
                 than a record. */}
             <Route path="focus" element={<FocusPage />} />
           </Route>
+          {/* #219's evaluation surface: the ranked backlog, the coverage
+              inventory, the review policy, and one record's whole
+              evaluation. The two named sub-paths are more specific than
+              /evaluation/:kind/:id and the router ranks them above it, so
+              "coverage" is never read as a record kind. */}
+          <Route path="/evaluation" element={<EvaluationPage />} />
+          <Route path="/evaluation/coverage" element={<EvaluationCoveragePage />} />
+          <Route path="/evaluation/policy" element={<EvaluationPolicyPage />} />
+          <Route path="/evaluation/:kind/:id" element={<EvaluationItemPage />} />
           <Route path="/review" element={<ReviewPage />} />
           <Route path="/review/:type/:id" element={<ReviewRecordPage />} />
           {/* #115's capture rides the review surface, so a complaint's record

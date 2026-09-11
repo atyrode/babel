@@ -59,10 +59,14 @@ type queueResult struct {
 
 // handleReviewQueue lists what is awaiting review, in enrolment order.
 //
-// The order is the service's and is not re-sorted here. §5.2 confines novelty
-// and priority to ordering and forbids them from gating whether a candidate
-// exists, and a queue that reordered itself by a model-produced score would
-// quietly do the triage the reviewer is there to do.
+// The order is the service's enrolment order and is not re-sorted here. This
+// is a queue of records enrolled for a §4.7 decision, in the order they were
+// enrolled, and the one thing it must not do is silently become a ranking: a
+// listing reordered by a model-produced number that the reader cannot see,
+// argue with, or date would have performed the triage the reviewer is here to
+// perform. §8.5's Recommended order is the opposite arrangement and lives on
+// the evaluation surface, where the ordering names its basis, its contributing
+// records and its freshness, and where the sort is the operator's choice.
 //
 // ?fleet=1 appends the other hosts' committed review records after the local
 // page. Local first, and the two blocks are not interleaved: this machine's

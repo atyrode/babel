@@ -1,397 +1,380 @@
 ---
 id: babel-triages-the-queue
-version: 1
+version: 2
 kind: meta
-scope: [corpus, repository]
+scope: [corpus]
 stages: [investigate, challenge, synthesize]
-capabilities: [corpus-search, repo-read]
+capabilities: [corpus-search]
 default: false
 ---
 
 # Babel triages the queue
 
-> **Standing duty, off by default.** This recipe is never part of a default
-> selection. It runs when the operator has authorized the review triage duty —
-> `babel conductor configure --babel-triages-the-queue` — or when it is named
-> explicitly, and its subject is the pile of Babel's own proposals that nobody
-> has ruled on yet. Everything it produces is advice attached beside a record
-> and addressed to the person about to decide. It records no disposition, and
-> the surface it writes through cannot express one.
+> **Authorized review, off by default.** This recipe is never part of a default
+> selection. It runs when the operator has authorized review work —
+> `babel conductor configure --babel-triages-the-queue` — and a share of cycles
+> has been allocated to it, or when `babel evaluate` is run by hand. Its subject
+> is one record revision Babel itself produced, and the job document names which
+> one and in which role. Everything it produces is an attributed assessment
+> recorded beside that record. It records no disposition, and the surface it
+> writes through cannot express one.
+
+> **Version 2 replaces the proposal-triage contract.** Version 1 ranked unruled
+> proposals within a cohort and required a counter-argument for every piece of
+> advice. That contract is superseded by SPEC §4.12: reception, evidence
+> checking, personal relevance and observed outcomes are four different
+> questions, they apply to every kind of reviewable output rather than to
+> proposals alone, and a bare vote with no prose is a complete answer. Cohort
+> rank is gone. Historical v1 advice remains readable as advice and is never a
+> reception vote, an exposure, or an outcome prediction; do not treat a v1 rank
+> found in the record as a prior evaluation.
 
 ## Question
 
-Of the proposals waiting for a ruling, which say the same thing as each other,
-which is worth reading first, what is the case against acting on each, and
-where is there a better version of one that nobody has written down?
+The job document names a record revision and a role. The question is the role's
+question about that revision, and nothing else:
 
-The pile is the reason this recipe exists. A proposal arrives already argued
-for — that is what a proposal is — and it arrives one at a time, so the person
-reading it is asked to judge it against a corpus of prior records they cannot
-hold in their head and against its neighbours in the same batch, which they
-have not read yet. Everything needed to do better than that is already stored:
-the proposals themselves, their supporting and conflicting material, the claims
-and findings they rest on, the prior records that say something similar, and
-the decline reasons an operator has already written against records like them.
-Nothing here is new instrumentation. It is one pass over material that already
-exists, done before the reading rather than during it.
+- **reception** — do you support this, oppose it, or are you unsure? That is a
+  judgement about the idea as stated. It is not a measurement of evidence
+  strength, not independent corroboration, and not a probability that the claim
+  is true. Those are different objectives and they have their own roles.
+- **evidence** — does the cited evidence support what the record claims? Follow
+  the locators. Report what the cited material does and does not show, per
+  criterion where criteria exist.
+- **challenge** — given the disagreement already recorded, what is the
+  strongest objection? Ground it in evidence, a consequence, a missing check or
+  a concrete alternative. This role is a bounded diagnosis of a disagreement,
+  not an obligation to argue until one side wins.
+- **comparison** — how does this record compare with the alternatives offered
+  beside it for the same problem? Say why now, what objection is unresolved,
+  and what would change the recommendation where you know it.
+- **outcome** — what actually happened? Whether it was implemented, whether the
+  promised outcome was observed, against which criteria, in which environment,
+  at what date, with what uncertainty.
+- **relevance** — is this relevant to the recorded work, pain and constraints
+  shown with it? Relevance is not quality: a correct finding about something
+  nobody is working on is correct and not relevant, and saying so is useful.
 
-**Advice, never disposition.** This is the binding constraint of this recipe
-and the one under pressure every time it runs. The recipe may rank, cluster,
-weigh and re-propose. It may not accept, reject, defer, or mark a duplicate,
-and it may not do any of those things in effect by other means: a proposal
-ranked last has not been declined, a cluster is not a merge, and a
-counter-argument is not a veto. Whether Babel should ever hold autonomous
-disposition is an open question the operator has explicitly not answered, and a
-run that behaved as though it had been answered would have answered it. The
-store enforces this rather than trusting it — the triage surface has no path to
-a disposition and refuses a proposal a ruling has already been recorded
-against — but the guidance has to want what the type system enforces, because
-a recipe straining against its own boundary produces advice written to be
-obeyed.
+Answer the role you were given. A reception vote does not discharge an evidence
+obligation and an evidence check does not imply a vote; the coverage inventory
+tracks them separately and an answer in the wrong field is refused rather than
+credited to the role that asked.
 
-**The counter-argument is the deliverable.** A rank is cheap and a cluster is
-mechanical; the case against acting is the thing nobody else in the pipeline
-has written. It is required of every piece of advice, and a pass that cannot
-argue against a proposal records no advice about it rather than recording a
-rank with a shrug attached.
+**A bare answer is a complete answer.** This is the binding constraint of this
+recipe and the one under pressure every time it runs. A support, opposition or
+uncertainty vote with no comment is a valid reception review. A contribution
+with no vote is valid. Nothing here requires prose, new evidence, a
+counter-argument or an alternative, and inventing any of them to fill the result
+makes the record worse: a manufactured objection is noise wearing the most
+authoritative shape this recipe can produce, and a rationale invented for a bare
+vote is a fabricated reason attached to an honest judgement. Where the useful
+answer is one word, give one word.
+
+**Assessment, never disposition.** The recipe may vote, contribute, check
+evidence, compare and report an observed outcome. It may not accept, reject,
+defer, merge or shelve, and it may not do any of those in effect by other means:
+an opposing vote is not a rejection, a comparison is not a merge, and an
+`unverifiable` outcome is not a refusal. The store enforces this — the
+submission has no field that can express a disposition — but the guidance has to
+want what the type system enforces, because a recipe straining against its own
+boundary produces assessments written to be obeyed.
 
 ## Inclusion, exclusion, and ambiguity
 
-Include a proposal that is waiting: current wording, no disposition recorded.
-That set is the subject, and it is the whole subject. The locatable material is
-the proposal's own payload — problem, outcome, impact, applicability,
-uncertainty, risks, open questions, prerequisites and verification criteria;
-its form, `consolidated` or `candidate`, and what it therefore rests on; the
-findings and observations behind a consolidation with their evidence and
-counter-evidence; the claim a remedy addresses and the competing remedies
-already addressing it; prior records saying something similar, with the
-dispositions and decline reasons written against them; and, for a proposal
-shaped as a change to code, the repository at a pinned snapshot.
+**What you were and were not shown.** For reception, evidence, outcome and
+relevance, this is an initial blind assessment. Babel has not shown you how the
+record has been received, how any earlier pass ranked it, or what any prior
+review of it said, and the search tool you were offered cannot reach Babel's
+own output at all — the surface selector is absent from its arguments and the
+request is refused if you construct one. That is procedural: it is a statement
+about what Babel served, not a claim about what you remember. Judge the record
+as it stands, and do not describe a reception you were not shown.
 
-Include the pile as a pile. Which of these are the same idea, which of them
-contradict each other, and which one of a cluster is the best-stated version —
-those are questions about the set, and the set is only visible to something
-that reads all of it at once. A reviewer working down an inbox sees each record
-against the records they happen to remember.
+For challenge and comparison the earlier evaluations are shown, because the
+disagreement is the question. They are statements, not a score: read who said
+what, on what evidence, and what they were unsure about. How many agreed is
+deliberately not reported and is not evidence about the claim.
 
-Include the argument the proposal's own material makes against it. A
-proposal's `conflicting` evidence, its stated risks, its open questions and its
-uncertainty are the counter-argument its author already half-wrote and then
-buried under the outcome. Surfacing it is not an accusation; it is reading the
-record properly, and it is the most defensible counter-argument available
-because every word of it is the record's own.
+The record's own body, its evidence and its criteria are shown in every role.
+For a reception vote the operator's recorded disposition is withheld as well, on
+the same reasoning as the tally: a recorded ruling is the loudest prior
+judgement there is, and reception is the one question that has to be answered
+independently of it. Every other role is *about* the lifecycle state and
+receives it.
 
-Include a better alternative where there is one, as a proposal. "Narrower
-scope, same support" and "the same change stated as the smaller change that
-would prove it" are real contributions and cheap to act on. An alternative is a
-new record resting on exactly what the original rests on, so the two are peers
-and the operator chooses; nothing edits the original, and a run that tried
-would be refused by the store.
+Include the record as written. The identity in the parameters names one
+immutable revision, and your assessment binds to that revision rather than to
+whatever the chain head becomes later. If the wording looks superseded, say so
+in your uncertainty; do not assess a draft you were not given.
 
-Exclude a proposal already ruled on. A ruling answered the question; advice
-arriving afterwards reads as a second opinion about a decision, which is the
-one thing this recipe has no standing to offer. If the ruling looks wrong, that
-is a finding about the review process and belongs to the product-dimension
-recipe, phrased as a mechanism and reviewed like anything else.
+Include the corpus. Every claim in the record is backed by locators into
+sessions, and the search tool serves exactly those sessions. For an evidence or
+outcome role this is the work: open what was cited, read around it, and look for
+what would contradict the claim rather than only for what repeats it.
 
-Exclude the mechanism. "These four proposals duplicate each other because
-retrieval never searched the frontier" is a defect in the pipeline and is
-`babel-improves-babel`'s subject. This recipe's output is "compare these four";
-emitting the mechanism here would bury a durable finding in advice attached to
-a record that is about to be disposed of, and emitting this recipe's advice
-there would add four more records to the queue it was asked to shorten.
+Include the record's own counter-material. Conflicting evidence, stated risks,
+open questions and declared uncertainty are the argument the author already
+half-wrote. Surfacing it is not an accusation; it is reading the record
+properly, and it is the most defensible objection available because every word
+of it is the record's own.
 
-Exclude any claim about the operator, on the same terms every meta recipe here
-does. Their prior rulings are evidence about records, and a decline reason is a
-fact about an output rather than about the person who wrote it.
+Exclude anything you cannot cite. A locator Babel did not serve you is refused
+whether or not its bytes exist, and an evidence contribution with no locator is
+refused as a shape error. If the material you would need is not reachable from
+here, that is a skip with the reason, or an `unverifiable` outcome, not a
+judgement made anyway.
 
-Exclude advice on the pass's own alternatives. A run that ranked its own
-alternative first against the proposal it was offered instead of has written
-advocacy, and an alternative arrives with the advice that explains it — that
-advice is the whole of what the pass gets to say about it.
+Exclude the mechanism. "Records of this kind keep arriving without criteria" is
+a defect in the pipeline and is `babel-improves-babel`'s subject. Said here it
+would be buried in an assessment about one record.
 
-Ambiguity is the normal state of a rank. Reading order depends on what the
-operator has time for, what they were already thinking about, and how much
-each proposal costs to act on, and the record settles none of that. Where the
-order is genuinely arbitrary, say so in the ranking's own words: "these three
-are interchangeable; read whichever is cheapest to act on" is a more useful
-sentence than a confident 1, 2, 3.
+Exclude any claim about the operator. Their prior rulings are evidence about
+records; a decline reason is a fact about an output rather than about the person
+who wrote it.
 
-Search the frontier before advising. The same pile will be met on every draw
-until the operator works through it, so a proposal already carrying this
-recipe's advice is a proposal to leave alone unless something has changed:
-another pass added a near-duplicate to its cluster, the repository moved under
-a code-shaped proposal, or a prior record it should be compared against
-appeared. Re-advising an unchanged record with the same argument is this
-recipe's most available failure, and it costs the operator exactly the
-attention the recipe exists to conserve.
+Exclude your own run's work. If the record under review, or an alternative
+offered beside it, came out of this same run, you may not support it, prefer it,
+or report it implemented or verified. Opposing or being unsure about your own
+run's output is accepted — a run arguing against what it produced is the honest
+direction, and the refusal exists to stop the other one.
+
+Ambiguity is the normal state of a vote. Reception depends on what the reader
+values, and the record settles none of that. Where your own judgement is
+genuinely balanced, `unsure` is the accurate answer and is more useful than a
+confident vote with a hedged comment attached.
 
 ## Sorting cues
 
-- two proposals resting on the same finding whose outcomes restate each other,
-  which is a cluster before it is anything else;
-- a proposal whose own `conflicting` material or stated risk answers its
-  outcome, which is a counter-argument already written and not yet read;
-- a proposal whose prerequisites name something the corpus shows does not
-  exist, and which is therefore not actionable yet whatever its merit;
-- a code-shaped proposal whose change the pinned snapshot already contains;
-- a near-verbatim restatement of a proposal an operator declined, where the
-  decline reason applies unchanged — the strongest counter-argument in the
-  store, because it is the operator's own;
-- competing remedies against one claim, none of which names the others, which
-  is a decision about which remedy rather than four decisions about four;
-- a `candidate` proposal rendered beside consolidations, which is a difference
-  in what they rest on and therefore in how cheaply each can be believed;
-- a proposal whose outcome is large and whose verification criteria are absent,
-  where the alternative worth writing is the smallest version that would settle
-  the question;
-- a proposal waiting far longer than its neighbours, which is a fact about the
-  queue rather than about the record, and belongs in the ranking's reasoning
-  rather than in the rank.
+These are what makes one answer rather than another more defensible. They are
+cues, not a scoring function, and no arithmetic over them produces a vote.
 
-Weak cues: how long a proposal is, how confidently it is worded, its stated
-impact grading, and the order the pile happened to arrive in. Retrieval rank
-contributes nothing. A proposal's own impact claim is the least reliable field
-it carries, because it is the field its author had the most reason to inflate.
+- a claim whose cited evidence, read at the locator, says something narrower
+  than the claim — the commonest real defect and the one the evidence role
+  exists for;
+- a record whose own conflicting material or stated risk answers its outcome,
+  which is an objection already written and not yet read;
+- a proposal whose prerequisites name something the corpus shows does not
+  exist, which is a reason to wait rather than a reason to oppose;
+- a finding that rests on observations whose locators recover different bytes
+  than the claim quotes;
+- an outcome claim where a merge exists and a deployment does not, or a
+  deployment exists and the promised effect is unmeasured — both are `partial`
+  at best and neither is `verified`;
+- a hypothesis stated so broadly that no observation could contradict it, which
+  is a reception judgement about the statement rather than about its subject;
+- alternatives that differ in what they rest on rather than in what they
+  propose, where the comparison is about how cheaply each can be believed;
+- a record answering an objection a prior review raised, which is the loop
+  working — arguing against it with the objection it already addressed teaches
+  the pipeline not to revise.
+
+Weak cues: how long the record is, how confidently it is worded, its own
+confidence or impact grading, and how recently it was written. Retrieval rank
+contributes nothing. A record's own impact claim is the least reliable field it
+carries, because it is the field its author had most reason to inflate. A
+historical v1 triage rank, if you encounter one in the corpus, is advice
+somebody wrote once and is not a prior evaluation.
 
 ## Evidence and counter-evidence
 
-Evidence, quoted with locators, always:
+Evidence, quoted with locators, wherever you make a claim about the world:
 
-- the proposals clustered together, quoted at the wording that makes them the
-  same idea — a cluster asserted without the two sentences side by side is a
-  guess about vocabulary;
-- for the counter-argument, whichever of these carries it: the record's own
-  conflicting material, risk, open question or uncertainty, quoted; the prior
-  decline reason, verbatim, with the record it was written against; the
-  repository state at the pinned snapshot showing the change already exists;
-  the prerequisite the corpus does not support;
-- for the ranking, what each proposal rests on and how much: the findings and
-  their observations' evidence for a consolidation, the addressed claim alone
-  for a candidate;
-- for an alternative, the material it rests on, which is the original's and is
-  never widened — an alternative that quietly claimed more support than the
-  record it improves would be the same epistemic failure the two proposal forms
-  exist to prevent.
+- for an evidence contribution, the material you read and what it shows,
+  quoted at the sentence that decides it;
+- for a criterion result, the material that satisfies it — a criterion you
+  believe holds but cannot cite is unsatisfied with your uncertainty recorded,
+  never satisfied on your word;
+- for an observed outcome, what shows the implementation and what shows the
+  effect. They are two claims and one does not stand for the other;
+- for an objection, whichever of these carries it: the record's own conflicting
+  material, quoted; the cited locator that says less than the claim; the
+  prerequisite the corpus does not support;
+- for a comparison, what each alternative rests on, which is never widened
+  beyond what its own record rests on.
 
-Counter-evidence to seek, and this recipe must seek it against its own advice
-rather than against the records:
+A bare vote needs no evidence, and that is not an exemption. A vote is a
+judgement about the record rather than an assertion about the world, so there is
+nothing for a locator to prove. What needs evidence is every statement of fact —
+and an observed outcome is a statement of fact, which is why an unevidenced
+outcome is refused before it is stored.
 
-- for every cluster, the difference: two proposals sharing their vocabulary may
-  propose opposite actions, and the sentence that distinguishes them is the one
-  the clustering will have skipped;
-- for every counter-argument, the proposal's answer to it — frequently the
-  record already addresses the objection in a field the pass did not read;
-- for a "already declined before" argument, whether this wording addresses the
-  stated reason. A re-proposal that answers the decline is the system working,
-  and arguing against it with the old reason punishes exactly the behaviour the
-  refinement path asks for;
-- for a "this already exists" argument, whether the snapshot is the repository
-  the proposal targets, and whether what exists is the thing proposed or
-  something adjacent to it;
-- for a ranking, the cost side: a proposal ranked first because it is
-  well-evidenced may be the most expensive one in the pile to act on, and the
-  reviewer's time is the resource being allocated.
+Counter-evidence to seek, and seek it against your own answer rather than
+against the record:
 
-Advice whose counter-evidence section says "none sought" is not usable here.
-The subject is the pass's own judgement, and it is the only record in this
-pipeline that reaches the operator without having been reviewed first.
+- for every objection, the record's answer to it — frequently the record
+  already addresses it in a field you did not read;
+- for every "the evidence does not support this", whether you opened the right
+  locator and whether the claim is narrower than you read it as;
+- for an `already-known` or `already-done` objection, whether what exists is the
+  thing claimed or something adjacent to it;
+- for an outcome, the contrary observation: a change that shipped and was
+  reverted, an effect measured before the change, a criterion satisfied in one
+  environment and not the one claimed;
+- for a comparison preference, the context in which the other alternative wins,
+  which is what makes the preference a preference rather than a ruling.
 
 ## Temporal and present-reality checks
 
-Advice is written about a pile that is moving, and it is read later than it is
-written, so three checks precede every piece of it:
+An assessment is written about a record that may be moving, and it is read later
+than it is written, so three checks precede it:
 
-1. Is this proposal still unruled? A disposition recorded between the read and
-   the write makes the advice retrospective, and the store refuses it. Check
-   rather than discover: an advice pass that has to be refused has spent its
-   reasoning on a record already answered.
-2. Is this still the current wording? A proposal that has been revised has a
-   descendant, and advice about a superseded draft argues against words nobody
-   will read. Advise the head of the chain or nothing.
-3. Does the code still look like this? Any counter-argument shaped as "the
-   repository already does this" is checked against the pinned snapshot, and
-   one that cannot be is not made. An unverifiable "this may already exist" is
-   worse than silence: it gives a reviewer a reason to decline that nobody
-   checked.
+1. Is this the revision you were given? Your vote binds to the wording read,
+   and Babel will not move it to a later revision. If a descendant exists, that
+   is a fact for your uncertainty, not a reason to assess the descendant.
+2. Is the context still current? The recorded work, pain and constraints shown
+   with the record are as of a stated version. A relevance answer is about that
+   version, and the same votes may yield a different recommendation when the
+   recorded work changes — which is Babel's arithmetic, not yours to anticipate.
+3. Does the world still look like this? Any statement shaped as "this already
+   happened" is checked against a locator, and one that cannot be is not made.
+   An unverifiable "this may already be done" is worse than silence.
 
-Use `still-applicable`, `resolved` (the proposal's outcome is already in the
-tree), `historical` (the proposal targets something that no longer exists),
-`contradicted` (a prior operator ruling says otherwise), and `unverifiable`.
-Say which records and which snapshot the status was established from.
+For an outcome, name the environment and the date the observation is about.
+`implemented`, `verified`, `partial`, `contradicted` and `unverifiable` are the
+whole vocabulary: `verified` requires every criterion you listed to be satisfied
+and evidenced, and `unverifiable` is the honest answer when the checks that
+would settle it are ones you cannot make from here.
 
 ## Classifications and stopping conditions
 
-- `duplicate-cluster` — two or more waiting proposals stating the same idea,
-  quoted side by side, with the difference between them stated if there is one.
-  An invitation to compare and never a merge;
-- `superseded-in-fact` — a waiting proposal whose outcome another waiting
-  proposal states more completely. Still two records, still two rulings;
-- `already-in-the-tree` — the change is present at the pinned snapshot, with
-  the location;
-- `answered-before` — an operator has declined this argument already, with the
-  reason verbatim and a statement of whether this wording addresses it;
-- `internal-objection` — the record's own conflicting material, risk or open
-  question answers its outcome;
-- `not-yet-actionable` — a prerequisite the corpus does not support, which is a
-  reason to wait rather than a reason to decline;
-- `alternative-offered` — a better-stated proposal for the same material,
-  minted as a record, with what makes it better;
-- `no-objection-found` — the pass looked and has nothing against this one. An
-  honest and valuable answer: it is the only thing in this vocabulary that
-  tells a reviewer the record survived a hostile reading, and a pass that never
-  returns it is a pass that is manufacturing objections;
-- `read-first` and `read-later` — the ranking's two ends, each with its
-  reasoning, and neither meaning anything about the merit of the record.
+The result's own fields are the classification. The contribution kinds are
+`comment`, `evidence`, `objection`, `refinement` and `comparison`; the vote
+vocabulary is `support`, `oppose` and `unsure`; the outcome vocabulary is the
+five above. There is no sixth value to reach for, and a judgement that does not
+fit one of them is a comment saying so.
 
-Stop when the counter-argument is located in a record rather than inferred,
-the cluster's members are quoted side by side, and the present-state check is
-done. Stop before offering an alternative that merely rewords: a second record
-in the queue costs the operator a second reading, and the bar for adding one is
-that the alternative would be acted on where the original would not. Stop when
-the honest advice is `no-objection-found`. Stop, and say so, when the pile is
-one proposal: a rank of one of one is not a ranking, and the pass's whole
-contribution there is the counter-argument.
+Stop when the role's question is answered. That is frequently one field:
 
-Never rule. Nothing in this recipe accepts, rejects, defers or marks a
-duplicate, and nothing it writes causes one of those to be recorded. A run that
-behaved as though its advice settled anything would have taken a decision the
-operator has not delegated and has said out loud is not yet settled.
+- Stop at the vote when you have a reception judgement and nothing to add. No
+  comment is required and none should be invented.
+- Stop at `no objection found` — expressed as a comment saying you looked and
+  found nothing — when a hostile reading came up empty. It is an honest and
+  valuable answer: it tells a later reader the obvious objection was checked,
+  and a pass that never returns it has stopped discriminating.
+- Stop before offering a refinement that merely rewords. A second record costs
+  a second reading, and the bar is that the operator would act on the
+  refinement where they would not act on the original.
+- Stop at a skip when the subject needs a check you cannot make or the evidence
+  is unreachable from here. Say which. A skip is recorded as a gap, consumes
+  bounded attention, and never becomes an opposing vote.
+- Stop at `unverifiable` rather than guessing at an outcome.
+
+Never rule. Nothing in this recipe accepts, rejects, defers or merges, and
+nothing it writes causes one of those to be recorded.
 
 ## Cross-session synthesis keys
 
-Group by: the material a proposal rests on — the finding, or the claim a remedy
-addresses; the outcome, normalized to what would change; the counter-argument's
-own kind, from the classification list; the recipe and version that produced
-the proposal; and the pass that wrote the advice.
+Group by: the record's kind and the role assessed; the material it rests on —
+the finding, or the claim a remedy addresses; the criterion version an outcome
+was judged against; the recipe and version that produced the record; and the
+recipe and version that produced the assessment.
 
 Recurrence means something different here than in a lens, and reading it as the
-same thing is the error to avoid. A cluster recurring across passes is not a
-stronger cluster — it is the same unmerged pile met twice, and the second
-sighting is a fact about the review backlog rather than about the records.
-What does promote is a counter-argument that lands: an objection this recipe
-raised, which the operator's own decline reason then repeated in their own
-words, is evidence that the objection was a standard nobody had written down,
-and that is a finding — for `babel-improves-babel`, phrased as a mechanism,
-not for this recipe to keep.
+same thing is the error to avoid. Repeated assessments of one record are not
+stronger evidence about it — they are independent judgements, legitimately from
+the same model, and none of them claims independence from the others. What does
+promote is an objection that lands: one this recipe raised which the operator's
+own decline reason later repeated in their own words is evidence that the
+objection was a standard nobody had written down. That is a finding for
+`babel-improves-babel`, phrased as a mechanism, not for this recipe to keep.
 
-Synthesis should cross-reference that recipe in the other direction too, and
-this is where the loop closes on itself. This recipe reviews Babel's proposals;
-`babel-improves-babel` reviews Babel's output, and this recipe's advice is
-Babel's output. Whether the operator read in the order suggested, merged the
-clusters, took the alternatives, or declined for reasons the advice never
-raised is all recorded, and it is the material for deciding whether triage is
-worth its cost. A recipe that advises the reviewer and is never itself reviewed
-would be the only unreviewed opinion in the pipeline.
+Persistent disagreement is bounded on purpose. A record with support and
+opposition recorded gets a challenge assessment, once, and then stops
+collecting votes: the useful output there is the diagnosis of what the two sides
+disagree about, not a larger tally.
 
 ## Capability needs
 
-- `corpus-search` is required and does most of the work. The waiting pile, the
-  lineage behind each proposal, the prior records a candidate resembles and the
-  decline reasons written against them are all retrievals, and the
-  `"scope": "frontier"` search is what makes the cluster and the
-  `answered-before` objection possible at all. Without it the pass can rank
-  what it was handed and nothing more, which is the least valuable thing it
-  does.
-- `repo-read` at a pinned snapshot is required before any `already-in-the-tree`
-  objection. It is the strongest counter-argument available for a code-shaped
-  proposal and the one a reviewer is least able to check quickly themselves.
-  Without a snapshot the objection is not made and the advice says so; a
-  guessed "this may already exist" hands a reviewer a reason to decline that
-  nobody verified.
-- No `sandbox-exec`: nothing here runs anything. A proposal's verification
-  criteria are the author's suggestion for a human, and executing them would be
-  acting on a proposal this recipe exists to stop short of.
+- `corpus-search` is required and does all of the work. The record's cited
+  locators, the material around them, and whatever would contradict the claim
+  are all retrievals over the sessions this review was given. In a blind role
+  the search reaches the corpus only: the surface selector is not in the tool's
+  arguments and a constructed one is refused, because Babel's own prior output
+  is exactly what an initial assessment may not read.
+- No `repo-read`: a review reads the archive of what happened, and a
+  repository-shaped claim is checked against the sessions that recorded the
+  work. A pinned snapshot is not brokered to a review in this build, so an
+  objection shaped as "the code already does this" is made from a locator or
+  not made at all.
+- No `sandbox-exec`: nothing here runs anything. A record's verification
+  criteria are a suggestion for a person, and executing them would be acting on
+  the record this recipe exists to assess.
 - No `public-research`: the material is entirely local, and an objection drawn
   from the open web would be an argument the operator cannot check against
   their own record.
 
 Dispositions this recipe emits: none, and that is the recipe rather than an
-omission. Its output is advice attached beside a proposal — the ranking, the
-cluster, the counter-argument — and, where it has one, an alternative proposal
-minted in the same transaction as the advice that explains it. Those are the
-only two things it writes. It emits no `draft-issue`, no `ask-question`, no
-`store-memory`, no `propose-reality-fact` and no `develop-further`: every one
-of those is a record that would join the queue this recipe was asked to
-prepare, and a triage pass that lengthens the pile has inverted its purpose. A
-question the pass genuinely needs answered goes in the counter-argument, where
-the operator is already reading.
+omission. Its output is one assessment — a vote, contributions, criterion
+results, an observed outcome, or a skip — recorded against the revision it was
+shown. It emits no `draft-issue`, no `ask-question`, no `store-memory`, no
+`propose-reality-fact` and no `develop-further`: every one of those is a record
+that would join the queue this recipe was asked to assess. A question you
+genuinely need answered goes in the uncertainty, where the operator is already
+reading.
 
 ## Known failure modes
 
-- **Advocacy in triage's clothing.** The defining hazard. A rank with a reason
-  written to be obeyed, a counter-argument for the proposals it wants declined
-  and `no-objection-found` for the ones it likes, an alternative offered as a
-  replacement rather than as a peer. The tell is asymmetry: every proposal gets
-  a hostile reading, or the advice is advocacy.
-- **Ranking as verdict.** Last is not rejected, and a reviewer who reads the
-  order as a recommendation to decline the tail has been misled by this recipe
-  whatever its wording said. Say what the rank means, every time.
-- **Clustering by vocabulary.** Two proposals sharing their words may propose
-  opposite actions. A cluster is asserted from the sentences, quoted, and never
-  from term overlap.
-- **Manufacturing objections.** Every proposal can be argued against by someone
-  determined enough, and a pass that never returns `no-objection-found` has
-  stopped discriminating. An objection nobody would act on is noise wearing the
-  most authoritative shape this recipe can produce.
-- **The alternative that is a reword.** A second record costs a second reading.
-  If the operator would act on both identically, the alternative should not
-  exist.
-- **Re-advising an unchanged record.** The same pile is met on every draw. The
-  second identical piece of advice is pure cost, and it accumulates fastest
-  exactly when the operator is furthest behind.
-- **Punishing a refinement.** A re-proposal that answers a prior decline is the
-  loop working. Arguing against it with the decline it already addressed
-  teaches the pipeline not to revise.
-- **Crossing into the mechanism.** Why the queue is full of duplicates is a
-  durable finding for another recipe. Said here it is advice on a record that
-  is about to disappear from the queue, and the finding disappears with it.
-- **Claiming authority.** Nothing here decides anything. The recipe ranks,
-  clusters, argues and proposes; a person accepts, rejects, defers and merges,
-  and the two are different records written by different hands.
-- **Compliance as correctness.** Fully evidenced advice can still be the wrong
-  reading of a pile, and the operator ignoring all of it is a legitimate
-  outcome rather than a failure to be designed around.
+- **Prose as proof of work.** The defining hazard of version 2, and the exact
+  inverse of version 1's. A bare vote looks like a thin answer, so the
+  temptation is to attach a paragraph that restates the record and concludes
+  nothing. That paragraph is cost with no content. Vote and stop.
+- **Manufacturing objections.** Every record can be argued against by someone
+  determined enough. An objection nobody would act on is noise, and a pass that
+  never finds a record acceptable has stopped discriminating.
+- **Voting the evidence.** "Support because it is well evidenced" conflates two
+  objectives §4.12 separates. Evidence strength is the evidence role's answer;
+  reception is whether the idea should be acted on.
+- **Describing a reception you were not shown.** In a blind role there is no
+  tally in front of you. A sentence about how this has been received is
+  invented, and it is invented in the one place the record is least able to
+  correct.
+- **Claiming an outcome from a merge.** A merge is not a deployment and a
+  deployment is not proof of the promised effect. Two claims, two pieces of
+  evidence, and `partial` where only one holds.
+- **Verifying against a replacement.** Criteria resolved after acceptance are a
+  later decision and stay attributed as one. Judging a record against criteria
+  you would rather it had met is rewriting the target.
+- **Turning a skip into a vote.** Declining is not opposing. A subject you
+  cannot assess gets a skip with its reason and stays a visible gap.
+- **Preferring your own.** A comparison that prefers the alternative this run
+  just wrote is advocacy, and it is refused.
+- **Compliance as correctness.** A fully evidenced assessment can still be the
+  wrong reading, and the operator ignoring it is a legitimate outcome rather
+  than a failure to be designed around.
 
 ## Examples
 
-Useful advice on a two-proposal cluster: two consolidations wait, both resting
-on the same finding about constraints restated after a change. The first
-proposes "state constraints up front in the handoff document"; the second
-proposes "require the handoff template to carry a constraints section". Both
-outcomes are quoted side by side; the difference is stated — the first is a
-practice and the second is a mechanism, and only the second can be checked.
-Classification `duplicate-cluster`, with the second ranked first and the
-reasoning saying why: it is the one whose verification criteria the record
-actually supports. The counter-argument against the one ranked first is its
-own, quoted from its conflicting material: one of its supporting observations
-records a handoff where the constraint was stated up front and dropped anyway.
-Neither is declined. Both stay in the queue, and the operator is told which
-comparison to make first.
+A complete reception review: a proposal asks for a handoff template to carry a
+constraints section, resting on a finding about constraints restated after a
+change. The record is clear, the finding is evidenced, and there is nothing to
+add. The submission is `vote: support` and nothing else. That is the whole
+answer, and a paragraph explaining it would have been a paragraph nobody needs.
 
-Useful advice with an alternative: a proposal asks for every recipe's
-inclusion section to state an exclusion the records show three of them
-enforcing informally. The counter-argument is the scope: the evidence covers
-three recipes and the proposal covers fourteen, and the eleven it has no
-evidence for are where it would be wrong. The alternative is minted against the
-same finding — the same exclusion, stated in the three recipes the evidence
-covers, with the wider change named as what a later pass could propose if those
-three hold. Classification `alternative-offered`. Two records, two rulings, the
-original untouched, and the advice on both says which is which.
+A contribution with no vote: the same proposal, read by an evidence role. Two of
+its three supporting observations quote the locators they cite accurately; the
+third cites a session where the constraint was stated up front and dropped
+anyway, which is closer to counter-evidence than support. The submission carries
+one `evidence` contribution with that locator quoted and the discrepancy stated,
+one criterion result marked unsatisfied with its uncertainty, and no vote —
+because whether the proposal should be acted on is not this role's question.
 
-Advice correctly withheld: a proposal about run receipts looked like a
-restatement of one declined last month, and the decline reason was "no evidence
-that the receipt is where the information was lost". The counter-evidence check
-read the new record: it cites two receipts where the denied tool request is the
-only trace of the failure, which is exactly the evidence the decline asked for.
-Classification `no-objection-found`, recorded with the reasoning, because the
-reviewer reading this record needs to know that the obvious objection was
-checked and does not apply.
+An honest uncertainty: a hypothesis claims a class of failures comes from a
+missing retrieval step. The corpus shows two instances that fit and one that
+does not, and the record does not say which population it means. The submission
+is `vote: unsure` with a short comment naming the ambiguity and
+`uncertainty` recording that the scope of the claim decides the answer. No
+objection is manufactured and no support is implied.
 
-An error to avoid: "three of the five waiting proposals are low-impact; suggest
-declining them to clear the backlog." It reads an impact grading the proposal's
-own author assigned as evidence, it recommends a disposition, and its subject
-is the length of the queue rather than the merit of anything in it. The valid
-version of the same observation is a ranking with its reasoning, and — if the
-backlog itself is the problem — a mechanism finding for the recipe whose
-subject that is.
+A skip: an outcome role is assigned to a proposal whose promised effect is a
+change in provider latency. Nothing in the archive records latency, and the
+review cannot measure it. The submission is `skip` with that reason. The
+assignment is journalled as skipped, the reservation is released, the record
+receives no vote, and the gap stays visible as a gap — which is the correct
+outcome and the one an unverifiable guess would have destroyed.
+
+An error to avoid: "oppose — three similar proposals are waiting and the backlog
+is long." It reads the length of the queue as evidence about one record, it
+recommends a disposition in the guise of a vote, and its subject is the pile
+rather than the merit of anything in it. The valid version is a reception vote
+on the record's own terms and — if the backlog itself is the problem — a
+mechanism finding for the recipe whose subject that is.

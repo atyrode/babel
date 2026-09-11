@@ -27,6 +27,8 @@ type conductorConfigDoc struct {
 	SliceSessions      int     `json:"slice_sessions"`
 	ConsolidateOneIn   int     `json:"consolidate_one_in"`
 	ConsolidateRoots   int     `json:"consolidate_roots"`
+	EvaluateOneIn      int     `json:"evaluate_one_in"`
+	EvaluateCadence    string  `json:"evaluate_cadence"`
 	BabelImprovesBabel bool    `json:"babel_improves_babel"`
 	BabelTunesItself   bool    `json:"babel_tunes_itself"`
 	BabelTriagesQueue  bool    `json:"babel_triages_the_queue"`
@@ -393,8 +395,10 @@ func TestConductorDrawsAnAuthorizedDuty(t *testing.T) {
 	if depth := rungDepth(t, cold.Rungs, "policy"); depth != 0 {
 		t.Fatalf("policy rung depth = %d with no duty authorized", depth)
 	}
-	if len(cold.Duties) != 4 {
-		t.Fatalf("status reports %d duties, want the four this build knows: %+v",
+	// Three standing duties: proposal triage became the evaluation rung and
+	// is no longer drawn from rung two.
+	if len(cold.Duties) != 3 {
+		t.Fatalf("status reports %d duties, want the three this build knows: %+v",
 			len(cold.Duties), cold.Duties)
 	}
 	for _, duty := range cold.Duties {
@@ -654,7 +658,7 @@ func plantSpentDay(t *testing.T, p *phaseB, cost float64) {
 // something.
 func assertLadderShape(t *testing.T, rungs []conductorRungDoc) {
 	t.Helper()
-	want := []string{"invitation", "policy", "serendipity", "consolidation"}
+	want := []string{"invitation", "policy", "serendipity", "consolidation", "evaluation"}
 	if len(rungs) != len(want) {
 		t.Fatalf("ladder = %+v, want %v", rungs, want)
 	}

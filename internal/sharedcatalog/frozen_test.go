@@ -109,6 +109,17 @@ func TestFrozenAllowlistShape(t *testing.T) {
 		// second. No content column came with it, and the Phase B class gate is
 		// what keeps one from arriving later.
 		"analysis_proposal_subjects",
+		// Evaluation coordination (migrations/0013, issue #219). These two are
+		// the first tables here that are neither archive metadata, analysis
+		// output nor presence: they hold one deployment's evaluation
+		// allowance and the fenced claims spending it, which has to be shared
+		// state because a fleet-wide budget measured per host is not
+		// fleet-wide. They are also the first outside `sessions` to carry a
+		// spend measure, and deliberately not Phase B tables - the class gate
+		// refuses money beside a sealed record, and this is money about a
+		// lease rather than about a judgement. No vote, score, tally or
+		// verdict column came with them.
+		"evaluation_budget_days", "evaluation_claims",
 	}
 	var got []string
 	for table := range tables {
@@ -148,6 +159,8 @@ func TestMigrationLedgerIsExactlyThese(t *testing.T) {
 		"0009_fleet_presence",
 		"0010_proposal_subjects",
 		"0011_complaint_records",
+		"0012_evaluation_records",
+		"0013_evaluation_claims",
 	}
 
 	entries, err := migrations()
@@ -201,6 +214,9 @@ func TestAppliedMigrationBodiesAreFrozen(t *testing.T) {
 		// freeze covers it from the commit that introduced it rather than
 		// from whenever somebody next remembered.
 		"0011_complaint_records": "5c24692e21a7aca9e296c8144afc5031f6863d9691de6ad339f718de745e96a4",
+		// Added with the migrations themselves (issue #219), on 0011's terms.
+		"0012_evaluation_records": "d4293111558d87f46343a12db8c8f86a041aed7e2bb4d24ccd2027f3accde15f",
+		"0013_evaluation_claims":  "e99248abd6eb847b004354a9f6622a5a9f7d200b153ff085717982c78f3f47fa",
 	}
 
 	const remedy = "Two changes are legitimate here, and they are not the same " +

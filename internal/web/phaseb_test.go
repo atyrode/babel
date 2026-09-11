@@ -225,6 +225,12 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		// without a test remembering to ask. presence_test.go describes the
 		// fixture.
 		Presence: presenceFixture(text),
+		// Issue #219's evaluation projection, wired by default for
+		// fleetFixture's reason: an item title, a coverage reason and an
+		// objection are wording a model produced, so the escaping sweep
+		// has to see them without a test remembering to ask.
+		// evaluation_test.go describes the fixture.
+		Evaluation: evaluationFixture(text),
 		Runs: runLister{{
 			ReceiptID:     "rcp-1 " + text,
 			RunID:         "run-1 " + text,
@@ -726,6 +732,11 @@ type phaseBRoute struct {
 	// Every other assertion, including the one that no control or bidi
 	// character reaches the browser, still applies to it.
 	fixed bool
+	// dual marks the one resource that answers both methods: the evaluation
+	// policy is read and saved at one path, so "a write refuses GET" is not
+	// true of it and the one-method-each matrix skips it. Every other guard
+	// still applies.
+	dual bool
 }
 
 // phaseBRoutes enumerates every route this file adds. The list is the test's
@@ -823,6 +834,33 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		// escaping coverage the rest of the surface gets.
 		{name: "complaints", method: http.MethodGet, path: "/api/complaints"},
 		{name: "complaint", method: http.MethodGet, path: "/api/complaint?id=" + h.complaint.ID},
+		// Issue #219's evaluation surface. Every read is enrolled because
+		// each carries a different body of model wording — a ranked item's
+		// title and reasons, one record's whole evaluation history, the
+		// coverage inventory's per-role reasons — and the two writes
+		// because they are attributed operator records reaching a service
+		// this package does not own.
+		{name: "evaluation list", method: http.MethodGet, path: "/api/evaluation/list"},
+		{name: "evaluation detail", method: http.MethodGet,
+			path: "/api/evaluation/detail?kind=proposal&id=prp_synthetic"},
+		{name: "evaluation coverage", method: http.MethodGet, path: "/api/evaluation/coverage"},
+		{name: "evaluation policy", method: http.MethodGet, path: "/api/evaluation/policy"},
+		{
+			name: "evaluation configure", method: http.MethodPost, path: "/api/evaluation/policy",
+			mutating: true,
+			dual:     true,
+			body: `{"version":"eval-policy-1","enabled":false,"cadence_seconds":3600,` +
+				`"overdue_seconds":604800,"initial_reviews":2,"cooldown_seconds":172800,` +
+				`"coverage_share":0.4,"exploration_share":0.1,"discovery_share":0.1,` +
+				`"max_item_reviews":6,"per_cycle_cost":0.5,"daily_cost":4,` +
+				`"lease_seconds":900,"batch_size":4}`,
+		},
+		{
+			name: "evaluation operator", method: http.MethodPost, path: "/api/evaluation/operator",
+			mutating: true,
+			body: `{"subject":{"kind":"proposal","id":"prp_synthetic"},"kind":"feedback",` +
+				`"reason":"not now; the corpus is too small to tell","criteria":[],"related_id":""}`,
+		},
 		{
 			name: "review decide", method: http.MethodPost, path: "/api/review/decide", mutating: true,
 			body: `{"subject":{"type":"proposal","id":"` + h.proposal.ID + `"},"disposition":"defer"}`,
@@ -981,6 +1019,9 @@ func TestPhaseBRoutesAcceptOneMethodEach(t *testing.T) {
 	h := newPhaseB(t, "plain", nil)
 	for _, route := range phaseBRoutes(h) {
 		t.Run(route.name, func(t *testing.T) {
+			if route.dual {
+				t.Skip("this resource answers both methods by design")
+			}
 			wrong := http.MethodPost
 			if route.mutating {
 				wrong = http.MethodGet

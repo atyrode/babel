@@ -176,9 +176,16 @@ func (l LinkType) valid() bool {
 }
 
 // Disposition is an operator review decision (§4.7). The vocabulary is closed
-// at four values on purpose: §4.7 states there is no standalone `refine`
-// disposition, because a refinement must be authorized by a recorded
-// rejection rather than standing alone.
+// on purpose: §4.7 states there is no standalone `refine` disposition, because
+// a refinement must be authorized by a recorded rejection rather than standing
+// alone.
+//
+// `reopen` is the fifth value and the only one that opens rather than closes.
+// It exists because the alternative was worse: reconsideration was reachable
+// only by appending the opposite decision, so a rejected record that new
+// evidence had merely made undecided again had to be accepted — endorsed — to
+// be looked at a second time. A reopen says what happened instead: the earlier
+// ruling stands in the history, and the record is back to being undecided.
 type Disposition string
 
 // The §4.7 dispositions.
@@ -187,11 +194,25 @@ const (
 	DispositionReject    Disposition = "reject"
 	DispositionDefer     Disposition = "defer"
 	DispositionDuplicate Disposition = "duplicate"
+	// DispositionReopen returns a decided record to undecided. It deletes
+	// nothing: the decision it reopens keeps its row, its sequence and its
+	// reviewer, and this event is appended after it.
+	DispositionReopen Disposition = "reopen"
 )
+
+// Dispositions lists the closed vocabulary in the order a surface offers it:
+// the four closing decisions, then the one that reopens. It is served to
+// pickers and validated against, so a value this package refuses cannot be
+// offered by anything that asks.
+func Dispositions() []Disposition {
+	return []Disposition{DispositionAccept, DispositionReject, DispositionDefer,
+		DispositionDuplicate, DispositionReopen}
+}
 
 func (d Disposition) valid() bool {
 	switch d {
-	case DispositionAccept, DispositionReject, DispositionDefer, DispositionDuplicate:
+	case DispositionAccept, DispositionReject, DispositionDefer, DispositionDuplicate,
+		DispositionReopen:
 		return true
 	}
 	return false

@@ -1899,15 +1899,50 @@ type DispositionInput struct {
 	ContextID     string
 	DuplicateOfID string
 	Note          string
+	// ResolvedStatus is the review status a caller resolved for a subject
+	// this store does not hold, and it is read by StageResolvedDisposition
+	// alone. A remote record is never written into these durable tables
+	// (remote.go says why), so this host has no disposition history for it
+	// and deriving the status here would read every such subject as
+	// undecided. Rather than pretend to have checked, the transition rule is
+	// applied to what the caller states it resolved. Decide and
+	// RejectAndRefine refuse a non-empty value: the local history is the
+	// authority there, and accepting a caller's claim beside it would be a
+	// second answer to a question this store can answer itself.
+	ResolvedStatus ReviewStatus
+}
+
+// allowReopen decides whether a reopen may be appended over a status.
+//
+// Three refusals, each for its own reason. An undecided record has nothing to
+// reopen, and appending the event anyway would make the history read as though
+// a decision had been reconsidered when none was ever made. A duplicate is
+// answered at the record it points at. And `refine-requested` says a rejection
+// authorized a descendant that is separately reviewable, so reopening the
+// ancestor would put two live records where the rejection left one.
+func allowReopen(current ReviewStatus) error {
+	switch current {
+	case ReviewAccepted, ReviewRejected, ReviewDeferred:
+		return nil
+	case ReviewNew:
+		return fmt.Errorf("%w: %s has no decision to reopen", ErrInvalidValue, current)
+	case ReviewDuplicate:
+		return fmt.Errorf("%w: %s is reopened at the record it duplicates", ErrInvalidValue, current)
+	case ReviewRefineRequested:
+		return fmt.Errorf("%w: %s is answered at the descendant the rejection authorized",
+			ErrInvalidValue, current)
+	}
+	return fmt.Errorf("%w: review status %q", ErrInvalidValue, current)
 }
 
 // Decide appends a §4.7 disposition. There is no update or delete path:
 // rejection never removes the record, and reconsidering appends another event
 // so both remain readable in order.
 //
-// The vocabulary is the four §4.7 values. `refine` is not among them by
-// design, so a refinement can only be created by RejectAndRefine, where a
-// recorded rejection authorizes it.
+// The vocabulary is Dispositions(). `refine` is not among them by design, so a
+// refinement can only be created by RejectAndRefine, where a recorded
+// rejection authorizes it; `reopen` is, and returns a decided record to
+// undecided without removing the decision it reopens.
 func (s *Store) Decide(ctx context.Context, in DispositionInput) (DispositionEvent, error) {
 	var (
 		recorded DispositionEvent
@@ -1944,24 +1979,75 @@ func (s *Store) Decide(ctx context.Context, in DispositionInput) (DispositionEve
 	return recorded, nil
 }
 
+// appendDisposition writes one decision about a subject this store holds.
+//
+// The subject is checked here, and that is the difference between this and
+// StageResolvedDisposition: a locally held record has a durable row and a
+// disposition history, so every rule is derived from what this store can see
+// rather than from what a caller says it saw.
 func (s *Store) appendDisposition(ctx context.Context, tx *sql.Tx, in DispositionInput) (DispositionEvent, error) {
-	if !in.Disposition.valid() {
-		return DispositionEvent{}, fmt.Errorf("%w: disposition %q", ErrInvalidValue, in.Disposition)
+	if in.ResolvedStatus != "" {
+		return DispositionEvent{}, fmt.Errorf(
+			"%w: a locally held subject's review status is derived here, not supplied", ErrInvalidValue)
 	}
-	if in.ReviewerID == "" {
-		return DispositionEvent{}, fmt.Errorf("%w: disposition reviewer is empty", ErrInvalidValue)
+	if err := validateDisposition(in); err != nil {
+		return DispositionEvent{}, err
 	}
 	if err := s.requireSubject(ctx, tx, in.Subject, true); err != nil {
 		return DispositionEvent{}, err
-	}
-	if in.Disposition == DispositionDuplicate && in.DuplicateOfID == "" {
-		return DispositionEvent{}, fmt.Errorf("%w: duplicate disposition names no original", ErrInvalidValue)
 	}
 	if in.DuplicateOfID != "" {
 		if err := s.requireSubject(ctx, tx, Ref{Type: in.Subject.Type, ID: in.DuplicateOfID}, false); err != nil {
 			return DispositionEvent{}, fmt.Errorf("duplicate original: %w", err)
 		}
 	}
+	if in.Disposition == DispositionReopen {
+		// Derived inside the transaction that is about to append, so the
+		// status a reopen was allowed against is the status it is
+		// recorded against.
+		current, err := reviewStatus(ctx, tx, in.Subject)
+		if err != nil {
+			return DispositionEvent{}, err
+		}
+		if err := allowReopen(current); err != nil {
+			return DispositionEvent{}, err
+		}
+	}
+	return s.writeDisposition(ctx, tx, in)
+}
+
+// validateDisposition holds the shape rules that need no stored row: the
+// vocabulary, the attribution, and what each decision must or must not name.
+// Both write paths share it, so a rule cannot hold on one and not the other.
+func validateDisposition(in DispositionInput) error {
+	if !in.Disposition.valid() {
+		return fmt.Errorf("%w: disposition %q", ErrInvalidValue, in.Disposition)
+	}
+	if in.ReviewerID == "" {
+		return fmt.Errorf("%w: disposition reviewer is empty", ErrInvalidValue)
+	}
+	if in.Disposition == DispositionDuplicate && in.DuplicateOfID == "" {
+		return fmt.Errorf("%w: duplicate disposition names no original", ErrInvalidValue)
+	}
+	if in.Disposition == DispositionReopen {
+		if in.DuplicateOfID != "" {
+			return fmt.Errorf("%w: a reopen names no original", ErrInvalidValue)
+		}
+		// A reopen is the one decision whose reason is not optional. The
+		// other four are answers to the record; this one says the answer
+		// stopped holding, and a history that cannot say why a rejection
+		// was reopened is a history that cannot be audited.
+		if strings.TrimSpace(in.Note) == "" {
+			return fmt.Errorf("%w: a reopen states no reason for reopening", ErrInvalidValue)
+		}
+	}
+	return nil
+}
+
+// writeDisposition appends the row and returns the event it recorded. It
+// performs no checks: both callers have already applied the rules their own
+// knowledge of the subject makes them able to apply.
+func (s *Store) writeDisposition(ctx context.Context, tx *sql.Tx, in DispositionInput) (DispositionEvent, error) {
 	id, err := newID("dsp")
 	if err != nil {
 		return DispositionEvent{}, err
@@ -1995,6 +2081,95 @@ func (s *Store) appendDisposition(ctx context.Context, tx *sql.Tx, in Dispositio
 		RecordedAt:    recorded,
 		Payload:       payload,
 	}, nil
+}
+
+// StageResolvedDisposition appends one decision about a subject the caller
+// resolved, inside the caller's transaction, and returns the publish step to
+// run after that transaction commits.
+//
+// It exists for one caller shape: a write that has to be atomic with something
+// this package does not own. internal/evaluation records an operator's
+// reconsideration decision and, when that decision is to reopen, the reopened
+// disposition has to exist if and only if the decision does — two stores, one
+// transaction. Decide cannot serve that, because it owns its own transaction
+// and commits before the caller's work is durable.
+//
+// Two things are the caller's to establish and both are stated rather than
+// assumed. The subject is resolved by the caller: a record another host
+// published has no durable row here (remote.go), so requireSubject would
+// refuse a subject that genuinely exists. And the review status is the
+// caller's, for the same reason — no local row means no local disposition
+// history, and deriving it here would read every remote subject as undecided
+// and silently refuse every reopen. So ResolvedStatus is required, and the
+// transition rule is this package's, applied to what the caller resolved.
+//
+// The returned function publishes. It is separate because publishing must
+// follow the commit the caller controls: running it earlier would announce a
+// disposition that a rolled-back transaction never recorded. A caller that
+// drops it has staged a durable row and told the fleet nothing, which is the
+// same state a publish failure leaves and is recoverable by the staging
+// journal; a caller that calls it before committing is not recoverable, which
+// is why it is a value handed back rather than a hook this store fires.
+func (s *Store) StageResolvedDisposition(ctx context.Context, tx *sql.Tx, in DispositionInput) (
+	DispositionEvent, func(context.Context) error, error) {
+	if tx == nil {
+		return DispositionEvent{}, nil, fmt.Errorf(
+			"%w: a resolved disposition is staged in the caller's transaction, and none was given",
+			ErrInvalidValue)
+	}
+	if err := validateDisposition(in); err != nil {
+		return DispositionEvent{}, nil, err
+	}
+	if !in.Subject.Type.valid() {
+		return DispositionEvent{}, nil, fmt.Errorf("%w: entity type %q", ErrInvalidValue, in.Subject.Type)
+	}
+	if !in.Subject.Type.reviewable() {
+		return DispositionEvent{}, nil, fmt.Errorf("%w: %s", ErrNotReviewable, in.Subject.Type)
+	}
+	if in.Subject.ID == "" {
+		return DispositionEvent{}, nil, fmt.Errorf("%w: disposition subject has no identity", ErrInvalidValue)
+	}
+	switch in.ResolvedStatus {
+	case ReviewNew, ReviewAccepted, ReviewRejected, ReviewDeferred, ReviewDuplicate,
+		ReviewRefineRequested:
+	default:
+		return DispositionEvent{}, nil, fmt.Errorf(
+			"%w: a resolved disposition states the review status it was resolved against, and %q is not one",
+			ErrInvalidValue, in.ResolvedStatus)
+	}
+	// The two closed states are closed to every decision, not only to a
+	// reopen: a duplicate is answered at its original, and a
+	// refine-requested record at the descendant its rejection authorized.
+	switch in.ResolvedStatus {
+	case ReviewDuplicate, ReviewRefineRequested:
+		return DispositionEvent{}, nil, fmt.Errorf("%w: %s accepts no further disposition",
+			ErrInvalidValue, in.ResolvedStatus)
+	}
+	if in.Disposition == DispositionReopen {
+		if err := allowReopen(in.ResolvedStatus); err != nil {
+			return DispositionEvent{}, nil, err
+		}
+	}
+	event, err := s.writeDisposition(ctx, tx, in)
+	if err != nil {
+		return DispositionEvent{}, nil, err
+	}
+	encoded, err := marshalPayload(event.Payload)
+	if err != nil {
+		return DispositionEvent{}, nil, err
+	}
+	staged, err := stagedDisposition(event, encoded)
+	if err != nil {
+		return DispositionEvent{}, nil, err
+	}
+	// Staged in the caller's transaction and with no producing run, on
+	// Decide's own terms: a disposition is an operator's act about a record
+	// rather than part of the closure of the run that produced it.
+	pub, err := s.stage(ctx, tx, "", staged)
+	if err != nil {
+		return DispositionEvent{}, nil, err
+	}
+	return event, func(ctx context.Context) error { return s.commit(ctx, pub) }, nil
 }
 
 // RejectAndRefine is §4.7's single atomic operation: it appends a `reject`
@@ -2177,11 +2352,23 @@ func (s *Store) RefinementRequests(ctx context.Context, subject Ref) ([]Refineme
 // mean "a rejection authorized a refinement request", since that is the only
 // way both rows can exist.
 func (s *Store) ReviewStatus(ctx context.Context, subject Ref) (ReviewStatus, error) {
+	return reviewStatus(ctx, s.db, subject)
+}
+
+// reviewStatus is the derivation itself, over any querier, so the read a
+// caller performs and the read a write performs inside its own transaction are
+// the same rule rather than two copies of it.
+//
+// A `reopen` derives `new`, and that is the point of the value: the decision it
+// reopened keeps its row and its place in the history, while the status goes
+// back to what it was before anybody decided. The record is undecided again
+// without anything having been deleted or rewritten.
+func reviewStatus(ctx context.Context, q querier, subject Ref) (ReviewStatus, error) {
 	var (
 		disposition string
 		refinements int
 	)
-	err := s.db.QueryRowContext(ctx, `SELECT d.disposition,
+	err := q.QueryRowContext(ctx, `SELECT d.disposition,
 		(SELECT COUNT(*) FROM frontier_refinement_request r WHERE r.disposition_id = d.id)
 		FROM frontier_disposition d WHERE d.subject_type = ? AND d.subject_id = ?
 		ORDER BY d.seq DESC LIMIT 1`, string(subject.Type), subject.ID).Scan(&disposition, &refinements)
@@ -2203,6 +2390,8 @@ func (s *Store) ReviewStatus(ctx context.Context, subject Ref) (ReviewStatus, er
 		return ReviewDeferred, nil
 	case DispositionDuplicate:
 		return ReviewDuplicate, nil
+	case DispositionReopen:
+		return ReviewNew, nil
 	}
 	return "", fmt.Errorf("%w: stored disposition %q", ErrInvalidValue, disposition)
 }

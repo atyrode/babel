@@ -427,6 +427,12 @@ func (s *Service) memoryStatus(ctx context.Context, id string) (frontier.ReviewS
 // fact authoritative; §4.8 owns that step, and nothing in this package can
 // perform it.
 func (s *Service) DisposeMemory(ctx context.Context, memoryID string, d frontier.Disposition, by Authority, contextID, note string) (MemoryDisposition, error) {
+	// The four closing decisions, and deliberately not `reopen`: that value
+	// undecides a frontier record whose status is derived from the
+	// disposition log, and a proposed piece of durable learning is answered
+	// once by an operator. A reopen here would have to mean something this
+	// table has no shape for, so it is refused by name rather than half
+	// supported.
 	switch d {
 	case frontier.DispositionAccept, frontier.DispositionReject,
 		frontier.DispositionDefer, frontier.DispositionDuplicate:

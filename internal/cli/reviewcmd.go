@@ -51,7 +51,7 @@ Flags:
   --json        emit the queue as JSON on stdout
 `
 
-const reviewDecideUsage = `Usage: babel review decide ID (--accept|--reject|--defer|--duplicate-of ID) [flags]
+const reviewDecideUsage = `Usage: babel review decide ID (--accept|--reject|--defer|--duplicate-of ID|--reopen) [flags]
 
 Records one §4.7 review decision against the record the identifier names.
 The kind comes from the identifier's own prefix, so a decision cannot land
@@ -64,6 +64,14 @@ recording that anyone accepted it. There is no default identity.
 --context records attributed operator guidance alongside the decision. It is
 guidance, never evidence: it explains the decision and supports nothing.
 
+--reopen returns a decided record to undecided. It deletes nothing: the
+decision it reopens keeps its place in the history, and the record's derived
+status goes back to "new" so it can be decided again on its merits. It
+requires --note, because a reopened rejection with no recorded reason is a
+history nobody can audit, and it is refused on a record nobody has decided,
+on a duplicate, and on a record whose rejection already authorized a
+refinement — the last two are answered where the decision now lives.
+
 Nothing is published, applied, or written to a source repository.
 
 Flags:
@@ -71,6 +79,7 @@ Flags:
   --reject              reject it; it stays readable with its whole history
   --defer               defer it
   --duplicate-of ID     mark it a duplicate of the record this names
+  --reopen              return a decided record to undecided (requires --note)
   --context TEXT        attributed operator guidance recorded with the decision
   --note TEXT           the reviewer's own words about the decision
   --operator ID         operator identity (default $BABEL_OPERATOR)
@@ -325,6 +334,8 @@ func (a *app) reviewDecide(ctx context.Context, args []string) error {
 	reject := c.fs.Bool("reject", false, "reject the record")
 	defer_ := c.fs.Bool("defer", false, "defer the record")
 	duplicateOf := c.fs.String("duplicate-of", "", "mark the record a duplicate of this one")
+	reopen := c.fs.Bool("reopen", false,
+		"return a decided record to undecided; keeps the earlier decision and requires --note")
 	contextText := c.fs.String("context", "", "attributed operator guidance recorded with the decision")
 	note := c.fs.String("note", "", "the reviewer's own words about the decision")
 	asJSON := c.fs.Bool("json", false, "emit the decision as JSON")
@@ -339,7 +350,7 @@ func (a *app) reviewDecide(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	disposition, err := pickDisposition(c, *accept, *reject, *defer_, *duplicateOf)
+	disposition, err := pickDisposition(c, *accept, *reject, *defer_, *reopen, *duplicateOf)
 	if err != nil {
 		return err
 	}
@@ -572,8 +583,12 @@ func exportNode(c *cmd, id string) (review.Node, error) {
 // closed vocabulary. Two decisions in one invocation is a rejected
 // invocation rather than a precedence rule: there is no sensible winner
 // between "accept" and "reject".
-func pickDisposition(c *cmd, accept, reject, defer_ bool, duplicateOf string) (frontier.Disposition, error) {
-	chosen := make([]string, 0, 4)
+//
+// --reopen is one of the five and not a modifier of the others, because that
+// is what it is: a record is reopened instead of being decided, not while
+// being decided.
+func pickDisposition(c *cmd, accept, reject, defer_, reopen bool, duplicateOf string) (frontier.Disposition, error) {
+	chosen := make([]string, 0, 5)
 	var d frontier.Disposition
 	if accept {
 		chosen, d = append(chosen, "--accept"), frontier.DispositionAccept
@@ -587,11 +602,15 @@ func pickDisposition(c *cmd, accept, reject, defer_ bool, duplicateOf string) (f
 	if duplicateOf != "" {
 		chosen, d = append(chosen, "--duplicate-of"), frontier.DispositionDuplicate
 	}
+	if reopen {
+		chosen, d = append(chosen, "--reopen"), frontier.DispositionReopen
+	}
 	switch len(chosen) {
 	case 1:
 		return d, nil
 	case 0:
-		return "", c.usagef("review decide requires one of --accept, --reject, --defer, or --duplicate-of ID")
+		return "", c.usagef(
+			"review decide requires one of --accept, --reject, --defer, --duplicate-of ID, or --reopen")
 	default:
 		return "", c.usagef("review decide takes exactly one decision, got %s", strings.Join(chosen, " "))
 	}

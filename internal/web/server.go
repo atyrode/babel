@@ -654,6 +654,48 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFleetPresence(w, r)
+	// Issue #219's evaluation surface (§4.12, §5.8, §8.5). Four reads and
+	// two writes, and the shape of the set is the authority: there is no
+	// route that submits an assessment, claims an assignment, or draws
+	// work, because a browser holds no run identity and no claim — the
+	// interface Options.Evaluation names has no method that could, which
+	// internal/web/evaluation.go states.
+	//
+	// The policy path answers two methods, which is this table's second
+	// deliberate exception after proposalPathPrefix. It is one resource
+	// rather than two: the form that saves the policy is rendered from
+	// the read, and the write answers with the same document, so a second
+	// path would make one page's read and write disagree about their own
+	// shape the first time either changed.
+	case "/api/evaluation/list":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleEvaluationList(w, r)
+	case "/api/evaluation/detail":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleEvaluationDetail(w, r)
+	case "/api/evaluation/coverage":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleEvaluationCoverage(w, r)
+	case "/api/evaluation/policy":
+		switch r.Method {
+		case http.MethodGet:
+			s.handleEvaluationPolicy(w, r)
+		case http.MethodPost:
+			s.handleEvaluationConfigure(w, r)
+		default:
+			s.writeError(w, http.StatusBadRequest, "unsupported method")
+		}
+	case "/api/evaluation/operator":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleEvaluationOperator(w, r)
 	case "/api/search":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return

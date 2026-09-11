@@ -13,6 +13,7 @@ import {
   statusTone,
   TimelineEntry,
 } from "../analysis";
+import { EvaluationCrossLink } from "../evaluation";
 import { RecordLinks } from "../references";
 
 function HypothesisPage() {
@@ -65,6 +66,7 @@ function HypothesisPage() {
   return (
     <section className="page detail-page frontier-detail">
       <Link className="back-link" to="/hypotheses">← Hypotheses</Link>
+      <EvaluationCrossLink kind="hypothesis" id={hypothesis.id} />
       <div className="page-heading detail-heading">
         <div>
           <div className="heading-badges">

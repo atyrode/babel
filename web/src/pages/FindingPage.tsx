@@ -10,6 +10,7 @@ import {
   Quoted,
   reviewTone,
 } from "../analysis";
+import { EvaluationCrossLink } from "../evaluation";
 import { ObservationCard } from "./HypothesisPage";
 import { RecordActions } from "../records";
 import { RecordLinks } from "../references";
@@ -63,6 +64,7 @@ function FindingPage() {
   return (
     <section className="page detail-page frontier-detail">
       <Link className="back-link" to="/findings">← Findings</Link>
+      <EvaluationCrossLink kind="finding" id={finding.id} />
       <div className="page-heading detail-heading">
         <div>
           <div className="heading-badges">

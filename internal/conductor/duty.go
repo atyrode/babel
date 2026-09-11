@@ -27,20 +27,26 @@ const (
 	// operator-specific relevance and memory amendments, including revisiting
 	// recorded facts against fresh archive state.
 	DutyTunesItself = "babel-tunes-itself"
-	// DutyTriagesTheQueue is the review-triage duty: Babel reading the
-	// proposals nobody has ruled on yet and leaving advice beside them —
-	// what duplicates what, what to read first, the case against acting,
-	// and a better-stated alternative where there is one.
+	// DutyTriagesTheQueue is the v1 proposal-triage duty, retained as a name
+	// and no longer a duty this rung draws.
 	//
-	// It has a toggle of its own rather than sharing DutyImprovesBabel's,
-	// because it authorizes a different act on a different surface. The
-	// product dimension authorizes analysis of Babel's own record, whose
-	// output is proposals an operator reads at leisure; this authorizes
-	// Babel to speak on the page where the operator decides, about records
-	// they have not ruled on yet. An operator may reasonably want the first
-	// and not the second, and folding them into one switch would take that
-	// choice away by treating "analyze yourself" as consent to "advise me
-	// while I rule".
+	// It authorized Babel to read the proposals nobody had ruled on yet and
+	// leave cohort advice beside them. SPEC §4.12 supersedes that in product
+	// intent: reception, evidence checking, relevance and observed outcomes
+	// are four separate judgements over every kind of reviewable output, not
+	// one ranked pass over unruled proposals, and they are drawn from a
+	// coverage inventory under a versioned policy rather than once a day over
+	// the whole corpus. So the work moved to the evaluation share, and the
+	// duty did not stay beside it: two active policies over the same records
+	// is the parallel writer path this cutover exists to remove.
+	//
+	// The constant survives for two reasons. Journals and receipts on
+	// existing machines carry "duty:babel-triages-the-queue" as the authority
+	// of runs that already happened, and the operator's stored authorization
+	// is still spelled this way — turning the evaluation share on is the same
+	// consent, about the same surface, and asking an operator to re-authorize
+	// a thing they already authorized would be a migration that loses their
+	// answer. What it no longer is, is a Toggle any Duty names: see Duties.
 	DutyTriagesTheQueue = "babel-triages-the-queue"
 )
 
@@ -101,7 +107,7 @@ type Duty struct {
 // StandingDuties returns every duty this build knows, in draw order.
 //
 // The list is written out here rather than derived from the cookbook. A recipe
-// existing is not an obligation to run it: the duties are the four the
+// existing is not an obligation to run it: the duties are the three the
 // operator authorizes toggles for, and a build that grew a self-analysis
 // recipe would otherwise start scheduling it by accident.
 //
@@ -146,26 +152,13 @@ func StandingDuties() []Duty {
 			Dimension: DimensionPersonal,
 			About:     "this operator's relevance and memory, revisited against the archive",
 		},
-		{
-			Name:      DutyTriagesTheQueue,
-			Recipe:    DutyTriagesTheQueue,
-			Toggle:    DutyTriagesTheQueue,
-			Dimension: DimensionProduct,
-			// The subject is Babel's own output, which is the product
-			// dimension's, even though nothing this duty writes is
-			// published: advice stays on the machine that wrote it,
-			// beside the record it is about. The dimension says what the
-			// duty reads, and the toggle beside it is what says who
-			// authorized Babel to say it out loud during review.
-			About: "what duplicates what in the review queue, and the case against each",
-		},
 	}
 	sort.SliceStable(duties, func(i, j int) bool { return duties[i].Friction && !duties[j].Friction })
 	return duties
 }
 
 // Duties is the operator's standing-duty authorization: which recipes the
-// loop may schedule duty cycles for. All three default off.
+// loop may schedule duty cycles for. Both default off.
 //
 // They are flags on `conductor configure` rather than #86-style ceremonies, and
 // that is a statement about what they authorize. A ceremony exists where the
@@ -175,10 +168,16 @@ func StandingDuties() []Duty {
 // operator already stated. Nothing here reaches a model, widens a grant or
 // mints a profile, so a terminal handover would add ritual without adding
 // intent — the same reasoning that made the ceilings flags.
+//
+// The v1 triage authorization is deliberately not here any more. It now
+// authorizes the evaluation share, which is not a duty: it draws a claimed
+// review of one named record from a coverage inventory rather than a recipe
+// over a corpus slice, so it is configured beside the other protected shares
+// and read from Config.Evaluation. The operator's stored answer is unchanged;
+// only what reads it moved.
 type Duties struct {
-	ImprovesBabel   bool
-	TunesItself     bool
-	TriagesTheQueue bool
+	ImprovesBabel bool
+	TunesItself   bool
 }
 
 // authorizes reports whether the operator has authorized d's toggle.
@@ -188,8 +187,6 @@ func (t Duties) authorizes(d Duty) bool {
 		return t.ImprovesBabel
 	case DutyTunesItself:
 		return t.TunesItself
-	case DutyTriagesTheQueue:
-		return t.TriagesTheQueue
 	default:
 		return false
 	}

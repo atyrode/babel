@@ -11,6 +11,7 @@ import (
 	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/disposition"
+	"github.com/atyrode/babel/internal/evaluation"
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/index"
@@ -109,6 +110,24 @@ type Options struct {
 	// page keeps answering.
 	Complaints ComplaintService
 	Reviver    FrontierReviver
+	// Evaluation is issue #219's full-lifecycle evaluation surface: what
+	// Babel's own output has been reviewed, how it was received, what
+	// coverage is still owed, and the operator's own decisions about all
+	// three (§4.12, §5.8, §8.5).
+	//
+	// It is its own field rather than a widening of Review or Frontier
+	// because it holds a different authority from both and reads a
+	// different store. Review decides a record's disposition; the frontier
+	// holds the records; this reads a rebuildable projection over the
+	// deployment's evaluation records and writes exactly two things — the
+	// operator's policy and the operator's own attributed criteria,
+	// feedback and reconsideration decisions.
+	//
+	// Nil is a state rather than a fault, on Complaints' terms: a build
+	// whose evaluation projection would not open keeps every page it
+	// already served, and the evaluation routes report that this session
+	// holds no evaluation service.
+	Evaluation EvaluationService
 	// Fleet and SyncJournal are issue #109's read half: the shared catalog
 	// every host in the deployment commits to, and this machine's own
 	// publication journal.
@@ -195,6 +214,37 @@ type ReviewService interface {
 	RecordContext(context.Context, review.Authority, string) (review.Context, error)
 }
 
+// EvaluationService is the §4.12/§5.8/§8.5 evaluation surface the web API may
+// reach, satisfied by *evaluation.Service.
+//
+// Six methods, and the shape of the set is the authority: four reads, the
+// operator's policy, and the operator's own attributed records. Submit, Draw,
+// Review and Claim are deliberately absent, and their absence is the one
+// guarantee this surface most has to make. An evaluation assessment is a
+// worker's statement about content it was served under a claim, fenced and
+// attributed to a run; a browser holds no claim, no fence and no run, so a
+// route that could reach Submit would let a click mint a vote that reads like
+// a review. That cannot be a rule a handler keeps, because a handler can be
+// edited — it is a method this type does not have.
+//
+// Refresh is absent for a different reason. The projection is rebuilt on a
+// schedule the launch owns (§8.5: page reads are bounded and do not scan the
+// corpus), so a GET that rebuilt it would make one operator's page view the
+// deployment's most expensive request.
+//
+// Configure takes the operator separately from the policy because the author
+// of a configuration is the session's identity and never a field in the body;
+// Operator takes an evaluation.OperatorInput whose Operator field the handler
+// fills in for the same reason.
+type EvaluationService interface {
+	List(context.Context, evaluation.Query) (evaluation.Page, error)
+	Detail(context.Context, evaluation.Subject) (evaluation.Detail, error)
+	Coverage(context.Context) (evaluation.Coverage, error)
+	Policy(context.Context) (evaluation.Policy, error)
+	Configure(context.Context, string, evaluation.Policy) (evaluation.Record, error)
+	Operator(context.Context, evaluation.OperatorInput) (evaluation.Record, error)
+}
+
 // FrontierReader is the read-only subset of *frontier.Store the API renders
 // records from.
 //
@@ -226,9 +276,12 @@ type FrontierReader interface {
 	TriageAdvice(context.Context, string) ([]frontier.TriageAdvice, error)
 	// TriageAdvised answers the same question for a whole listing page and
 	// answers only the presence of advice, never its rank. A row that has
-	// been read can say so; a queue cannot reorder itself by what Babel
-	// thought of it, because the number that would let it is not served
-	// here.
+	// been read can say so; the v1 cohort rank stays off a listing because
+	// it is a place in one pass's pile rather than a reception, an exposure
+	// or an outcome, so an order derived from it would mean none of the
+	// things a reader would take it for. §8.5's ordered reading queue is
+	// the evaluation surface, which states its basis and freshness with the
+	// order it serves.
 	TriageAdvised(context.Context, []string) (map[string]bool, error)
 	LinksFrom(context.Context, string) ([]frontier.Link, error)
 	LinksTo(context.Context, string) ([]frontier.Link, error)
@@ -540,6 +593,7 @@ var (
 	_ DispositionService   = (*disposition.Store)(nil)
 	_ ComplaintService     = (*complaint.Store)(nil)
 	_ SearchIndex          = (*index.Index)(nil)
+	_ EvaluationService    = (*evaluation.Service)(nil)
 )
 
 // State is the non-secret subset of persistent storage configuration exposed

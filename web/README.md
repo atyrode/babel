@@ -20,3 +20,15 @@ The dashboard reads one aggregate endpoint, `/api/overview`. `MOCK_OVERVIEW=heal
 (default) answers every panel; `MOCK_OVERVIEW=degraded` takes the archive and
 catalog panels away, and combines with `MOCK_UNWIRED` to preview a launch where
 neither storage nor analysis state is available — the state a first launch is in.
+
+The evaluation surface (`/evaluation`) has its own fixtures in
+`mock/evaluation.ts`, with stateful policy and operator-record flows.
+`MOCK_EVALUATION=rich` (default) carries the cases the interface has to render
+honestly — a bare vote with no prose, a record nobody reviewed, a role with no
+evaluator, a role supported but not yet required, a verified outcome with a
+later contradiction, two grouped remedies, a superseded revision, a Reconsider
+item, and enough rows to page; `empty` is the day-one state; `degraded` is a
+stale projection that still answers and says so; `running` shows claimed work
+in flight, which is the one state an enabled policy cannot produce by itself.
+`MOCK_UNWIRED=evaluation` refuses the whole surface the way a launch with no
+evaluation projection does.

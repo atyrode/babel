@@ -1084,6 +1084,70 @@ is nothing to distinguish.
 
 ---
 
+## 10. Turning evaluation on
+
+Full-lifecycle evaluation (SPEC §§4.12, 5.8, 8.5) ships in the binary and starts nothing by
+itself. Three switches gate it, and they are deliberately separate: one says the deployment
+authorizes review work at all, one says this machine may perform it, and one says how much of
+this machine's loop it gets.
+
+**OPERATOR STEP — not executed against the live deployment.** What has been exercised is the
+path up to the first switch: on 2026-09-11, on a disposable HOME with a synthetic worker, this
+binary refused in turn for missing ceilings, missing authorization and a disabled deployment
+policy, each naming its own remedy. Nothing was drawn, nothing was spent, and the real archive
+and catalog were not touched.
+
+**Preconditions.** A configured analysis profile (`babel analysis profile show`), conductor
+ceilings (§7.1), and — for fleet-wide accounting — shared mode with payload keys (§4, §8.1). A
+local-only machine evaluates its own records under its own allowance and says so.
+
+### 10.1 The deployment's policy — once, in the browser
+
+```
+$ babel web
+```
+
+Open **Evaluation → Review policy**, enable it, and save. The form states its own budget and
+selection settings; the defaults are conservative rather than measured. Saving publishes an
+operator-authored policy record that every authorized instance reads — it does not start a run
+on any of them, and the page says so.
+
+### 10.2 This machine's consent and share
+
+```
+$ babel conductor configure --babel-triages-the-queue --evaluate 3
+```
+
+The toggle is consent for Babel to form attributed judgements about records nobody has ruled on.
+`--evaluate N` allocates one cycle in N to review work as a protected share, the same way
+`--consolidate` allocates consolidation. Either without the other is a legitimate state: consent
+with no share schedules nothing, and a share with no consent is refused.
+
+### 10.3 One review, by hand
+
+```
+$ babel evaluate
+```
+
+Draws one claimed review, carries it out under the same blinding and budget the loop uses, and
+records what it found. It reports the coverage inventory either way, and when nothing is drawn
+it names which switch is still off. `--json` emits the same outcome as a document; `--correct
+RECORD_ID` re-reviews one statement this machine recorded, reserving the second pass before it
+runs.
+
+**Observable success.** `babel evaluate` reports the subject, role and allocation it reviewed;
+`babel conductor status` shows an `evaluation` rung with a non-zero depth while work is
+outstanding; the browser's **Evaluation** page lists the record with its reception, and
+**Coverage** shows what remains unreviewed. On a shared deployment the record appears on a
+second authorized instance after `babel sync`.
+
+**To stop it.** `babel conductor configure --evaluate 0` ends the allocation on this machine;
+disabling the policy in the browser ends it deployment-wide. Neither erases anything already
+recorded: evaluations are append-only, and a retired policy version stays readable as the
+contract its assessments were formed under.
+
+---
+
 ## What remains operator-gated
 
 The dated historical observations above do not establish current fleet state.
