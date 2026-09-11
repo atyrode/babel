@@ -185,7 +185,10 @@ export type HypothesisStatus =
   | "rejected"
   | "promoted";
 
-export type Disposition = "accept" | "reject" | "defer" | "duplicate";
+// The five §4.7 dispositions. Four close a record and `reopen` returns a
+// decided one to undecided: it removes no earlier decision, so a reopened
+// record reads with its whole history and a status of "new".
+export type Disposition = "accept" | "reject" | "defer" | "duplicate" | "reopen";
 
 export type ReviewStatus =
   | "new"
@@ -650,11 +653,13 @@ export interface ProposalRow extends FleetMark {
   classification: string;
   review_status?: ReviewStatus;
   // Set when a triage pass has left advice about this proposal, so a reader
-  // can see which rows Babel has already read. Presence only: the rank is
-  // not served to a listing, because a queue that sorted itself by Babel's
-  // suggested reading order would have done the operator's triage instead of
-  // offering to help with it. Absent on a row from another host, whose
-  // advice that host holds.
+  // can see which rows Babel has already read. Presence only: the v1 cohort
+  // rank is not served to a listing, because it is a place in one pass's
+  // pile rather than a reception, an exposure or an outcome, and a listing
+  // ordered by it would be ordered by a number meaning none of those. The
+  // operator's ordered reading queue is the evaluation surface (§8.5), which
+  // states its basis and freshness with the order. Absent on a row from
+  // another host, whose advice that host holds.
   advised?: boolean;
 }
 
@@ -2352,4 +2357,505 @@ export function createSubject(input: {
   aliases: SubjectAlias[];
 }): Promise<SubjectCreateResult> {
   return postJSON<SubjectCreateResult>("/api/reality/subject/create", input);
+}
+
+// ---------------------------------------------------------------------------
+// Full-lifecycle evaluation (issue #219; SPEC.md §4.12, §5.8, §8.5).
+//
+// These mirror internal/evaluation's own structs field for field, because the
+// Go routes serialize those structs directly rather than remapping them into
+// view types. There is no second read model to keep in step: what the ranking
+// service built is what arrives here.
+//
+// Four product rules from §4.12 are visible in the shapes rather than only in
+// the pages that render them.
+//
+// A bare vote is a complete review. `contributions` may be empty beside a
+// `vote`, and `vote` may be empty beside a contribution, so neither can be
+// rendered as an incomplete version of the other and no page has a reason to
+// synthesize prose for a vote that carried none.
+//
+// Reception is not evidence. `reception` counts what was said; `evidence` is
+// what the record cites; `results` are criterion outcomes. They are three
+// fields because they answer three questions, and a client that summed them
+// into a confidence would be doing the one thing §4.12 forbids.
+//
+// Absence is representable. `coverage` distinguishes never-reviewed, blocked,
+// not-applicable and overdue, and a missing evaluator is a gap rather than a
+// zero — so nothing here renders as "no opposition" when what happened is that
+// nobody looked.
+//
+// Nothing here can vote. There is no submit call in this module and no
+// assessment request type, because the browser holds no run identity and no
+// claim: the Go interface behind these routes has no such method either.
+// ---------------------------------------------------------------------------
+
+// The exact immutable record a vote is about. `id` is the revision's own
+// identity, never a mutable chain root, which is what makes "this vote is
+// about the wording that was read" checkable rather than asserted.
+export interface EvaluationSubject {
+  kind: string;
+  id: string;
+}
+
+export interface EvaluationCriterion {
+  id: string;
+  description: string;
+}
+
+export interface EvaluationCriterionResult {
+  criterion_id: string;
+  satisfied: boolean;
+  evidence: EvidenceRef[] | null;
+  uncertainty: string;
+}
+
+// One optional thing a reviewer added beyond the vote: an argument, new
+// supporting material, a comparison between alternatives, or what would change
+// its mind. `preferred` is a preference in the named comparison and never a
+// global ruling — §4.12 refuses to mint votes for either side from one.
+export interface EvaluationContribution {
+  kind: string;
+  text: string;
+  evidence: EvidenceRef[] | null;
+  alternatives: EvaluationSubject[] | null;
+  preferred?: EvaluationSubject | null;
+  would_change: string;
+}
+
+// The recorded context a recommendation was computed against: what the
+// operator said he is working on, what hurts, and what analysis is allowed to
+// spend. It travels with every artifact because §8.5 requires the same votes
+// to be able to yield a different order when the recorded work changes, and a
+// reader who cannot see the context cannot correct a mistaken one.
+export interface EvaluationContext {
+  version: string;
+  priority: number;
+  current_work: boolean;
+  pain: number;
+  blocked: boolean;
+  allowance: string;
+  reasons: string[] | null;
+  evidence: EvidenceRef[] | null;
+  unknown: string[] | null;
+}
+
+// One reviewable artifact as evaluation sees it. `body` is the record's own
+// stored payload, passed through verbatim, so a page renders the producing
+// record rather than a summary this surface invented.
+export interface EvaluationArtifact {
+  subject: EvaluationSubject;
+  root_id: string;
+  head_id: string;
+  run_id: string;
+  created_at: string;
+  title: string;
+  body: unknown;
+  review_status: string;
+  status: string;
+  related: EvaluationSubject[] | null;
+  evidence: EvidenceRef[] | null;
+  criteria: EvaluationCriterion[] | null;
+  // The operator-authored criteria record `criteria` came from. Empty means
+  // no such record was resolved, which a page says in those words: a context
+  // version is not a criteria identity, and rendering one in its place would
+  // let an unresolved target read as a settled one.
+  criteria_id: string;
+  context: EvaluationContext;
+  context_version: string;
+}
+
+// What produced an assessment. `blinded` is the procedural fact that prior
+// evaluations were withheld from the initial read — it is a statement about
+// what was served, not a claim about model memory, and the interface says so
+// where it renders it.
+export interface EvaluationProvenance {
+  run_id: string;
+  model: string;
+  profile: string;
+  recipe: string;
+  recipe_version: number;
+  blinded: boolean;
+  context_version: string;
+  consulted: EvaluationSubject[] | null;
+}
+
+export interface EvaluationAssessment {
+  vote: string;
+  contributions: EvaluationContribution[] | null;
+  outcome: string;
+  criteria_id: string;
+  results: EvaluationCriterionResult[] | null;
+  environment: string;
+  as_of: string;
+  uncertainty: string;
+  context_version: string;
+}
+
+export interface EvaluationAssignment {
+  id: string;
+  subject: EvaluationSubject;
+  run_id: string;
+  role: string;
+  policy_version: string;
+  context_version: string;
+  seed: number;
+  input_digest: string;
+  created_at: string;
+  expires_at: string;
+  fence: number;
+  reserved_cost: number;
+  lane: string;
+}
+
+// One thing that happened to an assignment. Exposure, completion, a skip and a
+// failure are four states rather than one boolean, because §4.12 requires them
+// to stay distinguishable: a skip is not a vote and a retry does not inflate
+// the review count.
+export interface EvaluationAttempt {
+  assignment_id: string;
+  state: string;
+  reason: string;
+  // What the attempt was charged. `unpriced` says the provider reported no
+  // cost, so `cost` is the reservation charged conservatively rather than an
+  // observed price — and never evidence that the work was free.
+  cost: number;
+  unpriced: boolean;
+  recorded_at: string;
+}
+
+// A coverage sweep that finished. It is its own record because "the check
+// completed" and "everything eligible has been reviewed" are separate facts,
+// and the interface must be able to state the first while the second is false.
+export interface EvaluationCheckpoint {
+  at: string;
+  input_digest: string;
+  covered: number;
+}
+
+// One published evaluation record, whatever kind it is. The optional payloads
+// are how one wire shape carries nine kinds without a client guessing: a
+// history entry renders from the field its `kind` names.
+export interface EvaluationRecord {
+  id: string;
+  kind: string;
+  subject: EvaluationSubject;
+  assignment_id: string;
+  supersedes_id: string;
+  actor_kind: string;
+  actor_id: string;
+  created_at: string;
+  provenance: EvaluationProvenance;
+  assessment?: EvaluationAssessment | null;
+  criteria?: EvaluationCriterion[] | null;
+  reason: string;
+  // The polarity of a reconsideration decision: `reopen` or `retain`, and
+  // empty on every other kind. A history entry renders this field and never
+  // reads the act out of `reason`, so the two decisions stay distinguishable
+  // however the operator worded his explanation.
+  decision?: string;
+  context?: EvaluationContext | null;
+  policy?: EvaluationPolicy | null;
+  related_id: string;
+  assignment?: EvaluationAssignment | null;
+  attempt?: EvaluationAttempt | null;
+  checkpoint?: EvaluationCheckpoint | null;
+}
+
+// The versioned selection and budget policy. Every field is a knob the
+// operator sets and none of them is a permission to run: the schedule the
+// deployment already keeps is what draws work, which is why the policy
+// response carries a sentence saying so.
+export interface EvaluationPolicy {
+  version: string;
+  enabled: boolean;
+  cadence_seconds: number;
+  overdue_seconds: number;
+  initial_reviews: number;
+  cooldown_seconds: number;
+  coverage_share: number;
+  exploration_share: number;
+  discovery_share: number;
+  max_item_reviews: number;
+  per_cycle_cost: number;
+  daily_cost: number;
+  lease_seconds: number;
+  batch_size: number;
+}
+
+// What was said about one revision. Skips are counted apart from reviews for
+// the reason the attempt states are four: a source nobody could review is a
+// gap, and folding it into `reviews` would report it as attention spent.
+export interface EvaluationReception {
+  support: number;
+  oppose: number;
+  unsure: number;
+  reviews: number;
+  skips: number;
+}
+
+// One review role's standing on one artifact. It is per role rather than per
+// record because §4.12 makes coverage role-specific: a reception vote does not
+// discharge an evidence check, so a single coverage word for an item would
+// report a satisfied obligation nobody met.
+//
+// `state` is the canonical vocabulary — unreviewed, reviewed, due, unsupported,
+// blocked, not_applicable — and `reason` is required for the last three.
+// `unsupported` is the missing-evaluator gap §8.5 keeps visible: it is not
+// reviewed, and it is not not-applicable either.
+//
+// `overdue` rides beside `state` rather than inside it because the two are
+// independent: an artifact can be reviewed once and overdue for its next pass,
+// which one mutually exclusive state cannot express.
+export interface EvaluationRoleCoverage {
+  role: string;
+  state: string;
+  reason?: string;
+  reviews: number;
+  overdue?: boolean;
+  last_reviewed?: string;
+}
+
+// Flat counters over one scope, one per canonical state plus the overdue flag.
+// There is no nesting and no score here by construction: a coverage inventory
+// answers how much is owed, never how good anything is.
+export interface EvaluationCoverageCounts {
+  unreviewed: number;
+  reviewed: number;
+  due: number;
+  unsupported: number;
+  blocked: number;
+  not_applicable: number;
+  overdue: number;
+}
+
+// The shared coverage inventory. `last_check` is when the sweep finished and
+// `overdue` is what is still owed: the two are independent, and a reader must
+// be able to see a completed check beside work that is still late.
+//
+// `by_role` is the same counters per review role, and it is what makes the
+// inventory honest about which obligation is outstanding rather than reporting
+// one number for five different questions.
+//
+// `active` and `next_draw` are what let this surface say whether authorized
+// work is running rather than inferring it from `enabled`. A zero `next_draw`
+// means unknown — no sweep has been recorded yet — and never "now".
+export interface EvaluationCoverage extends EvaluationCoverageCounts {
+  active: number;
+  last_check: string;
+  next_draw: string;
+  updated_at: string;
+  reason: string;
+  by_role: Record<string, EvaluationCoverageCounts> | null;
+}
+
+// One row of a ranked listing. `reasons`, `objections` and `would_change` are
+// §8.5's why-now, what-argues-against and what-would-change-this, and all
+// three may be empty: an unknown stays unknown rather than acquiring a
+// generated rationale.
+//
+// `group` is the reversible reading projection over competing remedies for one
+// problem. It is a grouping key and not a ruling: the records stay separately
+// addressable, keep their own votes, and none of them is suppressed.
+export interface EvaluationItem {
+  artifact: EvaluationArtifact;
+  reception: EvaluationReception;
+  // The item's coverage in the role the query asked about, or its weakest
+  // outstanding obligation when the query named no role.
+  coverage: string;
+  coverage_reason: string;
+  // Every applicable role, in the order internal/evaluation defines for this
+  // subject kind. A role absent from this list is not applicable to the kind;
+  // a role present with an `unsupported` state is one nothing can review yet.
+  review_coverage: EvaluationRoleCoverage[] | null;
+  lane: string;
+  score: number;
+  reasons: string[] | null;
+  objections: string[] | null;
+  would_change: string[] | null;
+  group: string;
+  reconsider: boolean;
+}
+
+// One page of the ranked eligible set. `snapshot` is the consistency contract:
+// the ranked set a page was cut from, sent back on the next request so paging
+// through a corpus somebody is publishing into stays one ordering.
+//
+// `stale` and `unavailable` are the honest degradations §8.5 requires. A
+// projection that has not been rebuilt still answers, labelled; it does not
+// refuse and it does not present itself as current.
+export interface EvaluationPage {
+  items: EvaluationItem[] | null;
+  total: number;
+  snapshot: string;
+  updated_at: string;
+  stale: boolean;
+  unavailable: string;
+  coverage: EvaluationCoverage;
+}
+
+// The closed vocabularies, served by the Go surface rather than written down
+// here. A picker holding its own copy would offer a sort the service refuses,
+// and the operator would discover it from a failed request.
+export interface EvaluationVocabulary {
+  sorts: string[];
+  lanes: string[];
+  coverage: string[];
+  kinds: string[];
+  roles: string[];
+  feedback_reasons: string[];
+  operator_kinds: string[];
+  // The polarities a reconsideration decision may state. Two words, and the
+  // reason they are served: the control that uses them decides whether a
+  // rejected record is reopened, so the page must offer exactly what the
+  // store accepts.
+  reconsider_decisions: string[];
+}
+
+// The query the server answered, which is not always the one that was asked:
+// an empty sort is the default order, and a pinned snapshot that has been
+// pruned is answered from the current one.
+export interface EvaluationQueryEcho {
+  kind: string;
+  lane: string;
+  sort: string;
+  role: string;
+  coverage: string;
+  limit: number;
+  offset: number;
+  snapshot: string;
+}
+
+export interface EvaluationListResponse extends EvaluationPage {
+  query: EvaluationQueryEcho;
+  vocabulary: EvaluationVocabulary;
+}
+
+// Where this subject's disposition is decided. It is an identity rather than a
+// URL, on ReferenceEndpoint's terms: the route is built by this client's own
+// table, so nothing a record carries can become a link destination. An empty
+// `type` means the kind has no review page, and the control is then not
+// offered at all.
+export interface EvaluationDecisionLink {
+  type: string;
+  id: string;
+}
+
+export interface EvaluationDetailResponse {
+  item: EvaluationItem;
+  history: EvaluationRecord[] | null;
+  assignments: EvaluationAssignment[] | null;
+  alternatives: EvaluationItem[] | null;
+  vocabulary: EvaluationVocabulary;
+  decisions: EvaluationDecisionLink;
+}
+
+export interface EvaluationCoverageResponse {
+  coverage: EvaluationCoverage;
+  kinds: string[];
+  roles: string[];
+}
+
+// The four states §8.5 requires this surface to be able to report. `running`
+// is observed from claimed work in flight and is never inferred from an
+// enabled policy; `unavailable` is "this session cannot say", which is a
+// different claim from `paused`.
+export type EvaluationStatus = "running" | "scheduled" | "paused" | "unavailable";
+
+export interface EvaluationPolicyResponse {
+  policy: EvaluationPolicy;
+  coverage: EvaluationCoverage;
+  status: EvaluationStatus;
+  detail: string;
+  next_draw?: string;
+  // The server's own sentence about what saving a policy does not do. It is
+  // rendered verbatim: §8.5 makes "saving a policy is not permission to launch
+  // compute" a requirement, and a paraphrase would be this client promising
+  // something on the server's behalf.
+  saving: string;
+  record?: EvaluationRecord | null;
+}
+
+export interface EvaluationOperatorResult {
+  record: EvaluationRecord;
+  decided: string;
+}
+
+// One operator statement about one subject. There is no `operator` field, and
+// the absence is the guarantee rather than an omission: the author is the
+// launch session's identity, resolved by the server, and the route refuses
+// unknown fields — so a caller cannot record a decision under another name.
+export interface EvaluationOperatorRequest {
+  subject: EvaluationSubject;
+  kind: string;
+  reason: string;
+  criteria: EvaluationCriterion[];
+  related_id: string;
+  // The act a reconsideration decision performs, from the served vocabulary.
+  // It is required on this type rather than optional because every caller has
+  // to say which act it is performing — an empty string on the two kinds that
+  // have no polarity, and a chosen word on the one that does. A form that
+  // could leave it out would be a form that reopens records by omission.
+  decision: string;
+}
+
+export interface EvaluationQuery {
+  kind?: string;
+  lane?: string;
+  sort?: string;
+  role?: string;
+  coverage?: string;
+  snapshot?: string;
+  limit?: number;
+  offset?: number;
+}
+
+// getEvaluationList reads one page of the ranked set. Every parameter is a
+// closed-vocabulary identifier or a number: no record wording travels in the
+// URL, so one instance's analysis cannot reach another's browser history or
+// any request log between them.
+export function getEvaluationList(params: EvaluationQuery = {}): Promise<EvaluationListResponse> {
+  const values: Record<string, string | number> = {};
+  if (params.kind) values.kind = params.kind;
+  if (params.lane) values.lane = params.lane;
+  if (params.sort) values.sort = params.sort;
+  if (params.role) values.role = params.role;
+  if (params.coverage) values.coverage = params.coverage;
+  if (params.snapshot) values.snapshot = params.snapshot;
+  if (params.limit !== undefined) values.limit = params.limit;
+  if (params.offset !== undefined) values.offset = params.offset;
+  return request<EvaluationListResponse>(`/api/evaluation/list?${query(values)}`);
+}
+
+// getEvaluationDetail opens one exact revision. The kind and the id are the
+// subject's own, never a chain root: a page that resolved a root to its head
+// would show a history of votes about wording it is not displaying.
+export function getEvaluationDetail(kind: string, id: string): Promise<EvaluationDetailResponse> {
+  return request<EvaluationDetailResponse>(`/api/evaluation/detail?${query({ kind, id })}`);
+}
+
+export function getEvaluationCoverage(): Promise<EvaluationCoverageResponse> {
+  return request<EvaluationCoverageResponse>("/api/evaluation/coverage");
+}
+
+export function getEvaluationPolicy(): Promise<EvaluationPolicyResponse> {
+  return request<EvaluationPolicyResponse>("/api/evaluation/policy");
+}
+
+// saveEvaluationPolicy stores the whole policy, not a patch. The form sends
+// back what it read with the operator's edits applied, so a knob this build
+// does not render cannot be silently zeroed by a partial write.
+export function saveEvaluationPolicy(policy: EvaluationPolicy): Promise<EvaluationPolicyResponse> {
+  return postJSON<EvaluationPolicyResponse>("/api/evaluation/policy", policy);
+}
+
+// recordEvaluationOperator appends one attributed operator statement. The
+// accept/reject/defer/refine vocabulary belongs to the review surface, and a
+// reconsideration decision states its own act — reopen or retain — in the
+// `decision` field rather than in the reason, so the caller sends the act it
+// means and the response says what was recorded in the server's own words.
+export function recordEvaluationOperator(
+  input: EvaluationOperatorRequest,
+): Promise<EvaluationOperatorResult> {
+  return postJSON<EvaluationOperatorResult>("/api/evaluation/operator", input);
 }

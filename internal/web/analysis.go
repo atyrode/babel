@@ -836,11 +836,15 @@ type ProposalSummary struct {
 	// mark at all rather than a mark that says "no advice", which is a
 	// claim about the record it is not.
 	//
-	// Presence and nothing more. The rank is deliberately not here. It is
-	// the field a listing would sort on, and a queue reordered by Babel's
-	// suggested reading order would have done the operator's triage rather
-	// than offered to help with it; the reading order is a sentence on the
-	// record's own page, addressed to somebody who has chosen to read it.
+	// Presence and nothing more. The v1 cohort rank is deliberately not
+	// here, and the reason is what it is rather than a rule against
+	// ordered listings: it is a place in one triage pass's pile, not a
+	// reception, an exposure or an outcome, so a listing ordered by it
+	// would be ordered by a number that means none of the things a
+	// reader would take it for. Ordering the operator's reading queue is
+	// the evaluation surface's job (§8.5), where the basis, the inputs
+	// and the freshness of the order are stated with it; the v1 reading
+	// order stays a sentence on the record's own page.
 	Advised bool `json:"advised,omitempty"`
 }
 

@@ -1,0 +1,112 @@
+-- Evaluation, admitted to the Phase B kind vocabulary (SPEC.md 4.12, 9;
+-- issue #219).
+--
+-- WHY THIS IS A MIGRATION AND NOT A NEW TABLE
+--
+-- An evaluation record is a Phase B record on 0003's exact terms: durable,
+-- irreplaceable, envelope-encrypted, object-first. Its substance - a vote, a
+-- contribution, a criterion result, an outcome assessment with its evidence -
+-- is content and stays sealed in the object, so what reaches PostgreSQL is what
+-- reaches it for a hypothesis: an identity, a kind, a schema version, a closure
+-- position, and the reference to the sealed object. It needs no column of its
+-- own and gets none.
+--
+-- The distinction that earns it a kind rather than a column is what a reader
+-- would otherwise have to guess. 0003 closes `kind` in a CHECK on purpose: a
+-- record type reaching this database under a new kind is a migration and a
+-- review, not an unnoticed string. This is that migration and that review.
+--
+-- WHY NOT ONE OF THE TEN KINDS THAT ALREADY EXIST
+--
+-- Two are near misses and both are worth naming, because either would have cost
+-- nothing today and would have been wrong.
+--
+-- `disposition` is the operator's ruling on a record: accept, reject, defer.
+-- An evaluation is not a ruling and must never be read as one. SPEC.md 4.12 and
+-- the lifecycle plan keep reception strictly separate from disposition
+-- authority - a fleet of workers voting support on a proposal decides nothing,
+-- and an operator's single rejection is not outvoted. A reader that saw both
+-- under one kind would be one join away from rendering an aggregate of machine
+-- opinion with the authority of an operator decision, which is the precise
+-- failure the separation exists to prevent.
+--
+-- `context` is attributed operator guidance: a person answering a question
+-- Babel put in front of them. An evaluation is the opposite direction of
+-- attribution - Babel answering a question about its own output - and it can
+-- also be operator-authored (criteria, feedback, a reconsider decision), so
+-- neither "who wrote it" nor "what it is about" separates the two. What
+-- separates them is that guidance is an input to analysis and an evaluation is
+-- a judgement of analysis, and "which of these did Babel conclude about its own
+-- work" is exactly the question the evaluation inventory exists to answer.
+--
+-- WHAT THIS SAYS ABOUT THE EVALUATION'S SHAPE, BY OMISSION
+--
+-- Nothing, and that is load-bearing here in a way it was not for `complaint`.
+-- An evaluation record carries a vote, tallies, ranks, criteria results and
+-- outcome verdicts, and every one of them is a content-derived judgement about
+-- the corpus. SPEC.md 9 forbids them in plaintext and the lifecycle plan
+-- restates it: votes, arguments, tallies, ranks and content-derived assessments
+-- stay out of plaintext catalog columns. So there is no vote column, no score,
+-- no tally, no role, no outcome and no subject column on the record row, and
+-- the Phase B class gate in allowlist.go is what refuses one that arrives
+-- later - a vote-shaped column has no class to be listed under.
+--
+-- The subject an evaluation is about travels sealed with it, unlike a
+-- proposal's subjects (0010), and the asymmetry is deliberate rather than an
+-- oversight. A proposal's subject list is a form question - consolidated from
+-- findings, or an unbacked candidate - that decides how much authority a reader
+-- may lend the record, and a host with no payload key must be able to answer it
+-- without one. Which revision an evaluation judged is only useful together with
+-- what the evaluation says about it, which requires the key anyway. What a
+-- subject column would add instead is durable and joinable: a permanent,
+-- keyless index of how much review each of Babel's conclusions accumulated and
+-- which ones are contested, readable by the managed provider and by anyone
+-- holding the catalog credential, long after the work finished.
+--
+-- Coordination is not here either. Assignments, leases, fences and budget
+-- reservations are in 0013_evaluation_claims, which is disposable coordination
+-- state rather than analysis output. Those rows do carry a subject, and the
+-- line between the two is attention versus judgement: a claim says an instance
+-- is reviewing a revision right now and nothing about how it came out, which
+-- is what `presence` already publishes about runs, while a record is the
+-- judgement and is permanent. Keeping the two apart is also what stops a
+-- claim's accounting from reading as a published verdict.
+--
+-- WHY THE CONSTRAINT IS DROPPED AND RE-ADDED
+--
+-- 0011's reasoning exactly. A CHECK is not extensible: widening a closed
+-- vocabulary means replacing the constraint that closed it. The constraint name
+-- is PostgreSQL's own default for an inline column CHECK - <table>_<column>_check
+-- - which 0003 declared without naming and 0011 re-added under that same name,
+-- so it is named here rather than guessed at: DROP CONSTRAINT without IF EXISTS
+-- fails loudly on a database whose constraint is named something else, which is
+-- the right outcome. Silently skipping the drop would leave the old vocabulary
+-- in force and turn every evaluation into a permanently stuck pending-sync row
+-- on that deployment.
+--
+-- The new CHECK is the old ten values plus 'evaluation'. Nothing is removed, so
+-- no row that satisfied the old constraint can fail the new one, and the
+-- statement cannot fail on existing data.
+--
+-- WHAT AN OLD BINARY DOES WITH THESE ROWS
+--
+-- It refuses them by name. A reader that predates this migration holds a closed
+-- kind vocabulary of ten values and reports an evaluation row as an unsupported
+-- kind; it does not decode it as something else and does not discard it. That
+-- is the rollback contract the lifecycle plan requires - newer records are
+-- retained and an unsupported reader fails explicitly - and it is a property of
+-- the old binary's own closed vocabulary rather than something this migration
+-- can arrange.
+--
+-- SchemaVersion stays 1: this is additive, it constrains no existing writer,
+-- and EnsureCompatible refuses a database migrated past the binary, so raising
+-- it would stop every live Phase A writer against production (SPEC.md 14).
+
+ALTER TABLE analysis_records
+    DROP CONSTRAINT analysis_records_kind_check;
+
+ALTER TABLE analysis_records
+    ADD CONSTRAINT analysis_records_kind_check CHECK (kind IN (
+        'hypothesis', 'observation', 'finding', 'proposal',
+        'link', 'disposition', 'context',
+        'preparation', 'receipt', 'complaint', 'evaluation'));

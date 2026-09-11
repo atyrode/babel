@@ -12,6 +12,7 @@ import type {
   VersionInfo,
 } from "../src/api";
 
+import { evaluationResponse } from "./evaluation";
 import { OVERVIEW_ROWS, overviewPhaseB, phasebResponse } from "./phaseb";
 
 const distRoot = resolve(import.meta.dir, "..", "dist");
@@ -402,6 +403,7 @@ const routeServices: Array<{ prefix: string; service: string; label: string }> =
   { prefix: "/api/review/", service: "review", label: "the review service" },
   { prefix: "/api/reality/", service: "reality", label: "the reality ledger" },
   { prefix: "/api/search", service: "search", label: "the retrieval index" },
+  { prefix: "/api/evaluation/", service: "evaluation", label: "the evaluation service" },
 ];
 
 function unwiredResponse(url: URL): Response | null {
@@ -685,6 +687,11 @@ const server = Bun.serve({
     // file; unknown /api paths still fall through to apiResponse's 404.
     const phaseb = await phasebResponse(request, url);
     if (phaseb) return phaseb;
+    // #219's evaluation surface, in its own file for phaseb.ts's reason:
+    // the ranking, coverage and policy fixtures are a body of state of
+    // their own and do not belong in either of the other two.
+    const evaluation = await evaluationResponse(request, url);
+    if (evaluation) return evaluation;
     const api = apiResponse(request, url);
     return api ?? staticResponse(url);
   },
@@ -693,6 +700,9 @@ const server = Bun.serve({
 console.log(`Babel mock: http://${server.hostname}:${server.port}/#nonce=synthetic-preview-nonce`);
 console.log(`Scan simulation: MOCK_SCAN=${scanMode} (running | error | idle | empty)`);
 console.log(
-  `Unwired services: MOCK_UNWIRED=${unwired.size === 0 ? "<none>" : [...unwired].join(",")} (frontier | review | reality | search)`,
+  `Unwired services: MOCK_UNWIRED=${unwired.size === 0 ? "<none>" : [...unwired].join(",")} (frontier | review | reality | search | evaluation)`,
 );
 console.log(`Dashboard: MOCK_OVERVIEW=${overviewMode} (healthy | degraded)`);
+console.log(
+  `Evaluation: MOCK_EVALUATION=${Bun.env.MOCK_EVALUATION ?? "rich"} (rich | empty | degraded | running)`,
+);

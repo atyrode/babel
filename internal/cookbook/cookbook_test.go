@@ -24,7 +24,10 @@ var shipped = []struct {
 	minScope int
 }{
 	{id: "babel-improves-babel", kind: KindMeta, enabled: false, minScope: 2},
-	{id: "babel-triages-the-queue", kind: KindMeta, enabled: false, minScope: 2},
+	// The evaluation recipe reads the session corpus and nothing else: a
+	// review checks what a record cited against the archive that recorded the
+	// work, and no repository snapshot is brokered to it (v2, SPEC §4.12).
+	{id: "babel-triages-the-queue", kind: KindMeta, enabled: false, minScope: 1},
 	{id: "babel-tunes-itself", kind: KindMeta, enabled: false, minScope: 2},
 	{id: "code-health-comprehensibility", kind: KindLens, enabled: true, minScope: 3},
 	{id: "decision-quality-operational-risk", kind: KindLens, enabled: false, minScope: 3},

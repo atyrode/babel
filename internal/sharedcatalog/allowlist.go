@@ -283,6 +283,53 @@ var allowlist = map[string]map[string]Class{
 		"finished_at":       ClassTimestamp,
 		"receipt_record_id": ClassOpaqueID,
 	},
+	// Evaluation coordination (migrations/0013, issue #219): who is allowed to
+	// review what, until when, and how much of the deployment's day is spoken
+	// for. These two are not Phase B tables and are deliberately absent from
+	// phaseBTables below - they hold no analysis output, and their content is
+	// authority and money rather than a judgement about the corpus, which is
+	// why they may carry a spend measure that the Phase B class gate would
+	// correctly refuse beside a sealed record.
+	//
+	// subject_kind and subject_id are the pair worth reading twice. They say
+	// which revision an instance is reviewing right now, which is the same
+	// class of in-flight fact `presence` already publishes about runs, and
+	// they are what lets an operator holding only the catalog credential see a
+	// working fleet. They never say how the review came out: there is no vote,
+	// score, tally, rank, role verdict or reason column here, and a future one
+	// would have no class to be listed under. migrations/0012 explains why the
+	// evaluation *record* carries no subject at all, which is a different
+	// question - a permanent keyless index of which conclusions are contested.
+	//
+	// state is a run lifecycle state on migrations/0009's terms: it says
+	// whether a worker is still holding an assignment, not how far a record
+	// got through the commit protocol.
+	"evaluation_budget_days": {
+		"deployment_id":  ClassOpaqueID,
+		"day":            ClassTimestamp,
+		"daily_cost":     ClassSpendMeasure,
+		"per_cycle_cost": ClassSpendMeasure,
+		"policy_version": ClassIdentifier,
+		"created_at":     ClassTimestamp,
+		"updated_at":     ClassTimestamp,
+	},
+	"evaluation_claims": {
+		"deployment_id":  ClassOpaqueID,
+		"claim_id":       ClassOpaqueID,
+		"fence":          ClassOrdering,
+		"subject_kind":   ClassIdentifier,
+		"subject_id":     ClassOpaqueID,
+		"run_id":         ClassOpaqueID,
+		"owner_id":       ClassOpaqueID,
+		"policy_version": ClassIdentifier,
+		"day":            ClassTimestamp,
+		"reserved_cost":  ClassSpendMeasure,
+		"observed_cost":  ClassSpendMeasure,
+		"state":          ClassRunState,
+		"claimed_at":     ClassTimestamp,
+		"expires_at":     ClassTimestamp,
+		"finished_at":    ClassTimestamp,
+	},
 }
 
 // Allowlist returns the contract as a sorted, flattened listing of

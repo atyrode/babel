@@ -26,6 +26,7 @@ import {
   TimelineEntry,
   unescapeWhitespace,
 } from "../analysis";
+import { EvaluationCrossLink } from "../evaluation";
 import { ObservationCard } from "./HypothesisPage";
 import { RecordLinks } from "../references";
 import { TriageAdvice } from "../triage";
@@ -46,15 +47,25 @@ import { TriageAdvice } from "../triage";
 // follow before believing any of it. The export stays, at the bottom, as the
 // document a person keeps.
 
-// The four §4.7 dispositions, each with the sentence a reviewer needs before
+// The five §4.7 dispositions, each with the sentence a reviewer needs before
 // choosing it. `reject-and-refine` is deliberately absent: it authorizes a
 // refinement request and belongs to the CLI until this page grows the full
 // guidance flow.
+//
+// `reopen` is the one that opens rather than closes, and its sentence says so
+// plainly: it is offered because an operator who is told a record has been
+// reconsidered needs somewhere to act on that, and accepting a record he has
+// not re-read would be the only alternative.
 const DISPOSITIONS: Array<{ value: Disposition; label: string; hint: string }> = [
   { value: "accept", label: "Accept", hint: "Endorse this record for projection and follow-on work." },
   { value: "reject", label: "Reject", hint: "Record disagreement. The record is kept, visibly rejected." },
   { value: "defer", label: "Defer", hint: "Not now. The record stays in the queue's history." },
   { value: "duplicate", label: "Duplicate", hint: "Points at an original record, which you name below." },
+  {
+    value: "reopen",
+    label: "Reopen",
+    hint: "Undecide it. The earlier decision stays in the history, the status returns to new, and your reason is required.",
+  },
 ];
 
 // RecordBody is the subject, whole, in the shape its own endpoint returns.
@@ -168,11 +179,17 @@ function ReviewRecordPage() {
           <RecordHeading body={body} type={type} />
           <p className="subtitle mono">{id}</p>
         </div>
-        {recordHref && (
-          <div className="heading-meta">
+        <div className="heading-meta">
+          {/* The reception of this exact revision, beside the decision
+              being made about it. It is a link rather than a panel: a vote
+              count on the decision page would sit one line from the accept
+              button, which is the one place §4.12's separation between
+              reception and the operator's own authority most has to hold. */}
+          <EvaluationCrossLink kind={type} id={id} />
+          {recordHref && (
             <Link className="review-link" to={recordHref}>See it in context →</Link>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
@@ -227,7 +244,11 @@ function ReviewRecordPage() {
                     tone={reviewTone(
                       decision.disposition === "accept" ? "accepted"
                         : decision.disposition === "reject" ? "rejected"
-                          : decision.disposition === "defer" ? "deferred" : "duplicate",
+                          : decision.disposition === "defer" ? "deferred"
+                            // A reopen returns the record to undecided, so it
+                            // is toned as the status it produced rather than
+                            // as one of the closing four.
+                            : decision.disposition === "reopen" ? "new" : "duplicate",
                     )}
                     at={decision.recorded_at}
                   >
@@ -639,10 +660,16 @@ function DecideForm({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const prompt =
-      `Record "${disposition}" for this ${type}?\n\nReview decisions are append-only: the ` +
-      "event is recorded permanently, and reconsidering later appends another event rather " +
-      "than replacing this one.";
+    // The prompt says what this decision does, and a reopen does something
+    // the other four do not: it returns the record to undecided. An operator
+    // confirming "reopen" must be told that and not the generic sentence.
+    const prompt = disposition === "reopen"
+      ? `Reopen this ${type}?\n\nThe decision you are reopening stays in the history — nothing ` +
+        "is edited or removed — and the record's status returns to new, so it can be decided " +
+        "again on its merits."
+      : `Record "${disposition}" for this ${type}?\n\nReview decisions are append-only: the ` +
+        "event is recorded permanently, and reconsidering later appends another event rather " +
+        "than replacing this one.";
     if (!window.confirm(prompt)) return;
     setSubmitting(true);
     setSubmitError(null);
@@ -716,9 +743,23 @@ function DecideForm({
           </label>
         )}
 
+        {/* The note is the reviewer's own words, and optional on the four
+            closing decisions. A reopen requires it: the service refuses a
+            reopen with no reason, and asking here says why rather than
+            letting the server say no. */}
         <label className="decide-field">
-          Note <span className="muted">(optional, recorded with the event)</span>
-          <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={2} />
+          Note{" "}
+          <span className="muted">
+            {disposition === "reopen"
+              ? "(required: why the earlier decision stopped holding)"
+              : "(optional, recorded with the event)"}
+          </span>
+          <textarea
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            rows={2}
+            required={disposition === "reopen"}
+          />
         </label>
 
         <label className="decide-field">

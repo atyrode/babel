@@ -327,6 +327,19 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 		}
 	}
 
+	if services.analysis != nil {
+		service, closeEvaluation, err := a.openEvaluationServices(context.Background(),
+			services.analysis.frontier, services.reality, services.analysis.sync, services.fleet, nil,
+			evaluationSourceOptions(services.analysis)...)
+		if err != nil {
+			a.diagf("warning: evaluation state unavailable: %s\n", Sanitize(err.Error()))
+		} else {
+			opts.Evaluation = service
+			services.evaluationClose = closeEvaluation
+			services.evaluationStop = a.refreshEvaluations(service)
+		}
+	}
+
 	srv, err := web.New(opts)
 	if err != nil {
 		// Nothing will ever call Serve, so the handles this launch opened
@@ -379,6 +392,9 @@ type webServices struct {
 	// Lister option serves, so the sessions page and a citation's endpoint can
 	// never disagree about which sessions this host has.
 	sessions *webSessionKeys
+	// Evaluation refresh must stop before the readers it borrows are closed.
+	evaluationStop  func()
+	evaluationClose func()
 }
 
 // openWebServices opens what this machine has, reporting what it does not.
@@ -548,6 +564,12 @@ func (s *webServices) sessionKeys() web.SessionKeyResolver {
 func (s *webServices) Close() error {
 	if s == nil {
 		return nil
+	}
+	if s.evaluationStop != nil {
+		s.evaluationStop()
+	}
+	if s.evaluationClose != nil {
+		s.evaluationClose()
 	}
 	var err error
 	// The fleet reader closes first because it is the only handle reaching a

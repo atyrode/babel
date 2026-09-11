@@ -4326,3 +4326,355 @@ a.link-target:hover {
   padding-top: 1.8rem;
 }
 
+
+/* ---------------------------------------------------------------------------
+   The evaluation surface (issue #219; SPEC.md §4.12, §5.8, §8.5).
+
+   Two rules of this section are visual and therefore live here rather than in
+   a component. Reception is rendered as three separate counts, never as a bar
+   or a proportion: a meter would read as a measurement of the idea, which is
+   exactly what §4.12 says reception is not. And the ranking score is never
+   rendered at all, so there is no class for it.
+   --------------------------------------------------------------------------- */
+
+.evaluation-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.evaluation-basis {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.evaluation-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+}
+
+.evaluation-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.evaluation-filters select {
+  min-width: 12rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-inset);
+  color: var(--text);
+}
+
+.evaluation-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.evaluation-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.evaluation-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.evaluation-row-marks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.evaluation-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.9rem;
+  font-size: 0.84rem;
+}
+
+.evaluation-subject-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-decoration: none;
+  color: inherit;
+  min-width: 0;
+}
+
+.evaluation-subject-link:hover strong {
+  color: var(--accent-bright);
+}
+
+.evaluation-row-why,
+.evaluation-row-objection {
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.evaluation-row-objection {
+  color: var(--amber);
+}
+
+/* Three counts, side by side, each labelled by its own sign. No ratio and no
+   bar: the numbers are what was said, and any visual that merged them would
+   be asserting a verdict nobody recorded. */
+.evaluation-reception {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.55rem;
+  font-size: 0.86rem;
+}
+
+.evaluation-reception .vote {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.86rem;
+}
+
+.evaluation-reception .vote.support {
+  color: var(--green);
+}
+
+.evaluation-reception .vote.oppose {
+  color: var(--red);
+}
+
+.evaluation-reception .vote.unsure {
+  color: var(--amber);
+}
+
+.evaluation-reception.none {
+  font-style: italic;
+}
+
+.evaluation-stale {
+  border-color: var(--amber);
+}
+
+.evaluation-freshness {
+  margin-top: 1rem;
+  font-size: 0.83rem;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-top: 0.9rem;
+}
+
+.pager button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-inset);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pager button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.evaluation-coverage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.evaluation-coverage-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.4rem;
+}
+
+.evaluation-coverage-count {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.evaluation-coverage-count .count-value {
+  font-size: 1.5rem;
+}
+
+.evaluation-roles {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+.evaluation-roles caption {
+  text-align: left;
+  padding-bottom: 0.5rem;
+}
+
+.evaluation-roles th,
+.evaluation-roles td {
+  text-align: left;
+  padding: 0.45rem 0.6rem 0.45rem 0;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: top;
+}
+
+.evaluation-roles td > span,
+.evaluation-roles td > strong {
+  display: block;
+}
+
+.evaluation-roles .numeric {
+  text-align: right;
+}
+
+.evaluation-history-list,
+.evaluation-alternative-list {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.evaluation-history-entry,
+.evaluation-alternative {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.evaluation-history-entry:last-child,
+.evaluation-alternative:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.evaluation-contribution {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--line);
+}
+
+.evaluation-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.evaluation-outcome:last-child {
+  border-bottom: none;
+}
+
+.evaluation-criteria,
+.evaluation-criteria-results {
+  list-style: none;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.evaluation-criteria-results li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.evaluation-why section {
+  margin-bottom: 0.7rem;
+}
+
+.evaluation-why ul {
+  margin: 0.3rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.evaluation-cross-link {
+  align-self: flex-start;
+}
+
+.evaluation-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.evaluation-policy-form fieldset {
+  margin: 1rem 0 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+}
+
+.evaluation-policy-form legend {
+  padding: 0 0.4rem;
+  color: var(--accent-bright);
+  font-size: 0.86rem;
+}
+
+.evaluation-knobs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 1rem;
+  margin-top: 0.6rem;
+}
+
+.evaluation-knobs label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.evaluation-knobs input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-inset);
+  color: var(--text);
+}
+
+.evaluation-enabled {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.evaluation-enabled > span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.evaluation-saving {
+  margin: 1rem 0 0.8rem;
+  font-size: 0.86rem;
+}

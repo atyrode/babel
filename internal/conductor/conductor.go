@@ -108,6 +108,12 @@ type Cycle struct {
 	Recipes    []string `json:"recipes,omitempty"`
 	Roots      []string `json:"roots,omitempty"`
 	Note       string   `json:"note,omitempty"`
+	// Evaluation is the review this cycle drew, on the evaluation share only.
+	// It is journalled with the cycle so an interrupted evaluation cycle is
+	// resumed against the same claim and fence rather than drawing a second
+	// review of the same record: the assignment was already taken, and the
+	// journal is the only thing that remembers which one.
+	Evaluation *ReviewDraw `json:"evaluation,omitempty"`
 	// What the run recorded.
 	PreparationID string  `json:"preparation_id,omitempty"`
 	ReceiptID     string  `json:"receipt_id,omitempty"`
@@ -143,6 +149,7 @@ func (c Cycle) assignment() Assignment {
 		Recipes:    slices.Clone(c.Recipes),
 		Roots:      slices.Clone(c.Roots),
 		Note:       c.Note,
+		Evaluation: c.Evaluation,
 	}
 }
 
@@ -277,6 +284,11 @@ type Config struct {
 	// them. Off unless the operator asked for it.
 	Consolidation Consolidation
 
+	// Evaluation is the protected share of cycles spent reviewing
+	// already-durable output rather than producing more of it, and the rung
+	// that draws them. Off unless the operator authorized it.
+	Evaluation Evaluation
+
 	// Publisher publishes each cycle's durable records once they are durable.
 	// Nil publishes nothing, which is a local-only deployment and not a
 	// degraded one.
@@ -360,6 +372,9 @@ func New(cfg Config) (*Conductor, error) {
 		cfg.PID = os.Getpid()
 	}
 	if err := cfg.Consolidation.validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Evaluation.validate(); err != nil {
 		return nil, err
 	}
 	if cfg.Log == nil {
@@ -699,6 +714,7 @@ func (c *Conductor) claim(ctx context.Context) (cycleClaim, error) {
 		Recipes:    assignment.Recipes,
 		Roots:      assignment.Roots,
 		Note:       assignment.Note,
+		Evaluation: assignment.Evaluation,
 		PID:        c.cfg.PID,
 	}
 	if err := c.cfg.Journal.Record(cycle); err != nil {
@@ -994,6 +1010,34 @@ func (c *Conductor) draw(ctx context.Context, d DrawRequest) (Assignment, error)
 			// ladder below draws the discovery that refills it.
 		default:
 			return Assignment{}, fmt.Errorf("conductor: draw from the %s rung: %w", RungConsolidation, err)
+		}
+	}
+
+	// The evaluation share is checked after consolidation and before the
+	// ladder, on the same reasoning and for the same failure mode one step
+	// further along. Consolidation drains a frontier that only grows;
+	// evaluation reviews output that only accumulates, and a share that
+	// yielded to every dutiful rung would leave a corpus of unassessed
+	// findings exactly as silently. It sits below consolidation because a
+	// candidate nothing has attacked yet is not yet the reviewable output
+	// this share exists to cover, so draining that backlog first is what
+	// keeps the two from competing for the same cycle forever. Both due at
+	// once costs evaluation one cycle: its own count is unchanged, so it is
+	// due again immediately.
+	if c.cfg.Evaluation.due(c.cfg.Journal) {
+		a, err := c.cfg.Evaluation.Rung.Draw(ctx, d)
+		switch {
+		case err == nil:
+			a.Note = "the evaluation share is due: " + a.Note
+			return a, nil
+		case errors.Is(err, ErrNoWork):
+			// Nothing drawable is the ordinary state of a machine whose
+			// eligible output is reviewed, whose review allowance is spent,
+			// or whose recorded policy withholds what is left. Each is
+			// reported by the rung's own depth note rather than by failing a
+			// cycle, and the ladder below draws the work that refills it.
+		default:
+			return Assignment{}, fmt.Errorf("conductor: draw from the %s rung: %w", RungEvaluation, err)
 		}
 	}
 	var empty []string

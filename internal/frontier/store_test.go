@@ -485,6 +485,263 @@ func TestDispositionVocabularyIsClosed(t *testing.T) {
 	}
 }
 
+// TestReopenUndecidesWithoutRewriting is the transition the reconsideration
+// lifecycle turns on. A rejected record that new evidence unsettled has to
+// become decidable again without anybody having to endorse it first, and
+// without the rejection disappearing: both events stay, in order, and the
+// derived status goes back to `new`.
+func TestReopenUndecidesWithoutRewriting(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	_, _, _, proposal := developPath(t, store)
+	subject := Ref{Type: EntityProposal, ID: proposal.ID}
+
+	if _, err := store.Decide(ctx, DispositionInput{
+		Subject: subject, Disposition: DispositionReject, ReviewerID: "operator",
+		Note: "the evidence does not support the outcome",
+	}); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	if _, err := store.Decide(ctx, DispositionInput{
+		Subject: subject, Disposition: DispositionReopen, ReviewerID: "operator",
+		Note: "a later session contradicts the basis of the rejection",
+	}); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+
+	status, err := store.ReviewStatus(ctx, subject)
+	if err != nil {
+		t.Fatalf("derive review status: %v", err)
+	}
+	if status != ReviewNew {
+		t.Fatalf("review status = %q, want %q after a reopen", status, ReviewNew)
+	}
+	// The reopened record is decidable again, and on its own merits: the
+	// point of the fifth value is that reconsidering costs no endorsement.
+	if _, err := store.Decide(ctx, DispositionInput{
+		Subject: subject, Disposition: DispositionReject, ReviewerID: "operator",
+		Note: "and the second reading agrees with the first",
+	}); err != nil {
+		t.Fatalf("reject after reopen: %v", err)
+	}
+	history, err := store.DispositionHistory(ctx, subject)
+	if err != nil {
+		t.Fatalf("read disposition history: %v", err)
+	}
+	want := []Disposition{DispositionReject, DispositionReopen, DispositionReject}
+	if len(history) != len(want) {
+		t.Fatalf("history has %d events, want %d", len(history), len(want))
+	}
+	for i, disposition := range want {
+		if history[i].Disposition != disposition {
+			t.Fatalf("history[%d] = %q, want %q", i, history[i].Disposition, disposition)
+		}
+	}
+	// And the record itself reads with the status its events justify.
+	reread, err := store.Proposal(ctx, proposal.ID)
+	if err != nil {
+		t.Fatalf("read proposal: %v", err)
+	}
+	if reread.ReviewStatus != ReviewRejected {
+		t.Fatalf("review status = %q, want %q", reread.ReviewStatus, ReviewRejected)
+	}
+}
+
+// TestReopenIsRefusedWhereThereIsNothingToReopen pins the three refusals. A
+// reopen that says nothing about why, a reopen of a record nobody decided, and
+// a reopen of a record whose decision now belongs elsewhere are each a
+// different false statement about the history.
+func TestReopenIsRefusedWhereThereIsNothingToReopen(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	hypothesis, _, finding, proposal := developPath(t, store)
+
+	t.Run("a reopen states its reason", func(t *testing.T) {
+		if _, err := store.Decide(ctx, DispositionInput{
+			Subject:     Ref{Type: EntityProposal, ID: proposal.ID},
+			Disposition: DispositionReopen, ReviewerID: "operator",
+		}); !errors.Is(err, ErrInvalidValue) {
+			t.Fatalf("got %v, want ErrInvalidValue for a reopen with no reason", err)
+		}
+	})
+
+	t.Run("an undecided record has nothing to reopen", func(t *testing.T) {
+		if _, err := store.Decide(ctx, DispositionInput{
+			Subject:     Ref{Type: EntityProposal, ID: proposal.ID},
+			Disposition: DispositionReopen, ReviewerID: "operator",
+			Note: "reopening what was never decided",
+		}); !errors.Is(err, ErrInvalidValue) {
+			t.Fatalf("got %v, want ErrInvalidValue reopening an undecided record", err)
+		}
+	})
+
+	t.Run("a duplicate is reopened at its original", func(t *testing.T) {
+		subject := Ref{Type: EntityHypothesis, ID: hypothesis.ID}
+		other, err := store.CreateHypothesis(ctx, HypothesisInput{
+			RunID: "run-1", Payload: hypothesisPayload("the original this duplicates", 0.4),
+		})
+		if err != nil {
+			t.Fatalf("create original: %v", err)
+		}
+		if _, err := store.Decide(ctx, DispositionInput{
+			Subject: subject, Disposition: DispositionDuplicate, ReviewerID: "operator",
+			DuplicateOfID: other.ID,
+		}); err != nil {
+			t.Fatalf("mark duplicate: %v", err)
+		}
+		if _, err := store.Decide(ctx, DispositionInput{
+			Subject: subject, Disposition: DispositionReopen, ReviewerID: "operator",
+			Note: "reopening a duplicate",
+		}); !errors.Is(err, ErrInvalidValue) {
+			t.Fatalf("got %v, want ErrInvalidValue reopening a duplicate", err)
+		}
+	})
+
+	t.Run("a rejection that authorized a refinement is answered there", func(t *testing.T) {
+		subject := Ref{Type: EntityFinding, ID: finding.ID}
+		if _, _, err := store.RejectAndRefine(ctx,
+			DispositionInput{Subject: subject, ReviewerID: "operator", Note: "too broad"},
+			RefinementPayload{Guidance: "narrow it to one repository"},
+		); err != nil {
+			t.Fatalf("reject and refine: %v", err)
+		}
+		if _, err := store.Decide(ctx, DispositionInput{
+			Subject: subject, Disposition: DispositionReopen, ReviewerID: "operator",
+			Note: "reopening the ancestor",
+		}); !errors.Is(err, ErrInvalidValue) {
+			t.Fatalf("got %v, want ErrInvalidValue reopening a refine-requested record", err)
+		}
+	})
+
+	t.Run("a reopen names no original", func(t *testing.T) {
+		if _, err := store.Decide(ctx, DispositionInput{
+			Subject:     Ref{Type: EntityProposal, ID: proposal.ID},
+			Disposition: DispositionReopen, ReviewerID: "operator",
+			Note: "reopening", DuplicateOfID: proposal.ID,
+		}); !errors.Is(err, ErrInvalidValue) {
+			t.Fatalf("got %v, want ErrInvalidValue for a reopen naming an original", err)
+		}
+	})
+}
+
+// TestStageResolvedDispositionServesACallerResolvedSubject is the path that
+// makes an operator's reconsideration decision and the reopen it performs one
+// durable act. The caller owns the transaction, so the two writes commit or
+// roll back together; the subject is one this store holds no row for, which is
+// the whole reason Decide cannot serve the case.
+func TestStageResolvedDispositionServesACallerResolvedSubject(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	// Deliberately not created here: a record another host published has no
+	// durable row on this machine, and staging a decision about it must not
+	// require one.
+	subject := Ref{Type: EntityProposal, ID: "pro_resolved-elsewhere"}
+
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	event, publish, err := store.StageResolvedDisposition(ctx, tx, DispositionInput{
+		Subject: subject, Disposition: DispositionReopen, ReviewerID: "operator",
+		Note:           "the rejection's basis changed",
+		ResolvedStatus: ReviewRejected,
+	})
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("stage resolved disposition: %v", err)
+	}
+	if event.Disposition != DispositionReopen || event.Subject != subject {
+		t.Fatalf("event = %+v, want the staged reopen", event)
+	}
+	// A read on the same single-writer file would block behind this open
+	// transaction, which is itself the atomicity this method relies on: the
+	// staged row becomes visible with the caller's commit, below.
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := publish(ctx); err != nil {
+		t.Fatalf("publish after commit: %v", err)
+	}
+	history, err := store.DispositionHistory(ctx, subject)
+	if err != nil {
+		t.Fatalf("read disposition history: %v", err)
+	}
+	if len(history) != 1 || history[0].Disposition != DispositionReopen {
+		t.Fatalf("history = %v, want one reopen", history)
+	}
+	status, err := store.ReviewStatus(ctx, subject)
+	if err != nil {
+		t.Fatalf("derive review status: %v", err)
+	}
+	if status != ReviewNew {
+		t.Fatalf("review status = %q, want %q", status, ReviewNew)
+	}
+}
+
+// TestStageResolvedDispositionRefusesAnUncheckedClaim keeps the resolved path
+// from being the loose one. It cannot see the subject, so what it does instead
+// is refuse every input it would have to assume something about: a status it
+// was not told, a status that admits no decision, and a reopen of a record the
+// caller itself resolved as undecided.
+func TestStageResolvedDispositionRefusesAnUncheckedClaim(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	subject := Ref{Type: EntityProposal, ID: "pro_resolved-elsewhere"}
+
+	for _, probe := range []struct {
+		name string
+		in   DispositionInput
+	}{
+		{
+			name: "no resolved status",
+			in: DispositionInput{Subject: subject, Disposition: DispositionReopen,
+				ReviewerID: "operator", Note: "reopening"},
+		},
+		{
+			name: "a status outside the vocabulary",
+			in: DispositionInput{Subject: subject, Disposition: DispositionReopen,
+				ReviewerID: "operator", Note: "reopening", ResolvedStatus: ReviewStatus("stale")},
+		},
+		{
+			name: "resolved as undecided",
+			in: DispositionInput{Subject: subject, Disposition: DispositionReopen,
+				ReviewerID: "operator", Note: "reopening", ResolvedStatus: ReviewNew},
+		},
+		{
+			name: "resolved as a duplicate",
+			in: DispositionInput{Subject: subject, Disposition: DispositionReopen,
+				ReviewerID: "operator", Note: "reopening", ResolvedStatus: ReviewDuplicate},
+		},
+		{
+			name: "an unreviewable kind",
+			in: DispositionInput{Subject: Ref{Type: EntityObservation, ID: "obs_elsewhere"},
+				Disposition: DispositionReopen, ReviewerID: "operator", Note: "reopening",
+				ResolvedStatus: ReviewRejected},
+		},
+	} {
+		t.Run(probe.name, func(t *testing.T) {
+			tx, err := store.db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatalf("begin transaction: %v", err)
+			}
+			defer tx.Rollback()
+			if _, _, err := store.StageResolvedDisposition(ctx, tx, probe.in); err == nil {
+				t.Fatal("the staged disposition was accepted, want a refusal")
+			}
+		})
+	}
+
+	// And the local path refuses a supplied status, so there is exactly one
+	// authority for a subject this store can see.
+	_, _, _, proposal := developPath(t, store)
+	if _, err := store.Decide(ctx, DispositionInput{
+		Subject: Ref{Type: EntityProposal, ID: proposal.ID}, Disposition: DispositionAccept,
+		ReviewerID: "operator", ResolvedStatus: ReviewNew,
+	}); !errors.Is(err, ErrInvalidValue) {
+		t.Fatalf("got %v, want ErrInvalidValue for a locally held subject with a supplied status", err)
+	}
+}
+
 // TestRejectAndRefineIsAtomic proves §4.7's single atomic operation: the
 // rejection and the authorized refinement request are created together, and an
 // injected failure between them leaves neither.

@@ -4,6 +4,7 @@ import { getProposal, type ProposalDetail } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge, EvidenceItems, FallibilityNote, Quoted, reviewTone } from "../analysis";
 import { RecordActions } from "../records";
+import { EvaluationCrossLink } from "../evaluation";
 import { RecordLinks } from "../references";
 import { TriageAdvice } from "../triage";
 
@@ -101,6 +102,7 @@ function ProposalPage() {
   return (
     <section className="page detail-page frontier-detail">
       <Link className="back-link" to="/proposals">← Proposals</Link>
+      <EvaluationCrossLink kind="proposal" id={detail.id} />
       <div className="page-heading detail-heading">
         <div>
           <div className="heading-badges">

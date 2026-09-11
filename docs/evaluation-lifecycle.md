@@ -1,9 +1,12 @@
 # Full-lifecycle evaluation: implementation plan
 
-**Status: approved design; runtime implementation is not delivered by this PR.**
-The work below is tracked in [#219](https://github.com/atyrode/babel/issues/219).
-A documentation PR references that issue; it does not close runtime acceptance.
-No acceptance scenario below has been exercised as part of this design delivery.
+**Status: delivered.** The runtime described below is implemented and covered by
+the Go, browser and shared-catalog suites; [#219](https://github.com/atyrode/babel/issues/219)
+tracks the work. Activation remains the operator's: an authorized toggle, a
+configured evaluation share, and an enabled policy saved in the browser. The
+policy's numbers ship as conservative defaults rather than measured settings,
+and no acceptance scenario below has been exercised against the real shared
+archive — the evidence is synthetic fixtures and disposable clusters.
 
 The authoritative contracts are SPEC
 [§4.12](../SPEC.md#412-evaluation-reception-and-observed-outcomes),
@@ -54,18 +57,20 @@ product specification. Baseline references below describe
 | Rebuildable reads | `internal/index/frontier.go:36-46,104-152`, `internal/web/fleet.go:335-470` | Bounded ranking/coverage projections over deployment-wide input, not whole-corpus payload opens per page |
 | Browser | `internal/web/analysis.go:809-844,960-1024`, `review.go:32-59`, `web/src/pages/ReviewPage.tsx`, `web/src/triage.tsx` | Coverage, sorts, lifecycle assessments, comparisons, and decision controls through the same Go services |
 
-The active `cookbook/recipes/babel-triages-the-queue.md` remains **version 1**
-in this documentation PR. Its mandatory-counterargument, proposal-only contract
-is an implementation baseline superseded in product intent by SPEC §4.12. Do not
-change its prompt to emit votes before the writer can accept them. Existing
+The active `cookbook/recipes/babel-triages-the-queue.md` is now **version 2**:
+the role-bounded evaluation contract of SPEC §4.12, shipped together with the
+services that can accept what it produces. Version 1's mandatory-counterargument,
+proposal-only contract stays readable as the historical contract its advice was
+formed under; no rank in it is a vote, an exposure or a prediction. Existing
 proposal/detail navigation is not proof of complete evaluation coverage, and
-un-enrolled records must not disappear from the new coverage inventory.
+un-enrolled records do not disappear from the coverage inventory.
 
 ## 3. Integration sequence
 
-All stages are **not implemented**. Record a delivered revision and observed
-acceptance here as stages land; intermediate code does not enable the full policy.
-Stages describe dependency boundaries, not separate reduced-scope products.
+All stages below are **delivered**. They describe dependency boundaries rather
+than separate reduced-scope products, and each names where its behaviour now
+lives. Observed acceptance from a real deployment is recorded per stage as it
+is obtained; none has been yet, because activation is the operator's.
 
 ### E1 — Records, revision binding, and review applicability
 

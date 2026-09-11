@@ -844,6 +844,65 @@ func TestReviewDecideRequiresAnOperatorIdentity(t *testing.T) {
 	assertNoRawControls(t, "review history --json", historyOut, historyErr)
 }
 
+// TestReviewDecideReopensADecidedRecord is the fifth disposition at the
+// command surface. The flag is one of the five rather than a modifier of the
+// others, the reason is required, and what it produces is an undecided record
+// whose earlier decision is still in its history.
+func TestReviewDecideReopensADecidedRecord(t *testing.T) {
+	f := newFixture(t)
+	ids := f.seed()
+
+	// Nothing has been decided, so there is nothing to reopen.
+	_, stderr := f.mustExit(exitFailure, "review", "decide", ids.proposal, "--reopen",
+		"--operator", "synthetic-operator", "--note", "reopening what was never decided")
+	if stderr == "" {
+		t.Error("the refusal explained nothing")
+	}
+	if status := f.reviewStatus(ids.proposal); status != frontier.ReviewNew {
+		t.Fatalf("the refused reopen changed the status to %q", status)
+	}
+
+	f.ok("review", "decide", ids.proposal, "--reject", "--operator", "synthetic-operator",
+		"--note", "the evidence does not support the outcome")
+
+	// A reopen with no reason is refused before anything is appended.
+	if _, stderr := f.mustExit(exitFailure, "review", "decide", ids.proposal, "--reopen",
+		"--operator", "synthetic-operator"); stderr == "" {
+		t.Error("a reopen with no reason was accepted or explained nothing")
+	}
+	if status := f.reviewStatus(ids.proposal); status != frontier.ReviewRejected {
+		t.Fatalf("status = %q, want the rejection still standing", status)
+	}
+
+	stdout, _ := f.ok("review", "decide", ids.proposal, "--reopen",
+		"--operator", "synthetic-operator", "--note", "a later session contradicts the basis", "--json")
+	res := decodeJSON[decideResult](t, stdout)
+	if res.Decision.Disposition != string(frontier.DispositionReopen) {
+		t.Errorf("disposition = %q, want reopen", res.Decision.Disposition)
+	}
+	if res.Status != string(frontier.ReviewNew) {
+		t.Errorf("status = %q, want new after a reopen", res.Status)
+	}
+	if status := f.reviewStatus(ids.proposal); status != frontier.ReviewNew {
+		t.Fatalf("durable status is %q, want new", status)
+	}
+
+	// Two decisions in one invocation stays a refused invocation.
+	if _, stderr := f.mustExit(exitUsage, "review", "decide", ids.proposal, "--reopen", "--accept",
+		"--operator", "synthetic-operator", "--note", "both"); !strings.Contains(stderr, "exactly one decision") {
+		t.Errorf("two decisions were not refused as one invocation:\n%s", stderr)
+	}
+
+	historyOut, _ := f.ok("review", "history", ids.proposal, "--json")
+	history := decodeJSON[historyResult](t, historyOut)
+	if len(history.Decisions) != 2 {
+		t.Fatalf("history holds %d decisions, want the rejection and the reopen", len(history.Decisions))
+	}
+	if history.Decisions[0].Disposition != "reject" || history.Decisions[1].Disposition != "reopen" {
+		t.Errorf("history = %+v, want the reject then the reopen", history.Decisions)
+	}
+}
+
 // TestRealityMutationsRequireAnOperatorIdentity is §4.8's counterpart: an
 // answer is authority-bearing provenance and an acceptance turns an
 // interpretation into reality, so neither may be anonymous.

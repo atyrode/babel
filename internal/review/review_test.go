@@ -324,6 +324,133 @@ func TestAnonymousDecisionsAreRefused(t *testing.T) {
 	}
 }
 
+// TestReopeningMakesARejectedRecordDecidableAgain is the transition an
+// operator reaches from a reconsideration. Before `reopen` existed the only
+// way to act on changed evidence was to append the opposite decision, so a
+// rejection that had merely become unsettled had to be accepted — endorsed —
+// to be looked at again. Reopening says what actually happened: the rejection
+// stands in the history, the record is undecided, and the next decision is
+// made on its merits.
+func TestReopeningMakesARejectedRecordDecidableAgain(t *testing.T) {
+	h := newHarness(t)
+	prop := h.chain("verify independently")
+	subject := frontier.Ref{Type: frontier.EntityProposal, ID: prop.ID}
+	h.decide(subject, frontier.DispositionReject)
+
+	if _, err := h.svc.Decide(h.ctx, review.Decision{
+		Subject:     subject,
+		Disposition: frontier.DispositionReopen,
+		By:          h.op,
+		Note:        "a later session contradicts the basis of the rejection",
+	}); err != nil {
+		t.Fatalf("Decide reopen: %v", err)
+	}
+
+	history, err := h.svc.History(h.ctx, subject)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if history.Status != frontier.ReviewNew {
+		t.Fatalf("status = %q, want %q after a reopen", history.Status, frontier.ReviewNew)
+	}
+	if len(history.Decisions) != 2 || history.Decisions[0].Event.Disposition != frontier.DispositionReject {
+		t.Fatalf("history = %+v, want the rejection kept beneath the reopen", history.Decisions)
+	}
+
+	// Rejecting again is not a repeat of the standing decision, because the
+	// reopen moved it: there is no standing decision to repeat.
+	if _, err := h.svc.Decide(h.ctx, review.Decision{
+		Subject:     subject,
+		Disposition: frontier.DispositionReject,
+		By:          h.op,
+		Note:        "and the second reading agrees with the first",
+	}); err != nil {
+		t.Fatalf("Decide reject after reopen: %v", err)
+	}
+	history, err = h.svc.History(h.ctx, subject)
+	if err != nil {
+		t.Fatalf("History after re-deciding: %v", err)
+	}
+	if history.Status != frontier.ReviewRejected || len(history.Decisions) != 3 {
+		t.Fatalf("status = %q with %d decisions, want rejected with three",
+			history.Status, len(history.Decisions))
+	}
+	// The record itself is untouched by all of it.
+	reread, err := h.front.Proposal(h.ctx, prop.ID)
+	if err != nil {
+		t.Fatalf("read proposal: %v", err)
+	}
+	if reread.Payload.Title != prop.Payload.Title {
+		t.Errorf("the reopened record's wording changed: %q", reread.Payload.Title)
+	}
+}
+
+// TestReopenIsRefusedWhereItWouldSaySomethingFalse pins the four refusals, each
+// with the error that names its own rule: a reviewer who is told "no" without
+// being told which rule refused cannot act on it.
+func TestReopenIsRefusedWhereItWouldSaySomethingFalse(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setup   func(h *harness, subject frontier.Ref)
+		note    string
+		wantErr error
+	}{
+		{
+			name:    "with no reason recorded",
+			setup:   func(h *harness, s frontier.Ref) { h.decide(s, frontier.DispositionReject) },
+			note:    "   ",
+			wantErr: review.ErrInvalidValue,
+		},
+		{
+			name:    "on a record nobody has decided",
+			setup:   func(h *harness, s frontier.Ref) {},
+			note:    "reopening what was never decided",
+			wantErr: review.ErrNoChange,
+		},
+		{
+			name: "on a record already marked duplicate",
+			setup: func(h *harness, s frontier.Ref) {
+				original := h.chain("the original proposal")
+				if _, err := h.svc.Decide(h.ctx, review.Decision{
+					Subject:       s,
+					Disposition:   frontier.DispositionDuplicate,
+					By:            h.op,
+					DuplicateOfID: original.ID,
+				}); err != nil {
+					h.t.Fatalf("Decide duplicate: %v", err)
+				}
+			},
+			note:    "reopening a duplicate",
+			wantErr: review.ErrTerminalStatus,
+		},
+		{
+			name: "on a record whose rejection authorized a refinement",
+			setup: func(h *harness, s frontier.Ref) {
+				h.rejectAndRefine(s, "cite the command output rather than the claim")
+			},
+			note:    "reopening the ancestor",
+			wantErr: review.ErrTerminalStatus,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			prop := h.chain("verify independently")
+			subject := frontier.Ref{Type: frontier.EntityProposal, ID: prop.ID}
+			tc.setup(h, subject)
+
+			_, err := h.svc.Decide(h.ctx, review.Decision{
+				Subject:     subject,
+				Disposition: frontier.DispositionReopen,
+				By:          h.op,
+				Note:        tc.note,
+			})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Decide reopen error = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // decide records one disposition and fails the test if it is refused.
 func (h *harness) decide(subject frontier.Ref, d frontier.Disposition) {
 	h.t.Helper()

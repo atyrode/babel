@@ -32,6 +32,12 @@ const (
 	// but a protected fraction, so the name reaches the journal and the
 	// status view without appearing between two rungs it does not outrank.
 	RungConsolidation = "consolidation"
+	// RungEvaluation is the authorized review of already-durable output
+	// (SPEC §5.8). It is not a ladder position but a protected fraction, on
+	// the same terms consolidation is: below the operator's invitations it
+	// would be starved, above them it would outrank a person, and what it
+	// competes with is the loop's appetite for producing more output.
+	RungEvaluation = "evaluation"
 	// RungSerendipity is the protected chaotic fraction: a random corpus slice
 	// crossed with a random default-enabled recipe, with no aim.
 	RungSerendipity = "serendipity"
@@ -74,6 +80,13 @@ type Assignment struct {
 	// It is the legibility half of the draw: an authority says who allowed the
 	// run, and this says what the loop actually decided.
 	Note string
+	// Evaluation is the claimed review this cycle drew, nil on every rung but
+	// the evaluation share. It travels on the assignment rather than being
+	// looked up again because the claim is already taken: an interrupted
+	// cycle is resumed under the same assignment and the same fence, which is
+	// what keeps a killed conductor from casting a second vote on one
+	// record.
+	Evaluation *ReviewDraw
 }
 
 // Depth is a rung's queue as `conductor status` reports it.

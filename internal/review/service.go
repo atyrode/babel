@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/atyrode/babel/internal/frontier"
@@ -56,12 +57,16 @@ func standing(status frontier.ReviewStatus) frontier.Disposition {
 // which wins; the original is where it goes. `refine-requested` says a
 // rejection authorized a descendant, and §4.7 makes that descendant a
 // separately reviewable record, so deciding the ancestor again would silently
-// reopen something whose replacement is already in flight.
+// reopen something whose replacement is already in flight. A reopen is refused
+// there for the same reason as every other decision: reopening the ancestor
+// would put two live records where the rejection left one.
 //
 // Repeating the standing decision is refused for a different reason. The
 // history is the audit record of how a reviewer's position moved; an event
 // that moved nothing makes it read as though the record was reconsidered when
-// it was not.
+// it was not. Reopening an undecided record is the same falsehood in the one
+// shape `standing` cannot catch — `new` is the absence of a decision rather
+// than a decision to be reopened — so it is named here.
 func allowTransition(current frontier.ReviewStatus, d frontier.Disposition) error {
 	switch current {
 	case frontier.ReviewDuplicate:
@@ -69,6 +74,9 @@ func allowTransition(current frontier.ReviewStatus, d frontier.Disposition) erro
 	case frontier.ReviewRefineRequested:
 		return fmt.Errorf("%w: %s is decided at the descendant the rejection authorized",
 			ErrTerminalStatus, current)
+	}
+	if d == frontier.DispositionReopen && current == frontier.ReviewNew {
+		return fmt.Errorf("%w: nothing has been decided here to reopen", ErrNoChange)
 	}
 	if standing(current) == d {
 		return fmt.Errorf("%w: already %s", ErrNoChange, current)
@@ -471,6 +479,14 @@ func (s *Service) checkDecision(ctx context.Context, in Decision) error {
 	switch in.Disposition {
 	case frontier.DispositionAccept, frontier.DispositionReject,
 		frontier.DispositionDefer, frontier.DispositionDuplicate:
+	case frontier.DispositionReopen:
+		// The one decision whose note is not optional. The other four
+		// answer the record; this one says the standing answer stopped
+		// holding, and a reopened rejection with no recorded reason is a
+		// history nobody can audit.
+		if strings.TrimSpace(in.Note) == "" {
+			return errInvalid("a reopen states no reason for reopening")
+		}
 	default:
 		return fmt.Errorf("%w: disposition %q", ErrInvalidValue, in.Disposition)
 	}

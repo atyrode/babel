@@ -308,7 +308,7 @@ func (r *Reader) Open(ctx context.Context, rec sharedcatalog.FleetRecord) (Recor
 		}
 		kind = frontier.PublishedReviewAnswer
 	case sharedcatalog.KindPreparation, sharedcatalog.KindReceipt,
-		sharedcatalog.KindContext, sharedcatalog.KindComplaint:
+		sharedcatalog.KindContext, sharedcatalog.KindComplaint, sharedcatalog.KindEvaluation:
 		return opened, nil
 	default:
 		return Record{}, fmt.Errorf("record %s has unsupported catalog kind %q", rec.Record.RecordID, rec.Record.Kind)

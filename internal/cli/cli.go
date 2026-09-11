@@ -105,6 +105,7 @@ Commands:
   sessions prune --local      remove locally fetched session directories
   prepare [SELECTOR...]       fix an exploration's corpus scope
   explore --preparation ID    run one exploration through Code
+  evaluate                    carry out one authorized review of Babel's own output
   runs interrupted            list durable partial explorations
   runs reconcile              receipt stale local attempts with unknown outcomes
   runs resume ID              resume from the recorded launch inputs
@@ -274,6 +275,8 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.prepare(ctx, args[1:])
 	case "explore":
 		return a.explore(ctx, args[1:])
+	case "evaluate":
+		return a.evaluate(ctx, args[1:])
 	case "runs":
 		return a.runsCmd(ctx, args[1:])
 	case "analysis":

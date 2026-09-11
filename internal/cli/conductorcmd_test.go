@@ -232,13 +232,13 @@ func TestConductorStatusReportsPlantedStateTruthfully(t *testing.T) {
 	// The ladder is the ladder #96 describes, and rung two is implemented now:
 	// it holds the standing duties of #88 and #94, none of them authorized on
 	// this machine, which is a depth of zero rather than an absence. The
-	// consolidation share is reported after them: it is not a rung the others
-	// outrank, and its depth is the frontier's own backlog.
-	if len(status.Rungs) != 4 {
+	// consolidation and evaluation shares are reported after them: neither is
+	// a rung the others outrank, and each reports its own backlog.
+	if len(status.Rungs) != 5 {
 		t.Fatalf("ladder = %+v", status.Rungs)
 	}
 	names := []string{conductor.RungInvitation, conductor.RungPolicy,
-		conductor.RungSerendipity, conductor.RungConsolidation}
+		conductor.RungSerendipity, conductor.RungConsolidation, conductor.RungEvaluation}
 	for i, name := range names {
 		if status.Rungs[i].Name != name {
 			t.Errorf("rung %d = %q, want %q", i, status.Rungs[i].Name, name)
@@ -252,11 +252,12 @@ func TestConductorStatusReportsPlantedStateTruthfully(t *testing.T) {
 		t.Errorf("the policy rung's note %q does not say what rung two still lacks", policy.Note)
 	}
 
-	// Every duty is reported with its own state, including the ones nobody
-	// authorized: an unauthorized duty and a duty this build does not have must
-	// not read the same.
-	if len(status.Duties) != 4 {
-		t.Fatalf("duties = %+v, want the four this build knows", status.Duties)
+	// Every standing duty is reported with its own state, including the ones
+	// nobody authorized: an unauthorized duty and a duty this build does not
+	// have must not read the same. Proposal triage is no longer among them -
+	// it became the evaluation rung - so three remain.
+	if len(status.Duties) != 3 {
+		t.Fatalf("duties = %+v, want the three standing duties this build knows", status.Duties)
 	}
 	for _, duty := range status.Duties {
 		if duty.Enabled || duty.Due {
@@ -379,11 +380,13 @@ func TestConductorConfigureStoresTheDutyToggles(t *testing.T) {
 	// And the status view reports the authorization it stored, per duty.
 	stdout, _ = f.ok("conductor", "status", "--json")
 	status := decodeJSON[conductorStatusResult](t, stdout)
+	// The v1 proposal-triage duty is deliberately absent: its authorization
+	// now drives the evaluation share rather than a duty cycle, so the rung
+	// no longer names it and the status view must not resurrect it.
 	want := map[string]bool{
 		conductor.DutyImprovesBabel:      false,
 		conductor.DutyMechanizationAudit: false,
 		conductor.DutyTunesItself:        true,
-		conductor.DutyTriagesTheQueue:    false,
 	}
 	if len(status.Duties) != len(want) {
 		t.Fatalf("status reports %d duties, want %d", len(status.Duties), len(want))
@@ -441,7 +444,7 @@ func TestConductorConfigureStoresTheDutyToggles(t *testing.T) {
 	}
 	wantOrder := []string{
 		conductor.DutyMechanizationAudit, conductor.DutyImprovesBabel,
-		conductor.DutyTunesItself, conductor.DutyTriagesTheQueue,
+		conductor.DutyTunesItself,
 	}
 	if !reflect.DeepEqual(order, wantOrder) {
 		t.Fatalf("duties are out of draw order: %v, want %v", order, wantOrder)

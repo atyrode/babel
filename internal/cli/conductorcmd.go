@@ -19,6 +19,7 @@ import (
 	"github.com/atyrode/babel/internal/conductor"
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/cookbook"
+	"github.com/atyrode/babel/internal/evaluation"
 	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/reality"
 	runstore "github.com/atyrode/babel/internal/run"
@@ -62,12 +63,14 @@ Flags:
   --slice-sessions N   bound a serendipity draw to N sessions (default 3)
   --consolidate N      guarantee one consolidation cycle in every N (0 is off)
   --consolidate-roots N   seed a consolidation cycle from N candidates (default 5)
+  --evaluate N         guarantee one evaluation cycle in every N (0 is off)
+  --evaluate-cadence DURATION   sweep the coverage inventory this often (default 1h)
   --babel-improves-babel      schedule the product self-improvement duties
   --no-babel-improves-babel   withdraw them
   --babel-tunes-itself        schedule the personal tuning duty
   --no-babel-tunes-itself     withdraw it
-  --babel-triages-the-queue      advise on proposals waiting for your ruling
-  --no-babel-triages-the-queue   withdraw it
+  --babel-triages-the-queue      authorize Babel to review records you have not ruled on
+  --no-babel-triages-the-queue   withdraw that authorization
   --json               emit the stored configuration as JSON
 
 A consolidation cycle draws candidates the frontier is still holding
@@ -79,6 +82,21 @@ those are worker jobs the ceilings have to cover.
 Both duties are off until you turn them on, and each takes an explicit --no-
 form: an invocation that adjusts one dial leaves everything it does not name
 alone, so "off" has to be said rather than implied.
+
+An evaluation cycle reviews output that already exists: it draws one claimed
+review of one record revision from the coverage inventory, under the policy
+you set in the browser, and records an attributed assessment. Three things
+have to line up before one runs — --babel-triages-the-queue authorizes the
+act, --evaluate allocates a share of cycles to it, and the stored evaluation
+policy has to be enabled. Saving that policy starts nothing by itself, and
+neither does setting a share: the loop is what spends.
+
+--babel-triages-the-queue is the same authorization it always was, about the
+same surface: Babel speaking about records you have not ruled on. What it
+schedules changed with SPEC §4.12 — reception, evidence checking, relevance
+and observed outcomes across every kind of reviewable output, instead of one
+ranked pass with a mandatory counterargument over unruled proposals. An
+answer already stored is kept rather than asked for again.
 
 A duty toggle grants no new authority. The cycle it schedules runs under the
 profile the analysis ceremony stored, inside these ceilings, over the same
@@ -106,6 +124,7 @@ Flags:
   --until TIME         stop at RFC 3339 time, HH:MM today, or after a duration
   --concurrent N       run N cycles at a time (default 1)
   --consolidate N      consolidate one cycle in every N for this invocation
+  --evaluate N         evaluate one cycle in every N for this invocation
   --challenge          run the challenger over each cycle's exploration
   --synthesize         run the synthesizer, which is what promotes findings
   --worker PATH        the Code executable that speaks the worker protocol
@@ -190,12 +209,27 @@ type conductorSettings struct {
 	// on upgrade would spend against a ceiling set for something else.
 	ConsolidateOneIn int `json:"consolidate_one_in,omitempty"`
 	ConsolidateRoots int `json:"consolidate_roots,omitempty"`
-	// BabelImprovesBabel, BabelTunesItself and BabelTriagesTheQueue are the
-	// standing-duty authorizations. Each is absent from the document until
-	// the operator turns it on, which is the same statement as off: a duty
-	// nobody authorized is never scheduled, and a settings file that
-	// recorded `false` for one would look like a decision rather than the
-	// default.
+	// EvaluateOneIn is the protected share of cycles spent reviewing
+	// already-durable output instead of producing more of it (SPEC §5.8).
+	// Absent is off, and the share alone is not authorization: a cycle is
+	// drawn only when BabelTriagesTheQueue is also on and the stored
+	// evaluation policy is enabled, so neither saving a policy in the browser
+	// nor setting a share here starts compute by itself.
+	EvaluateOneIn int `json:"evaluate_one_in,omitempty"`
+	// EvaluateCadenceSeconds is how often the coverage inventory is swept.
+	// Absent is conductor.DefaultEvaluationCadence.
+	EvaluateCadenceSeconds int `json:"evaluate_cadence_seconds,omitempty"`
+	// BabelImprovesBabel and BabelTunesItself are the standing-duty
+	// authorizations, and BabelTriagesTheQueue is the evaluation
+	// authorization. Each is absent from the document until the operator
+	// turns it on, which is the same statement as off: work nobody
+	// authorized is never scheduled, and a settings file that recorded
+	// `false` for one would look like a decision rather than the default.
+	//
+	// BabelTriagesTheQueue keeps its key across the §4.12 cutover on
+	// purpose. The operator authorized Babel to judge records they had not
+	// ruled on; that is the same consent about the same surface, and
+	// renaming the key would silently withdraw an answer they already gave.
 	BabelImprovesBabel   bool   `json:"babel_improves_babel,omitempty"`
 	BabelTunesItself     bool   `json:"babel_tunes_itself,omitempty"`
 	BabelTriagesTheQueue bool   `json:"babel_triages_the_queue,omitempty"`
@@ -230,10 +264,17 @@ func (s conductorSettings) interval() time.Duration {
 // duties is the standing-duty authorization the duty rung reads.
 func (s conductorSettings) duties() conductor.Duties {
 	return conductor.Duties{
-		ImprovesBabel:   s.BabelImprovesBabel,
-		TunesItself:     s.BabelTunesItself,
-		TriagesTheQueue: s.BabelTriagesTheQueue,
+		ImprovesBabel: s.BabelImprovesBabel,
+		TunesItself:   s.BabelTunesItself,
 	}
+}
+
+// evaluateCadence is how often the evaluation share sweeps coverage.
+func (s conductorSettings) evaluateCadence() time.Duration {
+	if s.EvaluateCadenceSeconds <= 0 {
+		return conductor.DefaultEvaluationCadence
+	}
+	return time.Duration(s.EvaluateCadenceSeconds) * time.Second
 }
 
 // consolidation is the protected consolidation share, and the rung that draws
@@ -353,6 +394,8 @@ type conductorConfigResult struct {
 	SliceSessions        int     `json:"slice_sessions"`
 	ConsolidateOneIn     int     `json:"consolidate_one_in"`
 	ConsolidateRoots     int     `json:"consolidate_roots"`
+	EvaluateOneIn        int     `json:"evaluate_one_in"`
+	EvaluateCadence      string  `json:"evaluate_cadence"`
 	BabelImprovesBabel   bool    `json:"babel_improves_babel"`
 	BabelTunesItself     bool    `json:"babel_tunes_itself"`
 	BabelTriagesTheQueue bool    `json:"babel_triages_the_queue"`
@@ -386,6 +429,8 @@ func (a *app) conductorConfigure(args []string) error {
 	slice := c.fs.Int("slice-sessions", 0, "bound a serendipity draw to N sessions")
 	consolidate := c.fs.Int("consolidate", 0, "guarantee one consolidation cycle in every N")
 	consolidateRoots := c.fs.Int("consolidate-roots", 0, "seed a consolidation cycle from N candidates")
+	evaluate := c.fs.Int("evaluate", 0, "guarantee one evaluation cycle in every N")
+	evaluateCadence := c.fs.Duration("evaluate-cadence", 0, "sweep the coverage inventory this often")
 	// The flag names are the duty names, taken from the constants a receipt's
 	// authority reference is built from, so a renamed duty cannot leave a flag
 	// authorizing something the loop no longer knows.
@@ -398,9 +443,9 @@ func (a *app) conductorConfigure(args []string) error {
 	noTunes := c.fs.Bool("no-"+conductor.DutyTunesItself, false,
 		"withdraw the personal tuning duty")
 	triages := c.fs.Bool(conductor.DutyTriagesTheQueue, false,
-		"authorize the review triage duty")
+		"authorize Babel to review records you have not ruled on")
 	noTriages := c.fs.Bool("no-"+conductor.DutyTriagesTheQueue, false,
-		"withdraw the review triage duty")
+		"withdraw that authorization")
 	asJSON := c.fs.Bool("json", false, "emit the stored configuration as JSON")
 	if err := c.parse(a, args); err != nil {
 		return err
@@ -452,6 +497,12 @@ func (a *app) conductorConfigure(args []string) error {
 	if *consolidateRoots < 0 {
 		return c.usagef("--consolidate-roots cannot be negative")
 	}
+	if *evaluate < 0 {
+		return c.usagef("--evaluate cannot be negative")
+	}
+	if *evaluateCadence < 0 {
+		return c.usagef("--evaluate-cadence cannot be negative")
+	}
 	improvesBabel, err := resolveDutyToggle(c, conductor.DutyImprovesBabel,
 		settings.BabelImprovesBabel, *improves, *noImproves)
 	if err != nil {
@@ -489,6 +540,15 @@ func (a *app) conductorConfigure(args []string) error {
 	if *consolidateRoots > 0 {
 		settings.ConsolidateRoots = *consolidateRoots
 	}
+	// --evaluate 0 withdraws the share for the same reason --consolidate 0
+	// does: its default is off, and a dial that could be raised but never
+	// lowered would only turn one way.
+	if flagNamed(c, "evaluate") {
+		settings.EvaluateOneIn = *evaluate
+	}
+	if *evaluateCadence > 0 {
+		settings.EvaluateCadenceSeconds = int(evaluateCadence.Seconds())
+	}
 	settings.BabelImprovesBabel = improvesBabel
 	settings.BabelTunesItself = tunesItself
 	settings.BabelTriagesTheQueue = triagesTheQueue
@@ -509,9 +569,11 @@ func (a *app) conductorConfigure(args []string) error {
 		{"interval", (time.Duration(res.IntervalSeconds) * time.Second).String()},
 		{"serendipity slice", fmt.Sprintf("up to %d %s", res.SliceSessions,
 			plural(res.SliceSessions, "session", "sessions"))},
-		{"consolidation", consolidationLabel(res.ConsolidateOneIn)},
+		{"consolidation", shareLabel(res.ConsolidateOneIn)},
 		{"consolidation roots", fmt.Sprintf("up to %d %s", res.ConsolidateRoots,
 			plural(res.ConsolidateRoots, "candidate", "candidates"))},
+		{"evaluation", shareLabel(res.EvaluateOneIn)},
+		{"coverage sweep", res.EvaluateCadence},
 		{"babel improves babel", onOrOff(res.BabelImprovesBabel)},
 		{"babel tunes itself", onOrOff(res.BabelTunesItself)},
 		{"babel triages the queue", onOrOff(res.BabelTriagesTheQueue)},
@@ -528,6 +590,8 @@ func conductorConfigDocument(s conductorSettings, path string) conductorConfigRe
 		SliceSessions:        s.SliceSessions,
 		ConsolidateOneIn:     s.ConsolidateOneIn,
 		ConsolidateRoots:     s.ConsolidateRoots,
+		EvaluateOneIn:        s.EvaluateOneIn,
+		EvaluateCadence:      s.evaluateCadence().String(),
 		ConfiguredAt:         s.ConfiguredAt,
 		BabelImprovesBabel:   s.BabelImprovesBabel,
 		BabelTunesItself:     s.BabelTunesItself,
@@ -584,9 +648,9 @@ func flagNamed(c *cmd, name string) bool {
 	return named
 }
 
-// consolidationLabel renders the consolidation share for a terminal, and says
-// off rather than quoting a fraction of nothing.
-func consolidationLabel(oneIn int) string {
+// shareLabel renders a protected share of cycles for a terminal, and says off
+// rather than quoting a fraction of nothing.
+func shareLabel(oneIn int) string {
 	if oneIn <= 0 {
 		return "off"
 	}
@@ -620,6 +684,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	stopFile := c.fs.String("stop-file", "", "stop at the cycle boundary when this file exists")
 	concurrent := c.fs.Int("concurrent", 1, "run this many cycles at a time")
 	consolidate := c.fs.Int("consolidate", 0, "consolidate one cycle in every N")
+	evaluate := c.fs.Int("evaluate", 0, "evaluate one cycle in every N")
 	challenge := c.fs.Bool("challenge", false, "run the challenger over each cycle's exploration")
 	synthesize := c.fs.Bool("synthesize", false, "run the synthesizer, which is what promotes findings")
 	asJSON := c.fs.Bool("json", false, "emit the cycles this invocation ran as JSON")
@@ -637,6 +702,9 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	}
 	if *consolidate < 0 {
 		return c.usagef("--consolidate cannot be negative")
+	}
+	if *evaluate < 0 {
+		return c.usagef("--evaluate cannot be negative")
 	}
 
 	settings, err := loadConductorSettings()
@@ -664,6 +732,22 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 		return c.usagef("consolidating one cycle in %d needs --challenge and --synthesize: "+
 			"a consolidation cycle that could neither attack nor promote what it drew "+
 			"would defer the same candidates again", consolidateOneIn)
+	}
+	// The evaluation share is read the same way and for the same reason:
+	// --evaluate 0 is how an operator runs a pure production loop on a
+	// machine configured to review.
+	evaluateOneIn := settings.EvaluateOneIn
+	if flagNamed(c, "evaluate") {
+		evaluateOneIn = *evaluate
+	}
+	if evaluateOneIn > 0 && !settings.BabelTriagesTheQueue {
+		// The share allocates cycles and the toggle authorizes the act. A
+		// loop that reviewed on the share alone would have Babel forming
+		// attributed judgements about records the operator never consented
+		// to have judged, which is the one thing this toggle exists for.
+		return c.usagef("evaluating one cycle in %d needs the review authorization: "+
+			"run \"babel conductor configure --%s\" first, or pass --evaluate 0",
+			evaluateOneIn, conductor.DutyTriagesTheQueue)
 	}
 	analysis, err := loadAnalysisSettings()
 	if err != nil {
@@ -745,6 +829,34 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 		a.diagf("conductor: %s; each cycle's records stay durable and pending\n", reason)
 	}
 
+	// The evaluation service is opened once for the whole loop, and only when
+	// the operator both authorized review work and allocated a share of
+	// cycles to it. A loop that opened it unconditionally would build a
+	// projection nothing was going to read.
+	//
+	// A service that will not open is fatal rather than degraded, unlike the
+	// focus ledger above. The difference is what absence means: a machine
+	// that cannot read its expenditure policy has been told to withhold
+	// nothing, while a machine that cannot open its evaluation service has
+	// been asked to review and cannot — and reviewing under a budget it
+	// cannot account for is the silent local fallback §9 and the coordination
+	// contract both refuse.
+	var (
+		evaluationShareCfg conductor.Evaluation
+		evaluationSvc      *evaluation.Service
+	)
+	if evaluateOneIn > 0 && settings.BabelTriagesTheQueue {
+		services, err := a.openEvaluation(ctx, state)
+		if err != nil {
+			return err
+		}
+		defer services.Close()
+		evaluationShareCfg = evaluationShare(evaluateOneIn, settings.BabelTriagesTheQueue,
+			&reviewsAdapter{service: services.service, diag: a.diagf},
+			conductorFocus(ledger), settings.evaluateCadence(), a.diagf)
+		evaluationSvc = services.service
+	}
+
 	loop, err := conductor.New(conductor.Config{
 		Ceilings: settings.ceilings(),
 		Floor:    conductor.Floor{OneIn: settings.Floor},
@@ -757,6 +869,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 				embeddedRecipes{}, drawGenerator(), settings.SliceSessions),
 		),
 		Consolidation: settings.consolidation(consolidateOneIn, state, conductorFocus(ledger)),
+		Evaluation:    evaluationShareCfg,
 		Publisher:     publisher,
 		Runner: &conductorRunner{
 			app:        a,
@@ -770,6 +883,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			challenge:  *challenge,
 			synthesize: *synthesize,
 			presence:   announcer,
+			evaluation: evaluationSvc,
 		},
 		Ledger:   conductor.NewReceiptLedger(state.runs),
 		Journal:  journal,
@@ -1066,6 +1180,11 @@ type conductorRunner struct {
 	// cycle's two rows - the loop's and the run's - come from one connection
 	// (#118). Nil on a machine with no fleet.
 	presence presence.Announcer
+	// evaluation is the service a review cycle reads and writes through, nil
+	// on an invocation that allocated no evaluation share. It is the loop's
+	// one handle, shared by every review cycle, for presence's reason: a
+	// projection opened per cycle would be rebuilt per cycle.
+	evaluation *evaluation.Service
 }
 
 // Run prepares the assignment's corpus slice and explores it.
@@ -1081,6 +1200,24 @@ func (r *conductorRunner) Run(ctx context.Context, runID string,
 		return conductor.Result{}, errors.New(
 			"a consolidation cycle needs the challenger and the synthesizer: " +
 				"run \"babel conductor run --challenge --synthesize\"")
+	}
+	if a.Rung == conductor.RungEvaluation {
+		// A review is not an exploration and cannot be degraded into one. An
+		// invocation that allocated no evaluation share but is resuming a
+		// journalled evaluation cycle refuses by name rather than exploring
+		// the corpus under an authority that says it was reviewing: the
+		// claim it held is left to its lease, which the store reconciles,
+		// and the operator's remedy is to run with the share again.
+		if a.Evaluation == nil {
+			return conductor.Result{}, errors.New(
+				"an evaluation cycle carries no drawn review, so there is nothing to assess")
+		}
+		if r.evaluation == nil {
+			return conductor.Result{}, fmt.Errorf(
+				"resuming evaluation cycle %s needs the evaluation share: "+
+					"run \"babel conductor run --evaluate N\"", a.Evaluation.AssignmentID)
+		}
+		return r.review(ctx, runID, a)
 	}
 	receipt, err := r.state.runs.Latest(ctx, runID)
 	if err == nil {
@@ -1441,6 +1578,29 @@ func (a *app) conductorStatus(ctx context.Context, args []string) error {
 	ladder = append(ladder, conductor.NewConsolidationRung(state.frontier,
 		conductor.NewRecordOrigins(state.frontier, state.runs),
 		conductorFocus(statusLedger), settings.ConsolidateRoots))
+	// The evaluation share is described beside consolidation, and for the
+	// same reason: its depth is the coverage backlog an operator deciding
+	// whether to authorize review work has to see, and reporting it only once
+	// review was already on would hide the state that argues for it.
+	//
+	// It is described only when the evaluation service opens. A machine with
+	// none says so in the rung note rather than reporting a zero backlog,
+	// because "nothing is outstanding" and "nothing could be counted" are
+	// different answers and the second is the one an operator has to fix.
+	if services, err := a.openEvaluation(ctx, state); err == nil {
+		defer services.Close()
+		ladder = append(ladder, conductor.NewEvaluationRung(
+			&reviewsAdapter{service: services.service, diag: a.diagf},
+			conductorFocus(statusLedger), nil, func() time.Time { return now },
+			settings.evaluateCadence()))
+	} else {
+		res.Rungs = append(res.Rungs, conductorRungRow{
+			Name:        conductor.RungEvaluation,
+			Implemented: true,
+			Note: Sanitize("the coverage inventory could not be opened, so no backlog is reported: " +
+				err.Error()),
+		})
+	}
 	rungs, err := conductor.Describe(ctx, ladder)
 	if err != nil {
 		return err
@@ -1513,7 +1673,8 @@ func (a *app) writeConductorStatus(res conductorStatusResult) {
 			[2]string{"ceilings", fmt.Sprintf("%.2f per cycle, %.2f per day %s",
 				res.Config.PerCycle, res.Config.PerDay, res.Config.Currency)},
 			[2]string{"serendipity floor", fmt.Sprintf("one cycle in %d", res.Config.Floor)},
-			[2]string{"consolidation", consolidationLabel(res.Config.ConsolidateOneIn)})
+			[2]string{"consolidation", shareLabel(res.Config.ConsolidateOneIn)},
+			[2]string{"evaluation", shareLabel(res.Config.EvaluateOneIn)})
 	} else {
 		rows = append(rows, [2]string{"ceilings",
 			"none; run \"babel conductor configure --per-cycle AMOUNT --per-day AMOUNT\""})

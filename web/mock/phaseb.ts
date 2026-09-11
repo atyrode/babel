@@ -1997,6 +1997,10 @@ function derivedStatus(record: ReviewRecordState): ReviewStatus {
       return record.refinements.length > 0 ? "refine-requested" : "rejected";
     case "defer":
       return "deferred";
+    // A reopen returns the record to undecided. The decision it reopened
+    // keeps its place in the history above it; only the derived status moves.
+    case "reopen":
+      return "new";
     default:
       return "duplicate";
   }
@@ -3035,11 +3039,27 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
           candidate.subject.type === body.subject?.type && candidate.subject.id === body.subject?.id,
       );
       if (!record) return json({ error: `synthetic record not found: ${body.subject?.id}` }, 404);
-      if (!["accept", "reject", "defer", "duplicate"].includes(body.disposition)) {
+      if (!["accept", "reject", "defer", "duplicate", "reopen"].includes(body.disposition)) {
         return json({ error: `unknown disposition: ${body.disposition}` }, 400);
       }
       if (body.disposition === "duplicate" && !body.duplicateOfId) {
         return json({ error: "duplicate disposition names no original" }, 400);
+      }
+      // The server's own reopen rules, mirrored so the interface cannot ship
+      // a control the real service refuses: a reason is required, an
+      // undecided record has nothing to reopen, and the two closed states
+      // are answered where the decision now lives.
+      if (body.disposition === "reopen") {
+        const current = derivedStatus(record);
+        if (!body.note || body.note.trim() === "") {
+          return json({ error: "a reopen states no reason for reopening" }, 400);
+        }
+        if (current === "new") {
+          return json({ error: "nothing has been decided here to reopen" }, 400);
+        }
+        if (current === "duplicate" || current === "refine-requested") {
+          return json({ error: `${current} accepts no further disposition` }, 400);
+        }
       }
       decisionCounter += 1;
       const event: DecisionView = {

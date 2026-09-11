@@ -159,6 +159,15 @@ func classifyService(err error) (int, string) {
 	if status, message, ok := classifyRecordAction(err); ok {
 		return status, message
 	}
+	// Issue #219's evaluation sentinels are classified in their own
+	// function rather than as six more cases here. The switch below
+	// already spans five packages, and the evaluation vocabulary is the
+	// one whose refusals an operator meets while configuring a budget:
+	// keeping it readable as one block is what lets the wording be
+	// checked against what the service actually refuses.
+	if status, message, ok := classifyEvaluation(err); ok {
+		return status, message
+	}
 	switch {
 	case errors.Is(err, review.ErrUnknownRecord),
 		errors.Is(err, reality.ErrUnknownRecord),
