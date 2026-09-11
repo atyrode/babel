@@ -483,7 +483,7 @@ func (s *Server) overviewFrontier(r *http.Request) (overviewFrontier, map[string
 	}
 	ids, err := s.hypothesisIDs(r.Context())
 	if err != nil {
-		s.logf("GET %s: frontier enumeration refused", r.URL.Path)
+		s.logf("GET %s: frontier enumeration refused: %v", r.URL.Path, err)
 		section.overviewSection = sectionMissing("The hypothesis frontier could not be read.")
 		return section, nil
 	}
@@ -598,7 +598,7 @@ func (s *Server) overviewRuns(r *http.Request, byRun map[string][]string) overvi
 	}
 	summaries, total, err := s.opts.Runs.Runs(r.Context(), overviewRows, 0)
 	if err != nil {
-		s.logf("GET %s: run receipts refused", r.URL.Path)
+		s.logf("GET %s: run receipts refused: %v", r.URL.Path, err)
 		section.overviewSection = sectionMissing("Run receipts could not be read.")
 		return section
 	}
@@ -680,7 +680,7 @@ func (s *Server) overviewReview(r *http.Request) overviewReview {
 	// re-sorted here, for the reason handleReviewQueue states.
 	items, err := s.opts.Review.Queue(r.Context(), review.QueueFilter{Limit: listScanCap})
 	if err != nil {
-		s.logf("GET %s: review queue refused", r.URL.Path)
+		s.logf("GET %s: review queue refused: %v", r.URL.Path, err)
 		section.overviewSection = sectionMissing("The review queue could not be read.")
 		return section
 	}
@@ -728,7 +728,7 @@ func (s *Server) overviewDispositions(r *http.Request) overviewDispositions {
 		Limit:    1,
 	})
 	if err != nil {
-		s.logf("GET %s: proposed actions refused", r.URL.Path)
+		s.logf("GET %s: proposed actions refused: %v", r.URL.Path, err)
 		section.overviewSection = sectionMissing("Proposed next actions could not be read.")
 		return section
 	}
@@ -745,7 +745,7 @@ func (s *Server) overviewQuestions(r *http.Request) overviewQuestions {
 	}
 	items, err := s.opts.Reality.Inbox(r.Context(), reality.InboxQuery{Limit: listScanCap})
 	if err != nil {
-		s.logf("GET %s: reality inbox refused", r.URL.Path)
+		s.logf("GET %s: reality inbox refused: %v", r.URL.Path, err)
 		section.overviewSection = sectionMissing("The question inbox could not be read.")
 		return section
 	}
