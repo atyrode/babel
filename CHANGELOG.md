@@ -9,6 +9,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-11
+
 ### Changed
 
 - **The dashboard loads on a machine that did not produce the records.** A
