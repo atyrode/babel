@@ -9,6 +9,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Changed
+
+- **Babel's next evaluation loop is specified around improving the backlog.**
+  A review may be just an upvote, downvote, or uncertainty; prose is optional.
+  The approved design separates the operator's recommended reading order from
+  a budgeted, weighted-random review queue and follows proposals through
+  implementation, observed outcomes, and reconsideration. Periodic coverage
+  checks surface unchecked artifacts; recommendations reflect current work,
+  recorded pain, and reality rather than popularity alone. The specification
+  and `docs/evaluation-lifecycle.md` define authority boundaries, shared
+  publication, revision-aware votes, and cross-instance acceptance scenarios.
+  This is a design delivery: runtime voting, scheduling, and lifecycle lanes
+  are not implemented or enabled by this change, and the existing version-1
+  triage recipe remains unchanged until its writer can enforce the new contract.
+
 ## [0.2.5] - 2026-09-11
 
 ### Changed
