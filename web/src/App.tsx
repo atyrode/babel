@@ -22,8 +22,14 @@ import HypothesesPage from "./pages/HypothesesPage";
 import HypothesisPage from "./pages/HypothesisPage";
 import ProposalPage from "./pages/ProposalPage";
 import ProposalsPage from "./pages/ProposalsPage";
+import RealityEntitiesPage from "./pages/RealityEntitiesPage";
 import RealityEntityPage from "./pages/RealityEntityPage";
+import RealityFactPage from "./pages/RealityFactPage";
+import RealityFactsPage from "./pages/RealityFactsPage";
+import RealityLayout from "./pages/RealityLayout";
 import RealityPage from "./pages/RealityPage";
+import RealityQuestionPage from "./pages/RealityQuestionPage";
+import RealityQuestionsPage from "./pages/RealityQuestionsPage";
 import ReviewPage from "./pages/ReviewPage";
 import ReviewRecordPage from "./pages/ReviewRecordPage";
 import SessionPage from "./pages/SessionPage";
@@ -242,12 +248,28 @@ function App() {
           <Route path="/findings/:id" element={<FindingPage />} />
           <Route path="/proposals" element={<ProposalsPage />} />
           <Route path="/proposals/:id" element={<ProposalPage />} />
-          <Route path="/reality" element={<RealityPage />} />
-          <Route path="/reality/entities/:id" element={<RealityEntityPage />} />
-          {/* §4.8's expenditure policy. It sits under /reality because that is
-              what it edits — the ledger's own facts — while carrying its own
-              nav entry because it is an act rather than a record. */}
-          <Route path="/reality/focus" element={<FocusPage />} />
+          {/* The Reality Ledger is one entry in the row above and five
+              destinations below it. They are nested under a layout so the
+              section's own navigation is present on every one of them —
+              including a fact or a question reached by clicking a record,
+              which is where a reader most needs to know what else the ledger
+              holds. §8.4 asks for reachability by navigation rather than by
+              URL, and RealityLayout is where that row and its justification
+              live. */}
+          <Route path="/reality" element={<RealityLayout />}>
+            <Route index element={<RealityPage />} />
+            <Route path="questions" element={<RealityQuestionsPage />} />
+            <Route path="questions/:id" element={<RealityQuestionPage />} />
+            <Route path="entities" element={<RealityEntitiesPage />} />
+            <Route path="entities/:id" element={<RealityEntityPage />} />
+            <Route path="facts" element={<RealityFactsPage />} />
+            <Route path="facts/:id" element={<RealityFactPage />} />
+            {/* §4.8's expenditure policy. It sits under /reality because
+                that is what it edits — the ledger's own facts — while
+                carrying its own nav entry above because it is an act rather
+                than a record. */}
+            <Route path="focus" element={<FocusPage />} />
+          </Route>
           <Route path="/review" element={<ReviewPage />} />
           <Route path="/review/:type/:id" element={<ReviewRecordPage />} />
           {/* #115's capture rides the review surface, so a complaint's record

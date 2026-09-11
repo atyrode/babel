@@ -740,7 +740,17 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{name: "export json", method: http.MethodGet, path: "/api/export?type=proposal&id=" + h.proposal.ID + "&format=json"},
 		{name: "export markdown", method: http.MethodGet, path: "/api/export?type=proposal&id=" + h.proposal.ID + "&format=markdown"},
 		{name: "reality inbox", method: http.MethodGet, path: "/api/reality/inbox"},
+		// The ledger's own listings and records. They are enrolled beside
+		// the inbox because they carry the same content it does — a
+		// prompt, an answer, a display name, a fact's note — reached by
+		// a different route, and §8.4's reachability is worth nothing if
+		// the page it leads to escapes its prose less carefully.
+		{name: "reality questions", method: http.MethodGet, path: "/api/reality/questions"},
+		{name: "reality question", method: http.MethodGet, path: "/api/reality/question?id=" + h.question.ID},
+		{name: "reality entities", method: http.MethodGet, path: "/api/reality/entities"},
 		{name: "reality entity", method: http.MethodGet, path: "/api/reality/entity?id=" + h.entity.ID},
+		{name: "reality facts", method: http.MethodGet, path: "/api/reality/facts"},
+		{name: "reality fact", method: http.MethodGet, path: "/api/reality/fact?id=" + h.policy.ID},
 		// §4.8's focus surface. The two reads answer on a deployment that
 		// has installed no policy version, which is the state this harness
 		// is in until a test installs one, and the subject lookup is
@@ -1268,7 +1278,12 @@ func TestPhaseBRoutesAnswerHonestlyWithoutServices(t *testing.T) {
 		{http.MethodGet, "/api/review/history?type=proposal&id=prp-1", ""},
 		{http.MethodGet, "/api/export?type=proposal&id=prp-1", ""},
 		{http.MethodGet, "/api/reality/inbox", ""},
+		{http.MethodGet, "/api/reality/questions", ""},
+		{http.MethodGet, "/api/reality/question?id=qst-1", ""},
+		{http.MethodGet, "/api/reality/entities", ""},
 		{http.MethodGet, "/api/reality/entity?id=ent-1", ""},
+		{http.MethodGet, "/api/reality/facts", ""},
+		{http.MethodGet, "/api/reality/fact?id=fct-1", ""},
 		{http.MethodGet, "/api/search?q=x", ""},
 		{http.MethodPost, "/api/review/decide", `{"subject":{"type":"proposal","id":"prp-1"},"disposition":"accept"}`},
 		{http.MethodPost, "/api/review/context", `{"text":"x"}`},

@@ -1,8 +1,15 @@
 package web
 
-// The §4.8 Reality Ledger surface: the question inbox, an entity's current
-// reality, and the two acts §4.8 gives an operator — retaining an answer and
-// the single explicit acceptance that lets a plan touch reality.
+// The §4.8 Reality Ledger surface: what the ledger holds and the two acts §4.8
+// gives an operator over it — retaining an answer and the single explicit
+// acceptance that lets a plan touch reality.
+//
+// The reads are listings, records and histories rather than one entity lookup,
+// and that is §8.4's requirement rather than a convenience: every stored thing
+// is to be reachable by moving through the interface, so the questions the
+// ledger has ever asked, the subjects it knows, and a fact's own revision and
+// status chain each have a route a page can arrive at. A record only a
+// hand-typed identifier could reach was a record the product did not have.
 //
 // Both mutations call the ledger, which is the service: internal/reality owns
 // the state machine, the atomic commit, and the rule that an accepted plan's
@@ -23,7 +30,6 @@ package web
 import (
 	"context"
 	"net/http"
-	"regexp"
 	"strconv"
 	"time"
 
@@ -153,16 +159,7 @@ func (s *Server) summarizeQuestion(ctx context.Context, item reality.InboxItem) 
 		return QuestionSummary{}, err
 	}
 	for _, answer := range answers {
-		summary.Answers = append(summary.Answers, answerView{
-			ID:         answer.ID,
-			QuestionID: answer.QuestionID,
-			Sequence:   answer.Sequence,
-			Author:     answer.Author,
-			At:         timeText(answer.At),
-			RecordedAt: timeText(answer.RecordedAt),
-			Outcome:    string(answer.Outcome),
-			Text:       answer.Payload.Text,
-		})
+		summary.Answers = append(summary.Answers, viewAnswer(answer))
 	}
 	plans, err := s.plansFor(ctx, question.ID)
 	if err != nil {
@@ -172,41 +169,284 @@ func (s *Server) summarizeQuestion(ctx context.Context, item reality.InboxItem) 
 	return summary, nil
 }
 
-// planID matches the ledger's plan identifier shape.
-var planID = regexp.MustCompile(`\bpln_[0-9A-Za-z]+\b`)
+// viewAnswer renders one retained answer. It is shared by the inbox summary
+// and the question's own page so the verbatim text an operator typed is
+// rendered by one function on both.
+func viewAnswer(answer reality.Answer) answerView {
+	return answerView{
+		ID:         answer.ID,
+		QuestionID: answer.QuestionID,
+		Sequence:   answer.Sequence,
+		Author:     answer.Author,
+		At:         timeText(answer.At),
+		RecordedAt: timeText(answer.RecordedAt),
+		Outcome:    string(answer.Outcome),
+		Text:       answer.Payload.Text,
+	}
+}
 
-// plansFor finds the interpretations a question produced.
+// plansFor reads the interpretations a question produced.
 //
-// internal/reality exposes no plans-by-question query — it answers Plan(id) —
-// so the question's own append-only state history is read for the identifiers it
-// names, and each candidate is resolved through Plan, which is authoritative.
-// That inversion is what makes reading a note safe: a hint that matches nothing
-// yields no plan rather than a wrong one, so the worst outcome of a changed note
-// format is an empty list, and an operator who needs the plan can still reach it
-// through the CLI. A plans-by-question listing on the ledger would replace this
-// entirely.
+// This used to recover plan identifiers from the question's append-only state
+// history by matching the identifier shape in an event note, because the
+// ledger answered Plan(id) and nothing else. It answers Plans(questionID)
+// now, and a query cannot drift the way reading a note format can.
 func (s *Server) plansFor(ctx context.Context, questionID string) ([]planView, error) {
-	history, err := s.opts.Reality.QuestionHistory(ctx, questionID)
+	plans, err := s.opts.Reality.Plans(ctx, questionID)
 	if err != nil {
 		return nil, err
 	}
-	views := []planView{}
-	seen := map[string]struct{}{}
-	for i := len(history) - 1; i >= 0; i-- {
-		for _, candidate := range planID.FindAllString(history[i].Payload.Note, -1) {
-			if _, ok := seen[candidate]; ok {
-				continue
-			}
-			seen[candidate] = struct{}{}
-			plan, err := s.opts.Reality.Plan(ctx, candidate)
-			if err != nil {
-				continue
-			}
-			if plan.QuestionID != questionID {
-				continue
-			}
-			views = append(views, viewPlan(plan))
+	views := make([]planView, 0, len(plans))
+	for _, plan := range plans {
+		views = append(views, viewPlan(plan))
+	}
+	return views, nil
+}
+
+// questionRow is one question in the ledger's own listing: the record, its
+// current state, and how much has accumulated on it.
+//
+// It carries no score, and the omission is the point. A score is the inbox's
+// ranking of what the operator should do next, and §4.8 fixes that ranking for
+// the two states only a human can move; a listing of every question the ledger
+// ever asked — answered, snoozed, declined — would have to invent a number for
+// the rest, and a made-up rank beside a real one is worse than no rank.
+type questionRow struct {
+	ID              string   `json:"id"`
+	Kind            string   `json:"kind"`
+	Class           string   `json:"class"`
+	State           string   `json:"state"`
+	Sensitivity     string   `json:"sensitivity"`
+	CreatedAt       string   `json:"created_at"`
+	Prompt          string   `json:"prompt"`
+	WhyAsked        string   `json:"why_asked"`
+	TargetEntityIDs []string `json:"target_entity_ids"`
+	Answers         int      `json:"answers"`
+	Plans           int      `json:"plans"`
+	// Pending is whether the ledger considers this question the operator's
+	// to move, which is what the ranked inbox is made of. It is here so a
+	// listing row can say "this one is waiting on you" without the page
+	// deciding for itself which states those are.
+	Pending bool `json:"pending"`
+}
+
+// stateCount is how many questions stand in one state. The counts travel as an
+// ordered list rather than an object because the order is §4.8's lifecycle,
+// and a JSON object's keys have no order at all.
+type stateCount struct {
+	State string `json:"state"`
+	Count int    `json:"count"`
+}
+
+type questionsResult struct {
+	Items  []questionRow `json:"items"`
+	Total  int           `json:"total"`
+	States []stateCount  `json:"states"`
+}
+
+// handleRealityQuestions serves every question the ledger has asked, newest
+// first, with the per-state census beside it.
+//
+// The inbox route above answers a different question and keeps answering it.
+// This one exists because §8.4 requires a stored record to be reachable by
+// moving through the interface: a question the operator answered last week
+// leaves the inbox by design, and until this route there was no way back to it
+// that did not involve typing an identifier nobody has.
+//
+// The census counts every state and is computed before the filter narrows the
+// rows, so a page showing "answered" can still say truthfully how many are
+// open.
+func (s *Server) handleRealityQuestions(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Reality != nil, "the reality ledger") {
+		return
+	}
+	pg, ok := s.requirePage(w, r)
+	if !ok {
+		return
+	}
+	query := reality.QuestionQuery{Limit: listScanCap}
+	if value := r.URL.Query().Get("class"); value != "" {
+		query.Class = reality.QuestionClass(value)
+	}
+	listed, err := s.opts.Reality.Questions(r.Context(), query)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	census := map[reality.QuestionState]int{}
+	rows := make([]questionRow, 0, len(listed))
+	state := r.URL.Query().Get("state")
+	for _, item := range listed {
+		census[item.Question.State]++
+		if state != "" && string(item.Question.State) != state {
+			continue
 		}
+		rows = append(rows, viewQuestionRow(item))
+	}
+	result := questionsResult{Items: []questionRow{}, Total: len(rows)}
+	for _, known := range reality.QuestionStates() {
+		if count := census[known]; count > 0 {
+			result.States = append(result.States, stateCount{State: string(known), Count: count})
+		}
+	}
+	start, end := pg.window(len(rows))
+	result.Items = append(result.Items, rows[start:end]...)
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+// pendingStates are the question states the ledger's own inbox is made of.
+// internal/reality decides inbox membership, so this is a rendering of that
+// decision rather than a second opinion about it: a row marked pending here is
+// a row that appears in Inbox.
+func pending(state reality.QuestionState) bool {
+	return state == reality.QuestionOpen || state == reality.QuestionPlanReady
+}
+
+func viewQuestionRow(item reality.QuestionListing) questionRow {
+	question := item.Question
+	row := questionRow{
+		ID:              question.ID,
+		Kind:            string(question.Kind),
+		Class:           string(question.Class),
+		State:           string(question.State),
+		Sensitivity:     string(question.Sensitivity),
+		CreatedAt:       timeText(question.CreatedAt),
+		Prompt:          question.Payload.Prompt,
+		WhyAsked:        question.Payload.WhyAsked,
+		TargetEntityIDs: question.TargetEntityIDs,
+		Answers:         item.Answers,
+		Plans:           item.Plans,
+		Pending:         pending(question.State),
+	}
+	if row.TargetEntityIDs == nil {
+		row.TargetEntityIDs = []string{}
+	}
+	return row
+}
+
+// questionEventView is one entry in a question's append-only state history.
+type questionEventView struct {
+	ID         string `json:"id"`
+	Sequence   int    `json:"sequence"`
+	State      string `json:"state"`
+	Actor      string `json:"actor"`
+	RecordedAt string `json:"recorded_at"`
+	Note       string `json:"note,omitempty"`
+}
+
+// questionDetail is one question read whole: the record, what it was asked
+// about, the answers it has, the interpretations they produced, the facts that
+// prompted it, and every transition it has been through.
+//
+// The answers and plans are here because §8.4's second requirement is that a
+// record's decisions are offered where the record is read. The answer route
+// and the plan acceptance are the two decisions a question admits, and this is
+// the page they belong beside.
+type questionDetail struct {
+	Question      questionRow         `json:"question"`
+	Targets       []entityRef         `json:"targets"`
+	Predicates    []string            `json:"predicates"`
+	Evidence      []string            `json:"material_evidence"`
+	Answers       []answerView        `json:"answers"`
+	Plans         []planView          `json:"plans"`
+	History       []questionEventView `json:"history"`
+	ExistingFacts []factView          `json:"existing_facts"`
+	ConflictFacts []factView          `json:"conflict_facts"`
+}
+
+func (s *Server) handleRealityQuestion(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Reality != nil, "the reality ledger") {
+		return
+	}
+	id, ok := s.requireID(w, r, "id")
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	question, err := s.opts.Reality.Question(ctx, id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	answers, err := s.opts.Reality.Answers(ctx, id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	plans, err := s.plansFor(ctx, id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	history, err := s.opts.Reality.QuestionHistory(ctx, id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	detail := questionDetail{
+		Question: viewQuestionRow(reality.QuestionListing{
+			Question: question,
+			Answers:  len(answers),
+			Plans:    len(plans),
+		}),
+		Targets:       make([]entityRef, 0, len(question.TargetEntityIDs)),
+		Predicates:    make([]string, 0, len(question.TargetPredicates)),
+		Evidence:      question.MaterialEvidence,
+		Answers:       make([]answerView, 0, len(answers)),
+		Plans:         plans,
+		History:       make([]questionEventView, 0, len(history)),
+		ExistingFacts: []factView{},
+		ConflictFacts: []factView{},
+	}
+	if detail.Evidence == nil {
+		detail.Evidence = []string{}
+	}
+	for _, target := range question.TargetEntityIDs {
+		detail.Targets = append(detail.Targets, s.entityRef(ctx, target))
+	}
+	for _, predicate := range question.TargetPredicates {
+		detail.Predicates = append(detail.Predicates, string(predicate))
+	}
+	for _, answer := range answers {
+		detail.Answers = append(detail.Answers, viewAnswer(answer))
+	}
+	for _, event := range history {
+		detail.History = append(detail.History, questionEventView{
+			ID:         event.ID,
+			Sequence:   event.Sequence,
+			State:      string(event.State),
+			Actor:      event.Actor,
+			RecordedAt: timeText(event.RecordedAt),
+			Note:       event.Payload.Note,
+		})
+	}
+	// The facts a question names are why it was asked: the revision
+	// suspected of drift, or the two that contradict each other. A page
+	// that showed the prompt without them would be showing the question
+	// and hiding its evidence.
+	if detail.ExistingFacts, err = s.factsByID(ctx, question.ExistingFactIDs); err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	if detail.ConflictFacts, err = s.factsByID(ctx, question.ConflictFactIDs); err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, detail)
+}
+
+// factsByID reads the facts a record names. A fact the ledger no longer holds
+// is an error rather than a gap: these identifiers are foreign keys the ledger
+// enforced when the record was written, so one that does not resolve means the
+// file changed underneath rather than that the reference was optional.
+func (s *Server) factsByID(ctx context.Context, ids []string) ([]factView, error) {
+	views := make([]factView, 0, len(ids))
+	for _, id := range ids {
+		fact, err := s.opts.Reality.Fact(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		views = append(views, viewFact(fact))
 	}
 	return views, nil
 }
@@ -257,19 +497,43 @@ type aliasView struct {
 	Note      string `json:"note,omitempty"`
 }
 
-type relationshipEnd struct {
+// entityRef names an entity a record points at, with the display name that
+// makes it readable.
+//
+// Every surface in this file that mentions an entity mentions it this way — an
+// edge's two ends, a question's target, a fact's subject and its object — so a
+// page can render "the repository Babel" wherever the ledger stored an
+// identifier. The name is best effort: an identifier that no longer resolves
+// still reads as an identifier rather than failing the record it appears on.
+type entityRef struct {
 	ID          string `json:"id"`
+	Kind        string `json:"kind,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
 }
 
 type relationshipView struct {
-	ID        string          `json:"id"`
-	Kind      string          `json:"kind"`
-	State     string          `json:"state"`
-	CreatedAt string          `json:"created_at"`
-	From      relationshipEnd `json:"from"`
-	To        relationshipEnd `json:"to"`
-	Note      string          `json:"note,omitempty"`
+	ID        string    `json:"id"`
+	Kind      string    `json:"kind"`
+	State     string    `json:"state"`
+	CreatedAt string    `json:"created_at"`
+	From      entityRef `json:"from"`
+	To        entityRef `json:"to"`
+	Note      string    `json:"note,omitempty"`
+}
+
+// resolutionView is one merge, split, or reversal in an identity's history.
+// §8.2 names alias merge/split history as part of what Reality shows, and this
+// is the record that holds it: an identity folded into another, or one pulled
+// back apart, with the operator who decided and the reasoning they gave.
+type resolutionView struct {
+	ID         string      `json:"id"`
+	Kind       string      `json:"kind"`
+	Actor      string      `json:"actor"`
+	RecordedAt string      `json:"recorded_at"`
+	ReversesID string      `json:"reverses_id,omitempty"`
+	Sources    []entityRef `json:"sources"`
+	Results    []entityRef `json:"results"`
+	Reason     string      `json:"reason,omitempty"`
 }
 
 type factValueView struct {
@@ -303,19 +567,115 @@ type factView struct {
 	Note        string            `json:"note,omitempty"`
 }
 
+// entityRow is one subject in the ledger's census: the identity, and the size
+// of what the ledger holds about it.
+type entityRow struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Role        string `json:"role"`
+	CanonicalID string `json:"canonical_id"`
+	DisplayName string `json:"display_name"`
+	CreatedAt   string `json:"created_at"`
+	Aliases     int    `json:"aliases"`
+	Facts       int    `json:"facts"`
+	Active      int    `json:"active_facts"`
+	LatestFact  string `json:"latest_fact,omitempty"`
+}
+
+// kindCount is how many entities the ledger holds of one kind, in §4.8's own
+// order rather than an object's key order, for stateCount's reason.
+type kindCount struct {
+	Kind  string `json:"kind"`
+	Count int    `json:"count"`
+}
+
+type entitiesResult struct {
+	Items []entityRow `json:"items"`
+	Total int         `json:"total"`
+	Kinds []kindCount `json:"kinds"`
+}
+
+// handleRealityEntities serves the ledger's subjects, newest first.
+//
+// Until this route the only way to an entity was its identifier, which meant
+// the ledger's own contents were reachable from a focus rule, from an edge on
+// another entity, or from a URL the operator had memorized — and from nothing
+// else. §8.4 calls that not being in the product. The census by kind travels
+// with the listing so a filtered page can still say what else is there.
+func (s *Server) handleRealityEntities(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Reality != nil, "the reality ledger") {
+		return
+	}
+	pg, ok := s.requirePage(w, r)
+	if !ok {
+		return
+	}
+	query := reality.EntityQuery{Limit: listScanCap}
+	if value := r.URL.Query().Get("kind"); value != "" {
+		query.Kind = reality.EntityKind(value)
+	}
+	listed, err := s.opts.Reality.Entities(r.Context(), query)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	// The census is of the whole ledger rather than of the filtered page,
+	// so the kind a reader is not looking at is still countable. It
+	// therefore costs a second read when a filter is in force, which is
+	// the honest price of the filter being able to offer anything else.
+	census := listed
+	if query.Kind != "" {
+		if census, err = s.opts.Reality.Entities(r.Context(), reality.EntityQuery{Limit: listScanCap}); err != nil {
+			s.serviceError(w, r, err)
+			return
+		}
+	}
+	counts := map[reality.EntityKind]int{}
+	for _, item := range census {
+		counts[item.Entity.Kind]++
+	}
+	result := entitiesResult{Items: []entityRow{}, Total: len(listed)}
+	for _, known := range reality.EntityKinds() {
+		if count := counts[known]; count > 0 {
+			result.Kinds = append(result.Kinds, kindCount{Kind: string(known), Count: count})
+		}
+	}
+	start, end := pg.window(len(listed))
+	for _, item := range listed[start:end] {
+		result.Items = append(result.Items, entityRow{
+			ID:          item.Entity.ID,
+			Kind:        string(item.Entity.Kind),
+			Role:        string(item.Entity.Role),
+			CanonicalID: item.Entity.CanonicalID,
+			DisplayName: item.Entity.Payload.DisplayName,
+			CreatedAt:   timeText(item.Entity.CreatedAt),
+			Aliases:     item.Aliases,
+			Facts:       item.Facts,
+			Active:      item.Active,
+			LatestFact:  timeText(item.LatestFact),
+		})
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
 type entityDetail struct {
 	Entity        entityView         `json:"entity"`
 	Aliases       []aliasView        `json:"aliases"`
 	Relationships []relationshipView `json:"relationships"`
 	Facts         []factView         `json:"facts"`
+	Resolutions   []resolutionView   `json:"resolutions"`
 }
 
 // handleRealityEntity serves one entity's current reality: its identity, the
-// names it is known by, its edges, and its facts.
+// names it is known by, its edges, its facts, and the merges and splits it has
+// been through.
 //
 // Every fact status is included, superseded revisions and proposals alike,
 // because reviewing what was proposed is a real need and a revision chain that
-// showed only its head would hide how reality was corrected.
+// showed only its head would hide how reality was corrected. The resolution
+// history is here for the same reason one step up: it is how the operator sees
+// that two names were judged one thing, who judged it, and that the judgement
+// can be reversed.
 func (s *Server) handleRealityEntity(w http.ResponseWriter, r *http.Request) {
 	if !s.requireService(w, s.opts.Reality != nil, "the reality ledger") {
 		return
@@ -345,6 +705,11 @@ func (s *Server) handleRealityEntity(w http.ResponseWriter, r *http.Request) {
 		s.serviceError(w, r, err)
 		return
 	}
+	resolutions, err := s.opts.Reality.ResolutionHistory(ctx, id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
 	detail := entityDetail{
 		Entity: entityView{
 			ID:            entity.ID,
@@ -359,6 +724,7 @@ func (s *Server) handleRealityEntity(w http.ResponseWriter, r *http.Request) {
 		Aliases:       make([]aliasView, 0, len(aliases)),
 		Relationships: make([]relationshipView, 0, len(relationships)),
 		Facts:         make([]factView, 0, len(facts)),
+		Resolutions:   make([]resolutionView, 0, len(resolutions)),
 	}
 	for _, alias := range aliases {
 		detail.Aliases = append(detail.Aliases, aliasView{
@@ -377,13 +743,32 @@ func (s *Server) handleRealityEntity(w http.ResponseWriter, r *http.Request) {
 			Kind:      string(relationship.Kind),
 			State:     string(relationship.State),
 			CreatedAt: timeText(relationship.CreatedAt),
-			From:      s.relationshipEnd(ctx, relationship.FromID, entity),
-			To:        s.relationshipEnd(ctx, relationship.ToID, entity),
+			From:      s.entityRef(ctx, relationship.FromID),
+			To:        s.entityRef(ctx, relationship.ToID),
 			Note:      relationship.Payload.Note,
 		})
 	}
 	for _, fact := range facts {
 		detail.Facts = append(detail.Facts, viewFact(fact))
+	}
+	for _, resolution := range resolutions {
+		view := resolutionView{
+			ID:         resolution.ID,
+			Kind:       string(resolution.Kind),
+			Actor:      resolution.Actor,
+			RecordedAt: timeText(resolution.RecordedAt),
+			ReversesID: resolution.ReversesID,
+			Sources:    make([]entityRef, 0, len(resolution.SourceIDs)),
+			Results:    make([]entityRef, 0, len(resolution.ResultIDs)),
+			Reason:     resolution.Payload.Reason,
+		}
+		for _, source := range resolution.SourceIDs {
+			view.Sources = append(view.Sources, s.entityRef(ctx, source))
+		}
+		for _, result := range resolution.ResultIDs {
+			view.Results = append(view.Results, s.entityRef(ctx, result))
+		}
+		detail.Resolutions = append(detail.Resolutions, view)
 	}
 	s.writeJSON(w, http.StatusOK, detail)
 }
@@ -421,18 +806,221 @@ func viewFact(fact reality.Fact) factView {
 	}
 }
 
-// relationshipEnd names one end of an edge, resolving the far entity's display
-// name best effort so an edge reads as prose. The requested entity is already
-// in hand, so only the other end costs a read.
-func (s *Server) relationshipEnd(ctx context.Context, id string, known reality.Entity) relationshipEnd {
-	if id == known.ID {
-		return relationshipEnd{ID: id, DisplayName: known.Payload.DisplayName}
+// entityRef resolves an identifier to the name a reader knows it by, best
+// effort. An identity the ledger no longer holds keeps its identifier and
+// loses only its name: a record must not become unreadable because something
+// it points at went missing.
+func (s *Server) entityRef(ctx context.Context, id string) entityRef {
+	if id == "" {
+		return entityRef{}
 	}
-	end := relationshipEnd{ID: id}
-	if other, err := s.opts.Reality.Entity(ctx, id); err == nil {
-		end.DisplayName = other.Payload.DisplayName
+	ref := entityRef{ID: id}
+	if entity, err := s.opts.Reality.Entity(ctx, id); err == nil {
+		ref.Kind = string(entity.Kind)
+		ref.DisplayName = entity.Payload.DisplayName
 	}
-	return end
+	return ref
+}
+
+// factRow is one revision in a listing, with the subject it is about named
+// rather than merely identified.
+type factRow struct {
+	Fact    factView  `json:"fact"`
+	Subject entityRef `json:"subject"`
+}
+
+// statusCount is how many of the listed revisions hold one status.
+type statusCount struct {
+	Status string `json:"status"`
+	Count  int    `json:"count"`
+}
+
+type factsResult struct {
+	Items    []factRow     `json:"items"`
+	Total    int           `json:"total"`
+	Statuses []statusCount `json:"statuses"`
+}
+
+// factListCap bounds the newest-first window the fact listing reads.
+//
+// It is a window rather than a page over the whole ledger, and the number says
+// so: the ledger's Facts query answers about a subject because that is what
+// analysis asks, and this listing exists for the reader who does not know
+// which subject to ask about yet. Once he does, the entity's own page holds
+// every revision about it.
+const factListCap = 200
+
+// handleRealityFacts serves what Babel has most recently concluded, whatever
+// it is about.
+//
+// This is the answer to "what does Babel believe" for a reader who has not
+// picked a subject, and it is the one listing on this surface that is
+// deliberately not exhaustive. A fact's whole context — its subject's other
+// facts, its revision chain — is one click away on the two pages this one
+// leads to.
+func (s *Server) handleRealityFacts(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Reality != nil, "the reality ledger") {
+		return
+	}
+	pg, ok := s.requirePage(w, r)
+	if !ok {
+		return
+	}
+	facts, err := s.opts.Reality.RecentFacts(r.Context(), factListCap)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	status := r.URL.Query().Get("status")
+	counts := map[reality.FactStatus]int{}
+	shown := make([]reality.Fact, 0, len(facts))
+	for _, fact := range facts {
+		counts[fact.Status]++
+		if status != "" && string(fact.Status) != status {
+			continue
+		}
+		shown = append(shown, fact)
+	}
+	result := factsResult{Items: []factRow{}, Total: len(shown)}
+	for _, known := range reality.FactStatuses() {
+		if count := counts[known]; count > 0 {
+			result.Statuses = append(result.Statuses, statusCount{Status: string(known), Count: count})
+		}
+	}
+	start, end := pg.window(len(shown))
+	// The subject's name is resolved once per distinct subject: a listing
+	// of twenty revisions about one entity is one read, not twenty.
+	subjects := map[string]entityRef{}
+	for _, fact := range shown[start:end] {
+		ref, known := subjects[fact.SubjectID]
+		if !known {
+			ref = s.entityRef(r.Context(), fact.SubjectID)
+			subjects[fact.SubjectID] = ref
+		}
+		result.Items = append(result.Items, factRow{Fact: viewFact(fact), Subject: ref})
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+// factStatusEventView is one entry in a fact's append-only status history.
+type factStatusEventView struct {
+	ID         string `json:"id"`
+	Sequence   int    `json:"sequence"`
+	Status     string `json:"status"`
+	RecordedAt string `json:"recorded_at"`
+	Note       string `json:"note,omitempty"`
+}
+
+// disputeView is one recorded contradiction a fact is party to.
+type disputeView struct {
+	ID        string   `json:"id"`
+	SubjectID string   `json:"subject_id"`
+	Predicate string   `json:"predicate"`
+	CreatedAt string   `json:"created_at"`
+	State     string   `json:"state"`
+	FactIDs   []string `json:"fact_ids"`
+	Reason    string   `json:"reason,omitempty"`
+}
+
+// factDetail is one revision read whole, with the chain it sits in.
+//
+// The chain is the point of the page. §4.8 has no update path — a correction
+// is a new revision whose ancestor keeps its bytes — and that only means
+// anything if a reader can see both ends of it: what this revision replaced,
+// and what replaced it. The status history beside it is what proves expiry
+// marked rather than deleted, and the disputes are what proves a contradiction
+// was recorded rather than resolved by whoever wrote last.
+type factDetail struct {
+	Fact         factView              `json:"fact"`
+	Subject      entityRef             `json:"subject"`
+	Object       *entityRef            `json:"object,omitempty"`
+	Supersedes   *factView             `json:"supersedes,omitempty"`
+	SupersededBy *factView             `json:"superseded_by,omitempty"`
+	History      []factStatusEventView `json:"history"`
+	Disputes     []disputeView         `json:"disputes"`
+}
+
+func (s *Server) handleRealityFact(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Reality != nil, "the reality ledger") {
+		return
+	}
+	id, ok := s.requireID(w, r, "id")
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	fact, err := s.opts.Reality.Fact(ctx, id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	history, err := s.opts.Reality.FactStatusHistory(ctx, id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	disputes, err := s.opts.Reality.DisputesFor(ctx, id)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	detail := factDetail{
+		Fact:     viewFact(fact),
+		Subject:  s.entityRef(ctx, fact.SubjectID),
+		History:  make([]factStatusEventView, 0, len(history)),
+		Disputes: make([]disputeView, 0, len(disputes)),
+	}
+	if fact.Value.ObjectID != "" {
+		object := s.entityRef(ctx, fact.Value.ObjectID)
+		detail.Object = &object
+	}
+	if fact.Supersedes != "" {
+		prior, err := s.opts.Reality.Fact(ctx, fact.Supersedes)
+		if err != nil {
+			s.serviceError(w, r, err)
+			return
+		}
+		view := viewFact(prior)
+		detail.Supersedes = &view
+	}
+	// The forward half of the chain is found rather than stored: a fact
+	// names what it replaced, and the ledger's unique index on that column
+	// is what makes the successor at most one. Reading the subject's facts
+	// is how it is located, which also means a successor asserted about an
+	// identity since merged into this subject is still found.
+	siblings, err := s.opts.Reality.Facts(ctx, reality.FactQuery{SubjectID: fact.SubjectID})
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	for _, sibling := range siblings {
+		if sibling.Supersedes == fact.ID {
+			view := viewFact(sibling)
+			detail.SupersededBy = &view
+			break
+		}
+	}
+	for _, event := range history {
+		detail.History = append(detail.History, factStatusEventView{
+			ID:         event.ID,
+			Sequence:   event.Sequence,
+			Status:     string(event.Status),
+			RecordedAt: timeText(event.RecordedAt),
+			Note:       event.Payload.Note,
+		})
+	}
+	for _, dispute := range disputes {
+		detail.Disputes = append(detail.Disputes, disputeView{
+			ID:        dispute.ID,
+			SubjectID: dispute.SubjectID,
+			Predicate: string(dispute.Predicate),
+			CreatedAt: timeText(dispute.CreatedAt),
+			State:     string(dispute.State),
+			FactIDs:   dispute.FactIDs,
+			Reason:    dispute.Payload.Reason,
+		})
+	}
+	s.writeJSON(w, http.StatusOK, detail)
 }
 
 type answerRequest struct {

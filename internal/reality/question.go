@@ -43,6 +43,17 @@ const (
 	QuestionSuperseded QuestionState = "superseded"
 )
 
+// QuestionStates lists the states in the order §4.8 walks them, so a surface
+// grouping questions by state does not have to keep a private copy of the
+// vocabulary — the same reason EntityKinds and Predicates are exported.
+func QuestionStates() []QuestionState {
+	return []QuestionState{
+		QuestionOpen, QuestionAnsweredUninterpreted, QuestionInterpreting,
+		QuestionPlanReady, QuestionAnswered, QuestionSnoozed,
+		QuestionDeclined, QuestionObsolete, QuestionSuperseded,
+	}
+}
+
 func (s QuestionState) valid() bool {
 	_, ok := questionTransitions[s]
 	return ok

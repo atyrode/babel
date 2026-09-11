@@ -2124,6 +2124,30 @@ const entities: Record<string, EntityDetail> = {
       { id: "rel_002", kind: "contains", state: "asserted", created_at: "2026-08-01T09:00:00Z", from: { id: "ent_longname", display_name: LONG_ENTITY_NAME }, to: { id: "ent_atlas", display_name: "Atlas import pipeline" } },
     ],
     facts: entityFacts.ent_atlas,
+    // A mis-resolution and its reversal, which is the case §4.8's
+    // append-only identity history exists for: both the merge and the undo
+    // are still here, and the page has to show them in order.
+    resolutions: [
+      {
+        id: "rsl_001",
+        kind: "merge",
+        actor: "operator",
+        recorded_at: "2026-05-02T09:00:00Z",
+        sources: [{ id: "ent_importer", kind: "project", display_name: "the importer" }],
+        results: [{ id: "ent_atlas", kind: "project", display_name: "Atlas import pipeline" }],
+        reason: "Chat used both names for what looked like one project.",
+      },
+      {
+        id: "rsl_002",
+        kind: "undo",
+        actor: "operator",
+        recorded_at: "2026-06-10T09:00:00Z",
+        reverses_id: "rsl_001",
+        sources: [{ id: "ent_importer", kind: "project", display_name: "the importer" }],
+        results: [{ id: "ent_importer", kind: "project", display_name: "the importer" }],
+        reason: "They are two projects after all; the merge was mine to undo.",
+      },
+    ],
   },
   ent_longname: {
     entity: {
@@ -2142,6 +2166,7 @@ const entities: Record<string, EntityDetail> = {
       { id: "rel_002", kind: "contains", state: "asserted", created_at: "2026-08-01T09:00:00Z", from: { id: "ent_longname", display_name: LONG_ENTITY_NAME }, to: { id: "ent_atlas", display_name: "Atlas import pipeline" } },
     ],
     facts: entityFacts.ent_longname,
+    resolutions: [],
   },
   ent_host: {
     entity: {
@@ -2160,6 +2185,7 @@ const entities: Record<string, EntityDetail> = {
       { id: "rel_001", kind: "deployed-on", state: "asserted", created_at: "2026-05-01T09:00:00Z", from: { id: "ent_atlas", display_name: "Atlas import pipeline" }, to: { id: "ent_host", display_name: "demo-workstation" } },
     ],
     facts: entityFacts.ent_host,
+    resolutions: [],
   },
 };
 
@@ -2292,6 +2318,215 @@ const questions: QuestionSummary[] = empty ? [] : [
 ];
 
 let answerCounter = 10;
+
+// The questions that have left the inbox (SPEC.md §8.4).
+//
+// The inbox above is what the operator still has to move, so a preview built
+// only from it cannot show the case the listing exists for: a question that
+// was answered, or refused, and is still part of the record. These two are
+// that case — one disposed of by an accepted plan, one the operator declined —
+// and they appear only in the listing, never in the inbox, exactly as the real
+// ledger behaves.
+const settledQuestions: QuestionSummary[] = empty ? [] : [
+  {
+    id: "qst_atlas-lifecycle",
+    kind: "acquire-context",
+    class: "blocking",
+    state: "answered",
+    sensitivity: "routine",
+    created_at: "2026-06-01T09:00:00Z",
+    prompt: "Is the Atlas import pipeline still being worked on?",
+    why_asked: "Three hypotheses about it could not be scoped without knowing.",
+    target_entity_ids: ["ent_atlas"],
+    target_predicates: ["lifecycle"],
+    score: 0,
+    terms: {},
+    answers: [
+      {
+        id: "ans_atlas-1",
+        question_id: "qst_atlas-lifecycle",
+        sequence: 1,
+        author: "operator",
+        at: "2026-06-02T10:00:00Z",
+        recorded_at: "2026-06-02T10:00:00Z",
+        outcome: "answered",
+        text: "It went quiet in January and came back in June.",
+      },
+    ],
+    plans: [
+      {
+        id: "pln_atlas-lifecycle",
+        question_id: "qst_atlas-lifecycle",
+        answer_id: "ans_atlas-1",
+        interpreter_version: 1,
+        created_at: "2026-06-02T10:05:00Z",
+        state: "accepted",
+        summary: "Supersede the dormant lifecycle fact with an active one.",
+        actions: [
+          {
+            id: "act_atlas-1",
+            position: 1,
+            kind: "supersede-fact",
+            state: "applied",
+            result_id: "fct_lifecycle-2",
+            applied_at: "2026-06-02T10:06:00Z",
+            payload: {
+              rationale: "The operator says work resumed in June.",
+              fact: { subject_id: "ent_atlas", predicate: "lifecycle", value: { kind: "enum", enum: "active" } },
+            },
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: "qst_declined-vendor",
+    kind: "resolve-entity",
+    class: "curiosity",
+    state: "declined",
+    sensitivity: "routine",
+    created_at: "2026-07-14T09:00:00Z",
+    prompt: "Which vendor account owns the preview environment?",
+    why_asked: "A billing fact would sharpen two cost hypotheses.",
+    target_entity_ids: ["ent_host"],
+    score: 0,
+    terms: {},
+    answers: [
+      {
+        id: "ans_declined-1",
+        question_id: "qst_declined-vendor",
+        sequence: 1,
+        author: "operator",
+        at: "2026-07-14T09:30:00Z",
+        recorded_at: "2026-07-14T09:30:00Z",
+        outcome: "declined",
+        text: "Not something I want Babel tracking. Stop asking.",
+      },
+    ],
+    plans: [],
+  },
+];
+
+// asked is every question the ledger holds, newest first, which is what the
+// listing route answers. The inbox is a subset of it and stays a subset: a
+// question answered through the mock's own answer route leaves the inbox's
+// pending states and keeps its row here.
+function asked(): QuestionSummary[] {
+  return [...questions, ...settledQuestions].sort((left, right) =>
+    right.created_at.localeCompare(left.created_at));
+}
+
+// PENDING_STATES mirrors internal/reality's inbox membership: the two states
+// in which only the operator can move a question.
+const PENDING_STATES: Record<string, true> = { open: true, "plan-ready": true };
+
+function questionRow(question: QuestionSummary) {
+  return {
+    id: question.id,
+    kind: question.kind,
+    class: question.class,
+    state: question.state,
+    sensitivity: question.sensitivity,
+    created_at: question.created_at,
+    prompt: question.prompt,
+    why_asked: question.why_asked,
+    target_entity_ids: question.target_entity_ids,
+    answers: question.answers.length,
+    plans: question.plans.length,
+    pending: PENDING_STATES[question.state] ?? false,
+  };
+}
+
+// The ledger's own state and kind order, mirrored from internal/reality so the
+// preview's filter rows read in the lifecycle's order rather than in whatever
+// order the fixtures happen to be written.
+const QUESTION_STATES = [
+  "open", "answered-uninterpreted", "interpreting", "plan-ready",
+  "answered", "snoozed", "declined", "obsolete", "superseded",
+];
+const ENTITY_KINDS = [
+  "environment", "machine", "organization", "project",
+  "provider", "repository", "service", "subject",
+];
+const FACT_STATUSES = ["proposed", "active", "superseded", "disputed", "stale"];
+
+// ledgerFacts is every revision the preview holds, newest first — the window
+// the fact listing serves.
+function ledgerFacts(): FactView[] {
+  return Object.values(entityFacts)
+    .flat()
+    .sort((left, right) => right.recorded_at.localeCompare(left.recorded_at));
+}
+
+function subjectRef(id: string) {
+  const detail = entities[id];
+  return detail
+    ? { id, kind: detail.entity.kind, display_name: detail.entity.display_name }
+    : { id };
+}
+
+// The dispute the disputed policy fact is party to. §4.8 records a
+// contradiction rather than letting the newer write win, and the fact page has
+// to be able to show one.
+const factDisputes: Record<string, unknown[]> = {
+  "fct_policy-1": [
+    {
+      id: "dsp_policy-1",
+      subject_id: "ent_atlas",
+      predicate: "analysis-policy",
+      created_at: "2026-08-29T07:45:00Z",
+      state: "open",
+      fact_ids: ["fct_policy-1"],
+      reason: "A conversation in August contradicts the imported learn-only policy.",
+    },
+  ],
+};
+
+// A revision's status history. Expiry and supersession are appended events
+// rather than edits, so the preview writes them out rather than deriving one
+// event from the current status: a single-entry history would let a page that
+// never rendered the chain pass.
+const factHistory: Record<string, Array<{ status: string; recorded_at: string; note?: string }>> = {
+  "fct_lifecycle-1": [
+    { status: "active", recorded_at: "2026-01-05T10:00:00Z" },
+    {
+      status: "superseded",
+      recorded_at: "2026-06-02T10:06:00Z",
+      note: "Replaced by fct_lifecycle-2 after the operator said work resumed.",
+    },
+  ],
+  "fct_policy-1": [
+    { status: "active", recorded_at: "2026-08-01T09:00:00Z" },
+    { status: "disputed", recorded_at: "2026-08-29T07:45:00Z", note: "Contradicted; nobody has decided." },
+  ],
+  "fct_host-1": [
+    { status: "active", recorded_at: "2026-05-01T09:00:00Z" },
+    { status: "stale", recorded_at: "2026-08-15T00:00:01Z", note: "Past its freshness horizon; marked, not deleted." },
+  ],
+};
+
+function factDetail(fact: FactView) {
+  const events = factHistory[fact.id] ?? [{ status: fact.status, recorded_at: fact.recorded_at }];
+  const successor = ledgerFacts().find((candidate) => candidate.supersedes === fact.id);
+  const ancestor = fact.supersedes
+    ? ledgerFacts().find((candidate) => candidate.id === fact.supersedes)
+    : undefined;
+  return {
+    fact,
+    subject: subjectRef(fact.subject_id),
+    ...(fact.value.object_id ? { object: subjectRef(fact.value.object_id) } : {}),
+    ...(ancestor ? { supersedes: ancestor } : {}),
+    ...(successor ? { superseded_by: successor } : {}),
+    history: events.map((event, index) => ({
+      id: `${fact.id}-status-${index + 1}`,
+      sequence: index + 1,
+      status: event.status,
+      recorded_at: event.recorded_at,
+      ...(event.note ? { note: event.note } : {}),
+    })),
+    disputes: factDisputes[fact.id] ?? [],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Search
@@ -2977,6 +3212,109 @@ export async function phasebResponse(request: Request, url: URL): Promise<Respon
     const ranked = [...questions].sort((left, right) => right.score - left.score);
     const { slice, total } = paged(url, ranked);
     return json({ items: slice, total });
+  }
+
+  if (method === "GET" && path === "/api/reality/questions") {
+    const all = asked();
+    const wanted = url.searchParams.get("state") ?? "";
+    const rows = all.filter((question) => !wanted || question.state === wanted).map(questionRow);
+    const { slice, total } = paged(url, rows);
+    // The census counts every state in the ledger rather than the states on
+    // the page, so a filtered view can still offer the others.
+    const states = QUESTION_STATES.map((state) => ({
+      state,
+      count: all.filter((question) => question.state === state).length,
+    })).filter((entry) => entry.count > 0);
+    return json({ items: slice, total, states });
+  }
+
+  if (method === "GET" && path === "/api/reality/question") {
+    const id = url.searchParams.get("id") ?? "";
+    const question = asked().find((candidate) => candidate.id === id);
+    if (!question) return json({ error: `synthetic question not found: ${id}` }, 404);
+    const facts = ledgerFacts();
+    return json({
+      question: questionRow(question),
+      targets: question.target_entity_ids.map(subjectRef),
+      predicates: question.target_predicates ?? [],
+      material_evidence: [`observation-${question.id}`],
+      answers: question.answers,
+      plans: question.plans,
+      history: [
+        { id: `${id}-evt-1`, sequence: 1, state: "open", actor: "asker", recorded_at: question.created_at },
+        ...(question.state === "open"
+          ? []
+          : [{
+            id: `${id}-evt-2`,
+            sequence: 2,
+            state: question.state,
+            actor: "operator",
+            recorded_at: question.answers[0]?.recorded_at ?? question.created_at,
+            note: "Recorded through the answer route.",
+          }]),
+      ],
+      // The facts a question names are why it was asked. Atlas's lifecycle
+      // question points at the revision it went on to supersede, which is the
+      // case worth previewing: the page has to lead from a question to the
+      // fact it changed.
+      existing_facts: question.target_predicates?.includes("lifecycle")
+        ? facts.filter((fact) => fact.id === "fct_lifecycle-1")
+        : [],
+      conflict_facts: question.target_predicates?.includes("analysis-policy")
+        ? facts.filter((fact) => fact.id === "fct_policy-1")
+        : [],
+    });
+  }
+
+  if (method === "GET" && path === "/api/reality/entities") {
+    const wanted = url.searchParams.get("kind") ?? "";
+    const all = Object.values(entities);
+    const rows = all
+      .filter((detail) => !wanted || detail.entity.kind === wanted)
+      .map((detail) => {
+        const facts = detail.facts;
+        const latest = facts
+          .map((fact) => fact.recorded_at)
+          .sort((left, right) => right.localeCompare(left))[0];
+        return {
+          id: detail.entity.id,
+          kind: detail.entity.kind,
+          role: detail.entity.role,
+          canonical_id: detail.entity.canonical_id,
+          display_name: detail.entity.display_name,
+          created_at: detail.entity.created_at,
+          aliases: detail.aliases.length,
+          facts: facts.length,
+          active_facts: facts.filter((fact) => fact.status === "active").length,
+          ...(latest ? { latest_fact: latest } : {}),
+        };
+      });
+    const { slice, total } = paged(url, rows);
+    const kinds = ENTITY_KINDS.map((kind) => ({
+      kind,
+      count: all.filter((detail) => detail.entity.kind === kind).length,
+    })).filter((entry) => entry.count > 0);
+    return json({ items: slice, total, kinds });
+  }
+
+  if (method === "GET" && path === "/api/reality/facts") {
+    const all = ledgerFacts();
+    const wanted = url.searchParams.get("status") ?? "";
+    const rows = all
+      .filter((fact) => !wanted || fact.status === wanted)
+      .map((fact) => ({ fact, subject: subjectRef(fact.subject_id) }));
+    const { slice, total } = paged(url, rows);
+    const statuses = FACT_STATUSES.map((status) => ({
+      status,
+      count: all.filter((fact) => fact.status === status).length,
+    })).filter((entry) => entry.count > 0);
+    return json({ items: slice, total, statuses });
+  }
+
+  if (method === "GET" && path === "/api/reality/fact") {
+    const id = url.searchParams.get("id") ?? "";
+    const fact = ledgerFacts().find((candidate) => candidate.id === id);
+    return fact ? json(factDetail(fact)) : json({ error: `synthetic fact not found: ${id}` }, 404);
   }
 
   if (method === "GET" && path === "/api/reality/entity") {

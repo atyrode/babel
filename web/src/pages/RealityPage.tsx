@@ -1,50 +1,24 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  acceptPlan,
-  answerQuestion,
-  getRealityInbox,
-  type PlanAcceptResult,
-  type PlanView,
-  type QuestionSummary,
-} from "../api";
+import { getRealityInbox, type QuestionSummary } from "../api";
 import { errorMessage, formatTime } from "../format";
-import { Badge, Quoted, type Tone } from "../analysis";
+import { Badge, Quoted } from "../analysis";
+import {
+  AnswerForm,
+  PlanCard,
+  answerableStates,
+  classTone,
+  questionStateTone,
+} from "../reality";
 
-// The §4.8 action kinds that mutate reality and therefore apply only on the
-// operator's explicit plan acceptance. Everything else is a non-authoritative
-// descendant retained immediately.
-const AUTHORITATIVE_KINDS: Record<string, true> = {
-  "assert-fact": true,
-  "supersede-fact": true,
-  "dispute-fact": true,
-  "merge-entities": true,
-  "split-entity": true,
-  "change-focus-policy": true,
-};
-
-function classTone(value: string): Tone {
-  if (value === "blocking") return "amber";
-  if (value === "curiosity") return "cyan";
-  return "neutral";
-}
-
-function questionStateTone(state: string): Tone {
-  switch (state) {
-    case "open":
-      return "violet";
-    case "answered-uninterpreted":
-    case "interpreting":
-      return "amber";
-    case "plan-ready":
-      return "cyan";
-    case "answered":
-      return "green";
-    default:
-      return "neutral";
-  }
-}
-
+// The §4.8 question inbox: what the ledger is asking that only the operator can
+// answer, ranked by §4.8's five factors.
+//
+// It is deliberately not the list of every question. A snoozed question was
+// deferred, a declined one was refused, and an answered one is done; putting
+// them here would make the inbox the list of everything rather than the list of
+// what to do. They are read on Questions instead, which is the sibling page
+// §8.4 required: a record that leaves this page must still be reachable.
 function RealityPage() {
   const [items, setItems] = useState<QuestionSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,16 +47,16 @@ function RealityPage() {
       <div className="page-heading">
         <div>
           <p className="eyebrow">Reality Ledger</p>
-          <h1>Reality</h1>
+          <h1>Questions</h1>
           <p className="subtitle">
-            Prioritized questions about the operator's world. Answers are kept verbatim;
+            What Babel needs you to tell it, most useful first. Answers are kept verbatim;
             interpreted plans change nothing until explicitly accepted.
           </p>
         </div>
         {items && (
           <div className="heading-meta">
             <span className="count-label">
-              {items.length} {items.length === 1 ? "question" : "questions"}
+              {items.length} waiting on you
             </span>
           </div>
         )}
@@ -103,10 +77,12 @@ function RealityPage() {
       {items && items.length === 0 && (
         <div className="state-card empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
-          <strong>No open questions</strong>
+          <strong>Nothing is waiting on you</strong>
           <span>
             Analysis has nothing it needs to ask. Questions appear here when exploration hits
-            missing, stale, or conflicting knowledge about your systems.
+            missing, stale, or conflicting knowledge about your systems — and every question
+            ever asked, answered or not, stays readable under{" "}
+            <Link to="/reality/questions">Asked</Link>.
           </span>
         </div>
       )}
@@ -137,7 +113,7 @@ function QuestionCard({
   onChanged: (message: string) => void;
 }) {
   const created = formatTime(question.created_at);
-  const answerable = ["open", "snoozed"].includes(question.state);
+  const answerable = answerableStates.includes(question.state);
   const terms = Object.entries(question.terms).filter(([, value]) => value !== 0);
 
   return (
@@ -163,6 +139,12 @@ function QuestionCard({
         {created && (
           <time dateTime={question.created_at} title={created.absolute}>{created.relative}</time>
         )}
+        {/* The way to this question's own page, where its whole history, the
+            facts that prompted it and every answer it has ever had are read.
+            The card is the inbox's working view; the page is the record. */}
+        <Link className="mono event-index" to={`/reality/questions/${encodeURIComponent(question.id)}`}>
+          {question.id}
+        </Link>
       </div>
 
       <Quoted label="Question — generated from analysis, untrusted" text={question.prompt} />
@@ -209,194 +191,8 @@ function QuestionCard({
         <PlanCard key={plan.id} plan={plan} onChanged={onChanged} />
       ))}
 
-      {answerable && <AnswerForm question={question} onChanged={onChanged} />}
+      {answerable && <AnswerForm questionId={question.id} onChanged={onChanged} />}
     </article>
-  );
-}
-
-function AnswerForm({
-  question,
-  onChanged,
-}: {
-  question: QuestionSummary;
-  onChanged: (message: string) => void;
-}) {
-  const [text, setText] = useState("");
-  const [outcome, setOutcome] = useState("answered");
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!text.trim() && outcome === "answered") return;
-    setSubmitting(true);
-    setSubmitError(null);
-    try {
-      const result = await answerQuestion(question.id, text, outcome);
-      onChanged(`Answer recorded. The question is now ${result.state}.`);
-      setText("");
-    } catch (reason) {
-      setSubmitError(errorMessage(reason));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <form className="answer-form" onSubmit={submit}>
-      <label>
-        Your answer
-        <textarea
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          rows={3}
-          placeholder="Answered text is retained verbatim and attributed to you."
-        />
-      </label>
-      <div className="answer-actions">
-        <label className="outcome-select">
-          Outcome
-          <select value={outcome} onChange={(event) => setOutcome(event.target.value)}>
-            <option value="answered">answered — send to the interpreter</option>
-            <option value="unknown">unknown — I don't know</option>
-            <option value="declined">declined — stop asking this</option>
-          </select>
-        </label>
-        <button
-          type="submit"
-          className="primary-button"
-          disabled={submitting || (outcome === "answered" && !text.trim())}
-        >
-          {submitting && <span className="spinner small" />}
-          {submitting ? "Recording…" : "Record answer"}
-        </button>
-      </div>
-      {submitError && <p className="inline-error" role="alert">{submitError}</p>}
-    </form>
-  );
-}
-
-function PlanCard({
-  plan,
-  onChanged,
-}: {
-  plan: PlanView;
-  onChanged: (message: string) => void;
-}) {
-  const [accepting, setAccepting] = useState(false);
-  const [acceptError, setAcceptError] = useState<string | null>(null);
-  const [acceptResult, setAcceptResult] = useState<PlanAcceptResult | null>(null);
-
-  const mutating = plan.actions.filter((action) => AUTHORITATIVE_KINDS[action.kind]);
-  const retained = plan.actions.filter((action) => !AUTHORITATIVE_KINDS[action.kind]);
-  const proposed = plan.state === "proposed";
-
-  async function accept() {
-    const summary = mutating.map((action) => action.kind).join(", ") || "no mutations";
-    const prompt =
-      `Accept this plan?\n\nThis applies ${mutating.length} reality ` +
-      `${mutating.length === 1 ? "mutation" : "mutations"} (${summary}) atomically with the `
-      + "question's disposition. Acceptance is recorded and cannot be un-recorded.";
-    if (!window.confirm(prompt)) return;
-    setAccepting(true);
-    setAcceptError(null);
-    try {
-      const result = await acceptPlan(plan.id);
-      setAcceptResult(result);
-      onChanged(`Plan accepted. Applied ${result.applied.length} changes; question is now ${result.state}.`);
-    } catch (reason) {
-      setAcceptError(errorMessage(reason));
-    } finally {
-      setAccepting(false);
-    }
-  }
-
-  return (
-    <div className={proposed ? "plan-card proposed" : "plan-card"}>
-      <div className="question-heading">
-        <Badge
-          label={proposed ? "proposed — nothing applied yet" : plan.state}
-          tone={proposed ? "amber" : plan.state === "accepted" ? "green" : plan.state === "rejected" ? "red" : "neutral"}
-        />
-        <span className="kind-label">interpreter v{plan.interpreter_version}</span>
-        <span className="mono event-index">{plan.id}</span>
-      </div>
-      <Quoted label="Interpreter summary — model text, untrusted" text={plan.summary} />
-
-      <ol className="action-list">
-        {plan.actions.map((action) => {
-          const authoritative = AUTHORITATIVE_KINDS[action.kind] ?? false;
-          const applied = formatTime(action.applied_at);
-          const { rationale, ...detail } = action.payload;
-          const options = Object.entries(detail).filter(([, value]) => value != null);
-          return (
-            <li className="action-entry" key={action.id}>
-              <div className="action-heading">
-                <Badge label={action.kind} tone={authoritative ? "amber" : "neutral"} />
-                {action.state === "applied" ? (
-                  <Badge label="applied" tone="green" />
-                ) : authoritative ? (
-                  <span className="action-state amber-text">applies only on acceptance</span>
-                ) : (
-                  <span className="action-state muted">
-                    {action.state === "retained" ? "retained immediately" : action.state}
-                  </span>
-                )}
-                {applied && action.state === "applied" && (
-                  <span className="secondary" title={applied.absolute}>{applied.relative}</span>
-                )}
-                {action.result_id && <span className="mono secondary">{action.result_id}</span>}
-              </div>
-              <p className="action-rationale untrusted-inline">{rationale}</p>
-              {options.length > 0 && (
-                <details className="json-disclosure">
-                  <summary>Proposed change</summary>
-                  <pre>{JSON.stringify(Object.fromEntries(options), null, 2)}</pre>
-                </details>
-              )}
-            </li>
-          );
-        })}
-      </ol>
-
-      {proposed && !acceptResult && (
-        <div className="accept-panel">
-          <div>
-            <strong>Acceptance is one explicit act.</strong>
-            <p className="muted">
-              {mutating.length > 0
-                ? `${mutating.length} ${mutating.length === 1 ? "mutation applies" : "mutations apply"} atomically on acceptance; `
-                : "This plan proposes no reality mutations; "}
-              {retained.length > 0
-                ? `${retained.length} non-authoritative ${retained.length === 1 ? "descendant is" : "descendants are"} retained regardless.`
-                : "and it retains no descendants."}
-            </p>
-          </div>
-          <button type="button" className="primary-button" onClick={accept} disabled={accepting}>
-            {accepting && <span className="spinner small" />}
-            {accepting ? "Applying…" : "Accept plan"}
-          </button>
-        </div>
-      )}
-      {acceptError && <p className="inline-error" role="alert">Acceptance failed: {acceptError}</p>}
-      {acceptResult && (
-        <div className="result-panel success-panel" role="status">
-          <strong>Plan accepted and applied atomically</strong>
-          <dl>
-            {acceptResult.applied.map((ref) => (
-              <div key={`${ref.kind}-${ref.id}`}>
-                <dt>{ref.kind}</dt>
-                <dd className="mono">{ref.id}</dd>
-              </div>
-            ))}
-            <div>
-              <dt>Question</dt>
-              <dd>{acceptResult.state}</dd>
-            </div>
-          </dl>
-        </div>
-      )}
-    </div>
   );
 }
 

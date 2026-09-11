@@ -649,6 +649,13 @@ export interface ProposalRow extends FleetMark {
   impact: string;
   classification: string;
   review_status?: ReviewStatus;
+  // Set when a triage pass has left advice about this proposal, so a reader
+  // can see which rows Babel has already read. Presence only: the rank is
+  // not served to a listing, because a queue that sorted itself by Babel's
+  // suggested reading order would have done the operator's triage instead of
+  // offering to help with it. Absent on a row from another host, whose
+  // advice that host holds.
+  advised?: boolean;
 }
 
 export interface ProposalsResponse extends SyncNotice {
@@ -882,8 +889,11 @@ export interface RelationshipView {
   kind: string;
   state: string;
   created_at: string;
-  from: { id: string; display_name: string };
-  to: { id: string; display_name: string };
+  // Both ends are named as well as identified, so an edge reads as prose.
+  // EntityRef is declared with the ledger's reading surfaces at the end of
+  // this file, where the rest of the entity vocabulary lives.
+  from: EntityRef;
+  to: EntityRef;
   note?: string;
 }
 
@@ -904,7 +914,10 @@ export interface FactView {
   observed_at: string;
   recorded_at: string;
   expires_at?: string;
-  authority: { kind: string; id: string };
+  // `at` is when the authority says it observed what it is asserting, which
+  // is not when the row was written. It is optional because the focus
+  // surface's own fixtures predate it being rendered anywhere.
+  authority: { kind: string; id: string; at?: string };
   confidence: Grading;
   sensitivity: string;
   status: string; // "proposed" | "active" | "superseded" | "disputed" | "stale"
@@ -917,6 +930,9 @@ export interface EntityDetail {
   aliases: AliasView[];
   relationships: RelationshipView[];
   facts: FactView[];
+  // The merges and splits this identity went through. §4.8 keeps them
+  // reversible, which only means something if the operator can see them.
+  resolutions: ResolutionView[];
 }
 
 export interface AnswerResult {
@@ -2075,4 +2091,194 @@ export function supersedeFocusPolicy(
   note: string,
 ): Promise<FocusWriteResult> {
   return postJSON<FocusWriteResult>("/api/reality/focus/supersede", { priorFactId, policy, note });
+}
+// ---------------------------------------------------------------------------
+// The Reality Ledger's reading surfaces (SPEC.md §8.4).
+//
+// §8.4 requires every stored thing to be reachable by moving through the
+// navigation rather than by typing a URL the operator already knew. The inbox
+// and the single entity read above were not enough for that on their own: the
+// inbox is only what the operator still has to move, and an entity page needs
+// an identifier from somewhere. These are the listings and records that make
+// the rest of the ledger arrivable — every question it has asked, the subjects
+// it knows, and one fact with the revision chain it sits in.
+//
+// Nothing here writes. The two decisions a question admits already have routes
+// — answerQuestion and acceptPlan above — and §8.4's "actionable" clause is
+// satisfied by offering those where the record is read, not by adding a third.
+// ---------------------------------------------------------------------------
+
+// QuestionRow carries no score, unlike a QuestionSummary from the inbox. A
+// score is the inbox's ranking of what to do next, and inventing one for a
+// question the operator answered last month would be a made-up number beside
+// real ones.
+export interface QuestionRow {
+  id: string;
+  kind: string;
+  class: string;
+  state: string;
+  sensitivity: string;
+  created_at: string;
+  prompt: string;
+  why_asked: string;
+  target_entity_ids: string[];
+  answers: number;
+  plans: number;
+  // pending is the ledger's own judgement that this question is the
+  // operator's to move, which is what puts it in the ranked inbox.
+  pending: boolean;
+}
+
+export interface StateCount {
+  state: string;
+  count: number;
+}
+
+export interface QuestionsResponse {
+  items: QuestionRow[];
+  total: number;
+  // states counts the whole ledger rather than the filtered page, so a page
+  // showing one state can still say how many are in another.
+  states: StateCount[] | null;
+}
+
+export interface EntityRef {
+  id: string;
+  kind?: string;
+  display_name?: string;
+}
+
+export interface QuestionEventView {
+  id: string;
+  sequence: number;
+  state: string;
+  actor: string;
+  recorded_at: string;
+  note?: string;
+}
+
+export interface QuestionDetail {
+  question: QuestionRow;
+  targets: EntityRef[];
+  predicates: string[];
+  material_evidence: string[];
+  answers: AnswerView[];
+  plans: PlanView[];
+  history: QuestionEventView[];
+  existing_facts: FactView[];
+  conflict_facts: FactView[];
+}
+
+export interface EntityRow {
+  id: string;
+  kind: string;
+  role: string;
+  canonical_id: string;
+  display_name: string;
+  created_at: string;
+  aliases: number;
+  facts: number;
+  active_facts: number;
+  latest_fact?: string;
+}
+
+export interface KindCount {
+  kind: string;
+  count: number;
+}
+
+export interface EntitiesResponse {
+  items: EntityRow[];
+  total: number;
+  kinds: KindCount[] | null;
+}
+
+// ResolutionView is one merge, split, or reversal in an identity's history —
+// §8.2's "alias merge/split history", which the ledger stored and no page
+// showed.
+export interface ResolutionView {
+  id: string;
+  kind: string;
+  actor: string;
+  recorded_at: string;
+  reverses_id?: string;
+  sources: EntityRef[];
+  results: EntityRef[];
+  reason?: string;
+}
+
+export interface FactRow {
+  fact: FactView;
+  subject: EntityRef;
+}
+
+export interface StatusCount {
+  status: string;
+  count: number;
+}
+
+export interface FactsResponse {
+  items: FactRow[];
+  total: number;
+  statuses: StatusCount[] | null;
+}
+
+export interface FactStatusEventView {
+  id: string;
+  sequence: number;
+  status: string;
+  recorded_at: string;
+  note?: string;
+}
+
+export interface DisputeView {
+  id: string;
+  subject_id: string;
+  predicate: string;
+  created_at: string;
+  state: string;
+  fact_ids: string[];
+  reason?: string;
+}
+
+// FactDetail is one immutable revision with both ends of its chain. The two
+// neighbours are what make §4.8's append-only rule checkable by a reader:
+// `supersedes` is the ancestor that kept its bytes, `superseded_by` is the
+// correction that replaced it, and either may be absent.
+export interface FactDetail {
+  fact: FactView;
+  subject: EntityRef;
+  object?: EntityRef;
+  supersedes?: FactView;
+  superseded_by?: FactView;
+  history: FactStatusEventView[];
+  disputes: DisputeView[];
+}
+
+export function getRealityQuestions(
+  params: { state?: string; class?: string } = {},
+): Promise<QuestionsResponse> {
+  const values: Record<string, string> = {};
+  if (params.state) values.state = params.state;
+  if (params.class) values.class = params.class;
+  const suffix = Object.keys(values).length > 0 ? `?${query(values)}` : "";
+  return request<QuestionsResponse>(`/api/reality/questions${suffix}`);
+}
+
+export function getRealityQuestion(id: string): Promise<QuestionDetail> {
+  return request<QuestionDetail>(`/api/reality/question?${query({ id })}`);
+}
+
+export function getRealityEntities(kind?: string): Promise<EntitiesResponse> {
+  const suffix = kind ? `?${query({ kind })}` : "";
+  return request<EntitiesResponse>(`/api/reality/entities${suffix}`);
+}
+
+export function getRealityFacts(status?: string): Promise<FactsResponse> {
+  const suffix = status ? `?${query({ status })}` : "";
+  return request<FactsResponse>(`/api/reality/facts${suffix}`);
+}
+
+export function getRealityFact(id: string): Promise<FactDetail> {
+  return request<FactDetail>(`/api/reality/fact?${query({ id })}`);
 }

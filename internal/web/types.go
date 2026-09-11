@@ -211,6 +211,12 @@ type FrontierReader interface {
 	// advice through internal/frontier's narrow triage handle, and a browser
 	// reaches neither that handle nor a disposition.
 	TriageAdvice(context.Context, string) ([]frontier.TriageAdvice, error)
+	// TriageAdvised answers the same question for a whole listing page and
+	// answers only the presence of advice, never its rank. A row that has
+	// been read can say so; a queue cannot reorder itself by what Babel
+	// thought of it, because the number that would let it is not served
+	// here.
+	TriageAdvised(context.Context, []string) (map[string]bool, error)
 	LinksFrom(context.Context, string) ([]frontier.Link, error)
 	LinksTo(context.Context, string) ([]frontier.Link, error)
 	StatusHistory(context.Context, string) ([]frontier.StatusEvent, error)
@@ -311,6 +317,14 @@ type RealityService interface {
 	Aliases(context.Context, string) ([]reality.Alias, error)
 	Relationships(context.Context, string) ([]reality.Relationship, error)
 	Facts(context.Context, reality.FactQuery) ([]reality.Fact, error)
+	Questions(context.Context, reality.QuestionQuery) ([]reality.QuestionListing, error)
+	Plans(context.Context, string) ([]reality.Plan, error)
+	Entities(context.Context, reality.EntityQuery) ([]reality.EntityListing, error)
+	ResolutionHistory(context.Context, string) ([]reality.Resolution, error)
+	RecentFacts(context.Context, int) ([]reality.Fact, error)
+	Fact(context.Context, string) (reality.Fact, error)
+	FactStatusHistory(context.Context, string) ([]reality.FactStatusEvent, error)
+	DisputesFor(context.Context, string) ([]reality.Dispute, error)
 	RecordAnswer(context.Context, reality.AnswerInput) (reality.Answer, error)
 	AcceptPlan(context.Context, reality.AcceptanceInput) (reality.Acceptance, reality.Application, error)
 }

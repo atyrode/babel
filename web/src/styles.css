@@ -1913,6 +1913,17 @@ select:focus {
   font-size: 0.72rem;
 }
 
+/* The listing's mark that a row carries advice. It is a sentence in the
+   page's own voice, not a badge: badges in this table say what the record is
+   and where its review stands, and a reader scanning them should not find
+   Babel's opinion sitting among the facts. Deliberately unobtrusive — the
+   advice itself is a page away, and the mark's whole job is to say it is
+   there. */
+.advice-mark {
+  color: var(--subtle);
+  font-style: italic;
+}
+
 .link-list {
   display: grid;
   gap: 0.55rem;
@@ -4205,3 +4216,87 @@ a.link-target:hover {
   margin: 0;
   font-size: 0.75rem;
 }
+/* One fact read whole: the claim as a sentence, and both ends of the chain
+   it sits in side by side, so "this replaced that, and nothing replaced it"
+   is one glance rather than two paragraphs. */
+
+.fact-claim {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: clamp(1.4rem, 2.4vw, 2rem);
+}
+
+.chain {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 0.7rem;
+  margin-top: 0.75rem;
+}
+
+.chain-link {
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.55rem;
+  background: var(--surface-inset);
+}
+
+/* An absent end is stated rather than left blank, so the border stops
+   claiming there is a record inside it. */
+.chain-link.empty {
+  border-style: dashed;
+  background: transparent;
+}
+
+.chain-link .eyebrow {
+  margin-bottom: 0.4rem;
+}
+
+.dispute-entry {
+  margin-top: 0.7rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid rgba(241, 120, 129, 0.3);
+  border-radius: 0.55rem;
+  background: var(--surface-inset);
+}
+
+/* The Reality section's own navigation. §8.4 asks for depth under one entry
+   rather than a twelfth noun in the primary row, so the ledger's surfaces are
+   reached from a row of their own that is present on every one of them. */
+
+.section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  width: min(1240px, calc(100% - 2.5rem));
+  margin: 0 auto;
+  padding-top: 1.6rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.section-nav a {
+  padding: 0.5rem 0.8rem;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 0.86rem;
+  text-decoration: none;
+}
+
+.section-nav a:hover {
+  color: var(--text);
+}
+
+.section-nav a.active {
+  color: var(--accent-bright);
+  border-bottom-color: var(--accent);
+}
+
+/* The pages below a section nav start closer to it: the row already
+   separates them from the topbar, and a full page's worth of leading below it
+   reads as two unrelated headers. */
+.section-nav + .page {
+  padding-top: 1.8rem;
+}
+
