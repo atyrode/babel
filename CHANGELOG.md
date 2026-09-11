@@ -9,6 +9,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-11
+
 ### Added
 
 - **The archive drains itself, like every other record.** §9.1 requires every
