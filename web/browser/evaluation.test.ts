@@ -299,7 +299,10 @@ test.skipIf(!chrome)("a never-reviewed record is found and is not rendered as un
   // Navigated to, not typed: the inventory's rows are links to the record.
   await openRow("hyp_never-reviewed");
   await page.waitForFunction(() => window.location.hash.includes("hyp_never-reviewed"));
-  await visible("Reception");
+  // The record's own heading, not "Reception": the coverage page this click
+  // left renders that word in its per-role table, so waiting for it can read
+  // the page being navigated away from.
+  await visible("The revision under evaluation");
   const text = await bodyText();
   // The absence is stated as an absence. Three zeroes would read as a record
   // nobody objected to.
