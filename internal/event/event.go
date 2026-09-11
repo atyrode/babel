@@ -96,6 +96,14 @@ const (
 	HarnessOMP    = "omp"
 	HarnessCodex  = "codex"
 	HarnessClaude = "claude"
+	// HarnessBabel is Babel's own analysis log. The records are OMP's own
+	// message objects, because an envelope of Babel's design would assert a
+	// schema over content Babel does not own, so it classifies identically.
+	// It is listed rather than folded into HarnessOMP because provenance is
+	// what decides whether a session may be analysed at all, and a reader
+	// that could not tell Babel's reasoning from the corpus it reasoned over
+	// could not enforce that.
+	HarnessBabel = "babel"
 )
 
 const (
@@ -172,6 +180,8 @@ func classifierFor(harness string) classifier {
 		return classifyCodex
 	case HarnessClaude:
 		return classifyClaude
+	case HarnessBabel:
+		return classifyOMP
 	default:
 		return nil
 	}

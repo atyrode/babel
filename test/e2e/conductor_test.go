@@ -29,6 +29,7 @@ type conductorConfigDoc struct {
 	ConsolidateRoots   int     `json:"consolidate_roots"`
 	BabelImprovesBabel bool    `json:"babel_improves_babel"`
 	BabelTunesItself   bool    `json:"babel_tunes_itself"`
+	BabelTriagesQueue  bool    `json:"babel_triages_the_queue"`
 	ConfiguredAt       string  `json:"configured_at"`
 	Path               string  `json:"path"`
 }
