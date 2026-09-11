@@ -630,57 +630,15 @@ tbody tr:last-child td {
   margin-top: 0;
 }
 
-/* Only the branch that says sessions exist elsewhere is given the accent.
-   "You are not missing anything" must not look like a call to action. */
-.scope-notice.more-elsewhere {
-  border-color: rgba(157, 140, 255, 0.4);
-  background: linear-gradient(155deg, rgba(30, 27, 52, 0.97), rgba(18, 20, 31, 0.97));
-}
-
-.scope-switch {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 1rem;
-}
-
-.archive-scope-card {
-  margin-top: 1rem;
-}
-
-/* An archive row's unobservable columns say so in words. This is deliberately
-   not the "—" a local row uses: that marks a described session that genuinely
-   has no value, while this marks a question nothing asked. */
+/* A value nothing looked for says so in words. This is deliberately not the
+   "—" a described row uses: that marks a value a row genuinely does not have,
+   while this marks a question nothing asked. */
 .not-observed {
   border-bottom: 1px dotted var(--line);
   color: var(--subtle);
   font-size: 0.78rem;
   font-style: italic;
   cursor: help;
-}
-
-.fetched-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--green);
-  font-size: 0.78rem;
-}
-
-.fetched-mark::before {
-  content: "●";
-  font-size: 0.6rem;
-}
-
-/* An archive row is not a link: this machine has no session detail to show for
-   a session whose files it does not hold. */
-.archive-table tbody tr {
-  cursor: default;
-}
-
-.archive-table tbody tr:hover,
-.archive-table tbody tr:focus-visible {
-  background: transparent;
 }
 
 /* The terminal state after an operator lock: the same card vocabulary as an
@@ -3407,10 +3365,9 @@ a.link-target:hover {
   border-bottom: none;
 }
 
-/* A doubted row is marked on its edge rather than tinted: the frontier table
-   marks a pending-sync row the same way, and an inset rule reads as "look
-   here" where a filled background reads as a verdict. Fresh and finished rows
-   carry no mark at all, because there is nothing to point at. */
+/* A doubted row is marked on its edge rather than tinted: an inset rule reads
+   as "look here" where a filled background reads as a verdict. Fresh and
+   finished rows carry no mark at all, because there is nothing to point at. */
 .presence-table tbody tr.freshness-stale {
   box-shadow: inset 0.2rem 0 0 var(--amber);
 }
@@ -3900,4 +3857,17 @@ a.link-target:hover {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+/* A render fault report: monospace, wrapped, never clipped. */
+.fault-detail {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-x: auto;
 }

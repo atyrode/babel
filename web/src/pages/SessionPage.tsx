@@ -48,7 +48,7 @@ function titleOriginLabel(title: string | null, provenance: string | null): stri
     case "derived":
       return "derived — babel computed it offline from the session's records, with no model";
     case "inferred":
-      return "inferred — a model wrote it, and session material left this machine";
+      return "inferred — a model wrote it, and session material was sent to a provider for it";
     default:
       return "unknown — nothing recorded where this title came from";
   }

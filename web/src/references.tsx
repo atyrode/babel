@@ -99,7 +99,7 @@ export function RecordLinks({
 
   // Nothing is rendered while the first read is in flight, and nothing is
   // rendered at all on a build with no graph. A spinner for a panel that may
-  // turn out not to exist would announce a feature this machine does not have.
+  // turn out not to exist would announce a feature this build does not have.
   if (!links && !error) return null;
   if (links && !links.available) return null;
 

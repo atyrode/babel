@@ -342,7 +342,7 @@ function DispositionEntry({
           <span className="context-label">Bound repository</span>
           <span className="mono">{action.anchor.url}</span>
           {action.anchor.branch && <span className="mono"> · {action.anchor.branch}</span>}
-          <span className="muted"> — read from a checkout on this machine, never from a model's guess.</span>
+          <span className="muted"> — read from a real checkout, never from a model's guess.</span>
         </p>
       )}
       {action.draft && (

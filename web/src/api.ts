@@ -121,29 +121,25 @@ export interface ArchiveStatus {
   hosts: ArchiveHost[];
 }
 
-// ArchiveSessionRow is deliberately not a SessionSummary and shares no field
-// with it beyond the four a snapshot's file listing actually carries. Browsing
-// another host's archive downloads no transcript bytes, so title, workspace,
-// modified time, and continuation grade are not merely null there — they are
-// unobserved, and this type cannot express them at all. A component holding
-// one of these rows therefore cannot render an absent title as an empty cell;
-// it has to say the snapshot listing does not carry one.
+// ArchiveSessionRow is what GET /api/archive/sessions answers with: the four
+// fields a snapshot's file listing actually carries, and nothing else. Reading
+// a snapshot's listing downloads no transcript bytes, so title, workspace,
+// modified time and continuation grade are not merely null there — they are
+// unobserved, and this type cannot express them at all.
+//
+// No page in this build browses an archive's session listing. The type stays
+// because the route stays served and the mock server answers it against the
+// same shape the Go DTO sends; recovering a session out of a snapshot is
+// `babel sessions fetch`'s job.
 export interface ArchiveSessionRow {
   harness: string;
   source_id: string;
   selector: string;
   size: number;
-  // Whether this machine already holds a fetched materialization of the
-  // session, and where it landed.
+  // Whether the session's files have already been fetched out of the snapshot,
+  // and where they landed.
   fetched: boolean;
   fetched_path?: string;
-}
-
-export interface ArchiveSessionsResponse {
-  host: string;
-  // The snapshot the request named; empty means that host's newest.
-  snapshot: string;
-  sessions: ArchiveSessionRow[];
 }
 
 export interface VerifyResult {
@@ -222,8 +218,6 @@ export type Grading = "low" | "moderate" | "high";
 // nowhere near an analytical record.
 // ---------------------------------------------------------------------------
 
-export type SyncState = "committed" | "pending-sync" | "local" | "unknown";
-
 // SyncNotice is the degraded marker a listing envelope carries when the shared
 // catalog could not answer part of a read. The rows still render, which is why
 // no page turns it into a banner: publication state is plumbing, and a record
@@ -238,7 +232,11 @@ export interface FleetMark {
   host_id?: string;
   host_attributed?: boolean;
   local_host?: boolean;
-  sync?: SyncState | string;
+  // The publication state the server reports, kept as the string it sends. No
+  // page renders it — a record either shows or it does not, and where it has
+  // replicated to is plumbing — so the interface holds no vocabulary of its
+  // own for the values.
+  sync?: string;
   committed_at?: string;
   unopened?: string;
 }
@@ -255,7 +253,7 @@ export interface FleetRecord {
   // The origin instance: the actor that generated the run and committed the
   // record. Always present, which is why it has no "attributed" companion.
   actor: string;
-  sync: SyncState | string;
+  sync: string;
   committed_at?: string;
   summary?: string;
   unopened?: string;
@@ -274,7 +272,7 @@ export interface FleetHost {
 }
 
 export interface FleetRecordsResponse {
-  // False means this machine has no shared backend, which is a fact about the
+  // False means no shared backend is configured, which is a fact about the
   // deployment rather than a failure. A backend that exists and did not answer
   // arrives as an APIError instead, and the two read differently on screen.
   configured: boolean;
@@ -285,7 +283,7 @@ export interface FleetRecordsResponse {
 
 export interface FleetHostsResponse {
   configured: boolean;
-  // This machine's own host id, absent when it has registered none.
+  // The host id this instance registered, absent when it has registered none.
   local_host?: string;
   hosts: FleetHost[];
 }
@@ -397,15 +395,17 @@ export interface RunSummary {
   preparation_id: string;
   revision: number;
   recorded_at: string;
-  sync: string; // "pending-sync" | "committed"
+  // The receipt's publication state, on FleetMark's terms: carried, never
+  // rendered.
+  sync: string;
   counts: RunCounts;
   // Why the run happened, as its receipt recorded it. Empty on a receipt
   // written before receipts carried one.
   authority: RunAuthority;
   // Which machine produced the run, read from the shared catalog rather than
   // from the receipt (issue #109 item 4). Both are absent on a run the catalog
-  // cannot attribute, and the receipt strip renders that as "unattributed"
-  // rather than as this machine.
+  // cannot attribute. Nothing renders either one: a receipt is read for what
+  // the run did, and no surface asks which computer it ran on.
   host?: string;
   host_attributed?: boolean;
 }
@@ -1376,35 +1376,21 @@ export function getArchiveStatus(): Promise<ArchiveStatus> {
   return request<ArchiveStatus>("/api/archive/status");
 }
 
-// getArchiveSessions reads one host's archived session listing. It goes over
-// the network to the repository, so it is slower than every other read on the
-// Sessions page and is never polled.
-export function getArchiveSessions(
-  host: string,
-  snapshot?: string,
-): Promise<ArchiveSessionsResponse> {
-  const values: Record<string, string> = { host };
-  if (snapshot?.trim()) values.snapshot = snapshot.trim();
-  return request<ArchiveSessionsResponse>(`/api/archive/sessions?${query(values)}`);
-}
-
 export function verifyArchive(deep: boolean): Promise<VerifyResult> {
   return request<VerifyResult>(`/api/archive/verify?${query({ deep: deep ? 1 : 0 })}`, {
     method: "POST",
   });
 }
 
-// fetchSession materializes one session's file closure locally. host is
-// required for a session this machine never had: without it the selector is
-// resolved against local source files, which by definition do not hold it.
+// fetchSession materializes one session's file closure out of a snapshot. The
+// selector is the catalog's own, and the snapshot is optional: without one the
+// newest snapshot holding the session is read.
 export function fetchSession(
   selector: string,
   snapshot?: string,
-  host?: string,
 ): Promise<FetchResult> {
   const values: Record<string, string> = { selector };
   if (snapshot?.trim()) values.snapshot = snapshot.trim();
-  if (host?.trim()) values.host = host.trim();
   return request<FetchResult>(`/api/fetch?${query(values)}`, { method: "POST" });
 }
 
@@ -1481,9 +1467,9 @@ export function getReviewQueue(
 // The fleet read (issue #109 item 4).
 //
 // Only identifiers travel in these URLs -- host ids, record kinds, a page --
-// and never a word of a record. Record content in a query string would put
-// another machine's analysis into this machine's browser history and into every
-// request log between them, which is the channel the leak acceptance guards.
+// and never a word of a record. Record content in a query string would put one
+// instance's analysis into another's browser history and into every request log
+// between them, which is the channel the leak acceptance guards.
 // ---------------------------------------------------------------------------
 
 export function getFleetRecords(filter: FleetRecordFilter = {}): Promise<FleetRecordsResponse> {

@@ -48,8 +48,12 @@ import type {
   RunAuthority,
   SearchHit,
   StatusEvent,
-  SyncState,
 } from "../src/api";
+
+// The publication states the Go DTOs put on the wire. The fixtures need the
+// vocabulary to build rows that exercise every one of them; the browser's own
+// types no longer carry it, because no page reads a record's publication state.
+type SyncState = "committed" | "pending-sync" | "local" | "unknown";
 
 const phasebMode = Bun.env.MOCK_PHASEB ?? "rich";
 const empty = phasebMode === "empty";

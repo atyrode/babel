@@ -53,6 +53,12 @@ type FleetReader interface {
 	LocalHost() string
 	Records(ctx context.Context, filter sharedcatalog.RecordFilter) ([]fleet.Record, error)
 	RecordsWithContent(ctx context.Context, filter sharedcatalog.RecordFilter) ([]fleet.Record, error)
+	// Open reads one record's content. A caller that will discard part of a
+	// page must list first and open only what it keeps: opening is a fetch,
+	// a digest check and a decrypt per record, and paying it for rows that
+	// are about to be dropped is what made the dashboard exceed the
+	// client's budget.
+	Open(ctx context.Context, rec sharedcatalog.FleetRecord) (fleet.Record, error)
 	Hosts(ctx context.Context, filter sharedcatalog.RecordFilter) ([]sharedcatalog.RecordHost, error)
 	SyncStates(ctx context.Context, journal fleet.SyncJournal, ids []string) (map[string]string, error)
 }
@@ -548,7 +554,16 @@ func (s *Server) mergeOtherHosts(r *http.Request, limit int,
 // inbox it is.
 func (s *Server) otherHosts(ctx context.Context, limit int,
 	kinds ...sharedcatalog.RecordKind) ([]fleet.Record, error) {
-	records, err := s.opts.Fleet.RecordsWithContent(ctx, sharedcatalog.RecordFilter{
+	// The catalog is asked for the rows first and the content afterwards,
+	// for the records that survive. Opening happens per record — a fetch
+	// from the object store, a digest check and a decrypt each — so reading
+	// content for the whole page and then discarding this machine's share of
+	// it paid that cost for rows nobody was ever going to see. On a
+	// deployment whose records were nearly all produced here that was the
+	// entire cost of the request: the dashboard spent longer opening records
+	// it would drop than the client was willing to wait, and rendered
+	// nothing at all.
+	records, err := s.opts.Fleet.Records(ctx, sharedcatalog.RecordFilter{
 		Kinds: kinds,
 		Limit: limit,
 	})
@@ -566,7 +581,16 @@ func (s *Server) otherHosts(ctx context.Context, limit int,
 		if local != "" && record.HostID == local {
 			continue
 		}
-		out = append(out, record)
+		// Open failures stay per-record: the reader's own rule is that a
+		// sealed record is reported as sealed, never dropped and never
+		// escalated into a failure of the whole listing.
+		opened, err := s.opts.Fleet.Open(ctx, record.FleetRecord)
+		if err != nil {
+			record.Unopened = err.Error()
+			out = append(out, record)
+			continue
+		}
+		out = append(out, opened)
 	}
 	return out, nil
 }

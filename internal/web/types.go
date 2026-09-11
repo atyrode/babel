@@ -194,6 +194,15 @@ type FrontierReader interface {
 	StatusHistory(context.Context, string) ([]frontier.StatusEvent, error)
 	ReviewStatus(context.Context, frontier.Ref) (frontier.ReviewStatus, error)
 	Unexplored(context.Context, int) ([]frontier.Hypothesis, error)
+	// Hypotheses enumerates §5.2's candidates with the store's own
+	// aggregate beside them, which is what the dashboard reads. A landing
+	// page wants a distribution and the few newest rows, never the corpus:
+	// tallying by reading every candidate through Hypothesis cost a
+	// thirty-second response on a two-thousand-record frontier and the
+	// browser abandoned it, so the count is computed where the records
+	// are. It is the same enumeration `babel hypotheses` pages, so the
+	// dashboard's total cannot drift from the command's.
+	Hypotheses(context.Context, frontier.ListFilter) ([]frontier.Hypothesis, int, error)
 	// Revisions and Head are #87's chain reads. They are reads in the
 	// strictest sense — one is the whole append-only chain a record belongs
 	// to and the other is its last entry — so they belong here rather than

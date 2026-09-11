@@ -7,6 +7,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/atyrode/babel/internal/cookbook"
@@ -490,6 +491,10 @@ type lineageView struct {
 }
 
 type hypothesisDetail struct {
+	// The notice a record read from the shared catalog carries when it could
+	// not be read at all (detail.go). A candidate this machine holds never
+	// sets it: the fields below come from a store that answered.
+	syncNotice
 	Hypothesis    hypothesisView    `json:"hypothesis"`
 	StatusHistory []statusEventView `json:"statusHistory"`
 	Observations  []observationView `json:"observations"`
@@ -514,10 +519,26 @@ func (s *Server) handleHypothesis(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	wide, ok := s.fleetScope(w, r)
+	if !ok {
+		return
+	}
 	ctx := r.Context()
 	record, err := s.opts.Frontier.Hypothesis(ctx, id)
 	if err != nil {
-		s.serviceError(w, r, err)
+		// A candidate this machine has never held may still be one the
+		// frontier listing showed, because that listing reads the whole
+		// deployment (detail.go). Anything other than an absence is this
+		// store failing and is reported as one.
+		found := catalogLookup{}
+		if errors.Is(err, frontier.ErrUnknownEntity) {
+			found = s.catalogRecord(r, wide, id, sharedcatalog.KindHypothesis)
+		}
+		if !found.answerable() {
+			s.serviceError(w, r, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, catalogHypothesis(id, found))
 		return
 	}
 	reviewStatus, err := s.opts.Frontier.ReviewStatus(ctx, frontier.Ref{Type: frontier.EntityHypothesis, ID: id})
@@ -808,12 +829,26 @@ func viewProposal(record frontier.Proposal) proposalView {
 		RunID:         record.RunID,
 		SchemaVersion: record.SchemaVersion,
 		CreatedAt:     timeText(record.CreatedAt),
-		FindingIDs:    record.FindingIDs,
-		HypothesisIDs: record.HypothesisIDs,
+		// A candidate proposal rests on a hypothesis and answers no
+		// finding, so one of these is routinely empty. An empty Go slice
+		// marshals as JSON null, which is not a list a reader can count,
+		// and a client that treated it as one rendered nothing at all for
+		// the whole record. The wire form of "no ids" is an empty array.
+		FindingIDs:    idList(record.FindingIDs),
+		HypothesisIDs: idList(record.HypothesisIDs),
 		Form:          string(record.Form),
 		ReviewStatus:  string(record.ReviewStatus),
 		Payload:       record.Payload,
 	}
+}
+
+// idList is the wire form of a possibly absent id list: always an array, so
+// every consumer can count it without first testing it for null.
+func idList(ids []string) []string {
+	if ids == nil {
+		return []string{}
+	}
+	return ids
 }
 
 // ProposalSummary is one §4.5 review artifact as a listing shows it.
@@ -980,17 +1015,32 @@ func (s *Server) handleProposal(w http.ResponseWriter, r *http.Request, id strin
 		s.writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
+	wide, ok := s.fleetScope(w, r)
+	if !ok {
+		return
+	}
 	record, err := s.opts.Frontier.Proposal(r.Context(), id)
 	if err != nil {
-		s.serviceError(w, r, err)
+		// The proposals listing reads the whole deployment, so a proposal
+		// this machine has never held is still a row an operator can click,
+		// and a link he bookmarked is still a link (detail.go).
+		found := catalogLookup{}
+		if errors.Is(err, frontier.ErrUnknownEntity) {
+			found = s.catalogRecord(r, wide, id, sharedcatalog.KindProposal)
+		}
+		if !found.answerable() {
+			s.serviceError(w, r, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, s.catalogProposal(id, found))
 		return
 	}
 	detail := proposalDetail{
 		ProposalSummary: summarizeProposal(record),
 		AncestorID:      record.AncestorID,
 		SchemaVersion:   record.SchemaVersion,
-		FindingIDs:      record.FindingIDs,
-		HypothesisIDs:   record.HypothesisIDs,
+		FindingIDs:      idList(record.FindingIDs),
+		HypothesisIDs:   idList(record.HypothesisIDs),
 		Form:            string(record.Form),
 		Payload:         record.Payload,
 	}
@@ -1003,6 +1053,9 @@ func (s *Server) handleProposal(w http.ResponseWriter, r *http.Request, id strin
 }
 
 type findingDetail struct {
+	// The notice a record read from the shared catalog carries when it could
+	// not be read at all, on hypothesisDetail's terms (detail.go).
+	syncNotice
 	Finding      findingView       `json:"finding"`
 	Observations []observationView `json:"observations"`
 	Proposals    []proposalView    `json:"proposals"`
@@ -1016,10 +1069,25 @@ func (s *Server) handleFinding(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	wide, ok := s.fleetScope(w, r)
+	if !ok {
+		return
+	}
 	ctx := r.Context()
 	record, err := s.opts.Frontier.Finding(ctx, id)
 	if err != nil {
-		s.serviceError(w, r, err)
+		// The findings listing reads the whole deployment, so a
+		// consolidation this machine has never held is still a row an
+		// operator can click (detail.go).
+		found := catalogLookup{}
+		if errors.Is(err, frontier.ErrUnknownEntity) {
+			found = s.catalogRecord(r, wide, id, sharedcatalog.KindFinding)
+		}
+		if !found.answerable() {
+			s.serviceError(w, r, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, catalogFinding(id, found))
 		return
 	}
 	status, err := s.opts.Frontier.ReviewStatus(ctx, frontier.Ref{Type: frontier.EntityFinding, ID: id})
@@ -1049,7 +1117,7 @@ func (s *Server) handleFinding(w http.ResponseWriter, r *http.Request) {
 			SchemaVersion:  record.SchemaVersion,
 			CreatedAt:      timeText(record.CreatedAt),
 			ObservationIDs: record.ObservationIDs,
-			HypothesisIDs:  record.HypothesisIDs,
+			HypothesisIDs:  idList(record.HypothesisIDs),
 			ReviewStatus:   string(status),
 			Payload:        record.Payload,
 		},

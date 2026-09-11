@@ -13,8 +13,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/review"
 )
 
 // overviewSessions is the catalog every overview test reads: three harnesses,
@@ -123,16 +129,16 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 		t.Errorf("an undescribed session claimed a title or a time: %+v", got.Activity.Rows[4])
 	}
 
-	// Five candidates are enumerable, and the dashboard counts the
-	// deployment rather than the machine. Three are this machine's: the two
-	// the development path enrolled and the head of the operator-revised
-	// chain, the chain's superseded original and the rejected candidate the
-	// revive fixture needs being neither enrolled nor unexplored. Two more
+	// Seven candidates exist, and the dashboard counts the deployment
+	// rather than the machine. Five are this machine's — the whole frontier
+	// as §5.2 keeps it, including the superseded original of the
+	// operator-revised chain and the rejected candidate the revive fixture
+	// needs, neither of which is enrolled for review or unexplored. Two more
 	// are the fleet's committed candidates — the other laptop's and the
 	// unattributed one — where the staged candidate is not globally
 	// reviewable and the sealed one this instance cannot open has no status
 	// to count.
-	if !got.Frontier.Available || got.Frontier.Hypotheses != 5 || got.Frontier.Truncated {
+	if !got.Frontier.Available || got.Frontier.Hypotheses != 7 || got.Frontier.Truncated {
 		t.Errorf("frontier section = %+v", got.Frontier)
 	}
 	// All six exploration statuses, in §4.2 order, zeros included: a
@@ -146,8 +152,18 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 			t.Errorf("status %d = %q, want %q", i, got.Frontier.Statuses[i].Status, want)
 		}
 	}
-	if got.Frontier.Statuses[0].Count != 3 {
-		t.Errorf("untriaged count = %d, want 3", got.Frontier.Statuses[0].Count)
+	// The distribution adds up to the total, and it is a distribution over
+	// the deployment: this machine holds four untriaged candidates and one
+	// rejected, and the two investigating ones are the fleet's, a number
+	// this machine's own corpus cannot produce. A dashboard that counted
+	// only local records would report a private backlog where the
+	// deployment has one shared body of work.
+	counts := map[string]int{}
+	for _, status := range got.Frontier.Statuses {
+		counts[status.Status] = status.Count
+	}
+	if counts["untriaged"] != 4 || counts["rejected"] != 1 || counts["investigating"] != 2 {
+		t.Errorf("status distribution = %+v", got.Frontier.Statuses)
 	}
 	if len(got.Frontier.Rows) != 5 {
 		t.Fatalf("frontier rows = %+v", got.Frontier.Rows)
@@ -162,19 +178,17 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 	if !carried {
 		t.Errorf("no row carries the fixture's statement: %+v", got.Frontier.Rows)
 	}
-	// A fleet row is attributed to the machine that produced it and is not
-	// marked as this one. The dashboard showing another host's candidate is
-	// the point of the deployment-wide default; showing it as this machine's
-	// would be the attribution failure migrations/0007 exists to prevent.
-	var attributed bool
+	// Every row states which machine produced it. All five are this
+	// machine's here: the panel shows the newest overviewRows candidates,
+	// this machine's are created as the fixture runs and the fleet's are
+	// dated months earlier, so the fleet's contribution to this panel is
+	// the count above rather than a row. A row that claimed no attribution
+	// would be the failure migrations/0007 exists to prevent, so the
+	// marking is checked even when every row is local.
 	for _, row := range got.Frontier.Rows {
-		if row.ID == "frec-remote" {
-			attributed = row.HostAttributed && !row.LocalHost &&
-				row.HostID == remoteFleetHost
+		if !row.LocalHost || !row.HostAttributed || row.HostID != localFleetHost {
+			t.Errorf("a row on this machine's frontier is misattributed: %+v", row)
 		}
-	}
-	if !attributed {
-		t.Errorf("the other host's candidate is missing or misattributed: %+v", got.Frontier.Rows)
 	}
 
 	if !got.Review.Available || got.Review.Awaiting != 4 || len(got.Review.Rows) != 4 {
@@ -201,11 +215,11 @@ func TestOverviewAggregatesTheWiredServices(t *testing.T) {
 		run.Failures != 1 || run.Redactions != 3 {
 		t.Errorf("run row counts = %+v", run)
 	}
-	// The three candidates this run put on the frontier that are still
-	// enumerable, counted from the frontier, and the §5.1 recipe read from
-	// the observation it recorded.
-	if run.Hypotheses != 3 {
-		t.Errorf("run hypotheses = %d, want 3", run.Hypotheses)
+	// Every candidate this run put on the frontier, counted from the page of
+	// recent candidates the dashboard indexes by run, and the §5.1 recipe
+	// read from the observation it recorded.
+	if run.Hypotheses != 5 {
+		t.Errorf("run hypotheses = %d, want 5", run.Hypotheses)
 	}
 	if len(run.Recipes) != 1 || run.Recipes[0].ID != "outcome-integrity" || run.Recipes[0].Version != 1 {
 		t.Errorf("run recipes = %+v", run.Recipes)
@@ -331,5 +345,151 @@ func TestOverviewLeaksNoServiceFailure(t *testing.T) {
 				t.Errorf("no diagnostic names the refused read: %q", diagnostics.String())
 			}
 		})
+	}
+}
+
+// countingFrontier is a frontier large enough that how the dashboard reads it
+// is the difference between a page and a timeout. It answers both of the
+// enumerations this package can reach — the store's aggregate listing and the
+// unexplored queue the listing routes assemble identifiers from — and counts
+// every single-record read it is asked for, so which one the dashboard chose
+// is observable rather than inferred from a stopwatch.
+type countingFrontier struct {
+	FrontierReader
+	// records are ordered by creation ascending, the order Hypotheses
+	// returns: §5.4 keeps a list position from reading as strength, so the
+	// store offers no newest-first enumeration and the newest candidates
+	// are the last page.
+	records []frontier.Hypothesis
+	reads   atomic.Int64
+}
+
+func (f *countingFrontier) Hypothesis(_ context.Context, id string) (frontier.Hypothesis, error) {
+	f.reads.Add(1)
+	for _, record := range f.records {
+		if record.ID == id {
+			return record, nil
+		}
+	}
+	return frontier.Hypothesis{}, frontier.ErrUnknownEntity
+}
+
+func (f *countingFrontier) Unexplored(_ context.Context, limit int) ([]frontier.Hypothesis, error) {
+	return f.records[:min(limit, len(f.records))], nil
+}
+
+func (f *countingFrontier) ObservationsFor(context.Context, string) ([]frontier.Observation, error) {
+	return nil, nil
+}
+
+// Hypotheses applies the narrowing and the bounds the store applies, because
+// both are what the dashboard's panel is built out of: a status count is the
+// total beside a one-record page, and the rows come from the last page.
+func (f *countingFrontier) Hypotheses(_ context.Context,
+	filter frontier.ListFilter) ([]frontier.Hypothesis, int, error) {
+	matched := make([]frontier.Hypothesis, 0, len(f.records))
+	for _, record := range f.records {
+		if len(filter.Statuses) == 0 || slices.Contains(filter.Statuses, record.Status) {
+			matched = append(matched, record)
+		}
+	}
+	limit := frontier.DefaultListLimit
+	if filter.Limit > 0 {
+		limit = min(filter.Limit, frontier.MaxListLimit)
+	}
+	start := min(filter.Offset, len(matched))
+	return matched[start:min(start+limit, len(matched))], len(matched), nil
+}
+
+// emptyQueue is the review surface with nothing enrolled. It is here so the
+// frontier is the only thing the dashboard could enumerate candidates from,
+// which is what makes the read count below attributable.
+type emptyQueue struct{ ReviewService }
+
+func (emptyQueue) Queue(context.Context, review.QueueFilter) ([]review.QueueItem, error) {
+	return nil, nil
+}
+
+// TestOverviewTalliesTheFrontierWithoutReadingTheCorpus is the property that
+// keeps the dashboard answerable on a real deployment. The panel needs a
+// distribution and the newest overviewRows rows; reading every candidate to
+// produce them cost thirty-one seconds on a two-thousand-candidate frontier,
+// past the browser's own timeout, so the whole document was discarded and the
+// dashboard rendered empty. The count of single-record reads is therefore a
+// property of this route and not a performance note: it must not grow with the
+// corpus.
+func TestOverviewTalliesTheFrontierWithoutReadingTheCorpus(t *testing.T) {
+	const corpus = 500
+	statuses := []frontier.Status{
+		frontier.StatusUntriaged, frontier.StatusQueued, frontier.StatusRejected,
+	}
+	fake := &countingFrontier{records: make([]frontier.Hypothesis, corpus)}
+	base := time.Date(2026, 4, 1, 8, 0, 0, 0, time.UTC)
+	for i := range fake.records {
+		fake.records[i] = frontier.Hypothesis{
+			ID:        fmt.Sprintf("hyp_%03d", i),
+			RunID:     "run-1",
+			Status:    statuses[i%len(statuses)],
+			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+			Payload:   frontier.HypothesisPayload{Statement: fmt.Sprintf("candidate %d", i)},
+		}
+	}
+	s, httpServer := testServer(t, Options{
+		Frontier: fake,
+		Review:   emptyQueue{},
+		Runs: runLister{{
+			ReceiptID: "rcp-1", RunID: "run-1", RecordedAt: "2026-04-02T08:00:00Z",
+		}},
+	})
+	response := request(t, httpServer.Client(), http.MethodGet,
+		httpServer.URL+"/api/overview", bootstrapSession(t, s, httpServer))
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.StatusCode, body(t, response))
+	}
+	var got overview
+	decodeResponse(t, response, &got)
+
+	// No candidate is read on its own. The panel is six aggregates and one
+	// page, so this is zero rather than a small number, and a read count
+	// that tracked the corpus would be the defect returning.
+	if reads := fake.reads.Load(); reads > overviewRows {
+		t.Errorf("the dashboard read %d candidates one at a time across a corpus of %d", reads, corpus)
+	}
+	// The aggregates are the store's, and they still describe the whole
+	// corpus: 167 untriaged, 167 queued and 166 rejected out of 500, with
+	// the statuses nothing holds reported as the zeros they are.
+	if !got.Frontier.Available || got.Frontier.Hypotheses != corpus || got.Frontier.Truncated {
+		t.Fatalf("frontier section = %+v", got.Frontier)
+	}
+	counted := 0
+	for _, status := range got.Frontier.Statuses {
+		counted += status.Count
+	}
+	if counted != corpus {
+		t.Errorf("status distribution sums to %d over a corpus of %d: %+v",
+			counted, corpus, got.Frontier.Statuses)
+	}
+	if got.Frontier.Statuses[0].Count != 167 || got.Frontier.Statuses[1].Count != 167 ||
+		got.Frontier.Statuses[4].Count != 166 || got.Frontier.Statuses[2].Count != 0 {
+		t.Errorf("status distribution = %+v", got.Frontier.Statuses)
+	}
+	// The rows are the newest candidates, newest first, which is the page
+	// the panel shows and the order it shows it in.
+	if len(got.Frontier.Rows) != overviewRows {
+		t.Fatalf("frontier rows = %+v", got.Frontier.Rows)
+	}
+	for i, row := range got.Frontier.Rows {
+		want := fmt.Sprintf("hyp_%03d", corpus-1-i)
+		if row.ID != want {
+			t.Errorf("row %d = %q, want %q", i, row.ID, want)
+		}
+	}
+	// The runs panel still gets the run-to-candidate index it annotates its
+	// rows from, off the same page rather than off a per-record walk.
+	if !got.Runs.Available || len(got.Runs.Rows) != 1 {
+		t.Fatalf("runs section = %+v", got.Runs)
+	}
+	if got.Runs.Rows[0].Hypotheses != corpus {
+		t.Errorf("run candidates = %d, want %d", got.Runs.Rows[0].Hypotheses, corpus)
 	}
 }

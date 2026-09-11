@@ -112,7 +112,7 @@ const AI_SURFACES: Array<{
     answer: "only during a run",
     reason:
       "The model is chosen once through babel titles configure, on the operator's own terminal; " +
-      "babel sessions title infer then previews exactly what would leave this machine and runs " +
+      "babel sessions title infer then previews exactly what would be sent to the model and runs " +
       "only on --confirm. The value is labeled inferred wherever it shows.",
   },
 ];

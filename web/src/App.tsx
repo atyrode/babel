@@ -27,6 +27,7 @@ import ReviewPage from "./pages/ReviewPage";
 import ReviewRecordPage from "./pages/ReviewRecordPage";
 import SessionPage from "./pages/SessionPage";
 import SessionsPage from "./pages/SessionsPage";
+import RenderBoundary from "./boundary";
 
 const LOCK_PROMPT =
   "Lock and stop the server?\n\nThe session is revoked immediately and this " +
@@ -213,6 +214,9 @@ function App() {
       )}
 
       <main>
+        {/* Keyed by path so navigating away from a faulted page clears the
+            fault instead of stranding the reader on it. */}
+        <RenderBoundary key={location.pathname}>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/help" element={<HelpPage />} />
@@ -243,6 +247,7 @@ function App() {
               asserts the property; see api.ts for the measurement. */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </RenderBoundary>
       </main>
     </div>
   );

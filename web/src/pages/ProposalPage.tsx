@@ -143,11 +143,11 @@ function ProposalPage() {
           {payload.destinations && payload.destinations.length > 0 && (
             <Fact label="Suggested destinations">{payload.destinations.join(" · ")}</Fact>
           )}
-          {detail.finding_ids.length > 0 && (
+          {(detail.finding_ids ?? []).length > 0 && (
             <div>
               <dt>Addresses</dt>
               <dd>
-                {detail.finding_ids.map((fid, index) => (
+                {(detail.finding_ids ?? []).map((fid, index) => (
                   <span key={fid}>
                     {index > 0 && " · "}
                     <Link className="mono" to={`/findings/${encodeURIComponent(fid)}`}>{fid}</Link>
@@ -156,11 +156,11 @@ function ProposalPage() {
               </dd>
             </div>
           )}
-          {detail.hypothesis_ids.length > 0 && (
+          {(detail.hypothesis_ids ?? []).length > 0 && (
             <div>
               <dt>Rests on</dt>
               <dd>
-                {detail.hypothesis_ids.map((hid, index) => (
+                {(detail.hypothesis_ids ?? []).map((hid, index) => (
                   <span key={hid}>
                     {index > 0 && " · "}
                     <Link className="mono" to={`/hypotheses/${encodeURIComponent(hid)}`}>{hid}</Link>

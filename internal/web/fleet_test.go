@@ -58,6 +58,10 @@ type fakeFleet struct {
 	// deployment has no fleet" and "this deployment's fleet did not answer" is
 	// observable from the outside.
 	fail error
+	// opened records every id Open was called for, which is how a test
+	// distinguishes a caller that listed a page from one that also paid to
+	// fetch and decrypt every record on it.
+	opened []string
 
 	recordFilters []sharedcatalog.RecordFilter
 	hostFilters   []sharedcatalog.RecordFilter
@@ -90,6 +94,23 @@ func (f *fakeFleet) RecordsWithContent(_ context.Context,
 	return f.selected(filter), nil
 }
 
+// Open answers the content the fixture already carries. The fake records the
+// ids it was asked for, so a test can assert a caller opened only the records
+// it kept rather than the whole page it listed.
+func (f *fakeFleet) Open(_ context.Context,
+	rec sharedcatalog.FleetRecord) (fleet.Record, error) {
+	f.opened = append(f.opened, rec.Record.RecordID)
+	if f.fail != nil {
+		return fleet.Record{}, f.fail
+	}
+	for _, record := range f.records {
+		if record.Record.RecordID == rec.Record.RecordID {
+			return record, nil
+		}
+	}
+	return fleet.Record{FleetRecord: rec}, nil
+}
+
 func (f *fakeFleet) Hosts(_ context.Context,
 	filter sharedcatalog.RecordFilter) ([]sharedcatalog.RecordHost, error) {
 	f.hostFilters = append(f.hostFilters, filter)
@@ -118,8 +139,8 @@ func (f *fakeFleet) SyncStates(_ context.Context, journal fleet.SyncJournal,
 }
 
 // selected applies the narrowing the handlers rely on: the catalog's semantics
-// reduced to what these fixtures exercise — any-of on hosts and kinds,
-// committed-only unless staged output was admitted, then the page.
+// reduced to what these fixtures exercise — any-of on hosts, kinds, runs and
+// record ids, committed-only unless staged output was admitted, then the page.
 func (f *fakeFleet) selected(filter sharedcatalog.RecordFilter) []fleet.Record {
 	out := make([]fleet.Record, 0, len(f.records))
 	for _, record := range f.records {
@@ -127,6 +148,9 @@ func (f *fakeFleet) selected(filter sharedcatalog.RecordFilter) []fleet.Record {
 			continue
 		}
 		if len(filter.Kinds) > 0 && !containsKind(filter.Kinds, record.Record.Kind) {
+			continue
+		}
+		if len(filter.RecordIDs) > 0 && !contains(filter.RecordIDs, record.Record.RecordID) {
 			continue
 		}
 		if len(filter.RunIDs) > 0 && !contains(filter.RunIDs, record.Record.RunID) {
@@ -300,6 +324,11 @@ func fixtureDecision(id, runID, hostID, display, instance string,
 // line therefore comes from the title internal/fleet projects rather than from
 // the retrieval derivation, which is what stops the review inbox rendering the
 // deployment's proposals as blank rows.
+//
+// It rests on the fixture's consolidation, because a published proposal that
+// rests on nothing is neither of #114's two forms and internal/frontier
+// refuses to publish one: a fixture without it would let a reader of this
+// deployment render a want with a consolidation's authority.
 func fixtureProposal(id, runID, hostID, display, instance string,
 	committedAt *time.Time, text string) fleet.Record {
 	return fleet.Record{
@@ -308,6 +337,9 @@ func fixtureProposal(id, runID, hostID, display, instance string,
 		Published: &frontier.PublishedRecord{
 			Schema: frontier.RecordSchema, Kind: frontier.PublishedProposal,
 			ID: id, RootID: id, RunID: runID,
+			RestsOn: []frontier.PublishedSubject{{
+				Kind: frontier.EntityFinding, ID: "frec-remote-finding",
+			}},
 			CreatedAt: time.Date(2026, 3, 1, 9, 30, 0, 0, time.UTC),
 			Payload: mustMarshalPayload(frontier.ProposalPayload{
 				Title:          "retire the duplicated manifest read " + text,
@@ -1033,15 +1065,17 @@ func TestFleetRunsAreAttributedByTheCatalog(t *testing.T) {
 }
 
 // TestFleetReaderSurfaceHoldsNoWriter is the §14 property for issue #109's read
-// path: the whole authority a browser reaches over the fleet is these five
-// reads. Ingest is the one that matters — it writes this machine's retrieval
+// path: the whole authority a browser reaches over the fleet is these six
+// reads. Open joined them when the dashboard stopped opening a whole page of
+// records to keep part of it; fetching and decrypting one record is a read,
+// and the property this test defends is that no writer appears here. Ingest is the one that matters — it writes this machine's retrieval
 // index, and a GET route that could reach it would make the busiest writer in
 // the process a read.
 func TestFleetReaderSurfaceHoldsNoWriter(t *testing.T) {
 	surface := reflect.TypeOf((*FleetReader)(nil)).Elem()
 	permitted := map[string]bool{
 		"LocalHost": true, "Records": true, "RecordsWithContent": true,
-		"Hosts": true, "SyncStates": true,
+		"Open": true, "Hosts": true, "SyncStates": true,
 	}
 	for i := range surface.NumMethod() {
 		if name := surface.Method(i).Name; !permitted[name] {

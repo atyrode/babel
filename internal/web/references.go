@@ -540,7 +540,7 @@ func (r *referenceResolver) frontierRecord(view referenceRefView) referenceRefVi
 	case err == nil:
 		return view
 	case errors.Is(err, frontier.ErrUnknownEntity):
-		return inert(view, "this host holds no "+view.Kind+" with that identifier: the edge's shape is visible here, the record it names is not")
+		return inert(view, "no "+view.Kind+" with that identifier could be read: the edge's shape is visible here, the record it names is not")
 	default:
 		// The store failed rather than answered. Reported in the row and
 		// never as the page's failure, because "one endpoint could not be
@@ -570,7 +570,7 @@ func (r *referenceResolver) complaintRecord(view referenceRefView) referenceRefV
 	case err == nil:
 		return view
 	case errors.Is(err, complaint.ErrUnknownComplaint):
-		return inert(view, "this host holds no complaint with that identifier: the edge's shape is visible here, the record it names is not")
+		return inert(view, "no complaint with that identifier could be read: the edge's shape is visible here, the record it names is not")
 	default:
 		return inert(view, "this host could not check whether that complaint exists, so the reference is left unfollowed")
 	}

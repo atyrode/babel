@@ -29,7 +29,13 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - **The machine left the reading path.** Host columns, host filters, host
   sorting and `local` / `pending-sync` / `committed` chips are gone from every
   reading surface except Archive, where a snapshot genuinely is a backup of
-  one machine. Fleet keeps its route but leaves the primary navigation.
+  one machine. Fleet keeps its route but leaves the primary navigation. The
+  Sessions page loses the last of it: no host in its heading, no scope
+  selector, and no cross-host archive table whose columns said only that
+  nothing had looked. It lists the corpus by time and by each session's own
+  attributes. Recovering a session out of another machine's snapshot stays
+  `babel sessions fetch --host`, and the Archive page still reports snapshots
+  per host.
 - **Rulings open.** Two packages publish `KindDisposition`, and the reader
   handed both to the frontier decoder, which requires a `schema` field a
   disposition's wire form does not carry — so every accept or reject read back
@@ -40,6 +46,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `?fleet=0` narrows to this machine. A shared-catalog outage degrades a
   listing with a notice instead of refusing it, so losing the network never
   costs the operator the ability to read his own work.
+- **The dashboard stops reading the corpus to count it.** Its frontier panel
+  enumerated up to five thousand candidate identifiers and then read each
+  candidate individually, so on a 1,958-candidate store `GET /api/overview`
+  took 31.5 seconds — past the browser's 20-second abort, which discarded the
+  whole document and left every panel empty while the four sections behind it
+  logged `context canceled`. The panel now asks the frontier for what it
+  shows: one count per §4.2 status and one page of the newest candidates,
+  seven bounded queries whatever the corpus holds. The total is the store's
+  own aggregate, so it is `babel hypotheses`'s total and includes the
+  superseded revisions and resting candidates the old enumeration could not
+  reach.
 - **Concurrent cycles stop colliding in the frontier index.** Each cycle opens
   its own handle on the index, and the reconcile read what the index already
   held *before* opening its write transaction, so two cycles could both see a

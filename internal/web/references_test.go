@@ -331,8 +331,8 @@ func TestRecordLinksFollowComplaintEndpoints(t *testing.T) {
 	// A complaint another machine's operator told. #112 makes the edge
 	// readable here even though the record never will be.
 	absent := edges[1].Other
-	if !absent.Inert || !strings.Contains(absent.Reason, "holds no complaint") {
-		t.Errorf("endpoint %+v, reason %q: want inert, naming the record this host does not hold",
+	if !absent.Inert || !strings.Contains(absent.Reason, "no complaint with that identifier") {
+		t.Errorf("endpoint %+v, reason %q: want inert, naming the record that could not be read",
 			absent, absent.Reason)
 	}
 
@@ -376,8 +376,15 @@ func TestRecordLinksMarkUnreachableEndpointsInert(t *testing.T) {
 	if !absent.Inert {
 		t.Fatalf("endpoint %+v: a record this host does not hold must be inert", absent)
 	}
-	if !strings.Contains(absent.Reason, "holds no hypothesis") {
-		t.Errorf("reason = %q, want it to name the record this host does not hold", absent.Reason)
+	if !strings.Contains(absent.Reason, "no hypothesis with that identifier") {
+		t.Errorf("reason = %q, want it to name the record that could not be read", absent.Reason)
+	}
+
+	// The reason is stated in record terms. An operator reading his own
+	// output is not told which machine failed to hold something, because
+	// that is not a fact about the record he asked for.
+	if strings.Contains(absent.Reason, "host") || strings.Contains(absent.Reason, "machine") {
+		t.Errorf("reason = %q: a reading surface must not name a machine", absent.Reason)
 	}
 
 	// A namespace with no page in this build. The reason names the namespace
@@ -394,7 +401,7 @@ func TestRecordLinksMarkUnreachableEndpointsInert(t *testing.T) {
 	// And a backlink from a record this host does not hold is inert on the
 	// same terms: the direction does not change what is knowable.
 	if backlink := got.CitedBy.Edges[1].Other; !backlink.Inert ||
-		!strings.Contains(backlink.Reason, "holds no observation") {
+		!strings.Contains(backlink.Reason, "no observation with that identifier") {
 		t.Errorf("backlink endpoint %+v, reason %q: want inert with the namespace named", backlink, backlink.Reason)
 	}
 }

@@ -13,6 +13,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/atyrode/babel/internal/fleet"
@@ -403,6 +404,9 @@ type refinementView struct {
 }
 
 type historyResult struct {
+	// The notice a record read from the shared catalog carries when it could
+	// not be read at all, on hypothesisDetail's terms (detail.go).
+	syncNotice
 	Status      string           `json:"status"`
 	Decisions   []decisionView   `json:"decisions"`
 	Refinements []refinementView `json:"refinements"`
@@ -419,9 +423,27 @@ func (s *Server) handleReviewHistory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	wide, ok := s.fleetScope(w, r)
+	if !ok {
+		return
+	}
 	history, err := s.opts.Review.History(r.Context(), subject)
 	if err != nil {
-		s.serviceError(w, r, err)
+		// The record a reviewer is being asked to rule on may be one this
+		// machine has never held, because the inbox he arrived from reads the
+		// whole deployment (detail.go). This route is what that page loads
+		// first, so a 404 here took the record's own text off the screen as
+		// well as its decisions.
+		found := catalogLookup{}
+		if kind, known := catalogKind(subject.Type); known &&
+			errors.Is(err, review.ErrUnknownRecord) {
+			found = s.catalogRecord(r, wide, subject.ID, kind)
+		}
+		if !found.answerable() {
+			s.serviceError(w, r, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, catalogHistory(found))
 		return
 	}
 	result := historyResult{

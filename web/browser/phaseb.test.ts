@@ -507,7 +507,7 @@ test.skipIf(!chrome)("a refusal banner is scoped to the route that earned it", a
     const watch = () => {
       const text = document.body.innerText;
       if (
-        text.includes("Every session Babel found on this machine")
+        text.includes("Every session Babel found, across every harness")
         && text.includes("is not available in this session")
       ) {
         Reflect.set(globalThis, "__babel_both_frames", Number(Reflect.get(globalThis, "__babel_both_frames")) + 1);
@@ -518,7 +518,7 @@ test.skipIf(!chrome)("a refusal banner is scoped to the route that earned it", a
   });
   await page.click('a[href="#/sessions"]');
   await page.waitForFunction(
-    () => document.body.innerText.includes("Every session Babel found on this machine"),
+    () => document.body.innerText.includes("Every session Babel found, across every harness"),
     { timeout: 15_000 },
   );
 
