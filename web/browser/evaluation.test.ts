@@ -585,6 +585,13 @@ test.skipIf(!chrome)("the review surface reopens a decided record and keeps its 
   page.once("dialog", (dialog) => dialog.accept());
   await page.click(".decide-card button[type='submit']");
   await visible("status is now new");
+  // The banner is the mutation's own answer; the history under it is a second
+  // read that has not landed yet, so wait for the appended event rather than
+  // for the sentence predicting it. Asserting on the page in between reads a
+  // record that is already decided and a history that does not say so.
+  await page.waitForFunction(() =>
+    Array.from(document.querySelectorAll(".timeline li"))
+      .some((entry) => (entry as HTMLElement).innerText.includes("reopen")));
   const after = await bodyText();
   // Both events are in the history, each with its own reason: the reopen
   // rewrote nothing.
