@@ -113,6 +113,24 @@ func (c *Controller) runStage(st *state, stage Stage, runID string, params map[s
 	if st.opt.OnProgress != nil {
 		cfg.OnProgress = func(p worker.ProgressRecord) { st.opt.OnProgress(stage, p) }
 	}
+	// The job's conversation is archived as a Babel session, opened here and
+	// closed when this job ends whichever way it ends: a stage that died
+	// mid-turn is exactly the one whose reasoning is worth reading.
+	//
+	// It is named by the exploration's own run id and the stage, not by the
+	// stage run id: §5.4's separate passes carry a derived identity of the
+	// form "<run>/challenge" (reference.go stageRunID), and the three
+	// conversations of one exploration belong together under the identity an
+	// operator typed.
+	if c.cfg.Transcript != nil {
+		log, err := c.cfg.Transcript(st.opt.RunID, string(stage))
+		if err != nil {
+			st.fail(stage, FailureStorage, c.now(), fmt.Errorf("explore: %s transcript: %w", stage, err))
+			return nil
+		}
+		defer log.Close()
+		cfg.Transcript = log
+	}
 	client, err := worker.New(cfg)
 	if err != nil {
 		st.fail(stage, FailureWorker, c.now(), fmt.Errorf("explore: %s worker: %w", stage, err))

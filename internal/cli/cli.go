@@ -46,6 +46,7 @@ import (
 	"strings"
 
 	"github.com/atyrode/babel/internal/adapter"
+	"github.com/atyrode/babel/internal/adapter/babelself"
 	"github.com/atyrode/babel/internal/adapter/claude"
 	"github.com/atyrode/babel/internal/adapter/codex"
 	"github.com/atyrode/babel/internal/adapter/omp"
@@ -354,8 +355,15 @@ func (a *app) bare() error {
 // adapters returns the source adapters in a stable order. Every command
 // that reads local sessions goes through this one registry, so a harness
 // is never visible to one command and invisible to another.
+//
+// babelself is last because it is the newest and because it is Babel's own:
+// the three harnesses Babel was built to read come first. Registering it
+// here is the whole of what an analysis session needs in order to be
+// discovered, described, listed and — because BackupRoots feeds
+// existingRoots — snapshotted by `archive push`, with no storage
+// configuration change on any machine.
 func adapters() []adapter.Adapter {
-	return []adapter.Adapter{omp.New(), codex.New(), claude.New()}
+	return []adapter.Adapter{omp.New(), codex.New(), claude.New(), babelself.New()}
 }
 
 // cmd is one subcommand's parser: a flag set, the usage text shown for -h

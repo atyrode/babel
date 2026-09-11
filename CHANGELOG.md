@@ -32,6 +32,32 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   on the frontier and its wording, `conductor status` reports how much of the
   backlog focus is holding, and superseding the fact makes it drawable again
   on the next cycle with nothing to restore.
+- **Babel records its own analysis runs as sessions.** An exploration's
+  reasoning used to live only as long as the process that produced it: the
+  receipt records the profile, the grant, every tool call and Babel's decision
+  on it, and deliberately not the transcript, so a finding could be reopened
+  through its locators months later while the argument for it was gone. Each
+  supervised job now writes its conversation to
+  `$XDG_DATA_HOME/babel/analysis/<run>/<job>.babel.jsonl`, and a fourth source
+  adapter (`babel`) discovers, describes and renders those logs exactly as the
+  three harnesses' — so `babel sessions list --harness babel`,
+  `sessions inspect`, the web session view and `archive push` all carry them
+  with no storage configuration change on any machine.
+
+  What a session log may *not* hold is the corpus. A retrieved excerpt reaches
+  the model because a model that cannot read a record cannot form an
+  observation about it, and it comes straight back in the engine's own
+  `agent_end` message list; persisted verbatim it would be a second plaintext
+  copy of the archive under Babel's data directory, which SPEC.md §9 forbids
+  of every durable record. So the writer reduces every served tool result to
+  the locators that recover its bytes and the reason the content is absent —
+  the asymmetry the receipt's retrieval trace already keeps — while the job
+  document, the model's reasoning, its tool calls and its conclusions are kept
+  verbatim. It is fail-closed in both directions: a writer cannot be
+  constructed without a redactor, and a payload the facility does not
+  recognise is withheld rather than copied. A real run over a synthetic corpus
+  proves it, and the guard fails if the reduction is removed.
+
 - **Findings and proposals have a front door.** Both are the first entries in
   the navigation, proposals being an entirely new listing — before this,
   Babel's committed output was reachable only by guessing a URL. The dashboard

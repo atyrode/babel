@@ -94,7 +94,7 @@ the harness itself recorded is never replaced, because babel's guess does not
 outrank the session's own record.
 
 Flags:
-  --harness NAME       restrict to one harness: omp, codex, or claude
+  --harness NAME       restrict to one harness: omp, codex, claude, or babel
   --roots DIR[,DIR]    scan these roots instead of the adapters' defaults
   --limit N            send at most N sessions (default 20, 0 for no bound)
   --untitled-only      offer only sessions that have no title at all

@@ -212,6 +212,12 @@ func main() {
 	}
 
 	params := promptParams(prompt)
+	// The conversation opens with what Babel asked, the way a real turn's
+	// message list does: the job document is the user message.
+	f.say(map[string]any{
+		"role":    "user",
+		"content": []any{map[string]any{"type": "text", "text": prompt}},
+	})
 	f.emit(map[string]any{"type": "agent_start"})
 	f.emit(map[string]any{"type": "turn_start"})
 	if *accounting {
@@ -280,15 +286,26 @@ func main() {
 
 	f.emit(map[string]any{"type": "turn_end"})
 	if *nonTerminalEnd {
-		f.emit(map[string]any{"type": "agent_end", "messages": []any{}, "isTerminal": false})
+		// A non-terminal end reports the conversation so far, and the
+		// terminal one below reports it again with the closing message
+		// appended. That is what a real engine does, so anything persisting
+		// these frames has to handle the repetition rather than the ideal
+		// case of one final list.
+		f.emit(map[string]any{"type": "agent_end", "messages": f.messages, "isTerminal": false})
 	}
+	// The turn closes with the model's own last word, which a transcript
+	// keeps verbatim: it is the agent's text, not anything a facility served.
+	f.say(map[string]any{
+		"role":    "assistant",
+		"content": []any{map[string]any{"type": "text", "text": "the synthetic turn is complete"}},
+	})
 	if *noEnd {
 		f.out.Flush()
 		os.Stdout.Close()
 		f.awaitClose(*ignoreEOF, *linger, *exitCode, engine.runtimeInfo, report, *noFinished)
 		return
 	}
-	f.emit(map[string]any{"type": "agent_end", "messages": []any{}, "isTerminal": true})
+	f.emit(map[string]any{"type": "agent_end", "messages": f.messages, "isTerminal": true})
 
 	// After the turn Babel asks for stats and closes stdin.
 	for {
@@ -336,6 +353,23 @@ type engine_ struct {
 	chunked  bool
 	calls    int
 	hostIDs  int
+
+	// messages is the conversation as a real engine reports it: OMP's own
+	// message objects, whole, in every agent_end frame. It is accumulated
+	// as generic maps like everything else the fixture writes, so a test
+	// that reads a transcript out of it is reading the wire rather than a
+	// struct both sides share.
+	//
+	// A tool result goes in verbatim, exactly as the engine received it from
+	// Babel — which is what makes a served corpus excerpt reach anything
+	// that persists these messages, and therefore what the redaction on that
+	// path has to be proven against.
+	messages []any
+}
+
+// say appends one message to the conversation the next agent_end reports.
+func (f *engine_) say(message map[string]any) {
+	f.messages = append(f.messages, message)
 }
 
 // emit writes one frame, honouring the negotiated framing and the one
@@ -475,15 +509,22 @@ func (f *engine_) callRaw(name string, arguments json.RawMessage) (string, bool)
 	f.calls++
 	f.hostIDs++
 	id := "host_" + strconv.Itoa(f.hostIDs)
+	callID := "toolu_" + strconv.Itoa(f.calls)
+	f.say(map[string]any{
+		"role": "assistant",
+		"content": []any{map[string]any{
+			"type": "toolCall", "id": callID, "name": name, "arguments": arguments,
+		}},
+	})
 	f.emit(map[string]any{
 		"type":       "tool_execution_start",
-		"toolCallId": "toolu_" + strconv.Itoa(f.calls),
+		"toolCallId": callID,
 		"toolName":   name,
 	})
 	f.emit(map[string]any{
 		"type":       "host_tool_call",
 		"id":         id,
-		"toolCallId": "toolu_" + strconv.Itoa(f.calls),
+		"toolCallId": callID,
 		"toolName":   name,
 		"arguments":  arguments,
 	})
@@ -496,7 +537,14 @@ func (f *engine_) callRaw(name string, arguments json.RawMessage) (string, bool)
 	if f.served != nil {
 		fmt.Fprintf(f.served, "%s\t%t\t%s\n", name, isError, text)
 	}
-	f.emit(map[string]any{"type": "tool_execution_end", "toolCallId": "toolu_" + strconv.Itoa(f.calls), "toolName": name, "isError": isError})
+	f.say(map[string]any{
+		"role":       "toolResult",
+		"toolCallId": callID,
+		"toolName":   name,
+		"isError":    isError,
+		"content":    []any{map[string]any{"type": "text", "text": text}},
+	})
+	f.emit(map[string]any{"type": "tool_execution_end", "toolCallId": callID, "toolName": name, "isError": isError})
 	return text, isError
 }
 
