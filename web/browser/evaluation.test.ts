@@ -98,17 +98,16 @@ function visible(text: string): Promise<unknown> {
     text,
   );
 }
-// openRow clicks a listing row's link and waits for the navigation it causes.
+// follow clicks a link and waits for the navigation it causes.
 //
-// A click is retried when the row is replaced under it: React re-renders the
-// listing when an answer lands, which detaches the node Puppeteer just
+// A click is retried when the element is replaced under it: every page here
+// re-renders when its answer lands, which detaches the node Puppeteer just
 // scrolled to, and a test that treated that as a failure would be reporting
 // the harness rather than the surface. A click that never navigates is still
 // a failure, which is what the loop's exit says.
-async function openRow(item: string): Promise<void> {
-  const selector = `[data-item='${item}'] a`;
+async function follow(selector: string): Promise<void> {
   const before = page.url();
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 8; attempt++) {
     await page.waitForSelector(selector);
     try {
       await page.click(selector);
@@ -123,6 +122,11 @@ async function openRow(item: string): Promise<void> {
     }
   }
   throw new Error(`clicking ${selector} never navigated away from ${before}`);
+}
+
+// openRow follows one listing row's link into the record it names.
+function openRow(item: string): Promise<void> {
+  return follow(`[data-item='${item}'] a`);
 }
 
 function bodyText(): Promise<string> {
@@ -158,18 +162,18 @@ test.skipIf(!chrome)("the whole surface is reachable by navigation, without a gu
   await page.goto(`${mock?.base}/#/`, { waitUntil: "networkidle2" });
   await page.waitForSelector("nav");
   // From the primary navigation, not from an address bar.
-  await page.click("nav a[href='#/evaluation']");
+  await follow("nav a[href='#/evaluation']");
   await visible("Backlog");
 
-  await page.click("a[href='#/evaluation/coverage']");
+  await follow("a[href='#/evaluation/coverage']");
   await visible("Coverage");
   await visible("Never reviewed");
 
-  await page.click("a[href='#/evaluation/policy']");
+  await follow("a[href='#/evaluation/policy']");
   await visible("Review policy");
 
   // And back down into one record, from the listing rather than by id.
-  await page.click("a[href='#/evaluation']");
+  await follow("a[href='#/evaluation']");
   await visible("Backlog");
   await openRow("prp_bare-vote");
   await visible("The revision under evaluation");
@@ -184,9 +188,8 @@ test.skipIf(!chrome)("a record's own page links to its evaluation", async () => 
   // get to its reception without knowing a URL.
   await open("hypotheses/hyp_unverified-closures");
   await visible("Hypothesis");
-  const link = await page.$("a[href='#/evaluation/hypothesis/hyp_unverified-closures']");
-  expect(link).not.toBeNull();
-  await link?.click();
+  expect(await page.$("a[href='#/evaluation/hypothesis/hyp_unverified-closures']")).not.toBeNull();
+  await follow("a[href='#/evaluation/hypothesis/hyp_unverified-closures']");
   await visible("The revision under evaluation");
   await visible("hyp_unverified-closures");
   // And the decision surface is reachable from there, rather than being
@@ -299,7 +302,10 @@ test.skipIf(!chrome)("a never-reviewed record is found and is not rendered as un
   // Navigated to, not typed: the inventory's rows are links to the record.
   await openRow("hyp_never-reviewed");
   await page.waitForFunction(() => window.location.hash.includes("hyp_never-reviewed"));
-  await visible("Reception");
+  // The record's own heading, not "Reception": the coverage page this click
+  // left renders that word in its per-role table, so waiting for it can read
+  // the page being navigated away from.
+  await visible("The revision under evaluation");
   const text = await bodyText();
   // The absence is stated as an absence. Three zeroes would read as a record
   // nobody objected to.
@@ -372,9 +378,8 @@ test.skipIf(!chrome)("competing remedies read together and stay separately addre
   // not as a vote for either record.
   expect(text).toContain("preferred here: prp_group-cache");
 
-  const other = await page.$("a[href='#/evaluation/proposal/prp_group-skip']");
-  expect(other).not.toBeNull();
-  await other?.click();
+  expect(await page.$("a[href='#/evaluation/proposal/prp_group-skip']")).not.toBeNull();
+  await follow("a[href='#/evaluation/proposal/prp_group-skip']");
   await visible("The revision under evaluation");
   await page.waitForFunction(() =>
     (document.body.innerText ?? "").includes("prp_group-skip") &&
