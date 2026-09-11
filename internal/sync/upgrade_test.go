@@ -212,6 +212,22 @@ func TestOpeningAnOlderJournalUpgradesItInPlace(t *testing.T) {
 			if !bytesContains(payload, "written before the upgrade") {
 				t.Error("the legacy payload did not survive the upgrade")
 			}
+
+			// And the debt can now be settled on that same file, which is the
+			// half version 4 could have broken: it altered sync_run rather
+			// than adding a table, so an upgrade that only re-ran the schema
+			// would leave declareTx naming a column the file does not have and
+			// refuse every closure on this host (issue #152).
+			run, err := journal.declare(t.Context(), Closure{
+				RunID:           "legacy-run",
+				AbandonedReason: "no lease and no receipt survive this run",
+			})
+			if err != nil {
+				t.Fatalf("seal the legacy run's closure after the upgrade: %v", err)
+			}
+			if run.abandonedReason != "no lease and no receipt survive this run" {
+				t.Errorf("the upgraded run row records %q, want the cause it was sealed for", run.abandonedReason)
+			}
 		})
 	}
 }
@@ -258,5 +274,41 @@ func TestEnsureSchemaNeverLowersTheRecordedVersion(t *testing.T) {
 	}
 	if _, err := OpenJournal(dir); err == nil {
 		t.Error("a journal migrated past this build was opened rather than refused")
+	}
+}
+
+// A writer holds a *Stager, declares closures on its own connection, and may
+// never open a Journal at all - so EnsureSchema is the only thing that ever
+// prepares the durable file on such a host. Version 4 altered sync_run, and a
+// path that created what was missing without altering what was already there
+// would leave that host refusing every declaration it tried to write, on a
+// file that looks migrated (issue #152).
+func TestEnsureSchemaAltersAnOlderRunTable(t *testing.T) {
+	dir := t.TempDir()
+	seedLegacyJournal(t, dir, v2Schema, 2)
+
+	db, err := sql.Open("sqlite", filepath.Join(dir, DatabaseName))
+	if err != nil {
+		t.Fatalf("open durable file: %v", err)
+	}
+	defer db.Close()
+	if err := EnsureSchema(db); err != nil {
+		t.Fatalf("ensure schema on a version 2 file: %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin a writer transaction: %v", err)
+	}
+	defer tx.Rollback()
+	run, err := NewStager().declareTx(t.Context(), tx, Closure{
+		RunID:           "legacy-run",
+		AbandonedReason: "the receipt reached interrupted without declaring a closure",
+	})
+	if err != nil {
+		t.Fatalf("declare a sealed closure on a writer-prepared file: %v", err)
+	}
+	if run.abandonedReason != "the receipt reached interrupted without declaring a closure" {
+		t.Errorf("the run row records %q, want the cause it was sealed for", run.abandonedReason)
 	}
 }

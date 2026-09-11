@@ -40,7 +40,19 @@ const component = "sync"
 // and a consolidated one would reach the fleet indistinguishable. Refusing a
 // version it does not know is what makes the addition safe rather than a
 // silently narrower publication.
-const journalVersion = 3
+//
+// Version 4 added sync_run.abandoned_reason, the cause a closure was sealed
+// at what the run reached rather than declared by the run itself (issue #152).
+// The bump is the first one this component cannot serve by re-running
+// journalSchema, because it alters a table rather than adding one, and it is
+// the first whose absence would be a write failure rather than a narrower
+// publication: declareTx names the column on every declaration, so a file the
+// upgrade did not reach would refuse every closure on that host. Refusing a
+// version this build does not know still protects the other direction - an
+// older binary would carry the records and drop the reason, and a run Babel
+// had to abandon would then be indistinguishable from one that ended cleanly,
+// which is exactly the measurement the column exists to keep.
+const journalVersion = 4
 
 // DatabaseName is the durable database this journal shares with every other
 // Phase B writer. It is named here rather than imported from one of them
@@ -114,6 +126,14 @@ var (
 // is the same and the cost of not staging is higher - nothing can re-derive
 // these ids from a sealed payload, and a proposal published without them is a
 // want a fleet host would render with the authority of a verified conclusion.
+//
+// abandoned_reason is the one column here that no remote table has. It records
+// why a closure was sealed at what the run reached instead of being declared
+// by the run itself, and it is a column rather than a printed line because
+// Babel should never abandon a run: the cases where it had to are what an
+// operator measures to find out why, how often, and what to fix (issue #152).
+// It is empty for every closure a run declared for itself, which is what makes
+// a non-empty one a finding rather than a field to read past.
 const journalSchema = `
 CREATE TABLE IF NOT EXISTS sync_run(
 	run_id            TEXT PRIMARY KEY,
@@ -121,7 +141,8 @@ CREATE TABLE IF NOT EXISTS sync_run(
 	continues_run_id  TEXT,
 	record_count      INTEGER NOT NULL CHECK (record_count > 0),
 	declared_at       TEXT NOT NULL,
-	sync_state        TEXT NOT NULL CHECK (sync_state IN ('pending-sync', 'committed'))
+	sync_state        TEXT NOT NULL CHECK (sync_state IN ('pending-sync', 'committed')),
+	abandoned_reason  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS sync_run_pending_idx ON sync_run(declared_at)
@@ -170,9 +191,7 @@ CREATE TRIGGER IF NOT EXISTS sync_record_append_only
 BEFORE DELETE ON sync_record
 BEGIN SELECT RAISE(ABORT, 'the sync journal is append-only: a record that reached the shared catalog is never unrecorded'); END;
 
-CREATE TRIGGER IF NOT EXISTS sync_run_forward_only
-BEFORE UPDATE OF run_id, execution_host_id, continues_run_id, record_count, declared_at ON sync_run
-BEGIN SELECT RAISE(ABORT, 'a run identity and its declared closure are fixed at declaration'); END;
+` + syncRunForwardOnly + `
 
 CREATE TRIGGER IF NOT EXISTS sync_run_append_only
 BEFORE DELETE ON sync_run
@@ -189,6 +208,18 @@ BEGIN SELECT RAISE(ABORT, 'a staged edge names the endpoints that were validated
 CREATE TRIGGER IF NOT EXISTS sync_record_subject_immutable
 BEFORE UPDATE ON sync_record_subject
 BEGIN SELECT RAISE(ABORT, 'a staged proposal subject was validated at write time; it is released, never rewritten'); END;`
+
+// syncRunForwardOnly is the trigger that fixes a run's identity and its
+// declared closure at declaration. It is a constant of its own for the reason
+// internal/run keeps receiptImmutable separate: version 4 added a column to
+// sync_run, and a migration that added the column while leaving a trigger
+// naming the version-3 list would make the abandonment cause the single
+// writable field of an otherwise immutable row.
+const syncRunForwardOnly = `
+CREATE TRIGGER IF NOT EXISTS sync_run_forward_only
+BEFORE UPDATE OF run_id, execution_host_id, continues_run_id, record_count, declared_at,
+	abandoned_reason ON sync_run
+BEGIN SELECT RAISE(ABORT, 'a run identity, its declared closure and the cause it was sealed for are fixed at declaration'); END;`
 
 // Journal is the local record of what has been staged for the shared catalog
 // and what has reached it.
@@ -284,12 +315,12 @@ func (j *Journal) migrate() error {
 		return fmt.Errorf("sync: journal schema version %d is not supported by this build", version)
 	case version < journalVersion:
 		// Every statement in journalSchema is IF NOT EXISTS, so bringing an
-		// older file forward is running the same schema again: what it already
-		// has is left exactly as it is and what later versions added arrives.
-		// That is only true because every addition so far is a new table or a
-		// new trigger - an upgrade that had to alter an existing table would
-		// need its own statement here and a version of its own, and could not
-		// be folded into this one.
+		// older file forward starts by running the same schema again: what it
+		// already has is left exactly as it is and what later versions added
+		// arrives beside it. Version 4 is where that stopped being the whole
+		// upgrade - it altered sync_run rather than adding a table, and CREATE
+		// TABLE IF NOT EXISTS adds no column to a table that is already there
+		// - so upgradeSchema now runs that alteration after the schema.
 		if err := upgradeSchema(j.db, version); err != nil {
 			return err
 		}
@@ -308,6 +339,14 @@ func EnsureSchema(db *sql.DB) error {
 	if _, err := db.Exec(journalSchema); err != nil {
 		return fmt.Errorf("sync: create journal schema: %w", err)
 	}
+	// The version-4 column is added here as well as in upgradeSchema, and that
+	// is not belt-and-braces: a writer holds a *Stager, declares closures on
+	// its own connection, and may never open a Journal at all, so a host whose
+	// durable file was only ever prepared through this path would refuse every
+	// declaration declareTx writes until something else happened to migrate it.
+	if err := addAbandonedReason(db); err != nil {
+		return err
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migration(
 		component TEXT PRIMARY KEY,
 		version   INTEGER NOT NULL)`); err != nil {
@@ -316,19 +355,61 @@ func EnsureSchema(db *sql.DB) error {
 	return recordSchemaVersion(db)
 }
 
+// addAbandonedReason brings a sync_run table created before version 4 up to the
+// shape declareTx writes: it adds abandoned_reason and recreates the trigger
+// that holds a declaration's fields immutable.
+//
+// The column is probed rather than added and the failure swallowed, because
+// SQLite reports a duplicate column as a generic error and a build that read
+// every error from this statement as "already there" would hide a file it
+// genuinely could not alter - which is the one condition that must stop the
+// open rather than surface later as a refused declaration.
+//
+// The trigger is dropped and recreated in the same step for the reason
+// syncRunForwardOnly exists: the version-3 trigger names the version-3 columns,
+// and leaving it would make the abandonment cause the single writable field of
+// an otherwise immutable row.
+func addAbandonedReason(db *sql.DB) error {
+	var present int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM pragma_table_info('sync_run') WHERE name = 'abandoned_reason'`,
+	).Scan(&present); err != nil {
+		return fmt.Errorf("sync: inspect the sync_run columns: %w", err)
+	}
+	if present != 0 {
+		return nil
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE sync_run ADD COLUMN abandoned_reason TEXT`,
+		`DROP TRIGGER IF EXISTS sync_run_forward_only`,
+		syncRunForwardOnly,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("sync: record the abandonment cause on sync_run: %w", err)
+		}
+	}
+	return nil
+}
+
 // upgradeSchema brings a file written by an older build up to journalVersion.
 //
-// It runs the same journalSchema an empty file gets, which is what makes the
-// upgrade one statement rather than a list: every statement there is IF NOT
-// EXISTS, so the tables and triggers the file already has are untouched and
-// whatever a later version added is created beside them. That is what lets one
-// path serve both hops - version 1 to 3 and version 2 to 3 - rather than a
-// chain. from is named in the error rather than used to choose statements,
-// because no upgrade so far has to know where it started; the first one that
-// alters an existing table will need its own case, and then this argument
-// stops being only diagnostic.
+// It runs the same journalSchema an empty file gets, which is what keeps the
+// table and trigger additions one statement rather than a list: every statement
+// there is IF NOT EXISTS, so the tables and triggers the file already has are
+// untouched and whatever a later version added is created beside them. That is
+// what lets one path serve every hop - version 1, 2 or 3 to 4 - rather than a
+// chain.
+//
+// Version 4 is the first addition that alters an existing table, which is the
+// case the earlier comment here predicted could not be folded into that one
+// statement. It is still not a chain: addAbandonedReason asks the file what it
+// already has rather than inferring it from where it started, so from stays
+// diagnostic and a file at any older version arrives at the same shape.
 func upgradeSchema(db *sql.DB, from int) error {
 	if _, err := db.Exec(journalSchema); err != nil {
+		return fmt.Errorf("sync: upgrade journal schema from version %d: %w", from, err)
+	}
+	if err := addAbandonedReason(db); err != nil {
 		return fmt.Errorf("sync: upgrade journal schema from version %d: %w", from, err)
 	}
 	return recordSchemaVersion(db)
@@ -361,6 +442,11 @@ type stagedRun struct {
 	continuesRunID  string
 	recordCount     int
 	state           string
+	// abandonedReason is empty for a closure the run declared for itself, and
+	// names the cause when one was sealed on its behalf. It rides here so a
+	// caller that already read the row - a seal reporting what it did - does
+	// not have to read it again to say why.
+	abandonedReason string
 }
 
 // stage records rec inside tx, which is the transaction that is making the
@@ -490,12 +576,20 @@ func (s *Stager) declareTx(ctx context.Context, tx *sql.Tx, c Closure) (stagedRu
 		return stagedRun{}, fmt.Errorf("sync: declare run %s: %w", c.RunID, ErrRunNotStaged)
 	}
 
+	// The cause rides the same INSERT as the closure it explains, so a sealed
+	// run cannot reach the journal without saying why it was sealed. ON
+	// CONFLICT DO NOTHING keeps the first declaration authoritative: a run that
+	// declared its own closure and was then sealed by a later sweep - a race
+	// this ordering permits and 0003 makes harmless - keeps the empty cause it
+	// declared with, because it did in fact end by itself.
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sync_run(
-		run_id, execution_host_id, continues_run_id, record_count, declared_at, sync_state)
-		VALUES(?, ?, ?, ?, ?, ?)
+		run_id, execution_host_id, continues_run_id, record_count, declared_at, sync_state,
+		abandoned_reason)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO NOTHING`,
 		c.RunID, nullable(c.ExecutionHostID), nullable(c.ContinuesRunID), count,
-		s.now().Format(timestampLayout), sharedcatalog.SyncPending); err != nil {
+		s.now().Format(timestampLayout), sharedcatalog.SyncPending,
+		nullable(c.AbandonedReason)); err != nil {
 		return stagedRun{}, fmt.Errorf("sync: declare run %s: %w", c.RunID, err)
 	}
 
@@ -559,12 +653,12 @@ func (s *Stager) closureOpen(ctx context.Context, tx *sql.Tx, runID string) (boo
 }
 
 const runColumns = `SELECT run_id, COALESCE(execution_host_id, ''), COALESCE(continues_run_id, ''),
-	record_count, sync_state FROM sync_run`
+	record_count, sync_state, COALESCE(abandoned_reason, '') FROM sync_run`
 
 func scanRun(s interface{ Scan(...any) error }) (stagedRun, error) {
 	var run stagedRun
 	if err := s.Scan(&run.runID, &run.executionHostID, &run.continuesRunID,
-		&run.recordCount, &run.state); err != nil {
+		&run.recordCount, &run.state, &run.abandonedReason); err != nil {
 		return stagedRun{}, fmt.Errorf("sync: read declared run: %w", err)
 	}
 	return run, nil
@@ -789,16 +883,62 @@ func (j *Journal) PendingByKind(ctx context.Context) (map[sharedcatalog.RecordKi
 	return counts, nil
 }
 
-// UndeclaredRecords counts staged records whose run has never declared a
-// closure.
+// UndeclaredRun is one run that owes the fleet records it has never declared a
+// closure for. Staged records are the only durable evidence that the debt
+// exists: a lease is deleted on release, a receipt may never have been
+// written, and a presence row expires, so a run killed badly leaves all three
+// absent and these rows behind.
+type UndeclaredRun struct {
+	RunID   string
+	Records int
+	FirstAt string
+	LastAt  string
+}
+
+// UndeclaredRuns lists them, oldest debt first.
 //
-// They are pending and deliberately unpublishable: an exploration interrupted
-// before its receipt has written records but has not finished producing them,
-// and declaring a closure at whatever it happened to reach would publish a run
-// that later grows - which 0003 refuses, permanently, because record_count is
-// immutable. Resuming the run under the same id closes the closure and the next
-// sync carries all of it. Reporting the count is what keeps that state visible
-// rather than looking like a sync that did nothing.
+// This is deliberately keyed on sync_record rather than on any evidence of the
+// producing process, which is what makes it the backstop: whatever else was
+// lost, a record that was staged is still owed. Whether a given run may be
+// sealed is the caller's judgement - a live attempt still holds its lease and
+// may yet declare its own closure, and 0003 makes that declaration immutable -
+// so this reports the debt and decides nothing.
+func (j *Journal) UndeclaredRuns(ctx context.Context) ([]UndeclaredRun, error) {
+	rows, err := j.db.QueryContext(ctx, `
+		SELECT r.run_id, count(*), min(r.staged_at), max(r.staged_at)
+		  FROM sync_record r
+		 WHERE r.sync_state = ?
+		   AND NOT EXISTS (SELECT 1 FROM sync_run u WHERE u.run_id = r.run_id)
+		 GROUP BY r.run_id
+		 ORDER BY min(r.staged_at), r.run_id`, sharedcatalog.SyncPending)
+	if err != nil {
+		return nil, fmt.Errorf("sync: list undeclared runs: %w", err)
+	}
+	defer rows.Close()
+	out := []UndeclaredRun{}
+	for rows.Next() {
+		var u UndeclaredRun
+		if err := rows.Scan(&u.RunID, &u.Records, &u.FirstAt, &u.LastAt); err != nil {
+			return nil, fmt.Errorf("sync: list undeclared runs: %w", err)
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sync: list undeclared runs: %w", err)
+	}
+	return out, nil
+}
+
+// UndeclaredRecords counts the same debt.
+//
+// An exploration interrupted before its receipt has written records but has
+// not finished producing them, and declaring a closure at whatever it happened
+// to reach would publish a run that later grows - which 0003 refuses,
+// permanently, because record_count is immutable. So a live run's records wait
+// for it. A run that is over waits for nothing and is sealed; see
+// Publisher.SealAbandoned, which is what stops this count from being a debt
+// the operator has to notice and settle by hand, and run.Store.RunLiveness,
+// which is the evidence it seals on.
 func (j *Journal) UndeclaredRecords(ctx context.Context) (int, error) {
 	var n int
 	if err := j.db.QueryRowContext(ctx, `

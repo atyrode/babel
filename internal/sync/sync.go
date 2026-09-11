@@ -231,6 +231,14 @@ type Closure struct {
 	// second instance's follow-on work stays attached to the first instance's
 	// output rather than merely resembling it.
 	ContinuesRunID string
+	// AbandonedReason is the cause this closure was sealed for, and it is empty
+	// for every closure a run declared for itself. A run that was proven over
+	// without ever declaring one is sealed at what it reached so its records
+	// can publish (Publisher.SealAbandoned), and the cause is recorded rather
+	// than printed because Babel should never have to abandon a run: the times
+	// it did are what an operator measures to find out why, how often, and what
+	// to fix (issue #152).
+	AbandonedReason string
 }
 
 // Hook is the publication surface a durable writer holds.
@@ -432,6 +440,22 @@ func (s *Stager) DeclareTx(ctx context.Context, tx *sql.Tx, c Closure) error {
 // publish it yet is not one.
 func (s *Stager) CommitInline(context.Context, Closure) error { return nil }
 
+// Liveness reports whether a run may still produce records.
+//
+// It is a function this package is handed rather than a rule it applies,
+// because the evidence is internal/run's: a held lease whose process still
+// exists, or a receipt whose latest checkpoint is running or resumed. That
+// package imports this one to stage what it writes, so a dependency the other
+// way would be a cycle - and the direction is right anyway, since the evidence
+// belongs to whoever owns the attempt rather than to whoever publishes.
+//
+// why is the cause a run that is over ended for, in the words of the store
+// that examined it, and it is meaningful only when live is false. It is
+// carried rather than derived here because this package cannot see which
+// evidence was missing, and "abandoned for an unstated reason" is exactly the
+// record that would make the abandonment unmeasurable.
+type Liveness func(ctx context.Context, runID string) (live bool, why string, err error)
+
 // Publisher commits declared closures to the shared backend.
 //
 // It is safe to reuse across closures and is deliberately not safe for
@@ -451,6 +475,21 @@ type Publisher struct {
 	// carry a remote endpoint's words - and only the command surface owns the
 	// terminal-safe renderer that may put it on a terminal (SPEC.md §8).
 	diag func(error)
+
+	// Live proves a run dead before its closure is sealed on its behalf. A nil
+	// Live means this deployment can prove nothing, and SealAbandoned then
+	// seals nothing: migration 0003 fixes a record_count at declaration, so a
+	// guess about a run that is still going would publish a closure the run
+	// then grows past, permanently.
+	//
+	// It is a field rather than an Options entry because of the direction the
+	// dependency runs. The evidence belongs to internal/run, that package
+	// imports this one to stage what it writes, and the store that answers the
+	// question is opened with this publisher as its own publication hook - so
+	// the publisher exists first and is handed the oracle immediately
+	// afterwards, at its wiring site, before any caller holds it. It is written
+	// once and read from then on; see internal/cli's openPublisher.
+	Live Liveness
 }
 
 // Options is everything a Publisher needs. Each dependency is injected rather
@@ -616,9 +655,16 @@ type Report struct {
 	Committed map[sharedcatalog.RecordKind]int
 	// Pending counts, per kind, the records still owed to the fleet.
 	Pending map[sharedcatalog.RecordKind]int
-	// Undeclared counts staged records whose run has declared no closure.
-	// They are deliberately unpublishable; see Journal.UndeclaredRecords.
+	// Undeclared counts staged records whose run has declared no closure and
+	// was not proven over either, so they are still waiting for the run itself.
+	// See Journal.UndeclaredRecords and SealAbandoned.
 	Undeclared int
+	// Sealed names each run this attempt declared a closure for on the run's
+	// behalf, and the cause. It is part of the report rather than a diagnostic
+	// because an abandonment Babel had to perform is a finding: the operator
+	// measures why it happened and how often from these rows, and a count with
+	// no cause beside it would be a number nobody can act on (issue #152).
+	Sealed []Sealed
 	// Failures names each closure that did not publish and why. It is a slice
 	// rather than one error because one unreachable record must not hide the
 	// nine that published.
@@ -631,6 +677,74 @@ type RunFailure struct {
 	Err   error
 }
 
+// Sealed is one run whose closure was declared at what it reached, because it
+// was proven over without ever declaring one itself.
+type Sealed struct {
+	RunID   string
+	Records int
+	Reason  string
+}
+
+// SealAbandoned declares the closure of every run that is over and never
+// declared one, so the records it staged can publish.
+//
+// It exists because three recovery paths all key on evidence a badly killed
+// process does not leave: Store.Reconcile scans a lease that is deleted on
+// release, Store.DeclareFinished selects receipts a killed run never wrote, and
+// Store.RecoverHistorical needs a presence row and a preparation that a run
+// with no receipt has no link to. The staged records are the only durable
+// evidence the debt exists, so this is the path that keys on them - which is
+// what makes it the backstop rather than a fourth way to miss the same runs
+// (issue #152; CHANGELOG's 2026-09-06 entry is the same shape striking twice).
+//
+// Nothing is sealed without proof of death. A nil Live means this deployment
+// can prove nothing and therefore seals nothing: migration 0003 fixes
+// record_count at declaration and never lets it move, so a closure guessed for
+// a run that is still producing would be permanently short of its own output. A
+// run Live reports live is skipped for the same reason and costs nothing - its
+// own declaration is still coming.
+//
+// A failure on one run does not stop the others, on Retry's terms: they are
+// independent declarations, and one run whose evidence cannot be read must not
+// strand the output of the rest. The returned error is a failure to read the
+// journal at all.
+func (p *Publisher) SealAbandoned(ctx context.Context) ([]Sealed, error) {
+	if p == nil || p.Live == nil {
+		return nil, nil
+	}
+	debts, err := p.journal.UndeclaredRuns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var sealed []Sealed
+	for _, debt := range debts {
+		live, why, err := p.Live(ctx, debt.RunID)
+		if err != nil {
+			p.report(fmt.Errorf("sync: prove run %s over: %w", debt.RunID, err))
+			continue
+		}
+		if live {
+			continue
+		}
+		// The count comes back from the declaration rather than from the debt
+		// row, because the journal is what fixed it: a writer that staged one
+		// more record between the two reads is declared at what it actually
+		// holds, and reporting the earlier number would misstate a closure this
+		// build can never change.
+		run, err := p.journal.declare(ctx, Closure{RunID: debt.RunID, AbandonedReason: why})
+		if err != nil {
+			p.report(fmt.Errorf("sync: seal abandoned run %s: %w", debt.RunID, err))
+			continue
+		}
+		sealed = append(sealed, Sealed{
+			RunID:   run.runID,
+			Records: run.recordCount,
+			Reason:  run.abandonedReason,
+		})
+	}
+	return sealed, nil
+}
+
 // Retry publishes every declared closure the journal still holds as pending.
 //
 // It is `babel sync` and the reconcile step after an archive push, and it is
@@ -640,6 +754,14 @@ type RunFailure struct {
 // what it continues - and a failure on one does not stop the rest, because
 // they are independent commits and a single unreachable object must not strand
 // output that would have published.
+//
+// Runs proven over that never declared a closure are sealed first, so their
+// records publish on this same attempt rather than on a later one an operator
+// has to remember to run: SealAbandoned declares the closure and the loop below
+// then finds it pending like any other. That ordering is the whole reason every
+// automatic publish path - the conductor's cycle, the sync after an archive
+// push, `babel sync`, `babel runs` - drains stranded records with no new
+// command and no operator action.
 //
 // The returned error is a failure to read the journal at all. Everything a
 // closure can fail at is in the Report.
@@ -651,6 +773,11 @@ func (p *Publisher) Retry(ctx context.Context) (Report, error) {
 	if p == nil {
 		return rep, nil
 	}
+	sealed, err := p.SealAbandoned(ctx)
+	if err != nil {
+		return rep, err
+	}
+	rep.Sealed = sealed
 	runs, err := p.journal.pendingRuns(ctx)
 	if err != nil {
 		return rep, err

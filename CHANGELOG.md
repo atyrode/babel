@@ -353,6 +353,34 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Fixed
 
+- **Records from a run nothing will ever finish now publish themselves
+  (#152).** Publication is automatic by design — an hourly push carries this
+  host's staged output as its last step — but the drain was keyed on a run
+  declaring its own closure, and a process killed hard declares nothing: on
+  2026-09-11 two runs left 1,022 records (951 link, 41 observation, 30
+  hypothesis) staged on dev-01 with no receipt, no lease and no preparation
+  to recover them from, where they sat for five days while `babel sync`
+  reported them as belonging to runs "that have not finished". The
+  2026-09-06 fix below — *An exploration now declares its publication closure
+  when it ends* — closed only the case where a receipt survived to declare
+  from; this closes the case where nothing survived but the records. The
+  journal (schema v4) enumerates the debt from the staged records
+  themselves, which is the only evidence a badly-killed process leaves
+  behind; `run.Store.RunLiveness` proves a run over, and names which
+  evidence was missing when it does — a lease whose process still exists or
+  a receipt standing at running or resumed is live, and nothing else is;
+  `sync.Publisher.SealAbandoned` seals the closure of every run proven over
+  at what it reached, recording the cause in `sync_run.abandoned_reason`.
+  `Retry` seals before it publishes, so every path that already publishes
+  without being asked drains the strays, and no new command exists to
+  forget. An instance that can prove nothing seals nothing, because
+  migration `0003` never lets a declared `record_count` move and a run
+  sealed while it could still grow would be permanently short of its own
+  output. With only the seal step removed from `Retry`, the regression fails
+  with `report sealed 0 runs, want the one that was abandoned`. SPEC.md §9.1
+  now states the invariant that was assumed: every record reaches the shared
+  catalog with no operator action.
+
 - **One stray disposal handle no longer fails a whole run.** A result that
   deferred or rejected a candidate handle it never declared was recorded with
   `state.fail`, and the first failure anywhere becomes the run's verdict, so a
