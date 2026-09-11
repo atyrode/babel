@@ -172,24 +172,19 @@ may supply missing capability proof, but a local skip is not a pass.
   temporary files. Record a procedure as exercised only after execution, with host, date
   and observed output; otherwise mark it **OPERATOR STEP** with prerequisites and observable
   success. Historical output or pinned source is not current activation proof.
-- **Plugins:** read `plugins/README.md` for SDK setup, bundle verification and development
-  commands, and `docs/manifold-transition.md` for implemented versus intended behavior.
-  The `../manifold` sibling, including beside an isolated worktree, must match
-  `plugins/MANIFOLD_REV` and have its dependencies installed. Change that pin and the
-  `uses:` ref in `.github/workflows/manifold-plugins.yml` together; Manifold's
-  `docs/PLUGINS.md` §9 at that pin owns kit commands and delivery strategies. Require the
-  plugin gate. Its temporary real-server verification is source/bundle proof, not installed
-  browser proof.
-- **Authorized preview or plugin delivery:** read `plugins/README.md` and
-  `.github/workflows/release.yml`; determine the actual host/hub rather than copying a
-  historical URL or container command. Preview release delivery is conditional on
-  `DEV_DEPLOY_HOST`; the workflow's development URL is `DEV_DEPLOY_URL`. Keep owner keys out
-  of argv, output and the tree. Verify the actual installed bundle and affected browser
-  action, using the current enrolled/online roster when needed. Packing or tagging does not
-  prove installation or interaction. At plugin-task delivery and when asking the operator
-  to inspect it, name the hub URL, panel, action and expected result.
-- **Release or deployment work:** read `.github/workflows/release.yml` for `v*` binary and
-  plugin publication, and the runbook/transition record for current deployment ownership.
+- **Plugins are paused; Babel is standalone.** Nothing Babel does depends on a hub: its
+  interface is `babel web` (`SPEC.md` §8.4), its storage is PostgreSQL and restic, and its
+  compute is a command run on a machine. The sources under `plugins/` stay in the tree, but
+  the release no longer packs or installs them and the gate runs only on
+  `workflow_dispatch`. Do not resume this work, bump `plugins/MANIFOLD_REV`, or restore the
+  packing, preview or CI triggers without the operator asking for it: the integration was
+  scratched before Manifold had the primitives it needs, and a half-built bundle in the
+  release path made a green build report failure. When it does resume, the pin and the
+  `uses:` ref in `.github/workflows/manifold-plugins.yml` move together, the fixtures under
+  `plugins/test` come to that kit, and the triggers return in the same change;
+  `plugins/README.md` and `docs/manifold-transition.md` describe the layout.
+- **Release or deployment work:** read `.github/workflows/release.yml` for `v*` binary
+  publication, and the runbook/transition record for current deployment ownership.
   Managed-machine packaging, scheduling and storage/key placement belong to dotfiles;
   source publication does not prove fleet activation. Only tag deployable revisions;
   never move or delete a published tag, since proxied Go modules are immutable. A bad tag
@@ -205,7 +200,7 @@ may supply missing capability proof, but a local skip is not a pass.
 - Use PRs into `main` with conventional-commit titles. Applicable local checks and current
   required CI remain readiness/merge prerequisites. `.github/workflows/ci.yml` runs `test`,
   `race`, `web` and `browser` on every PR and main push and supports manual main-CI dispatch.
-  Plugin CI runs only for changes to `plugins/**` or `.github/workflows/manifold-plugins.yml`.
+  Plugin CI is paused and runs only on `workflow_dispatch`.
 - Add one `## [Unreleased]` bullet in `CHANGELOG.md` per user-visible change, in the existing
   voice: what changed, why and what proves it.
 - Cite cross-repository facts with source `path:line` at a named revision, not from memory;

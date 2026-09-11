@@ -1,5 +1,18 @@
 # Babel's manifold plugins
 
+> **Paused, 2026-09-11.** Babel is a standalone product: its interface is `babel web`,
+> its storage is PostgreSQL and restic, and nothing it does depends on a hub. This
+> integration was scratched before manifold had the primitives it needs, so the release
+> no longer packs or installs these bundles and the CI gate runs only on
+> `workflow_dispatch`. The sources stay here because the work is postponed rather than
+> abandoned. Two things are known to be stale and must be settled together when it
+> resumes: `MANIFOLD_REV` (3f899e5) is behind the kit the fixtures under `test/` are
+> written against, so `bun run check` fails before any new change is considered; and the
+> host now refuses a server module that default-exports nothing, which is what failed
+> v0.2.4's preview install with `artifact_invalid: server module must default-export a
+> ServerPluginDef`. The rest of this document describes the intended shape, not what is
+> currently wired.
+
 Babel's final form is a manifold plugin (`docs/manifold-transition.md`). This directory is
 that plugin, in the shape the operator ratified on 2026-09-05 (§7 of the record): one
 **baseline** plus independently enable-able **sub-plugins**, each an isolated plugin authored

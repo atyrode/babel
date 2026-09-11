@@ -9,6 +9,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Changed
+
+- **Babel releases its own binary and nothing else.** The manifold plugins are
+  paused: Babel is a standalone product whose interface is `babel web`, whose
+  storage is PostgreSQL and restic, and nothing it does depends on a hub. The
+  integration was scratched before manifold had the primitives it needs, and
+  carrying it in the release path meant a green build reported failure —
+  v0.2.4's binaries published while its preview install refused with
+  `artifact_invalid: server module must default-export a ServerPluginDef`, a
+  loader contract written after `plugins/MANIFOLD_REV`. The packing and preview
+  jobs are gone from the release, the plugin gate runs only on
+  `workflow_dispatch`, and the sources stay in the tree with what is stale
+  recorded at the head of `plugins/README.md`, because the work is postponed
+  rather than abandoned.
+
 ## [0.2.4] - 2026-09-11
 
 ### Added
