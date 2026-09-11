@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,10 +59,17 @@ type fakeFleet struct {
 	// deployment has no fleet" and "this deployment's fleet did not answer" is
 	// observable from the outside.
 	fail error
+	// mu guards what Open records, because a listing opens its records
+	// concurrently.
+	mu sync.Mutex
 	// opened records every id Open was called for, which is how a test
 	// distinguishes a caller that listed a page from one that also paid to
 	// fetch and decrypt every record on it.
 	opened []string
+	// openGate, when set, runs inside every Open before it answers. A test
+	// that blocks it until several calls are in flight observes whether the
+	// caller opens its records together or one after another.
+	openGate func()
 
 	recordFilters []sharedcatalog.RecordFilter
 	hostFilters   []sharedcatalog.RecordFilter
@@ -99,7 +107,13 @@ func (f *fakeFleet) RecordsWithContent(_ context.Context,
 // it kept rather than the whole page it listed.
 func (f *fakeFleet) Open(_ context.Context,
 	rec sharedcatalog.FleetRecord) (fleet.Record, error) {
+	f.mu.Lock()
 	f.opened = append(f.opened, rec.Record.RecordID)
+	gate := f.openGate
+	f.mu.Unlock()
+	if gate != nil {
+		gate()
+	}
 	if f.fail != nil {
 		return fleet.Record{}, f.fail
 	}
@@ -1113,6 +1127,86 @@ func TestFleetRecordKindVocabularyMatchesTheCatalog(t *testing.T) {
 		response.Body.Close()
 		if response.StatusCode != http.StatusOK {
 			t.Errorf("kind=%s status = %d, want 200", kind, response.StatusCode)
+		}
+	}
+}
+
+// A merged listing opens the records it kept together, not one after another.
+//
+// Whose machine produced a record decides nothing about the cost of reading
+// it, and dropping this machine's share before opening hid that the reads
+// were serial: an instance that produced the deployment's records skips
+// nearly all of them and pays almost nothing, while an instance that produced
+// none of them skips nothing and pays an object-store round trip, a digest
+// check and a decrypt for every row, in sequence. On the deployment's own
+// 1,958-candidate frontier that was 31.7 seconds against the browser's
+// 20-second abort, so the dashboard rendered nothing at all on every machine
+// except the one that happened to have made the records.
+//
+// The listing's order is the catalog's and must survive completion order,
+// which is the other half of what reading them together must not cost.
+func TestAMergedListingOpensItsRecordsTogether(t *testing.T) {
+	h := newPhaseB(t, "plain", nil)
+	f := h.fleetOf()
+	// An instance that produced none of the deployment's records: nothing is
+	// dropped before opening, so the page is paid for in full.
+	f.local = "a-machine-that-made-none-of-this"
+
+	var mu sync.Mutex
+	var inFlight, peak int
+	together := make(chan struct{})
+	var once sync.Once
+	f.openGate = func() {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		reached := inFlight >= 2
+		mu.Unlock()
+		if reached {
+			once.Do(func() { close(together) })
+		}
+		// A caller that opens one record at a time never reaches the second
+		// while the first is held, so the wait is bounded: the test reports
+		// what it observed rather than hanging the package.
+		select {
+		case <-together:
+		case <-time.After(5 * time.Second):
+		}
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+	}
+
+	filter := sharedcatalog.RecordFilter{
+		Kinds: []sharedcatalog.RecordKind{sharedcatalog.KindHypothesis},
+		Limit: listScanCap,
+	}
+	want := f.selected(filter)
+	if len(want) < 2 {
+		t.Fatalf("the fixture offers %d remote candidates, want at least 2", len(want))
+	}
+
+	got, err := h.server.otherHosts(h.ctx, listScanCap, sharedcatalog.KindHypothesis)
+	if err != nil {
+		t.Fatalf("otherHosts: %v", err)
+	}
+
+	mu.Lock()
+	observed := peak
+	mu.Unlock()
+	if observed < 2 {
+		t.Errorf("opens in flight at once = %d, want at least 2: the listing reads one record after another", observed)
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("listed %d records, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Record.RecordID != want[i].Record.RecordID {
+			t.Fatalf("record %d is %s, want %s: completion order displaced the catalog's",
+				i, got[i].Record.RecordID, want[i].Record.RecordID)
 		}
 	}
 }

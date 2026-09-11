@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/sharedcatalog"
@@ -539,6 +540,12 @@ func (s *Server) mergeOtherHosts(r *http.Request, limit int,
 	return records, false
 }
 
+// openWorkers bounds how many records a merged listing opens at once. The
+// object store is a shared service and one page view is not entitled to
+// saturate it, so the bound is the publisher's own (internal/sharedcatalog's
+// publishWorkers) for the same reason that one has a bound.
+const openWorkers = 16
+
 // otherHosts reads the other machines' committed records of the given kinds.
 //
 // Only committed records cross: SPEC.md §9 makes staged output not globally
@@ -576,21 +583,68 @@ func (s *Server) otherHosts(ctx context.Context, limit int,
 		return nil, err
 	}
 	local := s.opts.Fleet.LocalHost()
-	out := make([]fleet.Record, 0, len(records))
+	// Whose records these are decides nothing about the cost of reading
+	// them, and the filter is applied before any of it is paid.
+	wanted := make([]fleet.Record, 0, len(records))
 	for _, record := range records {
 		if local != "" && record.HostID == local {
 			continue
 		}
-		// Open failures stay per-record: the reader's own rule is that a
-		// sealed record is reported as sealed, never dropped and never
-		// escalated into a failure of the whole listing.
-		opened, err := s.opts.Fleet.Open(ctx, record.FleetRecord)
-		if err != nil {
-			record.Unopened = err.Error()
-			out = append(out, record)
-			continue
+		wanted = append(wanted, record)
+	}
+	// Each open is an object-store round trip, a digest check and a decrypt,
+	// and no two of them depend on each other, so the serial loop this
+	// replaced spent the request waiting. Dropping this machine's share
+	// first hid that: a machine that produced the deployment's records skips
+	// nearly everything and pays almost nothing, while a machine that
+	// produced none of them skips nothing and pays for all of it. The
+	// deployment's 1,958-candidate frontier read from a non-producing
+	// instance took 31.7s against the browser's own 20-second abort, so the
+	// dashboard rendered nothing at all there while rendering in 3.3s on the
+	// machine that happened to make the records — the asymmetry being the
+	// tell that the work was never the reader's to do one at a time.
+	out := make([]fleet.Record, len(wanted))
+	workers := min(openWorkers, len(wanted))
+	next := make(chan int)
+	go func() {
+		defer close(next)
+		for i := range wanted {
+			select {
+			case next <- i:
+			case <-ctx.Done():
+				return
+			}
 		}
-		out = append(out, opened)
+	}()
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				record := wanted[i]
+				// Open failures stay per-record: the reader's own rule is
+				// that a sealed record is reported as sealed, never dropped
+				// and never escalated into a failure of the whole listing.
+				// The index is the listing's order, which the catalog chose
+				// and completion order must not disturb.
+				opened, err := s.opts.Fleet.Open(ctx, record.FleetRecord)
+				if err != nil {
+					record.Unopened = err.Error()
+					out[i] = record
+					continue
+				}
+				out[i] = opened
+			}
+		}()
+	}
+	wg.Wait()
+	// A cancelled request is one failure, not a page of records each
+	// reporting that it is sealed. The caller degrades the listing with the
+	// reason instead, which is what it already does for a catalog that
+	// cannot be reached.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
