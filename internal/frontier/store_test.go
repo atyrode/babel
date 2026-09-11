@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/harness"
 	"github.com/atyrode/babel/internal/synth"
 )
 
@@ -1423,7 +1424,7 @@ func TestEvidenceFromScannedCorpus(t *testing.T) {
 
 	var locators []event.Locator
 	err = event.Scan(log, event.Stream{
-		Harness: event.HarnessOMP, AdapterSchema: 1, SourceID: session.ID, Path: session.Path,
+		Harness: harness.OMP, AdapterSchema: 1, SourceID: session.ID, Path: session.Path,
 	}, func(e event.Event) error {
 		if e.Kind == event.KindUserReport && len(locators) < 3 {
 			locators = append(locators, e.Locator)

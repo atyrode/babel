@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/harness"
 	"github.com/atyrode/babel/internal/index"
 	"github.com/atyrode/babel/internal/preflight"
 	"github.com/atyrode/babel/internal/run"
@@ -82,7 +83,7 @@ func newServedBroker(t *testing.T, redact bool) *retrieval {
 	t.Cleanup(func() { idx.Close() })
 
 	stream := event.Stream{
-		Harness:       event.HarnessOMP,
+		Harness:       harness.OMP,
 		AdapterSchema: 1,
 		SourceID:      servedSourceID,
 		Path:          path,
@@ -93,7 +94,7 @@ func newServedBroker(t *testing.T, redact bool) *retrieval {
 	at := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	return &retrieval{
 		index:      idx,
-		harnesses:  []string{event.HarnessOMP},
+		harnesses:  []string{harness.OMP},
 		sourceIDs:  []string{servedSourceID},
 		redact:     redact,
 		thresholds: preflight.DefaultThresholds(),
@@ -142,7 +143,7 @@ func TestServedPayloadCarriesWhatMakesAHitCitable(t *testing.T) {
 		t.Fatalf("payload carries %d hits, want the one the request asked for", len(results.Hits))
 	}
 	hit := results.Hits[0]
-	if hit.Harness != event.HarnessOMP || hit.SourceID != servedSourceID {
+	if hit.Harness != harness.OMP || hit.SourceID != servedSourceID {
 		t.Errorf("hit identity = %s/%s, want the fixture session", hit.Harness, hit.SourceID)
 	}
 	if hit.Index == 0 {

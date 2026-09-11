@@ -53,6 +53,7 @@ import (
 	"github.com/atyrode/babel/internal/catalog"
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/fleet"
+	"github.com/atyrode/babel/internal/harness"
 	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/restic"
 )
@@ -352,18 +353,44 @@ func (a *app) bare() error {
 	return nil
 }
 
+// sourceAdapters is the local source adapter for each declared harness
+// (internal/harness): what discovers, describes and backs up that
+// harness's sessions on this machine.
+//
+// A harness Babel can read needs no entry here to be scanned, parsed or
+// prepared — that is the point of the declaration — but it needs one to be
+// discovered locally, because discovery is filesystem knowledge no
+// declaration can supply. A declared harness with no entry is therefore
+// readable but not collected, which is a coherent state for a harness whose
+// logs arrive by fetch; TestEveryDeclaredHarnessHasASourceAdapter pins that
+// none of the shipped harnesses is in it by accident.
+var sourceAdapters = map[string]func() adapter.Adapter{
+	harness.OMP:    func() adapter.Adapter { return omp.New() },
+	harness.Codex:  func() adapter.Adapter { return codex.New() },
+	harness.Claude: func() adapter.Adapter { return claude.New() },
+	harness.Babel:  func() adapter.Adapter { return babelself.New() },
+}
+
 // adapters returns the source adapters in a stable order. Every command
 // that reads local sessions goes through this one registry, so a harness
 // is never visible to one command and invisible to another.
 //
-// babelself is last because it is the newest and because it is Babel's own:
-// the three harnesses Babel was built to read come first. Registering it
-// here is the whole of what an analysis session needs in order to be
-// discovered, described, listed and — because BackupRoots feeds
-// existingRoots — snapshotted by `archive push`, with no storage
-// configuration change on any machine.
+// The order is the declaration's own: the three harnesses Babel was built
+// to read, then Babel's own, then anything registered later. Being here is
+// the whole of what an analysis session needs in order to be discovered,
+// described, listed and — because BackupRoots feeds existingRoots —
+// snapshotted by `archive push`, with no storage configuration change on
+// any machine.
 func adapters() []adapter.Adapter {
-	return []adapter.Adapter{omp.New(), codex.New(), claude.New(), babelself.New()}
+	out := make([]adapter.Adapter, 0, len(sourceAdapters))
+	for _, h := range harness.All() {
+		newAdapter, ok := sourceAdapters[h.Name]
+		if !ok {
+			continue
+		}
+		out = append(out, newAdapter())
+	}
+	return out
 }
 
 // cmd is one subcommand's parser: a flag set, the usage text shown for -h

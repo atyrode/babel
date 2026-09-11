@@ -10,6 +10,7 @@ import (
 	"github.com/atyrode/babel/internal/adapter/claude"
 	"github.com/atyrode/babel/internal/adapter/codex"
 	"github.com/atyrode/babel/internal/adapter/omp"
+	"github.com/atyrode/babel/internal/harness"
 )
 
 // realRootsEnv opts the real-tree smoke test in, matching the switch every
@@ -26,9 +27,9 @@ func TestScanRealRoots(t *testing.T) {
 		t.Skipf("set %s to scan the real harness roots", realRootsEnv)
 	}
 	adapters := map[string]adapter.Adapter{
-		HarnessOMP:    omp.New(),
-		HarnessCodex:  codex.New(),
-		HarnessClaude: claude.New(),
+		harness.OMP:    omp.New(),
+		harness.Codex:  codex.New(),
+		harness.Claude: claude.New(),
 	}
 	evidence := []Kind{KindUserReport, KindAgentClaim, KindToolObservation, KindRepositoryChange, KindVerificationEvidence}
 	for harness, a := range adapters {

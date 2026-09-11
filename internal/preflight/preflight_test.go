@@ -12,6 +12,7 @@ import (
 
 	"github.com/atyrode/babel/internal/digest"
 	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/harness"
 	"github.com/atyrode/babel/internal/worker"
 )
 
@@ -45,7 +46,7 @@ func ompLog(t *testing.T, dir, name, sourceID string, texts ...string) Input {
 	}
 	return Input{
 		Stream: event.Stream{
-			Harness:       event.HarnessOMP,
+			Harness:       harness.OMP,
 			AdapterSchema: 1,
 			SourceID:      sourceID,
 			Path:          path,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/atyrode/babel/internal/digest"
 	"github.com/atyrode/babel/internal/event"
+	"github.com/atyrode/babel/internal/harness"
 	"github.com/atyrode/babel/internal/synth"
 )
 
@@ -223,7 +224,7 @@ func rawLog(t *testing.T, sourceID, body string) Input {
 	}
 	return Input{
 		Stream: event.Stream{
-			Harness:       event.HarnessOMP,
+			Harness:       harness.OMP,
 			AdapterSchema: 1,
 			SourceID:      sourceID,
 			Path:          path,

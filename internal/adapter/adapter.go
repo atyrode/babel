@@ -1,5 +1,7 @@
 // Package adapter defines the harness source-adapter port (SPEC.md §3).
-// OMP, Codex, and Claude Code implement it over one provenance model.
+// OMP, Codex, and Claude Code are its first implementations over one
+// provenance model, not the set: which harnesses exist is
+// internal/harness's single declaration (SPEC.md §6.8).
 // Adapters read live session files in place: durability is restic's job
 // (snapshots are crash-consistent per file, not transactional across
 // files), so descriptions are best-effort views refreshed on every call,
@@ -223,8 +225,8 @@ type Description struct {
 
 // Adapter is the harness source-adapter port.
 type Adapter interface {
-	// Harness returns the stable lowercase harness name: "omp", "codex",
-	// or "claude".
+	// Harness returns the stable lowercase harness name this adapter
+	// reads, as internal/harness declares it.
 	Harness() string
 	// Schema returns the adapter metadata schema version.
 	Schema() int
