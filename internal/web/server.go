@@ -465,16 +465,47 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleExport(w, r)
+	// The ledger's reading surfaces. The inbox is what to do next; the
+	// listings beside it are what the ledger holds, and §8.4 is why they
+	// exist: a question the operator already answered, an entity nobody
+	// linked to, or one revision of a fact were each reachable only by an
+	// identifier a reader had to already have, which that section counts
+	// as not being in the product at all.
 	case "/api/reality/inbox":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return
 		}
 		s.handleRealityInbox(w, r)
+	case "/api/reality/questions":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRealityQuestions(w, r)
+	case "/api/reality/question":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRealityQuestion(w, r)
+	case "/api/reality/entities":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRealityEntities(w, r)
 	case "/api/reality/entity":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return
 		}
 		s.handleRealityEntity(w, r)
+	case "/api/reality/facts":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRealityFacts(w, r)
+	case "/api/reality/fact":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleRealityFact(w, r)
 	case "/api/reality/answer":
 		if !s.requireMethod(w, r, http.MethodPost) {
 			return

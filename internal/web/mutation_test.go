@@ -307,7 +307,7 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			concrete: reflect.TypeOf((*frontier.Store)(nil)),
 			permitted: []string{"Finding", "Head", "Hypotheses", "Hypothesis", "LinksFrom", "LinksTo",
 				"Observation", "ObservationsFor", "Proposal", "Proposals", "ProposalsAddressing",
-				"ReviewStatus", "Revisions", "StatusHistory", "TriageAdvice"},
+				"ReviewStatus", "Revisions", "StatusHistory", "TriageAdvice", "TriageAdvised"},
 			// Every frontier write, including its own Decide and the
 			// revive transition #87 added: one disposition log exists and
 			// internal/review is the only way this surface may append to
@@ -355,8 +355,10 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			name:     "reality",
 			surface:  reflect.TypeOf((*RealityService)(nil)).Elem(),
 			concrete: reflect.TypeOf((*reality.Store)(nil)),
-			permitted: []string{"AcceptPlan", "Aliases", "Answers", "Entity", "Facts", "Inbox",
-				"Plan", "Question", "QuestionHistory", "RecordAnswer", "Relationships"},
+			permitted: []string{"AcceptPlan", "Aliases", "Answers", "DisputesFor", "Entities",
+				"Entity", "Fact", "FactStatusHistory", "Facts", "Inbox", "Plan", "Plans",
+				"Question", "QuestionHistory", "Questions", "RecentFacts", "RecordAnswer",
+				"Relationships", "ResolutionHistory"},
 			// The ledger's authoritative writes. This surface reaches
 			// them only through a plan an operator accepted, so nothing
 			// a model proposed becomes reality by passing through a
@@ -601,6 +603,38 @@ func (failingServices) Facts(context.Context, reality.FactQuery) ([]reality.Fact
 	return nil, leakyError
 }
 
+func (failingServices) RecentFacts(context.Context, int) ([]reality.Fact, error) {
+	return nil, leakyError
+}
+
+func (failingServices) Fact(context.Context, string) (reality.Fact, error) {
+	return reality.Fact{}, leakyError
+}
+
+func (failingServices) FactStatusHistory(context.Context, string) ([]reality.FactStatusEvent, error) {
+	return nil, leakyError
+}
+
+func (failingServices) DisputesFor(context.Context, string) ([]reality.Dispute, error) {
+	return nil, leakyError
+}
+
+func (failingServices) Questions(context.Context, reality.QuestionQuery) ([]reality.QuestionListing, error) {
+	return nil, leakyError
+}
+
+func (failingServices) Plans(context.Context, string) ([]reality.Plan, error) {
+	return nil, leakyError
+}
+
+func (failingServices) Entities(context.Context, reality.EntityQuery) ([]reality.EntityListing, error) {
+	return nil, leakyError
+}
+
+func (failingServices) ResolutionHistory(context.Context, string) ([]reality.Resolution, error) {
+	return nil, leakyError
+}
+
 func (failingServices) RecordAnswer(context.Context, reality.AnswerInput) (reality.Answer, error) {
 	return reality.Answer{}, leakyError
 }
@@ -675,6 +709,11 @@ func TestServiceFailuresRevealNothing(t *testing.T) {
 		{http.MethodGet, "/api/export?type=proposal&id=prp_1", ""},
 		{http.MethodGet, "/api/reality/inbox", ""},
 		{http.MethodGet, "/api/reality/entity?id=ent_1", ""},
+		{http.MethodGet, "/api/reality/questions", ""},
+		{http.MethodGet, "/api/reality/question?id=qst_1", ""},
+		{http.MethodGet, "/api/reality/entities", ""},
+		{http.MethodGet, "/api/reality/facts", ""},
+		{http.MethodGet, "/api/reality/fact?id=fct_1", ""},
 		{http.MethodGet, "/api/search?q=x", ""},
 		{http.MethodPost, "/api/review/decide", `{"subject":{"type":"proposal","id":"prp_1"},"disposition":"accept"}`},
 		{http.MethodPost, "/api/review/context", `{"text":"guidance"}`},

@@ -269,6 +269,15 @@ func (s FactStatus) valid() bool {
 	return false
 }
 
+// FactStatuses lists the statuses in the order a revision moves through them,
+// so a surface grouping facts by status keeps no private copy of the
+// vocabulary — QuestionStates and EntityKinds are exported for this reason.
+func FactStatuses() []FactStatus {
+	return []FactStatus{
+		FactProposed, FactActive, FactSuperseded, FactDisputed, FactStale,
+	}
+}
+
 // Fact is one immutable revision. §4.8's field list is the struct's field
 // list, and none of it is editable: a change is a superseding revision whose
 // ancestor stays byte-identical.

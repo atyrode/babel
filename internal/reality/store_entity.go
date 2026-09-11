@@ -131,11 +131,19 @@ func (s *Store) appendMembership(ctx context.Context, tx *sql.Tx, entityID strin
 	return entry, nil
 }
 
-const entitySelect = `SELECT e.id, e.kind, e.schema_version, e.created_at, e.payload_json,
-	m.role, m.canonical_id
-	FROM reality_entity e
+// The columns scanEntity decodes, and the join that resolves an entity's
+// current role from its newest membership event. They are two constants
+// because the listing below selects the same entity columns plus counts of its
+// own, and a query that wants extra columns has to be able to add them to the
+// select list rather than after the join.
+const (
+	entityColumns = `e.id, e.kind, e.schema_version, e.created_at, e.payload_json,
+	m.role, m.canonical_id`
+	entityFrom = ` FROM reality_entity e
 	JOIN reality_entity_membership m ON m.entity_id = e.id
 	AND m.seq = (SELECT MAX(seq) FROM reality_entity_membership x WHERE x.entity_id = e.id)`
+	entitySelect = `SELECT ` + entityColumns + entityFrom
+)
 
 // Entity reads one subject with what the resolution history currently says
 // about it. A merged-away identity still reads: §4.8 forbids losing it, and a
@@ -144,7 +152,116 @@ func (s *Store) Entity(ctx context.Context, id string) (Entity, error) {
 	return scanEntity(s.db.QueryRowContext(ctx, entitySelect+` WHERE e.id = ?`, id), id)
 }
 
-func scanEntity(row *sql.Row, id string) (Entity, error) {
+// EntityQuery selects entities for a listing.
+type EntityQuery struct {
+	Kind EntityKind
+	// Limit bounds how many rows come back, newest first. Zero means no
+	// bound.
+	Limit int
+}
+
+// EntityListing is one entity with the size of what the ledger holds about it.
+//
+// A listing exists at all because of §8.4: an entity page reachable only by an
+// identifier the reader already knows is a stored thing the product does not
+// have. The counts are what make the list worth reading rather than a column
+// of names — whether Babel believes anything about this subject, and when it
+// last did.
+//
+// They are counts per identity: the rows whose subject is this entity, not the
+// rows that speak for it after a merge. Facts resolves the merge and includes
+// the facts of identities folded in, so a canonical entity's page can show
+// more than its row counted. That is the honest direction for a census to err
+// in, because the alternative is a listing where every row costs a merge
+// resolution.
+type EntityListing struct {
+	Entity Entity
+	// Aliases counts every alias ever attached, retracted ones included: a
+	// retraction is an appended event rather than a removal.
+	Aliases int
+	Facts   int
+	// Active is how many of those facts are in force, which is the number
+	// that answers "does Babel believe anything about this" — a total
+	// including proposals and superseded revisions does not.
+	Active int
+	// LatestFact is when the ledger last recorded anything about this
+	// entity, zero when it holds nothing.
+	LatestFact time.Time
+}
+
+// Entities lists the ledger's subjects, newest first.
+func (s *Store) Entities(ctx context.Context, query EntityQuery) ([]EntityListing, error) {
+	if query.Kind != "" && !query.Kind.valid() {
+		return nil, fmt.Errorf("%w: entity kind %q", ErrInvalidValue, query.Kind)
+	}
+	statement := `SELECT ` + entityColumns + `,
+		(SELECT COUNT(*) FROM reality_entity_alias a WHERE a.entity_id = e.id),
+		(SELECT COUNT(*) FROM reality_fact f WHERE f.subject_id = e.id),
+		(SELECT COUNT(*) FROM reality_fact f WHERE f.subject_id = e.id
+			AND (SELECT t.status FROM reality_fact_status t
+				WHERE t.fact_id = f.id ORDER BY t.seq DESC LIMIT 1) = ?),
+		(SELECT MAX(f.recorded_at) FROM reality_fact f WHERE f.subject_id = e.id)` + entityFrom
+	args := []any{string(FactActive)}
+	if query.Kind != "" {
+		statement += ` WHERE e.kind = ?`
+		args = append(args, string(query.Kind))
+	}
+	statement += ` ORDER BY e.created_at DESC, e.id DESC`
+	if query.Limit > 0 {
+		statement += ` LIMIT ?`
+		args = append(args, query.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reality: list entities: %w", err)
+	}
+	defer rows.Close()
+	var out []EntityListing
+	for rows.Next() {
+		var (
+			record EntityListing
+			latest sql.NullString
+		)
+		// The entity's own columns are decoded by the same function a
+		// single read uses, so the two cannot come to disagree about
+		// what a role or a display name is.
+		entity, err := scanEntity(countingRow{rows: rows, listing: &record, latest: &latest}, "")
+		if err != nil {
+			return nil, err
+		}
+		record.Entity = entity
+		if latest.Valid {
+			if record.LatestFact, err = parseTime(latest.String); err != nil {
+				return nil, fmt.Errorf("reality: entity %s: %w", entity.ID, err)
+			}
+		}
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}
+
+// countingRow feeds scanEntity the entity's columns and takes the listing's
+// trailing count columns for itself. The alternative — a second entity decoder
+// for result sets — is how one of the two eventually forgets that a role comes
+// from the newest membership event.
+type countingRow struct {
+	rows    *sql.Rows
+	listing *EntityListing
+	latest  *sql.NullString
+}
+
+func (r countingRow) Scan(dest ...any) error {
+	return r.rows.Scan(append(dest,
+		&r.listing.Aliases, &r.listing.Facts, &r.listing.Active, r.latest)...)
+}
+
+// rowScanner is the scan surface *sql.Row and a result set's row share, so one
+// entity decoder serves both a single read and a listing.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanEntity(row rowScanner, id string) (Entity, error) {
 	var (
 		record  Entity
 		kind    string

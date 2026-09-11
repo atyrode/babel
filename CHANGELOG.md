@@ -78,6 +78,15 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   chooses between two records. Whether Babel may ever accept or reject on its
   own is deliberately still unanswered, and nothing here anticipates an answer.
 
+  The proposals listing now says which rows Babel has already read, so the
+  advice is findable by scanning the pile rather than by opening records one
+  at a time to see whether any was left. The mark is presence and nothing
+  else: the rank is deliberately not served to a listing, because a queue
+  that could sort on Babel's suggested reading order would have done the
+  operator's triage instead of offering to help with it. It sits with the
+  record's own text rather than in the Review column, which is where a ruling
+  goes, and a proposal no pass has read carries no mark at all.
+
 - **Findings and proposals have a front door.** Both are the first entries in
   the navigation, proposals being an entirely new listing — before this,
   Babel's committed output was reachable only by guessing a URL. The dashboard

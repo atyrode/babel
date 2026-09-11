@@ -1,24 +1,17 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getRealityEntity, type EntityDetail, type FactView } from "../api";
+import { getRealityEntity, type EntityDetail } from "../api";
 import { errorMessage, formatTime } from "../format";
-import { Badge, type Tone } from "../analysis";
+import { Badge, TimelineEntry } from "../analysis";
+import { EntityName, FactEntry } from "../reality";
 
-function factTone(status: string): Tone {
-  switch (status) {
-    case "active":
-      return "green";
-    case "proposed":
-    case "stale":
-    case "expired":
-      return "amber";
-    case "disputed":
-      return "red";
-    default:
-      return "neutral"; // superseded and anything newer than this build
-  }
-}
-
+// One subject's current reality: what it is called, what it is attached to,
+// what Babel believes about it, and how its identity has been resolved.
+//
+// The page shows every fact status, superseded revisions and proposals
+// included, because reviewing what was proposed is a real need and a chain that
+// showed only its head would hide how reality was corrected. Each revision
+// links to its own page, which is where the chain is readable end to end.
 function RealityEntityPage() {
   const { id: routeID } = useParams();
   const id = routeID ?? "";
@@ -44,7 +37,7 @@ function RealityEntityPage() {
   if (error && !detail) {
     return (
       <section className="page">
-        <Link className="back-link" to="/reality">← Reality</Link>
+        <Link className="back-link" to="/reality/entities">← Subjects</Link>
         <div className="state-card error-state">
           <strong>Entity could not be loaded.</strong>
           <span>{error}</span>
@@ -61,12 +54,12 @@ function RealityEntityPage() {
     );
   }
 
-  const { entity, aliases, relationships, facts } = detail;
+  const { entity, aliases, relationships, facts, resolutions } = detail;
   const merged = entity.canonical_id !== entity.id;
 
   return (
     <section className="page detail-page entity-page">
-      <Link className="back-link" to="/reality">← Reality</Link>
+      <Link className="back-link" to="/reality/entities">← Subjects</Link>
       <div className="page-heading detail-heading">
         <div>
           <div className="heading-badges">
@@ -159,9 +152,9 @@ function RealityEntityPage() {
               <li key={relationship.id}>
                 <Badge label={relationship.kind} tone="neutral" />
                 <span className="link-target">
-                  <EntityRef id={relationship.from.id} name={relationship.from.display_name} current={entity.id} />
+                  <EntityName entity={relationship.from} current={entity.id} />
                   {" → "}
-                  <EntityRef id={relationship.to.id} name={relationship.to.display_name} current={entity.id} />
+                  <EntityName entity={relationship.to} current={entity.id} />
                 </span>
               </li>
             ))}
@@ -180,54 +173,69 @@ function RealityEntityPage() {
         <p className="muted">
           Immutable revisions with explicit authority and freshness. A proposed fact asserts
           nothing yet; a superseded or disputed fact stays readable rather than disappearing.
+          Each one opens its own page, where what it replaced and what replaced it are shown.
         </p>
         {facts.length === 0 ? (
-          <p className="muted">No facts recorded about this entity.</p>
+          <p className="muted">
+            Babel believes nothing about this subject yet. Facts arrive when a question about it
+            is answered and the interpretation accepted.
+          </p>
         ) : (
           <div className="fact-list">
-            {facts.map((fact) => <FactRow key={fact.id} fact={fact} />)}
+            {facts.map((fact) => <FactEntry key={fact.id} fact={fact} />)}
           </div>
         )}
       </article>
+
+      {/* §8.2 names alias merge/split history as part of what Reality shows,
+          and §4.8 keeps a mistaken resolution reversible — which is only worth
+          something if the operator can see that a merge happened, who decided
+          it, and what reason they gave. */}
+      <article className="card">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Append-only</p>
+            <h2>Identity history</h2>
+          </div>
+          <span className="count-label">{resolutions.length}</span>
+        </div>
+        {resolutions.length === 0 ? (
+          <p className="muted">
+            This identity has never been merged or split. It has meant one thing since it was
+            recognized.
+          </p>
+        ) : (
+          <ol className="timeline">
+            {resolutions.map((resolution) => (
+              <TimelineEntry
+                key={resolution.id}
+                badge={resolution.kind}
+                tone={resolution.kind === "undo" ? "amber" : "violet"}
+                at={resolution.recorded_at}
+              >
+                <span className="secondary">decided by {resolution.actor}</span>
+                {resolution.reason && <span className="untrusted-inline">{resolution.reason}</span>}
+                <span className="secondary">
+                  {resolution.sources.map((source, index) => (
+                    <span key={source.id}>
+                      {index > 0 && ", "}
+                      <EntityName entity={source} current={entity.id} />
+                    </span>
+                  ))}
+                  {resolution.results.length > 0 && " → "}
+                  {resolution.results.map((result, index) => (
+                    <span key={result.id}>
+                      {index > 0 && ", "}
+                      <EntityName entity={result} current={entity.id} />
+                    </span>
+                  ))}
+                </span>
+              </TimelineEntry>
+            ))}
+          </ol>
+        )}
+      </article>
     </section>
-  );
-}
-
-function EntityRef({ id, name, current }: { id: string; name: string; current: string }) {
-  if (id === current) return <span className="untrusted-inline">{name}</span>;
-  return (
-    <Link className="untrusted-inline" to={`/reality/entities/${encodeURIComponent(id)}`}>
-      {name}
-    </Link>
-  );
-}
-
-function FactRow({ fact }: { fact: FactView }) {
-  const observed = formatTime(fact.observed_at);
-  const expires = formatTime(fact.expires_at);
-  return (
-    <div className={`fact-entry status-${fact.status}`}>
-      <div className="fact-heading">
-        <Badge label={fact.status} tone={factTone(fact.status)} />
-        <span className="fact-predicate mono">{fact.predicate}</span>
-        <span className="fact-value untrusted-inline">
-          {fact.value.enum ?? fact.value.text ?? (fact.value.object_id ? (
-            <Link className="mono" to={`/reality/entities/${encodeURIComponent(fact.value.object_id)}`}>
-              {fact.value.object_id}
-            </Link>
-          ) : "—")}
-        </span>
-      </div>
-      <p className="fact-meta secondary">
-        authority {fact.authority.kind}
-        {fact.authority.id && <span className="mono"> {fact.authority.id}</span>}
-        {" · confidence "}{fact.confidence}
-        {observed && <span title={observed.absolute}> · observed {observed.relative}</span>}
-        {expires && <span title={expires.absolute}> · freshness expires {expires.relative}</span>}
-        {fact.supersedes && <span className="mono"> · supersedes {fact.supersedes}</span>}
-      </p>
-      {fact.note && <p className="fact-note untrusted-inline">{fact.note}</p>}
-    </div>
   );
 }
 

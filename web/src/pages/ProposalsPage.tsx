@@ -118,6 +118,21 @@ function ProposalsPage() {
                           <span className="secondary untrusted-inline">{item.problem}</span>
                         )}
                         <span className="secondary mono">{item.id}</span>
+                        {item.advised && (
+                          // Babel has read this one and written down what it
+                          // thinks. The mark says only that, and it sits with
+                          // the record's own text rather than in the Review
+                          // column, because the Review column is where a
+                          // ruling goes and advice is not one. The rows stay
+                          // in the order the store returned them: nothing
+                          // here sorts by what Babel thought.
+                          <span
+                            className="secondary advice-mark"
+                            title="Babel read this proposal before you and left advice beside it — the case against acting on it, and any records worth comparing it with. Advice, not a ruling; open the proposal to read it."
+                          >
+                            Babel left advice on this one
+                          </span>
+                        )}
                       </td>
                       <td>
                         {item.impact

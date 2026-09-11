@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -1326,6 +1327,117 @@ func (s *Store) Requests(ctx context.Context, planID string) ([]Request, error) 
 		out = append(out, record)
 	}
 	return out, rows.Err()
+}
+
+// QuestionQuery selects questions for a listing.
+//
+// This is not the inbox and deliberately does not rank. Inbox answers "what
+// should the operator do next", which is why its membership is the two states
+// only a human can move; this answers "what has Babel ever asked", which is
+// what a reader needs in order to reach a question that was already answered,
+// snoozed or declined. Without it those questions are stored and unreachable,
+// and §8.4 counts a record no surface can reach as a record that is not in the
+// product.
+type QuestionQuery struct {
+	// States narrows to these question states. Empty means every state,
+	// which is the listing's normal case.
+	States []QuestionState
+	Class  QuestionClass
+	// Limit bounds how many rows come back, newest first. Zero means no
+	// bound.
+	Limit int
+}
+
+// QuestionListing is one question with how much has accumulated on it.
+//
+// The two counts travel with the question because the statement that finds it
+// can count them in the same pass, while a caller doing the same thing would
+// read every answer and every plan of every question in order to render a list
+// that shows neither.
+type QuestionListing struct {
+	Question Question
+	Answers  int
+	Plans    int
+}
+
+// Questions lists what the ledger has asked, newest first.
+func (s *Store) Questions(ctx context.Context, query QuestionQuery) ([]QuestionListing, error) {
+	if query.Class != "" && !query.Class.valid() {
+		return nil, fmt.Errorf("%w: question class %q", ErrInvalidValue, query.Class)
+	}
+	var (
+		where []string
+		args  []any
+	)
+	if len(query.States) > 0 {
+		placeholders := make([]string, 0, len(query.States))
+		for _, state := range query.States {
+			if !state.valid() {
+				return nil, fmt.Errorf("%w: question state %q", ErrInvalidValue, state)
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, string(state))
+		}
+		where = append(where, `(SELECT e.state FROM reality_question_event e
+			WHERE e.question_id = q.id ORDER BY e.seq DESC LIMIT 1) IN (`+
+			strings.Join(placeholders, ", ")+`)`)
+	}
+	if query.Class != "" {
+		where = append(where, `q.question_class = ?`)
+		args = append(args, string(query.Class))
+	}
+	statement := `SELECT q.id,
+		(SELECT COUNT(*) FROM reality_answer a WHERE a.question_id = q.id),
+		(SELECT COUNT(*) FROM reality_plan p WHERE p.question_id = q.id)
+		FROM reality_question q`
+	if len(where) > 0 {
+		statement += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	statement += ` ORDER BY q.created_at DESC, q.id DESC`
+	if query.Limit > 0 {
+		statement += ` LIMIT ?`
+		args = append(args, query.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reality: list questions: %w", err)
+	}
+	// The identifiers and their counts are read to completion first: the
+	// durable database allows one connection, so readQuestion's own queries
+	// would wait for the connection this result set is holding.
+	type listed struct {
+		id      string
+		answers int
+		plans   int
+	}
+	var found []listed
+	for rows.Next() {
+		var record listed
+		if err := rows.Scan(&record.id, &record.answers, &record.plans); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("reality: list questions: %w", err)
+		}
+		found = append(found, record)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("reality: list questions: %w", err)
+	}
+	rows.Close()
+
+	out := make([]QuestionListing, 0, len(found))
+	for _, record := range found {
+		question, err := readQuestion(ctx, s.db, record.id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, QuestionListing{
+			Question: question,
+			Answers:  record.answers,
+			Plans:    record.plans,
+		})
+	}
+	return out, nil
 }
 
 // Inbox ranks the questions awaiting operator attention.

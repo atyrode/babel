@@ -498,6 +498,35 @@ func (s *Store) Facts(ctx context.Context, q FactQuery) ([]Fact, error) {
 	return out, nil
 }
 
+// RecentFacts reads the newest revisions the ledger recorded, whatever their
+// subject.
+//
+// Facts requires a subject because analysis asks about something in
+// particular. This exists for the opposite need, which §8.4 named: a reader
+// who does not yet know which entity to ask about, and wants to see what Babel
+// has been concluding. It is bounded rather than paged for the same reason —
+// it is a window on the head of the ledger, not an enumeration of it.
+func (s *Store) RecentFacts(ctx context.Context, limit int) ([]Fact, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("%w: recent fact limit %d", ErrInvalidValue, limit)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		factSelect+`ORDER BY f.recorded_at DESC, f.id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("reality: read recent facts: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Fact, 0, limit)
+	for rows.Next() {
+		record, err := scanFact(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}
+
 // FactStatusHistory reads a fact's append-only status history. It is what
 // proves expiry marked rather than deleted, and what shows a dispute opening
 // and closing over one revision.

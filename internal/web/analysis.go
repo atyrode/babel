@@ -830,6 +830,18 @@ type ProposalSummary struct {
 	Impact         string `json:"impact"`
 	Classification string `json:"classification"`
 	ReviewStatus   string `json:"review_status"`
+	// Advised says a triage pass has left advice about this proposal, so a
+	// reader can see which rows have been read before they open one. It is
+	// omitted when false: a row nothing was said about should carry no
+	// mark at all rather than a mark that says "no advice", which is a
+	// claim about the record it is not.
+	//
+	// Presence and nothing more. The rank is deliberately not here. It is
+	// the field a listing would sort on, and a queue reordered by Babel's
+	// suggested reading order would have done the operator's triage rather
+	// than offered to help with it; the reading order is a sentence on the
+	// record's own page, addressed to somebody who has chosen to read it.
+	Advised bool `json:"advised,omitempty"`
 }
 
 type proposalList struct {
@@ -876,8 +888,19 @@ func (s *Server) handleProposals(w http.ResponseWriter, r *http.Request) {
 	if degraded {
 		result.syncNotice = degradedNotice()
 	}
+	// One query for the page rather than one per row: the mark is presence,
+	// and presence for fifty rows is a single read. A failure is reported
+	// rather than swallowed, because a listing that silently dropped every
+	// mark would tell an operator nothing had been triaged, which is a
+	// claim about the queue it has no grounds to make.
+	advised, err := s.opts.Frontier.TriageAdvised(r.Context(), ids)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
 	for i := range result.Items {
 		result.Items[i].fleetMark = s.localMark(states[result.Items[i].ID])
+		result.Items[i].Advised = advised[result.Items[i].ID]
 	}
 	if fleetWide {
 		remote, unreachable := s.mergeOtherHosts(r, pg.limit, sharedcatalog.KindProposal)

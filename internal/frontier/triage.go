@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -410,6 +411,71 @@ func (s *Store) TriageAdvice(ctx context.Context, proposalID string) ([]TriageAd
 			WHERE advice_id = ? ORDER BY position`, out[i].ID); err != nil {
 			return nil, err
 		}
+	}
+	return out, nil
+}
+
+// TriageAdvised reports which of these proposals a triage pass has left advice
+// about, so a listing can mark the rows that carry some.
+//
+// It answers presence and nothing else. A rank is the one field a listing
+// could sort on, and a queue silently reordered by Babel's suggested reading
+// order would be the pass doing the operator's triage rather than advising it,
+// which is the line §5.2 draws when it confines a derived ordering to
+// ordering. So the answer is a yes for each id and no number to sort by; a
+// reader who wants the rank opens the record and reads the advice beside it.
+//
+// A proposal counts as advised when advice names it either way, matching what
+// TriageAdvice returns for it. The two have to agree: a row marked in the
+// listing that opened onto no advice, or an alternative that arrived unmarked
+// and then explained itself, would each teach an operator to distrust the
+// mark.
+func (s *Store) TriageAdvised(ctx context.Context, proposalIDs []string) (map[string]bool, error) {
+	if len(proposalIDs) == 0 {
+		return map[string]bool{}, nil
+	}
+	placeholders := make([]string, len(proposalIDs))
+	args := make([]any, 0, len(proposalIDs)*2)
+	for i, id := range proposalIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	list := strings.Join(placeholders, ", ")
+	for _, id := range proposalIDs {
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT proposal_id, alternative_id
+		FROM frontier_triage_advice
+		WHERE proposal_id IN (`+list+`) OR alternative_id IN (`+list+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read triage advice presence: %w", err)
+	}
+	defer rows.Close()
+	wanted := make(map[string]struct{}, len(proposalIDs))
+	for _, id := range proposalIDs {
+		wanted[id] = struct{}{}
+	}
+	// Absent rather than false for a proposal nothing was said about: the
+	// caller is asking which records carry advice, and a map of explicit
+	// noes is a thing a renderer can accidentally show.
+	out := make(map[string]bool, len(proposalIDs))
+	for rows.Next() {
+		var subject string
+		var alternative sql.NullString
+		if err := rows.Scan(&subject, &alternative); err != nil {
+			return nil, fmt.Errorf("read triage advice presence: %w", err)
+		}
+		for _, id := range []string{subject, alternative.String} {
+			if id == "" {
+				continue
+			}
+			if _, ok := wanted[id]; ok {
+				out[id] = true
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read triage advice presence: %w", err)
 	}
 	return out, nil
 }

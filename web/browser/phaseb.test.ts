@@ -204,7 +204,7 @@ test.skipIf(!chrome)("the empty frontier reads as a state, not a bug", async () 
   await visible("The frontier is empty");
 
   await open("reality", emptyMock?.base);
-  await visible("No open questions");
+  await visible("Nothing is waiting on you");
 
   await open("review", emptyMock?.base);
   await visible("Nothing awaits a decision");
