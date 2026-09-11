@@ -259,6 +259,11 @@ func TestSyncReportRendersHostileValuesSafely(t *testing.T) {
 		RunsPending:    1,
 		ObjectsWritten: 2,
 		Undeclared:     4,
+		Sealed: []babelsync.Sealed{{
+			RunID:   hostileKind,
+			Records: 7,
+			Reason:  "no lease and no receipt survive " + hostileKind,
+		}},
 		Failures: []babelsync.RunFailure{{
 			RunID: hostileKind,
 			Err:   errors.New("publish " + hostileKind + ": endpoint refused"),
@@ -277,9 +282,21 @@ func TestSyncReportRendersHostileValuesSafely(t *testing.T) {
 		t.Fatalf("the hostile kind never reached the report, so escaping it proves nothing:\n%s", stdout.String())
 	}
 	// The undeclared count is a state rather than a fault, so the report says
-	// what it means instead of leaving four stuck records to be inferred.
-	if !strings.Contains(stderr.String(), "never dropped") {
-		t.Errorf("undeclared records went unexplained:\n%s", stderr.String())
+	// what it means instead of leaving four stuck records to be inferred. What
+	// it may not say is the old sentence's claim that they publish as soon as
+	// the run finishes: for a run nothing will ever finish that was false, and
+	// believing it cost 1,022 records five days of being unpublishable
+	// (issue #152). Both halves of the true answer are required - a run that is
+	// over is sealed, a run still live is waited for - because a note that gave
+	// only one of them would leave the other inferred from silence again.
+	for _, want := range []string{"sealed", "still live"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("the undeclared note does not say what happens to %q records:\n%s", want, stderr.String())
+		}
+	}
+	if strings.Contains(stderr.String(), "never dropped") {
+		t.Errorf("the note still promises records publish when their run finishes, which is false "+
+			"for a run nothing will finish:\n%s", stderr.String())
 	}
 
 	stdout.Reset()
@@ -294,6 +311,12 @@ func TestSyncReportRendersHostileValuesSafely(t *testing.T) {
 	}
 	if len(got.Failures) != 1 || got.Failures[0].RunID == "" {
 		t.Errorf("the failed closure is not named: %+v", got.Failures)
+	}
+	// An abandonment has to reach the machine-readable document, because that
+	// is what an operator measures it from: a cause that only ever appeared on
+	// a terminal is a cause nobody can count (issue #152).
+	if len(got.Sealed) != 1 || got.Sealed[0].Records != 7 || got.Sealed[0].Reason == "" {
+		t.Errorf("the sealed run is not reported with its cause: %+v", got.Sealed)
 	}
 }
 

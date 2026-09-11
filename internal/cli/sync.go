@@ -67,12 +67,28 @@ type syncResult struct {
 	RunsPending    int           `json:"runs_pending"`
 	ObjectsWritten int           `json:"objects_written"`
 	Restaged       int           `json:"restaged"`
-	// Undeclared counts staged records whose producing run has not finished.
-	// They are deliberately unpublishable rather than stuck; see writeSync.
+	// Undeclared counts staged records whose producing run has neither declared
+	// a closure nor been proven over, so they are waiting for the run itself.
+	// See writeSync.
 	Undeclared int `json:"undeclared"`
+	// Sealed names each run whose closure this attempt declared on its behalf,
+	// with the cause. It is in the document rather than only on stderr because
+	// Babel should never have to abandon a run: these rows are how an operator
+	// measures the times it did, from a log they already collect (issue #152).
+	Sealed []syncSealedRow `json:"sealed,omitempty"`
 	// Failures is a list rather than one error because one unreachable object
 	// must not hide the nine closures that published.
 	Failures []syncFailureRow `json:"failures,omitempty"`
+}
+
+// syncSealedRow is one run that was sealed at what it reached. The record count
+// is the closure that is now fixed for it, and the reason is the evidence that
+// proved the run over - the two facts an operator needs to tell an abandonment
+// that cost nothing from one that cost a run's whole output.
+type syncSealedRow struct {
+	RunID   string `json:"run_id"`
+	Records int    `json:"records"`
+	Reason  string `json:"reason"`
 }
 
 // syncKindRow is one record kind's count.
@@ -501,6 +517,31 @@ func (a *app) openPublisher(ctx context.Context, d dirs) (*babelsync.Publisher, 
 	if err != nil {
 		return nil, cleanup, err
 	}
+
+	// The run store is opened last and with the publisher as its hook, which is
+	// the order the dependency forces: the publisher needs a way to prove a run
+	// dead, and the evidence - a held lease, a receipt's latest checkpoint - is
+	// internal/run's. That package imports internal/sync to stage what it
+	// writes, so nothing could travel the other way.
+	//
+	// The hook is attached even though only RunLiveness is called here. A hook
+	// lives as long as the handle, so "this caller only reads" is a judgement
+	// the next caller would inherit without knowing it was made - and a durable
+	// record written through an unhooked handle is owed to the fleet by nobody.
+	runs, err := runstore.Open(d.durableDir(), runstore.WithSync(pub))
+	if err != nil {
+		return nil, cleanup, err
+	}
+	release = append(release, func() {
+		if err := runs.Close(); err != nil {
+			a.diagf("warning: release the run store: %s\n", Sanitize(err.Error()))
+		}
+	})
+	// Set here rather than through Options because the store that answers the
+	// question needs the publisher that asks it. It is set before this
+	// publisher is handed to any caller, so the field is written once and read
+	// from then on (issue #152).
+	pub.Live = runs.RunLiveness
 	return pub, cleanup, nil
 }
 
@@ -595,6 +636,16 @@ func syncReport(rep babelsync.Report) syncResult {
 		ObjectsWritten: rep.ObjectsWritten,
 		Undeclared:     rep.Undeclared,
 	}
+	for _, s := range rep.Sealed {
+		// The run id comes out of the journal and the reason out of the run
+		// store, so both are rendered rather than trusted, on the same terms as
+		// a failure's.
+		res.Sealed = append(res.Sealed, syncSealedRow{
+			RunID:   Sanitize(s.RunID),
+			Records: s.Records,
+			Reason:  Sanitize(s.Reason),
+		})
+	}
 	for _, f := range rep.Failures {
 		// The run id and the reason both come out of the journal or out of a
 		// remote endpoint, so both are rendered rather than trusted.
@@ -651,6 +702,10 @@ func syncTotal(rows []syncKindRow) int {
 // long and a run id is not, and folding them into the detail block would push
 // its field column open for the one closure that failed.
 //
+// The abandoned runs get a table too, for the failures' reason and one of their
+// own: an abandonment is a finding rather than an error, and a reader scanning
+// for what went wrong must not have to tell the two apart by wording.
+//
 // The undeclared sentence goes to stderr with the rest of Babel's prose. The
 // count belongs in the report, but what the count means takes a sentence, and
 // a sentence inside an aligned block is what makes the block stop aligning.
@@ -676,11 +731,23 @@ func (a *app) writeSync(res syncResult) error {
 	rows = append(rows,
 		[2]string{"runs pending", fmt.Sprint(res.RunsPending)},
 		[2]string{"undeclared records", fmt.Sprint(res.Undeclared)},
+		[2]string{"runs sealed", fmt.Sprint(len(res.Sealed))},
 	)
 	if err := writeDetail(a.stdout, rows); err != nil {
 		return err
 	}
 
+	if len(res.Sealed) > 0 {
+		fmt.Fprintln(a.stdout)
+		sealed := make([][]string, 0, len(res.Sealed))
+		for _, s := range res.Sealed {
+			sealed = append(sealed, []string{s.RunID, fmt.Sprint(s.Records), s.Reason})
+		}
+		if err := writeTable(a.stdout,
+			[]string{"RUN ABANDONED", "RECORDS", "WHY BABEL HAD TO"}, sealed); err != nil {
+			return err
+		}
+	}
 	if len(res.Failures) > 0 {
 		fmt.Fprintln(a.stdout)
 		failures := make([][]string, 0, len(res.Failures))
@@ -692,8 +759,14 @@ func (a *app) writeSync(res syncResult) error {
 		}
 	}
 	if res.Undeclared > 0 {
-		a.diagf("note: %d staged %s to a run that has not finished; they publish as soon as it "+
-			"does, and are never dropped\n",
+		// What this used to say - that the records publish as soon as the run
+		// finishes and are never dropped - was false for a run nothing will
+		// ever finish, and that is the case that stranded 1,022 records for
+		// five days (issue #152). A run that is provably over is now sealed at
+		// what it reached and publishes on the next attempt; what is left here
+		// is the honest remainder, which is a run that may still be going.
+		a.diagf("note: %d staged %s to a run with no declared closure; a run proven over is sealed "+
+			"and published on the next publish, and a run still live waits for its own declaration\n",
 			res.Undeclared, plural(res.Undeclared, "record belongs", "records belong"))
 	}
 	return nil
@@ -736,7 +809,7 @@ func (a *app) syncAfterPush(ctx context.Context, d dirs) {
 	}
 	res := syncReport(rep)
 	committed, pending := syncTotal(res.Committed), syncTotal(res.Pending)
-	if committed == 0 && pending == 0 && len(res.Failures) == 0 {
+	if committed == 0 && pending == 0 && len(res.Failures) == 0 && len(res.Sealed) == 0 {
 		// A push that had no durable records to carry says nothing, on the
 		// same terms as the catalog row a local-mode push omits: an operator
 		// reading an hourly log does not need a line reporting two zeroes.
@@ -744,4 +817,14 @@ func (a *app) syncAfterPush(ctx context.Context, d dirs) {
 	}
 	a.diagf("note: published %d durable %s to the shared catalog; %d still pending\n",
 		committed, plural(committed, "record", "records"), pending)
+	// An abandonment is said out loud even here, where the push is otherwise
+	// terse. This is the one publish channel that runs on a schedule rather
+	// than on an operator's command, so a seal that went unmentioned would be
+	// the measurement arriving nowhere: the reason is in the hourly log, and
+	// `babel sync --json` is where the whole row lives (issue #152).
+	for _, s := range res.Sealed {
+		a.diagf("note: run %s was over without declaring a closure; its %d %s were sealed and "+
+			"published because %s\n",
+			s.RunID, s.Records, plural(s.Records, "record", "records"), s.Reason)
+	}
 }
