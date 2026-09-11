@@ -26,10 +26,12 @@ respect to durable remote state.** Scratch configuration checks are separately
 identified in §8.1. No snapshot was written, no catalog row was inserted or
 deleted, and no `restic` write verb (`init`, `backup`, `forget`, `prune`,
 `unlock`, `repair`) was run.
-Direct `restic` invocations all carried `--no-lock`; the one Babel command that
-reaches the repository through `restic restore` takes restic's ordinary
-transient shared lock and releases it, which was confirmed afterwards (see
-§2.4).
+Direct `restic` invocations all carried `--no-lock`; the one Babel command this
+drill ran that reaches the repository through `restic restore` takes restic's
+ordinary transient shared lock and releases it, which was confirmed afterwards
+(see §2.4). `archive push` reaches it the same way today, when it restores a
+`catalog-pending` snapshot to rescan it; that path did not exist on the drill
+date.
 
 ### Redaction
 
@@ -85,6 +87,15 @@ workstation-linux      40         843       2        40            2026-08-31T03
 
 real  0m4.201s   exit 0
 ```
+
+That capture is dated: the second note is the wording of the 2026-08-30 build,
+which told the operator that no command resolved `catalog-pending` and that the
+count would not fall. It does fall now. `babel archive push` adopts any host's
+uncatalogued snapshots and recovers a bounded number of `catalog-pending`
+snapshots per run by restoring and rescanning them, so both counts drain on the
+hourly timer with nothing typed (SPEC.md §9.1). A current `archive status`
+names that work instead, and a push reports `snapshots adopted` and `snapshots
+completed` in its own summary.
 
 `archive status` reports timestamps; it does not answer "did every machine back
 up". That is `archive fleet`, which judges each host against a cadence derived
@@ -580,23 +591,30 @@ babel storage rebuild --host HOST --yes  # rebuild one host's rows from the snap
 
 Know what `storage rebuild` costs before reaching for it. It **writes to the
 catalog** — it discards what the catalog held for that host — so it was
-deliberately not run by this read-only drill. What comes back is what a listing
-can support: snapshot identity, ordering rederived from restic's recorded times,
-and restic's counts. Session rows cannot be rebuilt from a listing, because
-their sizes and counts are read from the sessions themselves, so rebuilt
-snapshots arrive `catalog-pending` and session titles, workspaces, and
-continuation grades return only with the owning host's next push. The repository
-is never touched and no snapshot it still reports is ever dropped.
+deliberately not run by this read-only drill. What comes back immediately is
+what a listing can support: snapshot identity, ordering rederived from restic's
+recorded times, and restic's counts. Session rows cannot be rebuilt from a
+listing, because their sizes and counts are read from the sessions themselves,
+so rebuilt snapshots arrive `catalog-pending`. They do not stay there: the
+owning host's next push publishes its current session identity, and any host's
+`archive push` recovers each rebuilt snapshot's own session detail — titles,
+workspaces, sizes, continuation grades — by restoring that snapshot and
+rescanning it, a bounded number per run. The repository is never touched and no
+snapshot it still reports is ever dropped.
 
 **Verify.** Catalog reachability and drift are visible in the §1
 `archive status` output: `catalog reachable yes`, and the honest counts
 `uncatalogued snapshots 1` / `catalog-pending snapshots 2`. Those are not
-failures. An uncatalogued snapshot is one restic holds that the catalog has not
-adopted yet; the next push records it. A `catalog-pending` snapshot was adopted
-from the repository list after a PostgreSQL outage, so its record of which
-sessions it held was never written and is not derivable from a listing — no
-shipped command resolves it, which is exactly why `archive status` reports the
-count instead of presenting a pending action.
+failures, and neither is a pending action. An uncatalogued snapshot is one
+restic holds that the catalog has not adopted yet; the next `archive push`
+records it, from whichever host runs it. A `catalog-pending` snapshot carries
+restic's counts without the record of which sessions it held, which a listing
+cannot supply; the next pushes restore and rescan those snapshots, a couple per
+run, until the count reaches zero. Both counts therefore drain on the hourly
+timer, and what `archive status` reports is the remaining work rather than
+something for the operator to do (SPEC.md §9.1). A snapshot that cannot be
+restored or described is reported as `snapshots unrecovered` by the push that
+tried, keeps its state, and is retried by the next one.
 
 **Exercised 2026-08-31 on `workstation-linux`** (backup listing and catalog
 health live; `storage rebuild` documented but not run, because it mutates the

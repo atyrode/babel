@@ -369,6 +369,14 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			// be able to assert a lifecycle, and this entry is what
 			// stops that from being re-added by widening the interface
 			// every reality read already holds.
+			//
+			// CreateEntity and AddAlias are reachable from the browser
+			// too, and they are still forbidden here for the same
+			// reason rather than a weaker one. The subject-naming row
+			// below holds them, on a type that can do nothing else; a
+			// reality page that could mint an identity *and* assert a
+			// fact about it would be able to manufacture a belief from
+			// nothing, which is the pair this separation breaks.
 			forbidden: []string{"AssertFact", "SupersedeFact", "DisputeFacts", "ResolveDispute",
 				"MergeEntities", "SplitEntity", "UndoResolution", "ImportFacts", "PutFocusRules",
 				"RegisterTrustedSource", "CreateEntity", "AddAlias", "AddRelationship",
@@ -388,6 +396,29 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			// thirteen above. TestFocusSurfaceCarriesNoOtherAuthority
 			// asserts exactly that, which is the check this table cannot
 			// express: the concrete type is the boundary.
+		},
+		{
+			name:      "subject naming",
+			surface:   reflect.TypeOf((*SubjectNamingService)(nil)).Elem(),
+			concrete:  reflect.TypeOf((*reality.SubjectNaming)(nil)),
+			permitted: []string{"AliasKinds", "Create", "Kinds", "Resolve"},
+			// This row widens what a browser may write, and the widening
+			// is deliberate: Create mints an entity and attaches typed
+			// names to it, which is the write the reality row above
+			// forbids under the name CreateEntity. It is safe for the
+			// reason that forbidding it there was: an entity asserts
+			// nothing. It is the subject facts are about, so creating one
+			// leaves the ledger believing exactly what it believed
+			// before, and none of §4.8's authority rules is reachable
+			// through it — a fact still needs an authority, an
+			// interpretation's fact still needs an acceptance, and a
+			// policy is still FocusPolicy's one predicate.
+			//
+			// There is no forbidden list for the focus row's reason,
+			// which is the stronger property: *reality.SubjectNaming has
+			// no other method to name.
+			// TestSubjectNamingCarriesNoOtherAuthority asserts that the
+			// concrete type is the boundary.
 		},
 		{
 			name:      "complaints",

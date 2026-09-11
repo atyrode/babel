@@ -11,7 +11,9 @@ import {
   type FocusRuleInForce,
   type FocusSubject,
   type FocusSubjectResponse,
+  type SubjectCreateResult,
 } from "../api";
+import NameSubjectForm from "./NameSubject";
 import { errorMessage, formatTime } from "../format";
 import { Badge, Quoted, type Tone } from "../analysis";
 
@@ -360,11 +362,20 @@ function SubjectPicker({
   const [found, setFound] = useState<FocusSubjectResponse | null>(null);
   const [looking, setLooking] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  // naming is the dead end turned into the next step: the operator typed a
+  // word, the ledger answered that nothing has it, and this is the form that
+  // gives the word a subject. It is closed by default rather than always
+  // shown, because the ordinary answer to "nothing matched" is a typo.
+  const [naming, setNaming] = useState(false);
 
   const resolve = useCallback((value: string) => {
     setLooking(true);
     setLookupError(null);
     setFound(null);
+    // A fresh lookup closes the naming form. It was opened about a word that
+    // reached nothing, and leaving it open over a different answer would
+    // offer to name a subject for a word that now resolves.
+    setNaming(false);
     getFocusSubject(value)
       .then(setFound)
       .catch((reason) => setLookupError(errorMessage(reason)))
@@ -389,6 +400,31 @@ function SubjectPicker({
     if (!value) return;
     onTerm(value);
     resolve(value);
+  }
+
+  // named lands the operator where he was going. He came here to state a
+  // policy about something, was told the word reaches nothing, and has just
+  // given the word a subject — so the panel re-resolves and shows the control
+  // he came for instead of a confirmation he has to act on again.
+  //
+  // Which word it re-resolves is the ledger's business rather than a guess.
+  // A typed name normalizes by trimming and lowercasing, so if the word the
+  // operator typed was recorded as one of the subject's names, that word now
+  // reaches it and stays in the box; if he cleared that row, nothing resolves
+  // it and the canonical identifier is what the panel asks about — the same
+  // identifier an entity page links here with.
+  function named(result: SubjectCreateResult) {
+    const typed = found?.term ?? "";
+    const recorded = result.aliases.some(
+      (alias) => alias.value.trim().toLowerCase() === typed.trim().toLowerCase(),
+    );
+    const next = recorded ? typed : result.subject.entity_id;
+    setNaming(false);
+    setInput(next);
+    onTerm(next);
+    // onChanged bumps the page's revision, and the effect above re-resolves
+    // on either that or the new term, so the panel re-reads exactly once.
+    onChanged(`${result.subject.display_name} is now a subject in the ledger. ${result.believes}.`);
   }
 
   return (
@@ -422,8 +458,27 @@ function SubjectPicker({
 
       {found && !found.resolved && (
         <div className="state-card empty-state">
+          <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>Nothing matched that name.</strong>
           <span>{found.reason}</span>
+          {/* Naming is offered for the word that reaches nothing and withheld
+              for the word that already means several subjects. The server
+              decides which, because it is the same distinction that decides
+              whether the creation would be refused: a third thing answering
+              to an ambiguous word makes the resolution the operator owes the
+              ledger worse. */}
+          {found.nameable && !naming && (
+            <button type="button" className="primary-button" onClick={() => setNaming(true)}>
+              Name <span className="untrusted-inline">{found.term}</span> as a subject
+            </button>
+          )}
+          {found.nameable && naming && (
+            <NameSubjectForm
+              suggestedName={found.term}
+              onCreated={named}
+              onCancel={() => setNaming(false)}
+            />
+          )}
         </div>
       )}
 

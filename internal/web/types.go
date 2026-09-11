@@ -77,6 +77,19 @@ type Options struct {
 	// leaves the focus routes reporting that this session has no ledger
 	// while every reality read keeps answering.
 	Focus FocusPolicyService
+	// Subjects is §4.8's subject naming: the act that makes a ledger
+	// writable at all, because every fact, Question and focus policy is
+	// about an entity that already exists.
+	//
+	// It is a field of its own for Focus's reason rather than a widening of
+	// either surface beside it. The authority a browser needs to name a
+	// subject is not the authority to believe something about one, and the
+	// only way to keep that true is for the two to be different types: this
+	// one can create an identity and attach names to it, and has no method
+	// that writes a fact. A nil Subjects leaves the two subject routes
+	// reporting that this session has no ledger while every other reality
+	// route keeps answering.
+	Subjects SubjectNamingService
 	// Dispositions and Reviver are #87's record actions. They are two
 	// fields rather than one because they are two stores: the proposed
 	// actions and their ledger live beside the frontier in internal/
@@ -364,6 +377,36 @@ type FocusPolicyService interface {
 	Supersede(context.Context, reality.FocusPolicyRevision) (reality.Fact, error)
 }
 
+// SubjectNamingService is §4.8's subject-naming surface the web API may
+// reach, satisfied by *reality.SubjectNaming.
+//
+// It is a third reality surface rather than two more methods on either of the
+// two above, and the reason is that it holds a different authority from both.
+// RealityService reaches the ledger's authoritative writes only through a
+// plan an operator accepted, because a model proposed their content.
+// FocusPolicyService states the one predicate that carries an operator's own
+// intent. This one asserts nothing at all: it mints the subject those facts
+// are about, which is why CreateEntity stays forbidden on the interface every
+// reality page holds and lives here instead, on a type whose whole method set
+// is naming.
+//
+// Kinds and AliasKinds are served rather than restated by the client because
+// §4.8's vocabularies are closed. A picker holding its own copy of the kinds
+// would offer one the ledger cannot store, and the operator would discover it
+// from a refused form.
+//
+// Resolve is here for the write's own precondition, on FocusPolicyService's
+// terms: the page reached this surface because a word resolved to nothing, and
+// the creation has to be able to check that this is still true. Reading it
+// through a second surface would let the page be shown one answer and the
+// write act on another.
+type SubjectNamingService interface {
+	Kinds() []reality.EntityKind
+	AliasKinds() []reality.AliasKind
+	Resolve(context.Context, string) (string, error)
+	Create(context.Context, reality.NewSubject) (reality.Entity, []reality.Alias, error)
+}
+
 // ComplaintService is issue #115's operator-steering surface the web API may
 // reach, satisfied by *complaint.Store.
 //
@@ -488,14 +531,15 @@ type RunCounts struct {
 // service method that changed shape is a compile failure here instead of a
 // second implementation growing beside it.
 var (
-	_ ReviewService      = (*review.Service)(nil)
-	_ FrontierReader     = (*frontier.Store)(nil)
-	_ FrontierReviver    = (*frontier.Store)(nil)
-	_ RealityService     = (*reality.Store)(nil)
-	_ FocusPolicyService = (*reality.FocusPolicy)(nil)
-	_ DispositionService = (*disposition.Store)(nil)
-	_ ComplaintService   = (*complaint.Store)(nil)
-	_ SearchIndex        = (*index.Index)(nil)
+	_ ReviewService        = (*review.Service)(nil)
+	_ FrontierReader       = (*frontier.Store)(nil)
+	_ FrontierReviver      = (*frontier.Store)(nil)
+	_ RealityService       = (*reality.Store)(nil)
+	_ FocusPolicyService   = (*reality.FocusPolicy)(nil)
+	_ SubjectNamingService = (*reality.SubjectNaming)(nil)
+	_ DispositionService   = (*disposition.Store)(nil)
+	_ ComplaintService     = (*complaint.Store)(nil)
+	_ SearchIndex          = (*index.Index)(nil)
 )
 
 // State is the non-secret subset of persistent storage configuration exposed

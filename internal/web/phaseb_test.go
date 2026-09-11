@@ -197,7 +197,13 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		// every other route, and because a policy note and an entity's
 		// display name are content somebody typed: the escaping sweep has
 		// to see them without a test remembering to ask.
-		Focus:        ledger.Focus(),
+		Focus: ledger.Focus(),
+		// §4.8's subject naming, over the same ledger and wired by
+		// default for the focus surface's reason: naming a subject is the
+		// write every other ledger record depends on, and a display name
+		// and a typed alias are words an operator typed, so the escaping
+		// sweep has to see them without a test remembering to ask.
+		Subjects:     ledger.Naming(),
 		Search:       retrieval,
 		Cookbook:     recipes,
 		Dispositions: actions,
@@ -711,6 +717,15 @@ type phaseBRoute struct {
 	path     string
 	body     string
 	mutating bool
+	// fixed marks a read whose every value is a constant this build ships.
+	// There is exactly one — §4.8's closed vocabularies — and it is stated
+	// here rather than special-cased by name in the escaping sweep: a
+	// response with no fixture content in it has nothing hostile to find
+	// neutralized, so the sweep's "the escaped form is present instead"
+	// assertion would be checking that a constant contains a script tag.
+	// Every other assertion, including the one that no control or bidi
+	// character reaches the browser, still applies to it.
+	fixed bool
 }
 
 // phaseBRoutes enumerates every route this file adds. The list is the test's
@@ -759,6 +774,15 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{name: "focus policy", method: http.MethodGet, path: "/api/reality/focus"},
 		{name: "focus subject", method: http.MethodGet,
 			path: "/api/reality/focus/subject?subject=" + url.QueryEscape(h.term)},
+		// §4.8's subject naming. The vocabulary read is enrolled because
+		// it is what a form has to have before it can offer a kind, and it
+		// needs the same session, origin, no-store and read-only coverage
+		// every other read gets. It is `fixed` because its every value is
+		// a kind this build ships: there is no fixture content in it.
+		{
+			name: "subject vocabulary", method: http.MethodGet,
+			path: "/api/reality/subject/vocabulary", fixed: true,
+		},
 		{name: "search", method: http.MethodGet, path: "/api/search?q=verification"},
 		{name: "record revisions", method: http.MethodGet,
 			path: "/api/record/revisions?type=hypothesis&id=" + h.original.ID},
@@ -857,6 +881,18 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		{
 			name: "focus supersede", method: http.MethodPost, path: "/api/reality/focus/supersede", mutating: true,
 			body: `{"priorFactId":"` + h.policy.ID + `","policy":"normal","note":"it is worth a look again"}`,
+		},
+		// The creation. It is the second mutation here that mints a record
+		// rather than answering one, and the only one that mints the thing
+		// every other §4.8 record is about — so its name is a word nobody
+		// has used yet in this fixture, because a name the ledger already
+		// resolves is refused rather than duplicated and subject_test.go
+		// covers that refusal.
+		{
+			name: "subject create", method: http.MethodPost, path: "/api/reality/subject/create",
+			mutating: true,
+			body: `{"kind":"machine","name":"the unnamed box","notes":"it runs the nightly builds",` +
+				`"aliases":[{"kind":"hostname","value":"box-07"}]}`,
 		},
 	}
 }
@@ -1545,6 +1581,14 @@ func TestPhaseBNeutralizesMaliciousContent(t *testing.T) {
 				if strings.Contains(text, forbidden) {
 					t.Errorf("response carries %q unescaped: %s", forbidden, text)
 				}
+			}
+			if route.fixed {
+				// A closed vocabulary carries no fixture text, so there
+				// is nothing hostile in it to find in escaped form. The
+				// assertions above still ran and still hold, which is
+				// the whole property for a response whose every value
+				// is a constant this build ships.
+				return
 			}
 			// The escaped forms are present instead, so the values were
 			// neutralized rather than dropped: a field silently emptied

@@ -4164,6 +4164,32 @@ a.link-target:hover {
   gap: 0.6rem;
 }
 
+/* Naming a subject: one typed name is a kind and a value on one line. The kind
+   is a closed vocabulary, so it takes the width a word needs rather than the
+   width a repository URL needs, and the pair wraps on a narrow viewport
+   instead of shrinking the value box into uselessness. */
+.name-subject-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.6rem;
+}
+
+.name-subject-name label.kind {
+  flex: 0 1 11rem;
+}
+
+.name-subject-name label.value {
+  flex: 1 1 16rem;
+}
+
+/* The form is also used inside a card of its own on the Subjects listing,
+   where there is no control above it for its rule to separate it from. */
+.name-subject {
+  border-top: 0;
+  padding-top: 0;
+}
+
 .focus-choice-list {
   display: grid;
   gap: 0.6rem;

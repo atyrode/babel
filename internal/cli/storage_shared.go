@@ -53,15 +53,17 @@ What comes back is what the snapshot list can support: snapshot identity,
 ordering rederived from restic's recorded times, and restic's counts where the
 listing carries them. Session rows cannot be rebuilt from a listing, because
 their sizes and counts are read from the sessions themselves, so the rebuilt
-snapshots arrive "catalog-pending" and session identity returns with the owning
-host's next push (SPEC.md 9).
+snapshots arrive "catalog-pending" (SPEC.md 9). They do not stay that way
+unattended: the owning host's next push publishes current session identity, and
+any host's "archive push" recovers each rebuilt snapshot's own session detail by
+restoring it and rescanning it, a bounded number per run.
 
-That makes this the wrong tool for filling in session title, workspace, and
-continuation grade: it deletes the host's session rows, metadata included, and
-cannot reconstruct any of it. Those values arrive only from the owning host's
-next push. The host's own identity - display name, operating system,
-architecture, and first-seen time - does survive a rebuild, because this
-command has no way to know another machine's facts and so asserts none.
+That still makes this the wrong tool for filling in session title, workspace,
+and continuation grade: it deletes the host's session rows, metadata included,
+and cannot reconstruct any of it itself. The host's own identity - display name,
+operating system, architecture, and first-seen time - does survive a rebuild,
+because this command has no way to know another machine's facts and so asserts
+none.
 
 --host is required rather than defaulting to this machine, because rebuilding
 discards derived rows and the wrong host would be a silent loss. --yes is
@@ -524,7 +526,7 @@ func (a *app) storageRebuild(ctx context.Context, args []string) error {
 	}); err != nil {
 		return err
 	}
-	a.diagf("note: session identity is not derivable from a snapshot listing; these snapshots are catalog-pending until host %s pushes again\n",
+	a.diagf("note: session identity is not derivable from a snapshot listing, so these snapshots are catalog-pending; host %s's next push publishes its current sessions, and any host's `babel archive push` recovers each snapshot's own session detail by restoring and rescanning it\n",
 		Sanitize(rf.host))
 	return nil
 }

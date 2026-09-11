@@ -252,6 +252,7 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	opts.Runs = services.runs()
 	opts.Reality = services.realityService()
 	opts.Focus = services.focusPolicy()
+	opts.Subjects = services.subjectNaming()
 	opts.Search = services.search()
 	opts.Dispositions = services.dispositions()
 	opts.Reviver = services.reviver()
@@ -485,6 +486,17 @@ func (s *webServices) focusPolicy() web.FocusPolicyService {
 		return nil
 	}
 	return s.reality.Focus()
+}
+
+// subjectNaming is §4.8's subject naming, over the same open ledger and on
+// focusPolicy's terms: the browser surface that names a subject holds a type
+// that can create an identity and attach typed names to it, and nothing that
+// could assert a fact about one.
+func (s *webServices) subjectNaming() web.SubjectNamingService {
+	if s.reality == nil {
+		return nil
+	}
+	return s.reality.Naming()
 }
 
 func (s *webServices) search() web.SearchIndex {

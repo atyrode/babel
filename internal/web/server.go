@@ -547,6 +547,23 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFocusSupersede(w, r)
+	// §4.8's subject naming. It sits after the focus routes because that is
+	// where the need for it shows up: the focus page's unresolved-name
+	// state is the dead end this closes, and internal/web/subject.go states
+	// why a browser may mint an identity when it may not assert a fact.
+	//
+	// The GET is the ledger's closed vocabularies, which the form has to
+	// have before it can offer a kind; the POST is the creation itself.
+	case "/api/reality/subject/vocabulary":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleSubjectVocabulary(w, r)
+	case "/api/reality/subject/create":
+		if !s.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.handleSubjectCreate(w, r)
 	// Issue #87's record actions. The three POSTs are the browser's first
 	// writes against the frontier's own state, and each carries the chain
 	// head the page was rendered against; internal/web/records.go states

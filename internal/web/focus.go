@@ -409,6 +409,17 @@ type focusSubjectResult struct {
 	// ordinary case for an operator's first guess, and a name that means two
 	// things is §4.8's own resolve-entity question rather than a failure.
 	Resolved bool `json:"resolved"`
+	// Nameable distinguishes the two ways a lookup fails to resolve, which
+	// are opposite states and used to be one flag and a sentence.
+	//
+	// It is true when the word reaches nothing at all: no subject has it,
+	// so naming one is the operator's next step and the surface that told
+	// him the word is unknown is the surface that should offer it. It is
+	// false when the word already means several subjects, because a third
+	// thing answering to it would deepen exactly the confusion §4.8 raises
+	// a resolve-entity Question about — the operator has to pick the
+	// identity he meant instead.
+	Nameable bool `json:"nameable"`
 	// Via says how the term was recognized — "alias" for a name in the
 	// ledger's alias table, "id" for a canonical entity identifier.
 	Via     string            `json:"via,omitempty"`
@@ -444,13 +455,13 @@ func (s *Server) handleFocusSubject(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	result := focusSubjectResult{Term: term, History: []factView{}}
 
-	id, via, reason, err := s.resolveFocusSubject(r, term)
+	id, via, reason, nameable, err := s.resolveFocusSubject(r, term)
 	if err != nil {
 		s.serviceError(w, r, err)
 		return
 	}
 	if id == "" {
-		result.Reason = reason
+		result.Reason, result.Nameable = reason, nameable
 		s.writeJSON(w, http.StatusOK, result)
 		return
 	}
@@ -498,38 +509,45 @@ func (s *Server) handleFocusSubject(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveFocusSubject turns a word into a canonical entity. An empty id with no
-// error is "the ledger does not recognize this", and the reason says which of
-// the two ways it failed to.
-func (s *Server) resolveFocusSubject(r *http.Request, term string) (id, via, reason string, err error) {
+// error is "the ledger does not recognize this", the reason says which of the
+// two ways it failed to, and nameable says whether naming a subject for the
+// word is the sensible next act or the wrong one.
+func (s *Server) resolveFocusSubject(r *http.Request, term string) (id, via, reason string, nameable bool, err error) {
 	ctx := r.Context()
 	resolved, err := s.opts.Focus.Resolve(ctx, term)
 	switch {
 	case err == nil:
-		return resolved, "alias", "", nil
+		return resolved, "alias", "", false, nil
 	case errors.Is(err, reality.ErrAmbiguousAlias):
 		// §4.8 raises a resolve-entity question about exactly this, and
 		// guessing an entity here would bury it. The count is reported and
 		// the names are not: an alias value is operator vocabulary that
 		// belongs in the ledger rather than in an error.
+		//
+		// Naming a subject is not offered here, and that is the one place
+		// this surface withholds the act it otherwise leads with: a third
+		// thing answering to a word that already means two would make the
+		// resolution the operator owes the ledger harder, not easier.
 		return "", "", "That name means more than one thing in this ledger. " +
-			"Open the entity you mean from the Reality page and set its policy there, " +
-			"so the choice is recorded against the identity you intended.", nil
+			"Open the entity you mean from the Subjects listing and set its policy there, " +
+			"so the choice is recorded against the identity you intended.", false, nil
 	case !errors.Is(err, reality.ErrUnknownRecord):
-		return "", "", "", err
+		return "", "", "", false, err
 	}
 	// No alias answers to it. An entity identifier is the other thing an
 	// operator can be holding, and it resolves to itself.
 	entity, err := s.opts.Focus.Entity(ctx, term)
 	if errors.Is(err, reality.ErrUnknownRecord) {
 		return "", "", "Nothing in the ledger answers to that name. " +
-			"A subject has to exist before a policy can be stated about it: " +
-			"entities are created by exploration and by `babel reality entity create`, " +
-			"never by this page.", nil
+			"A subject has to exist before a policy can be stated about it, " +
+			"so name it here first: that records the identity and the words you call it by, " +
+			"and nothing else — Babel believes nothing about a subject until you or an " +
+			"analysis says something about it.", true, nil
 	}
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", false, err
 	}
-	return entity.CanonicalID, "id", "", nil
+	return entity.CanonicalID, "id", "", false, nil
 }
 
 // focusInstallResult is POST /api/reality/focus/install's response.

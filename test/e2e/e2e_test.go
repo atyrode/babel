@@ -281,6 +281,13 @@ type pushResult struct {
 	// catalog, so a push must say so rather than claiming it published.
 	Catalog           string `json:"catalog"`
 	SessionsPublished int    `json:"sessions_published"`
+	// The archive drains a shared-mode push reports (SPEC.md §9.1). They stay
+	// zero here for the same reason Catalog is "local": this suite configures
+	// no shared catalog, so there is nothing to drain.
+	SnapshotsAdopted     int `json:"snapshots_adopted"`
+	SnapshotsCompleted   int `json:"snapshots_completed"`
+	SessionsRecovered    int `json:"sessions_recovered"`
+	SnapshotsUnrecovered int `json:"snapshots_unrecovered"`
 }
 
 type statusHostRow struct {

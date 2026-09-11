@@ -69,15 +69,17 @@ func TestSnapshotStatesDistinguishesCommittedFromPending(t *testing.T) {
 	}
 }
 
-// The two conditions status reports are different, and one of them no shipped
-// command resolves. An adopted snapshot keeps real counts from restic but no
-// record of which sessions it held, and only its owning host could have written
-// that at push time - so a later push does NOT promote it. That is intended, and
-// pinning it stops a future change from quietly "fixing" it by backfilling
-// session detail nobody observed. The legitimate completion is a
-// restore-and-rescan (SPEC.md 12, Phase C), which would publish the rows the
-// snapshot actually held; if that lands, this test should be replaced rather
-// than deleted, because the claim it defends moves rather than disappears.
+// Publishing a snapshot says nothing about a different one. An adopted
+// snapshot keeps real counts from restic and no record of which sessions it
+// held, and a later publication of the NEXT snapshot must not promote it: that
+// would backfill session detail nobody observed, and the count `archive status`
+// reports would fall without anything having read the snapshot.
+//
+// What legitimately completes it is CompletePending, which publishes the rows a
+// restore-and-rescan actually read out of that snapshot - the drain `archive
+// push` runs (SPEC.md 9.1, internal/cli/archiverescan.go). So this test pins
+// the boundary between the two rather than the old claim that nothing resolved
+// the state at all.
 func TestAdoptedSnapshotStaysPendingAcrossLaterPushes(t *testing.T) {
 	db := newDB(t)
 	mustMigrate(t, db)
@@ -126,7 +128,7 @@ func TestAdoptedSnapshotStaysPendingAcrossLaterPushes(t *testing.T) {
 	}
 	if got := states["s-stranded"]; got != sharedcatalog.CommitPending {
 		t.Errorf("adopted snapshot state = %q after a later push, want %q: "+
-			"if a push now promotes it, status must stop telling operators the count does not fall",
+			"only a restore-and-rescan of that snapshot may complete it",
 			got, sharedcatalog.CommitPending)
 	}
 	if got := states["s-later"]; got != sharedcatalog.CommitCommitted {

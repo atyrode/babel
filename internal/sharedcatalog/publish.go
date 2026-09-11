@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -93,6 +94,26 @@ func SessionUID(deploymentID, hostID, harness, sourceID string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// PublishableHarness reports whether the catalog's session vocabulary admits a
+// harness name.
+//
+// sessions.harness is a closed enum (migrations/0001_init.sql), and it was
+// admitted to the plaintext allowlist on exactly that basis: it names which
+// adapter schema a row follows and ranges over compile-time constants, which is
+// why it is a schema identifier rather than user data (SPEC.md 9). That makes
+// it narrower than internal/harness's set, which is open by construction
+// (SPEC.md 6.8) and today also declares Babel's own analysis sessions. A writer
+// therefore has to be able to ask before it writes, rather than meet the answer
+// as a CHECK violation it cannot act on. Widening the set is a migration
+// against a frozen schema (SPEC.md 14), never an edit to this list.
+func PublishableHarness(name string) bool {
+	switch name {
+	case "omp", "codex", "claude":
+		return true
+	}
+	return false
+}
+
 // PublishSnapshot records one snapshot and its session rows under a fenced
 // lease, exactly once.
 //
@@ -179,49 +200,8 @@ func PublishSnapshot(
 		return false, fmt.Errorf("publish snapshot: upsert snapshot: %w", err)
 	}
 
-	for _, s := range sessions {
-		// first_snapshot_id records where a session was first seen and is never
-		// rewritten; latest_snapshot_id moves forward with each publication.
-		//
-		// title, workspace, continuation_grade and the usage summary are
-		// overwritten from this push rather than coalesced with what the row
-		// held. The publishing host is the authority on its own sessions: a
-		// renamed workspace, a session that stopped being continuable, or one
-		// whose transcript grew by another twenty turns must be able to say
-		// so, and coalescing would make the first value ever published
-		// permanent. A push cannot silently blank them by failing to describe
-		// - a session whose describe fails is pruned from the local cache and
-		// is not published at all (internal/catalog.Refresh).
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO sessions (session_uid, host_id, harness, first_snapshot_id,
-			                      latest_snapshot_id, primary_size, artifact_count,
-			                      blob_count, unresolved_blob_count, source_modified_at,
-			                      title, title_provenance, workspace, continuation_grade,
-			                      cost_usd, total_tokens, turns, tool_errors)
-			VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-			        $14, $15, $16, $17)
-			ON CONFLICT (session_uid) DO UPDATE
-			   SET latest_snapshot_id    = excluded.latest_snapshot_id,
-			       primary_size          = excluded.primary_size,
-			       artifact_count        = excluded.artifact_count,
-			       blob_count            = excluded.blob_count,
-			       unresolved_blob_count = excluded.unresolved_blob_count,
-			       source_modified_at    = excluded.source_modified_at,
-			       title                 = excluded.title,
-			       title_provenance      = excluded.title_provenance,
-			       workspace             = excluded.workspace,
-			       continuation_grade    = excluded.continuation_grade,
-			       cost_usd              = excluded.cost_usd,
-			       total_tokens          = excluded.total_tokens,
-			       turns                 = excluded.turns,
-			       tool_errors           = excluded.tool_errors,
-			       updated_at            = now()`,
-			s.SessionUID, l.HostID, s.Harness, snap.SnapshotID,
-			s.PrimarySize, s.ArtifactCount, s.BlobCount, s.UnresolvedBlobCount,
-			s.SourceModifiedAt, s.Title, s.TitleProvenance, s.Workspace, s.ContinuationGrade,
-			s.CostUSD, s.TotalTokens, s.Turns, s.ToolErrors); err != nil {
-			return false, fmt.Errorf("publish snapshot: upsert session: %w", err)
-		}
+	if err := insertSessions(ctx, tx, l.HostID, snap.SnapshotID, sessions, sessionUpsertLatest); err != nil {
+		return false, fmt.Errorf("publish snapshot: %w", err)
 	}
 
 	// Now that the snapshot row exists, point the claimed key at it so a later
@@ -252,6 +232,169 @@ func PublishSnapshot(
 		return false, fmt.Errorf("publish snapshot: commit: %w", err)
 	}
 	return true, nil
+}
+
+// CompletePending records the session rows a restore-and-rescan recovered for a
+// snapshot the catalog holds without them, and marks it committed.
+//
+// It reports whether it applied. A row that is no longer catalog-pending, or
+// that belongs to another host than the lease authorizes, is left exactly as it
+// is and reported as not applied: another instance completed it first, or the
+// caller is working from a listing that has since moved. That guard is also
+// what makes the operation idempotent, which is why it claims no idempotency
+// key - the commit state is the fence, and a repeat finds the work done.
+//
+// Three things it deliberately does not touch. The snapshot's counts stay as
+// restic recorded them: they were never the missing part, and rewriting them
+// from a rescan would replace archive truth with a second reading of it. The
+// publication order stays where adoption put it, because renumbering a host's
+// snapshots from another instance is exactly what publication_order exists to
+// prevent. And a session row that already exists is left alone rather than
+// updated - a row for that identity was written by a publication of some
+// snapshot of this host, and rewinding its latest_snapshot_id and its measures
+// to what an older snapshot held would replace current truth with history. The
+// rescan exists to recover detail nothing else holds, never to overwrite detail
+// a later push already wrote.
+func CompletePending(
+	ctx context.Context,
+	db *sql.DB,
+	l Lease,
+	snapshotID string,
+	publishedBy string,
+	sessions []SessionRow,
+) (applied bool, err error) {
+	if snapshotID == "" {
+		return false, fmt.Errorf("complete pending snapshot: snapshot id is required")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("complete pending snapshot: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := checkLease(ctx, tx, l); err != nil {
+		return false, err
+	}
+
+	// The row is locked before it is judged, so a concurrent completion cannot
+	// land between the read and the update. It is selected by host as well as
+	// by id: the lease authorizes one host's rows, and a snapshot that turns
+	// out to belong to another is refused rather than written.
+	var state string
+	err = tx.QueryRowContext(ctx,
+		`SELECT commit_state FROM snapshots WHERE snapshot_id = $1 AND host_id = $2 FOR UPDATE`,
+		snapshotID, l.HostID).Scan(&state)
+	switch {
+	case errors.Is(err, sql.ErrNoRows), err == nil && state != CommitPending:
+		// Commit rather than roll back so the lease row lock is released
+		// promptly: nothing was written, and the caller's next snapshot should
+		// not wait behind an abandoned transaction.
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("complete pending snapshot: commit no-op: %w", err)
+		}
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("complete pending snapshot: read commit state: %w", err)
+	}
+
+	if err := insertSessions(ctx, tx, l.HostID, snapshotID, sessions, sessionInsertOnly); err != nil {
+		return false, fmt.Errorf("complete pending snapshot: %w", err)
+	}
+
+	// session_count is what the snapshot held, not how many rows this call
+	// inserted: a session the host has published since is already in the table
+	// and was still in this snapshot.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE snapshots
+		   SET commit_state  = $1,
+		       session_count = $2,
+		       published_by  = $3,
+		       updated_at    = now()
+		 WHERE snapshot_id = $4`,
+		CommitCommitted, len(sessions), publishedBy, snapshotID); err != nil {
+		return false, fmt.Errorf("complete pending snapshot: mark committed: %w", err)
+	}
+
+	if publishDelayForTests != nil {
+		publishDelayForTests()
+	}
+
+	// Revalidated before commit for the reason PublishSnapshot gives: the row
+	// lock stops other writers but not the passage of time, and a rescan that
+	// took longer than the lease must land nothing.
+	if err := checkLease(ctx, tx, l); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("complete pending snapshot: commit: %w", err)
+	}
+	return true, nil
+}
+
+// The two conflict actions a session row may be written under.
+//
+// sessionUpsertLatest is a publication by the owning host: it is the authority
+// on its own sessions, so a renamed workspace, a session that stopped being
+// continuable, or one whose transcript grew by another twenty turns overwrites
+// what the row held rather than being coalesced with it - coalescing would make
+// the first value ever published permanent. A push cannot silently blank them
+// by failing to describe: a session whose describe fails is pruned from the
+// local cache and is not published at all (internal/catalog.Refresh).
+//
+// sessionInsertOnly is a restore-and-rescan completing an older snapshot, where
+// the row that may already exist is the newer statement. See CompletePending.
+const (
+	sessionUpsertLatest = `
+		ON CONFLICT (session_uid) DO UPDATE
+		   SET latest_snapshot_id    = excluded.latest_snapshot_id,
+		       primary_size          = excluded.primary_size,
+		       artifact_count        = excluded.artifact_count,
+		       blob_count            = excluded.blob_count,
+		       unresolved_blob_count = excluded.unresolved_blob_count,
+		       source_modified_at    = excluded.source_modified_at,
+		       title                 = excluded.title,
+		       title_provenance      = excluded.title_provenance,
+		       workspace             = excluded.workspace,
+		       continuation_grade    = excluded.continuation_grade,
+		       cost_usd              = excluded.cost_usd,
+		       total_tokens          = excluded.total_tokens,
+		       turns                 = excluded.turns,
+		       tool_errors           = excluded.tool_errors,
+		       updated_at            = now()`
+	sessionInsertOnly = `ON CONFLICT (session_uid) DO NOTHING`
+)
+
+// insertSessions writes one publication's session rows inside its transaction.
+//
+// The column list lives here once. Two paths write these rows - a host
+// publishing its own sessions and a rescan recovering a snapshot's - and they
+// differ only in what to do about a row that already exists, so the conflict
+// action is the parameter and everything the catalog records about a session is
+// stated in one place.
+//
+// first_snapshot_id records where a session was first seen and is never
+// rewritten; latest_snapshot_id moves forward with each publication.
+func insertSessions(ctx context.Context, tx *sql.Tx, hostID, snapshotID string,
+	sessions []SessionRow, conflict string) error {
+	for _, s := range sessions {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO sessions (session_uid, host_id, harness, first_snapshot_id,
+			                      latest_snapshot_id, primary_size, artifact_count,
+			                      blob_count, unresolved_blob_count, source_modified_at,
+			                      title, title_provenance, workspace, continuation_grade,
+			                      cost_usd, total_tokens, turns, tool_errors)
+			VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+			        $14, $15, $16, $17)`+conflict,
+			s.SessionUID, hostID, s.Harness, snapshotID,
+			s.PrimarySize, s.ArtifactCount, s.BlobCount, s.UnresolvedBlobCount,
+			s.SourceModifiedAt, s.Title, s.TitleProvenance, s.Workspace, s.ContinuationGrade,
+			s.CostUSD, s.TotalTokens, s.Turns, s.ToolErrors); err != nil {
+			return fmt.Errorf("upsert session: %w", err)
+		}
+	}
+	return nil
 }
 
 // publishDelayForTests runs after the row upserts and before the final lease

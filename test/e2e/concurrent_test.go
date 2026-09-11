@@ -296,12 +296,13 @@ func TestConcurrentPushesForDifferentHostsBothPublish(t *testing.T) {
 // rebuilds from the repository plus a rescan of live sources, which is the only
 // recovery path that exists: no catalog backup is assumed.
 //
-// What comes back is deliberately not everything. Snapshot visibility, ordering,
-// and restic's counts return for every historical snapshot; current session
-// identity returns from the rescan. What does not return is which sessions each
-// *historical* snapshot held, because only its owning host could have written
-// that at push time and it is not derivable from the listing — so those rows
-// come back `catalog-pending` and stay there (SPEC.md §9).
+// What comes back is now everything the archive can support. Snapshot
+// visibility, ordering, and restic's counts return for every historical
+// snapshot; current session identity returns from the rescan of live sources;
+// and which sessions each *historical* snapshot held - the part no listing
+// carries - is recovered by the restore-and-rescan the same pushes run, a
+// bounded number per push, for any host's snapshots and not only their own
+// (SPEC.md §9.1).
 func TestCatalogRebuildsFromTheRepository(t *testing.T) {
 	dep := newDeployment(t)
 	a := dep.newInstance(t, "instance-a", hostA, instanceA)
@@ -360,14 +361,16 @@ func TestCatalogRebuildsFromTheRepository(t *testing.T) {
 			t.Errorf("host %s has %d catalog rows, want all three of its snapshots: %+v",
 				h.Host, h.Snapshots, h)
 		}
-		// The two adopted historical snapshots carry no session detail, and the
-		// push that rebuilt is committed.
-		if h.Pending != 2 {
-			t.Errorf("host %s reports %d catalog-pending rows, want its two adopted snapshots: %+v",
+		// Nothing is left carrying restic's counts without its session detail:
+		// the two pushes restored and rescanned the four historical snapshots
+		// between them, each taking its bounded share and covering the other
+		// host's as readily as its own.
+		if h.Pending != 0 {
+			t.Errorf("host %s reports %d catalog-pending rows, want them all recovered: %+v",
 				h.Host, h.Pending, h)
 		}
 		if h.Sessions != 1 {
-			t.Errorf("host %s recovered %d session identities from its rescan, want 1: %+v",
+			t.Errorf("host %s recovered %d session identities, want 1: %+v",
 				h.Host, h.Sessions, h)
 		}
 		if h.NewestOrder != 3 {

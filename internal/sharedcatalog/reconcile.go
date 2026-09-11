@@ -18,11 +18,15 @@ import (
 //
 // Host is the snapshot's recorded host, which equals Babel's operator-assigned
 // host ID because `restic backup --host` is passed that ID. It is carried here
-// so attribution can be checked rather than assumed: a snapshot whose Host does
-// not match the host being reconciled is refused, never adopted. That matters
-// because when BABEL_HOST_ID is unset restic falls back to the machine's system
-// hostname, and adopting one of those would put infrastructure identity into
-// the shared catalog - outside the SPEC.md 9 allowlist.
+// so attribution is recorded rather than assumed: an adopted row names the
+// host restic says produced the snapshot, never the host that adopted it.
+// Reconcile takes one host's listing and refuses any other's, which is what
+// keeps a caller's filter mistake from writing another machine's snapshots
+// under this one; AdoptForeign takes the whole repository and writes each
+// snapshot under its own host, which is how a snapshot a retired or idle
+// machine stranded is catalogued at all (SPEC.md 9.1). Neither adopts a
+// snapshot that names no host: that would mean the snapshot was taken without
+// `--host`, so its identity is unknown rather than merely absent.
 //
 // Counts is the summary restic stored with the snapshot, or nil when the record
 // has none. restic does keep these counts in the snapshot list, so a rebuilt
@@ -54,8 +58,9 @@ var ErrHostMismatch = errors.New("snapshot belongs to a different host")
 // prose, so a caller can decide whether the fleet needs attention.
 type ReconcileReport struct {
 	// Added counts snapshots the repository holds that the catalog did not.
-	// They are recorded as catalog-pending: their session rows are unknown
-	// until the owning host pushes again or a restore-and-rescan runs.
+	// They are recorded as catalog-pending: their session rows are not in the
+	// listing, so they arrive unknown and a push's restore-and-rescan or the
+	// owning host's next publication is what supplies them.
 	Added int
 	// Confirmed counts snapshots present in both.
 	Confirmed int
@@ -68,9 +73,14 @@ type ReconcileReport struct {
 // Reconcile makes the catalog agree with the repository's snapshot list for one
 // host, without deleting anything.
 //
-// It is safe to run from any authorized instance and needs no lease: it only
-// adds snapshots the repository already committed, and records that a check
-// happened. A host's own publications remain the way session rows arrive.
+// It only adds snapshots the repository already committed, and records that a
+// check happened. Writing one host's rows still needs that host's publication
+// lease, because publication_order is assigned from the host's own current
+// maximum and two instances computing it at once would collide on UNIQUE
+// (host_id, publication_order): a push holds its own lease for the whole
+// catalog phase, and AdoptForeign takes each other host's for the length of
+// one adoption. A host's own publications remain the way session rows arrive,
+// or a restore-and-rescan recovers them.
 func Reconcile(ctx context.Context, db *sql.DB, hostID string, repo []RepoSnapshot) (ReconcileReport, error) {
 	var rep ReconcileReport
 
@@ -278,10 +288,14 @@ func Rebuild(ctx context.Context, db *sql.DB, deploymentID, hostID string, repo 
 // BABEL_HOST_ID, and storage.json already enforce, so a malformed identity
 // cannot reach a primary key through this path. Note what it does not do: a
 // machine's system hostname is usually a valid host id, so shape alone cannot
-// tell an operator-chosen identity from an infrastructure one. Keeping
-// infrastructure identity out of the shared catalog rests on the operator
-// supplying BABEL_HOST_ID, and on the mismatch check below refusing to adopt
-// snapshots recorded under anything else.
+// tell an operator-chosen identity from an infrastructure one, and nothing
+// here can. Keeping infrastructure identity out of the shared catalog rests
+// on the operator supplying BABEL_HOST_ID on every machine: `archive push`
+// falls back to the system hostname when he has not, so such a name would
+// reach the catalog as that host's own primary key long before any other
+// instance saw the snapshot. What this check does guarantee is narrower and
+// still worth having - a snapshot naming no host is never adopted, and a
+// snapshot naming a host the rest of Babel would reject is never adopted.
 func checkAttribution(hostID string, repo []RepoSnapshot) error {
 	if !config.ValidHostID(hostID) {
 		return fmt.Errorf("invalid host id %q", hostID)
@@ -296,4 +310,178 @@ func checkAttribution(hostID string, repo []RepoSnapshot) error {
 		}
 	}
 	return nil
+}
+
+// ForeignAdoption is what one instance's pass over the other machines'
+// snapshots achieved.
+//
+// It is reported per host rather than as one number because the host is the
+// unit of write authority: adoption writes another machine's rows under that
+// machine's publication lease, so a host some instance is publishing for right
+// now is skipped rather than waited for, and a host whose adoption failed must
+// not cost the operator the rest of the fleet.
+type ForeignAdoption struct {
+	// Adopted counts snapshots recorded across every host in this pass.
+	Adopted int
+	// Hosts names the hosts something was adopted for, in order.
+	Hosts []string
+	// Deferred names the hosts whose lease another instance held. Nothing is
+	// owed: that instance's own push adopts them, or the next pass does.
+	Deferred []string
+	// Failed carries one "host: reason" per host whose adoption failed, so a
+	// single misconfigured or mid-migration host is reported rather than
+	// silently dropped.
+	Failed []string
+	// Refused names the snapshots that identify no host Babel would accept -
+	// an empty host, or one config.ValidHostID rejects. They are named rather
+	// than adopted, and named rather than fatal: a nameless snapshot is an
+	// anomaly in the repository, and failing the whole pass over it would
+	// strand every other machine's snapshots behind it.
+	Refused []string
+}
+
+// AdoptForeign records every snapshot the repository holds for a host other
+// than the caller's that the catalog has no row for.
+//
+// This is the archive half of SPEC.md 9.1: a record Babel produced reaches the
+// shared catalog without an operator action. Reconcile alone could not deliver
+// that, because it adopts one host's snapshots and the caller can only pass its
+// own: a snapshot stranded by a machine that has since been retired, has died,
+// or is simply idle would then wait for a push that never comes. Any pushing
+// host now drains the whole repository, and the hourly timer is what runs it.
+//
+// Attribution stays truthful in both directions. Each adopted row names the
+// host restic recorded, and publication_order is taken from that host's own
+// current maximum - never mixed between hosts, because the column totally
+// orders one host's snapshots (migrations/0001_init.sql) and interleaving two
+// machines' numbering would make a reader's "newest" meaningless.
+//
+// Concurrency is handled with the mechanism that already exists for it rather
+// than a new one: writing a host's rows requires that host's publication lease,
+// so two instances pushing at once cannot both adopt one snapshot into
+// conflicting orders. The loser of the race gets ErrLeaseHeld for that host and
+// reports it deferred. selfHost is refused in the listing rather than adopted
+// for the same reason: the caller already holds its own lease, and re-acquiring
+// it here would mint a fresh fence and invalidate the publication in flight.
+func AdoptForeign(ctx context.Context, db *sql.DB, deploymentID, instanceID, selfHost string,
+	repo []RepoSnapshot, ttl time.Duration) (ForeignAdoption, error) {
+	var rep ForeignAdoption
+	if deploymentID == "" || instanceID == "" || selfHost == "" {
+		return rep, errors.New("adopt foreign snapshots: deployment, instance, and host ids are all required")
+	}
+
+	byHost := make(map[string][]RepoSnapshot)
+	var hosts []string
+	for _, s := range repo {
+		if s.Host == "" || !config.ValidHostID(s.Host) {
+			rep.Refused = append(rep.Refused, s.SnapshotID)
+			continue
+		}
+		if s.Host == selfHost {
+			return rep, fmt.Errorf("adopt foreign snapshots: snapshot %s is attributed to %q, the adopting host",
+				s.SnapshotID, s.Host)
+		}
+		if _, seen := byHost[s.Host]; !seen {
+			hosts = append(hosts, s.Host)
+		}
+		byHost[s.Host] = append(byHost[s.Host], s)
+	}
+	sort.Strings(hosts)
+	sort.Strings(rep.Refused)
+
+	for _, host := range hosts {
+		added, err := adoptOneHost(ctx, db, deploymentID, instanceID, host, byHost[host], ttl)
+		switch {
+		case err == nil:
+			if added > 0 {
+				rep.Adopted += added
+				rep.Hosts = append(rep.Hosts, host)
+			}
+		case errors.Is(err, ErrLeaseHeld), errors.Is(err, ErrLeaseLost):
+			rep.Deferred = append(rep.Deferred, host)
+		case Unreachable(err):
+			// The conversation with PostgreSQL has stopped, so no later host in
+			// this pass can succeed either. Reporting the outage once beats
+			// reporting it per host.
+			return rep, err
+		default:
+			rep.Failed = append(rep.Failed, fmt.Sprintf("%s: %s", host, err))
+		}
+	}
+	return rep, nil
+}
+
+// adoptOneHost adopts one other machine's snapshots under that machine's lease.
+func adoptOneHost(ctx context.Context, db *sql.DB, deploymentID, instanceID, hostID string,
+	repo []RepoSnapshot, ttl time.Duration) (int, error) {
+	// The host row is the precondition for both what follows: host_leases and
+	// snapshots both reference it. It asserts nothing about the machine - no
+	// display name, no operating system, no architecture - for the reason
+	// Rebuild gives: this process does not know another machine's identity, and
+	// writing what this one happens to be would be a lie about a machine
+	// (migrations/0004). Those columns stay NULL until that host registers.
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO hosts (host_id, deployment_id) VALUES ($1, $2)
+		ON CONFLICT (host_id) DO NOTHING`, hostID, deploymentID); err != nil {
+		return 0, fmt.Errorf("record host: %w", err)
+	}
+
+	lease, err := AcquireHostLease(ctx, db, hostID, instanceID, ttl)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		// Released early so the owning host's next push does not wait out the
+		// TTL, and a failure to release is not worth losing an adoption that
+		// already committed: the lease expires on its own.
+		_ = ReleaseHostLease(ctx, db, lease)
+	}()
+
+	rep, err := Reconcile(ctx, db, hostID, repo)
+	return rep.Added, err
+}
+
+// PendingSnapshot is one snapshot the catalog holds with restic's real counts
+// and no record of which sessions it held.
+//
+// It is what an outage, a rebuild, or an adoption leaves behind, and what a
+// restore-and-rescan completes. Order is the host's own publication order, so a
+// caller draining the backlog can take a host's oldest first.
+type PendingSnapshot struct {
+	SnapshotID string
+	HostID     string
+	Order      int64
+}
+
+// PendingSnapshots lists every catalog-pending row, by host and then by that
+// host's publication order.
+//
+// The whole fleet's rows are returned rather than one host's, because the work
+// they name is not the owning host's to do: restoring a snapshot and rescanning
+// it needs the repository and the adapters, both of which every authorized
+// instance has, and waiting for the owning machine is exactly the wait SPEC.md
+// 9.1 refuses.
+func PendingSnapshots(ctx context.Context, db *sql.DB) ([]PendingSnapshot, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT snapshot_id, host_id, publication_order
+		  FROM snapshots
+		 WHERE commit_state = $1
+		 ORDER BY host_id, publication_order`, CommitPending)
+	if err != nil {
+		return nil, fmt.Errorf("read catalog-pending snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PendingSnapshot
+	for rows.Next() {
+		var s PendingSnapshot
+		if err := rows.Scan(&s.SnapshotID, &s.HostID, &s.Order); err != nil {
+			return nil, fmt.Errorf("scan catalog-pending snapshot: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read catalog-pending snapshots: %w", err)
+	}
+	return out, nil
 }
