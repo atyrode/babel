@@ -276,15 +276,15 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	opts.Complaints = services.complaints()
 	opts.Receipts = services.receipts()
 
-	// §4.13's topics: the frontier's filings, the ledger's topic proposals and
-	// the operator's stance toward a topic. Each half wires on its own terms
-	// — a build with a frontier but no ledger still files records and lists
-	// nothing to accept — and the frontier is handed the ledger after both
-	// are open, because it opened first and needs it only to drop a retired
-	// topic's filings out of the unfiled count.
+	// §4.13's topics: the frontier's filings, the ledger's plans for the
+	// topic proposals Babel has published, and the operator's stance toward
+	// a topic. Each half wires on its own terms — a build with a frontier
+	// but no ledger still files records and proposes nothing — and the
+	// frontier is handed the ledger after both are open, because it opened
+	// first and needs it only to drop a retired topic's filings out of the
+	// unfiled count.
 	if services.analysis != nil {
 		opts.Filings = services.analysis.frontier
-		opts.TopicFiler = services.analysis.frontier
 	}
 	if services.reality != nil {
 		opts.Topics = services.reality
@@ -293,7 +293,7 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 			topics.Filer = services.analysis.frontier
 			services.analysis.frontier.UseEntities(services.reality)
 		}
-		opts.TopicQuestions = topics
+		opts.TopicPlans = topics
 		opts.Stance = topics
 	}
 

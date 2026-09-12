@@ -302,42 +302,65 @@ func WorkRoleApplies(subjectKind, role string) bool {
 	return RoleApplies(subjectKind, role)
 }
 
-// The outcomes one filing assignment can reach (§4.13). They are three because
-// the honest answers are three: the record is about something the ledger
-// already names, it is about something nobody has created an entity for yet, or
-// it is about nothing in particular and saying so is the result.
+// The outcomes one filing assignment can reach (§4.13). They are four because
+// the honest answers are four: the record is about something the ledger
+// already names, it is about something no entity names yet — so the pass
+// published a topic proposal — it is about nothing in particular, or the pass
+// answered an ask the operator made about a topic and proposed no change.
 const (
 	// FilingFiled is an `about` edge written to an existing entity.
 	FilingFiled = "filed"
-	// FilingProposed is a topic question raised because no entity answered.
-	// The record stays unfiled until the operator accepts the question:
-	// only the operator creates entities (§4.8).
+	// FilingProposed is a topic proposal the run published as an ordinary
+	// record: the operator rules on it the way he rules on every other
+	// proposal, and accepting it is what applies the change (§4.13's second
+	// reading). The record stays unfiled until he does, because only the
+	// operator creates, splits, merges or retires a topic (§4.8).
 	FilingProposed = "topic-proposed"
 	// FilingNone is the recorded judgement that the record is about nothing
 	// in particular, with the reason kept.
 	FilingNone = "no-topic"
+	// FilingAnswered is the pass answering the operator's ask about a topic
+	// with a reasoned no: the ask is replied to, nothing about the ledger is
+	// proposed, and the reason is kept verbatim. §4.13 has Babel answer an
+	// ask rather than obey it, and a pass that judged the ask wrong has
+	// produced exactly this.
+	FilingAnswered = "ask-answered"
 )
 
 // FilingOutcomes lists the filing outcomes in a stable order.
-func FilingOutcomes() []string { return []string{FilingFiled, FilingProposed, FilingNone} }
+func FilingOutcomes() []string {
+	return []string{FilingFiled, FilingProposed, FilingNone, FilingAnswered}
+}
 
 // Filing is what a filing assignment produced.
 //
-// The `about` edge itself lives in the frontier and the topic question in the
-// Reality ledger; this is the attributed evaluation record saying which of the
-// three a paid draw reached. It exists so that a receipt, and the accounting of
-// what the filing share bought, can be read without opening either store — and
-// so that a filing run that reached an honest "nothing in particular" is a
-// completion rather than a skip.
+// The `about` edge itself lives in the frontier, a topic proposal is a
+// frontier proposal record with a ledger plan behind it, and an answered ask
+// is a reply on the operator's own steering entry; this is the attributed
+// evaluation record saying which of the four a paid draw reached. It exists so
+// that a receipt, and the accounting of what the filing share bought, can be
+// read without opening any of those stores — and so that a filing run that
+// reached an honest "nothing in particular" is a completion rather than a
+// skip.
 type Filing struct {
 	Outcome string `json:"outcome"`
 	// Entity is the reality entity the record was filed under. Filed only.
 	Entity string `json:"entity,omitempty"`
-	// Question is the topic question the run raised. Proposed only.
-	Question string `json:"question,omitempty"`
-	// Reason is the rationale for the filing, the why of the proposal, or
-	// the reason the record is about nothing in particular. It is required
-	// in all three: a filing with no reason is a link nobody can argue with.
+	// Proposal is the proposal record the run published for the operator to
+	// rule on. Proposed only.
+	Proposal string `json:"proposal,omitempty"`
+	// Operation is which of §4.13's four changes that proposal carries —
+	// create, split, merge or retire. Proposed only, and recorded rather
+	// than derived because a receipt has to say what the operator is being
+	// asked to rule on without opening the proposal.
+	Operation string `json:"operation,omitempty"`
+	// Ask is the operator's steering entry this pass answered. Answered
+	// only.
+	Ask string `json:"ask,omitempty"`
+	// Reason is the rationale for the filing, the why of the proposal, the
+	// reason the record is about nothing in particular, or the reason the
+	// ask was answered with no change. It is required in all four: a filing
+	// with no reason is a link nobody can argue with.
 	Reason string `json:"reason"`
 }
 
@@ -350,20 +373,32 @@ func (f Filing) validate() error {
 		if strings.TrimSpace(f.Entity) == "" {
 			return fmt.Errorf("%w: a filed record must name the entity it was filed under", ErrInvalid)
 		}
-		if f.Question != "" {
-			return fmt.Errorf("%w: a filed record names an entity, not a topic question", ErrInvalid)
+		if f.Proposal != "" || f.Operation != "" {
+			return fmt.Errorf("%w: a filed record names an entity, not a topic proposal", ErrInvalid)
 		}
 	case FilingProposed:
-		if strings.TrimSpace(f.Question) == "" {
-			return fmt.Errorf("%w: a proposed topic must name the question that carries it", ErrInvalid)
+		if strings.TrimSpace(f.Proposal) == "" {
+			return fmt.Errorf("%w: a proposed topic must name the proposal record that carries it",
+				ErrInvalid)
+		}
+		if strings.TrimSpace(f.Operation) == "" {
+			return fmt.Errorf("%w: a topic proposal must say which change it proposes", ErrInvalid)
 		}
 		if f.Entity != "" {
 			return fmt.Errorf("%w: a proposed topic has no entity yet; only the operator creates one",
 				ErrInvalid)
 		}
 	case FilingNone:
-		if f.Entity != "" || f.Question != "" {
-			return fmt.Errorf("%w: a record about nothing in particular names neither entity nor question",
+		if f.Entity != "" || f.Proposal != "" || f.Ask != "" {
+			return fmt.Errorf("%w: a record about nothing in particular names neither entity, "+
+				"proposal nor ask", ErrInvalid)
+		}
+	case FilingAnswered:
+		if strings.TrimSpace(f.Ask) == "" {
+			return fmt.Errorf("%w: an answered ask must name the ask it answered", ErrInvalid)
+		}
+		if f.Entity != "" || f.Proposal != "" {
+			return fmt.Errorf("%w: an answer that proposes no change names neither entity nor proposal",
 				ErrInvalid)
 		}
 	}

@@ -7,8 +7,8 @@
   "recipes": [
     {
       "id": "babel-files-its-output",
-      "version": 1,
-      "digest": "sha256:692ba3f8b6606a673f2366b418a6d84066a1d686725cd9bd2587f7fea25913cd"
+      "version": 2,
+      "digest": "sha256:f5f37d2eee027577055f989b48c478623f7b3733e94782ed161b20abae03f70e"
     },
     {
       "id": "babel-improves-babel",

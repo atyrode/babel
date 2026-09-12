@@ -857,7 +857,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			&reviewsAdapter{service: services.service, diag: a.diagf},
 			conductorFocus(ledger), settings.evaluateCadence(), a.diagf)
 		evaluationSvc = services.service
-		evaluationTopics = topicService(state.frontier, services.reality, state.sessionCatalog)
+		evaluationTopics = topicService(topicFilingStores(state, services.reality, sf.rootList()))
 	}
 
 	loop, err := conductor.New(conductor.Config{

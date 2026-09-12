@@ -262,24 +262,20 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		// left it out would exercise the front page's vocabulary only in
 		// the tests that remembered to ask.
 		Filings: front,
-		// §4.13's topic proposals, over a fixture rather than the ledger,
-		// for fleetFixture's reason: a proposal's name and its "why" are a
+		// §4.13's topic plans, over a fixture rather than the ledger,
+		// for fleetFixture's reason: a plan's name and its "why" are a
 		// run's wording, so the escaping sweep has to see them without a
 		// test asking. filing_test.go describes the fixture.
-		TopicQuestions: topicQuestionsFixture(h, text),
+		TopicPlans: topicPlansFixture(h, text),
 		// The operator's stance toward a topic, over the same fixture: the
 		// reason he gave for parking a topic is his own prose.
 		Stance: topicStanceFixture(h, text),
-		// §4.13's topic surface, over the same ledger and the same
-		// frontier, wired by default for the focus surface's reason: a
-		// topic's display name and the operator's reason for retiring,
-		// merging or splitting one are words somebody typed, so the
-		// escaping sweep has to see them without a test remembering to
-		// ask. TopicFiler is the frontier because a split re-files the
-		// records it moves, which is the one filing write these routes
-		// perform.
-		Topics:     ledger,
-		TopicFiler: front,
+		// §4.13's one direct act on a topic, over the same ledger, wired
+		// by default for the focus surface's reason: a topic's display
+		// name and the operator's reason for parking one are words
+		// somebody typed, so the escaping sweep has to see them without a
+		// test remembering to ask.
+		Topics: ledger,
 	}
 	if mutate != nil {
 		mutate(&opts)
@@ -1022,9 +1018,10 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		// §4.13's four filing acts. Filing and unfiling are two paths
 		// rather than one toggle because both append: a withdrawal is a row
 		// that says who stopped believing this and why, so the two are
-		// different acts with different bodies. The topic answers are the
-		// operator's two replies to a proposal, and accepting mints the
-		// entity, which is why it answers 201.
+		// different acts with different bodies. There is no topic accept
+		// and no topic decline here, and their absence is §4.13's second
+		// reading: a topic change is a published proposal, and the ruling
+		// on it is the review route above.
 		{
 			name: "record file", method: http.MethodPost, mutating: true, created: true,
 			path: "/api/record/" + h.hypothesis.ID + "/file",
@@ -1034,16 +1031,6 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 			name: "record unfile", method: http.MethodPost, mutating: true,
 			path: "/api/record/" + h.finding.ID + "/unfile",
 			body: `{"entity":"` + h.entity.ID + `","reason":"it turned out to be about the other one"}`,
-		},
-		{
-			name: "topic accept", method: http.MethodPost, mutating: true, created: true,
-			path: "/api/topics/accept",
-			body: `{"question_id":"` + topicProposalQuestionID + `"}`,
-		},
-		{
-			name: "topic decline", method: http.MethodPost, mutating: true,
-			path: "/api/topics/decline",
-			body: `{"question_id":"` + topicProposalQuestionID + `","reason":"that directory is not a project"}`,
 		},
 		// The conversation under a record, read and written at one path.
 		// The read carries the reviewers' prose and the operator's own
@@ -1064,37 +1051,15 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 			path: "/api/record/" + h.proposal.ID + "/comments",
 			body: `{"text":"what would this cost on the whole corpus?","kind":"question"}`,
 		},
-		// §4.13's four acts on a topic's own identity. All four are
-		// enrolled because each carries operator prose — a stance's
-		// reason, a retirement's, a merge's, a split's — and because two
-		// of them take an entity id from the path, so a hostile
-		// identifier reaches the router rather than the query parser.
-		//
-		// Each acts on a different subject, because each consumes the
-		// one it names: the sweep runs every route once per harness, and
-		// a merge whose source had already been folded would be
-		// measuring the ledger's refusal instead of the guard.
+		// §4.13's one direct act on a topic's own identity. It is
+		// enrolled because it carries operator prose — the reason he
+		// gives for a stance — and because it takes an entity id from
+		// the path, so a hostile identifier reaches the router rather
+		// than the query parser.
 		{
 			name: "topic interest", method: http.MethodPost, mutating: true,
 			path: "/api/topics/" + h.entity.ID + "/interest",
 			body: `{"state":"not-now","reason":"the operator is elsewhere this quarter"}`,
-		},
-		{
-			name: "topic retire", method: http.MethodPost, mutating: true,
-			path: "/api/topics/" + h.restricted.ID + "/retire",
-			body: `{"reason":"this name never described one thing"}`,
-		},
-		{
-			name: "topic merge", method: http.MethodPost, mutating: true, path: "/api/topics/merge",
-			body: `{"from":"` + h.duplicate.ID + `","into":"` + h.canonical.ID +
-				`","reason":"the same checkout under two paths"}`,
-		},
-		{
-			name: "topic split", method: http.MethodPost, mutating: true, created: true,
-			path: "/api/topics/split",
-			body: `{"entity":"` + h.divisible.ID + `","name":"the second repository",` +
-				`"kind":"repository","records":["` + h.hypothesis.ID + `"],` +
-				`"reason":"the name covered a library and the service that uses it"}`,
 		},
 	}
 }
@@ -1545,10 +1510,6 @@ func TestPhaseBRoutesAnswerHonestlyWithoutServices(t *testing.T) {
 		{http.MethodGet, "/api/complaint?id=cmp-1", ""},
 		{http.MethodPost, "/api/complaint/tell", `{"text":"x"}`},
 		{http.MethodPost, "/api/topics/ent-1/interest", `{"state":"working","reason":"x"}`},
-		{http.MethodPost, "/api/topics/ent-1/retire", `{"reason":"x"}`},
-		{http.MethodPost, "/api/topics/merge", `{"from":"ent-1","into":"ent-2","reason":"x"}`},
-		{http.MethodPost, "/api/topics/split",
-			`{"entity":"ent-1","name":"x","kind":"repository","records":[],"reason":"x"}`},
 	} {
 		var reader io.Reader
 		if route.body != "" {

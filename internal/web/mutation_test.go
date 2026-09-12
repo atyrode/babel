@@ -422,46 +422,32 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 				"SetQuestionState", "BeginInterpretation", "ExpireStale", "CaptureSnapshot", "Close"},
 		},
 		{
-			name:     "topics",
-			surface:  reflect.TypeOf((*TopicLedger)(nil)).Elem(),
-			concrete: reflect.TypeOf((*reality.Store)(nil)),
-			permitted: []string{"Entity", "EntityInterest", "MergeEntities", "Resolve",
-				"RetireEntity", "SetInterest", "SplitEntity"},
-			// §4.13's acts on a topic's identity, and the row is where
-			// the widening is justified. MergeEntities and SplitEntity
-			// are forbidden on the reality row above and permitted
-			// here, on the terms the subject-naming row is: the
-			// reality page must not be able to resolve an identity
-			// while it can also assert facts about one, and this
-			// surface can do neither of the two things that would
-			// make that dangerous. SetInterest and RetireEntity do
-			// write facts, and what makes them safe is that they are
-			// not AssertFact: each writes one of two predicates with
-			// the closed vocabulary §4.13 spells, and neither takes a
-			// predicate, a value or an authority from a request.
+			name:      "topics",
+			surface:   reflect.TypeOf((*TopicLedger)(nil)).Elem(),
+			concrete:  reflect.TypeOf((*reality.Store)(nil)),
+			permitted: []string{"Entity", "EntityInterest", "Resolve", "SetInterest"},
+			// §4.13's one direct act on a topic, and the row is where
+			// the narrowing is recorded. MergeEntities, SplitEntity
+			// and RetireEntity used to be permitted here and are
+			// forbidden now: everything about a topic goes through
+			// Babel, so those three are applied by a ruling on a
+			// published proposal and by no surface at all. SetInterest
+			// does write facts, and what makes it safe is that it is
+			// not AssertFact: it writes one of two predicates with the
+			// closed vocabulary §4.13 spells, and takes no predicate,
+			// value or authority from a request.
 			//
-			// Ask, RecordPlan and AcceptPlan are forbidden because
-			// the other half of §4.13 runs through them: a topic
-			// question is raised by a run and accepted through the
-			// Reality Inbox, and a topic page that could raise or
-			// accept one would be minting identity from the surface
-			// that is supposed to be looking at it.
+			// Ask, RecordPlan and AcceptPlan are forbidden because a
+			// topic page that could raise or accept a plan would be
+			// minting identity from the surface that is supposed to be
+			// looking at it. ApplyTopicPlan and DeclineTopicPlan are
+			// forbidden here for the same reason and reached through
+			// TopicPlanService, which the ruling route holds.
 			forbidden: []string{"AssertFact", "SupersedeFact", "CreateEntity", "AddAlias",
 				"ImportFacts", "PutFocusRules", "RegisterTrustedSource", "Ask", "RecordPlan",
-				"AcceptPlan", "RejectPlan", "UndoResolution", "DisputeFacts", "Close"},
-		},
-		{
-			name:      "topic filer",
-			surface:   reflect.TypeOf((*TopicFiler)(nil)).Elem(),
-			concrete:  reflect.TypeOf((*frontier.Store)(nil)),
-			permitted: []string{"File"},
-			// One method, for FrontierReviver's reason. A split has to
-			// move the records the operator named or it produced an
-			// empty topic; everything else a filing can be — withdrawn,
-			// answered with "no topic", or read back — belongs to the
-			// record surface, and Unfiled is the triage backlog a lane
-			// draws from rather than anything a page writes.
-			forbidden: []string{"Unfile", "NoTopic", "Unfiled", "CreateHypothesis", "Close"},
+				"AcceptPlan", "RejectPlan", "MergeEntities", "SplitEntity", "RetireEntity",
+				"UndoResolution", "DisputeFacts", "ProposeTopic", "ApplyTopicPlan",
+				"DeclineTopicPlan", "Close"},
 		},
 		{
 			name:     "focus policy",

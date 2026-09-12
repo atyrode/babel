@@ -53,7 +53,7 @@ func (s *Store) ask(ctx context.Context, tx *sql.Tx, in QuestionInput, actor str
 		canonical = append(canonical, resolved)
 	}
 	canonical = sortedUnique(canonical)
-	key := dedupeKey(in.Kind, in.identity, canonical, in.TargetPredicates)
+	key := dedupeKey(in.Kind, canonical, in.TargetPredicates)
 
 	superseded, err := s.checkDuplicate(ctx, tx, key, in.MaterialEvidence)
 	if err != nil {

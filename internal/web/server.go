@@ -743,21 +743,14 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		if s.routeWatch(w, r) {
 			return
 		}
-		// §4.13's acts on a topic's identity, resolved here for the
-		// same reason: two of them carry an entity id in the path, and
-		// the bare /api/topics listing above is an exact match that a
-		// prefix cut ahead of the switch would have swallowed.
+		// §4.13's one direct act on a topic, resolved here for the same
+		// reason: it carries an entity id in the path, and the bare
+		// /api/topics listing above is an exact match that a prefix cut
+		// ahead of the switch would have swallowed.
 		if s.routeTopics(w, r) {
 			return
 		}
 		if s.routeRecord(w, r) {
-			return
-		}
-		// The operator's two answers to a topic proposal (§4.13). They are
-		// resolved here rather than in the switch above because the topics
-		// surface shares this prefix with the acts on a topic that already
-		// exists, and each file answers for the paths it owns.
-		if s.routeTopicQuestions(w, r) {
 			return
 		}
 		if s.routeSearch(w, r) {

@@ -201,14 +201,15 @@ type ReviewResult struct {
 	// subject, a target whose evidence this worker cannot reach. A skip is
 	// not a vote and never becomes one.
 	Skip string `json:"skip,omitempty"`
-	// Filing, Topic and NoTopic are the filing role's three answers, and
-	// exactly one of them is set (§4.13). They are three fields rather than
-	// one tagged union because that is what the recipe's result contract
-	// says on the wire, and a schema a model fills is easier to fill
-	// correctly when the alternatives are named.
-	Filing  *FiledUnder    `json:"filing,omitempty"`
-	Topic   *TopicProposal `json:"topic,omitempty"`
-	NoTopic *NoTopic       `json:"no_topic,omitempty"`
+	// Filing, Topic, NoTopic and NoChange are the filing role's four
+	// answers, and exactly one of them is set (§4.13). They are four fields
+	// rather than one tagged union because that is what the recipe's result
+	// contract says on the wire, and a schema a model fills is easier to
+	// fill correctly when the alternatives are named.
+	Filing   *FiledUnder    `json:"filing,omitempty"`
+	Topic    *TopicProposal `json:"topic,omitempty"`
+	NoTopic  *NoTopic       `json:"no_topic,omitempty"`
+	NoChange *NoChange      `json:"no_change,omitempty"`
 }
 
 // reviewAuthority is what one role's result may contain. It is the review
@@ -233,7 +234,7 @@ type reviewAuthority struct {
 	// preference. Comparison only: an alternative preferred in a named
 	// context is the comparison role's whole output.
 	alternatives bool
-	// filing admits the three answers of §4.13's filing pass and nothing
+	// filing admits the four answers of §4.13's filing pass and nothing
 	// else. It is the one authority that subtracts as well as adds: a
 	// filing says where a record belongs, so a contribution to the review
 	// of it would be a judgement the pass was not drawn to make.
@@ -312,8 +313,9 @@ func reviewSchema(auth reviewAuthority) (json.RawMessage, error) {
 		doc.remove("filing")
 		doc.remove("topic")
 		doc.remove("no_topic")
+		doc.remove("no_change")
 	} else {
-		// The filing role's whole result is which of the three answers it
+		// The filing role's whole result is which of the four answers it
 		// reached. A contribution field would invite the pass to review
 		// the record it was drawn to name, and the role table refuses one
 		// anyway — so it is pruned rather than offered and then rejected.
@@ -450,7 +452,7 @@ func parseReviewResult(rec *worker.ResultRecord, role string, self reviewSelf) (
 	res.Uncertainty = strings.TrimSpace(res.Uncertainty)
 	res.Skip = strings.TrimSpace(res.Skip)
 	res.Environment = strings.TrimSpace(res.Environment)
-	filed := res.Filing != nil || res.Topic != nil || res.NoTopic != nil
+	filed := res.Filing != nil || res.Topic != nil || res.NoTopic != nil || res.NoChange != nil
 	if res.Skip != "" && (res.Vote != "" || res.Outcome != "" || len(res.Contributions) > 0 ||
 		len(res.Results) > 0 || res.Uncertainty != "" || filed) {
 		return nil, fmt.Errorf("explore: a skip cannot also state an assessment")
@@ -948,6 +950,12 @@ func (r *Reviewer) Review(ctx context.Context, opt ReviewOptions) (*ReviewRun, e
 			return st.out, st.err
 		}
 		st.ledger = &ledger
+		// The record's own citations travel with the pass, because a topic
+		// proposal is published as an ordinary observation and the
+		// observation has to rest on something (§4.3). What this record
+		// cited is what the pass read, so it is the honest support for a
+		// claim about what the record is about.
+		st.evidence = target.Evidence
 	}
 
 	receipt, runErr := r.launch(st, broker, contract, target, alternatives, input.Previous, blinded, self)
@@ -1026,7 +1034,17 @@ func (r *Reviewer) Review(ctx context.Context, opt ReviewOptions) (*ReviewRun, e
 			// actually was, with the reason kept.
 			res.Skip = err.Error()
 		case err != nil:
-			st.fail(FailureFiling, r.now(), err)
+			code := FailureFiling
+			if errors.Is(err, ErrTopicResult) {
+				// The pass named a topic, or answered an ask,
+				// that the material it was served does not
+				// hold. That is a malformed result rather than
+				// a store refusing a write, and it is
+				// deliberately not turned into a proposal for
+				// the name it invented.
+				code = FailureResultSchema
+			}
+			st.fail(code, r.now(), err)
 			r.finishFailed(st, st.err)
 			st.out.Receipt = r.receipt(st, receipt, steps)
 			return st.out, st.err
@@ -1087,6 +1105,12 @@ type reviewState struct {
 	// ledger is what the filing pass was shown about the entities the
 	// record could be about, read once before the worker starts.
 	ledger *TopicLedger
+	// evidence is what the record under review cites, carried because a
+	// topic proposal is published as an ordinary chain and §4.3 forbids an
+	// evidence-free observation: the locators this pass rests on are the
+	// ones the record it read already rested on, which are served material
+	// rather than a citation a model invented.
+	evidence []frontier.Evidence
 	// filing is the answer a filing pass reached and the stores took, nil
 	// for every other role and for a filing that skipped.
 	filing *evaluation.Filing
@@ -1356,9 +1380,9 @@ func (r *Reviewer) receipt(st *reviewState, workerReceipt *worker.Receipt, steps
 	if st.filing != nil && body.Checkpoint.Reason == "" {
 		// What a filing pass did is the receipt's answer to "what did this
 		// cycle buy". The record it wrote is in Records below; this is the
-		// one line that says which of §4.13's three answers it was, so a
+		// one line that says which of §4.13's four answers it was, so a
 		// receipt listing distinguishes a record that found its topic from
-		// one that raised a question about it.
+		// one that proposed a change to the ledger about it.
 		body.Checkpoint.Reason = filingOutcome(st.filing)
 	}
 	if st.out.Record.ID != "" {

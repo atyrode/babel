@@ -843,7 +843,7 @@ func (a *app) evaluate(ctx context.Context, args []string) error {
 		adapters:  adapters(),
 		scanRoots: sf.rootList(),
 		presence:  nil,
-		topics:    topicService(state.frontier, services.reality, state.sessionCatalog),
+		topics:    topicService(topicFilingStores(state, services.reality, sf.rootList())),
 		budget:    explore.Budget{Retrievals: *retrievals, Fetches: *fetches},
 	}
 	announcer, closePresence := a.openPresence(ctx)
@@ -917,7 +917,7 @@ func (a *app) correctReview(ctx context.Context, services *evaluationServices, s
 		host:      cfg.host,
 		adapters:  adapters(),
 		scanRoots: cfg.scanRoots,
-		topics:    topicService(state.frontier, services.reality, state.sessionCatalog),
+		topics:    topicService(topicFilingStores(state, services.reality, cfg.scanRoots)),
 		budget:    cfg.budget,
 	}
 	// The correction's claim is reserved above and is held from here, so its

@@ -8,82 +8,120 @@ import (
 	"github.com/atyrode/babel/internal/reality"
 )
 
-// LedgerTopics is §4.13's topic-question and stance surface over the Reality
-// Ledger, in the shape the topics page consumes. It is the one adapter between
-// the ledger's own vocabulary — a TopicQuestion carrying a TopicProposal whose
-// binding is a list of facts — and the page's, which wants a name, a kind, a
-// remote and the paths as plain strings, because the page renders and the
-// ledger reasons.
+// LedgerTopics is §4.13's plan and stance surface over the Reality Ledger, in
+// the shape the topics page and the ruling route consume. It is the one
+// adapter between the ledger's own vocabulary — a TopicPlan carrying an
+// EntityDraft whose binding is a list of facts — and the surface's, which
+// wants an operation, a name and a list of target names, because the page
+// renders and the ledger reasons.
 //
-// It satisfies TopicQuestionService and TopicStanceReader together, since both
+// It satisfies TopicPlanService and TopicStanceReader together, since both
 // read the same store with the same authority and a build wires them as one.
 type LedgerTopics struct {
 	Ledger *reality.Store
-	// Filer is the frontier an acceptance files the proposal's records into.
-	// A nil Filer accepts a proposal that names no records and refuses one
+	// Filer is the frontier an application files the plan's records into.
+	// A nil Filer applies a plan that names no records and refuses one
 	// that does, rather than creating a topic with nothing in it.
 	Filer reality.Filer
 }
 
 var (
-	_ TopicQuestionService = LedgerTopics{}
-	_ TopicStanceReader    = LedgerTopics{}
+	_ TopicPlanService  = LedgerTopics{}
+	_ TopicStanceReader = LedgerTopics{}
 )
 
-// TopicProposals lists the open topic questions as the page views them.
-func (t LedgerTopics) TopicProposals(ctx context.Context) ([]TopicProposalView, error) {
+// OpenTopicPlans lists the plans awaiting a ruling as the page views them.
+func (t LedgerTopics) OpenTopicPlans(ctx context.Context) ([]TopicPlanView, error) {
 	if t.Ledger == nil {
 		return nil, nil
 	}
-	questions, err := t.Ledger.TopicProposals(ctx)
+	plans, err := t.Ledger.OpenTopicPlans(ctx)
 	if err != nil {
 		return nil, err
 	}
-	views := make([]TopicProposalView, 0, len(questions))
-	for _, q := range questions {
-		view := TopicProposalView{
-			QuestionID: q.Question.ID,
-			Name:       q.Proposal.Name,
-			Kind:       string(q.Proposal.Kind),
-			Identity:   q.Proposal.Identity,
-			Why:        q.Proposal.Reasoning,
-		}
-		for _, fact := range q.Proposal.Binding {
-			switch fact.Predicate {
-			case reality.PredicateRepositoryRemote:
-				view.Remote = fact.Value.Text
-			case reality.PredicateLocalPath:
-				if fact.Value.Text != "" {
-					view.Paths = append(view.Paths, fact.Value.Text)
-				}
-			}
-		}
-		for _, record := range q.Proposal.Records {
-			view.Records = append(view.Records, record.ID)
+	views := make([]TopicPlanView, 0, len(plans))
+	for _, plan := range plans {
+		view, err := t.view(ctx, plan)
+		if err != nil {
+			return nil, err
 		}
 		views = append(views, view)
 	}
 	return views, nil
 }
 
-// AcceptTopic creates the proposed entity and files the records the proposal
-// named. A filing failure after the entity exists is reported as an error and
-// the entity id is still returned: the topic is durable, the records it did
-// not reach stay unfiled, and the page says so rather than hiding either.
-func (t LedgerTopics) AcceptTopic(ctx context.Context, questionID, operator string) (string, error) {
+// TopicPlan reports the plan one proposal carries. Most proposals carry none
+// — they are about the corpus rather than about the ledger's naming — and
+// that is a false rather than an error.
+func (t LedgerTopics) TopicPlan(ctx context.Context, proposalID string) (TopicPlanView, bool, error) {
 	if t.Ledger == nil {
-		return "", fmt.Errorf("the reality ledger is not available in this session")
+		return TopicPlanView{}, false, nil
 	}
-	acceptance, err := t.Ledger.AcceptTopic(ctx, questionID, operator, t.Filer)
-	return acceptance.EntityID, err
+	plan, found, err := t.Ledger.TopicPlan(ctx, proposalID)
+	if err != nil || !found {
+		return TopicPlanView{}, false, err
+	}
+	view, err := t.view(ctx, plan)
+	if err != nil {
+		return TopicPlanView{}, false, err
+	}
+	return view, true, nil
 }
 
-// DeclineTopic refuses a proposal and keeps the reason verbatim.
-func (t LedgerTopics) DeclineTopic(ctx context.Context, questionID, operator, reason string) error {
+// view states one plan in the page's vocabulary, resolving each target to the
+// name a reader recognizes.
+//
+// A target whose entity this build cannot read keeps its id as its name
+// rather than costing the whole rail: the ruling is addressed to the proposal
+// and works either way, and an unnamed target is a worse row than a named one
+// but a better answer than no row at all.
+func (t LedgerTopics) view(ctx context.Context, plan reality.TopicPlan) (TopicPlanView, error) {
+	view := TopicPlanView{
+		ProposalID: plan.ProposalID,
+		Operation:  string(plan.Operation),
+		Name:       plan.Name(),
+		Kind:       string(plan.Kind()),
+		Why:        plan.Reasoning,
+		RunID:      plan.By.RunID,
+	}
+	for _, target := range plan.Targets {
+		name := target
+		if entity, err := t.Ledger.Entity(ctx, target); err == nil &&
+			entity.Payload.DisplayName != "" {
+			name = entity.Payload.DisplayName
+		}
+		view.Targets = append(view.Targets, TopicTargetView{ID: target, Name: name})
+	}
+	for _, record := range plan.Records() {
+		view.Records = append(view.Records, record.ID)
+	}
+	return view, nil
+}
+
+// ApplyTopicPlan performs what the operator accepted and files the records
+// the plan named. A filing failure after the ledger's half committed is
+// reported as an error and the outcome is still returned: the act is durable,
+// the records it did not reach stay unfiled, and the ruling says so rather
+// than hiding either.
+func (t LedgerTopics) ApplyTopicPlan(ctx context.Context, proposalID, operator string) (
+	TopicPlanOutcome, error) {
+	if t.Ledger == nil {
+		return TopicPlanOutcome{}, fmt.Errorf("the reality ledger is not available in this session")
+	}
+	acceptance, err := t.Ledger.ApplyTopicPlan(ctx, proposalID, operator, t.Filer)
+	return TopicPlanOutcome{
+		Operation: string(acceptance.Operation),
+		EntityID:  acceptance.EntityID,
+		Filed:     len(acceptance.Filings),
+	}, err
+}
+
+// DeclineTopicPlan refuses a plan and keeps the reason verbatim.
+func (t LedgerTopics) DeclineTopicPlan(ctx context.Context, proposalID, operator, reason string) error {
 	if t.Ledger == nil {
 		return fmt.Errorf("the reality ledger is not available in this session")
 	}
-	return t.Ledger.DeclineTopic(ctx, questionID, operator, reason)
+	return t.Ledger.DeclineTopicPlan(ctx, proposalID, operator, reason)
 }
 
 // TopicInterest reads the operator's recorded stance toward a topic.

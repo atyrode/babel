@@ -214,14 +214,16 @@ func TestTheFeedRefusesAVocabularyItDoesNotHave(t *testing.T) {
 	}
 }
 
-// TestTheFeedIsEveryKindOfRecordTheDeploymentHasProduced is §8.7's first
-// sentence.
+// TestTheFeedIsEveryKindOfRecordThatIsAPost is §8.7's first sentence as
+// §4.13's last reading leaves it.
 //
-// The observation is the one worth naming: it was the kind no listing could
-// enumerate, reachable only through the candidate it develops, and a front
-// page missing it would be the table of contents §8.6 replaced wearing a new
-// sort bar.
-func TestTheFeedIsEveryKindOfRecordTheDeploymentHasProduced(t *testing.T) {
+// The observation is the one worth naming, and it is named by its absence:
+// *observations are evidence, not posts* (operator direction 2026-09-12), so
+// the kind a run produces most of is reachable from the records that cite it
+// and is not a row here. Asking for it by name is refused like any other kind
+// this feed does not have, which is what stops "it is filtered out" from
+// being indistinguishable from "this deployment produced none".
+func TestTheFeedIsEveryKindOfRecordThatIsAPost(t *testing.T) {
 	h := newPhaseB(t, feedText, nil)
 
 	var feed feedList
@@ -231,12 +233,21 @@ func TestTheFeedIsEveryKindOfRecordTheDeploymentHasProduced(t *testing.T) {
 		kinds[post.Kind] = true
 	}
 	for _, want := range []string{
-		string(frontier.EntityHypothesis), string(frontier.EntityObservation),
-		string(frontier.EntityFinding), string(frontier.EntityProposal), feedKindQuestion,
+		string(frontier.EntityHypothesis), string(frontier.EntityFinding),
+		string(frontier.EntityProposal), feedKindQuestion,
 	} {
 		if !kinds[want] {
 			t.Errorf("the feed carries no %s; it has %v", want, kinds)
 		}
+	}
+	if kinds[string(frontier.EntityObservation)] {
+		t.Errorf("the feed lists observations; they are evidence rather than posts")
+	}
+	refused := h.get("/api/feed?kind=observation")
+	text := body(t, refused)
+	if refused.StatusCode != http.StatusBadRequest || !strings.Contains(text, "observation") {
+		t.Errorf("asking for observations: status = %d body %q, want a 400 naming the kind",
+			refused.StatusCode, text)
 	}
 
 	// Every row is one line of claim with a destination, an author where
@@ -248,9 +259,6 @@ func TestTheFeedIsEveryKindOfRecordTheDeploymentHasProduced(t *testing.T) {
 		}
 		if post.Kind == feedKindQuestion && !strings.HasPrefix(post.Href, "/ask/questions/") {
 			t.Errorf("a question opens at %q, want its own page", post.Href)
-		}
-		if post.Kind == string(frontier.EntityObservation) && post.Standing != "" {
-			t.Errorf("an observation stands at %q; §6.7 makes it unreviewable", post.Standing)
 		}
 	}
 

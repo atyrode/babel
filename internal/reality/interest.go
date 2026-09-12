@@ -26,6 +26,7 @@ package reality
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -211,6 +212,57 @@ func (s *Store) RetireEntity(ctx context.Context, entityID, operator, reason str
 		return err
 	}
 	return s.stateFact(ctx, canonical, PredicateLifecycle, LifecycleRetired, operator, reason)
+}
+
+// retireEntity writes §4.13's retirement inside a caller's transaction, so a
+// topic proposal the operator accepted retires its topic and records the
+// ruling in one commit.
+//
+// It is the same fact stateFact writes and it is written the same way — a
+// supersession when a lifecycle revision is in force, an assertion when none
+// is — and it is a second body rather than a shared one because stateFact's
+// two writes each open their own transaction, which is exactly what an
+// application inside a transaction cannot do.
+func (s *Store) retireEntity(ctx context.Context, tx *sql.Tx, entityID string,
+	authority Authority, reason string, set *recordSet) (Fact, error) {
+	canonical, err := resolve(ctx, tx, entityID)
+	if err != nil {
+		return Fact{}, err
+	}
+	held, err := readFacts(ctx, tx, `WHERE f.subject_id = ? AND f.predicate = ?`,
+		canonical, string(PredicateLifecycle))
+	if err != nil {
+		return Fact{}, err
+	}
+	input := FactInput{
+		SubjectID: canonical,
+		Predicate: PredicateLifecycle,
+		Value:     FactValue{Kind: ValueEnum, Enum: LifecycleRetired},
+		ValidFrom: authority.At,
+		// Open-ended and observed now, for stateFact's reason: an
+		// operator stating intent is observing his own intent.
+		ObservedAt:  authority.At,
+		Authority:   authority,
+		Confidence:  ConfidenceHigh,
+		Sensitivity: SensitivityRoutine,
+		Note:        reason,
+	}
+	if err := input.validate(); err != nil {
+		return Fact{}, err
+	}
+	var fact Fact
+	if prior, ok := currentFacts(held, s.now())[PredicateLifecycle]; ok {
+		fact, err = s.supersedeFact(ctx, tx, SupersedeInput{PriorID: prior.ID, Fact: input}, "", "")
+	} else {
+		fact, _, err = s.assertFact(ctx, tx, input, "", "", "")
+	}
+	if err != nil {
+		return Fact{}, err
+	}
+	if err := set.add(stagedFact(fact)); err != nil {
+		return Fact{}, err
+	}
+	return fact, nil
 }
 
 // EntityRetired reports whether the lifecycle fact in force retires this

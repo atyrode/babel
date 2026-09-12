@@ -172,24 +172,48 @@ type topicInterest struct {
 	By     string `json:"by"`
 }
 
-// topicProposal is one topic Babel has proposed and nobody has accepted.
+// topicProposal is one topic proposal Babel has published and nobody has
+// ruled on: the plan attached to a proposal record, in the shape the rail
+// renders.
 //
 // It is a separate list from the topics rather than a flag on one, because a
-// proposal is not a topic: it has no id, nothing is filed under it, and until
-// the operator accepts it the records it names are unfiled. A client that
-// rendered the two together would show the operator a vocabulary he never
-// agreed to, which is exactly what §4.13 replaced.
+// proposal is not a topic: nothing is created until the operator accepts it,
+// and the records it names are unfiled until then. A client that rendered the
+// two together would show the operator a vocabulary he never agreed to, which
+// is exactly what §4.13 replaced.
+//
+// Every act on it is a ruling on ProposalID through the ordinary review
+// route. There is no accept and no decline of a topic here — §4.13's second
+// reading makes a topic change an output like any other, and the shortcut on
+// the rail is a shortcut to that ruling and nothing else.
 type topicProposal struct {
-	QuestionID string        `json:"question_id"`
-	Name       string        `json:"name"`
-	Kind       string        `json:"kind"`
-	Binding    *topicBinding `json:"binding"`
-	// Posts is how many of the records the proposal names this deployment
-	// actually holds, which is what accepting it would file.
+	ProposalID string `json:"proposal_id"`
+	// Title is the proposal record's own one line, so the rail row and the
+	// feed row a reader opens it from say the same thing.
+	Title string `json:"title"`
+	// Name and Kind describe the topic a create or a split would produce,
+	// and are empty for a merge and a retirement, which name nothing new.
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Operation is one of create, split, merge and retire, and Targets are
+	// the topics it acts on.
+	Operation string        `json:"operation"`
+	Targets   []topicTarget `json:"targets"`
+	// RunID is the run that wrote the proposal.
+	RunID string `json:"run_id"`
+	// Posts is how many of the records the plan names this deployment
+	// actually holds, which is what a ruling would file here.
 	Posts int `json:"posts"`
-	// Why is the proposal's own sentence — "32 sessions in 3 checkouts cite
+	// Why is the plan's own sentence — "32 sessions in 3 checkouts cite
 	// it" — rather than this surface's paraphrase of it.
 	Why string `json:"why"`
+}
+
+// topicTarget is one topic a proposal acts on, by id and by the name the
+// operator reads.
+type topicTarget struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // topicList is GET /api/topics: the topics the operator has accepted, the
@@ -258,15 +282,23 @@ func feedWindows() []string {
 	return []string{"hour", "day", "week", "month", "year", windowAll}
 }
 
-// The post kinds. Four record kinds plus the questions Babel asks, which §8.7
-// puts in the feed beside them: a question is something the deployment
+// The post kinds: three record kinds plus the questions Babel asks, which
+// §8.7 puts in the feed beside them — a question is something the deployment
 // produced and is waiting on an answer to, which is exactly what a post is.
+//
+// Observations are not among them (operator direction 2026-09-12, §4.13's
+// last reading): *observations are evidence, not posts*. An observation is
+// what a finding consolidates and what a hypothesis rests on, it carries no
+// review standing and awaits nobody, and a feed that listed every one of them
+// would bury the three kinds a reader acts on under the material they were
+// derived from. They stay filed, searchable and reachable from the records
+// that cite them; they are simply not rows here, and ?kind=observation is
+// refused by name like any other kind this feed does not have.
 const feedKindQuestion = "question"
 
 func feedKinds() []string {
 	return []string{
 		string(frontier.EntityHypothesis),
-		string(frontier.EntityObservation),
 		string(frontier.EntityFinding),
 		string(frontier.EntityProposal),
 		feedKindQuestion,
@@ -306,17 +338,14 @@ const (
 // The reason is what each kind is for rather than how much it matters: a
 // proposal is a remedy addressed to the operator, a finding is a pattern
 // Babel has consolidated and is asking him to accept, and a candidate is
-// something it is still developing on its own. An observation weighs with the
-// candidates because it is the evidence one rests on; it carries no standing
-// and so never awaits anybody, and the weight is here for the sort's
-// totality rather than for a row anybody will see.
+// something it is still developing on its own.
 func feedKindWeight(kind string) int {
 	switch kind {
 	case string(frontier.EntityProposal):
 		return 0
 	case string(frontier.EntityFinding):
 		return 1
-	case string(frontier.EntityHypothesis), string(frontier.EntityObservation):
+	case string(frontier.EntityHypothesis):
 		return 2
 	default:
 		return 3
@@ -633,208 +662,72 @@ const (
 	interestExcluded = "excluded"
 )
 
-// topicProposals reads what Babel has proposed as a topic and nobody has
-// answered.
+// topicProposals reads the topic plans Babel has published and nobody has
+// ruled on, joined to the proposal records that carry them.
+//
+// The join is what makes the rail a view of the feed rather than a second
+// list: the row's title is the proposal record's own line, so the shortcut
+// and the post a reader opens from it say the same thing, and a plan whose
+// proposal this deployment does not hold is dropped rather than shown as a
+// row with nothing behind it.
 //
 // The post count is over the records this deployment actually holds rather
-// than over the ids the proposal names, because that is what accepting it
-// would file here: a proposal raised on another host's corpus would otherwise
+// than over the ids the plan names, because that is what accepting it would
+// file here: a plan produced against another host's corpus would otherwise
 // promise a number this machine cannot deliver.
 func (s *Server) topicProposals(r *http.Request, index *feedIndex) []topicProposal {
 	out := []topicProposal{}
-	if s.opts.TopicQuestions == nil {
+	if s.opts.TopicPlans == nil {
 		return out
 	}
-	proposals, err := s.opts.TopicQuestions.TopicProposals(r.Context())
+	plans, err := s.opts.TopicPlans.OpenTopicPlans(r.Context())
 	if err != nil {
-		s.logf("GET %s: the ledger's topic proposals are unread; the page offers none", r.URL.Path)
+		s.logf("GET %s: the ledger's topic plans are unread; the page proposes none", r.URL.Path)
 		return out
 	}
-	held := make(map[string]struct{}, len(index.posts))
+	held := make(map[string]feedPost, len(index.posts))
 	for _, entry := range index.posts {
-		held[entry.post.ID] = struct{}{}
+		held[entry.post.ID] = entry.post
 	}
-	for _, proposal := range proposals {
+	for _, plan := range plans {
+		post, carried := held[plan.ProposalID]
+		if !carried {
+			// The plan is durable and this machine does not hold the
+			// proposal it explains — another host's output, or a
+			// record this build could not read. A rail row the
+			// operator cannot open is worse than one fewer row.
+			continue
+		}
 		posts := 0
-		for _, id := range proposal.Records {
+		for _, id := range plan.Records {
 			if _, ok := held[id]; ok {
 				posts++
 			}
 		}
-		out = append(out, topicProposal{
-			QuestionID: proposal.QuestionID,
-			Name:       proposal.Name,
-			Kind:       proposal.Kind,
-			Binding:    proposedBinding(proposal),
+		row := topicProposal{
+			ProposalID: plan.ProposalID,
+			Title:      post.Title,
+			Name:       plan.Name,
+			Kind:       plan.Kind,
+			Operation:  plan.Operation,
+			Targets:    []topicTarget{},
+			RunID:      plan.RunID,
 			Posts:      posts,
-			Why:        proposal.Why,
-		})
+			Why:        plan.Why,
+		}
+		for _, target := range plan.Targets {
+			row.Targets = append(row.Targets, topicTarget{ID: target.ID, Name: target.Name})
+		}
+		out = append(out, row)
 	}
 	sort.SliceStable(out, func(a, b int) bool {
 		if out[a].Posts != out[b].Posts {
 			return out[a].Posts > out[b].Posts
 		}
-		return out[a].Name < out[b].Name
+		return out[a].Title < out[b].Title
 	})
 	return out
 }
-
-// proposedBinding renders what a proposal says the topic would be bound to,
-// and nothing when it proposes no binding: a concept has none, and a null is
-// what the accepted topics say in the same situation.
-func proposedBinding(proposal TopicProposalView) *topicBinding {
-	if proposal.Identity == "" && proposal.Remote == "" && len(proposal.Paths) == 0 {
-		return nil
-	}
-	identity := proposal.Identity
-	if identity == "" {
-		identity = proposal.Remote
-	}
-	return &topicBinding{
-		Kind:     proposal.Kind,
-		Identity: identity,
-		Remote:   proposal.Remote,
-		Paths:    proposal.Paths,
-	}
-}
-
-// topicsQuestionPrefix is where the two answers to a topic question live.
-const topicsQuestionPrefix = "/api/topics/"
-
-// routeTopicQuestions dispatches the operator's answers to a topic proposal,
-// reporting whether the path was one of them.
-//
-// Accepting and declining are the two acts §4.13 gives him over a proposal,
-// and they are here rather than beside the topic's own acts because they are
-// answers to a question rather than statements about a topic: until one of
-// them is recorded there is no topic to act on.
-func (s *Server) routeTopicQuestions(w http.ResponseWriter, r *http.Request) bool {
-	rest, found := strings.CutPrefix(r.URL.Path, topicsQuestionPrefix)
-	if !found {
-		return false
-	}
-	switch rest {
-	case "accept":
-		if s.requireMethod(w, r, http.MethodPost) {
-			s.handleTopicAccept(w, r)
-		}
-		return true
-	case "decline":
-		if s.requireMethod(w, r, http.MethodPost) {
-			s.handleTopicDecline(w, r)
-		}
-		return true
-	}
-	return false
-}
-
-// topicAnswer is POST /api/topics/accept and /api/topics/decline: which
-// proposal, and — for a decline — why.
-//
-// The reason is required on a decline and refused on an accept, which is
-// §4.8's asymmetry rather than an omission: a decline suppresses the same
-// proposal until materially new evidence exists, so the ledger keeps the
-// operator's words verbatim as the record of why, while an acceptance is
-// self-explaining — the entity it creates is the reason.
-type topicAnswer struct {
-	QuestionID string `json:"question_id"`
-	Reason     string `json:"reason,omitempty"`
-}
-
-// topicResult confirms the topic an acceptance created.
-type topicResult struct {
-	Topic topicRow `json:"topic"`
-}
-
-// handleTopicAccept creates the proposed entity and files the records the
-// proposal named, in one operator act (§4.8, §4.13).
-//
-// The filings it creates stay heuristic, and that is deliberate: the operator
-// accepted the topic, not each of the memberships the seeder guessed. §4.13
-// keeps a seeded filing labelled until the triage recipe revisits it, so the
-// recipe still owes an answer on every record even though the entity is now
-// real.
-func (s *Server) handleTopicAccept(w http.ResponseWriter, r *http.Request) {
-	if !s.requireService(w, s.opts.TopicQuestions != nil, topicQuestionServiceName) {
-		return
-	}
-	by, ok := s.requireOperator(w)
-	if !ok {
-		return
-	}
-	var request topicAnswer
-	if !s.decodeBody(w, r, &request) {
-		return
-	}
-	if strings.TrimSpace(request.QuestionID) == "" {
-		s.writeError(w, http.StatusBadRequest, "accepting a topic names the question it answers")
-		return
-	}
-	if strings.TrimSpace(request.Reason) != "" {
-		s.writeError(w, http.StatusBadRequest,
-			"accepting a topic records no reason; the entity it creates is the reason")
-		return
-	}
-	entityID, err := s.opts.TopicQuestions.AcceptTopic(r.Context(), request.QuestionID, by.ID())
-	if err != nil {
-		s.serviceError(w, r, err)
-		return
-	}
-	// The filings the acceptance created are invisible to the built index,
-	// so the page an operator lands on after clicking accept would show the
-	// topic he just created with nothing in it.
-	s.invalidateFeed()
-	index, err := s.feedIndex(r)
-	if err != nil {
-		s.serviceError(w, r, err)
-		return
-	}
-	for _, topic := range s.topicStances(r, index.topics) {
-		if topic.ID == entityID {
-			s.writeJSON(w, http.StatusCreated, topicResult{Topic: topic})
-			return
-		}
-	}
-	// The entity exists — the acceptance said so — and this build cannot see
-	// it, which is a ledger read this surface could not perform rather than
-	// an acceptance that did not happen.
-	s.writeJSON(w, http.StatusCreated, topicResult{Topic: topicRow{ID: entityID}})
-}
-
-// handleTopicDecline records that this proposal is not a topic, with the
-// reason kept verbatim.
-func (s *Server) handleTopicDecline(w http.ResponseWriter, r *http.Request) {
-	if !s.requireService(w, s.opts.TopicQuestions != nil, topicQuestionServiceName) {
-		return
-	}
-	by, ok := s.requireOperator(w)
-	if !ok {
-		return
-	}
-	var request topicAnswer
-	if !s.decodeBody(w, r, &request) {
-		return
-	}
-	if strings.TrimSpace(request.QuestionID) == "" {
-		s.writeError(w, http.StatusBadRequest, "declining a topic names the question it answers")
-		return
-	}
-	if strings.TrimSpace(request.Reason) == "" {
-		s.writeError(w, http.StatusBadRequest,
-			"declining a topic keeps the reason verbatim, and suppresses the proposal until "+
-				"something materially new turns up; this one gives none")
-		return
-	}
-	if err := s.opts.TopicQuestions.DeclineTopic(r.Context(), request.QuestionID, by.ID(),
-		request.Reason); err != nil {
-		s.serviceError(w, r, err)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, map[string]string{"question_id": request.QuestionID})
-}
-
-// topicQuestionServiceName is what a build with no ledger says it lacks.
-const topicQuestionServiceName = "the Reality Ledger's topic proposals"
 
 // invalidateFeed drops the built index so the next read rebuilds it.
 //
@@ -1147,10 +1040,10 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 		index.add(s.feedRecord(frontier.EntityHypothesis, record.ID, record.RunID, record.CreatedAt,
 			record.Payload.Statement, topics[record.ID], standings, tallies, now))
 	}
-	for _, record := range corpus.observations {
-		index.add(s.feedRecord(frontier.EntityObservation, record.ID, record.RunID, record.CreatedAt,
-			record.Payload.Claim, topics[record.ID], standings, tallies, now))
-	}
+	// No observation pass, and it is deliberate: §4.13's last reading makes
+	// observations evidence rather than posts. They are still read above —
+	// the topic derivation walks them — and they are still filed and
+	// searchable; they are simply not rows on the front page.
 	for _, record := range corpus.findings {
 		index.add(s.feedRecord(frontier.EntityFinding, record.ID, record.RunID, record.CreatedAt,
 			record.Payload.Title, topics[record.ID], standings, tallies, now))
@@ -1176,7 +1069,7 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 	// is what FleetError carries.
 	if s.opts.Fleet != nil || s.opts.FleetError != nil {
 		merged, degraded := s.mergeOtherHosts(r, listScanCap, sharedcatalog.KindHypothesis,
-			sharedcatalog.KindObservation, sharedcatalog.KindFinding, sharedcatalog.KindProposal)
+			sharedcatalog.KindFinding, sharedcatalog.KindProposal)
 		if degraded {
 			index.notice = catalogUnreachable
 		}
@@ -1673,14 +1566,14 @@ func feedFleetRecord(record fleet.Record,
 }
 
 // feedKindOfCatalog maps the shared catalog's vocabulary onto the frontier's.
-// Only the four analysis kinds are posts; a link, a receipt or a disposition
-// is machinery rather than something anybody reads.
+// Only the three post kinds map; a link, a receipt or a disposition is
+// machinery rather than something anybody reads, and an observation is
+// evidence rather than a post (§4.13), so another machine's observations are
+// skipped exactly as this machine's are.
 func feedKindOfCatalog(kind sharedcatalog.RecordKind) (frontier.EntityType, bool) {
 	switch kind {
 	case sharedcatalog.KindHypothesis:
 		return frontier.EntityHypothesis, true
-	case sharedcatalog.KindObservation:
-		return frontier.EntityObservation, true
 	case sharedcatalog.KindFinding:
 		return frontier.EntityFinding, true
 	case sharedcatalog.KindProposal:

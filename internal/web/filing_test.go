@@ -11,67 +11,86 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
 )
 
-// topicProposalQuestionID is the open topic question the harness's fixture
-// offers. It is a constant because the route sweep answers it by name.
-const topicProposalQuestionID = "qst_topic_fixture"
-
-// topicQuestions is a wired stand-in for §4.13's proposal surface.
+// topicPlans is a wired stand-in for §4.13's plan surface.
 //
 // It is a fixture rather than the ledger because the ledger half is another
-// component's: what this package owns is the projection and the two acts, so
-// the fake answers with the shape the page renders and records what the
-// handler asked for. Accepting resolves to an entity the ledger really holds,
-// which is what makes the 201's topic row a real read rather than an echo.
-type topicQuestions struct {
-	proposals []TopicProposalView
-	accepted  string
-	entityID  string
-	// acceptedBy and declined keep what the handler passed, so the
+// component's: what this package owns is the projection and the ruling that
+// reaches it, so the fake answers with the shape the page renders and records
+// what the handler asked for. Applying resolves to an entity the ledger really
+// holds, which is what makes the ruling's answer a real read rather than an
+// echo.
+type topicPlans struct {
+	plans []TopicPlanView
+	// applied and declined keep what the handler passed, so the
 	// attribution assertions read the call rather than the response.
-	acceptedBy     string
+	applied        string
+	appliedBy      string
 	declined       string
+	declinedBy     string
 	declinedReason string
-	err            error
+	entityID       string
+	// failApply is the ledger refusing after the ruling was recorded,
+	// which is the state a topic ruling has to report rather than hide.
+	failApply error
+	err       error
 }
 
-func (q *topicQuestions) TopicProposals(context.Context) ([]TopicProposalView, error) {
-	return q.proposals, q.err
+func (p *topicPlans) OpenTopicPlans(context.Context) ([]TopicPlanView, error) {
+	return p.plans, p.err
 }
 
-func (q *topicQuestions) AcceptTopic(_ context.Context, questionID, operator string) (string, error) {
-	q.accepted, q.acceptedBy = questionID, operator
-	return q.entityID, nil
+func (p *topicPlans) TopicPlan(_ context.Context, proposalID string) (TopicPlanView, bool, error) {
+	if p.err != nil {
+		return TopicPlanView{}, false, p.err
+	}
+	for _, plan := range p.plans {
+		if plan.ProposalID == proposalID {
+			return plan, true, nil
+		}
+	}
+	return TopicPlanView{}, false, nil
 }
 
-func (q *topicQuestions) DeclineTopic(_ context.Context, questionID, operator, reason string) error {
-	q.declined, q.declinedReason = questionID, reason
-	q.acceptedBy = operator
+func (p *topicPlans) ApplyTopicPlan(_ context.Context, proposalID, operator string) (
+	TopicPlanOutcome, error) {
+	p.applied, p.appliedBy = proposalID, operator
+	outcome := TopicPlanOutcome{Operation: "create", EntityID: p.entityID, Filed: 2}
+	if p.failApply != nil {
+		return TopicPlanOutcome{Operation: "create"}, p.failApply
+	}
+	return outcome, nil
+}
+
+func (p *topicPlans) DeclineTopicPlan(_ context.Context, proposalID, operator, reason string) error {
+	p.declined, p.declinedBy, p.declinedReason = proposalID, operator, reason
 	return nil
 }
 
-// topicQuestionsFixture is the harness's default proposal surface: one open
-// proposal carrying a run's wording, and an acceptance that resolves to the
-// fixture entity.
-func topicQuestionsFixture(h *phaseB, text string) *topicQuestions {
-	return &topicQuestions{
+// topicPlansFixture is the harness's default plan surface: one plan on the
+// fixture proposal record, carrying a run's wording, whose application
+// resolves to the fixture entity.
+func topicPlansFixture(h *phaseB, text string) *topicPlans {
+	return &topicPlans{
 		entityID: h.entity.ID,
-		proposals: []TopicProposalView{{
-			QuestionID: topicProposalQuestionID,
+		plans: []TopicPlanView{{
+			ProposalID: h.proposal.ID,
+			Operation:  "create",
 			Name:       "manifold " + text,
 			Kind:       "repository",
-			Identity:   "github.com/atyrode/manifold",
-			Remote:     "github.com/atyrode/manifold",
-			Paths:      []string{"/home/operator/manifold"},
+			Records:    []string{h.finding.ID},
 			Why:        "32 sessions in 3 checkouts cite it " + text,
+			RunID:      "run-1",
 		}},
 	}
 }
@@ -127,12 +146,19 @@ func TestDayOneHasNoTopicsAndEverythingUnfiled(t *testing.T) {
 	if len(topics.Topics) != 0 {
 		t.Errorf("a deployment with no entities offers %d topics: %+v", len(topics.Topics), topics.Topics)
 	}
-	if len(topics.Proposed) != 1 || topics.Proposed[0].QuestionID != topicProposalQuestionID {
-		t.Fatalf("proposed = %+v, want the seeder's one proposal", topics.Proposed)
+	if len(topics.Proposed) != 1 || topics.Proposed[0].ProposalID != h.proposal.ID {
+		t.Fatalf("proposed = %+v, want the plan on the published proposal", topics.Proposed)
 	}
 	proposal := topics.Proposed[0]
-	if proposal.Binding == nil || proposal.Binding.Remote != "github.com/atyrode/manifold" {
-		t.Errorf("the proposal's binding = %+v, want the repository it proposes", proposal.Binding)
+	if proposal.Operation != "create" || proposal.Name == "" {
+		t.Errorf("the proposal = %+v, want the act it would perform and the topic it names", proposal)
+	}
+	if proposal.Title != h.proposal.Payload.Title {
+		t.Errorf("the rail row reads %q and the proposal record reads %q",
+			proposal.Title, h.proposal.Payload.Title)
+	}
+	if proposal.RunID == "" {
+		t.Errorf("the proposal = %+v, want the run that wrote it", proposal)
 	}
 	if !strings.Contains(proposal.Why, "32 sessions") {
 		t.Errorf("the proposal's why = %q, want the run's own sentence", proposal.Why)
@@ -322,64 +348,119 @@ func TestFilingRefusesAnEntityTheLedgerDoesNotHold(t *testing.T) {
 	}
 }
 
-// TestAcceptingAProposalMakesItATopic is §4.13's one-act acceptance seen from
-// the surface: the proposal leaves the proposed list and the topic it becomes
-// is what the route answers with.
-func TestAcceptingAProposalMakesItATopic(t *testing.T) {
-	var questions *topicQuestions
+// TestAcceptingATopicProposalAppliesItsPlan is §4.13's second reading seen
+// from the surface: a topic change is an ordinary proposal, the operator
+// rules on it where he rules on everything else, and the acceptance is what
+// applies it. There is no topic accept route to call.
+func TestAcceptingATopicProposalAppliesItsPlan(t *testing.T) {
+	var plans *topicPlans
 	h := newPhaseB(t, feedText, func(o *Options) {
-		questions = o.TopicQuestions.(*topicQuestions)
+		plans = o.TopicPlans.(*topicPlans)
 	})
 
-	var accepted topicResult
-	decodeResponse(t, h.createdPost(t, "/api/topics/accept",
-		`{"question_id":"`+topicProposalQuestionID+`"}`), &accepted)
-	if accepted.Topic.ID != h.entity.ID {
-		t.Fatalf("accepted topic = %+v, want the entity the acceptance created", accepted.Topic)
+	var ruled decideResult
+	decodeResponse(t, h.okPost(t, "/api/review/decide",
+		`{"subject":{"type":"proposal","id":"`+h.proposal.ID+`"},"disposition":"accept"}`), &ruled)
+	if ruled.Topic == nil {
+		t.Fatalf("the ruling = %+v, want it to say what it did to the ledger", ruled)
 	}
-	if accepted.Topic.Posts == 0 {
-		t.Errorf("accepted topic = %+v, want the records it files counted", accepted.Topic)
+	if !ruled.Topic.Applied || ruled.Topic.EntityID != h.entity.ID || ruled.Topic.Error != "" {
+		t.Fatalf("the ruling's topic = %+v, want the applied plan and the topic it produced", ruled.Topic)
 	}
-	if questions.accepted != topicProposalQuestionID || questions.acceptedBy != operatorID {
-		t.Errorf("the handler accepted %q as %q, want the operator answering the proposal",
-			questions.accepted, questions.acceptedBy)
+	if ruled.Topic.Filed == 0 {
+		t.Errorf("the ruling's topic = %+v, want the records it filed counted", ruled.Topic)
 	}
-	// An acceptance records no reason, because the entity it creates is the
-	// reason; a decline records nothing else.
-	refused := h.post("/api/topics/accept",
-		`{"question_id":"`+topicProposalQuestionID+`","reason":"because"}`)
-	refused.Body.Close()
-	if refused.StatusCode != http.StatusBadRequest {
-		t.Errorf("an acceptance carrying a reason: status = %d, want 400", refused.StatusCode)
+	if plans.applied != h.proposal.ID || plans.appliedBy != operatorID {
+		t.Errorf("the handler applied %q as %q, want the operator ruling on the proposal",
+			plans.applied, plans.appliedBy)
+	}
+	if plans.declined != "" {
+		t.Errorf("an acceptance declined %q", plans.declined)
 	}
 }
 
-// TestDecliningAProposalKeepsTheReason is the other answer: §4.8 suppresses
-// the same proposal until materially new evidence exists, and the reason is
-// what makes that decision readable later.
-func TestDecliningAProposalKeepsTheReason(t *testing.T) {
-	var questions *topicQuestions
+// TestARulingStandsWhenTheLedgerRefusesTheAct is the half-applied case the
+// two stores make possible: the disposition is appended and §4.7 does not
+// un-append one, so a ledger refusal afterwards is reported beside a ruling
+// that is durable rather than turned into a failed request.
+func TestARulingStandsWhenTheLedgerRefusesTheAct(t *testing.T) {
+	var plans *topicPlans
 	h := newPhaseB(t, feedText, func(o *Options) {
-		questions = o.TopicQuestions.(*topicQuestions)
+		plans = o.TopicPlans.(*topicPlans)
+		plans.failApply = errors.New("the topic was retired after this was proposed")
 	})
 
-	response := h.post("/api/topics/decline", `{"question_id":"`+topicProposalQuestionID+`","reason":""}`)
+	var ruled decideResult
+	decodeResponse(t, h.okPost(t, "/api/review/decide",
+		`{"subject":{"type":"proposal","id":"`+h.proposal.ID+`"},"disposition":"accept"}`), &ruled)
+	if ruled.Status == "" || ruled.Event.ID == "" {
+		t.Fatalf("the ruling = %+v, want the disposition it appended", ruled)
+	}
+	if ruled.Topic == nil || ruled.Topic.Applied {
+		t.Fatalf("the ruling's topic = %+v, want an act that did not land", ruled.Topic)
+	}
+	if !strings.Contains(ruled.Topic.Error, "retired") {
+		t.Errorf("the ruling reports %q, want the ledger's own refusal", ruled.Topic.Error)
+	}
+}
+
+// TestRejectingATopicProposalKeepsTheReason is the other ruling: §4.13
+// suppresses the same proposal until materially new evidence exists, and the
+// reason is what makes that decision readable later — so a rejection with no
+// note is refused before the disposition is appended.
+func TestRejectingATopicProposalKeepsTheReason(t *testing.T) {
+	var plans *topicPlans
+	h := newPhaseB(t, feedText, func(o *Options) {
+		plans = o.TopicPlans.(*topicPlans)
+	})
+
+	response := h.post("/api/review/decide",
+		`{"subject":{"type":"proposal","id":"`+h.proposal.ID+`"},"disposition":"reject"}`)
 	response.Body.Close()
 	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("a decline with no reason: status = %d, want 400", response.StatusCode)
+		t.Fatalf("a rejection with no reason: status = %d, want 400", response.StatusCode)
 	}
-	if questions.declined != "" {
-		t.Fatalf("the handler declined %q before checking the reason", questions.declined)
+	if plans.declined != "" {
+		t.Fatalf("the handler declined %q before checking the reason", plans.declined)
 	}
 
-	accepted := h.okPost(t, "/api/topics/decline",
-		`{"question_id":"`+topicProposalQuestionID+`","reason":"that directory is not a project"}`)
-	accepted.Body.Close()
-	if questions.declined != topicProposalQuestionID {
-		t.Fatalf("the handler declined %q, want the proposal", questions.declined)
+	var ruled decideResult
+	decodeResponse(t, h.okPost(t, "/api/review/decide",
+		`{"subject":{"type":"proposal","id":"`+h.proposal.ID+
+			`"},"disposition":"reject","note":"that directory is not a project"}`), &ruled)
+	if ruled.Topic == nil || !ruled.Topic.Declined {
+		t.Fatalf("the ruling's topic = %+v, want the plan declined", ruled.Topic)
 	}
-	if questions.declinedReason != "that directory is not a project" {
-		t.Errorf("the reason reached the ledger as %q, want it verbatim", questions.declinedReason)
+	if plans.declined != h.proposal.ID || plans.declinedBy != operatorID {
+		t.Fatalf("the handler declined %q as %q, want the operator refusing the proposal",
+			plans.declined, plans.declinedBy)
+	}
+	if plans.declinedReason != "that directory is not a project" {
+		t.Errorf("the reason reached the ledger as %q, want it verbatim", plans.declinedReason)
+	}
+	if plans.applied != "" {
+		t.Errorf("a rejection applied %q", plans.applied)
+	}
+}
+
+// TestARulingOnAnOrdinaryProposalTouchesNoTopic is the other side of the
+// same route: most proposals are about the corpus rather than about the
+// ledger's naming, and a ruling on one must not report a topic act.
+func TestARulingOnAnOrdinaryProposalTouchesNoTopic(t *testing.T) {
+	var plans *topicPlans
+	h := newPhaseB(t, feedText, func(o *Options) {
+		plans = o.TopicPlans.(*topicPlans)
+		plans.plans = nil
+	})
+
+	var ruled decideResult
+	decodeResponse(t, h.okPost(t, "/api/review/decide",
+		`{"subject":{"type":"proposal","id":"`+h.proposal.ID+`"},"disposition":"accept"}`), &ruled)
+	if ruled.Topic != nil {
+		t.Fatalf("the ruling reports %+v, want no topic act", ruled.Topic)
+	}
+	if plans.applied != "" {
+		t.Errorf("the handler applied %q for a proposal carrying no plan", plans.applied)
 	}
 }
 
@@ -442,52 +523,86 @@ func TestTopicsSortByTheOperatorsInterestThenBySize(t *testing.T) {
 	}
 }
 
-// TestSeedTopicsProposesRepositoriesWithTheRecordsThatCiteThem is what stage
-// 1's derivation is for now.
+// TestUnboundIdentitiesAreEvidenceWithTheRecordsThatCiteThem is what the
+// repository derivation is for now: evidence handed to the filing run, never
+// a proposal this surface minted.
 //
 // The propagation is the half worth asserting: only the observation cites a
-// session, and the candidate it develops, the finding that consolidates it and
-// the proposal that rests on that finding all reach the repository through the
-// development path. That is what makes a topic question worth raising — it
-// arrives with the records it would file rather than with one.
-func TestSeedTopicsProposesRepositoriesWithTheRecordsThatCiteThem(t *testing.T) {
+// session, and the candidate it develops, the finding that consolidates it
+// and the proposal that rests on that finding all reach the repository
+// through the development path. That is what makes the evidence worth
+// handing over — it arrives with the records a run would consider filing
+// rather than with one.
+func TestUnboundIdentitiesAreEvidenceWithTheRecordsThatCiteThem(t *testing.T) {
 	h := newPhaseB(t, feedText, withCitedWorkspace)
 
-	seeds, err := h.server.seedTopics(h.ctx)
+	observed, err := h.server.UnboundIdentities(h.ctx)
 	if err != nil {
-		t.Fatalf("seedTopics: %v", err)
+		t.Fatalf("UnboundIdentities: %v", err)
 	}
-	var seeded seedTopic
-	for _, seed := range seeds {
-		if seed.Name == feedTopic {
-			seeded = seed
+	var seen reality.TopicObservation
+	for _, identity := range observed {
+		if identity.Name == feedTopic {
+			seen = identity
 		}
 	}
-	if seeded.Name == "" {
-		t.Fatalf("the repository this host observed is not proposed: %+v", seeds)
+	if seen.Name == "" {
+		t.Fatalf("the repository this host observed is not offered: %+v", observed)
 	}
-	if seeded.Remote != feedRepository {
-		t.Errorf("seed remote = %q, want the repository's own remote %q", seeded.Remote, feedRepository)
+	if seen.Remote != feedRepository {
+		t.Errorf("remote = %q, want the repository's own remote %q", seen.Remote, feedRepository)
 	}
-	if seeded.Sessions != 1 || seeded.Checkouts != 1 {
-		t.Errorf("seed = %+v, want the evidence it was proposed on", seeded)
+	if seen.Sessions != 1 || seen.Checkouts != 1 {
+		t.Errorf("observation = %+v, want the evidence behind it", seen)
 	}
 	got := map[string]bool{}
-	for _, ref := range seeded.Records {
+	for _, ref := range seen.Records {
 		got[ref.ID] = true
 	}
 	for _, want := range []string{h.hypothesis.ID, h.finding.ID, h.proposal.ID, h.observationID(t)} {
 		if !got[want] {
-			t.Errorf("%s is not among the records the seed would file; the lineage did not propagate", want)
+			t.Errorf("%s is not among the records this identity carries; the lineage did not propagate",
+				want)
 		}
 	}
-	// Seeding proposes and never files: until the operator accepts, the
-	// records are unfiled and the topic does not exist.
+	// It observes and never proposes: nothing is a topic, and nothing is
+	// offered for a ruling, because only a run's published proposal is.
 	var topics topicList
 	decodeResponse(t, h.ok(t, "/api/topics"), &topics)
 	for _, topic := range topics.Topics {
 		if topic.Name == feedTopic {
-			t.Errorf("the seeder's name is a topic before anybody accepted it: %+v", topic)
+			t.Errorf("an observed repository is a topic before anybody proposed it: %+v", topic)
+		}
+	}
+}
+
+// TestUnboundIdentitiesSkipWhatTheLedgerAlreadyBinds keeps the evidence
+// honest: a repository the operator has already named is not something a run
+// needs to propose, and offering it would produce a proposal the ledger
+// refuses as bound.
+func TestUnboundIdentitiesSkipWhatTheLedgerAlreadyBinds(t *testing.T) {
+	h := newPhaseB(t, feedText, withCitedWorkspace)
+
+	if _, _, err := h.reality.AssertFact(h.ctx, reality.FactInput{
+		SubjectID:   h.entity.ID,
+		Predicate:   reality.Predicate("repository-remote"),
+		Value:       reality.FactValue{Kind: reality.ValueText, Text: feedRepository},
+		ValidFrom:   time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		ObservedAt:  time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		Authority:   reality.Authority{Kind: reality.AuthorityOperator, ID: operatorID, At: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)},
+		Confidence:  reality.ConfidenceHigh,
+		Sensitivity: reality.SensitivityRoutine,
+	}); err != nil {
+		t.Fatalf("AssertFact: %v", err)
+	}
+
+	observed, err := h.server.UnboundIdentities(h.ctx)
+	if err != nil {
+		t.Fatalf("UnboundIdentities: %v", err)
+	}
+	for _, identity := range observed {
+		if identity.Remote == feedRepository {
+			t.Fatalf("a bound repository is still offered as unnamed: %+v", identity)
 		}
 	}
 }

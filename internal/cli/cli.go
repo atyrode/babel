@@ -142,7 +142,6 @@ Commands:
   reality import --source ID  apply one trusted source's versioned fact batch
   reality focus               show or install the expenditure policy
   topics                      list the topics records are filed under
-  topics seed                 propose a topic per observed repository identity
   cookbook list               list the analysis recipes
   cookbook check              check recipe versions against their bodies
   analysis profile configure  hand this terminal to Code's configuration
@@ -316,7 +315,7 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 	case "reality":
 		return a.reality(ctx, args[1:])
 	case "topics":
-		return a.topicsCmd(ctx, args[1:])
+		return a.topicsList(ctx, args[1:])
 	case "cookbook":
 		return a.cookbookCmd(args[1:])
 	case "conductor":

@@ -139,13 +139,22 @@ func composeReviewPrompt(contract worker.OutputContract, recipe *cookbook.Recipe
 		b.WriteString("nobody needed a second name for is the one an operator can act on. The retired and declined ")
 		b.WriteString("reasons are why Babel got a topic wrong before, and repeating one of them is the failure this ")
 		b.WriteString("material exists to prevent.\n\n")
-		encoded, err := json.MarshalIndent(ledger, "", "  ")
+		// The two blocks below are rendered on their own rather than
+		// inside this JSON, so the observations a pass may propose from
+		// and the asks it has to answer cannot be read as more entities
+		// that already exist. Same material, three headings, because the
+		// difference between them is the whole authority boundary.
+		known := *ledger
+		known.Unbound, known.Asks = nil, nil
+		encoded, err := json.MarshalIndent(known, "", "  ")
 		if err != nil {
 			return "", fmt.Errorf("explore: render the topic ledger: %w", err)
 		}
 		b.WriteString("```json\n")
 		b.Write(encoded)
 		b.WriteString("\n```\n\n")
+		b.WriteString(renderUnbound(ledger.Unbound))
+		b.WriteString(renderAsks(ledger.Asks))
 	}
 
 	return b.String(), nil
@@ -192,6 +201,96 @@ func renderPriorEvaluation(record evaluation.Record) string {
 		fmt.Fprintf(&b, "  unsure about: %s\n", record.Assessment.Uncertainty)
 	}
 	return b.String()
+}
+
+// renderUnbound renders what the scan observed and nothing names.
+//
+// It is evidence and the heading says so. §4.13's second reading removed the
+// Go loop that turned each of these into a topic question, because a topic
+// nothing judged is a topic Babel cannot explain; what reaches a pass is
+// therefore the observation with its counts, and the proposal — if the record
+// under review is about one of them — is the pass's own.
+//
+// The counts are rendered rather than the raw struct because they are what
+// carries the judgement: sessions and checkouts say whether the identity is a
+// project or a scratch clone, and the record count says how much filing the
+// operator would be accepting.
+func renderUnbound(observed []TopicObservation) string {
+	if len(observed) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## What the scan observed and nothing names\n\n")
+	b.WriteString("Repository identities this host observed that no entity in the ledger binds. They are ")
+	b.WriteString("evidence, not proposals: nothing here is a topic until you say the record under review is ")
+	b.WriteString("about one and the operator accepts it. Propose one only when *this* record is about it — a ")
+	b.WriteString("busy identity is not a reason to name it while reviewing something else.\n\n")
+	for _, item := range observed {
+		fmt.Fprintf(&b, "- %s (identity %s", item.Name, item.Identity)
+		if item.Remote != "" {
+			fmt.Fprintf(&b, ", remote %s", item.Remote)
+		}
+		fmt.Fprintf(&b, "): %d %s in %d %s",
+			item.Sessions, plural(item.Sessions, "session", "sessions"),
+			item.Checkouts, plural(item.Checkouts, "checkout", "checkouts"))
+		if item.Records > 0 {
+			// Rendered only when somebody counted. The count is a
+			// corpus-wide derivation and not every caller holds the
+			// corpus, so a printed zero would tell a pass that nothing
+			// cites the identity when the truth is that nothing
+			// counted.
+			fmt.Fprintf(&b, ", %d %s cite it",
+				item.Records, plural(item.Records, "record", "records"))
+		}
+		if item.Kind != "" {
+			fmt.Fprintf(&b, "; observed as a %s", item.Kind)
+		}
+		b.WriteString("\n")
+		for _, path := range item.Paths {
+			fmt.Fprintf(&b, "  seen at: %s\n", path)
+		}
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// renderAsks renders the operator's own asks about topics.
+//
+// They are his words and they are not parsed into an instruction, which is the
+// difference §4.13 draws between Babel doing as it is told and Babel
+// understanding what it was told. The id travels because answering one is a
+// write against it: a proposal that names the ask, or a reasoned no that does.
+func renderAsks(asks []TopicAsk) string {
+	if len(asks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## What the operator asked\n\n")
+	b.WriteString("What the operator said about topics and nobody has answered yet, in his own words. Answer ")
+	b.WriteString("every one that concerns this record's topics — with a `topic` proposal naming the ask, or ")
+	b.WriteString("with `no_change` and the reason. An ask is answered rather than obeyed: if it is wrong, say ")
+	b.WriteString("so and why.\n\n")
+	for _, ask := range asks {
+		fmt.Fprintf(&b, "- %s", ask.ID)
+		if !ask.At.IsZero() {
+			fmt.Fprintf(&b, " on %s", ask.At.UTC().Format("2006-01-02"))
+		}
+		if ask.Topic != "" {
+			fmt.Fprintf(&b, " about %s", ask.Topic)
+		}
+		fmt.Fprintf(&b, ": %s\n", strings.TrimSpace(ask.Text))
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// plural picks the noun form for a rendered count, so a prompt does not tell a
+// model about "1 sessions" and invite it to read the number as approximate.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // reviewInstructions composes one role's static instructions from the blocks
@@ -259,10 +358,11 @@ func reviewRoleQuestion(role string) string {
 			"shown with it. Relevance is not quality and not reception: a correct finding about something " +
 			"nobody is working on is correct and not relevant, and saying so is the useful answer.\n"
 	case evaluation.RoleFiling:
-		return "The question is what this record is about: which topic a reader would look for it under. " +
-			"A topic is a thing in the world with a name and a binding — a repository, a project, a " +
-			"machine, a service, a concept — and never a folder, a directory or the workspace the work " +
-			"happened in. You are not judging this record, and no part of your answer is a vote.\n"
+		return "The question is what this record is about: which topic a reader would look for it under, " +
+			"and whether the ledger's topics themselves should change for it to be findable. A topic is " +
+			"a thing in the world with a name and a binding — a repository, a project, a machine, a " +
+			"service, a concept — and never a folder, a directory or the workspace the work happened " +
+			"in. You are not judging this record, and no part of your answer is a vote.\n"
 	default:
 		return ""
 	}
@@ -324,22 +424,53 @@ where you know it, and leave it empty where you do not.
 `
 
 const instructionsReviewFiling = `
-Answer with exactly one of three fields.
+Answer with exactly one of four fields.
 
 ` + "`filing`" + ` files this record under a topic that already exists. Name the
 entity by any name or alias it is listed under and say in ` + "`rationale`" + `
 why this record is about it. This is the answer to prefer: a second topic for
 something the ledger already names is a merge the operator has to do by hand.
 
-` + "`topic`" + ` proposes a topic nobody has created, when the record is about
-something no listed entity names. It is a question for the operator and not a
-creation: give the ` + "`name`" + `, the ` + "`kind`" + `, an
-` + "`identity`" + ` that is the same string for the same thing every time — a
-normalized remote, a common directory, a hostname, or a slug for a concept —
-and bind it to something real with ` + "`remote`" + `, ` + "`paths`" + ` or a
-one-sentence ` + "`definition`" + `. Say in ` + "`reasoning`" + ` why the topic
-should exist and list in ` + "`considered`" + ` the existing topics you weighed
-and rejected.
+` + "`topic`" + ` proposes a change to the ledger's topics. It is a proposal
+for the operator and never a change: he reads it and accepting it is what
+applies it. Set ` + "`operation`" + ` to exactly one of four:
+
+- ` + "`create`" + ` — the record is about something no listed entity names.
+  Give the ` + "`name`" + `, the ` + "`kind`" + `, an ` + "`identity`" + ` that
+  is the same string for the same thing every time — a normalized remote, a
+  common directory, a hostname, or a slug for a concept — and bind it to
+  something real with ` + "`remote`" + `, ` + "`paths`" + ` or a one-sentence
+  ` + "`definition`" + `. Name no targets.
+- ` + "`split`" + ` — one listed topic names two things. Put that topic in
+  ` + "`targets`" + `, and describe the part that would be separated out with
+  the same name, kind, identity and binding a create carries. This record is
+  what moves to the new part, so split only when this record belongs to the
+  part you are describing.
+- ` + "`merge`" + ` — two listed topics name one thing. Put both in
+  ` + "`targets`" + `, the one that disappears first and the one that survives
+  second, and carry no name, kind or identity: nothing is created.
+- ` + "`retire`" + ` — one listed topic should never have existed. Put it in
+  ` + "`targets`" + `, and remember that retiring it re-queues everything filed
+  under it for triage, so the reason has to be that the topic is wrong rather
+  than that it is quiet.
+
+Every operation needs ` + "`reasoning`" + `: why the ledger should change, and
+why the topics in ` + "`considered`" + ` were weighed and rejected. Every
+` + "`targets`" + ` entry must be a topic listed above — an invented one is
+refused as a malformed result and creates nothing.
+
+An identity listed under "what the scan observed and nothing names" is evidence
+for a ` + "`create`" + `, and only when *this* record is about it. The counts
+say how much stands behind it; the fact that Babel saw a repository is not a
+reason to name it while reviewing a record about something else.
+
+An ask listed under "what the operator asked" is answered rather than obeyed.
+If you agree with it, answer with the ` + "`topic`" + ` proposal it calls for
+and set ` + "`ask_id`" + ` to that ask. If you judge it wrong — the topics it
+names are one thing, the split it wants would cut across what the records
+actually say — answer with ` + "`no_change`" + `, naming the ` + "`ask_id`" + `
+and the ` + "`reason`" + `, which lands as a reply where he asked. Answer only
+the asks that concern this record's topics.
 
 ` + "`no_topic`" + ` records that the record is about nothing in particular,
 with the reason. Some outputs are about the process, about a passing question,
@@ -348,7 +479,7 @@ the honest result. It is not a failure and it is not a skip: a skip means you
 could not read the record, and this means you read it and it has no topic.
 
 A name you use in ` + "`filing`" + ` that no listed entity answers to becomes a
-topic question rather than a filing, so guessing at a name costs the operator a
-question to decline. Set ` + "`skip`" + ` only when the record itself is
+create proposal rather than a filing, so guessing at a name costs the operator
+a proposal to decline. Set ` + "`skip`" + ` only when the record itself is
 unreadable from here.
 `

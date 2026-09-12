@@ -242,11 +242,14 @@ func TestFilingAssessmentBelongsToTheFilingRole(t *testing.T) {
 	}
 
 	for name, filing := range map[string]Filing{
-		"unknown outcome":     {Outcome: "sorted", Reason: "why"},
-		"filed with nothing":  {Outcome: FilingFiled, Reason: "why"},
-		"proposed an entity":  {Outcome: FilingProposed, Entity: "ent_1", Question: "q_1", Reason: "why"},
-		"no topic but an id":  {Outcome: FilingNone, Entity: "ent_1", Reason: "why"},
-		"no reason for a why": {Outcome: FilingFiled, Entity: "ent_1"},
+		"unknown outcome":      {Outcome: "sorted", Reason: "why"},
+		"filed with nothing":   {Outcome: FilingFiled, Reason: "why"},
+		"proposed an entity":   {Outcome: FilingProposed, Entity: "ent_1", Proposal: "pro_1", Operation: "create", Reason: "why"},
+		"proposed no change":   {Outcome: FilingProposed, Proposal: "pro_1", Reason: "why"},
+		"no topic but an id":   {Outcome: FilingNone, Entity: "ent_1", Reason: "why"},
+		"answered no ask":      {Outcome: FilingAnswered, Reason: "why"},
+		"answered with a plan": {Outcome: FilingAnswered, Ask: "cmp_1", Proposal: "pro_1", Reason: "why"},
+		"no reason for a why":  {Outcome: FilingFiled, Entity: "ent_1"},
 	} {
 		assessment := Assessment{Filing: &filing}
 		if err := assessment.validate(RoleFiling); !errors.Is(err, ErrInvalid) {

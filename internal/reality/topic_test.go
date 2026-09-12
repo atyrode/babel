@@ -16,7 +16,7 @@ import (
 type recordingFiler struct {
 	filed []frontier.FilingInput
 	// failOn refuses the record with this ID, which is how the tests reach
-	// the half-applied acceptance §4.13's two stores make possible.
+	// the half-applied application §4.13's two stores make possible.
 	failOn string
 }
 
@@ -36,87 +36,119 @@ func (f *recordingFiler) File(ctx context.Context, in frontier.FilingInput) (fro
 	}, nil
 }
 
-// manifold is the proposal every test in this file starts from: one
-// repository, bound by its remote, seen at two worktrees, with two records
-// that would be filed under it.
-func manifold(sessions int) TopicProposal {
-	return TopicProposal{
-		Name: "manifold",
-		Kind: EntityRepository,
-		Aliases: []AliasInput{
-			{Kind: AliasRepository, Payload: AliasPayload{Value: "github.com/atyrode/manifold"}},
-			{Kind: AliasPath, Payload: AliasPayload{Value: "/home/alex/manifold"}},
-			{Kind: AliasPath, Payload: AliasPayload{Value: "/home/alex/wt/manifold-fix"}},
+// manifold is the plan every test in this file starts from: one repository,
+// bound by its remote, seen at two worktrees, with two records that would be
+// filed under it — carried by the proposal record the operator rules on.
+func manifold(proposalID string, sessions int) TopicPlan {
+	return TopicPlan{
+		ProposalID: proposalID,
+		Operation:  TopicCreate,
+		Identity:   "github.com/atyrode/manifold",
+		Entity: &EntityDraft{
+			Subject: NewSubject{
+				Kind:        EntityRepository,
+				DisplayName: "manifold",
+				Aliases: []AliasInput{
+					{Kind: AliasRepository, Payload: AliasPayload{Value: "github.com/atyrode/manifold"}},
+					{Kind: AliasPath, Payload: AliasPayload{Value: "/home/alex/manifold"}},
+					{Kind: AliasPath, Payload: AliasPayload{Value: "/home/alex/wt/manifold-fix"}},
+				},
+			},
+			Binding: []FactInput{{
+				Predicate: PredicateRepositoryRemote,
+				Value:     FactValue{Kind: ValueText, Text: "github.com/atyrode/manifold"},
+			}},
 		},
-		Binding: []FactInput{{
-			Predicate: PredicateRepositoryRemote,
-			Value:     FactValue{Kind: ValueText, Text: "github.com/atyrode/manifold"},
-		}},
+		Filings: []FilingDraft{
+			{Record: frontier.Ref{Type: frontier.EntityFinding, ID: "fnd-1"},
+				Rationale: "the finding is about this repository"},
+			{Record: frontier.Ref{Type: frontier.EntityHypothesis, ID: "hyp-1"},
+				Rationale: "the candidate is about this repository"},
+		},
 		Reasoning: "32 sessions in 2 checkouts cite this repository",
-		Records: []frontier.Ref{
-			{Type: frontier.EntityFinding, ID: "fnd-1"},
-			{Type: frontier.EntityHypothesis, ID: "hyp-1"},
-		},
-		Identity: "github.com/atyrode/manifold",
-		Sessions: sessions,
+		Sessions:  sessions,
 	}
 }
 
-// TestAskTopicDedupesByIdentityAndRefusesOneAlreadyBound is §4.13's two
-// refusals, which are different things and must not be one.
+// namedRepository is a create plan for a second repository, so a test can
+// hold several plans without repeating the fixture.
+func namedRepository(proposalID, name, remote string, sessions int) TopicPlan {
+	return TopicPlan{
+		ProposalID: proposalID,
+		Operation:  TopicCreate,
+		Identity:   remote,
+		Entity: &EntityDraft{
+			Subject: NewSubject{Kind: EntityRepository, DisplayName: name},
+			Binding: []FactInput{{
+				Predicate: PredicateRepositoryRemote,
+				Value:     FactValue{Kind: ValueText, Text: remote},
+			}},
+		},
+		Reasoning: "the sessions in it are about " + name,
+		Sessions:  sessions,
+	}
+}
+
+// TestProposeTopicDedupesBySubjectMatterAndRefusesOneAlreadyBound is §4.13's
+// two refusals, which are different things and must not be one.
 //
-// Two runs that met the same repository raise one question however differently
-// they worded it, because a topic proposal is keyed by the identity it
-// proposes and not by its prose. And once the operator has accepted it, the
-// identity binds an entity: a second proposal for it is refused and the error
-// names the entity, because the ledger already holds the thing and what the
-// caller has is a filing, not a new subject.
-func TestAskTopicDedupesByIdentityAndRefusesOneAlreadyBound(t *testing.T) {
+// Two runs that met the same repository produce one thing for the operator to
+// rule on however differently they worded their proposals, because a plan is
+// keyed by the identity it would bind and not by its prose. And once the
+// operator has accepted one, the identity binds an entity: a later plan for it
+// is refused and the error names the entity, because the ledger already holds
+// the thing and what the caller has is a filing, not a new subject.
+func TestProposeTopicDedupesBySubjectMatterAndRefusesOneAlreadyBound(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newStore(t)
 
-	first, err := store.AskTopic(ctx, manifold(32), Provenance{Actor: "topic-seed"})
-	if err != nil {
-		t.Fatalf("AskTopic: %v", err)
+	if err := store.ProposeTopic(ctx, manifold("pro-1", 32)); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
 	}
-	if first.Kind != QuestionTopic || first.State != QuestionOpen {
-		t.Fatalf("question is %s/%s, want an open topic question", first.Kind, first.State)
+	plan, found, err := store.TopicPlan(ctx, "pro-1")
+	if err != nil || !found {
+		t.Fatalf("TopicPlan: %v (found=%v)", err, found)
 	}
-	if len(first.TargetEntityIDs) != 0 {
-		t.Errorf("a topic question targets %v, want nothing: its subject does not exist yet",
-			first.TargetEntityIDs)
+	if plan.State != TopicPlanOpen || plan.Operation != TopicCreate {
+		t.Fatalf("the plan reads %s/%s, want an open create", plan.State, plan.Operation)
 	}
 
-	reworded := manifold(40)
-	reworded.Name = "Manifold, the thing"
+	reworded := manifold("pro-2", 40)
+	reworded.Entity.Subject.DisplayName = "Manifold, the thing"
 	reworded.Reasoning = "another run met the same remote"
-	if _, err := store.AskTopic(ctx, reworded, Provenance{RunID: "run-1"}); !isErr(err, ErrDuplicateQuestion) {
-		t.Fatalf("second ask: %v, want ErrDuplicateQuestion", err)
+	reworded.By = Provenance{RunID: "run-1"}
+	if err := store.ProposeTopic(ctx, reworded); !isErr(err, ErrConflict) {
+		t.Fatalf("second proposal: %v, want ErrConflict", err)
+	}
+	// A second plan on the same proposal record is refused too: the plan is
+	// immutable, and a run that changes its mind publishes another
+	// proposal.
+	if err := store.ProposeTopic(ctx, manifold("pro-1", 33)); !isErr(err, ErrConflict) {
+		t.Fatalf("re-planning one proposal: %v, want ErrConflict", err)
 	}
 
-	filer := &recordingFiler{}
-	acceptance, err := store.AcceptTopic(ctx, first.ID, "operator", filer)
+	acceptance, err := store.ApplyTopicPlan(ctx, "pro-1", "operator", &recordingFiler{})
 	if err != nil {
-		t.Fatalf("AcceptTopic: %v", err)
+		t.Fatalf("ApplyTopicPlan: %v", err)
 	}
-	err = func() error { _, err := store.AskTopic(ctx, manifold(99), Provenance{RunID: "run-2"}); return err }()
+	err = store.ProposeTopic(ctx, manifold("pro-3", 99))
 	if !isErr(err, ErrTopicBound) {
-		t.Fatalf("ask after acceptance: %v, want ErrTopicBound", err)
+		t.Fatalf("proposal after acceptance: %v, want ErrTopicBound", err)
 	}
 	if !strings.Contains(err.Error(), acceptance.EntityID) {
 		t.Errorf("the refusal is %q and does not name entity %s", err.Error(), acceptance.EntityID)
 	}
 }
 
-// TestAskTopicRefusesAnIdentityBoundByAFactAlone is the other half of
+// TestProposeTopicRefusesAnIdentityBoundByAFactAlone is the other half of
 // "already bound", and the half an alias index cannot answer.
 //
 // An operator who created a repository by hand and asserted where it lives has
-// bound the identity without ever attaching an alias for it. A seeder that
-// only consulted aliases would offer to create a second subject for a
-// repository the ledger already holds, which is the duplication §4.8's merge
-// history exists to undo.
-func TestAskTopicRefusesAnIdentityBoundByAFactAlone(t *testing.T) {
+// bound the identity without ever attaching an alias for it. A run that only
+// consulted aliases would offer to create a second subject for a repository
+// the ledger already holds, which is the duplication §4.8's merge history
+// exists to undo.
+func TestProposeTopicRefusesAnIdentityBoundByAFactAlone(t *testing.T) {
 	ctx := context.Background()
 	store, clock := newStore(t)
 
@@ -126,43 +158,46 @@ func TestAskTopicRefusesAnIdentityBoundByAFactAlone(t *testing.T) {
 		t.Fatalf("AssertFact: %v", err)
 	}
 
-	proposal := manifold(3)
-	proposal.Name = "dotfiles"
-	proposal.Identity = "/home/alex/dotfiles/.git"
-	proposal.Aliases = nil
-	proposal.Binding = []FactInput{{
-		Predicate: PredicateLocalPath,
-		Value:     FactValue{Kind: ValueText, Text: "/home/alex/dotfiles/.git"},
-	}}
-	_, err := store.AskTopic(ctx, proposal, Provenance{Actor: "topic-seed"})
+	plan := manifold("pro-1", 3)
+	plan.Identity = "/home/alex/dotfiles/.git"
+	plan.Entity = &EntityDraft{
+		Subject: NewSubject{Kind: EntityRepository, DisplayName: "dotfiles"},
+		Binding: []FactInput{{
+			Predicate: PredicateLocalPath,
+			Value:     FactValue{Kind: ValueText, Text: "/home/alex/dotfiles/.git"},
+		}},
+	}
+	err := store.ProposeTopic(ctx, plan)
 	if !isErr(err, ErrTopicBound) {
-		t.Fatalf("AskTopic: %v, want ErrTopicBound", err)
+		t.Fatalf("ProposeTopic: %v, want ErrTopicBound", err)
 	}
 	if !strings.Contains(err.Error(), entity.ID) {
 		t.Errorf("the refusal is %q and does not name entity %s", err.Error(), entity.ID)
 	}
 }
 
-// TestAcceptTopicCreatesTheSubjectAndFilesEveryRecord is §4.13's acceptance:
-// creating the entity and filing the records is one operator act.
+// TestApplyTopicPlanCreatesTheSubjectAndFilesEveryRecord is §4.13's
+// acceptance: creating the entity and filing the records is one operator act.
 //
-// The filings' author is the proposal's provenance rather than the accepting
+// The filings' author is the plan's provenance rather than the accepting
 // operator, which is the section's own distinction: what he accepted is the
-// topic, not each record's membership, and a proposal derived from repository
-// identity alone judged nothing — so its filings stay heuristic until the
-// triage recipe revisits them.
-func TestAcceptTopicCreatesTheSubjectAndFilesEveryRecord(t *testing.T) {
+// topic, not each record's membership, and a plan with no run behind it judged
+// nothing — so its filings stay heuristic until the triage recipe revisits
+// them.
+func TestApplyTopicPlanCreatesTheSubjectAndFilesEveryRecord(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newStore(t)
 
-	question, err := store.AskTopic(ctx, manifold(32), Provenance{Actor: "topic-seed"})
-	if err != nil {
-		t.Fatalf("AskTopic: %v", err)
+	if err := store.ProposeTopic(ctx, manifold("pro-1", 32)); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
 	}
 	filer := &recordingFiler{}
-	acceptance, err := store.AcceptTopic(ctx, question.ID, "operator", filer)
+	acceptance, err := store.ApplyTopicPlan(ctx, "pro-1", "operator", filer)
 	if err != nil {
-		t.Fatalf("AcceptTopic: %v", err)
+		t.Fatalf("ApplyTopicPlan: %v", err)
+	}
+	if acceptance.Operation != TopicCreate {
+		t.Errorf("the acceptance reports %s", acceptance.Operation)
 	}
 
 	entity, err := store.Entity(ctx, acceptance.EntityID)
@@ -173,9 +208,9 @@ func TestAcceptTopicCreatesTheSubjectAndFilesEveryRecord(t *testing.T) {
 		t.Errorf("entity is %s/%q, want the proposed repository", entity.Kind, entity.Payload.DisplayName)
 	}
 
-	// Every name the proposal offered answers for the subject, and so does
-	// the identity it is bound by — that alias is what makes the next
-	// proposal of this repository refusable.
+	// Every name the plan offered answers for the subject, and so does the
+	// identity it is bound by — that alias is what makes the next plan for
+	// this repository refusable.
 	for _, name := range []string{
 		"github.com/atyrode/manifold", "manifold",
 		"/home/alex/manifold", "/home/alex/wt/manifold-fix",
@@ -211,7 +246,7 @@ func TestAcceptTopicCreatesTheSubjectAndFilesEveryRecord(t *testing.T) {
 	}
 
 	if len(filer.filed) != 2 {
-		t.Fatalf("the filer saw %d records, want both the proposal named", len(filer.filed))
+		t.Fatalf("the filer saw %d records, want both the plan named", len(filer.filed))
 	}
 	for _, filing := range filer.filed {
 		if filing.EntityID != acceptance.EntityID {
@@ -226,32 +261,36 @@ func TestAcceptTopicCreatesTheSubjectAndFilesEveryRecord(t *testing.T) {
 		}
 	}
 
-	answered, err := store.Question(ctx, question.ID)
+	applied, _, err := store.TopicPlan(ctx, "pro-1")
 	if err != nil {
-		t.Fatalf("Question: %v", err)
+		t.Fatalf("TopicPlan: %v", err)
 	}
-	if answered.State != QuestionAnswered {
-		t.Errorf("the question is %s after acceptance, want answered", answered.State)
+	if applied.State != TopicPlanApplied || applied.EntityID != acceptance.EntityID {
+		t.Errorf("the plan reads back as %s/%q after acceptance", applied.State, applied.EntityID)
 	}
-	if _, err := store.AcceptTopic(ctx, question.ID, "operator", filer); !isErr(err, ErrAlreadyDecided) {
+	if _, err := store.ApplyTopicPlan(ctx, "pro-1", "operator", filer); !isErr(err, ErrAlreadyDecided) {
 		t.Errorf("second acceptance: %v, want ErrAlreadyDecided", err)
+	}
+	if err := store.DeclineTopicPlan(ctx, "pro-1", "operator", "changed my mind"); !isErr(err, ErrAlreadyDecided) {
+		t.Errorf("decline after acceptance: %v, want ErrAlreadyDecided", err)
 	}
 }
 
-// TestAcceptTopicRunProposalFilesAsTheRun is the other side of authorship: a
-// run that proposed a topic judged that each record it named is about it, so
+// TestApplyTopicPlanRunProposalFilesAsTheRun is the other side of authorship:
+// a run that proposed a topic judged that each record it named is about it, so
 // the filing is the run's work and is not labelled heuristic.
-func TestAcceptTopicRunProposalFilesAsTheRun(t *testing.T) {
+func TestApplyTopicPlanRunProposalFilesAsTheRun(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newStore(t)
 
-	question, err := store.AskTopic(ctx, manifold(4), Provenance{RunID: "run-7", RecipeID: "babel-files-its-output"})
-	if err != nil {
-		t.Fatalf("AskTopic: %v", err)
+	plan := manifold("pro-1", 4)
+	plan.By = Provenance{RunID: "run-7", RecipeID: "babel-files-its-output"}
+	if err := store.ProposeTopic(ctx, plan); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
 	}
 	filer := &recordingFiler{}
-	if _, err := store.AcceptTopic(ctx, question.ID, "operator", filer); err != nil {
-		t.Fatalf("AcceptTopic: %v", err)
+	if _, err := store.ApplyTopicPlan(ctx, "pro-1", "operator", filer); err != nil {
+		t.Fatalf("ApplyTopicPlan: %v", err)
 	}
 	for _, filing := range filer.filed {
 		if filing.Author != frontier.FilingRun || filing.AuthorID != "run-7" || filing.Heuristic {
@@ -261,27 +300,26 @@ func TestAcceptTopicRunProposalFilesAsTheRun(t *testing.T) {
 	}
 }
 
-// TestAcceptTopicReportsAFilingFailureAndKeepsWhatItCreated pins the
+// TestApplyTopicPlanReportsAFilingFailureAndKeepsWhatItCreated pins the
 // consequence of the two stores being two handles on one file.
 //
 // The ledger's half is one transaction and the filings follow it, so a filer
 // that refuses leaves exactly this: the entity, its aliases, its binding facts
-// and the answered question are durable, the records are unfiled, and the
-// error says so while the returned acceptance still names what exists. That is
-// the benign direction — §4.13 makes unfiled the triage backlog — and the test
-// exists so the alternative is never introduced quietly.
-func TestAcceptTopicReportsAFilingFailureAndKeepsWhatItCreated(t *testing.T) {
+// and the ruling are durable, the records are unfiled, and the error says so
+// while the returned acceptance still names what exists. That is the benign
+// direction — §4.13 makes unfiled the triage backlog — and the test exists so
+// the alternative is never introduced quietly.
+func TestApplyTopicPlanReportsAFilingFailureAndKeepsWhatItCreated(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newStore(t)
 
-	question, err := store.AskTopic(ctx, manifold(9), Provenance{Actor: "topic-seed"})
-	if err != nil {
-		t.Fatalf("AskTopic: %v", err)
+	if err := store.ProposeTopic(ctx, manifold("pro-1", 9)); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
 	}
 	filer := &recordingFiler{failOn: "fnd-1"}
-	acceptance, err := store.AcceptTopic(ctx, question.ID, "operator", filer)
+	acceptance, err := store.ApplyTopicPlan(ctx, "pro-1", "operator", filer)
 	if err == nil {
-		t.Fatal("AcceptTopic: no error, want the filer's refusal reported")
+		t.Fatal("ApplyTopicPlan: no error, want the filer's refusal reported")
 	}
 	if acceptance.EntityID == "" {
 		t.Fatal("the acceptance reports no entity; a caller cannot see what exists")
@@ -292,130 +330,452 @@ func TestAcceptTopicReportsAFilingFailureAndKeepsWhatItCreated(t *testing.T) {
 	if _, err := store.Entity(ctx, acceptance.EntityID); err != nil {
 		t.Errorf("the entity the acceptance created is gone: %v", err)
 	}
-	answered, err := store.Question(ctx, question.ID)
+	applied, _, err := store.TopicPlan(ctx, "pro-1")
 	if err != nil {
-		t.Fatalf("Question: %v", err)
+		t.Fatalf("TopicPlan: %v", err)
 	}
-	if answered.State != QuestionAnswered {
-		t.Errorf("the question is %s, want answered: the ledger's half committed", answered.State)
+	if applied.State != TopicPlanApplied {
+		t.Errorf("the plan is %s, want applied: the ledger's half committed", applied.State)
 	}
 }
 
-// TestDeclineTopicSuppressesUntilMoreEvidenceStandsBehindIt is §4.13's
-// suppression in the term a topic is measured in.
+// TestApplyTopicPlanSplitsATopicAndMovesItsRecords is §4.13's split: one name
+// covered two things, and the records that belong to the second move with it.
 //
-// A refusal has to stay refused: re-asking the same proposal is the repetition
-// suppression exists to stop. What lifts it is materially new evidence, and
-// for a topic seeded from the catalog that is more sessions than there were
-// when the operator refused — which is why the count is recorded on the
-// question rather than recomputed later.
-func TestDeclineTopicSuppressesUntilMoreEvidenceStandsBehindIt(t *testing.T) {
+// The parent is replaced by two parts rather than carved into, which is
+// §4.8's own shape, and the new part carries the identity, the name and the
+// binding the plan proposed — without which the split would have produced an
+// entity nobody can resolve by the thing it names.
+func TestApplyTopicPlanSplitsATopicAndMovesItsRecords(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newStore(t)
 
-	first, err := store.AskTopic(ctx, manifold(2), Provenance{Actor: "topic-seed"})
-	if err != nil {
-		t.Fatalf("AskTopic: %v", err)
+	parent := mustEntity(t, store, EntityRepository, "manifold")
+	plan := TopicPlan{
+		ProposalID: "pro-split",
+		Operation:  TopicSplit,
+		Targets:    []string{parent.ID},
+		Identity:   "github.com/atyrode/manifold-ui",
+		Entity: &EntityDraft{
+			Subject: NewSubject{Kind: EntityRepository, DisplayName: "manifold-ui"},
+			Binding: []FactInput{{
+				Predicate: PredicateRepositoryRemote,
+				Value:     FactValue{Kind: ValueText, Text: "github.com/atyrode/manifold-ui"},
+			}},
+		},
+		Filings: []FilingDraft{{
+			Record:    frontier.Ref{Type: frontier.EntityFinding, ID: "fnd-ui"},
+			Rationale: "the finding is about the interface, not the engine",
+		}},
+		Reasoning: "the interface and the engine are two projects under one name",
+		By:        Provenance{RunID: "run-9"},
 	}
-	if err := store.DeclineTopic(ctx, first.ID, "operator", ""); !isErr(err, ErrInvalidValue) {
+	if err := store.ProposeTopic(ctx, plan); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
+	}
+
+	filer := &recordingFiler{}
+	acceptance, err := store.ApplyTopicPlan(ctx, "pro-split", "operator", filer)
+	if err != nil {
+		t.Fatalf("ApplyTopicPlan: %v", err)
+	}
+	if acceptance.Resolution == nil || acceptance.Resolution.Kind != ResolutionSplit {
+		t.Fatalf("the acceptance recorded %+v, want a split resolution", acceptance.Resolution)
+	}
+	if acceptance.EntityID == "" || acceptance.EntityID == parent.ID {
+		t.Fatalf("the split produced %q, want a new part", acceptance.EntityID)
+	}
+	created, err := store.Entity(ctx, acceptance.EntityID)
+	if err != nil {
+		t.Fatalf("Entity: %v", err)
+	}
+	if created.Payload.DisplayName != "manifold-ui" {
+		t.Errorf("the new part is %q", created.Payload.DisplayName)
+	}
+	resolved, err := store.ResolveSubject(ctx, "github.com/atyrode/manifold-ui")
+	if err != nil {
+		t.Fatalf("ResolveSubject: %v", err)
+	}
+	if resolved != acceptance.EntityID {
+		t.Errorf("the new identity resolves to %s, want the part %s", resolved, acceptance.EntityID)
+	}
+	binding, bound, err := store.EntityBinding(ctx, acceptance.EntityID)
+	if err != nil || !bound {
+		t.Fatalf("EntityBinding: %v (bound=%v)", err, bound)
+	}
+	if binding.Remote != "github.com/atyrode/manifold-ui" {
+		t.Errorf("the part is bound to %+v", binding)
+	}
+	// The parent stops speaking for itself, which is what tells a reader to
+	// look at the parts.
+	after, err := store.Entity(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("Entity: %v", err)
+	}
+	if after.Role != RoleSplit {
+		t.Errorf("the parent is %s after the split, want split", after.Role)
+	}
+	if len(filer.filed) != 1 || filer.filed[0].EntityID != acceptance.EntityID {
+		t.Fatalf("the filer saw %+v, want the record moved to the new part", filer.filed)
+	}
+	if filer.filed[0].Author != frontier.FilingRun || filer.filed[0].AuthorID != "run-9" {
+		t.Errorf("the moved record is attributed to %s/%q, want the run that judged it",
+			filer.filed[0].Author, filer.filed[0].AuthorID)
+	}
+}
+
+// TestApplyTopicPlanMergesTwoTopics is §4.13's merge: two names turn out to be
+// one thing, and the filings follow without a pass over the frontier.
+//
+// Nothing rewrites an `about` edge, and that is the point: an edge names an
+// entity id and every consumer resolves it through the merge history, so the
+// records under the folded identity are the survivor's afterwards because the
+// ledger says the two are one thing.
+func TestApplyTopicPlanMergesTwoTopics(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newStore(t)
+
+	from := mustEntity(t, store, EntityRepository, "manifold-old")
+	into := mustEntity(t, store, EntityRepository, "manifold")
+	if err := store.ProposeTopic(ctx, TopicPlan{
+		ProposalID: "pro-merge",
+		Operation:  TopicMerge,
+		Targets:    []string{from.ID, into.ID},
+		Reasoning:  "both names are the same checkout under two remotes",
+		By:         Provenance{RunID: "run-3"},
+	}); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
+	}
+	acceptance, err := store.ApplyTopicPlan(ctx, "pro-merge", "operator", nil)
+	if err != nil {
+		t.Fatalf("ApplyTopicPlan: %v", err)
+	}
+	if acceptance.Resolution == nil || acceptance.Resolution.Kind != ResolutionMerge {
+		t.Fatalf("the acceptance recorded %+v, want a merge resolution", acceptance.Resolution)
+	}
+	if acceptance.EntityID != "" {
+		t.Errorf("a merge created entity %q", acceptance.EntityID)
+	}
+	canonical, err := store.Resolve(ctx, from.ID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if canonical != into.ID {
+		t.Errorf("the folded identity resolves to %s, want %s", canonical, into.ID)
+	}
+	topics, err := store.Topics(ctx)
+	if err != nil {
+		t.Fatalf("Topics: %v", err)
+	}
+	if len(topics) != 1 || topics[0].Entity.ID != into.ID {
+		t.Errorf("the ledger lists %d topics after the merge, want only the survivor", len(topics))
+	}
+}
+
+// TestApplyTopicPlanRetiresATopic is §4.13's retirement: a name that should
+// never have existed stops being a place records live, and nothing is deleted.
+func TestApplyTopicPlanRetiresATopic(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newStore(t)
+
+	scratch := mustEntity(t, store, EntityRepository, "tmp")
+	const reason = "a scratch directory is a locator, not a topic"
+	if err := store.ProposeTopic(ctx, TopicPlan{
+		ProposalID: "pro-retire",
+		Operation:  TopicRetire,
+		Targets:    []string{scratch.ID},
+		Reasoning:  reason,
+		By:         Provenance{RunID: "run-4"},
+	}); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
+	}
+	acceptance, err := store.ApplyTopicPlan(ctx, "pro-retire", "operator", nil)
+	if err != nil {
+		t.Fatalf("ApplyTopicPlan: %v", err)
+	}
+	if len(acceptance.Facts) != 1 || acceptance.Facts[0].Value.Enum != LifecycleRetired {
+		t.Fatalf("the acceptance recorded %+v, want one retirement fact", acceptance.Facts)
+	}
+	if acceptance.Facts[0].Payload.Note != reason {
+		t.Errorf("the retirement's reason is %q, want the plan's own words",
+			acceptance.Facts[0].Payload.Note)
+	}
+	if acceptance.Facts[0].Authority.ID != "operator" {
+		t.Errorf("the retirement is attributed to %q", acceptance.Facts[0].Authority.ID)
+	}
+	retired, err := store.EntityRetired(ctx, scratch.ID)
+	if err != nil {
+		t.Fatalf("EntityRetired: %v", err)
+	}
+	if !retired {
+		t.Error("the topic is not retired after its proposal was accepted")
+	}
+	// Nothing is deleted: the entity is still readable, and the topic
+	// listing simply stops offering it as a place to file.
+	if _, err := store.Entity(ctx, scratch.ID); err != nil {
+		t.Errorf("the retired entity is gone: %v", err)
+	}
+	topics, err := store.Topics(ctx)
+	if err != nil {
+		t.Fatalf("Topics: %v", err)
+	}
+	if len(topics) != 0 {
+		t.Errorf("the retired topic is still listed: %+v", topics)
+	}
+}
+
+// TestApplyTopicPlanRefusesATargetTheLedgerHasMovedPast is the refusal a plan
+// needs because the operator rules later than the run proposed.
+//
+// A topic that has been merged away or retired since the proposal was
+// published is not the thing the plan reasoned about, and applying against it
+// would either fail deep inside §4.8's checks or act on an identity that no
+// longer speaks for anything. The refusal names the state, which is what tells
+// the operator to let Babel look again.
+func TestApplyTopicPlanRefusesATargetTheLedgerHasMovedPast(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newStore(t)
+
+	folded := mustEntity(t, store, EntityRepository, "manifold-old")
+	survivor := mustEntity(t, store, EntityRepository, "manifold")
+	scratch := mustEntity(t, store, EntityRepository, "tmp")
+
+	if err := store.ProposeTopic(ctx, TopicPlan{
+		ProposalID: "pro-retire-folded",
+		Operation:  TopicRetire,
+		Targets:    []string{folded.ID},
+		Reasoning:  "this name was a mistake",
+	}); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
+	}
+	if err := store.ProposeTopic(ctx, TopicPlan{
+		ProposalID: "pro-retire-twice",
+		Operation:  TopicRetire,
+		Targets:    []string{scratch.ID},
+		Reasoning:  "a scratch directory is not a topic",
+	}); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
+	}
+
+	if _, err := store.MergeEntities(ctx, MergeInput{
+		SourceIDs: []string{folded.ID}, TargetID: survivor.ID,
+		Actor: "operator", Reason: "they were one repository",
+	}); err != nil {
+		t.Fatalf("MergeEntities: %v", err)
+	}
+	if err := store.RetireEntity(ctx, scratch.ID, "operator", "already handled"); err != nil {
+		t.Fatalf("RetireEntity: %v", err)
+	}
+
+	merged := store.mustRefuse(ctx, t, "pro-retire-folded")
+	if !strings.Contains(merged.Error(), survivor.ID) {
+		t.Errorf("the refusal is %q and does not name what the target became", merged.Error())
+	}
+	gone := store.mustRefuse(ctx, t, "pro-retire-twice")
+	if !strings.Contains(gone.Error(), "retired") {
+		t.Errorf("the refusal is %q and does not say the topic was retired", gone.Error())
+	}
+	// Refusing is not ruling: both plans are still open, so the operator
+	// can decline them once Babel has looked again.
+	for _, id := range []string{"pro-retire-folded", "pro-retire-twice"} {
+		plan, _, err := store.TopicPlan(ctx, id)
+		if err != nil {
+			t.Fatalf("TopicPlan(%s): %v", id, err)
+		}
+		if plan.State != TopicPlanOpen {
+			t.Errorf("plan %s is %s after a refused application", id, plan.State)
+		}
+	}
+}
+
+// mustRefuse applies a plan expecting the ledger to refuse it as stale.
+func (s *Store) mustRefuse(ctx context.Context, t *testing.T, proposalID string) error {
+	t.Helper()
+	_, err := s.ApplyTopicPlan(ctx, proposalID, "operator", nil)
+	if !isErr(err, ErrConflict) {
+		t.Fatalf("ApplyTopicPlan(%s): %v, want ErrConflict", proposalID, err)
+	}
+	return err
+}
+
+// TestProposeTopicRefusesAPlanThatCouldNeverBeApplied is the shape check, and
+// it is a refusal at the door rather than a branch in the application: a merge
+// carrying a proposed entity and a create naming an existing topic are both
+// plans no acceptance could perform.
+func TestProposeTopicRefusesAPlanThatCouldNeverBeApplied(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newStore(t)
+	entity := mustEntity(t, store, EntityRepository, "manifold")
+
+	merge := TopicPlan{
+		ProposalID: "pro-bad",
+		Operation:  TopicMerge,
+		Targets:    []string{entity.ID},
+		Reasoning:  "one target is not a merge",
+	}
+	for _, probe := range []struct {
+		name string
+		plan func(TopicPlan) TopicPlan
+	}{
+		{"a merge with one target", func(p TopicPlan) TopicPlan { return p }},
+		{"a merge that folds a topic into itself", func(p TopicPlan) TopicPlan {
+			p.Targets = []string{entity.ID, entity.ID}
+			return p
+		}},
+		{"a merge that creates an entity", func(p TopicPlan) TopicPlan {
+			p.Targets = []string{entity.ID, entity.ID + "-other"}
+			p.Entity = &EntityDraft{Subject: NewSubject{Kind: EntityRepository, DisplayName: "x"}}
+			return p
+		}},
+		{"a create that names an existing topic", func(p TopicPlan) TopicPlan {
+			p.Operation = TopicCreate
+			p.Identity = "github.com/atyrode/x"
+			p.Entity = &EntityDraft{Subject: NewSubject{Kind: EntityRepository, DisplayName: "x"}}
+			return p
+		}},
+		{"a create with no identity", func(p TopicPlan) TopicPlan {
+			p.Operation = TopicCreate
+			p.Targets = nil
+			p.Entity = &EntityDraft{Subject: NewSubject{Kind: EntityRepository, DisplayName: "x"}}
+			return p
+		}},
+		{"a retirement that files records", func(p TopicPlan) TopicPlan {
+			p.Operation = TopicRetire
+			p.Filings = []FilingDraft{{
+				Record:    frontier.Ref{Type: frontier.EntityFinding, ID: "fnd-1"},
+				Rationale: "why",
+			}}
+			return p
+		}},
+		{"an operation outside the vocabulary", func(p TopicPlan) TopicPlan {
+			p.Operation = "rename"
+			return p
+		}},
+	} {
+		t.Run(probe.name, func(t *testing.T) {
+			if err := store.ProposeTopic(ctx, probe.plan(merge)); !isErr(err, ErrInvalidValue) {
+				t.Fatalf("ProposeTopic: %v, want ErrInvalidValue", err)
+			}
+		})
+	}
+
+	// A target the ledger does not hold is refused by name rather than
+	// carried until the operator rules on it.
+	if err := store.ProposeTopic(ctx, TopicPlan{
+		ProposalID: "pro-absent",
+		Operation:  TopicRetire,
+		Targets:    []string{"ent_absent"},
+		Reasoning:  "it should not exist",
+	}); !isErr(err, ErrUnknownRecord) {
+		t.Fatalf("a plan about an unknown topic: %v, want ErrUnknownRecord", err)
+	}
+}
+
+// TestDeclineTopicPlanSuppressesUntilMoreEvidenceStandsBehindIt is §4.13's
+// suppression in the term a topic is measured in.
+//
+// A refusal has to stay refused: re-proposing the same thing is the repetition
+// suppression exists to stop. What lifts it is materially new evidence, and
+// for a repository that is more sessions than there were when the operator
+// refused — which is why the count is recorded on the plan rather than
+// recomputed later.
+func TestDeclineTopicPlanSuppressesUntilMoreEvidenceStandsBehindIt(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newStore(t)
+
+	if err := store.ProposeTopic(ctx, manifold("pro-1", 2)); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
+	}
+	if err := store.DeclineTopicPlan(ctx, "pro-1", "operator", ""); !isErr(err, ErrInvalidValue) {
 		t.Errorf("decline with no reason: %v, want ErrInvalidValue", err)
 	}
 	const reason = "two scratch sessions are not a project"
-	if err := store.DeclineTopic(ctx, first.ID, "operator", reason); err != nil {
-		t.Fatalf("DeclineTopic: %v", err)
+	if err := store.DeclineTopicPlan(ctx, "pro-1", "operator", reason); err != nil {
+		t.Fatalf("DeclineTopicPlan: %v", err)
 	}
 
-	if _, err := store.AskTopic(ctx, manifold(2), Provenance{Actor: "topic-seed"}); !isErr(err, ErrSuppressed) {
-		t.Fatalf("re-ask with the same evidence: %v, want ErrSuppressed", err)
+	if err := store.ProposeTopic(ctx, manifold("pro-2", 2)); !isErr(err, ErrSuppressed) {
+		t.Fatalf("re-proposal with the same evidence: %v, want ErrSuppressed", err)
 	}
-	if _, err := store.AskTopic(ctx, manifold(1), Provenance{Actor: "topic-seed"}); !isErr(err, ErrSuppressed) {
-		t.Fatalf("re-ask with less evidence: %v, want ErrSuppressed", err)
+	if err := store.ProposeTopic(ctx, manifold("pro-3", 1)); !isErr(err, ErrSuppressed) {
+		t.Fatalf("re-proposal with less evidence: %v, want ErrSuppressed", err)
 	}
-
-	revived, err := store.AskTopic(ctx, manifold(9), Provenance{Actor: "topic-seed"})
-	if err != nil {
-		t.Fatalf("re-ask with more sessions: %v", err)
-	}
-	if revived.PromptedByID != first.ID {
-		t.Errorf("the new question was prompted by %q, want the refusal it revisits", revived.PromptedByID)
+	if err := store.ProposeTopic(ctx, manifold("pro-4", 9)); err != nil {
+		t.Fatalf("re-proposal with more sessions: %v", err)
 	}
 
 	// The refusal and its reason stay readable: §4.13 has the triage recipe
 	// read why topics were declined as evidence for its next proposals.
-	history, err := store.QuestionHistory(ctx, first.ID)
+	declined, err := store.DeclinedTopicPlans(ctx, 0)
 	if err != nil {
-		t.Fatalf("QuestionHistory: %v", err)
+		t.Fatalf("DeclinedTopicPlans: %v", err)
 	}
-	var kept bool
-	for _, event := range history {
-		if event.State == QuestionDeclined && event.Payload.Note == reason && event.Actor == "operator" {
-			kept = true
-		}
+	if len(declined) != 1 || declined[0].ProposalID != "pro-1" {
+		t.Fatalf("the declined plans are %+v, want the one he refused", declined)
 	}
-	if !kept {
-		t.Errorf("the decline's reason is not in the history verbatim: %+v", history)
+	if declined[0].Reason != reason || declined[0].RuledBy != "operator" {
+		t.Errorf("the refusal reads back as %q by %q", declined[0].Reason, declined[0].RuledBy)
+	}
+	if declined[0].State != TopicPlanDeclined {
+		t.Errorf("the declined plan is %s", declined[0].State)
 	}
 }
 
-// TestTopicProposalsListsOnlyWhatAwaitsTheOperator keeps the inbox honest: an
-// accepted proposal is an entity and a declined one is a refusal, and offering
-// either again would be asking a question that has an answer.
-func TestTopicProposalsListsOnlyWhatAwaitsTheOperator(t *testing.T) {
+// TestOpenTopicPlansListsOnlyWhatAwaitsTheOperator keeps the rail honest: an
+// applied plan is an entity and a declined one is a refusal, and offering
+// either again would be asking for a ruling that has been given.
+func TestOpenTopicPlansListsOnlyWhatAwaitsTheOperator(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newStore(t)
 
-	accepted, err := store.AskTopic(ctx, manifold(32), Provenance{Actor: "topic-seed"})
-	if err != nil {
-		t.Fatalf("AskTopic: %v", err)
+	if err := store.ProposeTopic(ctx, manifold("pro-accept", 32)); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
 	}
-	other := manifold(3)
-	other.Name, other.Identity = "dotfiles", "github.com/atyrode/dotfiles"
-	other.Aliases, other.Records = nil, nil
-	other.Binding = []FactInput{{
-		Predicate: PredicateRepositoryRemote,
-		Value:     FactValue{Kind: ValueText, Text: "github.com/atyrode/dotfiles"},
-	}}
-	declined, err := store.AskTopic(ctx, other, Provenance{Actor: "topic-seed"})
-	if err != nil {
-		t.Fatalf("AskTopic: %v", err)
+	if err := store.ProposeTopic(ctx,
+		namedRepository("pro-decline", "dotfiles", "github.com/atyrode/dotfiles", 3)); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
 	}
-	third := manifold(7)
-	third.Name, third.Identity = "nixos", "github.com/atyrode/nixos"
-	third.Aliases, third.Records = nil, nil
-	third.Binding = []FactInput{{
-		Predicate: PredicateRepositoryRemote,
-		Value:     FactValue{Kind: ValueText, Text: "github.com/atyrode/nixos"},
-	}}
-	if _, err := store.AskTopic(ctx, third, Provenance{Actor: "topic-seed"}); err != nil {
-		t.Fatalf("AskTopic: %v", err)
+	if err := store.ProposeTopic(ctx,
+		namedRepository("pro-open", "nixos", "github.com/atyrode/nixos", 7)); err != nil {
+		t.Fatalf("ProposeTopic: %v", err)
 	}
 
-	if _, err := store.AcceptTopic(ctx, accepted.ID, "operator", &recordingFiler{}); err != nil {
-		t.Fatalf("AcceptTopic: %v", err)
+	acceptance, err := store.ApplyTopicPlan(ctx, "pro-accept", "operator", &recordingFiler{})
+	if err != nil {
+		t.Fatalf("ApplyTopicPlan: %v", err)
 	}
-	if err := store.DeclineTopic(ctx, declined.ID, "operator", "not a project"); err != nil {
-		t.Fatalf("DeclineTopic: %v", err)
+	if err := store.DeclineTopicPlan(ctx, "pro-decline", "operator", "not a project"); err != nil {
+		t.Fatalf("DeclineTopicPlan: %v", err)
 	}
 
-	open, err := store.TopicProposals(ctx)
+	open, err := store.OpenTopicPlans(ctx)
 	if err != nil {
-		t.Fatalf("TopicProposals: %v", err)
+		t.Fatalf("OpenTopicPlans: %v", err)
 	}
-	if len(open) != 1 || open[0].Proposal.Name != "nixos" {
-		t.Fatalf("the inbox offers %d proposals, want only nixos: %+v", len(open), open)
+	if len(open) != 1 || open[0].Name() != "nixos" {
+		t.Fatalf("the rail offers %d plans, want only nixos: %+v", len(open), open)
 	}
-	if open[0].Proposal.Sessions != 7 || open[0].Proposal.Identity != "github.com/atyrode/nixos" {
-		t.Errorf("the proposal reads back as %+v", open[0].Proposal)
+	if open[0].Sessions != 7 || open[0].Identity != "github.com/atyrode/nixos" {
+		t.Errorf("the plan reads back as %+v", open[0])
+	}
+	if open[0].ProposalID != "pro-open" {
+		t.Errorf("the plan is keyed on %q, want the proposal record", open[0].ProposalID)
 	}
 
-	// The accepted one still says what it produced, which is what makes an
-	// answered proposal traceable to the subject it created.
-	answered, err := store.TopicQuestion(ctx, accepted.ID)
+	// The applied one still says what it produced, which is what makes an
+	// accepted proposal traceable to the subject it created.
+	topics, err := store.Topics(ctx)
 	if err != nil {
-		t.Fatalf("TopicQuestion: %v", err)
+		t.Fatalf("Topics: %v", err)
 	}
-	if answered.EntityID == "" {
-		t.Error("the accepted proposal names no entity")
+	var named string
+	for _, topic := range topics {
+		if topic.Entity.ID == acceptance.EntityID {
+			named = topic.ProposalID
+		}
+	}
+	if named != "pro-accept" {
+		t.Errorf("the created topic names proposal %q, want the one he accepted", named)
 	}
 }
 

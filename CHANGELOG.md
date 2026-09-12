@@ -191,6 +191,51 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   receipts are ordinary receipts and name which of the three answers it
   reached; a filing is not a review, so it consumes no review cap and clears
   no coverage obligation (SPEC §4.13, §4.12).
+- **Everything about a topic goes through Babel.** A new topic, a split, a
+  merge and a retirement are one output kind: a *topic proposal* a run
+  publishes through the ordinary chain, reviewed by Babel's reviewers, scored
+  and commented on in the feed like every other proposal, and applied by the
+  ruling the operator gives it — accept creates, splits, merges or retires
+  and files the records the plan named; reject keeps his reason verbatim and
+  suppresses the same proposal until more evidence stands behind it than
+  there was when he refused. The plan hangs off the proposal record it
+  explains (`reality_topic_plan`, one per proposal, immutable) and applies
+  through §4.8's own acts, so a split's new part carries the identity and the
+  binding the run proposed and the records that belong to it move with it,
+  while a plan whose topic was merged away or retired since it was published
+  is refused with the state named rather than applied against a subject that
+  no longer speaks for itself. The surfaces that let a topic be changed by
+  hand are gone: `POST /api/topics/{id}/retire`, `/api/topics/merge`,
+  `/api/topics/split`, `/api/topics/accept`, `/api/topics/decline` and
+  `babel topics seed` no longer exist, and the topic question kind with them,
+  because a topic changed by hand is a change Babel did not see, cannot
+  explain and cannot learn from. What the repository scan produces is
+  evidence handed to the filing run — the identities this host observes and
+  the ledger does not name — never a proposal it minted. Interest is the one
+  direct act left (`POST /api/topics/{id}/interest`), because a stance is a
+  fact about the operator rather than something Babel proposed. Observations
+  leave the feed with the same reading: they are the evidence a finding
+  consolidates, so `?kind=observation` is refused by name and the front page
+  lists hypotheses, findings, proposals and questions (SPEC §4.13, §4.8,
+  §8.7).
+- **A topic change is a proposal Babel makes.** The filing pass no longer
+  raises a topic *question* and nothing mints a topic from a heuristic: a new
+  topic, a split, a merge and a retirement are one output kind with an
+  `operation`, produced by a run through Babel's ordinary chain — a claim, the
+  evidence under it, the consolidation, and a proposal titled "New topic:
+  manifold" or "Split t/manifold: …" that the operator rules on the way he
+  rules on every other proposal, with the ledger plan his acceptance applies
+  hanging off it. The pass is shown two new kinds of material and they are
+  deliberately not the same thing as the entities that exist: the repository
+  identities this host observed that nothing names, with the sessions and
+  checkouts behind them, are *evidence* for a `create` — and only when the
+  record under review is about one of them — and the operator's own asks
+  (`babel tell "topic t/manifold: …"`) are answered rather than obeyed, with
+  the proposal they call for or with a reasoned no that lands as a reply on
+  what he said. A target or an ask the pass was not shown is refused as a
+  malformed result rather than turned into a new topic, which is §4.8's rule
+  that only the operator creates identity, held at the one seam a typo could
+  otherwise cross (SPEC §4.13).
 
 ### Changed
 

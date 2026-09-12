@@ -128,7 +128,11 @@ func (s QuestionState) live() bool {
 // for different reasons are different questions.
 type QuestionKind string
 
-// The question kinds: §4.8's seven, and §4.13's topic proposal.
+// The question kinds, which are §4.8's seven. §4.13's topic proposal is not
+// among them: a topic change is an ordinary published proposal record the
+// operator rules on (operator direction 2026-09-12, second reading), so there
+// is no question kind whose subject does not exist yet and every question
+// here is about entities the ledger already holds.
 const (
 	KindAcquireContext  QuestionKind = "acquire-context"
 	KindRefreshStale    QuestionKind = "refresh-stale"
@@ -137,24 +141,12 @@ const (
 	KindSetFocus        QuestionKind = "set-focus"
 	KindClarifyAnswer   QuestionKind = "clarify-answer"
 	KindFactCheckDrift  QuestionKind = "fact-check-drift"
-	// QuestionTopic is §4.13's topic proposal: a run met records it
-	// believes are about one thing the ledger does not name, and asks the
-	// operator to create it. It is a question kind rather than a record of
-	// its own because §4.8's rule is what makes it legitimate — a name a
-	// run cannot resolve is a question, and only the operator creates an
-	// entity — so it ranks, dedupes, suppresses and declines exactly as
-	// every other question does.
-	//
-	// It is the one kind whose targets are empty: the entity it is about
-	// does not exist yet, which is the whole point, so its subject matter
-	// is keyed by the proposed identity instead.
-	QuestionTopic QuestionKind = "topic"
 )
 
 func (k QuestionKind) valid() bool {
 	switch k {
 	case KindAcquireContext, KindRefreshStale, KindResolveConflict, KindResolveEntity,
-		KindSetFocus, KindClarifyAnswer, KindFactCheckDrift, QuestionTopic:
+		KindSetFocus, KindClarifyAnswer, KindFactCheckDrift:
 		return true
 	}
 	return false
@@ -333,12 +325,6 @@ type QuestionInput struct {
 	MaterialEvidence  []string
 	AvoidedCost       int
 	Payload           QuestionPayload
-
-	// identity is the subject matter of a question about something the
-	// ledger does not name yet. It is unexported because only AskTopic sets
-	// it: every other question is about entities that exist, and their
-	// subject matter is those entities.
-	identity string
 }
 
 func (in QuestionInput) validate() error {
@@ -358,15 +344,7 @@ func (in QuestionInput) validate() error {
 		return fmt.Errorf("%w: expected authority %s cannot authorize an answer",
 			ErrNotAuthoritative, in.ExpectedAuthority)
 	}
-	// A topic question is the one kind whose subject does not exist yet
-	// (§4.13), so its identity stands where its targets would: a proposal
-	// with neither names nothing at all and is refused for the same reason
-	// a targetless question of any other kind is.
-	if in.Kind == QuestionTopic {
-		if in.identity == "" {
-			return fmt.Errorf("%w: topic question names no proposed identity", ErrInvalidValue)
-		}
-	} else if len(in.TargetEntityIDs) == 0 {
+	if len(in.TargetEntityIDs) == 0 {
 		return fmt.Errorf("%w: question names no target entity", ErrInvalidValue)
 	}
 	for _, p := range in.TargetPredicates {
@@ -388,15 +366,8 @@ func (in QuestionInput) validate() error {
 // dedupeKey derives the question's subject-matter key from its canonical
 // targets. The caller's entity IDs are resolved first, so a question about a
 // merged-away identity dedupes against one about the identity it merged into.
-//
-// The identity is the topic proposal's key and is empty for every other kind:
-// two proposals of one repository are one question however differently the two
-// runs worded them, and a question about entities is keyed by those entities.
-func dedupeKey(kind QuestionKind, identity string, entityIDs []string, predicates []Predicate) string {
+func dedupeKey(kind QuestionKind, entityIDs []string, predicates []Predicate) string {
 	parts := []string{string(kind)}
-	if identity != "" {
-		parts = append(parts, identity)
-	}
 	parts = append(parts, sortedUnique(entityIDs)...)
 	names := make([]string, 0, len(predicates))
 	for _, p := range predicates {

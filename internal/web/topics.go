@@ -20,12 +20,9 @@ package web
 // knows to revisit them.
 
 import (
-	"context"
 	"path"
 	"sort"
 	"strings"
-
-	"github.com/atyrode/babel/internal/frontier"
 )
 
 // topicBinding is what a topic name is bound to: the real thing a reader can
@@ -200,93 +197,4 @@ func sortedKeys(set map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// seedTopic is one repository this host can observe, with the records stage 1
-// would file under it (§4.13).
-//
-// It is the seeder's input and nothing else's. The feed no longer files
-// anything by repository identity — a post's topics are the ledger entities it
-// is filed under — so what this derivation is for is raising the topic
-// questions the operator answers: the identity Babel proposes, the binding it
-// proposes for it, and the evidence it is proposing on.
-type seedTopic struct {
-	// Identity is the repository's own identity, preferring the remote, and
-	// is the dedup key a topic question is raised under.
-	Identity string
-	Remote   string
-	Name     string
-	// Kind is left empty here: this derivation observes repositories, and
-	// the entity kind a question proposes belongs to the ledger's own
-	// vocabulary rather than to a projection over the session catalog.
-	Kind  string
-	Paths []string
-	// Sessions is how many of this host's sessions carry the identity, and
-	// Checkouts how many workspaces resolved to it. Both are the proposal's
-	// evidence weight: §4.13 lifts a declined proposal's suppression on
-	// materially new evidence, which for a repository is more sessions than
-	// when it was declined.
-	Sessions  int
-	Checkouts int
-	// Records are the records stage 1 would file under the topic: the ones
-	// whose evidence walks back to a session in this repository.
-	Records []frontier.Ref
-}
-
-// seedTopics derives what §4.13's seeding would propose: one entry per
-// repository this host observes, with the records that cite it.
-//
-// It is the one caller of the heuristic derivation left. The feed reads
-// filings, the topics page reads the ledger, and this reads the session
-// catalog — which is the only one of the three that can observe a repository
-// nobody has created an entity for, and therefore the only one that can
-// propose one.
-//
-// A name with no binding is skipped rather than proposed. An ambiguous name is
-// two repositories this host cannot tell apart, and proposing an entity for it
-// would ask the operator to accept a topic that is not one thing.
-func (s *Server) seedTopics(ctx context.Context) ([]seedTopic, error) {
-	sessions := s.sessionsBySourceID(ctx)
-	corpus, err := s.readCorpus(ctx)
-	if err != nil {
-		return nil, err
-	}
-	bindings := topicBindings(sessions)
-	counts := map[string]int{}
-	for _, rows := range sessions {
-		for _, row := range rows {
-			if name := topicOf(row); name != "" {
-				counts[name]++
-			}
-		}
-	}
-	records := map[string][]frontier.Ref{}
-	for id, names := range corpus.topics(sessions) {
-		kind, known := kindOfRecordID(id)
-		if !known {
-			continue
-		}
-		for _, name := range names {
-			records[name] = append(records[name], frontier.Ref{Type: kind, ID: id})
-		}
-	}
-	out := make([]seedTopic, 0, len(bindings))
-	for name, binding := range bindings {
-		if binding == nil {
-			continue
-		}
-		refs := records[name]
-		sort.Slice(refs, func(a, b int) bool { return refs[a].ID < refs[b].ID })
-		out = append(out, seedTopic{
-			Identity:  binding.Identity,
-			Remote:    binding.Remote,
-			Name:      name,
-			Paths:     binding.Paths,
-			Sessions:  counts[name],
-			Checkouts: len(binding.Paths),
-			Records:   refs,
-		})
-	}
-	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
-	return out, nil
 }

@@ -12,17 +12,26 @@ import (
 	"github.com/atyrode/babel/internal/frontier"
 )
 
-// topicIdentityKey derives a proposal's opaque subject-matter key. It is
-// digested for aliasKey's reason: a remote and a checkout directory are
-// operator vocabulary, and §9 keeps them out of every plaintext column.
-func topicIdentityKey(identity string) string {
-	return digestKey("babel/reality/topic", normalizeAlias(identity))
+// topicSubjectKey derives a plan's opaque subject-matter key. It is digested
+// for aliasKey's reason: a remote and a checkout directory are operator
+// vocabulary, and §9 keeps them out of every plaintext column.
+func topicSubjectKey(subject string) string {
+	return digestKey("babel/reality/topic", subject)
 }
 
-// AskTopic raises §4.13's topic question: a run proposes an identity, and the
-// operator is the only one who can create it.
+// ProposeTopic attaches §4.13's plan to the proposal record a run published.
 //
-// Three refusals matter, and they are different from one another.
+// The run wrote an ordinary proposal through the ordinary chain and the
+// operator will rule on it like any other; this is what that ruling would
+// *do*, recorded beside it so that acceptance has something to apply. Nothing
+// here creates, merges, splits or retires anything — §4.8's rule stands
+// unchanged, and only the operator's acceptance applies a plan.
+//
+// Four refusals matter, and they are different from one another.
+//
+// A proposal that already carries a plan is ErrConflict. The plan is
+// immutable and one per proposal: a run that changes its mind publishes
+// another proposal, which is what the frontier's revision chain is for.
 //
 // An identity that already binds a live entity is ErrTopicBound, and the error
 // names that entity. The ledger already holds the thing; what the caller has
@@ -30,168 +39,309 @@ func topicIdentityKey(identity string) string {
 // and minting a second identity for one thing is exactly the confusion §4.8's
 // merge history exists to undo.
 //
-// An identity already proposed and still open is ErrDuplicateQuestion, through
-// the same deduplication every other question uses: the proposal is keyed by
-// identity rather than by wording, so two runs that met the same repository
-// raise one question.
+// A subject matter already proposed and unruled is ErrConflict through the
+// same key: two runs that met the same repository, or proposed the same
+// merge, produce one thing for the operator to rule on rather than two.
 //
-// An identity the operator declined is ErrSuppressed until materially new
+// A subject matter the operator declined is ErrSuppressed until materially new
 // evidence exists, and for a topic §4.13's "materially new" is measurable:
 // more sessions than stood behind it when he refused. The count is recorded on
-// the proposal, so a re-ask with the same or less evidence is the repetition
-// suppression exists to stop, and one with more supersedes the refusal and
-// links to it.
-func (s *Store) AskTopic(ctx context.Context, in TopicProposal, by Provenance) (Question, error) {
-	if err := in.validate(); err != nil {
-		return Question{}, err
-	}
-	bound, err := s.EntityBoundTo(ctx, in.Identity)
+// the plan, so a re-proposal with the same or less evidence is the repetition
+// suppression exists to stop.
+func (s *Store) ProposeTopic(ctx context.Context, plan TopicPlan) error {
+	admitted, key, err := s.admitTopicPlan(ctx, plan, true)
 	if err != nil {
-		return Question{}, err
+		return err
 	}
-	if bound != "" {
-		// The identity stays out of the message for §9's reason; the
-		// entity id is the caller's handle on what already holds it.
-		return Question{}, fmt.Errorf("%w: entity %s", ErrTopicBound, bound)
-	}
-	for _, entityID := range in.Considered {
-		if err := requireRow(ctx, s.db, "reality_entity", "id", entityID); err != nil {
-			return Question{}, fmt.Errorf("reality: considered entity: %w", err)
-		}
-	}
-	key := topicIdentityKey(in.Identity)
-	if err := s.checkTopicEvidence(ctx, key, in.Sessions); err != nil {
-		return Question{}, err
-	}
-
-	payload := topicPayload{
-		Name:       in.Name,
-		Identity:   in.Identity,
-		Aliases:    in.Aliases,
-		Binding:    in.Binding,
-		Reasoning:  in.Reasoning,
-		Records:    in.Records,
-		Considered: sortedUnique(in.Considered),
-		Sessions:   in.Sessions,
-		By:         by,
-	}
-	encoded, err := marshalPayload(payload)
-	if err != nil {
-		return Question{}, err
-	}
-
-	var record Question
-	err = s.transact(ctx, func(tx *sql.Tx) error {
-		created, err := s.ask(ctx, tx, QuestionInput{
-			Kind:              QuestionTopic,
-			Class:             ClassMaintenance,
-			Sensitivity:       SensitivityRoutine,
-			ExpectedAuthority: AuthorityOperator,
-			MaterialEvidence:  topicEvidence(key, in.Sessions),
-			Payload: QuestionPayload{
-				Prompt:   topicPrompt(in),
-				WhyAsked: in.Reasoning,
-			},
-			identity: key,
-		}, by.actor())
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO reality_topic_proposal(
-			question_id, identity_key, entity_kind, evidence_weight, created_at, payload_json)
-			VALUES(?, ?, ?, ?, ?, ?)`,
-			created.ID, key, string(in.Kind), in.Sessions,
-			formatTime(created.CreatedAt), encoded); err != nil {
-			return fmt.Errorf("reality: insert topic proposal: %w", err)
-		}
-		record = created
-		return nil
+	plan = admitted
+	encoded, err := marshalPayload(topicPayload{
+		Identity:   plan.Identity,
+		Targets:    plan.Targets,
+		Entity:     plan.Entity,
+		Filings:    plan.Filings,
+		Considered: sortedUnique(plan.Considered),
+		Reasoning:  plan.Reasoning,
+		By:         plan.By,
 	})
 	if err != nil {
-		return Question{}, err
+		return err
 	}
-	// Nothing is staged. A topic question is a question, and publish.go
-	// says why a question does not travel: Babel derives it, and a second
-	// machine holding the same ledger and the same catalog proposes the
-	// same topic itself. What no other machine can produce is the
-	// operator's acceptance, and that publishes the entity and its facts.
-	return record, nil
+	// Nothing is staged. A plan is Babel's reasoning about a proposal
+	// record that publishes on its own terms, and publish.go says why a
+	// derivation does not travel: a second machine holding the same ledger
+	// and the same proposal derives it for itself. What no other machine
+	// can produce is the operator's acceptance, and that publishes the
+	// entity, the resolution and the facts.
+	return s.transact(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO reality_topic_plan(
+			proposal_id, subject_key, operation, entity_kind, evidence_weight,
+			created_at, payload_json) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			plan.ProposalID, key, string(plan.Operation), string(plan.Kind()),
+			plan.Sessions, formatTime(s.now()), encoded); err != nil {
+			return fmt.Errorf("reality: insert topic plan: %w", err)
+		}
+		return nil
+	})
 }
 
-// topicPrompt is what the inbox shows. It is prose about the corpus, so it
-// lives in the sealed payload with the reasoning.
-func topicPrompt(in TopicProposal) string {
-	return fmt.Sprintf("Is %q a %s worth naming as a topic?", in.Name, in.Kind)
+// CheckTopicPlan answers whether ProposeTopic would take this plan, and
+// writes nothing.
+//
+// It exists because of write ordering rather than caution. A plan is keyed by
+// the proposal record that carries it, so a run has to publish the whole
+// chain — hypothesis, observation, finding, proposal — before it can record
+// the plan at all; a refusal discovered at that point has already littered
+// the frontier with records explaining a proposal the ledger will not accept.
+// Asking first is what lets a run skip the topic and write nothing.
+//
+// ProposalID is ignored, because there is no proposal yet. Every other rule
+// is the same rule ProposeTopic applies, shared rather than restated: the
+// shape, the credential refusals, the targets, the already-bound identity,
+// the open duplicate and the suppressed decline. A plan admitted here can
+// still be refused at ProposeTopic — another run may propose the same
+// identity in between — and that refusal is the honest one, because by then
+// two runs really did race.
+func (s *Store) CheckTopicPlan(ctx context.Context, plan TopicPlan) error {
+	if strings.TrimSpace(plan.ProposalID) == "" {
+		// A placeholder stands in for the record the caller has not
+		// written yet, so the shape check answers about the plan rather
+		// than about the absence of an identifier.
+		plan.ProposalID = "pending-proposal"
+	}
+	_, _, err := s.admitTopicPlan(ctx, plan, false)
+	return err
 }
 
-// topicEvidence states what stands behind a proposal in terms a later ask can
-// be compared against. The identity's digest is always present, so a repeat
-// with nothing new offers nothing new; the session count is the term that
-// moves when the world says more than it did.
-func topicEvidence(identityKey string, sessions int) []string {
-	return []string{identityKey, fmt.Sprintf("sessions:%d", sessions)}
-}
-
-// checkTopicEvidence enforces §4.13's suppression in the term a topic is
-// measured in. Question.checkDuplicate already refuses a re-ask that offers no
-// new evidence key at all; this refuses one that offers a *smaller* count,
-// which the generic comparison cannot see because a different number is a
-// different string.
-func (s *Store) checkTopicEvidence(ctx context.Context, identityKey string, sessions int) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT p.question_id, p.evidence_weight,
-		(SELECT e.state FROM reality_question_event e WHERE e.question_id = p.question_id
-			ORDER BY e.seq DESC LIMIT 1)
-		FROM reality_topic_proposal p WHERE p.identity_key = ?
-		ORDER BY p.created_at, p.question_id`, identityKey)
+// admitTopicPlan applies §4.13's admission rule and reports the plan with its
+// targets stated canonically, beside the subject-matter key it would be
+// stored under. It writes nothing; keyed says whether the proposal record's
+// own uniqueness is part of the question, which it is not for a pre-check.
+func (s *Store) admitTopicPlan(ctx context.Context, plan TopicPlan, keyed bool) (
+	TopicPlan, string, error) {
+	if err := plan.validate(); err != nil {
+		return TopicPlan{}, "", err
+	}
+	if keyed {
+		if _, found, err := s.TopicPlan(ctx, plan.ProposalID); err != nil {
+			return TopicPlan{}, "", err
+		} else if found {
+			return TopicPlan{}, "", fmt.Errorf("%w: proposal %s already carries a topic plan",
+				ErrConflict, plan.ProposalID)
+		}
+	}
+	targets, err := s.resolveTargets(ctx, plan)
 	if err != nil {
-		return fmt.Errorf("reality: read topic proposals: %w", err)
+		return TopicPlan{}, "", err
+	}
+	plan.Targets = targets
+	if plan.Operation.creates() {
+		bound, err := s.EntityBoundTo(ctx, plan.Identity)
+		if err != nil {
+			return TopicPlan{}, "", err
+		}
+		if bound != "" {
+			// The identity stays out of the message for §9's reason;
+			// the entity id is the caller's handle on what holds it.
+			return TopicPlan{}, "", fmt.Errorf("%w: entity %s", ErrTopicBound, bound)
+		}
+	}
+	for _, entityID := range plan.Considered {
+		if err := requireRow(ctx, s.db, "reality_entity", "id", entityID); err != nil {
+			return TopicPlan{}, "", fmt.Errorf("reality: considered entity: %w", err)
+		}
+	}
+	key := topicSubjectKey(plan.subjectMatter())
+	if err := s.checkTopicEvidence(ctx, key, plan.Sessions); err != nil {
+		return TopicPlan{}, "", err
+	}
+	return plan, key, nil
+}
+
+// resolveTargets checks that every entity a plan acts on exists and states it
+// canonically, so a plan raised about a name that a merge has since folded
+// away is applied to the identity that speaks for it.
+func (s *Store) resolveTargets(ctx context.Context, plan TopicPlan) ([]string, error) {
+	out := make([]string, 0, len(plan.Targets))
+	for _, target := range plan.Targets {
+		canonical, err := s.Resolve(ctx, target)
+		if err != nil {
+			return nil, fmt.Errorf("reality: topic target: %w", err)
+		}
+		out = append(out, canonical)
+	}
+	if plan.Operation == TopicMerge && len(out) == 2 && out[0] == out[1] {
+		return nil, fmt.Errorf("%w: these two names are already one topic", ErrConflict)
+	}
+	return out, nil
+}
+
+// checkTopicEvidence enforces §4.13's suppression, and the duplicate rule that
+// keeps two runs' identical proposals one thing to rule on.
+//
+// A plan the operator has not ruled on is a duplicate: the same repository, or
+// the same merge, is one decision however differently two runs worded the
+// proposals carrying it. A plan he declined suppresses the next one until more
+// evidence stands behind it than did when he refused, which is the term §4.13
+// measures a topic in. An applied plan blocks nothing here — what it created
+// is an entity, and EntityBoundTo is the refusal that names it.
+func (s *Store) checkTopicEvidence(ctx context.Context, subjectKey string, sessions int) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT p.proposal_id, p.evidence_weight,
+		(SELECT r.verdict FROM reality_topic_ruling r WHERE r.proposal_id = p.proposal_id)
+		FROM reality_topic_plan p WHERE p.subject_key = ?
+		ORDER BY p.created_at, p.proposal_id`, subjectKey)
+	if err != nil {
+		return fmt.Errorf("reality: read topic plans: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			questionID string
+			proposalID string
 			weight     int
-			state      string
+			verdict    sql.NullString
 		)
-		if err := rows.Scan(&questionID, &weight, &state); err != nil {
-			return fmt.Errorf("reality: read topic proposals: %w", err)
+		if err := rows.Scan(&proposalID, &weight, &verdict); err != nil {
+			return fmt.Errorf("reality: read topic plans: %w", err)
 		}
-		if QuestionState(state) != QuestionDeclined {
-			continue
+		switch {
+		case !verdict.Valid:
+			return fmt.Errorf("%w: proposal %s already proposes this and awaits the operator",
+				ErrConflict, proposalID)
+		case TopicPlanState(verdict.String) == TopicPlanDeclined && sessions <= weight:
+			return fmt.Errorf("%w: the plan on proposal %s was declined with %d sessions "+
+				"behind it and this one has %d", ErrSuppressed, proposalID, weight, sessions)
 		}
-		if sessions > weight {
-			continue
-		}
-		return fmt.Errorf("%w: topic question %q was declined with %d sessions behind it "+
-			"and this ask has %d", ErrSuppressed, questionID, weight, sessions)
 	}
 	return rows.Err()
 }
 
-// TopicProposals lists the topic questions awaiting the operator.
+// OpenTopicPlans lists the plans no ruling has answered, heaviest evidence
+// first, because that is the order a reader deciding what to name would choose
+// for himself; ties break on time and id so two reads agree.
+func (s *Store) OpenTopicPlans(ctx context.Context) ([]TopicPlan, error) {
+	return s.topicPlansWhere(ctx, `WHERE NOT EXISTS(
+		SELECT 1 FROM reality_topic_ruling r WHERE r.proposal_id = p.proposal_id)
+		ORDER BY p.evidence_weight DESC, p.created_at, p.proposal_id`, 0)
+}
+
+// DeclinedTopicPlans lists the plans the operator refused, newest ruling
+// first, with his reason kept verbatim.
 //
-// Open only: a declined proposal is a refusal that must stay refused, and an
-// accepted one is an entity, so neither is something to propose again. The
-// order is the evidence behind them, heaviest first, because that is the order
-// a reader deciding what to name would choose for himself; ties break on time
-// and id so two reads agree.
-func (s *Store) TopicProposals(ctx context.Context) ([]TopicQuestion, error) {
-	ids, err := queryStrings(ctx, s.db, `SELECT p.question_id FROM reality_topic_proposal p
-		WHERE (SELECT e.state FROM reality_question_event e WHERE e.question_id = p.question_id
-			ORDER BY e.seq DESC LIMIT 1) = ?
-		ORDER BY p.evidence_weight DESC, p.created_at, p.question_id`, string(QuestionOpen))
+// It exists because §4.13 has the triage recipe read *why* topics were
+// declined as evidence for its next proposals, and a recipe that had to
+// reconstruct that from dispositions would be reading the ruling rather than
+// the reason. A limit of zero or less is every one of them.
+func (s *Store) DeclinedTopicPlans(ctx context.Context, limit int) ([]TopicPlan, error) {
+	return s.topicPlansWhere(ctx, `WHERE EXISTS(
+		SELECT 1 FROM reality_topic_ruling r WHERE r.proposal_id = p.proposal_id
+			AND r.verdict = '`+string(TopicPlanDeclined)+`')
+		ORDER BY (SELECT r.recorded_at FROM reality_topic_ruling r
+			WHERE r.proposal_id = p.proposal_id) DESC, p.proposal_id`, limit)
+}
+
+func (s *Store) topicPlansWhere(ctx context.Context, clause string, limit int) ([]TopicPlan, error) {
+	query := `SELECT p.proposal_id FROM reality_topic_plan p ` + clause
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	ids, err := queryStrings(ctx, s.db, query)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]TopicQuestion, 0, len(ids))
+	out := make([]TopicPlan, 0, len(ids))
 	for _, id := range ids {
-		topic, err := s.TopicQuestion(ctx, id)
+		plan, found, err := s.TopicPlan(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, topic)
+		if !found {
+			continue
+		}
+		out = append(out, plan)
 	}
 	return out, nil
+}
+
+// TopicPlan reads the plan attached to one proposal record, reporting whether
+// there is one. A proposal with no plan is the ordinary case — most proposals
+// are about the corpus rather than about the ledger's naming — so it is a
+// false rather than an error.
+func (s *Store) TopicPlan(ctx context.Context, proposalID string) (TopicPlan, bool, error) {
+	var (
+		operation string
+		weight    int
+		created   string
+		encoded   []byte
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT operation, evidence_weight, created_at, payload_json
+		FROM reality_topic_plan WHERE proposal_id = ?`, proposalID).
+		Scan(&operation, &weight, &created, &encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TopicPlan{}, false, nil
+	}
+	if err != nil {
+		return TopicPlan{}, false, fmt.Errorf("reality: read topic plan: %w", err)
+	}
+	var payload topicPayload
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		return TopicPlan{}, false, fmt.Errorf("reality: decode topic plan %s: %w", proposalID, err)
+	}
+	plan := TopicPlan{
+		ProposalID: proposalID,
+		Operation:  TopicOperation(operation),
+		Targets:    payload.Targets,
+		Identity:   payload.Identity,
+		Entity:     payload.Entity,
+		Filings:    payload.Filings,
+		Considered: payload.Considered,
+		Reasoning:  payload.Reasoning,
+		Sessions:   weight,
+		By:         payload.By,
+		State:      TopicPlanOpen,
+	}
+	if plan.CreatedAt, err = parseTime(created); err != nil {
+		return TopicPlan{}, false, fmt.Errorf("reality: topic plan %s: %w", proposalID, err)
+	}
+	if err := s.readTopicRuling(ctx, &plan); err != nil {
+		return TopicPlan{}, false, err
+	}
+	return plan, true, nil
+}
+
+// readTopicRuling attaches what the operator did with a plan, leaving it open
+// when he has not ruled.
+func (s *Store) readTopicRuling(ctx context.Context, plan *TopicPlan) error {
+	var (
+		verdict      string
+		entityID     sql.NullString
+		resolutionID sql.NullString
+		actor        string
+		recorded     string
+		encoded      []byte
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT verdict, entity_id, resolution_id, actor,
+		recorded_at, payload_json FROM reality_topic_ruling WHERE proposal_id = ?`,
+		plan.ProposalID).Scan(&verdict, &entityID, &resolutionID, &actor, &recorded, &encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reality: read topic ruling: %w", err)
+	}
+	var payload StatusPayload
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		return fmt.Errorf("reality: decode topic ruling %s: %w", plan.ProposalID, err)
+	}
+	plan.State = TopicPlanState(verdict)
+	plan.RuledBy = actor
+	plan.Reason = payload.Note
+	plan.EntityID = entityID.String
+	plan.ResolutionID = resolutionID.String
+	at, err := parseTime(recorded)
+	if err != nil {
+		return fmt.Errorf("reality: topic ruling %s: %w", plan.ProposalID, err)
+	}
+	plan.RuledAt = at
+	return nil
 }
 
 // Topic is one subject read as a topic: what it is bound to, and the
@@ -201,19 +351,19 @@ type Topic struct {
 	Binding  Binding
 	Bound    bool
 	Interest Interest
-	// QuestionID is the proposal the operator accepted to create it, empty
+	// ProposalID is the proposal the operator accepted to create it, empty
 	// for a subject he created directly.
-	QuestionID string
+	ProposalID string
 }
 
 // Topics lists the subjects a reader would call topics: every identity that
 // speaks for itself and has not been retired.
 //
 // The membership is deliberately every entity rather than only the ones an
-// accepted proposal created. §4.13 is explicit that a topic is a Reality
-// Ledger entity and nothing else, so a machine the operator named by hand is
-// as legitimate a topic as a repository Babel proposed, and a listing that
-// showed only Babel's own proposals would be a listing of Babel's opinions.
+// applied plan created. §4.13 is explicit that a topic is a Reality Ledger
+// entity and nothing else, so a machine the operator named by hand is as
+// legitimate a topic as a repository Babel proposed, and a listing that showed
+// only Babel's own proposals would be a listing of Babel's opinions.
 //
 // The order is §4.13's stance order — working, watching, unsaid, not now,
 // excluded — and then the display name, so the list reads as what the
@@ -223,7 +373,7 @@ func (s *Store) Topics(ctx context.Context) ([]Topic, error) {
 	if err != nil {
 		return nil, err
 	}
-	accepted, err := s.acceptedTopics(ctx)
+	applied, err := s.appliedTopics(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +404,7 @@ func (s *Store) Topics(ctx context.Context) ([]Topic, error) {
 			Binding:    binding,
 			Bound:      bound,
 			Interest:   interest,
-			QuestionID: accepted[listing.Entity.ID],
+			ProposalID: applied[listing.Entity.ID],
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -288,90 +438,36 @@ func interestRank(state string) int {
 	return 5
 }
 
-// acceptedTopics maps each entity an accepted proposal created to the question
-// it came from, so a listing can say which topics the operator named from an
-// inbox and which he minted himself.
-func (s *Store) acceptedTopics(ctx context.Context) (map[string]string, error) {
+// appliedTopics maps each entity an applied plan created to the proposal it
+// came from, so a listing can say which topics the operator accepted from
+// Babel's output and which he minted himself.
+func (s *Store) appliedTopics(ctx context.Context) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT entity_id, question_id FROM reality_topic_acceptance`)
+		`SELECT entity_id, proposal_id FROM reality_topic_ruling WHERE entity_id IS NOT NULL`)
 	if err != nil {
-		return nil, fmt.Errorf("reality: read topic acceptances: %w", err)
+		return nil, fmt.Errorf("reality: read topic rulings: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]string{}
 	for rows.Next() {
-		var entityID, questionID string
-		if err := rows.Scan(&entityID, &questionID); err != nil {
-			return nil, fmt.Errorf("reality: read topic acceptances: %w", err)
+		var entityID, proposalID string
+		if err := rows.Scan(&entityID, &proposalID); err != nil {
+			return nil, fmt.Errorf("reality: read topic rulings: %w", err)
 		}
-		out[entityID] = questionID
+		out[entityID] = proposalID
 	}
 	return out, rows.Err()
 }
 
-// TopicQuestion reads one proposal with the question carrying it, and the
-// entity an acceptance created from it.
-func (s *Store) TopicQuestion(ctx context.Context, questionID string) (TopicQuestion, error) {
-	question, err := readQuestion(ctx, s.db, questionID)
-	if err != nil {
-		return TopicQuestion{}, err
-	}
-	proposal, payload, err := readTopicProposal(ctx, s.db, questionID)
-	if err != nil {
-		return TopicQuestion{}, err
-	}
-	topic := TopicQuestion{Question: question, Proposal: proposal, By: payload.By}
-	var entityID sql.NullString
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT entity_id FROM reality_topic_acceptance WHERE question_id = ?`,
-		questionID).Scan(&entityID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return TopicQuestion{}, fmt.Errorf("reality: read topic acceptance: %w", err)
-	}
-	topic.EntityID = entityID.String
-	return topic, nil
-}
-
-func readTopicProposal(ctx context.Context, q querier, questionID string) (TopicProposal, topicPayload, error) {
-	var (
-		kind    string
-		weight  int
-		encoded []byte
-	)
-	err := q.QueryRowContext(ctx, `SELECT entity_kind, evidence_weight, payload_json
-		FROM reality_topic_proposal WHERE question_id = ?`, questionID).Scan(&kind, &weight, &encoded)
-	if errors.Is(err, sql.ErrNoRows) {
-		return TopicProposal{}, topicPayload{}, fmt.Errorf("%w: topic proposal for question %q",
-			ErrUnknownRecord, questionID)
-	}
-	if err != nil {
-		return TopicProposal{}, topicPayload{}, fmt.Errorf("reality: read topic proposal: %w", err)
-	}
-	var payload topicPayload
-	if err := json.Unmarshal(encoded, &payload); err != nil {
-		return TopicProposal{}, topicPayload{}, fmt.Errorf("reality: decode topic proposal %s: %w",
-			questionID, err)
-	}
-	return TopicProposal{
-		Name:       payload.Name,
-		Kind:       EntityKind(kind),
-		Aliases:    payload.Aliases,
-		Binding:    payload.Binding,
-		Reasoning:  payload.Reasoning,
-		Records:    payload.Records,
-		Considered: payload.Considered,
-		Identity:   payload.Identity,
-		Sessions:   weight,
-	}, payload, nil
-}
-
-// DeclineTopic records the operator's refusal of a proposal.
+// DeclineTopicPlan records that the operator refused what a topic proposal
+// would have done.
 //
 // The reason is kept verbatim and is required: §4.13 has the triage recipe
 // read why topics were declined as evidence for its next proposals, and a
 // refusal with no reason teaches it nothing. Suppression follows from the
-// state — a declined question silences an equivalent re-ask until materially
-// new evidence exists — so nothing else here has to arrange it.
-func (s *Store) DeclineTopic(ctx context.Context, questionID, operator, reason string) error {
+// record — a declined subject matter silences the next plan about it until
+// materially new evidence exists — so nothing else here has to arrange it.
+func (s *Store) DeclineTopicPlan(ctx context.Context, proposalID, operator, reason string) error {
 	if operator == "" {
 		return fmt.Errorf("%w: a decline has no operator", ErrInvalidValue)
 	}
@@ -379,24 +475,26 @@ func (s *Store) DeclineTopic(ctx context.Context, questionID, operator, reason s
 		return fmt.Errorf("%w: a declined topic keeps the operator's reason, and this one is empty",
 			ErrInvalidValue)
 	}
-	question, err := readQuestion(ctx, s.db, questionID)
+	plan, found, err := s.TopicPlan(ctx, proposalID)
 	if err != nil {
 		return err
 	}
-	if question.Kind != QuestionTopic {
-		return fmt.Errorf("%w: question %q is a %s question, not a topic proposal",
-			ErrInvalidValue, questionID, question.Kind)
+	if !found {
+		return fmt.Errorf("%w: proposal %s carries no topic plan", ErrUnknownRecord, proposalID)
 	}
-	return s.SetQuestionState(ctx, QuestionStateInput{
-		QuestionID: questionID,
-		State:      QuestionDeclined,
-		Actor:      operator,
-		Note:       reason,
+	if plan.State != TopicPlanOpen {
+		return fmt.Errorf("%w: the plan on proposal %s is already %s",
+			ErrAlreadyDecided, proposalID, plan.State)
+	}
+	return s.transact(ctx, func(tx *sql.Tx) error {
+		_, err := s.recordTopicRuling(ctx, tx, proposalID, TopicPlanDeclined, operator, reason, "", "")
+		return err
 	})
 }
 
-// AcceptTopic creates the topic the operator accepted and files the records it
-// named.
+// ApplyTopicPlan performs what the operator accepted, in the one act §4.13
+// gives him: a topic created, a topic split with the records that move, two
+// topics merged, or a topic retired.
 //
 // The transaction boundary is the interesting part, and it is a consequence of
 // §9's storage layout rather than a choice made here. The Reality Ledger and
@@ -410,89 +508,84 @@ func (s *Store) DeclineTopic(ctx context.Context, questionID, operator, reason s
 // and write its tables through it, which is a cross-component coupling the
 // codebase has deliberately refused twice (HypothesisSink, RecordPlan).
 //
-// So the order is: the ledger's half in one transaction — the entity, its
-// aliases, its binding facts, the acceptance and the question's disposition,
-// all of which commit together or not at all — and then the filings. A filing
-// that fails leaves the acceptance standing and its records *unfiled*, and the
-// error names them. That is the benign direction for this to fail in: §4.13
-// makes unfiled an honest state and the triage backlog, while the alternative
-// ordering would leave edges pointing at an entity no acceptance ever created.
-// The returned TopicAcceptance is populated either way, exactly as
-// SubjectNaming.Create returns the entity it made beside the alias error.
-func (s *Store) AcceptTopic(ctx context.Context, questionID, operator string,
+// So the order is: the ledger's half in one transaction — the entity or the
+// resolution or the lifecycle fact, the ruling, all of which commit together
+// or not at all — and then the filings. A filing that fails leaves the
+// application standing and its records *unfiled*, and the error names them.
+// That is the benign direction for this to fail in: §4.13 makes unfiled an
+// honest state and the triage backlog, while the alternative ordering would
+// leave edges pointing at an entity no acceptance ever created. The returned
+// TopicAcceptance is populated either way, exactly as SubjectNaming.Create
+// returns the entity it made beside the alias error.
+func (s *Store) ApplyTopicPlan(ctx context.Context, proposalID, operator string,
 	filer Filer) (TopicAcceptance, error) {
 	if operator == "" {
 		return TopicAcceptance{}, fmt.Errorf("%w: an acceptance has no operator", ErrInvalidValue)
 	}
-	topic, err := s.TopicQuestion(ctx, questionID)
+	plan, found, err := s.TopicPlan(ctx, proposalID)
 	if err != nil {
 		return TopicAcceptance{}, err
 	}
-	if topic.EntityID != "" {
-		return TopicAcceptance{}, fmt.Errorf("%w: topic question %q already created entity %s",
-			ErrAlreadyDecided, questionID, topic.EntityID)
+	if !found {
+		return TopicAcceptance{}, fmt.Errorf("%w: proposal %s carries no topic plan",
+			ErrUnknownRecord, proposalID)
 	}
-	if topic.Question.State != QuestionOpen {
-		return TopicAcceptance{}, fmt.Errorf("%w: question %q is %s",
-			ErrInvalidTransition, questionID, topic.Question.State)
+	if plan.State != TopicPlanOpen {
+		return TopicAcceptance{}, fmt.Errorf("%w: the plan on proposal %s is already %s",
+			ErrAlreadyDecided, proposalID, plan.State)
 	}
-	bound, err := s.EntityBoundTo(ctx, topic.Proposal.Identity)
-	if err != nil {
+	if err := s.checkApplicable(ctx, plan); err != nil {
 		return TopicAcceptance{}, err
 	}
-	if bound != "" {
-		return TopicAcceptance{}, fmt.Errorf("%w: entity %s", ErrTopicBound, bound)
+	// The parent is read before the transaction opens because a split's
+	// remainder keeps the parent's own name and kind, and this package's
+	// entity read is over the store's handle rather than a caller's
+	// transaction.
+	var parent Entity
+	if plan.Operation == TopicSplit {
+		if parent, err = s.Entity(ctx, plan.Targets[0]); err != nil {
+			return TopicAcceptance{}, err
+		}
 	}
-	if len(topic.Proposal.Records) > 0 && filer == nil {
+	if len(plan.Filings) > 0 && filer == nil {
 		// Refused rather than silently skipped: §4.13 has accepting a
-		// proposal create the entity *and* file the records, and an
+		// proposal perform the act *and* file the records, and an
 		// acceptance that quietly filed nothing would leave the operator
 		// believing it had.
-		return TopicAcceptance{}, fmt.Errorf("%w: topic question %q names %d records and no filer was supplied",
-			ErrInvalidValue, questionID, len(topic.Proposal.Records))
+		return TopicAcceptance{}, fmt.Errorf(
+			"%w: the plan on proposal %s names %d records and no filer was supplied",
+			ErrInvalidValue, proposalID, len(plan.Filings))
 	}
 
-	acceptance := TopicAcceptance{QuestionID: questionID, Actor: operator}
+	acceptance := TopicAcceptance{
+		ProposalID: proposalID,
+		Operation:  plan.Operation,
+		Targets:    plan.Targets,
+		Actor:      operator,
+	}
 	var pub publication
 	err = s.transact(ctx, func(tx *sql.Tx) error {
 		recorded := s.now()
 		authority := Authority{Kind: AuthorityOperator, ID: operator, At: recorded}
 		set := s.newRecordSet()
-		entity, aliases, facts, err := s.applyEntityDraft(ctx, tx, topicDraft(topic.Proposal),
-			authority, "", set)
+		anchor, err := s.applyTopicOperation(ctx, tx, plan, parent, authority, set, &acceptance)
 		if err != nil {
 			return err
 		}
-		id, err := newID("tac")
+		ruling, err := s.recordTopicRuling(ctx, tx, proposalID, TopicPlanApplied, operator,
+			plan.Reasoning, acceptance.EntityID, resolutionID(acceptance.Resolution))
 		if err != nil {
 			return err
 		}
-		encoded, err := marshalPayload(StatusPayload{Note: topic.Proposal.Reasoning})
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO reality_topic_acceptance(
-			id, question_id, entity_id, actor, recorded_at, payload_json) VALUES(?, ?, ?, ?, ?, ?)`,
-			id, questionID, entity.ID, operator, formatTime(recorded), encoded); err != nil {
-			return fmt.Errorf("reality: record topic acceptance: %w", err)
-		}
-		if err := s.transitionQuestion(ctx, tx, questionID, QuestionAnswered, operator,
-			"topic accepted as entity "+entity.ID); err != nil {
-			return err
-		}
-		acceptance.ID = id
-		acceptance.EntityID = entity.ID
-		acceptance.Entity = entity
-		acceptance.Aliases = aliases
-		acceptance.Facts = facts
+		acceptance.ID = ruling
 		acceptance.RecordedAt = recorded
-		// Anchored on the entity, which is the record without which the
-		// others must not exist. The acceptance row itself does not
-		// travel, for the reason its question does not: a reading host
-		// has the facts, each attributed to the accepting operator, and
-		// the local question the acceptance disposed of is one it derives
-		// for itself.
-		pub, err = s.stageSet(ctx, tx, entity.ID, set)
+		// Anchored on the record without which the others must not exist:
+		// the entity a create minted, and the resolution or the fact
+		// otherwise. The ruling itself does not travel — a reading host
+		// has the facts and the resolution, each attributed to the
+		// accepting operator, and the local proposal it answered is one
+		// it holds for itself.
+		pub, err = s.stageSet(ctx, tx, anchor, set)
 		return err
 	})
 	if err != nil {
@@ -501,62 +594,221 @@ func (s *Store) AcceptTopic(ctx context.Context, questionID, operator string,
 	if err := s.commit(ctx, pub); err != nil {
 		return acceptance, err
 	}
-	filings, err := fileRecords(ctx, filer, topicFilings(topic, acceptance.EntityID))
+	filings, err := fileRecords(ctx, filer, topicFilings(plan, acceptance.EntityID))
 	acceptance.Filings = filings
 	if err != nil {
 		return acceptance, fmt.Errorf(
-			"reality: topic %s accepted as entity %s; its records stay unfiled: %w",
-			questionID, acceptance.EntityID, err)
+			"reality: the plan on proposal %s was applied; its records stay unfiled: %w",
+			proposalID, err)
 	}
 	return acceptance, nil
 }
 
-// topicDraft states a proposal as the subject a create-entity action mints.
-//
-// The identity becomes an identifier alias, and that is what makes the binding
-// enforceable rather than documentary: the next proposal of the same
-// repository resolves the identity through the ledger's own alias index and is
-// refused as bound, which is the check EntityBoundTo performs.
-func topicDraft(in TopicProposal) EntityDraft {
-	aliases := make([]AliasInput, 0, len(in.Aliases)+2)
-	aliases = append(aliases, AliasInput{
-		Kind:    AliasIdentifier,
-		Payload: AliasPayload{Value: in.Identity, Note: "the identity this topic is bound by"},
-	})
-	aliases = append(aliases, AliasInput{Kind: AliasName, Payload: AliasPayload{Value: in.Name}})
-	aliases = append(aliases, in.Aliases...)
-	return EntityDraft{
-		Subject: NewSubject{
-			Kind:        in.Kind,
-			DisplayName: in.Name,
-			Notes:       in.Reasoning,
-			Aliases:     aliases,
-		},
-		Binding: in.Binding,
+// applyTopicOperation performs the plan's own act inside the caller's
+// transaction and reports the record the published closure anchors on.
+func (s *Store) applyTopicOperation(ctx context.Context, tx *sql.Tx, plan TopicPlan, parent Entity,
+	authority Authority, set *recordSet, acceptance *TopicAcceptance) (string, error) {
+	switch plan.Operation {
+	case TopicCreate:
+		entity, aliases, facts, err := s.applyEntityDraft(ctx, tx, topicDraft(plan),
+			authority, "", set)
+		if err != nil {
+			return "", err
+		}
+		acceptance.EntityID, acceptance.Entity = entity.ID, entity
+		acceptance.Aliases, acceptance.Facts = aliases, facts
+		return entity.ID, nil
+	case TopicSplit:
+		return s.applyTopicSplit(ctx, tx, plan, parent, authority, set, acceptance)
+	case TopicMerge:
+		resolution, err := s.mergeEntities(ctx, tx, MergeInput{
+			SourceIDs: []string{plan.Targets[0]},
+			TargetID:  plan.Targets[1],
+			Actor:     authority.ID,
+			Reason:    plan.Reasoning,
+		}, set)
+		if err != nil {
+			return "", err
+		}
+		acceptance.Resolution = &resolution
+		return resolution.ID, nil
+	default:
+		fact, err := s.retireEntity(ctx, tx, plan.Targets[0], authority, plan.Reasoning, set)
+		if err != nil {
+			return "", err
+		}
+		acceptance.Facts = []Fact{fact}
+		return fact.ID, nil
 	}
 }
 
-// topicFilings states the proposal's records as filings under the entity that
-// now exists.
+// applyTopicSplit carves the new topic out of the one that covered two things,
+// and moves the records that belong to it.
 //
-// The author is the proposal's provenance rather than the accepting operator,
-// and the distinction is §4.13's. A run that proposed a topic judged that each
-// of these records is about it, so the filing is the run's; a proposal derived
-// from repository identity alone judged nothing, so its filings are heuristic
-// and the triage recipe knows to revisit them. What the operator accepted is
-// the topic, not each record's membership.
-func topicFilings(topic TopicQuestion, entityID string) []FilingDraft {
-	author, authorID := frontier.FilingRun, topic.By.RunID
-	heuristic := topic.By.heuristic()
+// §4.8's split creates the parts rather than carving one out, so the parent is
+// replaced by two: the remainder, which keeps the parent's own name and kind
+// because that is what is left when the new thing is taken out of it, and the
+// topic the plan named. The parent keeps its facts and its history — they were
+// asserted about the identity as it was then understood, and reattributing
+// them would rewrite history — and it stops speaking for itself, which is what
+// a reader needs in order to know to look at the parts.
+func (s *Store) applyTopicSplit(ctx context.Context, tx *sql.Tx, plan TopicPlan, parent Entity,
+	authority Authority, set *recordSet, acceptance *TopicAcceptance) (string, error) {
+	resolution, parts, err := s.splitEntity(ctx, tx, SplitInput{
+		ParentID: parent.ID,
+		Parts: []EntityInput{
+			{Kind: parent.Kind, Payload: EntityPayload{
+				DisplayName: parent.Payload.DisplayName,
+				Notes:       parent.Payload.Notes,
+			}},
+			{Kind: plan.Kind(), Payload: EntityPayload{
+				DisplayName: plan.Name(),
+				Notes:       plan.Reasoning,
+			}},
+		},
+		Actor:  authority.ID,
+		Reason: plan.Reasoning,
+	}, set)
+	if err != nil {
+		return "", err
+	}
+	// The parts come back in the order they were asked for, so the new
+	// topic is the second. Reading it by name would be looking up something
+	// this call already knows.
+	created := parts[len(parts)-1]
+	aliases, facts, err := s.applyDraftNames(ctx, tx, created.ID, topicDraft(plan), authority, "", set)
+	if err != nil {
+		return "", err
+	}
+	acceptance.EntityID, acceptance.Entity = created.ID, created
+	acceptance.Aliases, acceptance.Facts = aliases, facts
+	acceptance.Resolution = &resolution
+	return resolution.ID, nil
+}
+
+// checkApplicable refuses a plan the ledger has moved past.
+//
+// A plan is Babel's reading of the ledger at the moment it ran, and the
+// operator may rule on it days later. Between the two the topic it names can
+// have been merged into another or retired, and applying a plan against that
+// state would either fail deep inside §4.8's own checks with a generic
+// conflict or, worse, act on an identity that no longer speaks for anything.
+// So each target is checked here and the refusal names the state, which is
+// what tells the operator that the answer is to let Babel look again.
+func (s *Store) checkApplicable(ctx context.Context, plan TopicPlan) error {
+	if plan.Operation.creates() {
+		bound, err := s.EntityBoundTo(ctx, plan.Identity)
+		if err != nil {
+			return err
+		}
+		if bound != "" {
+			return fmt.Errorf("%w: entity %s", ErrTopicBound, bound)
+		}
+	}
+	for _, target := range plan.Targets {
+		canonical, err := s.Resolve(ctx, target)
+		if err != nil {
+			return fmt.Errorf("reality: topic target: %w", err)
+		}
+		if canonical != target {
+			return fmt.Errorf("%w: topic %s was merged into %s after this was proposed",
+				ErrConflict, target, canonical)
+		}
+		retired, err := s.EntityRetired(ctx, target)
+		if err != nil {
+			return err
+		}
+		if retired {
+			return fmt.Errorf("%w: topic %s was retired after this was proposed",
+				ErrConflict, target)
+		}
+	}
+	return nil
+}
+
+// recordTopicRuling appends what the operator decided about a plan. The unique
+// index on proposal_id is what makes a double-click impossible, for the same
+// reason a plan's acceptance is unique.
+func (s *Store) recordTopicRuling(ctx context.Context, tx *sql.Tx, proposalID string,
+	verdict TopicPlanState, operator, note, entityID, resolutionID string) (string, error) {
+	id, err := newID("trl")
+	if err != nil {
+		return "", err
+	}
+	encoded, err := marshalPayload(StatusPayload{Note: note})
+	if err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO reality_topic_ruling(
+		id, proposal_id, verdict, entity_id, resolution_id, actor, recorded_at, payload_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, proposalID, string(verdict), nullableID(entityID), nullableID(resolutionID),
+		operator, formatTime(s.now()), encoded); err != nil {
+		return "", fmt.Errorf("reality: record topic ruling: %w", err)
+	}
+	return id, nil
+}
+
+func resolutionID(resolution *Resolution) string {
+	if resolution == nil {
+		return ""
+	}
+	return resolution.ID
+}
+
+// topicDraft states a plan's proposed entity as the subject a create mints.
+//
+// The identity becomes an identifier alias, and that is what makes the binding
+// enforceable rather than documentary: the next plan for the same repository
+// resolves the identity through the ledger's own alias index and is refused as
+// bound, which is the check EntityBoundTo performs.
+func topicDraft(plan TopicPlan) EntityDraft {
+	draft := *plan.Entity
+	aliases := make([]AliasInput, 0, len(draft.Subject.Aliases)+2)
+	aliases = append(aliases, AliasInput{
+		Kind:    AliasIdentifier,
+		Payload: AliasPayload{Value: plan.Identity, Note: "the identity this topic is bound by"},
+	})
+	aliases = append(aliases, AliasInput{
+		Kind:    AliasName,
+		Payload: AliasPayload{Value: draft.Subject.DisplayName},
+	})
+	aliases = append(aliases, draft.Subject.Aliases...)
+	draft.Subject.Aliases = aliases
+	if strings.TrimSpace(draft.Subject.Notes) == "" {
+		draft.Subject.Notes = plan.Reasoning
+	}
+	return draft
+}
+
+// topicFilings states the plan's records as filings under the entity that now
+// exists.
+//
+// The author is the plan's provenance rather than the accepting operator, and
+// the distinction is §4.13's. A run that proposed a topic judged that each of
+// these records is about it, so the filing is the run's; a plan with no run
+// behind it judged nothing, so its filings are heuristic and the triage recipe
+// knows to revisit them. What the operator accepted is the topic, not each
+// record's membership.
+func topicFilings(plan TopicPlan, entityID string) []FilingDraft {
+	if entityID == "" {
+		return nil
+	}
+	author, authorID := frontier.FilingRun, plan.By.RunID
+	heuristic := plan.By.heuristic()
 	if heuristic {
 		author, authorID = frontier.FilingHeuristic, ""
 	}
-	out := make([]FilingDraft, 0, len(topic.Proposal.Records))
-	for _, record := range topic.Proposal.Records {
+	out := make([]FilingDraft, 0, len(plan.Filings))
+	for _, filing := range plan.Filings {
+		rationale := filing.Rationale
+		if strings.TrimSpace(rationale) == "" {
+			rationale = plan.Reasoning
+		}
 		out = append(out, FilingDraft{
-			Record:    record,
+			Record:    filing.Record,
 			EntityID:  entityID,
-			Rationale: topic.Proposal.Reasoning,
+			Rationale: rationale,
 			Author:    author,
 			AuthorID:  authorID,
 			Heuristic: heuristic,
@@ -597,9 +849,9 @@ func fileRecords(ctx context.Context, filer Filer, drafts []FilingDraft) ([]fron
 // applyEntityDraft mints a subject, its names and its binding facts inside the
 // caller's transaction, under the accepting operator's authority.
 //
-// It is shared by AcceptTopic and by an accepted plan's create-entity action,
-// so a topic the operator accepted from its own page and one he accepted as
-// part of an answer plan are the same record written the same way.
+// It is shared by ApplyTopicPlan and by an accepted plan's create-entity
+// action, so a topic the operator accepted from a proposal and one he accepted
+// as part of an answer plan are the same record written the same way.
 func (s *Store) applyEntityDraft(ctx context.Context, tx *sql.Tx, draft EntityDraft,
 	authority Authority, contextID string, set *recordSet) (Entity, []Alias, []Fact, error) {
 	entity, err := s.createEntity(ctx, tx, EntityInput{
@@ -612,6 +864,22 @@ func (s *Store) applyEntityDraft(ctx context.Context, tx *sql.Tx, draft EntityDr
 	if err := set.add(stagedEntity(entity)); err != nil {
 		return Entity{}, nil, nil, err
 	}
+	aliases, facts, err := s.applyDraftNames(ctx, tx, entity.ID, draft, authority, contextID, set)
+	if err != nil {
+		return Entity{}, nil, nil, err
+	}
+	return entity, aliases, facts, nil
+}
+
+// applyDraftNames attaches a draft's aliases and binding facts to a subject
+// that already exists in the caller's transaction.
+//
+// It is separate from applyEntityDraft because a split does not mint its parts
+// here — §4.8's splitEntity does, so that the parts belong to the resolution
+// that says the parent covered two things — and the new part still has to
+// receive the identity, the names and the binding the plan proposed.
+func (s *Store) applyDraftNames(ctx context.Context, tx *sql.Tx, entityID string, draft EntityDraft,
+	authority Authority, contextID string, set *recordSet) ([]Alias, []Fact, error) {
 	aliases := make([]Alias, 0, len(draft.Subject.Aliases))
 	for _, alias := range draft.Subject.Aliases {
 		if strings.TrimSpace(alias.Payload.Value) == "" {
@@ -620,16 +888,16 @@ func (s *Store) applyEntityDraft(ctx context.Context, tx *sql.Tx, draft EntityDr
 		// The subject is this entity whatever the caller put there, for
 		// SubjectNaming.Create's reason: an alias must not be smuggled
 		// onto another subject by an acceptance.
-		alias.EntityID = entity.ID
+		alias.EntityID = entityID
 		added, err := s.addAlias(ctx, tx, alias)
 		if err != nil {
-			return Entity{}, nil, nil, fmt.Errorf("reality: topic alias %s: %w", alias.Kind, err)
+			return nil, nil, fmt.Errorf("reality: topic alias %s: %w", alias.Kind, err)
 		}
 		aliases = append(aliases, added)
 	}
 	facts := make([]Fact, 0, len(draft.Binding))
 	for _, input := range draft.Binding {
-		input.SubjectID = entity.ID
+		input.SubjectID = entityID
 		input.Authority = authority
 		if input.ValidFrom.IsZero() {
 			input.ValidFrom = authority.At
@@ -647,20 +915,20 @@ func (s *Store) applyEntityDraft(ctx context.Context, tx *sql.Tx, draft EntityDr
 			input.ContextID = contextID
 		}
 		if err := input.validate(); err != nil {
-			return Entity{}, nil, nil, err
+			return nil, nil, err
 		}
 		fact, _, err := s.assertFact(ctx, tx, input, "", "", "")
 		if err != nil {
-			return Entity{}, nil, nil, err
+			return nil, nil, err
 		}
-		// A dispute cannot arise here: the subject was created by this
-		// transaction, so nothing can already claim its predicates.
+		// A dispute cannot arise for a subject this transaction created,
+		// and a split's new part is one of those.
 		if err := set.add(stagedFact(fact)); err != nil {
-			return Entity{}, nil, nil, err
+			return nil, nil, err
 		}
 		facts = append(facts, fact)
 	}
-	return entity, aliases, facts, nil
+	return aliases, facts, nil
 }
 
 // EntityBoundTo names the live entity an identity already binds, or "" when
@@ -671,7 +939,7 @@ func (s *Store) applyEntityDraft(ctx context.Context, tx *sql.Tx, draft EntityDr
 // is how every topic this package creates is findable. A binding fact —
 // repository-remote or local-path — is the second, because an entity the
 // operator created by hand through `babel reality entity create` carries facts
-// and may carry no alias at all, and a proposal that ignored it would offer to
+// and may carry no alias at all, and a plan that ignored it would offer to
 // create a second subject for a repository the ledger already holds.
 //
 // A retired entity does not bind. §4.13 retires a topic that should never have
