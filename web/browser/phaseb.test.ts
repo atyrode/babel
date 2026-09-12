@@ -512,19 +512,19 @@ test.skipIf(!chrome)("the operator rules rather than votes, and his retired stan
       ).length,
       score: scored?.tagName ?? "",
       breakdown: scored?.getAttribute("title") ?? "",
-      // A record no reviewer has assessed carries a dimmed nought and a hollow
-      // ring that says so. The figure used to vanish entirely, which kept the
-      // column the eye was learning from existing on an arriving front page;
-      // what §8.5 forbids is an unreviewed record reading as an unopposed one,
-      // and the ring is what says which it is.
-      dimmed: item.querySelector(".feed-score[data-zero]") !== null,
+      // A record no reviewer has assessed carries a hollow ring and no
+      // figure: a nought over the ring read as a tally of nothing objected
+      // to, which is what §8.5 forbids. The column stays where the eye
+      // learned it — the ring holds the place — and the figure appears with
+      // the first assessment.
+      figure: item.querySelector(".feed-score") !== null,
       ring: item.querySelector('.feed-dot[data-tone="none"]')?.getAttribute("title") ?? "",
     };
   }, row);
   expect(votes.stances).toBe(0);
   expect(votes.score).toBe("SPAN");
   expect(votes.breakdown).toMatch(/Babel's reviewers/u);
-  expect(votes.dimmed).toBe(true);
+  expect(votes.figure).toBe(false);
   expect(votes.ring).toBe("not yet reviewed");
 
   // The ruling is confirmed before it is recorded — it is an appended,
