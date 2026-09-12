@@ -4,24 +4,11 @@
 # same copy, because two React instances in one process is a hook dispatcher that is null -
 # so react and react-dom are not dependencies of this package; they are linked from the SDK
 # checkout's own resolution root, the one @manifold/plugin and @manifold/ui resolve against.
-# The same two-candidate rule as tsconfig.json and pack.sh: MANIFOLD_DIR, else ../../manifold
-# (CI's layout), and for a working tree that keeps the plugin-database branch beside it,
-# ../../manifold-db first. The type packages are linked with them: two @types/react on one
+# The checkout is the one manifold-dir.sh resolves, like pack and verify. The type packages are linked with them: two @types/react on one
 # tsc program are two unrelated `Ref` types, and @manifold/ui is typed against the SDK's.
 set -euo pipefail
 cd "$(dirname "$0")"
-here="$(pwd)"
-root=""
-for candidate in "${MANIFOLD_DIR:-}" "$here/../../manifold-db" "$here/../../manifold"; do
-  if [ -n "$candidate" ] && [ -d "$candidate/packages/plugin/node_modules/react" ]; then
-    root="$candidate/packages/plugin/node_modules"
-    break
-  fi
-done
-if [ -z "$root" ]; then
-  echo "link-externals: no manifold checkout with an installed packages/plugin (set MANIFOLD_DIR; see README.md)" >&2
-  exit 1
-fi
+root="$(./manifold-dir.sh)/packages/plugin/node_modules"
 mkdir -p node_modules/@types
 for name in react react-dom scheduler @types/react @types/react-dom; do
   if [ -e "$root/$name" ]; then

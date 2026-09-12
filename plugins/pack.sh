@@ -3,20 +3,12 @@
 # plugin kit's `pack` (the kit, the protocol and zod inlined into each half), then writes
 # dist/SHA256SUMS over the artifacts' exact bytes: the pins `engine.plugins.install` demands.
 #
-# The SDK is a sibling checkout of atyrode/manifold at the revision in MANIFOLD_REV (README.md):
-# `../../manifold` from here, which is the layout manifold's reusable `plugins.yml` builds in CI
-# and the one tsconfig.json resolves. MANIFOLD_DIR overrides it for a working tree that keeps the
-# checkout somewhere else (an isolated worktree, or dev-01, where the branch carrying the plugin
-# database is checked out as `manifold-db`).
+# The SDK is the checkout manifold-dir.sh resolves (MANIFOLD_DIR, ../../manifold-db, ../../manifold).
 set -euo pipefail
 
 cd "$(dirname "$0")"
-MANIFOLD="${MANIFOLD_DIR:-$(cd ../.. && pwd)/manifold}"
+MANIFOLD="$(./manifold-dir.sh)"
 PACK="$MANIFOLD/packages/plugin-kit/src/pack.ts"
-if [ ! -f "$PACK" ]; then
-  echo "pack.sh: no manifold checkout at $MANIFOLD (expected atyrode/manifold @ $(cat MANIFOLD_REV); see README.md, or set MANIFOLD_DIR)" >&2
-  exit 1
-fi
 
 rm -rf dist
 mkdir -p dist

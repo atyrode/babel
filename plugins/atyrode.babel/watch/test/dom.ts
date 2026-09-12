@@ -8,7 +8,10 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
   module's dependencies in the order they are imported, which is the whole mechanism — a
   `register()` call inside `render.tsx` would run after its own import of react-dom.
 */
-GlobalRegistrator.register();
-/** React's own flag, which no lib.dom type declares; the harness asserts nothing about it. */
-const scope = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
-scope.IS_REACT_ACT_ENVIRONMENT = true;
+// Once per process: the feed's harness registers the same DOM, one `bun test` over the whole
+// family evaluates both, and a second registration throws.
+if (!GlobalRegistrator.isRegistered) {
+  GlobalRegistrator.register();
+  /** React's own flag, which no lib.dom type declares; the harness asserts nothing about it. */
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+}
