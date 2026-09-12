@@ -6,8 +6,8 @@
 # checkout's own resolution root, the one @manifold/plugin and @manifold/ui resolve against.
 # The same two-candidate rule as tsconfig.json and pack.sh: MANIFOLD_DIR, else ../../manifold
 # (CI's layout), and for a working tree that keeps the plugin-database branch beside it,
-# ../../manifold-db first. @types/react stays a devDependency: TypeScript falls through a
-# typeless linked package to node_modules/@types the way it falls through any other.
+# ../../manifold-db first. The type packages are linked with them: two @types/react on one
+# tsc program are two unrelated `Ref` types, and @manifold/ui is typed against the SDK's.
 set -euo pipefail
 cd "$(dirname "$0")"
 here="$(pwd)"
@@ -22,8 +22,8 @@ if [ -z "$root" ]; then
   echo "link-externals: no manifold checkout with an installed packages/plugin (set MANIFOLD_DIR; see README.md)" >&2
   exit 1
 fi
-mkdir -p node_modules
-for name in react react-dom scheduler; do
+mkdir -p node_modules/@types
+for name in react react-dom scheduler @types/react @types/react-dom; do
   if [ -e "$root/$name" ]; then
     rm -rf "node_modules/$name"
     ln -s "$root/$name" "node_modules/$name"
