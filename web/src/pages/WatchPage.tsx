@@ -59,7 +59,10 @@ import "../watch.css";
 
 const LIVE_POLL_MS = 5_000;
 const SERIES_DAYS = 30;
-const RUNS_LIMIT = 50;
+// Twenty recent runs, not fifty: with the live strip, the launch form and four
+// series above it, fifty rows put Watch at four screens, past §8.6's ceiling.
+// The run page and the API keep the rest; the table says how many it holds.
+const RUNS_LIMIT = 20;
 
 // How many runs in flight get a card of their own before the strip becomes a
 // table.

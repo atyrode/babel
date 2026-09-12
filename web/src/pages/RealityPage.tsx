@@ -21,11 +21,17 @@ import { Identifiers, ScoreBreakdown, Subjects } from "./RealityData";
 // them here would make the inbox the list of everything rather than the list of
 // what to do. They are read on Questions instead, which is the sibling page
 // §8.4 required: a record that leaves this page must still be reachable.
+const INBOX_PAGE = 6;
+
 function RealityPage() {
   const [items, setItems] = useState<QuestionSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  // The inbox is answered one question at a time, and each card carries a
+  // form; six of them is already a page. The rest stay one click away rather
+  // than pushing the page past §8.6's ceiling.
+  const [shown, setShown] = useState(INBOX_PAGE);
 
   const load = useCallback((mode: "blocking" | "quiet") => {
     if (mode === "blocking") {
@@ -91,7 +97,7 @@ function RealityPage() {
 
       {items && items.length > 0 && (
         <div className="question-list">
-          {items.map((question) => (
+          {items.slice(0, shown).map((question) => (
             <QuestionCard
               key={question.id}
               question={question}
@@ -101,6 +107,14 @@ function RealityPage() {
               }}
             />
           ))}
+          {items.length > shown && (
+            <p className="muted">
+              {items.length - shown} more, most useful first.{" "}
+              <button type="button" className="link-button" onClick={() => setShown((n) => n + INBOX_PAGE)}>
+                Show the next {Math.min(INBOX_PAGE, items.length - shown)}
+              </button>
+            </p>
+          )}
         </div>
       )}
     </section>
