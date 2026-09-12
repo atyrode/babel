@@ -9,7 +9,7 @@
     "test": "bun test",
     "pack": "./pack.sh",
     "verify": "bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/verify.ts\" dist/*.manifold-plugin.json",
-    "dev": "bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/dev.ts\" ."
+    "dev": "./pack.sh --machine && bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/dev.ts\" ."
   },
   "dependencies": {
     "zod": "4.4.3"

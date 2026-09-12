@@ -1,2 +1,5 @@
 node_modules/
 dist/
+# Built by pack.sh from atyrode.babel/machine/ and carried inside the baseline's bundle; the
+# manifest pins its sha256, so the file itself is never committed.
+atyrode.babel/machine.js
