@@ -749,6 +749,10 @@ func webSessionRow(row sessionRow) web.SessionRow {
 		TitleProvenance:   row.TitleProvenance,
 		Workspace:         row.Workspace,
 		ContinuationGrade: row.Continuous,
+		CostUSD:           row.CostUSD,
+		TotalTokens:       row.TotalTokens,
+		Turns:             row.Turns,
+		ToolErrors:        row.ToolErrors,
 	}
 }
 

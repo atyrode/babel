@@ -33,6 +33,12 @@ const sessions: SessionSummary[] = [
     title_provenance: "derived",
     workspace: "/home/demo/projects/atlas",
     continuation_grade: true,
+    // Two of the three fixtures carry usage and one does not, because the
+    // absence is half of what the table has to render honestly.
+    cost_usd: 4.182,
+    total_tokens: 1_284_002,
+    turns: 96,
+    tool_errors: 3,
   },
   {
     harness: "claude-code",
@@ -44,6 +50,10 @@ const sessions: SessionSummary[] = [
     title_provenance: "recorded",
     workspace: "/home/demo/projects/kepler",
     continuation_grade: false,
+    cost_usd: 0.42,
+    total_tokens: 88_400,
+    turns: 11,
+    tool_errors: 0,
   },
   {
     harness: "omp",
@@ -55,6 +65,10 @@ const sessions: SessionSummary[] = [
     title_provenance: null,
     workspace: "/home/demo/scratch",
     continuation_grade: true,
+    cost_usd: null,
+    total_tokens: null,
+    turns: null,
+    tool_errors: null,
   },
 ];
 
@@ -250,6 +264,12 @@ function fillerSession(index: number): SessionSummary {
     title_provenance: index % 4 === 0 ? null : ["recorded", "derived", "inferred"][index % 3],
     workspace: `/home/demo/projects/synthetic-${index % 5}`,
     continuation_grade: index % 3 !== 0,
+    // Every fifth filler session recorded no usage, so the table's absent
+    // case, its cost bar and its totals are all previewable.
+    cost_usd: index % 5 === 0 ? null : Number((0.08 * (index + 1)).toFixed(3)),
+    total_tokens: index % 5 === 0 ? null : 18_000 * (index + 1),
+    turns: index % 5 === 0 ? null : 2 + index,
+    tool_errors: index % 5 === 0 ? null : index % 4,
   };
 }
 

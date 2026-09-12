@@ -708,6 +708,22 @@ type SessionRow struct {
 	TitleProvenance   *string `json:"title_provenance"`
 	Workspace         *string `json:"workspace"`
 	ContinuationGrade *bool   `json:"continuation_grade"`
+	// CostUSD, TotalTokens, Turns and ToolErrors are what the harness itself
+	// recorded about the model work in this session, summed by the adapter
+	// over the raw transcript. The CLI's listing has carried them since the
+	// usage columns landed and `sessions list --json` emits them; the browser
+	// is the surface an operator actually sorts a corpus on, so they cross
+	// the wire here too.
+	//
+	// Null is not zero, exactly as in the CLI's row: a session that cost
+	// nothing and a session whose adapter extracted no usage are different
+	// answers, and only the first one is a statement about the session. A
+	// page that rendered the second as $0.00 would be reporting a
+	// measurement nobody took.
+	CostUSD     *float64 `json:"cost_usd"`
+	TotalTokens *int64   `json:"total_tokens"`
+	Turns       *int64   `json:"turns"`
+	ToolErrors  *int64   `json:"tool_errors"`
 }
 
 // ScanState mirrors internal/cli scanState field-for-field. It reports the

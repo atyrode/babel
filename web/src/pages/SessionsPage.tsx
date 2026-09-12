@@ -1,5 +1,14 @@
-import { useCallback, useMemo, useRef, useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useEffect,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import { Link, useNavigate } from "react-router-dom";
 import {
   getScan,
   getSessions,
@@ -9,8 +18,26 @@ import {
   type SessionsResponse,
 } from "../api";
 import { errorMessage, formatBytes, formatDuration, formatTime } from "../format";
+import "../sessions.css";
 
-type SortColumn = "harness" | "title" | "workspace" | "size" | "modified" | "continuation";
+// The corpus is a body of measured work, so this page is a data table: every
+// number the catalog holds about a session is a column, every column sorts,
+// and the header states the totals of whatever the filter currently selects.
+// What a session cost, how many tokens it spent, how many turns it took and
+// how many of its tool calls failed were all recorded by the harness and
+// summed at describe time; until now they reached `sessions list --json` and
+// stopped there.
+type SortColumn =
+  | "harness"
+  | "title"
+  | "workspace"
+  | "size"
+  | "modified"
+  | "continuation"
+  | "cost"
+  | "tokens"
+  | "turns"
+  | "tool_errors";
 type SortDirection = "asc" | "desc";
 
 // The server returns cached rows immediately and describes stale sessions on a
@@ -20,13 +47,16 @@ const SCAN_POLL_MS = 750;
 const ROW_REFRESH_MS = 3_000;
 const ELAPSED_TICK_MS = 1_000;
 
-// The corpus is one body of work and this page names no machine for it. Which
-// computer's disk a transcript happens to sit on answers no question a reader
-// has of a session, so there is no host column, no host chip, no scope
-// selector and no sort by where a file landed: a session is read by its time
-// and its own attributes. A snapshot is the one place a machine is a
-// legitimate subject, because a snapshot is a backup *of* one, and that is the
-// Archive page's.
+// The corpus runs to hundreds of sessions and this table is read a page at a
+// time, because a list that renders all of them is twenty-five screens tall
+// and answers no question a reader had: the sort is what finds a session, and
+// a sort is only useful if its first rows are visible without scrolling.
+//
+// "All" stays available. It is the honest escape hatch for a reader who wants
+// the browser's own find-in-page over the whole corpus, and the cost of it is
+// the reader's own choice rather than the default.
+const PAGE_SIZES = [25, 50, 100, 0] as const;
+const DEFAULT_PAGE_SIZE = 50;
 
 // Three different kinds of claim look identical on this page: a title the
 // harness wrote into its own log, one babel computed offline from the session's
@@ -35,10 +65,11 @@ const ELAPSED_TICK_MS = 1_000;
 // by derivation — and a reader who cannot tell them apart is being shown
 // babel's arithmetic as if it were the session's own name.
 //
-// This is a mark on the title rather than a seventh column. The table already
-// carries six, the value is one short word, and it is a property of the title
-// and not of the session — a column would put it as far from the thing it
-// qualifies as the layout allows, and cost width on every row to do it.
+// This is a mark on the title rather than a column of its own. The table
+// already carries nine, the value is one short word, and it is a property of
+// the title and not of the session — a column would put it as far from the
+// thing it qualifies as the layout allows, and cost width on every row to do
+// it.
 //
 // A recorded title carries no mark on purpose. It is what a reader already
 // assumes a title is, so marking every row would make the mark decoration and
@@ -62,6 +93,35 @@ const TITLE_ORIGIN: Record<string, { label: string; tone: string; hint: string }
   },
 };
 
+// formatUSD states a recorded cost at the precision that cost has. A cent is
+// the unit an operator reasons in above a dollar, and below a cent the figure
+// is still real money summed over a corpus, so it keeps its digits rather than
+// rounding to "$0.00" — which reads as free.
+export function formatUSD(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  if (value === 0) return "$0";
+  if (Math.abs(value) < 0.01) return `$${value.toFixed(4)}`;
+  if (Math.abs(value) < 1_000) return `$${value.toFixed(2)}`;
+  return `$${Math.round(value).toLocaleString()}`;
+}
+
+// formatCount abbreviates a token or turn count. A corpus-wide token total
+// runs to ten figures, and a figure that long is not compared, it is
+// deciphered; the exact number rides the cell's own tooltip or the stat's
+// note for the reader who wants it.
+export function formatCount(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  const magnitude = Math.abs(value);
+  for (const [unit, scale] of [["B", 1e9], ["M", 1e6], ["k", 1e3]] as const) {
+    if (magnitude < scale) continue;
+    const scaled = value / scale;
+    // One decimal below ten, none above: "1.4M" and "297k" are both four
+    // characters wide, which is what keeps a numeric column a column.
+    return `${Math.abs(scaled) < 10 ? scaled.toFixed(1) : Math.round(scaled)}${unit}`;
+  }
+  return String(value);
+}
+
 function TitleOrigin({ provenance, hasTitle }: { provenance: string | null; hasTitle: boolean }) {
   if (!hasTitle) return null;
   if (provenance === "recorded") return null;
@@ -83,6 +143,19 @@ function TitleOrigin({ provenance, hasTitle }: { provenance: string | null; hasT
   );
 }
 
+// The numeric columns and how each one is read off a row. A null here means
+// nobody measured it, which is why these return null rather than zero: the
+// comparator and every cell treat the two differently.
+const NUMERIC: Partial<Record<SortColumn, (session: SessionSummary) => number | null>> = {
+  size: (session) => session.size,
+  modified: (session) => (session.modified ? new Date(session.modified).getTime() : null),
+  continuation: (session) => Number(session.continuation_grade),
+  cost: (session) => session.cost_usd,
+  tokens: (session) => session.total_tokens,
+  turns: (session) => session.turns,
+  tool_errors: (session) => session.tool_errors,
+};
+
 function SessionsPage() {
   const navigate = useNavigate();
   const [data, setData] = useState<SessionsResponse | null>(null);
@@ -97,6 +170,8 @@ function SessionsPage() {
   const [harness, setHarness] = useState<string | null>(null);
   const [sortColumn, setSortColumn] = useState<SortColumn>("modified");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+  const [page, setPage] = useState(0);
   const scanWasRunning = useRef(false);
 
   const loadSessions = useCallback((mode: "blocking" | "quiet") => {
@@ -193,28 +268,66 @@ function SessionsPage() {
         .some((value) => value?.toLocaleLowerCase().includes(needle));
     });
     const direction = sortDirection === "asc" ? 1 : -1;
+    const read = NUMERIC[sortColumn];
     return filtered.sort((left, right) => {
       let comparison = 0;
-      if (sortColumn === "size") comparison = left.size - right.size;
-      else if (sortColumn === "modified") {
-        comparison = new Date(left.modified ?? 0).getTime() - new Date(right.modified ?? 0).getTime();
-      } else if (sortColumn === "continuation") {
-        comparison = Number(left.continuation_grade) - Number(right.continuation_grade);
+      if (read) {
+        const leftValue = read(left);
+        const rightValue = read(right);
+        // A session nobody measured sorts last in both directions. It is not
+        // the cheapest session and it is not the most expensive one: ranking
+        // an absent measurement against a number would invent the number.
+        if (leftValue === null || rightValue === null) {
+          if (leftValue !== rightValue) return leftValue === null ? 1 : -1;
+        } else {
+          comparison = leftValue - rightValue;
+        }
       } else {
-        const leftValue = (left[sortColumn] ?? "").toLocaleLowerCase();
-        const rightValue = (right[sortColumn] ?? "").toLocaleLowerCase();
-        comparison = leftValue.localeCompare(rightValue);
+        const leftText = (left[sortColumn as "harness" | "title" | "workspace"] ?? "").toLocaleLowerCase();
+        const rightText = (right[sortColumn as "harness" | "title" | "workspace"] ?? "").toLocaleLowerCase();
+        comparison = leftText.localeCompare(rightText);
       }
-      if (comparison === 0) comparison = left.selector.localeCompare(right.selector);
+      if (comparison === 0) return left.selector.localeCompare(right.selector);
       return comparison * direction;
     });
   }, [data, harness, search, sortColumn, sortDirection]);
 
+  // The totals describe the filter, not the page: an operator who narrows to
+  // one harness is asking what that harness cost, and a figure that answered
+  // for the fifty rows currently visible would answer a question about
+  // pagination instead.
+  const totals = useMemo(() => {
+    let cost = 0;
+    let tokens = 0;
+    let priced = 0;
+    let costliest = 0;
+    for (const session of sessions) {
+      if (session.cost_usd !== null) {
+        cost += session.cost_usd;
+        priced += 1;
+        costliest = Math.max(costliest, session.cost_usd);
+      }
+      if (session.total_tokens !== null) tokens += session.total_tokens;
+    }
+    return { cost, tokens, priced, costliest };
+  }, [sessions]);
+
+  const pages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(sessions.length / pageSize));
+  const currentPage = Math.min(page, pages - 1);
+  const pageStart = pageSize === 0 ? 0 : currentPage * pageSize;
+  const pageRows = pageSize === 0 ? sessions : sessions.slice(pageStart, pageStart + pageSize);
+
+  // Every control that changes which rows exist returns to the first page,
+  // because page four of a list that just became one page long is an empty
+  // table and looks like a failure.
   function changeSort(column: SortColumn) {
-    if (sortColumn === column) setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    setPage(0);
+    if (sortColumn === column) setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
     else {
       setSortColumn(column);
-      setSortDirection("asc");
+      // Text reads naturally from A, and a measurement is asked for from the
+      // top: "sort by cost" means the expensive sessions, every time.
+      setSortDirection(NUMERIC[column] ? "desc" : "asc");
     }
   }
 
@@ -223,7 +336,12 @@ function SessionsPage() {
     return sortDirection === "asc" ? "Sorted ascending" : "Sorted descending";
   }
 
-  function openSession(session: SessionSummary) {
+  function openSession(session: SessionSummary, event: ReactMouseEvent | ReactKeyboardEvent) {
+    // The title is a real link, so a click that landed on it has already been
+    // handled — following the row too would navigate twice and break
+    // middle-click and modified clicks, which are the whole reason the link
+    // exists.
+    if (event.target instanceof Element && event.target.closest("a")) return;
     navigate(`/sessions/${encodeURIComponent(session.selector)}`);
   }
 
@@ -238,14 +356,44 @@ function SessionsPage() {
           <p className="eyebrow">Corpus</p>
           <h1>Sessions</h1>
           <p className="subtitle">
-            Every session Babel found, across every harness. This list is not scoped to the
-            folder <code>babel web</code> was launched from — the workspace column is a property
-            of each session, not a filter on the list.
+            Every session Babel found, across every harness, with what each one cost. The
+            workspace column is a property of the session, not a filter on this list.
           </p>
         </div>
-        <div className="heading-meta">
-          <span className="count-label">{rowCount} cached {rowCount === 1 ? "session" : "sessions"}</span>
-          {data && <span className="refresh-time">Refreshed {formatTime(data.refreshed_at)?.relative ?? data.refreshed_at}</span>}
+        {/* The totals row is its own container rather than the shared
+            heading-meta, because heading-meta stacks one short line per fact
+            and these are figures with labels. */}
+        <div className="sessions-totals">
+          <div className="stat">
+            <span className="stat-label">Sessions</span>
+            <strong className="stat-value">{sessions.length.toLocaleString()}</strong>
+            <span className="stat-note">
+              {sessions.length === rowCount ? "all cached" : `of ${rowCount.toLocaleString()} cached`}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Recorded spend</span>
+            <strong className="stat-value">{totals.priced === 0 ? "—" : formatUSD(totals.cost)}</strong>
+            {/* The denominator is the point. Most harnesses record no usage,
+                so a total without the count of what it was summed over would
+                read as the corpus's cost rather than as the measured part of
+                it. */}
+            <span className="stat-note">
+              {totals.priced === 0
+                ? "nothing here recorded usage"
+                : `${totals.priced.toLocaleString()} of ${sessions.length.toLocaleString()} priced`}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="stat-label">Tokens</span>
+            <strong className="stat-value">{totals.tokens === 0 ? "—" : formatCount(totals.tokens)}</strong>
+            <span className="stat-note">{totals.tokens === 0 ? "unmeasured" : totals.tokens.toLocaleString()}</span>
+          </div>
+          {data && (
+            <span className="refresh-time">
+              Refreshed {formatTime(data.refreshed_at)?.relative ?? data.refreshed_at}
+            </span>
+          )}
         </div>
       </div>
 
@@ -270,15 +418,37 @@ function SessionsPage() {
           <input
             type="search"
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setPage(0);
+            }}
             placeholder="Filter title, workspace, or selector…"
             autoComplete="off"
           />
         </label>
         <div className="filter-chips" aria-label="Filter by harness">
-          <button type="button" className={!harness ? "chip active" : "chip"} onClick={() => setHarness(null)}>All</button>
+          <button
+            type="button"
+            className={!harness ? "chip active" : "chip"}
+            aria-pressed={!harness}
+            onClick={() => {
+              setHarness(null);
+              setPage(0);
+            }}
+          >
+            All
+          </button>
           {harnesses.map((name) => (
-            <button type="button" className={harness === name ? "chip active" : "chip"} onClick={() => setHarness(name)} key={name}>
+            <button
+              type="button"
+              className={harness === name ? "chip active" : "chip"}
+              aria-pressed={harness === name}
+              onClick={() => {
+                setHarness(name);
+                setPage(0);
+              }}
+              key={name}
+            >
               {name}
             </button>
           ))}
@@ -317,32 +487,52 @@ function SessionsPage() {
               <thead>
                 <tr>
                   <th><button type="button" onClick={() => changeSort("harness")} aria-label={`${sortLabel("harness")} by harness`}>Harness <SortMark column="harness" active={sortColumn} direction={sortDirection} /></button></th>
-                  <th><button type="button" onClick={() => changeSort("title")} aria-label={`${sortLabel("title")} by title`}>Session <SortMark column="title" active={sortColumn} direction={sortDirection} /></button></th>
-                  <th title="The workspace path recorded inside the session. It is not a filter on this list.">
-                    <button type="button" onClick={() => changeSort("workspace")} aria-label={`${sortLabel("workspace")} by recorded workspace`}>Recorded workspace <SortMark column="workspace" active={sortColumn} direction={sortDirection} /></button>
+                  <th className="session-cell"><button type="button" onClick={() => changeSort("title")} aria-label={`${sortLabel("title")} by title`}>Session <SortMark column="title" active={sortColumn} direction={sortDirection} /></button></th>
+                  <th className="workspace-cell" title="The workspace path recorded inside the session. It is not a filter on this list.">
+                    <button type="button" onClick={() => changeSort("workspace")} aria-label={`${sortLabel("workspace")} by recorded workspace`}>Workspace <SortMark column="workspace" active={sortColumn} direction={sortDirection} /></button>
+                  </th>
+                  <th><button type="button" onClick={() => changeSort("modified")} aria-label={`${sortLabel("modified")} by modified time`}>Modified <SortMark column="modified" active={sortColumn} direction={sortDirection} /></button></th>
+                  <th
+                    className="numeric"
+                    title={
+                      totals.costliest > 0
+                        ? `What the harness recorded this session's model work cost. The bar is drawn against ${formatUSD(totals.costliest)}, the highest in this filter.`
+                        : "What the harness recorded this session's model work cost."
+                    }
+                  >
+                    <button type="button" onClick={() => changeSort("cost")} aria-label={`${sortLabel("cost")} by recorded cost`}>Cost <SortMark column="cost" active={sortColumn} direction={sortDirection} /></button>
+                  </th>
+                  <th className="numeric"><button type="button" onClick={() => changeSort("tokens")} aria-label={`${sortLabel("tokens")} by token count`}>Tokens <SortMark column="tokens" active={sortColumn} direction={sortDirection} /></button></th>
+                  <th className="numeric" title="Assistant turns the harness recorded.">
+                    <button type="button" onClick={() => changeSort("turns")} aria-label={`${sortLabel("turns")} by turns`}>Turns <SortMark column="turns" active={sortColumn} direction={sortDirection} /></button>
+                  </th>
+                  <th className="numeric" title="Tool results the harness marked as failures.">
+                    <button type="button" onClick={() => changeSort("tool_errors")} aria-label={`${sortLabel("tool_errors")} by tool errors`}>Tool err <SortMark column="tool_errors" active={sortColumn} direction={sortDirection} /></button>
                   </th>
                   <th className="numeric"><button type="button" onClick={() => changeSort("size")} aria-label={`${sortLabel("size")} by size`}>Size <SortMark column="size" active={sortColumn} direction={sortDirection} /></button></th>
-                  <th><button type="button" onClick={() => changeSort("modified")} aria-label={`${sortLabel("modified")} by modified time`}>Modified <SortMark column="modified" active={sortColumn} direction={sortDirection} /></button></th>
                   <th className="grade-column"><button type="button" onClick={() => changeSort("continuation")} aria-label={`${sortLabel("continuation")} by continuation grade`}>Grade <SortMark column="continuation" active={sortColumn} direction={sortDirection} /></button></th>
                 </tr>
               </thead>
               <tbody>
-                {sessions.map((session) => {
+                {pageRows.map((session) => {
                   const modified = formatTime(session.modified);
                   return (
                     <tr
                       key={session.selector}
                       tabIndex={0}
                       role="link"
-                      onClick={() => openSession(session)}
+                      onClick={(event) => openSession(session, event)}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") openSession(session);
+                        if (event.key === "Enter" || event.key === " ") openSession(session, event);
                       }}
                     >
                       <td><span className="harness-badge">{session.harness}</span></td>
-                      <td>
+                      <td className="session-cell" title={session.title ?? undefined}>
                         <span className="session-title">
-                          <strong>{session.title || "Untitled session"}</strong>
+                          {/* A row is a link with a URL the browser can show,
+                              open in a new tab and middle-click, which an
+                              onclick handler is not. */}
+                          <Link to={`/sessions/${encodeURIComponent(session.selector)}`}>{session.title || "Untitled session"}</Link>
                           <TitleOrigin
                             provenance={session.title_provenance}
                             hasTitle={Boolean(session.title)}
@@ -350,11 +540,36 @@ function SessionsPage() {
                         </span>
                         <span className="secondary mono">{session.selector}</span>
                       </td>
-                      <td>{session.workspace || <span className="muted">—</span>}</td>
-                      <td className="numeric mono">{formatBytes(session.size)}</td>
-                      <td>
-                        {modified ? <><span>{modified.relative}</span><span className="secondary" title={modified.absolute}>{modified.absolute}</span></> : <span className="muted">—</span>}
+                      <td className="workspace-cell" title={session.workspace ?? undefined}>{session.workspace || <Absent />}</td>
+                      {/* One line per row: the absolute time is a tooltip
+                          rather than a second line, because a table's rows
+                          are only comparable at a glance if they are the
+                          same height. */}
+                      <td className="time-cell">
+                        {modified ? <span title={modified.absolute}>{modified.relative}</span> : <Absent />}
                       </td>
+                      <td className="numeric mono cost-cell">
+                        {session.cost_usd === null ? <Absent /> : (
+                          <>
+                            <span>{formatUSD(session.cost_usd)}</span>
+                            <CostBar value={session.cost_usd} ceiling={totals.costliest} />
+                          </>
+                        )}
+                      </td>
+                      <td className="numeric mono" title={session.total_tokens?.toLocaleString()}>
+                        {session.total_tokens === null ? <Absent /> : formatCount(session.total_tokens)}
+                      </td>
+                      <td className="numeric mono">
+                        {session.turns === null ? <Absent /> : session.turns.toLocaleString()}
+                      </td>
+                      <td className="numeric mono">
+                        {session.tool_errors === null
+                          ? <Absent />
+                          : session.tool_errors === 0
+                            ? <span className="zero">0</span>
+                            : <span className="errors">{session.tool_errors.toLocaleString()}</span>}
+                      </td>
+                      <td className="numeric mono">{formatBytes(session.size)}</td>
                       <td className="grade-column"><span className={session.continuation_grade ? "grade-dot good" : "grade-dot partial"} title={session.continuation_grade ? "Continuation-ready" : "Partial continuation metadata"} /></td>
                     </tr>
                   );
@@ -362,9 +577,89 @@ function SessionsPage() {
               </tbody>
             </table>
           </div>
+          <Pager
+            total={sessions.length}
+            page={currentPage}
+            pages={pages}
+            pageSize={pageSize}
+            from={pageStart + 1}
+            to={pageStart + pageRows.length}
+            onPage={setPage}
+            onPageSize={(size) => {
+              setPageSize(size);
+              setPage(0);
+            }}
+          />
         </div>
       )}
     </section>
+  );
+}
+
+// Absent renders a measurement nobody took. It is a dash with a reason, not a
+// zero: the difference is the whole point of the nullable columns.
+function Absent() {
+  return <span className="absent" title="Not recorded. This is an absent measurement, not a zero.">—</span>;
+}
+
+// CostBar draws one row's cost against the most expensive session in the
+// current filter, so a column of figures becomes a shape a reader can scan.
+// Inline SVG rather than a styled div because a bar is geometry, and geometry
+// scales with the cell instead of being pinned to a pixel width.
+function CostBar({ value, ceiling }: { value: number; ceiling: number }) {
+  if (ceiling <= 0) return null;
+  // A cost far below the ceiling still gets a visible mark: a bar that rounds
+  // to nothing says "no cost" when the truth is "a small one".
+  const width = Math.max(1.5, Math.min(100, (value / ceiling) * 100));
+  return (
+    <span className="spark cost-bar" style={{ "--spark-height": "4px" } as CSSProperties} aria-hidden="true">
+      <svg viewBox="0 0 100 4" preserveAspectRatio="none">
+        {/* The track is what makes the bar a comparison rather than a mark:
+            a $1 bar beside a $2,000 one is a sliver, and a sliver with no
+            scale behind it reads as a stray rule. */}
+        <rect x="0" y="0" width="100" height="4" fill="currentColor" fillOpacity="0.16" />
+        <rect x="0" y="0" width={width} height="4" fill="currentColor" />
+      </svg>
+    </span>
+  );
+}
+
+interface PagerProps {
+  total: number;
+  page: number;
+  pages: number;
+  pageSize: number;
+  from: number;
+  to: number;
+  onPage: (page: number) => void;
+  onPageSize: (size: number) => void;
+}
+
+function Pager({ total, page, pages, pageSize, from, to, onPage, onPageSize }: PagerProps) {
+  return (
+    <div className="sessions-pager">
+      <div className="rule-bar" role="group" aria-label="Rows per page">
+        {PAGE_SIZES.map((size) => (
+          <button
+            type="button"
+            key={size}
+            className={pageSize === size ? "active" : undefined}
+            aria-pressed={pageSize === size}
+            onClick={() => onPageSize(size)}
+          >
+            {size === 0 ? "All" : size}
+          </button>
+        ))}
+      </div>
+      <span className="pager-range mono">
+        {total === 0 ? "no rows" : `rows ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}`}
+      </span>
+      <div className="rule-bar" role="group" aria-label="Pages">
+        <button type="button" onClick={() => onPage(page - 1)} disabled={page === 0}>← Previous</button>
+        <button type="button" onClick={() => onPage(page + 1)} disabled={page >= pages - 1}>Next →</button>
+      </div>
+      <span className="pager-page mono">page {page + 1} of {pages}</span>
+    </div>
   );
 }
 

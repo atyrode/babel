@@ -1,0 +1,282 @@
+/* The corpus surfaces, in the observatory register: dense rows, tabular
+   figures, a bar where a comparison is easier to see than to read, and an
+   absent measurement that never renders as a zero.
+
+   Every colour, type stack and step of space here is a Contract T token. The
+   container vocabulary (surface, panel, quote, peel) and the shared
+   primitives (.stat, .spark, .chip, .rule-bar) come from styles.css; this
+   file lays them out and adds nothing global. */
+
+/* The totals ride the heading, because the first question a table of numbers
+   is asked is what they add up to. */
+.sessions-page .sessions-totals {
+  display: flex;
+  flex-flow: row wrap;
+  gap: var(--space-5);
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.sessions-page .sessions-totals .refresh-time {
+  flex-basis: 100%;
+  color: var(--ink-faint);
+  font-size: 0.7rem;
+  text-align: right;
+}
+
+/* A flush surface has no padding, so the shared rule that pulls a table out
+   of a surface's gutter has nothing to pull it out of here: it moves the
+   table under the surface's own clipped edge and cuts the first and last
+   columns off. Edge to edge is what a flush surface means. */
+.sessions-page .surface.flush > .table-scroll {
+  margin: 0;
+}
+
+/* A data table, so: one line of type, figures in mono with tabular widths,
+   and rows tight enough that a sorted column can be read as a shape. */
+.sessions-page .sessions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+}
+
+.sessions-page .sessions-table th {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-faint);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sessions-page .sessions-table th button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.sessions-page .sessions-table th button:hover {
+  color: var(--ink);
+}
+
+.sessions-page .sessions-table th.numeric,
+.sessions-page .sessions-table td.numeric {
+  text-align: right;
+}
+
+/* Fifty rows fit in under three screens at this height, which is the point
+   of the page size: a sort is only useful if its first rows are on the
+   screen the reader is already looking at. */
+.sessions-page .sessions-table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-muted);
+  line-height: 1.2;
+  vertical-align: middle;
+}
+
+.sessions-page .sessions-table td.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sessions-page .sessions-table tbody tr {
+  cursor: pointer;
+  transition: background var(--motion-fast) ease;
+}
+
+.sessions-page .sessions-table tbody tr:hover,
+.sessions-page .sessions-table tbody tr:focus-visible {
+  background: var(--bg-raised);
+}
+
+/* The title is the row's link and reads as the row's subject; the selector
+   under it is the identity you copy into a command. Both truncate rather
+   than wrap: a data table's rows are only comparable at a glance when they
+   are the same height, and the full string is in the cell's own title. */
+.sessions-page .session-title {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  min-width: 0;
+}
+
+.sessions-page .session-title a {
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 650;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessions-page .session-title a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* The provenance mark keeps its width while the title gives way. */
+.sessions-page .session-title .badge {
+  flex: none;
+}
+
+/* The legacy table set a 19rem floor under this column and a 20rem ceiling
+   under the next. Ten columns do not fit around that, so the session column
+   is given its own share of the row here. */
+.sessions-page .sessions-table td.session-cell,
+.sessions-page .sessions-table th.session-cell {
+  width: 34%;
+  min-width: 18rem;
+  max-width: 0;
+}
+
+.sessions-page .sessions-table td.session-cell .secondary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessions-page .sessions-table td.time-cell {
+  white-space: nowrap;
+}
+
+.sessions-page .sessions-table td .secondary {
+  display: block;
+  color: var(--ink-faint);
+  font-size: 0.66rem;
+  line-height: 1.15;
+}
+
+.sessions-page .sessions-table td.workspace-cell,
+.sessions-page .sessions-table th.workspace-cell {
+  width: 14%;
+  max-width: 12rem;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The cost cell is a figure with its own bar beneath, drawn against the
+   most expensive session in the filter. */
+.sessions-page .cost-cell {
+  min-width: 5.5rem;
+  color: var(--ink);
+}
+
+.sessions-page .cost-bar {
+  display: block;
+  margin-top: 3px;
+  color: var(--accent);
+}
+
+/* An absent measurement. Faint, dashed, and never a number. */
+.sessions-page .absent,
+.session-page .absent {
+  color: var(--ink-faint);
+}
+
+.sessions-page .zero {
+  color: var(--ink-faint);
+}
+
+.sessions-page .errors {
+  color: var(--bad);
+}
+
+.sessions-page .sessions-table .grade-column {
+  width: 3rem;
+  text-align: center;
+}
+
+/* Pagination is a footer on the table rather than a control above it: the
+   reader arrives at it by finishing the page. */
+.sessions-page .sessions-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--rule);
+}
+
+.sessions-page .pager-range,
+.sessions-page .pager-page {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sessions-page .pager-range {
+  margin-right: auto;
+}
+
+/* One session. The usage strip answers "what did this cost" before the
+   metadata answers "what is it", because the numbers are four words long and
+   the description is a screen. */
+.session-page .session-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  align-items: flex-end;
+  padding: var(--space-4);
+}
+
+.session-page .session-usage .usage-note {
+  flex: 1 1 18ch;
+  min-width: 18ch;
+  color: var(--ink-faint);
+  font-size: 0.74rem;
+  text-align: right;
+}
+
+/* Where a citation lands. The cited record is the hero of the page it opens:
+   the human sentence a proposal grew from is the thing worth arriving at, so
+   it takes an accent rule and its own weight, permanently — a reader who
+   scrolls away and back must be able to find it again. */
+.session-page .transcript-entry.cited-hero {
+  border-left: 3px solid var(--accent);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-raised);
+}
+
+.session-page .transcript-entry.cited-hero > pre,
+.session-page .transcript-entry.cited-hero > summary {
+  color: var(--ink);
+}
+
+/* On arrival the neighbours step back for two seconds, which is how the page
+   says "here" without moving anything. It is a fade on the records around the
+   hero, not on the hero itself, so nothing the reader came to read is ever
+   dimmed. */
+.session-page .transcript-events.spotlight > :not(.cited-hero) {
+  opacity: 0.25;
+}
+
+.session-page .transcript-events > * {
+  transition: opacity var(--motion-peel) ease;
+}
+
+/* Reduced motion keeps the answer and drops the animation: the hero still
+   carries its rule and its raise, and nothing fades in or out. */
+@media (prefers-reduced-motion: reduce) {
+  .session-page .transcript-events > * {
+    transition: none;
+  }
+
+  .session-page .transcript-events.spotlight > :not(.cited-hero) {
+    opacity: 1;
+  }
+}

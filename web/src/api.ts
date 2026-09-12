@@ -27,6 +27,14 @@ export interface SessionSummary {
   title_provenance: string | null;
   workspace: string | null;
   continuation_grade: boolean;
+  // What the harness itself recorded about the model work in this session,
+  // summed by the adapter over the raw transcript. Null is not zero: most
+  // harnesses record no usage at all, and a table that printed $0.00 for them
+  // would report a measurement nobody took.
+  cost_usd: number | null;
+  total_tokens: number | null;
+  turns: number | null;
+  tool_errors: number | null;
 }
 
 export interface ScanState {
@@ -1382,6 +1390,22 @@ export function refreshSessions(): Promise<ScanState> {
 
 export function getSession(selector: string): Promise<SessionDetail> {
   return request<SessionDetail>(`/api/session?${query({ selector })}`);
+}
+
+// getSessionRow reads one session's listing row — the row that carries what
+// the session cost, how many tokens it spent, how many turns it took and how
+// many tool calls failed.
+//
+// It reads the listing rather than the inspect document because that is where
+// the usage lives: `/api/session` describes a session's files and metadata and
+// has never carried the usage columns, while `/api/sessions` is answered from
+// the catalog the scanner already holds in memory, without touching a
+// transcript. A session with no row is not an error — a selector that was
+// never described has no usage to report — so this resolves to null.
+export function getSessionRow(selector: string): Promise<SessionSummary | null> {
+  return getSessions().then(
+    (listing) => listing.sessions.find((row) => row.selector === selector) ?? null,
+  );
 }
 
 export function getTranscript(
