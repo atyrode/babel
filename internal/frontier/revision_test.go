@@ -179,8 +179,10 @@ func TestEveryRecordKindJoinsAChain(t *testing.T) {
 
 // TestReviveIsLegalFromEveryRestingStatusAndNoOther enumerates §4.2's whole
 // status vocabulary rather than the two that read like endings. #87 says
-// nothing closes, so the three statuses a stopped candidate can be in must all
-// be revivable — and the three a live one can be in must all refuse, because
+// nothing closes, so every status a stopped candidate can be in must be
+// revivable — including §4.13's superseded and retired, which an accepted
+// proposal appends and an operator can argue back — and the three a live one
+// can be in must all refuse, because
 // reviving there would either mean nothing or rewrite a running exploration's
 // lifecycle from outside it.
 func TestReviveIsLegalFromEveryRestingStatusAndNoOther(t *testing.T) {
@@ -193,12 +195,15 @@ func TestReviveIsLegalFromEveryRestingStatusAndNoOther(t *testing.T) {
 		StatusDeferred:      true,
 		StatusRejected:      true,
 		StatusPromoted:      true,
+		StatusSuperseded:    true,
+		StatusRetired:       true,
 	}
 	// Every §4.2 status is covered, so a status added later fails here
 	// rather than quietly having no revive rule.
 	for _, status := range []Status{
 		StatusUntriaged, StatusQueued, StatusInvestigating,
 		StatusDeferred, StatusRejected, StatusPromoted,
+		StatusSuperseded, StatusRetired,
 	} {
 		if _, ok := cases[status]; !ok {
 			t.Fatalf("status %q has no revive expectation", status)

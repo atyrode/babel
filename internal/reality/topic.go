@@ -125,19 +125,24 @@ func TopicOperations() []TopicOperation {
 // what decides whether a plan needs a draft and an identity.
 func (o TopicOperation) creates() bool { return o == TopicCreate || o == TopicSplit }
 
-// TopicPlanState is where a plan stands: proposed and unruled, applied by the
-// operator, or declined by him.
+// RulingState is where a plan the operator rules on stands: proposed and
+// unruled, applied by him, or declined by him.
 //
 // It is derived from the ruling rather than stored on the plan, for §4.8's
 // reason: the plan row is immutable, and a state column on it would be a field
 // that can disagree with the append-only record of what the operator did.
-type TopicPlanState string
+//
+// One vocabulary serves every plan kind — a topic plan and a backlog plan —
+// because the operator's act is the same act: he reads the proposal that
+// carries it and rules on it. A second set of three words for the second plan
+// kind would be two names for one state.
+type RulingState string
 
 // The plan states.
 const (
-	TopicPlanOpen     TopicPlanState = "open"
-	TopicPlanApplied  TopicPlanState = "applied"
-	TopicPlanDeclined TopicPlanState = "declined"
+	RulingOpen     RulingState = "open"
+	RulingApplied  RulingState = "applied"
+	RulingDeclined RulingState = "declined"
 )
 
 // TopicPlan is what a topic proposal would do, attached to the proposal record
@@ -190,7 +195,7 @@ type TopicPlan struct {
 	// fills it from the plan row and the ruling recorded against it.
 
 	// State is open until the operator rules, and then what he ruled.
-	State TopicPlanState
+	State RulingState
 	// CreatedAt is when the plan was recorded.
 	CreatedAt time.Time
 	// RuledBy and RuledAt attribute the ruling, and Reason keeps the

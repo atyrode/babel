@@ -109,7 +109,7 @@ func TestProposeTopicDedupesBySubjectMatterAndRefusesOneAlreadyBound(t *testing.
 	if err != nil || !found {
 		t.Fatalf("TopicPlan: %v (found=%v)", err, found)
 	}
-	if plan.State != TopicPlanOpen || plan.Operation != TopicCreate {
+	if plan.State != RulingOpen || plan.Operation != TopicCreate {
 		t.Fatalf("the plan reads %s/%s, want an open create", plan.State, plan.Operation)
 	}
 
@@ -265,7 +265,7 @@ func TestApplyTopicPlanCreatesTheSubjectAndFilesEveryRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TopicPlan: %v", err)
 	}
-	if applied.State != TopicPlanApplied || applied.EntityID != acceptance.EntityID {
+	if applied.State != RulingApplied || applied.EntityID != acceptance.EntityID {
 		t.Errorf("the plan reads back as %s/%q after acceptance", applied.State, applied.EntityID)
 	}
 	if _, err := store.ApplyTopicPlan(ctx, "pro-1", "operator", filer); !isErr(err, ErrAlreadyDecided) {
@@ -334,7 +334,7 @@ func TestApplyTopicPlanReportsAFilingFailureAndKeepsWhatItCreated(t *testing.T) 
 	if err != nil {
 		t.Fatalf("TopicPlan: %v", err)
 	}
-	if applied.State != TopicPlanApplied {
+	if applied.State != RulingApplied {
 		t.Errorf("the plan is %s, want applied: the ledger's half committed", applied.State)
 	}
 }
@@ -582,7 +582,7 @@ func TestApplyTopicPlanRefusesATargetTheLedgerHasMovedPast(t *testing.T) {
 		if err != nil {
 			t.Fatalf("TopicPlan(%s): %v", id, err)
 		}
-		if plan.State != TopicPlanOpen {
+		if plan.State != RulingOpen {
 			t.Errorf("plan %s is %s after a refused application", id, plan.State)
 		}
 	}
@@ -716,7 +716,7 @@ func TestDeclineTopicPlanSuppressesUntilMoreEvidenceStandsBehindIt(t *testing.T)
 	if declined[0].Reason != reason || declined[0].RuledBy != "operator" {
 		t.Errorf("the refusal reads back as %q by %q", declined[0].Reason, declined[0].RuledBy)
 	}
-	if declined[0].State != TopicPlanDeclined {
+	if declined[0].State != RulingDeclined {
 		t.Errorf("the declined plan is %s", declined[0].State)
 	}
 }

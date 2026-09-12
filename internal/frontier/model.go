@@ -117,6 +117,14 @@ type Status string
 
 // The §4.2 statuses. StatusDeferred is the one a finite run leaves behind:
 // §5.2 requires the unexplored remainder to be deferred rather than erased.
+//
+// StatusSuperseded and StatusRetired are §4.13's last paragraph: the backlog a
+// deferred candidate leaves is worked through the chain, and the two answers
+// that take a hypothesis off the frontier without deleting it are "a newer
+// candidate says this better" and "this was asked and answered". Neither is
+// reachable from a run: both are written only when the operator accepts the
+// proposal that argued for them, which is what keeps a status change something
+// Babel proposed and a person ruled on.
 const (
 	StatusUntriaged     Status = "untriaged"
 	StatusQueued        Status = "queued"
@@ -124,29 +132,49 @@ const (
 	StatusDeferred      Status = "deferred"
 	StatusRejected      Status = "rejected"
 	StatusPromoted      Status = "promoted"
+	StatusSuperseded    Status = "superseded"
+	StatusRetired       Status = "retired"
 )
 
 func (s Status) valid() bool {
 	switch s {
-	case StatusUntriaged, StatusQueued, StatusInvestigating, StatusDeferred, StatusRejected, StatusPromoted:
+	case StatusUntriaged, StatusQueued, StatusInvestigating, StatusDeferred, StatusRejected,
+		StatusPromoted, StatusSuperseded, StatusRetired:
 		return true
 	}
 	return false
 }
 
+// Replaced reports a candidate another record now speaks for, or one the
+// backlog pass retired with a reason the operator accepted.
+//
+// It exists because every surface that asks "does this still need somebody"
+// has to answer no for these two, and each of them asking the status vocabulary
+// itself is how the feed and the evaluation draw come to disagree. A replaced
+// candidate is still readable, still filed, still linked to the record that
+// replaced it; it is simply not work and not a row awaiting a ruling.
+func (s Status) Replaced() bool {
+	return s == StatusSuperseded || s == StatusRetired
+}
+
 // resting reports whether a candidate's lifecycle has come to a stop in this
 // status. §4.7 already refuses to delete anything; #87 goes one step further
-// and refuses to let a status be an ending, so the three states a run leaves
-// behind when it stops working on a candidate are resting places rather than
+// and refuses to let a status be an ending, so the states a run leaves behind
+// when it stops working on a candidate are resting places rather than
 // terminals, and Revive is the transition out of each of them.
 //
 // `investigating` is deliberately not among them even though it can outlive
 // the run that set it: a candidate a run abandoned mid-investigation is
 // resumed by the run, not revived by an operator, and treating a crashed run's
 // leftovers as a resting state would hide the crash.
+//
+// Superseded and retired are resting for the reason the other three are. §4.13
+// deletes nothing, and a candidate the operator later decides was replaced too
+// early comes back through the same attributed, argued transition every other
+// resting candidate does.
 func (s Status) resting() bool {
 	switch s {
-	case StatusDeferred, StatusRejected, StatusPromoted:
+	case StatusDeferred, StatusRejected, StatusPromoted, StatusSuperseded, StatusRetired:
 		return true
 	}
 	return false
@@ -542,6 +570,19 @@ type Hypothesis struct {
 	// listing that hid them would be the tidy version of the frontier
 	// rather than the true one.
 	Duplicates []DuplicateWarning
+}
+
+// DeferredHypothesis is one candidate in the backlog, with when it was last
+// set down.
+//
+// The deferral time travels beside the record because it is what the backlog
+// is ordered by and it is not derivable from anything else the candidate
+// carries: a hypothesis created in January and deferred in June has been
+// waiting since June, and its creation date says nothing about how long
+// nobody has come back to it.
+type DeferredHypothesis struct {
+	Hypothesis Hypothesis
+	DeferredAt time.Time
 }
 
 // HypothesisPayload is the §9 encryption-bound part of a candidate. It holds

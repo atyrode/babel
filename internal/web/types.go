@@ -249,7 +249,11 @@ type Options struct {
 	// render with their interest unset.
 	Filings    FilingService
 	TopicPlans TopicPlanService
-	Stance     TopicStanceReader
+	// BacklogPlans is §4.13's other plan half: what accepting a published
+	// backlog proposal would do to the frontier and the ledger. Nil is the
+	// feature absent, on TopicPlans' terms.
+	BacklogPlans BacklogPlanService
+	Stance       TopicStanceReader
 	// Topics is §4.13's topic surface over the Reality Ledger: the
 	// operator's stance toward a topic.
 	//
@@ -1202,6 +1206,55 @@ type TopicPlanService interface {
 	// an error beside a populated outcome, because the act did happen.
 	ApplyTopicPlan(ctx context.Context, proposalID, operator string) (TopicPlanOutcome, error)
 	DeclineTopicPlan(ctx context.Context, proposalID, operator, reason string) error
+}
+
+// BacklogPlanView is one backlog proposal's plan as the ruling route reads it:
+// which of §4.13's four acts accepting the published proposal would perform,
+// and on which candidates.
+//
+// It is the surface's vocabulary rather than the ledger's, for
+// TopicPlanView's reason: the page renders identifiers and an act, and the
+// ledger reasons about fact inputs and provenance.
+type BacklogPlanView struct {
+	// ProposalID is the frontier proposal record the operator rules on.
+	ProposalID string
+	// Operation is the act: consolidate, supersede, retire or promote.
+	Operation string
+	// Hypotheses are the candidates the act would settle, and Status what
+	// it would settle them to.
+	Hypotheses []string
+	Status     string
+	// Reasoning is why the act is right, in the run's own words.
+	Reasoning string
+}
+
+// BacklogPlanOutcome is what applying a backlog plan did, as the ruling's
+// answer reports it.
+type BacklogPlanOutcome struct {
+	Operation string
+	// Settled are the candidates whose status the acceptance moved, Status
+	// what it moved them to, and FactID the fact a promotion asserted.
+	Settled []string
+	Status  string
+	FactID  string
+}
+
+// BacklogPlanService is §4.13's backlog plan half: what accepting a published
+// backlog proposal would do, and the two things the operator's ruling on that
+// proposal performs.
+//
+// It is TopicPlanService's shape and it is a second interface rather than a
+// widened one because the two answer about different proposals: a proposal
+// carries at most one plan, and a surface that asked one service for both
+// would have to decide which answer wins.
+type BacklogPlanService interface {
+	// BacklogPlan reports the plan one proposal carries, and false for a
+	// proposal that carries none — which is most of them.
+	BacklogPlan(ctx context.Context, proposalID string) (BacklogPlanView, bool, error)
+	// ApplyBacklogPlan performs the act the operator accepted: the status
+	// events it settles, and the fact a promotion records.
+	ApplyBacklogPlan(ctx context.Context, proposalID, operator string) (BacklogPlanOutcome, error)
+	DeclineBacklogPlan(ctx context.Context, proposalID, operator, reason string) error
 }
 
 // TopicInterestView is the operator's recorded stance toward one topic, as the

@@ -218,6 +218,22 @@ func (p Predicate) TTL() (time.Duration, string) {
 	return spec.ttl, spec.why
 }
 
+// ValueKind reports how this predicate's value is typed, and Vocabulary its
+// closed value space — empty for a predicate whose value is free text or
+// another entity.
+//
+// They are readable for Predicates()' reason. A surface that offers a fact to
+// be recorded has to say what a value may be, and a caller that had to learn
+// the vocabulary by being refused would be discovering the registry through
+// errors.
+func (p Predicate) ValueKind() ValueKind { return predicateSpecs[p].kind }
+
+// Vocabulary lists the values this predicate admits, in the order the registry
+// declares them.
+func (p Predicate) Vocabulary() []string {
+	return append([]string{}, predicateSpecs[p].values...)
+}
+
 // validateValue checks a value against its predicate's declared type and
 // vocabulary. An out-of-vocabulary enum is refused rather than stored, because
 // a focus rule that matches on a value can only be deterministic if the value

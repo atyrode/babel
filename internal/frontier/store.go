@@ -862,11 +862,16 @@ func (s *Store) Hypothesis(ctx context.Context, id string) (Hypothesis, error) {
 	return record, err
 }
 
-const hypothesisSelect = `SELECT h.id, h.ancestor_id, h.run_id, h.schema_version, h.created_at, h.payload_json,
+// hypothesisColumns is the candidate projection every read of one shares, so
+// a query that needs a column beside it appends rather than restating the
+// list: two copies of a projection are two answers to what a candidate is.
+const hypothesisColumns = `SELECT h.id, h.ancestor_id, h.run_id, h.schema_version, h.created_at, h.payload_json,
 	(SELECT e.status FROM frontier_status_event e WHERE e.hypothesis_id = h.id ORDER BY e.seq DESC LIMIT 1),
 	(SELECT json_group_array(json_object('id', w.id, 'duplicate_of', w.duplicate_of,
 		'overlap', json_extract(w.payload_json, '$.overlap'), 'recorded_at', w.recorded_at))
-		FROM frontier_duplicate_warning w WHERE w.hypothesis_id = h.id)
+		FROM frontier_duplicate_warning w WHERE w.hypothesis_id = h.id)`
+
+const hypothesisSelect = hypothesisColumns + `
 	FROM frontier_hypothesis h`
 
 func scanHypothesis(row interface{ Scan(...any) error }) (Hypothesis, error) {
@@ -1193,6 +1198,67 @@ func (s *Store) Unexplored(ctx context.Context, limit int) ([]Hypothesis, error)
 	}
 	return frontier, rows.Err()
 }
+
+// Deferred is §4.13's backlog: the candidates a run set down and nobody came
+// back to, oldest deferral first.
+//
+// It is a different question from Unexplored and deliberately not a filter on
+// it. Unexplored asks what a resumed run should pick up and orders by the
+// priority the producing run recorded; this asks what has been waiting longest
+// with nothing happening to it, because the backlog pass exists to work
+// through a pile in the order it accumulated rather than to re-run the
+// producer's ranking. A candidate deferred, revived and deferred again is at
+// its latest deferral, which is when it was last set down.
+//
+// Only leaves, for Unexplored's reason: a revised candidate is spoken for by
+// its descendant, and consolidating a wording the frontier has already moved
+// past would argue about a sentence nobody holds.
+func (s *Store) Deferred(ctx context.Context, limit int) ([]DeferredHypothesis, error) {
+	query := hypothesisColumns + `,
+	(SELECT e.recorded_at FROM frontier_status_event e WHERE e.hypothesis_id = h.id
+		AND e.status = ? ORDER BY e.seq DESC LIMIT 1)
+	FROM frontier_hypothesis h
+	WHERE NOT EXISTS(SELECT 1 FROM frontier_hypothesis d WHERE d.ancestor_id = h.id)
+	AND (SELECT e.status FROM frontier_status_event e WHERE e.hypothesis_id = h.id
+		ORDER BY e.seq DESC LIMIT 1) = ?
+	ORDER BY 9, h.created_at, h.id`
+	args := []any{string(StatusDeferred), string(StatusDeferred)}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the deferred backlog: %w", err)
+	}
+	defer rows.Close()
+	var out []DeferredHypothesis
+	for rows.Next() {
+		var deferred sql.NullString
+		record, err := scanHypothesis(withColumn{row: rows, extra: &deferred})
+		if err != nil {
+			return nil, err
+		}
+		item := DeferredHypothesis{Hypothesis: record}
+		if deferred.Valid {
+			if item.DeferredAt, err = parseTime(deferred.String); err != nil {
+				return nil, fmt.Errorf("hypothesis %s deferral: %w", record.ID, err)
+			}
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// withColumn lets a query that selects the candidate projection plus one
+// column reuse scanHypothesis rather than restating the eight destinations it
+// already knows how to fill.
+type withColumn struct {
+	row   interface{ Scan(...any) error }
+	extra any
+}
+
+func (w withColumn) Scan(dest ...any) error { return w.row.Scan(append(dest, w.extra)...) }
 
 // DeferFrontier records that a finite run stopped with these candidates
 // unexplored. §5.2: finite runs defer the unexplored frontier, they do not

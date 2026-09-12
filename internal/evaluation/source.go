@@ -177,6 +177,17 @@ type UnfiledSource interface {
 	Unfiled(ctx context.Context, limit int) ([]Subject, error)
 }
 
+// DeferredSource is the optional interface a Source implements when it can
+// report which hypotheses a run set down and nobody came back to (§4.13).
+//
+// Optional for UnfiledSource's reason, and separate from it because they are
+// two different backlogs read from two different facts: one is about the
+// `about` edges and one about the status history, and a source that can answer
+// either must not have to answer both.
+type DeferredSource interface {
+	Deferred(ctx context.Context, limit int) ([]Subject, error)
+}
+
 // maxConcurrentOpens bounds how many sealed objects are opened at once.
 //
 // Eight, against two costs that pull in opposite directions: an open is one
@@ -355,6 +366,29 @@ func (s *babelSource) Unfiled(ctx context.Context, limit int) ([]Subject, error)
 			continue
 		}
 		out = append(out, Subject{Kind: kind, ID: ref.ID})
+	}
+	return out, nil
+}
+
+// Deferred reports the candidates whose latest status is `deferred`, oldest
+// deferral first (§4.13).
+//
+// The answer is the frontier's and only the translation is here, on Unfiled's
+// terms: what counts as deferred is that store's status history, and a second
+// derivation of it would be a second answer to "what is still waiting".
+//
+// It reads this machine's durable frontier alone, for Unfiled's reason. A
+// candidate another host deferred is that host's backlog: the status history
+// lives beside the record, and settling a remote candidate from here would
+// append an ending to a lifecycle this machine cannot see the whole of.
+func (s *babelSource) Deferred(ctx context.Context, limit int) ([]Subject, error) {
+	records, err := s.front.Deferred(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the deferred backlog: %w", err)
+	}
+	out := make([]Subject, 0, len(records))
+	for _, record := range records {
+		out = append(out, Subject{Kind: SubjectKindHypothesis, ID: record.Hypothesis.ID})
 	}
 	return out, nil
 }

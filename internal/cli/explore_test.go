@@ -23,7 +23,7 @@ import (
 // again, deriving the expectation from the same source would make this file
 // agree with the bug.
 const (
-	shippedRecipes = 16
+	shippedRecipes = 17
 	defaultRecipes = 5
 )
 

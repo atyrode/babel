@@ -206,7 +206,7 @@ func (s *Store) checkTopicEvidence(ctx context.Context, subjectKey string, sessi
 		case !verdict.Valid:
 			return fmt.Errorf("%w: proposal %s already proposes this and awaits the operator",
 				ErrConflict, proposalID)
-		case TopicPlanState(verdict.String) == TopicPlanDeclined && sessions <= weight:
+		case RulingState(verdict.String) == RulingDeclined && sessions <= weight:
 			return fmt.Errorf("%w: the plan on proposal %s was declined with %d sessions "+
 				"behind it and this one has %d", ErrSuppressed, proposalID, weight, sessions)
 		}
@@ -233,7 +233,7 @@ func (s *Store) OpenTopicPlans(ctx context.Context) ([]TopicPlan, error) {
 func (s *Store) DeclinedTopicPlans(ctx context.Context, limit int) ([]TopicPlan, error) {
 	return s.topicPlansWhere(ctx, `WHERE EXISTS(
 		SELECT 1 FROM reality_topic_ruling r WHERE r.proposal_id = p.proposal_id
-			AND r.verdict = '`+string(TopicPlanDeclined)+`')
+			AND r.verdict = '`+string(RulingDeclined)+`')
 		ORDER BY (SELECT r.recorded_at FROM reality_topic_ruling r
 			WHERE r.proposal_id = p.proposal_id) DESC, p.proposal_id`, limit)
 }
@@ -296,7 +296,7 @@ func (s *Store) TopicPlan(ctx context.Context, proposalID string) (TopicPlan, bo
 		Reasoning:  payload.Reasoning,
 		Sessions:   weight,
 		By:         payload.By,
-		State:      TopicPlanOpen,
+		State:      RulingOpen,
 	}
 	if plan.CreatedAt, err = parseTime(created); err != nil {
 		return TopicPlan{}, false, fmt.Errorf("reality: topic plan %s: %w", proposalID, err)
@@ -331,7 +331,7 @@ func (s *Store) readTopicRuling(ctx context.Context, plan *TopicPlan) error {
 	if err := json.Unmarshal(encoded, &payload); err != nil {
 		return fmt.Errorf("reality: decode topic ruling %s: %w", plan.ProposalID, err)
 	}
-	plan.State = TopicPlanState(verdict)
+	plan.State = RulingState(verdict)
 	plan.RuledBy = actor
 	plan.Reason = payload.Note
 	plan.EntityID = entityID.String
@@ -482,12 +482,12 @@ func (s *Store) DeclineTopicPlan(ctx context.Context, proposalID, operator, reas
 	if !found {
 		return fmt.Errorf("%w: proposal %s carries no topic plan", ErrUnknownRecord, proposalID)
 	}
-	if plan.State != TopicPlanOpen {
+	if plan.State != RulingOpen {
 		return fmt.Errorf("%w: the plan on proposal %s is already %s",
 			ErrAlreadyDecided, proposalID, plan.State)
 	}
 	return s.transact(ctx, func(tx *sql.Tx) error {
-		_, err := s.recordTopicRuling(ctx, tx, proposalID, TopicPlanDeclined, operator, reason, "", "")
+		_, err := s.recordTopicRuling(ctx, tx, proposalID, RulingDeclined, operator, reason, "", "")
 		return err
 	})
 }
@@ -530,7 +530,7 @@ func (s *Store) ApplyTopicPlan(ctx context.Context, proposalID, operator string,
 		return TopicAcceptance{}, fmt.Errorf("%w: proposal %s carries no topic plan",
 			ErrUnknownRecord, proposalID)
 	}
-	if plan.State != TopicPlanOpen {
+	if plan.State != RulingOpen {
 		return TopicAcceptance{}, fmt.Errorf("%w: the plan on proposal %s is already %s",
 			ErrAlreadyDecided, proposalID, plan.State)
 	}
@@ -572,7 +572,7 @@ func (s *Store) ApplyTopicPlan(ctx context.Context, proposalID, operator string,
 		if err != nil {
 			return err
 		}
-		ruling, err := s.recordTopicRuling(ctx, tx, proposalID, TopicPlanApplied, operator,
+		ruling, err := s.recordTopicRuling(ctx, tx, proposalID, RulingApplied, operator,
 			plan.Reasoning, acceptance.EntityID, resolutionID(acceptance.Resolution))
 		if err != nil {
 			return err
@@ -730,7 +730,7 @@ func (s *Store) checkApplicable(ctx context.Context, plan TopicPlan) error {
 // index on proposal_id is what makes a double-click impossible, for the same
 // reason a plan's acceptance is unique.
 func (s *Store) recordTopicRuling(ctx context.Context, tx *sql.Tx, proposalID string,
-	verdict TopicPlanState, operator, note, entityID, resolutionID string) (string, error) {
+	verdict RulingState, operator, note, entityID, resolutionID string) (string, error) {
 	id, err := newID("trl")
 	if err != nil {
 		return "", err

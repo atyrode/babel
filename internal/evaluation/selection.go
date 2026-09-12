@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/atyrode/babel/internal/frontier"
 )
 
 // This file is the worker queue: which review, of which revision, in which
@@ -76,11 +78,18 @@ const (
 	// package's coverage — and because a cycle's accounting has to be able
 	// to say how much went to naming rather than to judging.
 	LaneFiling = "filing"
+	// LaneBacklog is §4.13's second draw kind: the share spent working
+	// through the hypotheses a run deferred and nobody came back to. It is
+	// its own lane for LaneFiling's reason and one more — the two backlogs
+	// are different piles, and a deployment that had cleared its filings
+	// but not its deferrals must not read as having cleared both.
+	LaneBacklog = "backlog"
 )
 
 // AllocationLanes lists the allocation lanes in a stable order.
 func AllocationLanes() []string {
-	return []string{LaneCoverage, LaneWeighted, LaneExploration, LaneDiscovery, LaneChallenge, LaneFiling}
+	return []string{LaneCoverage, LaneWeighted, LaneExploration, LaneDiscovery, LaneChallenge,
+		LaneFiling, LaneBacklog}
 }
 
 // ValidAllocationLane reports whether lane is an allocation lane.
@@ -153,6 +162,12 @@ type drawInput struct {
 	// review obligation and never makes a record more or less worth
 	// reviewing.
 	Unfiled []Subject
+	// Deferred are the hypotheses whose latest status is `deferred`, oldest
+	// deferral first, as the frontier reported them (§4.13). They are the
+	// backlog lane's candidate set and nothing else's, for Unfiled's
+	// reason: having been set down is a fact about the frontier's own
+	// lifecycle and never makes a record more or less worth reviewing.
+	Deferred []Subject
 }
 
 // drawResult is one selection decision.
@@ -201,6 +216,16 @@ type candidate struct {
 	// backlog of unfiled records can never displace review work — nor be
 	// displaced by it, because the share is its own.
 	Filing bool
+	// Backlog marks the backlog lane's candidate: a deferred hypothesis,
+	// drawn to be worked through rather than judged. Only LaneBacklog draws
+	// one, on Filing's terms — the two backlogs are each other's equals and
+	// neither can displace review work or be displaced by it.
+	Backlog bool
+	// Rank is the frontier's own position in the backlog, oldest deferral
+	// first and one-based. It is set for a backlog candidate and nowhere
+	// else, because it is the one ordering this package cannot derive from
+	// the projection.
+	Rank int
 }
 
 // selectDraw chooses the next assignment.
@@ -244,13 +269,16 @@ func selectDraw(in drawInput, runID string, seed uint64) (drawResult, error) {
 		return drawResult{StopReason: reason, Gaps: gaps},
 			fmt.Errorf("%w: %s", ErrNoWork, reason)
 	}
-	// A challenge and a filing are accounted to their own lane whichever
-	// reservation drew them, so a cycle's accounting can say how much went
-	// to arguing about disagreement, and how much to deciding what a record
-	// is about, rather than to reviewing.
+	// A challenge, a filing and a backlog act are accounted to their own
+	// lane whichever reservation drew them, so a cycle's accounting can say
+	// how much went to arguing about disagreement, to deciding what a record
+	// is about, and to working through what was deferred, rather than to
+	// reviewing.
 	switch {
 	case chosen.Filing:
 		lane = LaneFiling
+	case chosen.Backlog:
+		lane = LaneBacklog
 	case chosen.Role == RoleChallenge:
 		lane = LaneChallenge
 	}
@@ -377,14 +405,23 @@ func buildCandidates(in drawInput) ([]candidate, []string) {
 		}
 	}
 
-	// The filing backlog is the frontier's answer, not this projection's, so
-	// it is indexed rather than derived: a record is a filing candidate
-	// because no live non-heuristic filing points at it, which is a fact
-	// about the `about` edges and has nothing to do with how well reviewed
-	// it is.
+	// The two backlogs are the frontier's answers, not this projection's, so
+	// they are indexed rather than derived: a record is a filing candidate
+	// because no live non-heuristic filing points at it, and a candidate is
+	// a backlog entry because its latest status event says `deferred`. Both
+	// are facts about the frontier and have nothing to do with how well
+	// reviewed anything is.
 	unfiled := make(map[Subject]bool, len(in.Unfiled))
 	for _, subject := range in.Unfiled {
 		unfiled[subject] = true
+	}
+	// The rank is the frontier's own order — oldest deferral first — kept
+	// because it is not derivable from anything the projection holds. A
+	// candidate written in January and set down in June has been waiting
+	// since June, and its creation date says nothing about that.
+	deferred := make(map[Subject]int, len(in.Deferred))
+	for rank, subject := range in.Deferred {
+		deferred[subject] = rank + 1
 	}
 
 	var (
@@ -449,6 +486,60 @@ func buildCandidates(in drawInput) ([]candidate, []string) {
 					Filing:  true,
 				})
 			}
+		}
+		if rank := deferred[subject]; rank > 0 {
+			deferred[subject] = -rank
+			key := roleKey{subject: subject, role: RoleBacklog}
+			// Outside the per-revision review cap, for the filing
+			// block's reason: the cap bounds how much judgement one
+			// revision may collect, and what becomes of a deferred
+			// candidate is not a judgement about it.
+			switch {
+			case !WorkRoleApplies(subject.Kind, RoleBacklog):
+				gaps = append(gaps, fmt.Sprintf("%s %s: deferred, and only a hypothesis is "+
+					"worked from the backlog", subject.Kind, subject.ID))
+			case active[key] > 0:
+				gaps = append(gaps, fmt.Sprintf("%s %s: the backlog act is already claimed by a "+
+					"live worker", subject.Kind, subject.ID))
+			case completed[key] > 0:
+				// A backlog pass that kept the candidate, or that
+				// proposed an act on it, has done the work this
+				// share pays for. The candidate stays deferred
+				// until the operator rules, and drawing it again
+				// would pay to propose what the ledger already
+				// holds.
+				gaps = append(gaps, fmt.Sprintf(
+					"%s %s: a backlog pass already ran; the candidate stays deferred until "+
+						"the act it proposed is accepted", subject.Kind, subject.ID))
+			case setbacks[key] >= maxSkipAttempts:
+				gaps = append(gaps, fmt.Sprintf(
+					"%s %s: %d backlog skips or failures; bounded attention spent and "+
+						"reported as a gap", subject.Kind, subject.ID, setbacks[key]))
+			default:
+				out = append(out, candidate{
+					Item:  item,
+					Role:  RoleBacklog,
+					State: CoverageUnreviewed,
+					// The record's own creation time keeps the
+					// total order total; the deferral rank is
+					// what this lane actually draws by.
+					DueAt:   item.Artifact.CreatedAt,
+					Weight:  1,
+					Ordinal: ordinals[key] + 1,
+					Backlog: true,
+					Rank:    rank,
+				})
+			}
+		}
+		if replaced(item.Artifact.Status) {
+			// A candidate a later record speaks for, or one the
+			// operator retired with a reason, is not work. §4.13
+			// deletes nothing, so it stays readable, filed and
+			// linked — and a review of it would be paying to judge a
+			// sentence the frontier has already moved past.
+			gaps = append(gaps, fmt.Sprintf("%s %s: %s, so no review of it is outstanding",
+				subject.Kind, subject.ID, item.Artifact.Status))
+			continue
 		}
 		if item.Assessments >= policy.MaxItemReviews {
 			gaps = append(gaps, fmt.Sprintf("%s %s: per-revision cap of %d reviews reached",
@@ -541,6 +632,21 @@ func buildCandidates(in drawInput) ([]candidate, []string) {
 	if policy.FilingShare > 0 && len(in.Unfiled) == 0 {
 		gaps = append(gaps, "filing: every open record carries a filing, so the filing share has "+
 			"nothing to draw")
+	}
+	// The same two answers the backlog share owes. A deferred candidate the
+	// reviewable inventory does not hold cannot be served the material a
+	// backlog pass reads, and an empty backlog is the good outcome rather
+	// than a stuck one.
+	for _, subject := range in.Deferred {
+		if deferred[subject] > 0 {
+			deferred[subject] = 0
+			gaps = append(gaps, fmt.Sprintf(
+				"%s %s: deferred, and not in the reviewable inventory, so no backlog context "+
+					"can be served", subject.Kind, subject.ID))
+		}
+	}
+	if policy.BacklogShare > 0 && len(in.Deferred) == 0 {
+		gaps = append(gaps, "backlog: nothing is deferred, so the backlog share has nothing to draw")
 	}
 	sortCandidates(out)
 	sort.Strings(gaps)
@@ -645,11 +751,11 @@ func weigh(item *projected, coverage RoleCoverage, policy Policy, now time.Time)
 // through rather than refusing is correct — an empty coverage lane means every
 // initial review is done, which is a reason to spend the share on weighted work
 // and not a reason to idle — and the order is fixed so a replay lands the same
-// way. The filing lane is last in every review order and the review lanes are
-// last in its own, so the two backlogs cover for each other only when one of
-// them is genuinely empty: a deployment with unfiled records and no due review
-// spends on naming rather than idling, and one with a full review backlog does
-// not lose the filing share to it.
+// way. The two work lanes are last in every review order and the review lanes
+// are last in theirs, so the three backlogs cover for each other only when one
+// of them is genuinely empty: a deployment with unfiled records and no due
+// review spends on naming rather than idling, and one with a full review
+// backlog does not lose the filing or the backlog share to it.
 func sample(candidates []candidate, policy Policy, seed uint64) (string, *candidate) {
 	rng := rand.New(rand.NewPCG(seed, seed^seedStream))
 	roll := rng.Float64()
@@ -658,17 +764,26 @@ func sample(candidates []candidate, policy Policy, seed uint64) (string, *candid
 	discoveryEdge := coverageEdge + policy.DiscoveryShare
 	explorationEdge := discoveryEdge + policy.ExplorationShare
 	filingEdge := explorationEdge + policy.FilingShare
+	backlogEdge := filingEdge + policy.BacklogShare
 
-	order := []string{LaneWeighted, LaneCoverage, LaneDiscovery, LaneExploration, LaneFiling}
+	order := []string{LaneWeighted, LaneCoverage, LaneDiscovery, LaneExploration, LaneFiling,
+		LaneBacklog}
 	switch {
 	case roll < coverageEdge:
-		order = []string{LaneCoverage, LaneDiscovery, LaneWeighted, LaneExploration, LaneFiling}
+		order = []string{LaneCoverage, LaneDiscovery, LaneWeighted, LaneExploration, LaneFiling,
+			LaneBacklog}
 	case roll < discoveryEdge:
-		order = []string{LaneDiscovery, LaneCoverage, LaneWeighted, LaneExploration, LaneFiling}
+		order = []string{LaneDiscovery, LaneCoverage, LaneWeighted, LaneExploration, LaneFiling,
+			LaneBacklog}
 	case roll < explorationEdge:
-		order = []string{LaneExploration, LaneWeighted, LaneCoverage, LaneDiscovery, LaneFiling}
+		order = []string{LaneExploration, LaneWeighted, LaneCoverage, LaneDiscovery, LaneFiling,
+			LaneBacklog}
 	case roll < filingEdge:
-		order = []string{LaneFiling, LaneWeighted, LaneCoverage, LaneDiscovery, LaneExploration}
+		order = []string{LaneFiling, LaneBacklog, LaneWeighted, LaneCoverage, LaneDiscovery,
+			LaneExploration}
+	case roll < backlogEdge:
+		order = []string{LaneBacklog, LaneFiling, LaneWeighted, LaneCoverage, LaneDiscovery,
+			LaneExploration}
 	}
 	for _, lane := range order {
 		if chosen := pick(candidates, lane, rng); chosen != nil {
@@ -690,22 +805,23 @@ const seedStream = 0x9e3779b97f4a7c15
 //
 // Coverage and discovery are deterministic: they draw the oldest-due and the
 // oldest untouched respectively, because a reservation whose target was chosen
-// at random would not reliably clear the backlog it exists to clear. Filing is
-// deterministic for the same reason and reads the same way: oldest unfiled
-// first. Exploration is uniform. Weighted is a cumulative-weight sample, which
-// is the only lane where a higher weight means a higher probability rather than
-// a guarantee.
+// at random would not reliably clear the backlog it exists to clear. Filing and
+// the backlog are deterministic for the same reason and read the same way:
+// oldest unfiled first, and longest deferred first. Exploration is uniform.
+// Weighted is a cumulative-weight sample, which is the only lane where a higher
+// weight means a higher probability rather than a guarantee.
 //
-// Every lane but filing skips a filing candidate, and filing draws nothing
-// else. That is the whole separation between the two backlogs: a record drawn
-// to be named is not a review, so it must never arrive at a reviewer, and a
-// record drawn to be reviewed must never arrive at the filing recipe.
+// Every review lane skips a work candidate, and each work lane draws nothing
+// else. That is the whole separation between the three backlogs: a record drawn
+// to be named or settled is not a review, so it must never arrive at a
+// reviewer, and a record drawn to be reviewed must never arrive at the filing
+// or the backlog recipe.
 func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 	switch lane {
 	case LaneCoverage:
 		var best *candidate
 		for i := range candidates {
-			if candidates[i].Filing || candidates[i].Revisit || !candidates[i].Initial {
+			if work(candidates[i]) || candidates[i].Revisit || !candidates[i].Initial {
 				continue
 			}
 			if best == nil || candidates[i].DueAt.Before(best.DueAt) {
@@ -716,7 +832,7 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 	case LaneDiscovery:
 		var best *candidate
 		for i := range candidates {
-			if candidates[i].Filing || candidates[i].Revisit || !candidates[i].Untouched {
+			if work(candidates[i]) || candidates[i].Revisit || !candidates[i].Untouched {
 				continue
 			}
 			if best == nil || candidates[i].DueAt.Before(best.DueAt) {
@@ -735,6 +851,21 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 			}
 		}
 		return best
+	case LaneBacklog:
+		// By the frontier's rank rather than by the record's age: the
+		// backlog is cleared in the order it accumulated, and the
+		// candidate set arrives already ordered by when each was last
+		// set down.
+		var best *candidate
+		for i := range candidates {
+			if !candidates[i].Backlog {
+				continue
+			}
+			if best == nil || candidates[i].Rank < best.Rank {
+				best = &candidates[i]
+			}
+		}
+		return best
 	case LaneExploration:
 		// The only lane that draws a revisit, and it draws uniformly
 		// over everything eligible: an exploration share spent by weight
@@ -742,7 +873,7 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 		// the share is that something nothing recommends still gets seen.
 		eligible := 0
 		for i := range candidates {
-			if !candidates[i].Filing {
+			if !work(candidates[i]) {
 				eligible++
 			}
 		}
@@ -751,7 +882,7 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 		}
 		nth := rng.IntN(eligible)
 		for i := range candidates {
-			if candidates[i].Filing {
+			if work(candidates[i]) {
 				continue
 			}
 			if nth == 0 {
@@ -766,7 +897,7 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 		// with due work for the paid share.
 		total := 0.0
 		for i := range candidates {
-			if candidates[i].Filing || candidates[i].Revisit {
+			if work(candidates[i]) || candidates[i].Revisit {
 				continue
 			}
 			total += candidates[i].Weight
@@ -776,7 +907,7 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 		}
 		target := rng.Float64() * total
 		for i := range candidates {
-			if candidates[i].Filing || candidates[i].Revisit {
+			if work(candidates[i]) || candidates[i].Revisit {
 				continue
 			}
 			target -= candidates[i].Weight
@@ -785,7 +916,7 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 			}
 		}
 		for i := len(candidates) - 1; i >= 0; i-- {
-			if !candidates[i].Filing && !candidates[i].Revisit {
+			if !work(candidates[i]) && !candidates[i].Revisit {
 				return &candidates[i]
 			}
 		}
@@ -793,6 +924,17 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 	}
 	return nil
 }
+
+// work reports a candidate drawn to be acted on rather than judged: a record
+// to be named, or a deferred candidate to be settled. It is one predicate
+// because every review lane owes both the same exclusion, and two tests that
+// had to be kept in step is how one of them comes to be forgotten.
+func work(c candidate) bool { return c.Filing || c.Backlog }
+
+// replaced reports an exploration status that says a later record speaks for
+// this one (§4.13). It reads the frontier's vocabulary through its own type so
+// this package cannot drift from it.
+func replaced(status string) bool { return frontier.Status(status).Replaced() }
 
 // sortCandidates puts the eligible set in a total order.
 //

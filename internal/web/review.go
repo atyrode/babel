@@ -260,6 +260,13 @@ type decideResult struct {
 	// naming" is the ordinary case and must not read as a topic act that
 	// did nothing.
 	Topic *topicRuling `json:"topic,omitempty"`
+	// Backlog is present only when the record ruled on carried §4.13's
+	// backlog plan, and is a pointer for Topic's reason. A proposal carries
+	// at most one of the two: a topic act changes what records are about
+	// and a backlog act changes what becomes of a candidate, and a run that
+	// wrote both against one proposal would be asking for one ruling on two
+	// different changes.
+	Backlog *backlogRuling `json:"backlog,omitempty"`
 }
 
 // topicRuling is what a ruling on a topic proposal did (§4.13).
@@ -281,6 +288,28 @@ type topicRuling struct {
 	// Error is why the ledger act did not land, in the ledger's own words.
 	// The ruling stands either way: it is an append-only disposition that
 	// was recorded before this was attempted.
+	Error string `json:"error,omitempty"`
+}
+
+// backlogRuling is what a ruling on a backlog proposal did (§4.13's last
+// paragraph). It states Applied and Declined rather than inferring them from
+// the disposition, for topicRuling's reason: the ruling and the act are two
+// writes and the second can fail after the first.
+type backlogRuling struct {
+	ProposalID string `json:"proposal_id"`
+	Operation  string `json:"operation"`
+	Applied    bool   `json:"applied"`
+	Declined   bool   `json:"declined"`
+	// Settled are the candidates whose status the acceptance moved, and
+	// Status what it moved them to. Both travel because an acceptance that
+	// settled some of them and failed on the rest is a state the operator
+	// has to be able to see.
+	Settled []string `json:"settled,omitempty"`
+	Status  string   `json:"status,omitempty"`
+	// FactID is the fact an applied promotion recorded, empty otherwise.
+	FactID string `json:"fact_id,omitempty"`
+	// Error is why the act did not land, in the store's own words. The
+	// ruling stands either way.
 	Error string `json:"error,omitempty"`
 }
 
@@ -339,6 +368,19 @@ func (s *Server) handleReviewDecide(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	act, settling, ok := s.backlogPlanFor(w, r, subject, request)
+	if !ok {
+		return
+	}
+	if planned && settling {
+		s.writeError(w, http.StatusConflict,
+			"this proposal carries both a topic plan and a backlog plan; one ruling cannot apply "+
+				"two different changes, and Babel should have published them as two proposals")
+		return
+	}
+	if !ok {
+		return
+	}
 	event, err := s.opts.Review.Decide(r.Context(), review.Decision{
 		Subject:       subject,
 		Disposition:   frontier.Disposition(request.Disposition),
@@ -370,6 +412,10 @@ func (s *Server) handleReviewDecide(w http.ResponseWriter, r *http.Request) {
 	}
 	if planned {
 		result.Topic = s.ruleTopicPlan(r, plan, frontier.Disposition(request.Disposition),
+			by.ID(), request.Note)
+	}
+	if settling {
+		result.Backlog = s.ruleBacklogPlan(r, act, frontier.Disposition(request.Disposition),
 			by.ID(), request.Note)
 	}
 	s.writeJSON(w, http.StatusOK, result)
@@ -438,6 +484,78 @@ func (s *Server) ruleTopicPlan(r *http.Request, plan TopicPlanView,
 		if err := s.opts.TopicPlans.DeclineTopicPlan(r.Context(), plan.ProposalID,
 			operator, note); err != nil {
 			s.logf("POST %s: the topic plan on %s was not declined: %v",
+				r.URL.Path, plan.ProposalID, err)
+			out.Error = err.Error()
+			return out
+		}
+		out.Declined = true
+	}
+	return out
+}
+
+// backlogPlanFor reads the backlog plan the ruled-on record carries, and
+// refuses the ruling the plan could not survive.
+//
+// The one refusal is topicPlanFor's and for the same reason: §4.13 keeps a
+// declined plan's reason verbatim as the evidence the next pass reads before
+// proposing the same act again, and a rejection this surface accepted with no
+// reason would teach Babel nothing.
+func (s *Server) backlogPlanFor(w http.ResponseWriter, r *http.Request, subject frontier.Ref,
+	request decideRequest) (BacklogPlanView, bool, bool) {
+	if s.opts.BacklogPlans == nil || subject.Type != frontier.EntityProposal {
+		return BacklogPlanView{}, false, true
+	}
+	plan, planned, err := s.opts.BacklogPlans.BacklogPlan(r.Context(), subject.ID)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return BacklogPlanView{}, false, false
+	}
+	if !planned {
+		return BacklogPlanView{}, false, true
+	}
+	if frontier.Disposition(request.Disposition) == frontier.DispositionReject &&
+		strings.TrimSpace(request.Note) == "" {
+		s.writeError(w, http.StatusBadRequest,
+			"rejecting a backlog proposal keeps the reason verbatim, and suppresses the same act "+
+				"until something materially new turns up; this one gives none")
+		return BacklogPlanView{}, false, false
+	}
+	return plan, true, true
+}
+
+// ruleBacklogPlan applies or declines the backlog plan the operator has just
+// ruled on, and reports what happened.
+//
+// A failure is reported rather than returned as the request's error, on
+// ruleTopicPlan's terms: the disposition is already appended and §4.7 does not
+// un-append one. Every other disposition leaves the plan open, which is what a
+// deferral means — and leaves the candidate deferred, which is where it
+// already was.
+func (s *Server) ruleBacklogPlan(r *http.Request, plan BacklogPlanView,
+	disposition frontier.Disposition, operator, note string) *backlogRuling {
+	out := &backlogRuling{ProposalID: plan.ProposalID, Operation: plan.Operation}
+	switch disposition {
+	case frontier.DispositionAccept:
+		outcome, err := s.opts.BacklogPlans.ApplyBacklogPlan(r.Context(), plan.ProposalID, operator)
+		out.Settled, out.Status, out.FactID = outcome.Settled, outcome.Status, outcome.FactID
+		if outcome.Operation != "" {
+			out.Operation = outcome.Operation
+		}
+		if err != nil {
+			s.logf("POST %s: the backlog plan on %s was not applied: %v",
+				r.URL.Path, plan.ProposalID, err)
+			out.Error = err.Error()
+			return out
+		}
+		out.Applied = true
+		// The status events the acceptance appended are invisible to the
+		// built index, so the page the operator lands on would still show
+		// the candidate he just settled as awaiting him.
+		s.invalidateFeed()
+	case frontier.DispositionReject:
+		if err := s.opts.BacklogPlans.DeclineBacklogPlan(r.Context(), plan.ProposalID,
+			operator, note); err != nil {
+			s.logf("POST %s: the backlog plan on %s was not declined: %v",
 				r.URL.Path, plan.ProposalID, err)
 			out.Error = err.Error()
 			return out

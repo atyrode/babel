@@ -23,6 +23,10 @@ var shipped = []struct {
 	enabled  bool
 	minScope int
 }{
+	// The backlog recipe reads the deferred candidates and their
+	// observations: it decides what becomes of one (§4.13) and never
+	// materializes a repository to do it.
+	{id: "babel-consolidates-its-backlog", kind: KindMeta, enabled: false, minScope: 1},
 	// The filing recipe reads the session corpus and the ledger's topics:
 	// it decides what a record is about (§4.13) and never materializes a
 	// repository to do it.

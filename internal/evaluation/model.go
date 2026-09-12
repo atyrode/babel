@@ -283,21 +283,44 @@ func ValidRole(role string) bool { return slices.Contains(Roles(), role) }
 // recorded as an attributed, append-only assessment.
 const RoleFiling = "filing"
 
-// WorkRoles lists every role an assignment can carry — the review roles and
-// filing — in a stable order.
-func WorkRoles() []string { return append(Roles(), RoleFiling) }
+// RoleBacklog is the backlog lane's work role: working through the hypotheses
+// a run deferred and nobody came back to (§4.13's last paragraph), rather than
+// judging a record.
+//
+// It is not one of Roles() for RoleFiling's reason, and the reason reads the
+// same way: a deferred candidate is a pile to work through, not an unmet
+// review obligation, and admitting it to the coverage vocabulary would report
+// every record as missing a review nobody was going to perform. What it shares
+// with a review is everything else — drawn under the same policy, claimed
+// against the same allowance, one supervised worker, one attributed record.
+const RoleBacklog = "backlog"
+
+// WorkRoles lists every role an assignment can carry — the review roles,
+// filing and the backlog — in a stable order.
+func WorkRoles() []string { return append(Roles(), RoleFiling, RoleBacklog) }
 
 // ValidWorkRole reports whether role is one an assignment can be drawn in.
-func ValidWorkRole(role string) bool { return role == RoleFiling || ValidRole(role) }
+func ValidWorkRole(role string) bool {
+	return role == RoleFiling || role == RoleBacklog || ValidRole(role)
+}
 
 // WorkRoleApplies reports whether a subject kind can carry a work role.
 //
 // Filing applies to every evaluable kind except this package's own records: an
 // evaluation is not a frontier record, so there is no `about` edge to write for
 // it and no topic a reader would look for it under.
+//
+// The backlog applies to hypotheses and to nothing else, because a deferred
+// candidate is the only thing §4.2 has a deferral for: an observation takes
+// its hypothesis's fate (§4.13), and a finding or a proposal that nobody has
+// ruled on is awaiting the operator rather than sitting in a backlog Babel may
+// work through.
 func WorkRoleApplies(subjectKind, role string) bool {
-	if role == RoleFiling {
+	switch role {
+	case RoleFiling:
 		return subjectKind != SubjectKindEvaluation && len(RolesForKind(subjectKind)) > 0
+	case RoleBacklog:
+		return subjectKind == SubjectKindHypothesis
 	}
 	return RoleApplies(subjectKind, role)
 }
@@ -404,6 +427,82 @@ func (f Filing) validate() error {
 	}
 	if strings.TrimSpace(f.Reason) == "" {
 		return fmt.Errorf("%w: a filing must say why", ErrInvalid)
+	}
+	return nil
+}
+
+// The outcomes one backlog assignment can reach (§4.13's last paragraph).
+//
+// Two, and the asymmetry is the point. Every act on a deferred candidate —
+// consolidating it with others, superseding it, retiring it, promoting one of
+// its observations to a fact — is a *proposal* the operator rules on, because
+// a status a run set on its own authority would be Babel deciding what it
+// knows. The other honest answer is that the candidate should stay where it
+// is, which is a completed pass and not a skip: the pass read the backlog
+// entry and judged that nothing should happen to it yet.
+const (
+	// BacklogProposed is a backlog act the run published as an ordinary
+	// proposal record, with the plan behind it in the Reality Ledger.
+	BacklogProposed = "backlog-proposed"
+	// BacklogKept is the recorded judgement that the candidate is worth
+	// keeping as it stands, with the reason.
+	BacklogKept = "kept"
+)
+
+// BacklogOutcomes lists the backlog outcomes in a stable order.
+func BacklogOutcomes() []string { return []string{BacklogProposed, BacklogKept} }
+
+// Backlog is what a backlog assignment produced.
+//
+// It exists for Filing's reason: the proposal is a frontier record and the
+// plan is the ledger's, and this is the attributed evaluation record saying
+// which answer a paid draw reached — so a receipt, and the accounting of what
+// the backlog share bought, can be read without opening either store.
+type Backlog struct {
+	Outcome string `json:"outcome"`
+	// Proposal is the proposal record the run published for the operator to
+	// rule on. Proposed only.
+	Proposal string `json:"proposal,omitempty"`
+	// Operation is which of §4.13's four acts that proposal carries —
+	// consolidate, supersede, retire or promote — recorded rather than
+	// derived so a receipt can say what the operator is being asked to rule
+	// on without opening the proposal.
+	Operation string `json:"operation,omitempty"`
+	// Hypotheses are the deferred candidates the act settles. Proposed
+	// only, and carried because "what would this change" is the question a
+	// reader of the receipt asks first.
+	Hypotheses []string `json:"hypotheses,omitempty"`
+	// Reason is why the act is right, or why the candidate is worth keeping
+	// as it stands. It is required in both: a backlog pass that moved
+	// nothing and said nothing has not worked the backlog.
+	Reason string `json:"reason"`
+}
+
+func (b Backlog) validate() error {
+	if !slices.Contains(BacklogOutcomes(), b.Outcome) {
+		return fmt.Errorf("%w: %q is not a backlog outcome", ErrInvalid, b.Outcome)
+	}
+	switch b.Outcome {
+	case BacklogProposed:
+		if strings.TrimSpace(b.Proposal) == "" {
+			return fmt.Errorf("%w: a proposed backlog act must name the proposal record that "+
+				"carries it", ErrInvalid)
+		}
+		if strings.TrimSpace(b.Operation) == "" {
+			return fmt.Errorf("%w: a backlog proposal must say which act it proposes", ErrInvalid)
+		}
+		if len(b.Hypotheses) == 0 {
+			return fmt.Errorf("%w: a backlog proposal must name the candidates it would settle",
+				ErrInvalid)
+		}
+	case BacklogKept:
+		if b.Proposal != "" || b.Operation != "" || len(b.Hypotheses) > 0 {
+			return fmt.Errorf("%w: a candidate kept as it stands names no proposal, act or "+
+				"settled candidate", ErrInvalid)
+		}
+	}
+	if strings.TrimSpace(b.Reason) == "" {
+		return fmt.Errorf("%w: a backlog pass must say why", ErrInvalid)
 	}
 	return nil
 }
@@ -783,6 +882,11 @@ type Assessment struct {
 	// its own because it is the same thing every other field here is: one
 	// paid draw's attributed statement about one record.
 	Filing *Filing `json:"filing,omitempty"`
+	// Backlog is what a backlog assignment did with a deferred candidate
+	// (§4.13), for that assignment and no other. It is on the assessment
+	// for Filing's reason and carries no judgement about the record: a pass
+	// that proposes to retire a candidate has not voted against it.
+	Backlog *Backlog `json:"backlog,omitempty"`
 }
 
 // validateShape checks everything about an assessment that does not depend on
@@ -806,9 +910,15 @@ func (a Assessment) validateShape() error {
 			return err
 		}
 	}
-	if a.Vote == "" && len(a.Contributions) == 0 && a.Outcome == "" && a.Filing == nil {
-		return fmt.Errorf("%w: an assessment states no vote, no contribution, no outcome and no filing; "+
-			"record a skip instead", ErrInvalid)
+	if a.Backlog != nil {
+		if err := a.Backlog.validate(); err != nil {
+			return err
+		}
+	}
+	if a.Vote == "" && len(a.Contributions) == 0 && a.Outcome == "" && a.Filing == nil &&
+		a.Backlog == nil {
+		return fmt.Errorf("%w: an assessment states no vote, no contribution, no outcome, no filing "+
+			"and no backlog act; record a skip instead", ErrInvalid)
 	}
 	for i, contribution := range a.Contributions {
 		if err := contribution.validate(); err != nil {
@@ -881,9 +991,13 @@ func (a Assessment) validate(role string) error {
 		return fmt.Errorf("%w: a filing needs the %s role, not %q: where a record belongs is not a "+
 			"judgement about it", ErrInvalid, RoleFiling, role)
 	}
-	if role == RoleFiling && len(a.Contributions) > 0 {
-		return fmt.Errorf("%w: a filing assignment records where a record belongs and contributes "+
-			"nothing to the review of it", ErrInvalid)
+	if a.Backlog != nil && role != RoleBacklog {
+		return fmt.Errorf("%w: a backlog act needs the %s role, not %q: what becomes of a deferred "+
+			"candidate is not a judgement about it", ErrInvalid, RoleBacklog, role)
+	}
+	if (role == RoleFiling || role == RoleBacklog) && len(a.Contributions) > 0 {
+		return fmt.Errorf("%w: a %s assignment records what it did and contributes nothing to the "+
+			"review of the record", ErrInvalid, role)
 	}
 	for i, contribution := range a.Contributions {
 		if contribution.Kind == ContributionComparison && role != RoleComparison {
@@ -926,6 +1040,8 @@ func (a Assessment) satisfiesRole(role string) error {
 		stated = a.Outcome != ""
 	case RoleFiling:
 		stated = a.Filing != nil
+	case RoleBacklog:
+		stated = a.Backlog != nil
 	}
 	if !stated {
 		return fmt.Errorf("%w: this assessment states nothing the %s role counts; a skip is the honest "+
@@ -1136,7 +1252,12 @@ type Policy struct {
 	// FilingShare is §4.13's draw kind: the share of a cycle spent deciding
 	// what a record is about. Zero is a policy, not a fault — a deployment
 	// whose operator files by hand spends nothing here.
-	FilingShare    float64 `json:"filing_share,omitempty"`
+	FilingShare float64 `json:"filing_share,omitempty"`
+	// BacklogShare is §4.13's second draw kind: the share of a cycle spent
+	// working through the hypotheses a run deferred and nobody came back
+	// to. Zero is a policy for FilingShare's reason — a deployment that
+	// wants its backlog left alone spends nothing here.
+	BacklogShare   float64 `json:"backlog_share,omitempty"`
 	MaxItemReviews int     `json:"max_item_reviews"`
 	PerCycleCost   float64 `json:"per_cycle_cost"`
 	DailyCost      float64 `json:"daily_cost"`
