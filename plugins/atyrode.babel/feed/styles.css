@@ -1,15 +1,901 @@
 /*
-  THE FEED'S SKIN. Every selector's leftmost compound is this plugin's own root class
-  (docs/PLUGINS.md §10, ADR 0025 §7); the tokens come from the ground, never from `:root`.
+  BABEL'S SKIN, scoped to its own root (PLUGINS.md §10, S13).
 
-  STUB (Scaffold, P0): belongs to the feed slice with its web half; replace both together.
+  Every selector's leftmost compound is `.plugin-atyrode_babel_feed` — the panels put that
+  class on their outermost element themselves — so nothing here can reach a shell family, and
+  the tokens below are Babel's own rather than a second writer for the ground's.
+
+  The tokens ARE the standalone product's, ported: six untinted greys, four signals, one hue
+  for names, three faces, and ONE FOUR-PIXEL SCALE. A padding, gap or rhythm that is not a
+  step on it is a number nobody can retune. Two buttons — the plain one and the primary — and
+  one chip; that is the whole control vocabulary, and a third would be a third idea of what a
+  press means.
 */
 
 .plugin-atyrode_babel_feed {
-  color: var(--fg);
-  font-size: 0.875rem;
+  /* Base: the page, the thing lifted off it, the well, two rules, four inks. */
+  --babel-bg: #0d0f12;
+  --babel-bg-raised: #14171c;
+  --babel-rule: #23272e;
+  --babel-rule-strong: #2e343c;
+  --babel-ink-strong: #f2f4f7;
+  --babel-ink: #e8eaed;
+  --babel-ink-muted: #9aa3ad;
+  --babel-ink-faint: #6b7480;
+
+  /* Signals, and one hue that is a name rather than a judgement. */
+  --babel-accent: #4c8dff;
+  --babel-accent-ink: #a9c8ff;
+  --babel-good: #3ecf8e;
+  --babel-bad: #ff6b6b;
+  --babel-warn: #f0b429;
+  --babel-info: #59b3ab;
+
+  /* Type: a serif for what a human reads, the shell's sans for chrome, a mono for figures. */
+  --babel-font-editorial: "Source Serif 4", Charter, "Iowan Old Style", Georgia, serif;
+  --babel-font-ui: inherit;
+  --babel-font-mono: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, ui-monospace, monospace;
+  --babel-measure: 68ch;
+
+  /* Space: one scale, six steps. */
+  --babel-space-1: 4px;
+  --babel-space-2: 8px;
+  --babel-space-3: 12px;
+  --babel-space-4: 16px;
+  --babel-space-5: 24px;
+  --babel-space-6: 32px;
+
+  --babel-radius: 10px;
+  --babel-radius-sm: 6px;
+  --babel-radius-pill: 2rem;
+  --babel-motion-fast: 120ms;
+  --babel-motion-peel: 220ms;
+
+  /* Derived: nothing below is a new colour, every value is a mix with the page under it. */
+  --babel-rule-soft: color-mix(in srgb, var(--babel-rule) 62%, var(--babel-bg));
+  --babel-accent-soft: color-mix(in srgb, var(--babel-accent) 14%, transparent);
+  --babel-good-soft: color-mix(in srgb, var(--babel-good) 10%, transparent);
+  --babel-bad-soft: color-mix(in srgb, var(--babel-bad) 11%, transparent);
+  --babel-warn-ink: color-mix(in srgb, var(--babel-warn) 62%, var(--babel-ink));
+
+  color: var(--babel-ink);
+  font-family: var(--babel-font-ui);
 }
 
-.plugin-atyrode_babel_feed__note {
-  color: var(--fg-muted);
+.plugin-atyrode_babel_feed .babel-panel {
+  padding: var(--babel-space-5);
+}
+
+/* --------------------------------------------------------------------------- the two buttons */
+
+.plugin-atyrode_babel_feed button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2rem;
+  padding: var(--babel-space-1) var(--babel-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--babel-radius-sm);
+  color: var(--babel-ink-muted);
+  background: none;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.plugin-atyrode_babel_feed button:hover:not(:disabled),
+.plugin-atyrode_babel_feed button:focus-visible {
+  border-color: var(--babel-rule);
+  color: var(--babel-ink);
+  background: color-mix(in srgb, var(--babel-ink) 6%, transparent);
+}
+
+.plugin-atyrode_babel_feed button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.plugin-atyrode_babel_feed .babel-primary {
+  border-color: var(--babel-accent);
+  color: var(--babel-bg);
+  background: var(--babel-accent);
+  font-weight: 600;
+}
+
+.plugin-atyrode_babel_feed .babel-primary:hover:not(:disabled) {
+  color: var(--babel-bg);
+  background: color-mix(in srgb, var(--babel-ink) 14%, var(--babel-accent));
+}
+
+/* THE ONE CHIP is `@manifold/ui`'s: the stdlib owns the box — border, radius, padding, type
+   — and what an adopter owns is the tint (PLUGINS.md §7b). The standing a record wears is the
+   only token on these surfaces, and this is its colour. */
+.plugin-atyrode_babel_feed .babel-standing {
+  border-radius: var(--babel-radius-pill);
+  color: var(--babel-ink-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.plugin-atyrode_babel_feed .babel-link {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--babel-accent);
+  font-size: inherit;
+}
+
+.plugin-atyrode_babel_feed .babel-note {
+  margin: 0;
+  color: var(--babel-ink-faint);
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-error {
+  margin: 0;
+  color: var(--babel-bad);
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-mono {
+  font-family: var(--babel-font-mono);
+  font-size: 0.76rem;
+}
+
+/* Untrusted model prose, always framed as a quotation. */
+.plugin-atyrode_babel_feed .babel-quote {
+  max-width: var(--babel-measure);
+  margin: 0;
+  color: var(--babel-ink);
+  font-family: var(--babel-font-editorial);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------------------- the sentence */
+
+.plugin-atyrode_babel_feed .babel-sentence {
+  margin: 0;
+  color: var(--babel-ink-muted);
+  font-size: 0.86rem;
+  line-height: 1.9;
+}
+
+.plugin-atyrode_babel_feed .babel-sentence[data-heading] {
+  color: var(--babel-ink);
+  font-size: 1.05rem;
+}
+
+.plugin-atyrode_babel_feed .babel-pick {
+  position: relative;
+  display: inline-block;
+}
+
+.plugin-atyrode_babel_feed .babel-pick-button {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--babel-ink-strong);
+  font-size: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--babel-rule-strong);
+  text-underline-offset: 4px;
+}
+
+.plugin-atyrode_babel_feed .babel-pick-button:hover:not(:disabled),
+.plugin-atyrode_babel_feed .babel-pick-button:focus-visible,
+.plugin-atyrode_babel_feed .babel-pick-button[aria-expanded="true"] {
+  border: 0;
+  color: var(--babel-accent);
+  background: none;
+}
+
+.plugin-atyrode_babel_feed .babel-pick-caret {
+  margin-left: var(--babel-space-1);
+  color: var(--babel-ink-faint);
+  font-size: 0.8em;
+}
+
+.plugin-atyrode_babel_feed .babel-menu {
+  position: absolute;
+  z-index: 25;
+  top: calc(100% + var(--babel-space-1));
+  left: 0;
+  display: grid;
+  min-width: 14rem;
+  padding: var(--babel-space-1);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius);
+  background: var(--babel-bg-raised);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.5);
+}
+
+.plugin-atyrode_babel_feed .babel-menu-wide {
+  grid-auto-flow: column;
+  gap: var(--babel-space-3);
+}
+
+.plugin-atyrode_babel_feed .babel-menu-column {
+  display: grid;
+  align-content: start;
+}
+
+.plugin-atyrode_babel_feed .babel-menu-head {
+  display: block;
+  margin: var(--babel-space-1) var(--babel-space-2);
+  color: var(--babel-ink-faint);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.plugin-atyrode_babel_feed .babel-menu button {
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  justify-content: start;
+  padding: var(--babel-space-2);
+  text-align: left;
+}
+
+.plugin-atyrode_babel_feed .babel-menu-column button {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.plugin-atyrode_babel_feed .babel-menu button[aria-checked="true"] {
+  color: var(--babel-accent);
+}
+
+.plugin-atyrode_babel_feed .babel-menu-tick {
+  color: var(--babel-accent);
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-menu-note {
+  grid-column: 2;
+  color: var(--babel-ink-faint);
+  font-size: 0.72rem;
+}
+
+.plugin-atyrode_babel_feed .babel-count,
+.plugin-atyrode_babel_feed .babel-ranked,
+.plugin-atyrode_babel_feed .babel-ruled {
+  color: var(--babel-ink-faint);
+  font-family: var(--babel-font-mono);
+  font-size: 0.76rem;
+}
+
+.plugin-atyrode_babel_feed .babel-said {
+  margin: 0;
+  color: var(--babel-accent);
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-said:empty {
+  display: none;
+}
+
+.plugin-atyrode_babel_feed .babel-notice {
+  margin: 0;
+  color: var(--babel-warn-ink);
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-pulse {
+  margin: 0;
+  color: var(--babel-ink-muted);
+  font-family: var(--babel-font-mono);
+  font-size: 0.76rem;
+}
+
+/* --------------------------------------------------------------------------- the list */
+
+.plugin-atyrode_babel_feed .babel-list,
+.plugin-atyrode_babel_feed .babel-waiting {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--babel-rule-soft);
+  list-style: none;
+}
+
+/* One row: what Babel's reviewers said in a gutter of its own, then the claim. Fourteen
+   pixels of air is the one measurement here that is not a step on the scale, and it is
+   deliberate — at twelve the titles touch, at sixteen fifteen rows leave the density
+   contract. */
+.plugin-atyrode_babel_feed .babel-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: var(--babel-space-3);
+  align-items: start;
+  padding: 14px var(--babel-space-3);
+  border-bottom: 1px solid var(--babel-rule-soft);
+  transition: background var(--babel-motion-fast) ease;
+}
+
+.plugin-atyrode_babel_feed .babel-row:hover {
+  background: var(--babel-bg-raised);
+}
+
+/* The row the keyboard is on. An inset shadow rather than a border, so arriving on a row does
+   not move the text inside it by two pixels. */
+.plugin-atyrode_babel_feed .babel-row[data-focused],
+.plugin-atyrode_babel_feed .babel-row[data-selected] {
+  background: var(--babel-bg-raised);
+  box-shadow: inset 2px 0 0 0 var(--babel-accent);
+}
+
+.plugin-atyrode_babel_feed .babel-row:focus {
+  outline: none;
+}
+
+.plugin-atyrode_babel_feed .babel-row[data-leaving] {
+  overflow: hidden;
+  opacity: 0;
+  transition:
+    opacity var(--babel-motion-fast) ease,
+    max-height var(--babel-motion-peel) ease;
+  max-height: 0;
+  padding-block: 0;
+  pointer-events: none;
+}
+
+.plugin-atyrode_babel_feed .babel-claim {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--babel-ink-strong);
+  font-family: var(--babel-font-editorial);
+  font-size: 1.02rem;
+  line-height: 1.35;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.plugin-atyrode_babel_feed .babel-claim:hover:not(:disabled),
+.plugin-atyrode_babel_feed .babel-row[data-focused] .babel-claim {
+  border: 0;
+  color: var(--babel-accent);
+  background: none;
+}
+
+.plugin-atyrode_babel_feed .babel-facts {
+  color: var(--babel-ink-muted);
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-kind {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plugin-atyrode_babel_feed .babel-kind[data-tone="accent"] {
+  color: var(--babel-accent);
+}
+
+.plugin-atyrode_babel_feed .babel-kind[data-tone="good"] {
+  color: var(--babel-good);
+}
+
+.plugin-atyrode_babel_feed .babel-kind[data-tone="info"] {
+  color: var(--babel-info);
+}
+
+.plugin-atyrode_babel_feed .babel-kind[data-tone="warn"] {
+  color: var(--babel-warn);
+}
+
+.plugin-atyrode_babel_feed .babel-topic,
+.plugin-atyrode_babel_feed .babel-age,
+.plugin-atyrode_babel_feed .babel-comments {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--babel-ink-muted);
+  font-family: var(--babel-font-mono);
+  font-size: 0.76rem;
+}
+
+.plugin-atyrode_babel_feed .babel-why {
+  color: var(--babel-ink-faint);
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* Somebody is reading it right now: the only mark on a row that moves, because it is the only
+   fact on a row that is about this moment. */
+.plugin-atyrode_babel_feed .babel-reviewing {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--babel-good);
+}
+
+.plugin-atyrode_babel_feed .babel-acted {
+  color: var(--babel-ink-muted);
+  font-size: 0.76rem;
+}
+
+.plugin-atyrode_babel_feed .babel-acted[data-act="accept"] {
+  color: var(--babel-good);
+}
+
+.plugin-atyrode_babel_feed .babel-acted[data-act="reject"] {
+  color: var(--babel-bad);
+}
+
+/* --------------------------------------------------------------------------- the vote strip */
+
+.plugin-atyrode_babel_feed .babel-votes {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.plugin-atyrode_babel_feed .babel-score-line {
+  display: flex;
+  align-items: center;
+  gap: var(--babel-space-1);
+}
+
+.plugin-atyrode_babel_feed .babel-score {
+  color: var(--babel-ink-strong);
+  font-family: var(--babel-font-mono);
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.plugin-atyrode_babel_feed .babel-score[data-zero] {
+  color: var(--babel-ink-faint);
+  font-weight: 500;
+}
+
+/* Two tones split across one small square: support and opposition, together. */
+.plugin-atyrode_babel_feed .babel-contested {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  background: linear-gradient(135deg, var(--babel-good) 50%, var(--babel-bad) 50%);
+}
+
+.plugin-atyrode_babel_feed .babel-dots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px;
+  max-width: 44px;
+}
+
+.plugin-atyrode_babel_feed .babel-dot {
+  font-size: 7px;
+  line-height: 1;
+  cursor: help;
+}
+
+.plugin-atyrode_babel_feed .babel-dot[data-tone="good"] {
+  color: var(--babel-good);
+}
+
+.plugin-atyrode_babel_feed .babel-dot[data-tone="bad"] {
+  color: var(--babel-bad);
+}
+
+.plugin-atyrode_babel_feed .babel-dot[data-tone="faint"] {
+  color: var(--babel-ink-faint);
+}
+
+/* A record nobody assessed: the ring alone, because a nought over nothing reads as a record
+   nobody objected to. */
+.plugin-atyrode_babel_feed .babel-dot[data-tone="none"] {
+  color: var(--babel-rule-strong);
+}
+
+.plugin-atyrode_babel_feed .babel-dots-more {
+  color: var(--babel-ink-faint);
+  font-family: var(--babel-font-mono);
+  font-size: 0.6rem;
+}
+
+/* --------------------------------------------------------------------------- the acts */
+
+/* Hidden until the row is under the pointer, holds the keyboard, or is the row j/k put the
+   focus on: five controls on every waiting row is seventy-five buttons on the first screen. */
+.plugin-atyrode_babel_feed .babel-acts {
+  display: none;
+}
+
+.plugin-atyrode_babel_feed .babel-row:hover .babel-acts,
+.plugin-atyrode_babel_feed .babel-row:focus-within .babel-acts,
+.plugin-atyrode_babel_feed .babel-row[data-focused] .babel-acts {
+  display: block;
+}
+
+.plugin-atyrode_babel_feed .babel-acts-text {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--babel-space-3);
+  animation: plugin-atyrode_babel_feed__acts var(--babel-motion-fast) ease-out;
+}
+
+.plugin-atyrode_babel_feed .babel-acts-text button {
+  min-height: 1.5rem;
+  padding: 0;
+  border: 0;
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-acts-text button:hover:not(:disabled),
+.plugin-atyrode_babel_feed .babel-acts-text button.active {
+  border: 0;
+  color: var(--babel-accent);
+  background: none;
+}
+
+.plugin-atyrode_babel_feed .babel-acts-bar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius-sm);
+  overflow: hidden;
+}
+
+.plugin-atyrode_babel_feed .babel-acts-bar button {
+  border: 0;
+  border-radius: 0;
+  border-right: 1px solid var(--babel-rule);
+}
+
+.plugin-atyrode_babel_feed .babel-acts-bar button.active,
+.plugin-atyrode_babel_feed .babel-acts-bar button[aria-pressed="true"] {
+  color: var(--babel-accent-ink);
+  background: var(--babel-accent-soft);
+}
+
+/* The confirmation unfolds where the button was, so the claim being ruled on is on screen. */
+.plugin-atyrode_babel_feed .babel-confirm {
+  display: grid;
+  gap: var(--babel-space-2);
+  margin-top: var(--babel-space-2);
+  padding: var(--babel-space-3);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius);
+  background: var(--babel-bg-raised);
+}
+
+.plugin-atyrode_babel_feed .babel-confirm p {
+  margin: 0;
+  color: var(--babel-ink-muted);
+  font-size: 0.8rem;
+}
+
+.plugin-atyrode_babel_feed .babel-confirm label {
+  display: grid;
+  gap: var(--babel-space-1);
+  color: var(--babel-ink-faint);
+  font-size: 0.74rem;
+}
+
+.plugin-atyrode_babel_feed .babel-confirm textarea,
+.plugin-atyrode_babel_feed .babel-confirm input,
+.plugin-atyrode_babel_feed .babel-confirm select {
+  padding: var(--babel-space-2);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius-sm);
+  color: var(--babel-ink);
+  background: var(--babel-bg);
+  font: inherit;
+  font-size: 0.85rem;
+}
+
+/* --------------------------------------------------------------------------- states */
+
+.plugin-atyrode_babel_feed .babel-state {
+  display: grid;
+  gap: var(--babel-space-2);
+  justify-items: start;
+  padding: var(--babel-space-5);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius);
+  color: var(--babel-ink-muted);
+  font-size: 0.85rem;
+}
+
+.plugin-atyrode_babel_feed .babel-state strong {
+  color: var(--babel-ink-strong);
+}
+
+.plugin-atyrode_babel_feed .babel-skeleton-block {
+  display: inline-block;
+  width: 62%;
+  border-radius: var(--babel-radius-sm);
+  background: var(--babel-rule);
+}
+
+.plugin-atyrode_babel_feed .babel-skeleton-score {
+  width: 1.4rem;
+  height: 0.95rem;
+}
+
+/* The way back from the last ruling: a receipt with one control on it, not a dialogue. */
+.plugin-atyrode_babel_feed .babel-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--babel-space-3);
+  padding: var(--babel-space-2) var(--babel-space-3);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius);
+  background: var(--babel-bg-raised);
+  color: var(--babel-ink-muted);
+  font-size: 0.78rem;
+}
+
+/* --------------------------------------------------------------------------- the rail */
+
+.plugin-atyrode_babel_feed .babel-topic-list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-atyrode_babel_feed .babel-topic-list button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  width: 100%;
+  gap: var(--babel-space-2);
+  padding: var(--babel-space-1) var(--babel-space-2);
+  font-family: var(--babel-font-mono);
+  font-size: 0.76rem;
+  text-align: left;
+}
+
+.plugin-atyrode_babel_feed .babel-topic-list button[aria-current="page"] {
+  color: var(--babel-accent);
+}
+
+.plugin-atyrode_babel_feed .babel-topic-count,
+.plugin-atyrode_babel_feed .babel-topic-group-count {
+  color: var(--babel-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-atyrode_babel_feed .babel-topic-group-label {
+  margin: 0 0 var(--babel-space-1);
+  padding: 0 var(--babel-space-2);
+  color: var(--babel-ink-faint);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.plugin-atyrode_babel_feed .babel-topic-why {
+  margin: 0;
+  padding: 0 var(--babel-space-2);
+  color: var(--babel-ink-muted);
+  font-size: 0.74rem;
+}
+
+.plugin-atyrode_babel_feed .babel-topic-ruled {
+  margin: 0;
+  padding: var(--babel-space-1) var(--babel-space-2);
+  color: var(--babel-ink-muted);
+  font-size: 0.72rem;
+}
+
+.plugin-atyrode_babel_feed .babel-topic-fold > summary {
+  padding: var(--babel-space-1) var(--babel-space-2);
+  color: var(--babel-ink-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+/* --------------------------------------------------------------------------- the record */
+
+.plugin-atyrode_babel_feed .babel-record-claim {
+  max-width: var(--babel-measure);
+  margin: 0;
+  color: var(--babel-ink-strong);
+  font-family: var(--babel-font-editorial);
+  font-size: 1.4rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.plugin-atyrode_babel_feed .babel-peel {
+  border-top: 1px solid var(--babel-rule-soft);
+}
+
+.plugin-atyrode_babel_feed .babel-peel-title {
+  color: var(--babel-ink);
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.plugin-atyrode_babel_feed .babel-peel-count {
+  margin-left: var(--babel-space-2);
+  color: var(--babel-ink-faint);
+  font-family: var(--babel-font-mono);
+  font-size: 0.72rem;
+}
+
+.plugin-atyrode_babel_feed .babel-field-label {
+  margin: 0 0 var(--babel-space-1);
+  color: var(--babel-ink-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.plugin-atyrode_babel_feed .babel-field-list {
+  display: grid;
+  gap: var(--babel-space-2);
+  margin: 0;
+  padding-left: var(--babel-space-4);
+}
+
+.plugin-atyrode_babel_feed .babel-evidence {
+  margin: 0;
+  padding-left: var(--babel-space-3);
+  border-left: 2px solid var(--babel-rule-strong);
+}
+
+.plugin-atyrode_babel_feed .babel-evidence-note {
+  margin: var(--babel-space-1) 0 0;
+  color: var(--babel-ink-faint);
+  font-size: 0.76rem;
+}
+
+.plugin-atyrode_babel_feed .babel-related-word {
+  color: var(--babel-ink-faint);
+  font-family: var(--babel-font-mono);
+  font-size: 0.72rem;
+}
+
+.plugin-atyrode_babel_feed .babel-roles {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--babel-font-mono);
+  font-size: 0.78rem;
+}
+
+.plugin-atyrode_babel_feed .babel-roles th,
+.plugin-atyrode_babel_feed .babel-roles td {
+  padding: var(--babel-space-1) var(--babel-space-2);
+  border-bottom: 1px solid var(--babel-rule-soft);
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-atyrode_babel_feed .babel-rows {
+  display: grid;
+  gap: var(--babel-space-1);
+  margin: 0;
+}
+
+.plugin-atyrode_babel_feed .babel-rows dt {
+  color: var(--babel-ink-faint);
+  font-size: 0.72rem;
+}
+
+.plugin-atyrode_babel_feed .babel-rows dd {
+  margin: 0 0 var(--babel-space-2);
+  overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------------------- the thread */
+
+.plugin-atyrode_babel_feed .babel-comments,
+.plugin-atyrode_babel_feed .babel-replies {
+  display: grid;
+  gap: var(--babel-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-atyrode_babel_feed .babel-replies {
+  margin-top: var(--babel-space-2);
+  padding-left: var(--babel-space-4);
+  border-left: 1px solid var(--babel-rule-soft);
+}
+
+.plugin-atyrode_babel_feed .babel-comment-who {
+  margin: 0 0 var(--babel-space-1);
+  color: var(--babel-ink-faint);
+  font-size: 0.74rem;
+}
+
+.plugin-atyrode_babel_feed .babel-comment-author {
+  color: var(--babel-ink-muted);
+  font-family: var(--babel-font-mono);
+}
+
+/* A ruling is not a comment and does not look like one: the log is authority, not opinion. */
+.plugin-atyrode_babel_feed .babel-act-row {
+  padding: var(--babel-space-2) var(--babel-space-3);
+  border-left: 2px solid var(--babel-accent);
+  background: color-mix(in srgb, var(--babel-accent) 5%, transparent);
+  font-size: 0.8rem;
+}
+
+.plugin-atyrode_babel_feed .babel-act-row[data-act="accept"] {
+  border-left-color: var(--babel-good);
+  background: var(--babel-good-soft);
+}
+
+.plugin-atyrode_babel_feed .babel-act-row[data-act="reject"] {
+  border-left-color: var(--babel-bad);
+  background: var(--babel-bad-soft);
+}
+
+.plugin-atyrode_babel_feed .babel-act-row p {
+  margin: 0;
+}
+
+/* --------------------------------------------------------------------------- what the last read did */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* A row that arrived on a live read. An overlay rather than the row's own background, so it
+     fades over the hover tint instead of fighting it. */
+  .plugin-atyrode_babel_feed .babel-row[data-arrived]::after {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    background: var(--babel-accent-soft);
+    animation: plugin-atyrode_babel_feed__halo 4s ease-out forwards;
+    content: "";
+    pointer-events: none;
+  }
+
+  /* A figure that changed: it lifts and takes the accent for a fifth of a second. */
+  .plugin-atyrode_babel_feed .babel-score[data-ticked],
+  .plugin-atyrode_babel_feed .babel-count[data-ticked] {
+    animation: plugin-atyrode_babel_feed__tick 200ms ease-out;
+  }
+
+  .plugin-atyrode_babel_feed .babel-reviewing {
+    animation: plugin-atyrode_babel_feed__breathe 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes plugin-atyrode_babel_feed__halo {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes plugin-atyrode_babel_feed__tick {
+  from {
+    color: var(--babel-accent);
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes plugin-atyrode_babel_feed__breathe {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes plugin-atyrode_babel_feed__acts {
+  from {
+    transform: translateY(4px);
+    opacity: 0;
+  }
 }
