@@ -205,7 +205,13 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
     ["queue", "#/"],
     ["review", "#/"],
     ["evaluation/coverage", "#/"],
-    ["review/proposal/pro_bare-vote", "#/r/pro_bare-vote"],
+    // The per-record rows below name pro_criteria-template, which is the
+    // proposal this fixture actually holds. pro_bare-vote stood here until
+    // the cutover moved the record peel's fixture into mock/phaseb.ts and
+    // left that id only in the evaluation fixture, where no /api/record/{id}
+    // answers for it — so every row pointing at it was asserting a redirect
+    // onto a page that reads "This record could not be read."
+    ["review/proposal/pro_criteria-template", "#/r/pro_criteria-template"],
     // /read was a destination and is now the feed. The kind it filtered by is
     // the one thing that bookmark carried which the feed still answers, so it
     // survives as a chip; everything else that URL could say belonged to the
@@ -219,12 +225,12 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
     ["findings", "#/?kind=finding&needs=all"],
     ["findings/fnd_conflicting-evidence", "#/r/fnd_conflicting-evidence"],
     ["proposals", "#/?kind=proposal&needs=all"],
-    ["proposals/pro_bare-vote", "#/r/pro_bare-vote"],
+    ["proposals/pro_criteria-template", "#/r/pro_criteria-template"],
     ["hypotheses", "#/?kind=hypothesis&needs=all"],
     ["hypotheses/hyp_unverified-closures", "#/r/hyp_unverified-closures"],
     ["evaluation", "#/?needs=all"],
     ["evaluation/policy", "#/settings?section=policy"],
-    ["evaluation/proposal/pro_bare-vote", "#/r/pro_bare-vote"],
+    ["evaluation/proposal/pro_criteria-template", "#/r/pro_criteria-template"],
     ["explore", "#/watch"],
     // The fleet page was about machines, and the machine is no longer a
     // dimension of the reading path: the bookmark lands on Watch rather than
@@ -255,10 +261,38 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
 test.skipIf(!chrome)("a record opens by identity, whatever kind it is", async () => {
   // One record is one page. The kind used to be in the route, which is how the
   // same proposal came to have four of them.
-  for (const id of ["hyp_unverified-closures", "fnd_conflicting-evidence", "pro_bare-vote"]) {
+  //
+  // Landing is not opening, so both are read. This test asserted the hash
+  // alone and named pro_bare-vote, an id no fixture serves since the peel's
+  // state moved to mock/phaseb.ts: it passed while the page it measured was
+  // the error state, which is exactly the failure a route-by-identity test
+  // exists to catch. What the record page renders when it has a record is its
+  // post header and its depths, and what it renders when it has none is the
+  // server's own sentence — so the claim has to be on screen and that sentence
+  // must not be.
+  for (const id of ["hyp_unverified-closures", "fnd_conflicting-evidence", "pro_criteria-template"]) {
     await page.goto(`${mock?.base}/#/r/${id}`, { waitUntil: "networkidle2" });
     const hash = await landed(`#/r/${id}`);
     expect(hash).toBe(`#/r/${id}`);
+    // The wait is on the page having settled either way — the claim, or the
+    // sentence that says why there is none — so a record this deployment
+    // cannot open is reported as the state it rendered rather than as a
+    // selector timeout with nothing in it a reader can act on.
+    await page.waitForFunction(
+      () => document.querySelector(".record-post .record-claim") !== null
+        || document.querySelector(".state-note.error-state") !== null,
+      { timeout: 15_000 },
+    );
+    const opened = await page.evaluate(() => ({
+      claim: (document.querySelector(".record-post .record-claim") as HTMLElement | null)
+        ?.innerText.trim() ?? "",
+      unreadable: (document.querySelector(".state-note.error-state") as HTMLElement | null)
+        ?.innerText.trim() ?? "",
+      depths: document.querySelectorAll("details.peel").length,
+    }));
+    expect(`${id}: ${opened.unreadable || "read"}`).toBe(`${id}: read`);
+    expect(`${id}: claim ${opened.claim.length > 0}, depths ${opened.depths > 0}`)
+      .toBe(`${id}: claim true, depths true`);
   }
 });
 
