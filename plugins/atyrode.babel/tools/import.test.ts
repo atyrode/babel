@@ -868,7 +868,7 @@ test("the operator's acts and Babel's votes arrive with their provenance", async
     .toEqual(["obs_a", 3.125, 0.25, "2026-09-04T00:00:05Z"]);
 
   const policy = await scalar(`SELECT * FROM policies WHERE version = 'eval-policy-1'`);
-  expect(JSON.parse(String(policy["payload"]))).toMatchObject({ version: "eval-policy-1", daily_cost: 25 });
+  expect(JSON.parse(String(policy["payload"]))).toMatchObject({ version: "eval-policy-1", dailyCost: 25 });
 
   const status = await scalar(`SELECT * FROM status_events WHERE id = 'ste_2'`);
   expect([status["status"], status["seq"], status["actor_kind"], status["reason"]])
@@ -898,7 +898,11 @@ test("the Reality Ledger crosses whole, and a plan carries the ruling that settl
   expect([entity["name"], entity["canonical_id"], entity["kind"]]).toEqual(["dev-01", "ent_1", "machine"]);
 
   const alias = await scalar(`SELECT * FROM aliases WHERE id = 'als_1'`);
-  expect([alias["value"], alias["retired_at"]]).toEqual(["dev-01", "2026-09-06T00:00:00Z"]);
+  // The hub resolves a topic by name through value_key, so the key is the normalized value,
+  // not the sealed digest the Go store kept.
+  expect([alias["value"], alias["value_key"], alias["retired_at"]]).toEqual([
+    "dev-01", "dev-01", "2026-09-06T00:00:00Z",
+  ]);
 
   const fact = await scalar(`SELECT * FROM facts WHERE id = 'fct_1'`);
   expect([fact["value"], fact["predicate"], fact["authority_id"], fact["note"]])

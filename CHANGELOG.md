@@ -265,6 +265,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   deleted: every settled candidate keeps its record, its observations and its
   history, and gains one appended status event saying which record now speaks
   for it (SPEC §4.13).
+- **The catalog comes from a job, not a command.** The plugin's machine half
+  ships its first operation: `scan` walks this machine's session roots and
+  writes one `sessions` row per session as a job output the hub ingests —
+  source identity, the harness's own recorded title with its provenance, the
+  workspace, the modified time, the bytes and their `sha256:` digest, and for
+  OMP the spend the transcript itself recorded. The repository identity is
+  observed once per workspace from `git rev-parse --git-common-dir` with
+  `GIT_OPTIONAL_LOCKS=0` and a one-second bound, so a checkout and every
+  linked worktree of it file under one project, a normalized `origin`
+  (`host/owner/repo`) names it across machines, and a workspace that is not a
+  repository carries the reason instead of a guess. The three source adapters
+  (omp, codex, claude) are ported to TypeScript with their identities
+  unchanged, so imported provenance still matches what a scan finds; Codex's
+  offline title derivation comes with them. Proof: `bun test
+  plugins/atyrode.babel/machine` (47 tests), and one read-only run over the
+  operator's own `~/.omp` catalogued 98 sessions, 1.04 GB, in 8.6 s — 58 of
+  them filed under 7 repositories, 35 in directories that are not
+  repositories and say so (plan §4, #244).
 
 ### Changed
 
