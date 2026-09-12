@@ -465,3 +465,16 @@ export const ReceiptSchema = z.strictObject({
   counts: z.record(z.string(), z.number().int()),
 });
 export type Receipt = z.infer<typeof ReceiptSchema>;
+
+// ---------------------------------------------------------------------------- job bindings
+
+/**
+ * Every Babel operation writes its files flat into ONE output directory and binds it under one
+ * name, so an operation that had nothing to say about a file simply writes no file, rather than
+ * leaving a promised binding unfilled. The operation declarations in server.ts and the loop that
+ * reads the outputs back agree through these three strings and nothing else.
+ */
+export const OUTPUT_BINDING = "outputs";
+export const OUTPUT_LOCATION = "outputs";
+/** The operation's single input binding: one JSON document, as the machine half parses it. */
+export const INPUT_FIELD = "input";
