@@ -104,6 +104,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   accepted, rejected, deferred, duplicate, reopened — in their chronological
   place as the attributed acts they are rather than as opinions. The box
   records a reason and changes no vote (SPEC §8.7, #235).
+- **A topic is a repository, not a folder.** The scan observes each session
+  workspace's git identity once — the common directory every worktree of a
+  repository shares, plus the origin normalized to `host/owner/repo` — and
+  the feed's topics are bound to that instead of to the last element of a
+  path. A session's workspace is where work happened; what it was about is
+  the repository, and the difference was visible on the operator's own
+  machine: of 96 sessions, a topic called `tmp` collected 32 that shared
+  nothing but a scratch directory, and one project read as three communities
+  because two of its worktrees were named `witty-sage-crab` and
+  `bold-gold-koala`. Both are gone: the worktrees are `manifold` and the
+  scratch sessions are unfiled, each carrying the reason it could not be
+  filed — not a git repository, workspace absent on this host, git
+  unavailable. `GET /api/topics` states each topic's binding and labels every
+  filing `heuristic`, because these come from repository identity alone and
+  §4.13's triage recipe has yet to revisit them. The observation is
+  read-only, runs once per distinct workspace per scan, and never writes to
+  a checkout (SPEC §4.13).
 
 ### Changed
 

@@ -740,19 +740,22 @@ func webSessionRows(rows []sessionRow) []web.SessionRow {
 // session".
 func webSessionRow(row sessionRow) web.SessionRow {
 	return web.SessionRow{
-		Harness:           row.Harness,
-		SourceID:          row.SourceID,
-		Selector:          row.Selector,
-		Size:              row.Size,
-		Modified:          row.Modified,
-		Title:             row.Title,
-		TitleProvenance:   row.TitleProvenance,
-		Workspace:         row.Workspace,
-		ContinuationGrade: row.Continuous,
-		CostUSD:           row.CostUSD,
-		TotalTokens:       row.TotalTokens,
-		Turns:             row.Turns,
-		ToolErrors:        row.ToolErrors,
+		Harness:            row.Harness,
+		SourceID:           row.SourceID,
+		Selector:           row.Selector,
+		Size:               row.Size,
+		Modified:           row.Modified,
+		Title:              row.Title,
+		TitleProvenance:    row.TitleProvenance,
+		Workspace:          row.Workspace,
+		RepositoryIdentity: row.RepositoryIdentity,
+		RepositoryRemote:   row.RepositoryRemote,
+		RepositoryReason:   row.RepositoryReason,
+		ContinuationGrade:  row.Continuous,
+		CostUSD:            row.CostUSD,
+		TotalTokens:        row.TotalTokens,
+		Turns:              row.Turns,
+		ToolErrors:         row.ToolErrors,
 	}
 }
 

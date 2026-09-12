@@ -28,12 +28,16 @@ import (
 // non-empty.
 const feedText = "the feed is babel"
 
-// feedWorkspace is the checkout the fixture's cited session happened in. It
-// carries a capital so the lowercasing rule is asserted rather than assumed:
-// §8.7 requires the same project seen from two machines to be one topic.
-const feedWorkspace = "/home/operator/Tyrode-Infra"
+// feedWorkspace is the checkout the fixture's cited session happened in, and
+// feedRepository is the repository that checkout belongs to. They are
+// separate because §4.13 separates them: the workspace is where the work
+// happened and the repository is what it was about, and only the second is a
+// topic. The remote carries a capital so the lowercasing rule is asserted
+// rather than assumed — the same project seen from two machines is one topic.
+const feedWorkspace = "/home/operator/checkouts/wt/witty-sage-crab"
+const feedRepository = "github.com/tyrode/Tyrode-Infra"
 
-// feedTopic is what that workspace files a record under.
+// feedTopic is what that repository files a record under.
 const feedTopic = "tyrode-infra"
 
 // TestHotPrefersTheNewerPostAtEqualScoreAndTheHigherScoreAtEqualAge is the
@@ -606,14 +610,18 @@ func TestTheCommentThreadNestsARefinementUnderWhatItRevises(t *testing.T) {
 // under is a fact this host resolved rather than a constant the test supplied.
 func withCitedWorkspace(o *Options) {
 	workspace := feedWorkspace
+	remote := feedRepository
+	identity := "/home/operator/checkouts/tyrode-infra/.git"
 	title := "the deploy step " + feedText
 	o.Lister = SessionListerFunc(func(context.Context) (SessionsResult, error) {
 		return SessionsResult{Sessions: []SessionRow{{
-			Harness:   "omp",
-			SourceID:  "session-a",
-			Selector:  "omp/session-a",
-			Title:     &title,
-			Workspace: &workspace,
+			Harness:            "omp",
+			SourceID:           "session-a",
+			Selector:           "omp/session-a",
+			Title:              &title,
+			Workspace:          &workspace,
+			RepositoryIdentity: &identity,
+			RepositoryRemote:   &remote,
 		}}}, nil
 	})
 }

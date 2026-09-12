@@ -758,9 +758,24 @@ type SessionRow struct {
 	// has to reach a human: three different kinds of claim render as the same
 	// short line of text, and a reader who cannot tell them apart is being
 	// shown Babel's arithmetic as if the harness had recorded it.
-	TitleProvenance   *string `json:"title_provenance"`
-	Workspace         *string `json:"workspace"`
-	ContinuationGrade *bool   `json:"continuation_grade"`
+	TitleProvenance *string `json:"title_provenance"`
+	Workspace       *string `json:"workspace"`
+	// RepositoryIdentity, RepositoryRemote and RepositoryReason are the
+	// repository the workspace belongs to, as this host observed it during
+	// the scan. They are what the feed's topics are derived from: a
+	// workspace path says where the work happened, and SPEC.md §4.13 is
+	// explicit that this is not what a record is about — two worktrees of
+	// one repository are one topic, and a directory under /tmp is none.
+	//
+	// RepositoryIdentity is the absolute git common directory, which every
+	// worktree of a repository shares; RepositoryRemote is the origin as
+	// host/owner/repo, absent when the checkout has no origin;
+	// RepositoryReason is present exactly when the identity is absent and
+	// says why nothing was observed.
+	RepositoryIdentity *string `json:"repository_identity"`
+	RepositoryRemote   *string `json:"repository_remote"`
+	RepositoryReason   *string `json:"repository_reason"`
+	ContinuationGrade  *bool   `json:"continuation_grade"`
 	// CostUSD, TotalTokens, Turns and ToolErrors are what the harness itself
 	// recorded about the model work in this session, summed by the adapter
 	// over the raw transcript. The CLI's listing has carried them since the

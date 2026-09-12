@@ -43,7 +43,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,11 +115,22 @@ type feedList struct {
 	Notice  string     `json:"notice"`
 }
 
-// topicCount is one community in the sidebar.
+// topicCount is one community in the sidebar: what it is called, how much is
+// in it, and — since topics became repository-bound (§4.13) — what the name
+// is actually bound to and how the filing was produced.
 type topicCount struct {
 	Name     string `json:"name"`
 	Posts    int    `json:"posts"`
 	LatestAt string `json:"latest_at"`
+	// Binding is the real thing the name names, and is null only when this
+	// deployment cannot bind the name to one repository.
+	Binding *topicBinding `json:"binding"`
+	// Heuristic is true for every topic this deployment seeds, and stays
+	// true until §4.13's triage recipe has run: these filings come from
+	// repository identity alone, with no model and no operator act behind
+	// them, and the section requires them to say so rather than to read as
+	// entities somebody created.
+	Heuristic bool `json:"heuristic"`
 }
 
 // topicList is GET /api/topics. Unfiled is counted rather than named, because
@@ -625,7 +635,7 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 		}
 	}
 
-	index.countTopics()
+	index.countTopics(sessions)
 	index.cost = time.Since(started)
 	return index, nil
 }
@@ -641,8 +651,14 @@ func (i *feedIndex) add(entry feedEntry) {
 }
 
 // countTopics derives the sidebar from the posts themselves, so a topic's
-// count and the feed it opens cannot disagree.
-func (i *feedIndex) countTopics() {
+// count and the feed it opens cannot disagree, and binds each name to the
+// repository it came from (§4.13).
+//
+// The counts come from the posts and the bindings from the catalog, because
+// the two answer different questions: how much is filed here, and what this
+// name actually is. A topic with posts and no binding is a name this host
+// cannot resolve to one repository, never a name it made up.
+func (i *feedIndex) countTopics(sessions map[string][]SessionRow) {
 	counts := map[string]int{}
 	latest := map[string]time.Time{}
 	for _, entry := range i.posts {
@@ -657,10 +673,12 @@ func (i *feedIndex) countTopics() {
 			}
 		}
 	}
+	bindings := topicBindings(sessions)
 	i.topics = make([]topicCount, 0, len(counts))
 	for name, count := range counts {
 		i.topics = append(i.topics, topicCount{
 			Name: name, Posts: count, LatestAt: timeText(latest[name]),
+			Binding: bindings[name], Heuristic: true,
 		})
 	}
 	// Busiest first, then by name: a sidebar that reshuffled two equal
@@ -1078,30 +1096,6 @@ func topicNames(names map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// topicOf is the name a session files a record under: the last element of the
-// workspace the conversation happened in, lowercased.
-//
-// Lowercased because §8.7 requires "the same project seen from two machines is
-// one topic", and a path element is the part of a workspace that survives the
-// same repository being checked out somewhere else. A session with no recorded
-// workspace files nothing: this machine did not observe where that work
-// happened, and naming the topic after the harness or the host would be the
-// surface inventing a provenance.
-func topicOf(row SessionRow) string {
-	if row.Workspace == nil {
-		return ""
-	}
-	trimmed := strings.TrimRight(strings.TrimSpace(*row.Workspace), "/")
-	if trimmed == "" {
-		return ""
-	}
-	name := strings.ToLower(path.Base(trimmed))
-	if name == "." || name == "/" || name == topicUnfiled {
-		return ""
-	}
-	return name
 }
 
 // commentsPathSuffix is the conversation under a record.

@@ -479,7 +479,24 @@ type sessionRow struct {
 	// indistinguishable from provenance the harness supplied.
 	TitleProvenance *string `json:"title_provenance"`
 	Workspace       *string `json:"workspace"`
-	Continuous      *bool   `json:"continuation_grade"`
+	// RepositoryIdentity, RepositoryRemote and RepositoryReason are the
+	// repository the workspace belongs to, observed once per workspace
+	// during the scan. The workspace above is where the work happened; this
+	// is what it was about (SPEC.md §4.13), and the two differ exactly where
+	// it matters: two worktrees of one repository are two workspaces and one
+	// identity, and a session run under /tmp has a workspace and no
+	// repository at all.
+	//
+	// RepositoryIdentity is the absolute path of the git common directory —
+	// the one thing every worktree of a repository shares. RepositoryRemote
+	// is the origin normalized to host/owner/repo and is null for a checkout
+	// with no origin. RepositoryReason is set exactly when RepositoryIdentity
+	// is null and says why: this host does not hold the workspace, the
+	// workspace is not under git, or this machine has no git to ask.
+	RepositoryIdentity *string `json:"repository_identity"`
+	RepositoryRemote   *string `json:"repository_remote"`
+	RepositoryReason   *string `json:"repository_reason"`
+	Continuous         *bool   `json:"continuation_grade"`
 	// CostUSD, TotalTokens, Turns and ToolErrors are what the harness itself
 	// recorded about this session's model spend, summed by the adapter over
 	// the raw transcript (adapter.Usage). They are null when the adapter
@@ -663,6 +680,7 @@ func (a *app) listSessionRows(ctx context.Context, sessions []localSession, scop
 	overlay := a.loadInferredOverlay(ctx, dataDir)
 
 	if noCache {
+		repositories := adapter.NewRepositoryObserver()
 		rows := make([]sessionRow, 0, len(sessions))
 		for _, session := range sessions {
 			desc, err := describeSession(ctx, session)
@@ -671,6 +689,7 @@ func (a *app) listSessionRows(ctx context.Context, sessions []localSession, scop
 				continue
 			}
 			row := rowFromDescription(session, desc)
+			observeRepository(ctx, repositories, &row)
 			row.Title, row.TitleProvenance = overlay.apply(row.Selector, row.Title, row.TitleProvenance)
 			rows = append(rows, row)
 		}
@@ -712,7 +731,15 @@ func catalogRefs(sessions []localSession) ([]catalog.Ref, map[string]localSessio
 // catalogDescriber turns one stale ref into the row the catalog caches. A
 // session that cannot be described or encoded is reported and omitted, so the
 // catalog never holds a row it could not round-trip.
+//
+// The repository observation happens here rather than in any adapter, and
+// that placement is the point: every harness records a workspace in its own
+// way and none of them records what the work was about, so the one thing that
+// can observe it is the step that runs after whichever adapter described the
+// session. One observer serves the whole describe pass, so a machine with
+// four thousand sessions in thirty checkouts asks git thirty times.
 func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localSession, describeSession sessionDescribeFunc) func(catalog.Ref) (catalog.Row, bool) {
+	repositories := adapter.NewRepositoryObserver()
 	return func(ref catalog.Ref) (catalog.Row, bool) {
 		session := bySelector[ref.Selector]
 		desc, err := describeSession(ctx, session)
@@ -721,6 +748,7 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 			return catalog.Row{}, false
 		}
 		row := rowFromDescription(session, desc)
+		observeRepository(ctx, repositories, &row)
 		rowJSON, err := json.Marshal(row)
 		if err != nil {
 			a.diagf("warning: encode %s: %s\n", Sanitize(ref.Selector), Sanitize(err.Error()))
@@ -732,6 +760,9 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 			Workspace:           row.Workspace,
 			CreatedAt:           timePtr(desc.Meta.CreatedAt),
 			ModifiedAt:          row.Modified,
+			RepositoryIdentity:  row.RepositoryIdentity,
+			RepositoryRemote:    row.RepositoryRemote,
+			RepositoryReason:    row.RepositoryReason,
 			ContinuationGrade:   desc.ContinuationGrade,
 			ArtifactCount:       len(desc.Artifacts),
 			BlobCount:           len(desc.Blobs),
@@ -742,6 +773,25 @@ func (a *app) catalogDescriber(ctx context.Context, bySelector map[string]localS
 			ToolErrors:          row.ToolErrors,
 			RowJSON:             rowJSON,
 		}, true
+	}
+}
+
+// observeRepository fills one row's repository identity from the workspace the
+// session recorded, and records why it could not when it could not.
+//
+// The identity and the reason are exclusive by construction here, which is
+// what keeps SPEC.md §3's rule true of this column: a row never carries both
+// a repository and an excuse, and never carries neither.
+func observeRepository(ctx context.Context, observer *adapter.RepositoryObserver, row *sessionRow) {
+	observed := observer.Observe(ctx, row.Workspace)
+	row.RepositoryIdentity, row.RepositoryRemote, row.RepositoryReason = nil, nil, nil
+	if observed.Identity == "" {
+		row.RepositoryReason = sanitizePtr(&observed.Reason)
+		return
+	}
+	row.RepositoryIdentity = sanitizePtr(&observed.Identity)
+	if observed.Remote != "" {
+		row.RepositoryRemote = sanitizePtr(&observed.Remote)
 	}
 }
 
@@ -774,6 +824,9 @@ func decodeCatalogRows(cached []catalog.Row, keep map[string]localSession, overl
 		}
 		row.Title = sanitizePtr(cachedRow.Title)
 		row.TitleProvenance = sanitizePtr(cachedRow.TitleProvenance)
+		row.RepositoryIdentity = sanitizePtr(cachedRow.RepositoryIdentity)
+		row.RepositoryRemote = sanitizePtr(cachedRow.RepositoryRemote)
+		row.RepositoryReason = sanitizePtr(cachedRow.RepositoryReason)
 		row.CostUSD = cachedRow.CostUSD
 		row.TotalTokens = cachedRow.TotalTokens
 		row.Turns = cachedRow.Turns
