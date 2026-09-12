@@ -781,8 +781,11 @@ function WatchPage() {
           )}
         </div>
         {drain && (
-          <p className="watch-drain" title="Publication is automatic: every run's output is sealed and published as the process exits.">
-            {count(drain.published)} published · {count(drain.sealed)} sealed · {count(drain.pending)} pending
+          <p
+            className="watch-drain"
+            title="Publication is automatic. Pending counts records still owed to the shared catalog — mostly the output of runs that have not ended yet, which publish when they do."
+          >
+            last publication: {count(drain.published)} published · {count(drain.sealed)} sealed · {count(drain.pending)} still owed
             {drainAt && (
               <>
                 {" · last attempt "}

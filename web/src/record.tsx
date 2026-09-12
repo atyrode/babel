@@ -862,6 +862,11 @@ function citationLabel(item: RecordEvidence): string {
 // already rejected; Babel suspects this restates a candidate from March; a
 // later revision replaced this wording; the rest of the run's output is one
 // click away. None of that is in the record, and all of it is in the stores.
+// RELATED_SHOWN bounds each group of the strip. A run that wrote twenty records
+// would otherwise push the reception and the machinery a screen down, and the
+// strip exists to be glanced at, not read; the run's own page lists all of them.
+const RELATED_SHOWN = 6;
+
 function RelatedStrip({ related }: { related: RecordRelated | undefined }) {
   if (!related) return null;
   const groups: Array<{ label: string; items: RelatedRecord[] | undefined; overlap?: boolean; standing?: boolean }> = [
@@ -883,7 +888,7 @@ function RelatedStrip({ related }: { related: RecordRelated | undefined }) {
             <span className="muted"> · {group.items?.length}</span>
           </h3>
           <ul>
-            {(group.items ?? []).map((item) => (
+            {(group.items ?? []).slice(0, RELATED_SHOWN).map((item) => (
               <li key={item.id}>
                 <Link to={`/r/${encodeURIComponent(item.id)}`}>
                   {item.title ? (
@@ -901,6 +906,11 @@ function RelatedStrip({ related }: { related: RecordRelated | undefined }) {
                 {item.kind && <span className="muted">{KIND_WORDS[item.kind] ?? item.kind}</span>}
               </li>
             ))}
+            {(group.items?.length ?? 0) > RELATED_SHOWN && (
+              <li className="muted">
+                and {(group.items?.length ?? 0) - RELATED_SHOWN} more; the run's page under Watch lists every one
+              </li>
+            )}
           </ul>
         </div>
       ))}
