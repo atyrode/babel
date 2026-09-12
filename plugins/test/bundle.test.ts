@@ -110,7 +110,9 @@ test("the packed machine half runs the argv its manifest declares", async () => 
     machineId: string;
     closure: string;
   };
-  expect(receipt).toMatchObject({ kind: OPERATIONS.scan, machineId: "bundle-test", closure: "completed" });
+  // The receipt records the WORD the binary was invoked with, not the namespaced id the hub
+  // addressed the operation by: the receipt is the machine half's own account of what it ran.
+  expect(receipt).toMatchObject({ kind: "scan", machineId: "bundle-test", closure: "completed" });
 });
 
 test("a web half is built against the shell's own floor, not its own copy", () => {

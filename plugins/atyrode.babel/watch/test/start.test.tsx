@@ -1,7 +1,7 @@
 import "./dom.ts";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { afterEach, expect, test } from "bun:test";
-import { ACTIONS, LaunchInputSchema } from "../../contract.ts";
+import { ACTIONS, LaunchRequestSchema, LaunchInputSchema, OPERATIONS } from "../../contract.ts";
 import { Watch } from "../web.tsx";
 import { MACHINES, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
 import { choose, click, mount, settle, type, unmountAll } from "./render.tsx";
@@ -70,6 +70,7 @@ test("with no machine there is no launch and no preview: the card says why", asy
   expect(root.textContent).toContain("Pick a machine to run on.");
   expect(root.querySelector<HTMLButtonElement>(LAUNCH_BUTTON)?.disabled).toBe(true);
   expect(root.querySelector(WILLRUN)?.textContent).toContain("Pick a machine to run on.");
+  expect(fake.callsTo(ACTIONS.launchPreview)).toHaveLength(0);
   expect(fake.callsTo(ACTIONS.launch)).toHaveLength(0);
 });
 
@@ -78,15 +79,17 @@ test("picking a machine states what will run — profile, model, cost per 1k, bo
   await choose(picker(root, "Machine"), "m-dev-01");
   await settle();
 
-  const dry = fake.callsTo(ACTIONS.launch);
+  // The dry read is its own door, and it carries no node: a preview asks nothing of a machine,
+  // so it must not need the operator's version-bound consent to say what a run would cost.
+  const dry = fake.callsTo(ACTIONS.launchPreview);
   expect(dry).toHaveLength(1);
   expect(dry[0]?.args).toEqual({
     machineId: "m-dev-01",
     preset: "read-whats-new",
     sinceDays: 1,
     recipes: [],
-    preview: true,
   });
+  expect(fake.callsTo(ACTIONS.launch)).toHaveLength(0);
 
   const line = root.querySelector(WILLRUN)?.textContent ?? "";
   expect(line).toContain("claude-opus-4");
@@ -96,7 +99,7 @@ test("picking a machine states what will run — profile, model, cost per 1k, bo
   expect(root.querySelector<HTMLButtonElement>(LAUNCH_BUTTON)?.disabled).toBe(false);
 });
 
-test("the button posts the contract's launch input, with no preview flag on it", async () => {
+test("the button posts the contract's launch request, with the node it is authorized at", async () => {
   const { root, fake } = await open();
   await choose(picker(root, "Machine"), "m-dev-01");
   await settle();
@@ -105,7 +108,16 @@ test("the button posts the contract's launch input, with no preview flag on it",
 
   const calls = fake.callsTo(ACTIONS.launch);
   expect(calls.at(-1)?.args).toEqual(
-    LaunchInputSchema.parse({ machineId: "m-dev-01", preset: "read-whats-new", sinceDays: 1 }),
+    LaunchRequestSchema.parse({
+      machineId: "m-dev-01",
+      preset: "read-whats-new",
+      sinceDays: 1,
+      operation: {
+        kind: "operation",
+        machineId: "m-dev-01",
+        operationId: OPERATIONS.explore,
+      },
+    }),
   );
   expect(root.textContent).toContain("Started explore as run_new");
 });
@@ -119,7 +131,7 @@ test("a knob's value is what reaches the door", async () => {
   await click(root.querySelector(LAUNCH_BUTTON));
   await settle();
 
-  expect(fake.callsTo(ACTIONS.launch).at(-1)?.args).toEqual(
+  expect(fake.callsTo(ACTIONS.launch).at(-1)?.args).toMatchObject(
     LaunchInputSchema.parse({ machineId: "m-dev-01", preset: "read-whats-new", sinceDays: 9 }),
   );
 });
@@ -133,12 +145,11 @@ test("switching preset switches the knob, and the old preset's knob is not sent"
 
   expect(root.querySelector(KNOB_LABEL)?.textContent).toBe("Minutes");
   expect(knobInput(root).value).toBe("60");
-  expect(fake.callsTo(ACTIONS.launch).at(-1)?.args).toEqual({
+  expect(fake.callsTo(ACTIONS.launchPreview).at(-1)?.args).toEqual({
     machineId: "m-dev-01",
     preset: "keep-going",
     minutes: 60,
     recipes: [],
-    preview: true,
   });
 });
 
@@ -164,7 +175,12 @@ test("explore a topic offers the topics door's own rows and will not start witho
   await settle();
 
   expect(fake.callsTo(ACTIONS.launch).at(-1)?.args).toEqual(
-    LaunchInputSchema.parse({ machineId: "m-dev-01", preset: "explore-topic", entityId: "ent_1a2b3c4d" }),
+    LaunchRequestSchema.parse({
+      machineId: "m-dev-01",
+      preset: "explore-topic",
+      entityId: "ent_1a2b3c4d",
+      operation: { kind: "operation", machineId: "m-dev-01", operationId: OPERATIONS.explore },
+    }),
   );
 });
 
@@ -180,7 +196,7 @@ test("a chosen recipe replaces the default set in the launch input", async () =>
   await click(root.querySelector(LAUNCH_BUTTON));
   await settle();
 
-  expect(fake.callsTo(ACTIONS.launch).at(-1)?.args).toEqual(
+  expect(fake.callsTo(ACTIONS.launch).at(-1)?.args).toMatchObject(
     LaunchInputSchema.parse({
       machineId: "m-dev-01",
       preset: "read-whats-new",
@@ -191,13 +207,11 @@ test("a chosen recipe replaces the default set in the launch input", async () =>
 });
 
 test("a refused launch shows the hub's own sentence and starts nothing", async () => {
+  const refuse = () => {
+    throw new Error("dev-01 has no code engine configured");
+  };
   const fake = fakeHost(
-    watchDoors({
-      runs: () => runsResult([]),
-      launch: () => {
-        throw new Error("dev-01 has no code engine configured");
-      },
-    }),
+    watchDoors({ runs: () => runsResult([]), launchPreview: refuse, launch: refuse }),
     MACHINES,
   );
   const root = await mount(<Watch host={fake.host} />);

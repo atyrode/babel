@@ -645,7 +645,13 @@ function runStatement(
   const produced = receipt?.counts["records"] ?? rows[JOB_OUTPUT_FILES.records] ?? 0;
   const values: Record<string, SqlParam | undefined> = {
     id: runId,
-    kind: receipt?.kind ?? target.operationId,
+    // THE OPERATION ID, never the receipt's word. `kind` is the operation the job ran as: it is
+    // what `stop` builds a job node out of and what a surface labels a row by, and both of those
+    // speak the engine's namespaced id. The receipt's `kind` is the machine half's own account
+    // of which verb its binary ran, it stays inside the receipt payload below, and letting it
+    // overwrite this column turned a finished `atyrode.babel.scan` into a bare `scan` — a node
+    // no hub can address.
+    kind: target.operationId,
     machine_id: target.machineId,
     job_id: target.jobId,
     recipe_id: receipt?.recipeId,

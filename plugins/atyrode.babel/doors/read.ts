@@ -43,6 +43,29 @@ import { defineServerAction } from "@manifold/plugin-kit/server";
 /** Reading is a read of the plugin's own rows; the caller needs the workspace it asked about. */
 const READ_CAPS = ["containers:read"] as const;
 
+/*
+  THE TWO READS THAT WAKE THE LOOP CARRY ONE NATIVE CEILING, AND IT IS NOT A SECOND PERMISSION.
+
+  `pulse` and `runs` are the doors a cycle follows (server.ts's `WAKES`), and the half of a cycle
+  that matters when no settlement arrived — a hook that overran, a hub restarted mid-run — is
+  INGESTION: read the jobs this store is still waiting on, take their sealed outputs, close the
+  runs. All of that is `jobs:read`, and the dispatcher attenuates `ctx.jobs` to what the door
+  declared, so without it here the safety net could not read a single job and every cycle behind
+  a read was a list of refusals.
+
+  It is a DELEGATE, not a cap: a delegate is the native ceiling this door's job authority may
+  reach, while a cap is what the caller must hold. The caller is unchanged — it still needs only
+  `containers:read` — and nothing is widened, because the ceiling is intersected with the
+  CALLER's own capabilities before any job verb runs, and the engine still requires the
+  operator's version-bound consent for `jobs:read` at each operation node before it answers.
+
+  STARTING work is deliberately not reachable from here. `machines:run` is absent from this
+  ceiling, so a cycle behind a five-second poll cannot dispatch: only `launch`, which declares it
+  at the node its arguments name, and `onJobSettled`, which carries the credential the job ran
+  under, can ask a machine to run anything.
+*/
+const WAKING_DELEGATES = ["jobs:read"] as const;
+
 /** `pulse` and `topics` are asked without arguments; a strict empty object says so on the wire. */
 const NoQuerySchema = z.strictObject({});
 
@@ -122,6 +145,7 @@ export function readDoors(store: BabelStore): readonly Door[] {
         name: ACTIONS.pulse,
         title: "Read what Babel did today",
         caps: READ_CAPS,
+        delegates: WAKING_DELEGATES,
         input: NoQuerySchema,
         result: PulseResultSchema,
       }),
@@ -133,6 +157,7 @@ export function readDoors(store: BabelStore): readonly Door[] {
         name: ACTIONS.runs,
         title: "Read the runs",
         caps: READ_CAPS,
+        delegates: WAKING_DELEGATES,
         input: RunsQuerySchema,
         result: RunsResultSchema,
       }),

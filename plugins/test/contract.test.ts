@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  CEILING_DATABASE_MAX_BYTES,
-  MachineHalfSchema,
-  PluginManifestSchema,
-} from "@manifold/protocol";
+import { CEILING_DATABASE_MAX_BYTES, PluginManifestSchema } from "@manifold/protocol";
 import {
   BABEL_PLUGIN_ID,
   EVENTS,
@@ -13,6 +9,7 @@ import {
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   PANELS,
+  RUNTIME_TOOLS,
   WATCH_PLUGIN_ID,
 } from "../atyrode.babel/contract.ts";
 import { ADAPTERS } from "../atyrode.babel/machine/adapters/index.ts";
@@ -21,7 +18,6 @@ import { plugin } from "../atyrode.babel/server.ts";
 import babelManifest from "../atyrode.babel/manifest.json";
 import feedManifest from "../atyrode.babel/feed/manifest.json";
 import watchManifest from "../atyrode.babel/watch/manifest.json";
-import pinnedTools from "../atyrode.babel/tools.json";
 
 /*
   A manifest is JSON and cannot import `contract.ts`, so every id it repeats is pinned here:
@@ -145,11 +141,16 @@ describe("the machine half is declared as the machine half is built", () => {
     // /job/artifact, the input document is materialized as a file at /inputs/<key> and NOT
     // substituted into argv (the engine would pass its bytes), and the output directory is the
     // sealed lease at /outputs/<name> rather than the location the lease is cut from.
-    for (const operation of declared) {
+    //
+    // The VERB is the operation's short word, never its declared id: the hub needs a namespaced
+    // id to tell two plugins' operations apart, and the binary behind the id belongs to one
+    // plugin and takes `scan`.
+    for (const [word, operation] of Object.entries(OPERATIONS)) {
+      if (!declared.includes(operation)) continue;
       const op = machine.operations[operation]!;
       expect(op.argv).toEqual([
         { literal: "/job/artifact" },
-        { literal: operation },
+        { literal: word },
         { literal: "--input" },
         { literal: `/inputs/${INPUT_FIELD}` },
         { literal: "--out" },
@@ -203,22 +204,16 @@ describe("the machine half is declared as the machine half is built", () => {
     expect(minutes(OPERATIONS.evaluate)).toBe(60);
   });
 
-  test("every tool an operation runs is pinned, and pinned to what pin-tools.ts downloaded", () => {
-    // An alias no `tools` entry declares is an operation that can only run where the operator
-    // built the closure himself; `pack.sh` stamps this block from tools.json, so a manifest
-    // that disagrees with it was edited by hand and ships hashes nobody obtained.
-    // Parsed, not merely compared: tools.json is stamped in verbatim, so it must be a valid
-    // `machine.tools` on its own before it is worth asking whether the manifest agrees.
-    expect(machine.tools).toEqual(MachineHalfSchema.shape.tools.parse(pinnedTools));
+  test("no tool is pinned: bun and code are runtime tools the machine's owner provides", () => {
+    // A Manifold job sandbox has no libc (docs/SELF-HOST.md: "a dynamically linked executable
+    // without its loader cannot run in the empty sandbox"), and neither bun nor code ships a
+    // static build, so an artifact pinned here could be fetched and verified and still never
+    // exec. The owner's `execution.runtimeToolClosures` binds a tool WITH its closure; the
+    // manifest names the alias and nothing else, so a declared artifact can never shadow it.
+    expect(machine.tools).toBeUndefined();
     for (const operation of declared) {
       for (const alias of machine.operations[operation]!.runtimeTools) {
-        expect(Object.keys(machine.tools ?? {})).toContain(alias);
-      }
-    }
-    for (const platforms of Object.values(machine.tools ?? {})) {
-      for (const artifact of Object.values(platforms)) {
-        expect(artifact.url?.startsWith("https://")).toBe(true);
-        expect(artifact.maxBytes).toBeGreaterThan(0);
+        expect(RUNTIME_TOOLS as readonly string[]).toContain(alias);
       }
     }
   });

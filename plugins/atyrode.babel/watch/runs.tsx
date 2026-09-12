@@ -38,7 +38,8 @@ export interface RunsProps {
   readonly stopping: string;
   /** A failed read or a refused stop, in the door's own words. */
   readonly note: string;
-  readonly onStop: (runId: string) => void;
+  /** The whole row, because a stop is authorized at the run's own job node, not at its id. */
+  readonly onStop: (run: RunRow) => void;
   readonly onMore: () => void;
 }
 
@@ -51,7 +52,7 @@ function LiveTable({
   readonly runs: readonly RunRow[];
   readonly now: number;
   readonly stopping: string;
-  readonly onStop: (runId: string) => void;
+  readonly onStop: (run: RunRow) => void;
 }) {
   return (
     <div className="plugin-atyrode_babel_watch__table-scroll">
@@ -95,7 +96,7 @@ function LiveTable({
                     className="plugin-atyrode_babel_watch__quiet"
                     data-action={door(ACTIONS.stop)}
                     disabled={stopping === run.id}
-                    onClick={() => onStop(run.id)}
+                    onClick={() => onStop(run)}
                   >
                     {stopping === run.id ? "Stopping…" : "Stop"}
                   </button>

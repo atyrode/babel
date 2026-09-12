@@ -2,13 +2,17 @@ import type { HostServices } from "@manifold/plugin";
 import { z } from "zod";
 import {
   LaunchInputSchema,
+  LaunchRequestSchema,
   LaunchResultSchema,
+  OPERATIONS,
   PRESETS,
+  PRESET_OPERATIONS,
   PolicyResultSchema,
   PresetSchema,
   RecipeRowSchema,
   RunRowSchema,
   RunsResultSchema,
+  StopInputSchema,
   TopicRowSchema,
   TopicsResultSchema,
   door,
@@ -201,6 +205,41 @@ export function launchInput(draft: LaunchDraft): LaunchInput {
   });
 }
 
+/**
+ * The same draft as the `launch` door takes it: the request above plus the OPERATION NODE.
+ *
+ * `launch` holds `machines:run` at a node rather than over the workspace, and the host reads
+ * that node out of the arguments this function builds — so a panel that posted only a machine id
+ * would be refused `invalid authority target` before the door ran. The node is the machine the
+ * operator picked and the operation his preset becomes, which is `PRESET_OPERATIONS`, the same
+ * table the door plans from.
+ */
+export function launchRequest(draft: LaunchDraft): z.infer<typeof LaunchRequestSchema> {
+  const input = launchInput(draft);
+  return LaunchRequestSchema.parse({
+    ...input,
+    operation: {
+      kind: "operation",
+      machineId: draft.machineId,
+      operationId: PRESET_OPERATIONS[draft.preset],
+    },
+  });
+}
+
+/**
+ * What `stop` takes for one row: the run, and the JOB NODE the engine holds `jobs:cancel` at.
+ * The row already carries every part of it — the machine, the operation it ran as its `kind`,
+ * and the job — so the panel posts the node rather than asking the door to look one up, because
+ * the requirement is discharged against these arguments before the door is entered.
+ */
+export function stopInput(run: RunRow, reason = ""): z.infer<typeof StopInputSchema> {
+  return StopInputSchema.parse({
+    runId: run.id,
+    job: { kind: "job", machineId: run.machineId, operationId: run.kind, jobId: run.jobId },
+    reason,
+  });
+}
+
 /** Why a draft cannot be started yet, in one clause, or empty when it can. */
 export function unready(draft: LaunchDraft): string {
   if (draft.machineId === "") return "Pick a machine to run on.";
@@ -217,14 +256,18 @@ export const FRESHNESS_NOTE: Record<string, string> = {
   ended: "Finished: the receipt is written.",
 };
 
-/** The kinds a run row carries, in the two words a receipt records. */
+/**
+ * The kinds a run row carries, in the two words a receipt records. A row's `kind` is the
+ * OPERATION ID the job ran as, and those are namespaced on the machine half, so the table is
+ * keyed off the contract's own names rather than the short words it used to carry.
+ */
 export const RUN_KIND_LABELS: Record<string, string> = {
-  explore: "Exploration",
-  evaluate: "Review",
+  [OPERATIONS.explore]: "Exploration",
+  [OPERATIONS.evaluate]: "Review",
+  [OPERATIONS.prepare]: "Preparation",
+  [OPERATIONS.scan]: "Scan",
+  [OPERATIONS.archive]: "Archive",
   conductor: "Loop",
-  prepare: "Preparation",
-  scan: "Scan",
-  archive: "Archive",
 };
 
 /**

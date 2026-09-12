@@ -97,6 +97,7 @@ export const ACTIONS = {
   tell: "tell",
   setPolicy: "setPolicy",
   launch: "launch",
+  launchPreview: "launchPreview",
   stop: "stop",
   // the crossing (owner only)
   importLedger: "importLedger",
@@ -355,15 +356,57 @@ export const PulseResultSchema = z.strictObject({
 
 // ---------------------------------------------------------------------------- machine operations
 
-/** The operations the baseline declares on a machine (plan §4); each is one job. */
+/**
+ * The operations the baseline declares on a machine (plan §4); each is one job.
+ *
+ * THE IDS ARE NAMESPACED because the engine requires it: `engine.jobs.install` refuses a machine
+ * half whose operation or location keys are not prefixed with the plugin's own id
+ * (`unqualified_declaration`), so a bare `scan` is a declaration no hub would ever install.
+ */
 export const OPERATIONS = {
-  scan: "scan",
-  archive: "archive",
-  prepare: "prepare",
-  explore: "explore",
-  evaluate: "evaluate",
+  scan: `${BABEL_PLUGIN_ID}.scan`,
+  archive: `${BABEL_PLUGIN_ID}.archive`,
+  prepare: `${BABEL_PLUGIN_ID}.prepare`,
+  explore: `${BABEL_PLUGIN_ID}.explore`,
+  evaluate: `${BABEL_PLUGIN_ID}.evaluate`,
 } as const;
 export type OperationName = (typeof OPERATIONS)[keyof typeof OPERATIONS];
+
+/**
+ * The word the machine half's CLI takes and the receipt records — the KEY of the table above.
+ * A binary's verb is `scan`, not `atyrode.babel.scan`: the namespace exists so a hub can tell
+ * two plugins' operations apart, and there is only ever one plugin inside that binary.
+ */
+export type OperationWord = keyof typeof OPERATIONS;
+
+/**
+ * A NODE THE ENGINE ADDRESSES, as a door's caller posts it (ADR 0035).
+ *
+ * A governed capability — `machines:run`, `jobs:cancel` — is never held over a workspace: it is
+ * held at one node, and the door declares `requirements: [{cap, target}]` naming where in its
+ * OWN ARGUMENTS the node is. The host walks that path through the raw arguments before the
+ * handler runs, so the reference has to travel as a structured `ManifoldRef` — a machine id and
+ * an operation name in two separate fields is a pair the evaluator cannot ask a question about.
+ *
+ * These two are `ManifoldRefSchema`'s `operation` and `job` members, restated here rather than
+ * imported, because a plugin's contract may not depend on the engine's protocol package: the
+ * shape is a wire shape, and this file is where Babel's wire shapes are spelled.
+ */
+const refId = z.string().min(1).max(128);
+export const OperationRefSchema = z.strictObject({
+  kind: z.literal("operation"),
+  machineId: refId,
+  operationId: refId,
+});
+export type OperationRef = z.infer<typeof OperationRefSchema>;
+
+export const JobRefSchema = z.strictObject({
+  kind: z.literal("job"),
+  machineId: refId,
+  operationId: refId,
+  jobId: refId,
+});
+export type JobRef = z.infer<typeof JobRefSchema>;
 
 // ---------------------------------------------------------------------------- events
 
@@ -403,6 +446,21 @@ export const PresetSchema = z.enum(PRESETS);
 export const RUN_STATES = ["queued", "running", "finished", "failed", "stopped"] as const;
 export const RunStateSchema = z.enum(RUN_STATES);
 
+/**
+ * WHICH OPERATION A PRESET BECOMES. It is here rather than beside the door's plan table because
+ * the panel needs it too: `launch` declares `machines:run` at the operation node its arguments
+ * name, so the caller has to build that node — the machine it picked and the operation its
+ * preset runs — before it can knock. Two tables would be two answers to the same question, and
+ * the one the panel held would be the one nobody checked.
+ */
+export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> = {
+  "read-whats-new": OPERATIONS.explore,
+  "explore-topic": OPERATIONS.explore,
+  "review-backlog": OPERATIONS.evaluate,
+  "file-and-tidy": OPERATIONS.evaluate,
+  "keep-going": OPERATIONS.scan,
+};
+
 export const LaunchInputSchema = z.strictObject({
   machineId: bounded(120),
   preset: PresetSchema,
@@ -420,12 +478,20 @@ export const LaunchInputSchema = z.strictObject({
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 
 /**
- * What the `launch` door takes: the input above plus the dry read. A preview executes nothing
- * and asks nothing — it answers from the store and the policy alone, with the same result shape
- * and `runId`/`jobId` empty, so Watch can state the profile, the model and the ceilings BEFORE
- * the run exists without a second description of a launch.
+ * What the `launch` door takes: the request above, plus the OPERATION NODE it is asked at.
+ *
+ * `launch` declares `machines:run`, which is governed: the engine grants it at a node and never
+ * at a workspace, and the door's `requirements` name `operation` as the argument path the node
+ * is read from — the host walks it through the RAW arguments and refuses `invalid authority
+ * target` before the handler is entered. So the node is a field of the request rather than
+ * something the door assembles: a reference the handler built would be a reference nobody
+ * authorized the caller to name.
+ *
+ * The dry read is not on this door. `launchPreview` answers it under `containers:read`, because
+ * a preview asks nothing of a machine and requiring version-bound consent to READ what a run
+ * would cost is the panel unable to say what it is about to ask for.
  */
-export const LaunchRequestSchema = LaunchInputSchema.extend({ preview: z.boolean().default(false) });
+export const LaunchRequestSchema = LaunchInputSchema.extend({ operation: OperationRefSchema });
 
 export const LaunchResultSchema = z.strictObject({
   runId: z.string(),
@@ -437,9 +503,15 @@ export const LaunchResultSchema = z.strictObject({
   ceiling: z.strictObject({ perRunUsd: z.number(), perDayUsd: z.number() }),
 });
 
-/** What `stop` takes: the run to end, and why — the reason is recorded, never required. */
+/**
+ * What `stop` takes: the run to end, the JOB NODE the engine holds `jobs:cancel` at, and why —
+ * the reason is recorded, never required. The node travels for the same reason `launch`'s does:
+ * the requirement is discharged against the raw arguments, so the run row's `job_id` and
+ * `machine_id` have to be posted, not looked up.
+ */
 export const StopInputSchema = z.strictObject({
   runId: z.string().min(1).max(200),
+  job: JobRefSchema,
   reason: z.string().max(2000).default(""),
 });
 
@@ -572,12 +644,23 @@ export type Receipt = z.infer<typeof ReceiptSchema>;
 // ---------------------------------------------------------------------------- job bindings
 
 /**
+ * The runtime tools an operation may name, and nothing about where they come from: a Manifold
+ * job sandbox carries no libc, so a tool must arrive WITH its closure, and only the machine's
+ * owner can bind one (`execution.runtimeToolClosures`, manifold docs/SELF-HOST.md). `bun` runs
+ * machine.js; `code` is the engine explore and evaluate drive. The manifest declares neither
+ * as an artifact, so an operation runs exactly where its owner said it may.
+ */
+export const RUNTIME_TOOLS = ["bun", "code"] as const;
+
+/**
  * Every Babel operation writes its files flat into ONE output directory and binds it under one
  * name, so an operation that had nothing to say about a file simply writes no file, rather than
  * leaving a promised binding unfilled. The operation declarations in server.ts and the loop that
  * reads the outputs back agree through these three strings and nothing else.
  */
 export const OUTPUT_BINDING = "outputs";
-export const OUTPUT_LOCATION = "outputs";
+/** The LOCATION is a machine-half declaration, so it carries the plugin's own prefix; the
+ *  binding name above is a name inside one job and does not. */
+export const OUTPUT_LOCATION = `${BABEL_PLUGIN_ID}.outputs`;
 /** The operation's single input binding: one JSON document, as the machine half parses it. */
 export const INPUT_FIELD = "input";

@@ -6,13 +6,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { z } from "zod";
 import {
   ACTIONS,
-  LaunchRequestSchema,
   LaunchResultSchema,
   PANELS,
   PolicyResultSchema,
   RunsQuerySchema,
   RunsResultSchema,
-  StopInputSchema,
   TopicsResultSchema,
   WATCH_PLUGIN_ID,
 } from "../contract.ts";
@@ -20,11 +18,14 @@ import {
   INITIAL_DRAFT,
   act,
   launchInput,
+  launchRequest,
   read,
+  stopInput,
   unready,
   type LaunchAnswer,
   type LaunchDraft,
   type PolicyResult,
+  type RunRow,
   type RunsResult,
   type TopicsResult,
 } from "./api.ts";
@@ -130,7 +131,7 @@ export function Watch({ host }: PanelProps) {
     () =>
       request === null
         ? Promise.resolve(null)
-        : read(host, ACTIONS.launch, LaunchRequestSchema.parse({ ...request, preview: true }), LaunchResultSchema),
+        : read(host, ACTIONS.launchPreview, request, LaunchResultSchema),
     PREVIEW_POLL_MS,
     {
       key: "atyrode.babel.launch.preview",
@@ -157,7 +158,7 @@ export function Watch({ host }: PanelProps) {
     if (blocked !== "") return;
     setStarting(true);
     setStartNote("");
-    const outcome = await act(host, ACTIONS.launch, launchInput(draft), LaunchResultSchema);
+    const outcome = await act(host, ACTIONS.launch, launchRequest(draft), LaunchResultSchema);
     setStarting(false);
     if (outcome.ok) {
       setStartNote(`Started ${outcome.value.kind} as ${outcome.value.runId}.`);
@@ -169,11 +170,13 @@ export function Watch({ host }: PanelProps) {
   }, [blocked, draft, host, runs]);
 
   const onStop = useCallback(
-    async (runId: string) => {
-      setStopping(runId);
-      const outcome = await act(host, ACTIONS.stop, StopInputSchema.parse({ runId }), z.unknown());
+    async (run: RunRow) => {
+      setStopping(run.id);
+      const outcome = await act(host, ACTIONS.stop, stopInput(run), z.unknown());
       setStopping("");
-      setStopNote(outcome.ok ? `Asked ${runId} to stop; it stops at its next safe point.` : outcome.message);
+      setStopNote(
+        outcome.ok ? `Asked ${run.id} to stop; it stops at its next safe point.` : outcome.message,
+      );
       runs.refresh();
     },
     [host, runs],

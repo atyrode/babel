@@ -27,7 +27,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { OPERATIONS, ROLES, type Receipt } from "../contract.ts";
+import { ROLES, type Receipt } from "../contract.ts";
 import { runEngineJob, type EngineOutcome } from "./engine/client.ts";
 import {
   ENGINE_FAILURES,
@@ -230,7 +230,7 @@ export async function evaluate(input: EvaluateInput, out: OutputSink, deps: Oper
   }
   const receipt = buildReceipt({
     runId,
-    kind: OPERATIONS.evaluate,
+    kind: "evaluate",
     machineId: input.machineId,
     recipeId: input.recipe.id,
     role,

@@ -10,6 +10,7 @@ import {
   JOB_OUTPUT_FILES,
   OPERATIONS,
   OUTPUT_BINDING,
+  OUTPUT_LOCATION,
 } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
@@ -645,7 +646,7 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
   expect(launch?.machineId).toBe("dev-01");
   expect(launch?.installationRevision).toBe("rev-7");
   expect(launch?.outputs).toEqual([
-    { name: OUTPUT_BINDING, locationId: "outputs", components: ["job_asg_a1b2"] },
+    { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: ["job_asg_a1b2"] },
   ]);
   const document = JSON.parse(String(launch?.input[INPUT_FIELD])) as Record<string, unknown>;
   expect(document["runId"]).toBe("run_asg_a1b2");
@@ -922,11 +923,13 @@ test("the beat's own job is ingested although the hub never requested it", async
   const rows = await db.query(
     `SELECT id, job_id, kind, closure FROM runs WHERE job_id = 'schedule-abc'`,
   );
+  // The row is keyed to the OPERATION the beat ran as, not to the word its receipt used for
+  // itself: `stop` addresses a job node with this column.
   expect(rows).toEqual([
     {
       id: "run_minted_by_the_machine",
       job_id: "schedule-abc",
-      kind: "scan",
+      kind: OPERATIONS.scan,
       closure: "completed",
     },
   ]);

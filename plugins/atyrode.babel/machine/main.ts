@@ -1,4 +1,4 @@
-import { OPERATIONS, type OperationName, type Receipt } from "../contract.ts";
+import { OPERATIONS, type OperationWord, type Receipt } from "../contract.ts";
 import { type OutputSink, directorySink } from "./output.ts";
 import { claim, discover, existingRoots } from "./adapters/index.ts";
 
@@ -27,7 +27,7 @@ import { claim, discover, existingRoots } from "./adapters/index.ts";
 */
 
 export interface Invocation {
-  operation: OperationName;
+  operation: OperationWord;
   inputPath: string;
   outputDir: string;
 }
@@ -42,7 +42,7 @@ const USAGE = `babel-machine <${Object.keys(OPERATIONS).join("|")}> --input <fil
  * client for `explore` and `evaluate`. A static import graph would make every scheduled scan
  * load all five.
  */
-const DISPATCH: Record<OperationName, (raw: unknown, out: OutputSink) => Promise<Receipt>> = {
+const DISPATCH: Record<OperationWord, (raw: unknown, out: OutputSink) => Promise<Receipt>> = {
   scan: async (raw, out) => {
     const { ScanInputSchema, scan } = await import("./scan.ts");
     return scan(ScanInputSchema.parse(raw), out);
@@ -66,7 +66,7 @@ const DISPATCH: Record<OperationName, (raw: unknown, out: OutputSink) => Promise
 };
 
 export function parseArgv(argv: readonly string[]): Invocation {
-  let operation: OperationName | null = null;
+  let operation: OperationWord | null = null;
   let inputPath = process.env["BABEL_JOB_INPUT"]?.trim() ?? "";
   let outputDir = process.env["BABEL_JOB_OUTPUT_DIR"]?.trim() ?? "";
   for (let i = 0; i < argv.length; i++) {
@@ -87,7 +87,7 @@ export function parseArgv(argv: readonly string[]): Invocation {
     if (argument.startsWith("-")) throw new Error(`unknown flag ${argument}\n${USAGE}`);
     if (operation !== null) throw new Error(`unexpected argument ${argument}\n${USAGE}`);
     if (!(argument in OPERATIONS)) throw new Error(`unknown operation ${argument}\n${USAGE}`);
-    operation = argument as OperationName;
+    operation = argument as OperationWord;
   }
   if (operation === null) throw new Error(`no operation named\n${USAGE}`);
   if (inputPath === "") throw new Error(`${operation} needs --input <file>\n${USAGE}`);

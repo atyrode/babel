@@ -10,11 +10,11 @@
 #      (git ignores it; `--machine` leaves it in place for `dev`, a pack deletes it after).
 #   2. Its sha256 is written into BOTH platform artifacts of manifest.json — a `raw` artifact is
 #      its own entry, so `sha256` and `entrySha256` are the same digest (manifold
-#      packages/plugin-kit/src/artifacts.ts, the `format === "raw"` branch) — and
-#      atyrode.babel/tools.json is stamped in as `machine.tools`. The manifest that ships is
-#      therefore always over the bytes just built, and the committed one carries the last stamp:
-#      whoever changes the machine half sees the pin move in the diff, which is the point.
-#      `pin-tools.ts` is what writes tools.json, from downloads; nothing here reaches the network.
+#      packages/plugin-kit/src/artifacts.ts, the `format === "raw"` branch). The manifest that
+#      ships is therefore always over the bytes just built, and the committed one carries the
+#      last stamp: whoever changes the machine half sees the pin move in the diff, which is the
+#      point. No tool is pinned here: `bun` and `code` are runtime tools the machine's owner
+#      provides with their closures (README.md), because the job sandbox has no libc.
 #
 # The SDK is the checkout manifold-dir.sh resolves (MANIFOLD_DIR, ../../manifold-db, ../../manifold).
 set -euo pipefail
@@ -34,7 +34,6 @@ for (const artifact of Object.values(manifest.machine.artifacts)) {
   artifact.sha256 = sha256;
   artifact.entrySha256 = sha256;
 }
-manifest.machine.tools = await Bun.file(`${dir}/tools.json`).json();
 await Bun.write(file, JSON.stringify(manifest, null, 2) + "\n");
 console.log(`machine.js ${String(machine.byteLength)} bytes sha256=${sha256}`);
 '

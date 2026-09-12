@@ -1,7 +1,7 @@
 import "./dom.ts";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { afterEach, expect, test } from "bun:test";
-import { ACTIONS } from "../../contract.ts";
+import { ACTIONS, OPERATIONS } from "../../contract.ts";
 import { Watch } from "../web.tsx";
 import { MACHINES, fakeHost, runRow, runsResult, watchDoors } from "./host.ts";
 import { click, mount, settle, unmountAll } from "./render.tsx";
@@ -90,7 +90,17 @@ test("stop asks the door for that run and says what stopping means", async () =>
   await click(root.querySelector("[data-action='atyrode.babel.stop']"));
   await settle();
 
-  expect(fake.callsTo(ACTIONS.stop).at(-1)?.args).toEqual({ runId: "run_live", reason: "" });
+  // The node travels with the request: `stop` holds `jobs:cancel` at the run's own job.
+  expect(fake.callsTo(ACTIONS.stop).at(-1)?.args).toEqual({
+    runId: "run_live",
+    reason: "",
+    job: {
+      kind: "job",
+      machineId: "m-dev-01",
+      operationId: OPERATIONS.explore,
+      jobId: "job_1",
+    },
+  });
   expect(root.textContent).toContain("Asked run_live to stop; it stops at its next safe point.");
 });
 

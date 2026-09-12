@@ -14,7 +14,14 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, INPUT_FIELD, OPERATIONS, OUTPUT_BINDING, OUTPUT_LOCATION } from "../contract.ts";
+import {
+  ACTIONS,
+  INPUT_FIELD,
+  OPERATIONS,
+  OUTPUT_BINDING,
+  OUTPUT_LOCATION,
+  PRESET_OPERATIONS,
+} from "../contract.ts";
 import type {
   Conductor,
   JobLaunch,
@@ -184,6 +191,45 @@ async function dispatch(name: string, args: unknown): Promise<Record<string, unk
   return result.data as Record<string, unknown>;
 }
 
+/**
+ * A launch as the panel posts one: the request, plus the OPERATION NODE the door is authorized
+ * at. Every test goes through this rather than hand-writing the node, because a launch without
+ * one is not a request the hub would ever deliver — the host refuses `invalid authority target`
+ * before the handler is entered.
+ */
+async function start(
+  args: { readonly preset: keyof typeof PRESET_OPERATIONS } & Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const machineId = typeof args["machineId"] === "string" ? args["machineId"] : MACHINE;
+  return await dispatch(ACTIONS.launch, {
+    ...args,
+    machineId,
+    operation: {
+      kind: "operation",
+      machineId,
+      operationId: PRESET_OPERATIONS[args.preset],
+    },
+  });
+}
+
+/** A stop as a run row's own Stop button posts one: the run, and that run's job node. */
+async function halt(
+  runId: string,
+  job: { readonly operationId: string; readonly jobId: string; readonly machineId?: string },
+  reason = "",
+): Promise<Record<string, unknown>> {
+  return await dispatch(ACTIONS.stop, {
+    runId,
+    reason,
+    job: {
+      kind: "job",
+      machineId: job.machineId ?? MACHINE,
+      operationId: job.operationId,
+      jobId: job.jobId,
+    },
+  });
+}
+
 /** The document one job carries, read back out of the request the fleet was handed. */
 function documentOf(launch: JobLaunch): Record<string, unknown> {
   const text = launch.input[INPUT_FIELD];
@@ -232,13 +278,58 @@ afterEach(() => {
   harness.close();
 });
 
-test("the roster declares the two doors as writes", () => {
-  expect(doors.map((entry) => entry.action.name)).toEqual([ACTIONS.launch, ACTIONS.stop]);
+test("the roster declares a dry read, a governed launch and a governed stop", () => {
+  expect(doors.map((entry) => entry.action.name)).toEqual([
+    ACTIONS.launchPreview,
+    ACTIONS.launch,
+    ACTIONS.stop,
+  ]);
+  const [preview, launch, stop] = doors as readonly Door[];
+
+  // The dry read asks no machine anything, so it carries no governed capability and no target.
+  expect(preview?.action.caps).toEqual(["containers:read"]);
+  expect(preview?.action.requirements).toBeUndefined();
+  expect(preview?.action.delegates).toBeUndefined();
+
+  // A governed cap without a requirement is refused outright by the dispatcher, and a
+  // requirement whose cap is not declared is refused at assembly: the two lists pair exactly.
+  expect(launch?.action.caps).toEqual(["machines:run"]);
+  expect(launch?.action.requirements).toEqual([{ cap: "machines:run", target: ["operation"] }]);
+  // The native ceiling the launched job inherits — `onJobSettled` reads its outputs back with
+  // this credential, and `execute` discharges the operation's own locations against it.
+  expect(launch?.action.delegates).toEqual(["jobs:read", "locations:read", "locations:write"]);
+
+  expect(stop?.action.caps).toEqual(["jobs:cancel"]);
+  expect(stop?.action.requirements).toEqual([{ cap: "jobs:cancel", target: ["job"] }]);
+});
+
+test("every declared requirement resolves to a node in the arguments the panel posts", () => {
+  // This is the host's own walk (`plugin-host.ts`: follow the target through the RAW arguments,
+  // parse a `ManifoldRef`), and it is the whole reason the node travels in the request. A door
+  // whose target named a field nobody posts is refused `invalid authority target` for every
+  // caller, which is a denial no test of the handler would ever see.
+  const posted: Record<string, Record<string, unknown>> = {
+    [ACTIONS.launch]: {
+      machineId: MACHINE,
+      preset: "keep-going",
+      operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.scan },
+    },
+    [ACTIONS.stop]: {
+      runId: "run_live",
+      job: { kind: "job", machineId: MACHINE, operationId: OPERATIONS.scan, jobId: "job_live" },
+    },
+  };
   for (const entry of doors) {
-    expect(entry.action.caps).toEqual(["containers:write"]);
-    // A governed capability at a door needs a reference target (ADR 0035), and the panel posts
-    // a machine ID rather than a machine node: declaring one here would refuse every dispatch.
-    expect(entry.action.requirements).toBeUndefined();
+    for (const requirement of entry.action.requirements ?? []) {
+      let value: unknown = posted[entry.action.name];
+      for (const segment of requirement.target) {
+        value =
+          value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+            ? Reflect.get(value, segment)
+            : undefined;
+      }
+      expect(value).toMatchObject({ kind: expect.any(String), machineId: MACHINE });
+    }
   }
 });
 
@@ -257,8 +348,8 @@ test("a preview states what will run, and runs nothing", async () => {
     }),
   });
 
-  const answer = await dispatch(ACTIONS.launch, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, preview: true,
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1,
   });
 
   expect(answer).toEqual({
@@ -280,17 +371,15 @@ test("a preview states what will run, and runs nothing", async () => {
 });
 
 test("a preview of a deployment that has run nothing states no profile", async () => {
-  const answer = await dispatch(ACTIONS.launch, {
-    machineId: MACHINE, preset: "keep-going", minutes: 30, preview: true,
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "keep-going", minutes: 30,
   });
   expect(answer["profile"]).toBeNull();
   expect(answer["kind"]).toBe("conductor");
 });
 
 test("keep going starts the beat, under the operator's own minutes, and records the run", async () => {
-  const answer = await dispatch(ACTIONS.launch, {
-    machineId: MACHINE, preset: "keep-going", minutes: 5,
-  });
+  const answer = await start({ preset: "keep-going", minutes: 5 });
 
   expect(fleet.executed).toHaveLength(1);
   const launch = fleet.executed[0]!;
@@ -320,9 +409,7 @@ test("keep going starts the beat, under the operator's own minutes, and records 
 test("reading what is new carries the window's sessions and the recipe it was told to run", async () => {
   cookbook[RECIPE.id] = RECIPE;
 
-  const answer = await dispatch(ACTIONS.launch, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id],
-  });
+  const answer = await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id] });
 
   expect(answer).toMatchObject({ runId: "run_000001", jobId: "job_000001", kind: "explore" });
   const launch = fleet.executed[0]!;
@@ -375,7 +462,7 @@ test("exploring a topic reads the sessions its own records cite", async () => {
     created_at: stamp(NOW - HOUR),
   });
 
-  await dispatch(ACTIONS.launch, { machineId: MACHINE, preset: "explore-topic", entityId: TOPIC });
+  await start({ preset: "explore-topic", entityId: TOPIC });
 
   expect(documentOf(fleet.executed[0]!)["preparation"]).toEqual({
     id: "",
@@ -386,27 +473,21 @@ test("exploring a topic reads the sessions its own records cite", async () => {
 });
 
 test("an explore with no method to run is refused by name, and starts nothing", async () => {
-  const empty = await dispatch(ACTIONS.launch, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1,
-  });
+  const empty = await start({ preset: "read-whats-new", sinceDays: 1 });
   expect(empty["refused"]).toContain("no cookbook recipe is installed");
 
   cookbook[RECIPE.id] = RECIPE;
-  const missing = await dispatch(ACTIONS.launch, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, recipes: ["time-and-spend"],
-  });
+  const missing = await start({ preset: "read-whats-new", sinceDays: 1, recipes: ["time-and-spend"] });
   expect(missing["refused"]).toContain("time-and-spend");
   expect(fleet.executed).toEqual([]);
 });
 
 test("an explore over a window holding nothing says so rather than starting an empty run", async () => {
   cookbook[RECIPE.id] = RECIPE;
-  const answer = await dispatch(ACTIONS.launch, {
-    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id],
-  });
+  const answer = await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id] });
   expect(answer["runId"]).toBe("run_000001");
 
-  const none = await dispatch(ACTIONS.launch, {
+  const none = await start({
     machineId: "m-other", preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id],
   });
   expect(none["refused"]).toContain("catalogued no session");
@@ -414,15 +495,13 @@ test("an explore over a window holding nothing says so rather than starting an e
 
 test("a machine that cannot run it refuses the launch and posts nothing", async () => {
   fleet.readiness = { ...READY, connected: false };
-  expect((await dispatch(ACTIONS.launch, { machineId: MACHINE, preset: "keep-going" }))["refused"]).toContain(
-    "offline",
-  );
+  expect((await start({ preset: "keep-going" }))["refused"]).toContain("offline");
 
   fleet.readiness = {
     ...READY,
     operations: { [OPERATIONS.scan]: { ready: false, reason: "artifact_missing" } },
   };
-  const notReady = await dispatch(ACTIONS.launch, { machineId: MACHINE, preset: "keep-going" });
+  const notReady = await start({ preset: "keep-going" });
   expect(notReady["refused"]).toContain("artifact_missing");
   expect(fleet.executed).toEqual([]);
   expect((await harness.store.runs({ limit: 25, offset: 0 })).total).toBe(0);
@@ -430,7 +509,7 @@ test("a machine that cannot run it refuses the launch and posts nothing", async 
 
 test("a job the machine refuses leaves no run row behind", async () => {
   fleet.refusal = "machine_offline";
-  const answer = await dispatch(ACTIONS.launch, { machineId: MACHINE, preset: "keep-going" });
+  const answer = await start({ preset: "keep-going" });
   expect(answer["refused"]).toContain("machine_offline");
   expect((await harness.store.runs({ limit: 25, offset: 0 })).total).toBe(0);
 });
@@ -440,7 +519,7 @@ test("a disabled policy starts nothing, and says which policy", async () => {
     version: "p2", seq: 2, actor_id: "operator", reason: "pausing",
     payload: JSON.stringify({ enabled: false }), recorded_at: stamp(NOW),
   });
-  const answer = await dispatch(ACTIONS.launch, { machineId: MACHINE, preset: "keep-going" });
+  const answer = await start({ preset: "keep-going" });
   expect(answer["refused"]).toContain("p2");
   expect(fleet.executed).toEqual([]);
 });
@@ -458,9 +537,7 @@ test("a drawn preset runs cycles of the loop and answers with the first job draw
     report({ stop: { reason: "per-cycle", detail: "one cycle's allowance is spent" } }),
   ];
 
-  const answer = await dispatch(ACTIONS.launch, {
-    machineId: MACHINE, preset: "review-backlog", draws: 3,
-  });
+  const answer = await start({ preset: "review-backlog", draws: 3 });
 
   expect(answer).toMatchObject({ runId: "run_asg1", jobId: "job_asg1", kind: "evaluate" });
   // The door posts nothing itself: the conductor claims and dispatches, so the ceiling and the
@@ -471,7 +548,7 @@ test("a drawn preset runs cycles of the loop and answers with the first job draw
 
 test("a cycle that draws nothing answers with the reason nothing was drawn", async () => {
   cycle.reports = [report({ stop: { reason: "no-candidates", detail: "every candidate is resting" } })];
-  const answer = await dispatch(ACTIONS.launch, { machineId: MACHINE, preset: "file-and-tidy", draws: 2 });
+  const answer = await start({ preset: "file-and-tidy", draws: 2 });
   expect(answer["refused"]).toContain("every candidate is resting");
   expect(cycle.ticks).toBe(1);
 });
@@ -488,7 +565,11 @@ test("stop cancels the job, closes the run and releases what it reserved", async
     granted_at: stamp(NOW - HOUR), expires_at: stamp(NOW + HOUR),
   });
 
-  const answer = await dispatch(ACTIONS.stop, { runId: "run_live", reason: "it is arguing with itself" });
+  const answer = await halt(
+    "run_live",
+    { operationId: OPERATIONS.evaluate, jobId: "job_live" },
+    "it is arguing with itself",
+  );
 
   expect(answer).toEqual({
     runId: "run_live", jobId: "job_live", machineId: MACHINE, closure: "stopped",
@@ -514,8 +595,12 @@ test("stop refuses a run that has already ended, and one nobody started", async 
     payload: JSON.stringify({ closure: "completed" }),
   });
 
-  expect((await dispatch(ACTIONS.stop, { runId: "run_done" }))["refused"]).toContain("already ended");
-  expect((await dispatch(ACTIONS.stop, { runId: "run_nothing" }))["refused"]).toContain("no run run_nothing");
+  expect(
+    (await halt("run_done", { operationId: OPERATIONS.scan, jobId: "job_done" }))["refused"],
+  ).toContain("already ended");
+  expect(
+    (await halt("run_nothing", { operationId: OPERATIONS.scan, jobId: "job_none" }))["refused"],
+  ).toContain("no run run_nothing");
   expect(fleet.cancelled).toEqual([]);
 });
 
@@ -526,8 +611,34 @@ test("a machine that refuses to stop leaves the run open rather than lying about
   });
   fleet.refusal = "job_not_cancellable";
 
-  const answer = await dispatch(ACTIONS.stop, { runId: "run_live" });
+  const answer = await halt("run_live", { operationId: OPERATIONS.scan, jobId: "job_live" });
 
   expect(answer["refused"]).toContain("job_not_cancellable");
+  expect((await harness.store.run("run_live")).run).toMatchObject({ state: "running" });
+});
+
+test("a request authorized at one node and aimed at another is refused, and reaches nothing", async () => {
+  // The host discharged the caller's authority at the node in the ARGUMENTS. Running the job the
+  // rest of the request describes would be starting something nobody was admitted for, so the
+  // two halves are required to agree.
+  const crossed = await dispatch(ACTIONS.launch, {
+    machineId: MACHINE,
+    preset: "keep-going",
+    operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.explore },
+  });
+  expect(crossed["refused"]).toContain(OPERATIONS.explore);
+  expect(fleet.executed).toEqual([]);
+
+  await insert(harness.db, "runs", {
+    id: "run_live", kind: OPERATIONS.scan, machine_id: MACHINE, job_id: "job_live",
+    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+  });
+  const elsewhere = await halt("run_live", {
+    machineId: "m-other",
+    operationId: OPERATIONS.scan,
+    jobId: "job_live",
+  });
+  expect(elsewhere["refused"]).toContain("m-other");
+  expect(fleet.cancelled).toEqual([]);
   expect((await harness.store.run("run_live")).run).toMatchObject({ state: "running" });
 });

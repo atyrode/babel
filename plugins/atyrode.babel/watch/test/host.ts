@@ -1,6 +1,6 @@
 import type { HostServices } from "@manifold/plugin";
 import type { ActionOutcome, MachineSummary } from "@manifold/protocol";
-import { ACTIONS, door, type ActionName } from "../../contract.ts";
+import { ACTIONS, OPERATIONS, door, type ActionName } from "../../contract.ts";
 import type { LaunchAnswer, PolicyResult, RunRow, RunsResult, TopicsResult } from "../api.ts";
 
 /*
@@ -72,7 +72,7 @@ export const MACHINES: readonly MachineSummary[] = [
 
 export function runRow(row: Partial<RunRow> & Pick<RunRow, "id" | "state" | "startedAt" | "lastWord">): RunRow {
   return {
-    kind: "explore",
+    kind: OPERATIONS.explore,
     machineId: "m-dev-01",
     jobId: "job_1",
     recipe: "code-health-comprehensibility",
@@ -174,6 +174,8 @@ export function watchDoors(answers: {
   readonly runs: () => RunsResult;
   readonly policy?: () => PolicyResult;
   readonly topics?: () => TopicsResult;
+  /** The dry read the card polls; `launch` below is only ever the button. */
+  readonly launchPreview?: (args: unknown) => LaunchAnswer;
   readonly launch?: (args: unknown) => LaunchAnswer;
   readonly stop?: (args: unknown) => unknown;
 }): Record<string, Doorman> {
@@ -181,6 +183,8 @@ export function watchDoors(answers: {
     [door(ACTIONS.runs)]: () => answers.runs(),
     [door(ACTIONS.policy)]: () => (answers.policy ?? (() => POLICY))(),
     [door(ACTIONS.topics)]: () => (answers.topics ?? (() => TOPICS))(),
+    [door(ACTIONS.launchPreview)]: (args) =>
+      (answers.launchPreview ?? (() => launchAnswer({ runId: "", jobId: "" })))(args),
     [door(ACTIONS.launch)]: (args) => (answers.launch ?? (() => launchAnswer()))(args),
     [door(ACTIONS.stop)]: (args) => (answers.stop ?? (() => ({ asked: true })))(args),
   };

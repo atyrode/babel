@@ -48,7 +48,7 @@ manifest and served as `ctx.database`. Three consequences worth knowing before r
   purge deletes `data.db` with its `-wal` and `-shm`. `bun run verify` asserts both halves of
   that: the file exists once the doors have answered, and is gone after the purge.
 
-## The machine half: one bundled file, two pinned tools
+## The machine half: one bundled file, two runtime tools the machine provides
 
 A run is a **job on an enrolled machine** (manifold `docs/PLUGINS.md` §8), and the baseline's
 manifest carries the `machine` block that says what may run there. `atyrode.babel/machine/` is
@@ -61,7 +61,7 @@ bun /job/artifact <operation> --input /inputs/input --out /outputs/outputs
 — which is literally the `argv` every operation declares. `pack.sh` builds that half with
 `bun build --target bun` into `atyrode.babel/machine.js`, stamps its sha256 into **both**
 platform artifacts of the manifest (a `raw` artifact is its own entry, so `sha256` and
-`entrySha256` are one digest), stamps `atyrode.babel/tools.json` in as `machine.tools`, and packs
+`entrySha256` are one digest), and packs
 it as a `bundleFile` member of the baseline's bundle. The file itself is never committed —
 `.gitignore` has it, a pack deletes it afterwards, `bun run dev` keeps it (`./pack.sh --machine`)
 because the inner loop re-packs on every save. The committed manifest carries the **last stamp**,
@@ -76,19 +76,27 @@ lease is cut from a **managed** location: the alternative, an ordinary anchor, m
 on the machine for `write` and refuses a second job for `create`. `scan` and `prepare` run with
 `network: "none"`; `explore` and `evaluate` reach the host because they launch the engine.
 
-Two tools are **managed artifacts**: the machine's own owner downloads them, verifies the pinned
-hashes and mounts them read-only at `/runtime/bin/<alias>` — `bun`, which is the executable every
-operation runs, and `code`, the engine `explore` and `evaluate` launch as `/runtime/bin/code`.
-`pin-tools.ts` is the only thing that writes those hashes and it writes them from downloads
-(`bun pin-tools.ts`, re-run on a version bump); `atyrode.babel/tools.json` is its committed
-output, checked against the release's own `checksums.txt` for `code` and the registry's
-`dist.integrity` for `bun`, and handed to the kit's own extractor before it is written.
+Two tools are **runtime tools the machine's owner provides, not artifacts this manifest pins**:
+`bun`, the executable every operation runs, and `code`, the engine `explore` and `evaluate`
+launch. A Manifold job sandbox is built from `/proc`, `/dev`, the job's own directories and the
+declared binds and nothing else — no `/lib64`, no libc — and manifold's own rule is that "a
+dynamically linked executable without its loader cannot run in the empty sandbox"
+(`docs/SELF-HOST.md`). Neither bun nor code ships a static build (the musl bun is dynamic
+against `ld-musl` too), so a pinned artifact could be downloaded and verified and still die at
+`execvp` — which is exactly what happened on the first real job. The owner's
+`execution.runtimeToolClosures` binds a tool WITH its exact closure at Nix build time, per
+machine, under the alias the operation names; the manifest therefore declares
+`runtimeTools: ["bun"]` / `["bun", "code"]` and no `tools` block, so a declared artifact can never
+shadow the owner's binding. For the operator's fleet that is one dotfiles module:
 
-**`bun` is pinned from npm, not from its GitHub release.** Oven publishes Linux builds as zip
-only, and the kit's extractor admits exactly one Info-ZIP extra field (0x5855) per member while
-those zips carry 0x5455 and 0x7875 — `artifact_unsupported_zip`, every job, forever. The same
-build is on the registry as a gzipped tar (`@oven/bun-linux-x64`), and `package/bin/bun` in it is
-byte-identical to `bun-linux-x64/bun` in the zip.
+```nix
+services.manifold.execution = {
+  runtimeTools.bun = [{ source = "${pkgs.bun}/bin/bun"; target = "/runtime/bin/bun"; kind = "file"; }];
+  runtimeToolClosures.bun = [ pkgs.bun ];
+  runtimeTools.code = [{ source = "${code}/bin/code"; target = "/runtime/bin/code"; kind = "file"; }];
+  runtimeToolClosures.code = [ code ];
+};
+```
 
 **`archive` is not declared, and `restic` is not pinned.** Upstream's whole Linux distribution is
 bare bzip2 — `restic_0.19.1_linux_amd64.bz2` (10,107,515 bytes) and
@@ -102,10 +110,10 @@ that binary is hosted where the operator will trust it) AND a job can be given a
 before, because a pin nobody obtained by download is not a pin, and a password in a manifest is
 not a password.
 
-Two things an enrolled machine's operator must arrange, because a manifest cannot: the `home`
-anchor needs `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` to **exist** (a job whose read
-location is missing fails to start; `mkdir -p` is the whole fix), and the artifact origins must
-admit `registry.npmjs.org` and `github.com`.
+Two more things an enrolled machine's operator must arrange, because a manifest cannot: the
+`home` anchor needs `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` to **exist** (a job whose
+read location is missing fails to start; `mkdir -p` is the whole fix), and the `runtime` anchor
+must be a dedicated bounded tmpfs, since the named-output lease is cut from it.
 
 ## The SDK is a sibling checkout, for now
 
@@ -144,12 +152,11 @@ reads from the shell's own module registry, so a bundle never carries a second c
 
 ```sh
 bun install                 # zod, typescript, react + types, happy-dom; nothing else
-bun run check               # tsc over both halves, the store, the panels, pin-tools.ts and the tests
+bun run check               # tsc over both halves, the store, the panels and the tests
 bun test                    # the manifests against the contract, the doors against a real temporary database, the panels in a document, and `pack` itself
 bun run pack                # builds machine.js, stamps the manifest, dist/<id>.manifold-plugin.json per manifest, parents first, plus dist/SHA256SUMS
 bun run verify              # every bundle installed on a real engine spawned from the checkout
 bun run dev -- --hub http://127.0.0.1:7912 --deliver docker:manifold-dev-manifold-1
-bun pin-tools.ts            # only on a tool version bump: downloads, hashes, rewrites tools.json
 ```
 
 `verify` is the kit's own (`docs/PLUGINS.md` §9 Verifying): it spawns the sibling checkout's

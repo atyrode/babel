@@ -4,11 +4,12 @@ import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   INPUT_FIELD,
+  LaunchInputSchema,
   LaunchRequestSchema,
   LaunchResultSchema,
-  OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
+  PRESET_OPERATIONS,
   StopInputSchema,
   StopResultSchema,
   type LaunchInput,
@@ -28,7 +29,7 @@ import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
 
 /*
-  THE TWO DOORS WATCH POSTS TO: start one thing, stop one thing.
+  THE THREE DOORS WATCH POSTS TO: read what a run would be, start one thing, stop one thing.
 
   A preset is a NAMED REQUEST rather than a set of flags (watch/api.ts): "read what's new · the
   last 1 day" instead of "explore --preparation p_3f2a --recipe … --develop 3". This file is
@@ -47,27 +48,49 @@ import { defineDoor, type Door } from "./door.ts";
   `file-and-tidy` run cycles of the loop and answer with the first job the cycle asked for; the
   refusal, when there is none, is the cycle's own sentence about why nothing was drawn.
 
-  PREVIEW EXECUTES NOTHING AND ASKS NOTHING. Watch polls it while the operator is still choosing,
-  so it answers from the store and the policy alone: the profile is the one the newest receipt
-  RECORDED (what actually ran last), the ceilings are the policy's, and no machine is described
-  and no job is started. A preview that reached the host would make a form that is merely open
-  cost round trips on a machine, and a preview that stated a profile nobody had run would be
-  Watch telling the operator what it hopes will happen.
+  WHY `launch` DECLARES `machines:run` AT A NODE. A governed capability is granted at a NODE and
+  never over a workspace (ADR 0035), and the dispatcher attenuates a door's `ctx.jobs` to exactly
+  the capabilities the door DECLARED before the handler runs. A `launch` declaring only
+  `containers:write` therefore reached `ctx.jobs.describe` with no `machines:run` at all and was
+  refused `governed_authority_refused` on the first machine it asked about — the door was not
+  denied, its own hands were empty.
 
-  WHY NEITHER DOOR DECLARES `machines:run`. Every governed capability — `machines:run`,
-  `jobs:read`, `jobs:cancel` — has to be discharged at a REFERENCE (ADR 0035), and a door
-  declaring one without `requirements` is refused outright by the dispatcher
-  ("governed actions require resource targets and explicit consent", plugin-host.ts). A
-  requirement's target is resolved by walking own properties of the RAW arguments — for an
-  isolated plugin the engine parses the input as `z.unknown()` and the guest parses it again —
-  so the machine would have to arrive as `{ kind: "machine", machineId }` in the arguments the
-  Watch panel posts, and it posts `machineId` as a plain string. These doors therefore carry
-  `containers:write`, like the nine acts, and the governed authority is discharged where the
-  effect is: the caller's own credential at `ctx.jobs.execute` and `ctx.jobs.cancel`.
+  So the door declares `machines:run` and pairs it with `requirements: [{cap, target:
+  ["operation"]}]`. The host walks `operation` through the RAW arguments, parses it as a
+  `ManifoldRef`, discharges `machines:run` there through the ordinary waterfall, and then admits
+  the dispatch against the operator's version-bound CONSENT for this plugin at that node. That is
+  why the panel posts the node instead of a machine id: a door with a governed cap and no
+  requirement is refused outright ("governed actions require resource targets and explicit
+  consent"), and a requirement whose target is a bare string is `invalid authority target`.
+
+  `jobs:read` and the two `locations:` capabilities are DELEGATES rather than caps: they are the
+  native ceiling this door's job authority carries, not a second thing to ask the caller for.
+  The engine re-derives them at the effect — `execute` requires `machines:run` at the operation
+  and `locations:read`/`locations:write` at every location the operation declares, each against
+  its own consent — and the credential the job then carries is THIS attenuated authority, which
+  is what `onJobSettled` later reads the sealed outputs back with. Declaring them as caps would
+  demand a requirement apiece (assembly refuses caps and requirements that do not pair) and so a
+  consent for `jobs:read` at a node nobody asks a question about.
+
+  THE DRY READ IS ITS OWN DOOR. `launchPreview` answers what a run would be — the recorded
+  profile, the model, the ceilings — under `containers:read`, describing no machine and starting
+  no job. It cannot live on `launch`: the requirement is discharged before the handler is
+  entered, so a preview there would need a node AND the operator's consent at it merely to say
+  what a launch would cost, and Watch polls it while he is still choosing.
 */
 
-/** A launch is a write into the workspace this plugin serves; the job's own authority is the caller's. */
-const LAUNCH_CAPS = ["containers:write"] as const;
+/** Governed, at the operation node the request names; see the block above. */
+const LAUNCH_CAPS = ["machines:run"] as const;
+const LAUNCH_REQUIREMENTS = [{ cap: "machines:run" as const, target: ["operation"] }];
+/** The native ceiling the launched job inherits: reading it back, and its declared locations. */
+const LAUNCH_DELEGATES = ["jobs:read", "locations:read", "locations:write"] as const;
+
+/** Stopping is governed at the JOB node, which the run row carries and the panel posts. */
+const STOP_CAPS = ["jobs:cancel"] as const;
+const STOP_REQUIREMENTS = [{ cap: "jobs:cancel" as const, target: ["job"] }];
+
+/** A dry read of the store and the policy; it asks no machine anything. */
+const PREVIEW_CAPS = ["containers:read"] as const;
 
 /** What a preset is, in one row: the run's kind, the operation it becomes, how it is started. */
 type Start = "explore" | "draw" | "beat";
@@ -78,11 +101,11 @@ interface PresetPlan {
 }
 
 const PRESET_PLANS: Record<LaunchInput["preset"], PresetPlan> = {
-  "read-whats-new": { kind: "explore", operationId: OPERATIONS.explore, start: "explore" },
-  "explore-topic": { kind: "explore", operationId: OPERATIONS.explore, start: "explore" },
-  "review-backlog": { kind: "evaluate", operationId: OPERATIONS.evaluate, start: "draw" },
-  "file-and-tidy": { kind: "evaluate", operationId: OPERATIONS.evaluate, start: "draw" },
-  "keep-going": { kind: "conductor", operationId: OPERATIONS.scan, start: "beat" },
+  "read-whats-new": { kind: "explore", operationId: PRESET_OPERATIONS["read-whats-new"], start: "explore" },
+  "explore-topic": { kind: "explore", operationId: PRESET_OPERATIONS["explore-topic"], start: "explore" },
+  "review-backlog": { kind: "evaluate", operationId: PRESET_OPERATIONS["review-backlog"], start: "draw" },
+  "file-and-tidy": { kind: "evaluate", operationId: PRESET_OPERATIONS["file-and-tidy"], start: "draw" },
+  "keep-going": { kind: "conductor", operationId: PRESET_OPERATIONS["keep-going"], start: "beat" },
 };
 
 /**
@@ -292,31 +315,75 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     return { input: { [INPUT_FIELD]: text } };
   }
 
+  /** What a preset on a machine would be, before it is anything: the answer both doors share. */
+  async function prospect(input: LaunchInput): Promise<{
+    plan: RunPlan;
+    policy: Policy;
+    version: string;
+    answer: Omit<z.infer<typeof LaunchResultSchema>, "runId" | "jobId">;
+  }> {
+    const preset = PRESET_PLANS[input.preset];
+    const inForce = await deps.coordinator.policy();
+    const policy = inForce.policy;
+    return {
+      plan: deps.plan(policy, preset.operationId),
+      policy,
+      version: inForce.version,
+      answer: {
+        machineId: input.machineId,
+        kind: preset.kind,
+        profile: await lastProfile(input.machineId),
+        ceiling: { perRunUsd: perRunUsd(policy), perDayUsd: policy.dailyCost },
+      },
+    };
+  }
+
+  const preview = defineDoor(
+    defineServerAction({
+      name: ACTIONS.launchPreview,
+      title: "Read what a run would be",
+      caps: PREVIEW_CAPS,
+      input: LaunchInputSchema,
+      result: LaunchResultSchema,
+    }),
+    async (_ctx, input) => {
+      const { answer } = await prospect(input);
+      return { runId: "", jobId: "", ...answer };
+    },
+  );
+
   const launch = defineDoor(
     defineServerAction({
       name: ACTIONS.launch,
       title: "Start a run on a machine",
       caps: LAUNCH_CAPS,
+      delegates: LAUNCH_DELEGATES,
+      requirements: LAUNCH_REQUIREMENTS,
       input: LaunchRequestSchema,
       result: LaunchResultSchema,
     }),
     async (ctx, input) => {
       const preset = PRESET_PLANS[input.preset];
-      const inForce = await deps.coordinator.policy();
-      const policy = inForce.policy;
-      const plan = deps.plan(policy, preset.operationId);
-      const ceiling = { perRunUsd: perRunUsd(policy), perDayUsd: policy.dailyCost };
-      const answer = {
-        machineId: input.machineId,
-        kind: preset.kind,
-        profile: await lastProfile(input.machineId),
-        ceiling,
-      };
-      if (input.preview) return { runId: "", jobId: "", ...answer };
+      const { plan, policy, version, answer } = await prospect(input);
+      // The host discharged `machines:run` at the node in the ARGUMENTS; this is the only place
+      // that can say the node is the one this request is actually about. The engine re-checks
+      // consent at the operation it is really asked to run, so a mismatch is never authority
+      // this earns — it is a request whose two halves disagree, and answering it would be
+      // starting something the operator did not authorize by name.
+      if (
+        input.operation.machineId !== input.machineId ||
+        input.operation.operationId !== preset.operationId
+      ) {
+        return {
+          refused:
+            `this launch names ${input.machineId}/${preset.operationId} and asks for authority ` +
+            `at ${input.operation.machineId}/${input.operation.operationId}`,
+        };
+      }
       if (!policy.enabled) {
         return {
           refused:
-            `the evaluation policy in force (${inForce.version}) is disabled, so Babel starts ` +
+            `the evaluation policy in force (${version}) is disabled, so Babel starts ` +
             `nothing; enable it and the launch runs under its ceilings`,
         };
       }
@@ -489,11 +556,12 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     defineServerAction({
       name: ACTIONS.stop,
       title: "Stop a run",
-      caps: LAUNCH_CAPS,
+      caps: STOP_CAPS,
+      requirements: STOP_REQUIREMENTS,
       input: StopInputSchema,
       result: StopResultSchema,
     }),
-    async (ctx, { runId, reason }) => {
+    async (ctx, { runId, job, reason }) => {
       const rows = await store.db.query<{
         job_id: string | null;
         machine_id: string | null;
@@ -508,13 +576,17 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       if (jobId === "" || machineId === "") {
         return { refused: `${runId} has no job on a machine to stop` };
       }
+      // The caller was admitted at the node it POSTED; the row says which job this run is. A
+      // request that authorized one job and named another is refused rather than reconciled.
+      if (job.jobId !== jobId || job.machineId !== machineId || job.operationId !== run.kind) {
+        return {
+          refused:
+            `${runId} is ${machineId}/${run.kind}/${jobId} and this stop asks for authority ` +
+            `at ${job.machineId}/${job.operationId}/${job.jobId}`,
+        };
+      }
       try {
-        await deps.jobs(ctx).cancel({
-          kind: "job",
-          machineId,
-          operationId: run.kind,
-          jobId,
-        });
+        await deps.jobs(ctx).cancel(job);
       } catch (error) {
         return { refused: `${machineId} refused to stop ${jobId}: ${message(error)}` };
       }
@@ -554,7 +626,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     },
   );
 
-  return [launch, stop];
+  return [preview, launch, stop];
 }
 
 function message(error: unknown): string {

@@ -63,7 +63,6 @@
     "atyrode.babel/**/*.ts",
     "atyrode.babel/**/*.tsx",
     "atyrode.babel/**/*.json",
-    "pin-tools.ts",
     "test/**/*.ts",
     "test/**/*.tsx"
   ]

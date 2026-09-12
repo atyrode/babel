@@ -27,7 +27,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { OPERATIONS, type Receipt } from "../contract.ts";
+import { type Receipt } from "../contract.ts";
 import { runEngineJob, type EngineOutcome, type HostTool, type ToolBroker } from "./engine/client.ts";
 import {
   ENGINE_FAILURES,
@@ -260,7 +260,7 @@ export async function explore(input: ExploreInput, out: OutputSink, deps: Operat
   }
   const receipt = buildReceipt({
     runId,
-    kind: OPERATIONS.explore,
+    kind: "explore",
     machineId: input.machineId,
     ...(input.recipes[0] === undefined ? {} : { recipeId: input.recipes[0].id }),
     preparation: {
