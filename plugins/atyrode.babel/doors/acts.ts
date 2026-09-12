@@ -2,6 +2,7 @@ import { defineServerAction } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   AnswerInputSchema,
+  BABEL_PLUGIN_ID,
   CommentInputSchema,
   EVENTS,
   FileInputSchema,
@@ -12,6 +13,7 @@ import {
   TellInputSchema,
   UnfileInputSchema,
 } from "../contract.ts";
+
 import {
   ActRefused,
   AnsweredSchema,
@@ -34,6 +36,13 @@ import {
   type ActsStore,
 } from "../store/acts.ts";
 import { defineDoor, type Door } from "./door.ts";
+
+/**
+ * Every act is news on this plugin's own node. The id is the contract's, not the context's:
+ * a hardened guest context carries `pluginId` and the in-realm one does not, and an emission
+ * on `manifold://plugin/undefined` is refused as another plugin's node.
+ */
+const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;
 
 /*
   THE DOORS THE OPERATOR ACTS THROUGH. Nine of them, and they are thin on purpose: each parses
@@ -154,7 +163,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
           { id: args.id, ruling: args.ruling, note: args.note, duplicateOf: args.duplicateOf },
           ctx.principal.id,
         );
-        ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, EVENTS.ruled, {
+        ctx.emit(OWN_NODE, EVENTS.ruled, {
           id: ruled.id,
           ruling: args.ruling,
           standing: ruled.standing,
@@ -163,7 +172,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
         // A plan that moved the ledger is its own event: a reader of the feed learns a record was
         // ruled on, and a reader of the topics page learns an entity now exists.
         if (ruled.plan?.applied === true) {
-          ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, EVENTS.planApplied, {
+          ctx.emit(OWN_NODE, EVENTS.planApplied, {
             id: ruled.id,
             kind: ruled.plan.kind,
             operation: ruled.plan.operation,
@@ -181,7 +190,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
           { id: args.id, text: args.text, kind: args.kind, relatedId: args.relatedId },
           ctx.principal.id,
         );
-        ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, EVENTS.recordWritten, {
+        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
           id: commented.id,
           recordId: commented.recordId,
           question: commented.question,
@@ -193,7 +202,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
     defineDoor(answerAction, async (ctx, args) =>
       await acted(async () => {
         const answered = await answer(store, args, ctx.principal.id);
-        ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, EVENTS.recordWritten, {
+        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
           id: answered.id,
           questionId: answered.questionId,
           state: answered.state,
@@ -209,7 +218,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
           { entityId: args.entityId, state: args.state, reason: args.reason },
           ctx.principal.id,
         );
-        ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, EVENTS.recordWritten, {
+        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
           entityId: stated.entityId,
           state: stated.state,
           facts: stated.facts.length,
@@ -221,7 +230,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
     defineDoor(fileAction, async (ctx, args) =>
       await acted(async () => {
         const filed = await file(store, args, ctx.principal.id);
-        ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, EVENTS.recordWritten, {
+        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
           id: filed.id,
           recordId: filed.recordId,
           entityId: filed.entityId,
@@ -233,7 +242,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
     defineDoor(unfileAction, async (ctx, args) =>
       await acted(async () => {
         const withdrawn = await unfile(store, args, ctx.principal.id);
-        ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, EVENTS.recordWritten, {
+        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
           id: withdrawn.id,
           recordId: withdrawn.recordId,
           entityId: withdrawn.entityId,
@@ -250,7 +259,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
           { text: args.text, target: args.target, replyTo: args.replyTo },
           ctx.principal.id,
         );
-        ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, EVENTS.recordWritten, { id: told.id, rootId: told.rootId, seq: told.seq });
+        ctx.emit(OWN_NODE, EVENTS.recordWritten, { id: told.id, rootId: told.rootId, seq: told.seq });
         return told;
       }),
     ),
@@ -258,7 +267,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
     defineDoor(setPolicyAction, async (ctx, args) =>
       await acted(async () => {
         const installed = await setPolicy(store, args.policy, args.reason, ctx.principal.id);
-        ctx.emit({ kind: "plugin", pluginId: ctx.pluginId }, EVENTS.recordWritten, { version: installed.version, seq: installed.seq });
+        ctx.emit(OWN_NODE, EVENTS.recordWritten, { version: installed.version, seq: installed.seq });
         return installed;
       }),
     ),
