@@ -127,11 +127,18 @@ may supply missing capability proof, but a local skip is not a pass.
 
 ## Boundaries
 
-- **Destructive and irreversible archive, custody and fleet operations are operator-only.**
-  Never run live `restic backup`, `forget`, `prune`, `unlock`, `init` or `repair`, never
-  rewrite or delete shared catalog rows, and never apply fleet or deployment changes. A
-  documented operator step does not authorize archive mutation, analysis restart or fleet
-  apply. Production plugin installation is also by the operator, by hand; never automate it.
+- **Destructive and irreversible archive, custody and fleet operations need case-by-case
+  authorization** (operator direction 2026-09-12). `restic forget`, `prune`, `unlock`,
+  `repair` and `init`, rewriting or deleting shared catalog rows, moving or deleting a
+  published tag, and fleet or deployment apply can each destroy history nothing else
+  holds. Name the operation and get approval for that occasion; an approval covers what
+  it named and not the class. Production plugin installation is by the operator, by hand.
+- **Running Babel is ordinary operation, not a mutation to be asked about.** Analysis
+  runs, the conductor loop, `babel prepare`/`explore`, `babel evaluate`, coverage sweeps,
+  additive `restic backup`, and the shared-catalog migrations a publication needs are
+  normal work inside whatever the operator asked for. They append; they destroy nothing.
+  Refusing them because something downstream writes is the failure mode this bullet
+  exists to stop.
 - **`babel sync` is ordinary record publication, not archive mutation, and is permitted**
   within the authorized scope of the analysis work that produced the records. It appends
   this host's already-durable Phase B records to the shared backend; it deletes nothing,
