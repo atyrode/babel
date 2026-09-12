@@ -24,8 +24,8 @@
 // That nothing renders a liveness colour over an unobserved process: the live
 // mark is on exactly the rows the server says were heard from.
 //
-// That no host appears in the reading path at all — not on Decide, not on Read,
-// not on a record, not on Watch — while Settings › Archive still names machines,
+// That no host appears in the reading path at all — not on the feed, not on a
+// record, not on Watch — while Settings › Archive still names machines,
 // because a repository's coverage is a fact about machines.
 //
 // The corpus is synthetic and disposable. Nothing here reads a real session.
@@ -334,9 +334,9 @@ test.skipIf(!chrome)("no host is named in the reading path, and Settings › Arc
   });
   expect(hosts.length).toBeGreaterThan(0);
 
-  // Every surface a reader passes through to answer "what needs me", "what has
-  // Babel found", "what is it doing" and "what is this record".
-  for (const route of ["", "read", "watch", "r/hyp_unverified-closures"]) {
+  // Every surface a reader passes through to answer "what has Babel produced",
+  // "what is it doing" and "what is this record".
+  for (const route of ["", "watch", "r/hyp_unverified-closures"]) {
     await open(route);
     await page.waitForSelector(".page", { timeout: 15_000 });
     const state = await page.evaluate(() => ({

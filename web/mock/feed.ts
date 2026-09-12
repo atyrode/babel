@@ -22,8 +22,11 @@
 // Types only. ./serve.ts runs under Bun with no DOM, and ../src/feedapi pulls
 // in ../src/api, which reads `window` at import time to take the launch
 // nonce: every other mock in this directory imports its shapes the same way
-// and for the same reason.
+// and for the same reason. The hostile markup is the value half of the same
+// arrangement: it is ./phaseb.ts's fixture rather than a second copy, because
+// two strings that are supposed to be the same attack drift apart.
 import type { FeedKind, FeedPost, FeedSort, FeedWindow } from "../src/feedapi";
+import { HOSTILE_HTML } from "./phaseb";
 
 // The five kinds, in the order the chips offer them. It is written out here
 // rather than imported for the reason above; the wire contract is what the
@@ -67,6 +70,11 @@ const CLAIMS: Record<FeedKind, string[]> = {
   ],
   finding: [
     "Every review run this month outlived its lease and lost its write-back",
+    // The claim that names its own identifier: this is the second finding, so
+    // it is the one REAL_IDS files under fnd_hostile-title, and the feed's
+    // rendering of an untrusted line is then reachable in a browser without
+    // opening the record that carries it.
+    "A model's own output can carry markup: " + HOSTILE_HTML,
     "The sessions listing renders 15,311 pixels tall on a 1440px screen",
     "Describe re-reads each transcript once per scan, not once per change",
     "Four of fifty-five evaluation claims finished, and all four failed",
@@ -258,7 +266,11 @@ function build(): Fixture[] {
   return posts;
 }
 
-const fixture = build();
+// Day one has no posts, and the switch is ./phaseb.ts's own: a deployment
+// whose frontier, queue and inbox are empty and whose front page is sixty
+// posts deep is a deployment that does not exist, and the feed's own day-one
+// sentence would then be unreachable in a browser.
+const fixture = Bun.env.MOCK_PHASEB === "empty" ? [] : build();
 
 // The operator's own stance, in memory, keyed by post id. It is the same
 // append-nothing receipt ./record.ts keeps for the record page: the preview

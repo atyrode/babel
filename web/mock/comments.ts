@@ -17,6 +17,13 @@
 // the thread are two reads with two bodies of fixture state, and #234's whole
 // diagnosis is what happens when one file holds everything a surface touches.
 
+// A reviewer's prose is a model's output, so one line of it carries ./phaseb.ts's
+// hostile markup. The thread is a surface that did not exist when that fixture
+// was written, and prose written by a model is exactly where §2.7's inertness
+// has to hold: the markup is imported rather than copied so the two cannot
+// drift into being different attacks.
+import { HOSTILE_HTML } from "./phaseb";
+
 // The record whose conversation the preview holds: the consolidated proposal,
 // which is the first proposal ./phaseb.ts describes and the one the record
 // page is normally opened on.
@@ -147,6 +154,15 @@ const fixture: MockComment[] = [
       "The other remedy for the same pain — skipping describes on unchanged digests — does not " +
       "address closures at all. They are not alternatives.",
     at: "2026-09-01T07:15:00Z",
+    related_id: "",
+  },
+  {
+    id: "cmt_hostile-contribution",
+    kind: "contribution",
+    author: run("run_discovery-07"),
+    role: "evidence",
+    text: "The excerpt this claim rests on reads: " + HOSTILE_HTML,
+    at: "2026-09-01T07:20:00Z",
     related_id: "",
   },
   {
