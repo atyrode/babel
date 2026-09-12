@@ -1,0 +1,22 @@
+{
+  "id": "atyrode.babel.watch",
+  "version": "0.3.0",
+  "title": "Watch",
+  "description": "What is running, and what will run: a preset and a topic instead of flags, the model, the profile and the ceiling stated before the first byte, the runs in flight with their live pulse, and the receipt of every run that finished. Launches, follows and stops through the baseline's doors.",
+  "capabilities": [],
+  "dependencies": {
+    "atyrode.babel": {
+      "type": "required",
+      "reason": "a run is launched, followed and stopped through babel's doors"
+    }
+  },
+  "contributes": {
+    "panels": [{ "id": "watch", "title": "Watch" }],
+    "seats": [{ "panel": "watch", "order": 300 }]
+  },
+  "entry": { "web": "web.js", "styles": true },
+  "links": {
+    "repository": "https://github.com/atyrode/babel",
+    "changelog": "https://github.com/atyrode/babel/blob/main/CHANGELOG.md"
+  }
+}

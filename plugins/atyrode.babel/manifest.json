@@ -1,16 +1,35 @@
 {
   "id": "atyrode.babel",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "title": "babel",
-  "description": "Babel's baseline: records a run of one of babel's read-only reports (archive status, archive fleet, storage status, version) on a chosen enrolled machine and lists the last fifty. The terminal that runs the report is opened by a sub-plugin's panel through the viewer's own authority.",
-  "capabilities": ["containers:read", "terminals:spawn"],
+  "description": "Babel on the hub: the doors the operator rules through and the store they read. One list of every record Babel produced, ranked by what needs him; rulings, asks, answers, interest and filings as append-only acts; topics as ledger entities; runs on enrolled machines as jobs. Its data is rows — records, links, votes, filings, entities, facts — in one SQLite file of its own.",
+  "capabilities": [
+    "containers:read",
+    "containers:write",
+    "machines:run",
+    "jobs:read",
+    "jobs:input",
+    "jobs:cancel"
+  ],
+  "dataVersion": { "major": 1, "minor": 0 },
+  "database": { "maxBytes": 1073741824 },
+  "purges": ["storage"],
   "contributes": {
     "panels": [],
     "sections": [],
     "elements": [],
     "tools": [],
-    "events": [{ "id": "run_recorded", "title": "Report run recorded" }]
+    "events": [
+      { "id": "record_written", "title": "Record written" },
+      { "id": "ruled", "title": "Operator ruled" },
+      { "id": "assessed", "title": "Reviewer voted" },
+      { "id": "plan_applied", "title": "Plan applied" },
+      { "id": "run_changed", "title": "Run changed" }
+    ]
   },
-  "purges": ["storage"],
-  "entry": { "server": true, "web": "web.js" }
+  "entry": { "server": true, "web": "web.js" },
+  "links": {
+    "repository": "https://github.com/atyrode/babel",
+    "changelog": "https://github.com/atyrode/babel/blob/main/CHANGELOG.md"
+  }
 }

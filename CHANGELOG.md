@@ -11,6 +11,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Babel becomes a manifold plugin family.** `plugins/atyrode.babel` is the
+  baseline — one SQLite store of its own (manifold ADR 0034), the doors over it
+  and the five event kinds it originates — with `atyrode.babel.feed` (Home, the
+  peeled record, a topic) and `atyrode.babel.watch` (what runs) as its panels,
+  in-realm React on `@manifold/ui`. The vocabulary is spelled once in
+  `contract.ts` and the twenty-three append-only tables once in
+  `store/schema.ts`; the shape is created whole by the plugin's own enable hook
+  and a purge is the file. `bun run check`, `bun test`, `bun run pack` and
+  `bun run verify` gate it against a real engine spawned from the pinned
+  manifold checkout, in CI through manifold's reusable `plugins.yml`. Decision
+  91, `docs/manifold-plan.md` P0, #241.
 - **One record, peeled.** A finding, proposal, hypothesis or observation is
   one page at `/r/<id>`, opened at its claim and expanding in place through
   five depths: the claim, the case, the evidence, the reception, the

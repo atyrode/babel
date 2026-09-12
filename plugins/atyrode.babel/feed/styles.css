@@ -1,0 +1,15 @@
+/*
+  THE FEED'S SKIN. Every selector's leftmost compound is this plugin's own root class
+  (docs/PLUGINS.md §10, ADR 0025 §7); the tokens come from the ground, never from `:root`.
+
+  STUB (Scaffold, P0): belongs to the feed slice with its web half; replace both together.
+*/
+
+.plugin-atyrode_babel_feed {
+  color: var(--fg);
+  font-size: 0.875rem;
+}
+
+.plugin-atyrode_babel_feed__note {
+  color: var(--fg-muted);
+}

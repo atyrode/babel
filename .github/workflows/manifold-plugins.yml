@@ -1,32 +1,37 @@
 name: manifold-plugins
 
-# Babel's manifold plugins (plugins/) are built against the manifold plugin kit read from a
-# sibling checkout pinned by plugins/MANIFOLD_REV (plugins/README.md). The whole job lives in
-# manifold's reusable workflow: it checks this repository out beside atyrode/manifold at that
-# revision so plugins/tsconfig.json's `../../manifold` resolves exactly as it does on a
-# developer's machine, then runs `check`, `test`, `pack` and `verify` from plugins/package.json
-# and uploads dist/ as the `manifold-plugins` artifact.
+# Babel IS a manifold plugin family (decision 91, docs/manifold-plan.md): plugins/ is the
+# product, and this gate is the one that says the artifact composes. The whole job lives in
+# manifold's reusable workflow, which checks this repository out beside atyrode/manifold at the
+# revision in plugins/MANIFOLD_REV — the sibling layout plugins/tsconfig.json and plugins/pack.sh
+# resolve on a developer's machine — then runs `check`, `test`, `pack` and `verify` from
+# plugins/package.json and uploads dist/ as the `manifold-plugins` artifact.
 #
 # The `uses:` ref below and plugins/MANIFOLD_REV are the same revision and are bumped together:
-# the workflow reads the kit's commands from the checkout the file names, so a ref ahead of the
-# file would run a newer workflow against an older kit.
+# a ref ahead of the file would run a newer workflow against an older kit. ea675d21 is the
+# revision carrying the plugin database (manifold ADR 0034), which the store cannot start
+# without.
+#
+# Delivery is not here. Every change is proved on preview.manifold.tyrode.dev or a local
+# preview-equivalent hub, through `bun run dev -- --deliver` from dev-01; production
+# (manifold.tyrode.dev) is installed by the operator, by hand, from the plugin manager. The
+# release path that hands a tagged bundle to the preview's receiver returns with the P7 cutover
+# (plugins/README.md, "Where a change is proved").
 
-# PAUSED. Babel is a standalone product and nothing it does depends on a hub,
-# so this gate no longer runs on a push or a pull request. It cannot pass as
-# things stand: the fixtures under plugins/test are written against the kit's
-# current interfaces while plugins/MANIFOLD_REV pins 3f899e5, so `check` fails
-# on GuestStorage.compareAndSet, GuestHost.openStream and getTerminalExecution
-# before any change of ours is considered. Resuming the work means bumping the
-# pin and the `uses:` ref below together, bringing the fixtures to that kit,
-# and restoring the push and pull_request triggers in the same change.
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - "plugin/**"
+  pull_request:
+    paths:
+      - "plugins/**"
+      - ".github/workflows/manifold-plugins.yml"
 
 permissions:
   contents: read
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@3f899e54e063d5dd0731d4fd1a443ac95940b972
+    uses: atyrode/manifold/.github/workflows/plugins.yml@ea675d21aaf7f7ed407bc68640a6e561fd091a18
     with:
       plugins-dir: plugins
