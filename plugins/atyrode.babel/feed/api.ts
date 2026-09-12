@@ -12,6 +12,7 @@ import {
   RuleResultSchema,
   ThreadResultSchema,
   TopicProposalSchema,
+  TopicResultSchema,
   TopicRowSchema,
   TopicsResultSchema,
   door,
@@ -37,18 +38,6 @@ import {
 */
 
 // ---------------------------------------------------------------------------- doors
-
-/**
- * The topic door's answer. It is spelled here rather than in `contract.ts` because the
- * baseline owns that file and the door landed in this wave; the rows inside it are the
- * contract's own, so nothing here reinterprets a shape. Move it up when the contract grows
- * `TopicQuerySchema`/`TopicResultSchema`.
- */
-export const TopicResultSchema = z.strictObject({
-  topic: TopicRowSchema.nullable(),
-  proposed: z.array(TopicProposalSchema),
-  feed: FeedResultSchema,
-});
 
 /**
  * What an act answers when the contract spells only its input. The panels read nothing off

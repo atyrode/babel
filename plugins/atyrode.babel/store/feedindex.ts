@@ -380,7 +380,7 @@ async function readEntityFacts(db: PluginDatabase): Promise<Map<string, EntityFa
  * The operator's stance toward one topic, read off the same facts (§4.13).
  *
  * It is a reading of the ledger rather than a stored state: an `excluded` analysis policy is
- * the refusal whatever the lifecycle says, and a lifecycle this vocabulary does not spell —
+ * the refusal whatever the lifecycle says, and a lifecycle this vocabulary has no word for —
  * retired, or anything a later build adds — reads as nothing said, which is a different answer
  * from "not now" and is shown as one.
  */

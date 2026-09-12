@@ -4,7 +4,9 @@ import {
   LaunchInputSchema,
   LaunchResultSchema,
   PRESETS,
+  PolicyResultSchema,
   PresetSchema,
+  RecipeRowSchema,
   RunRowSchema,
   RunsResultSchema,
   TopicRowSchema,
@@ -19,6 +21,9 @@ export type RunRow = z.infer<typeof RunRowSchema>;
 export type RunsResult = z.infer<typeof RunsResultSchema>;
 export type TopicRow = z.infer<typeof TopicRowSchema>;
 export type TopicsResult = z.infer<typeof TopicsResultSchema>;
+export type RecipeRow = z.infer<typeof RecipeRowSchema>;
+export type PolicyResult = z.infer<typeof PolicyResultSchema>;
+export type Preset = z.infer<typeof PresetSchema>;
 /** What the `launch` door answers, dry or wet: the profile, the model, the cost, the ceiling. */
 export type LaunchAnswer = z.infer<typeof LaunchResultSchema>;
 
@@ -27,81 +32,13 @@ export type LaunchAnswer = z.infer<typeof LaunchResultSchema>;
 
   Every door this panel knocks on is the baseline's, by its contract name, and every answer is
   parsed before a pixel is painted: a panel that renders an unvalidated shape is a panel that
-  paints a lie the first time the server half changes. The schemas the contract already spells
-  are imported; the four it does not yet spell are declared here, under the heading below, and
-  reported upward as contract additions rather than invented quietly in a component.
+  paints a lie the first time the server half changes. Every shape on the wire is the contract's
+  own — `contract.ts` spells them once for both halves and this file imports them, so a door's
+  input is never described a second time in a component.
 
   Nothing in this file knows about React. The launch input, the ceilings reading, the clock and
   the preset table are the panel's whole vocabulary, and they are testable without a DOM.
 */
-
-// ---------------------------------------------------------------------------- contract additions
-
-/*
-  THE FOUR SHAPES THE CONTRACT LACKS (reported as additions to `contract.ts`, P5):
-
-  1. `RunsQuerySchema` — the `runs` door's input. StoreDoors serves `{ limit, offset, state?,
-     machineId?, kind? }`; Watch sends the first three.
-  2. `StopInputSchema` — `ACTIONS.stop` is named in the contract with no input shape at all.
-  3. `PolicyResultSchema` + `RecipeRowSchema` — the `policy` door's result: the ceilings in
-     force, today's spend, the lane shares and the recipes by name with what each looks for and
-     when it last ran (#245's own bullet). Agreed verbatim with StoreDoors, who serves it.
-  4. `preview` on `LaunchInputSchema` — a dry read of what will run. The profile, model, cost
-     per 1k and ceilings come back in `LaunchResultSchema` already; Watch needs them BEFORE the
-     run exists, so it asks the same door with `preview: true` and gets the same result with
-     `runId`/`jobId` empty. One door, one answer, no second description of a launch.
-*/
-
-export const RUN_STATES = ["queued", "running", "finished", "failed", "stopped"] as const;
-export const RunStateSchema = z.enum(RUN_STATES);
-
-export const RunsQuerySchema = z.strictObject({
-  limit: z.number().int().min(1).max(100).default(25),
-  offset: z.number().int().min(0).default(0),
-  state: RunStateSchema.optional(),
-});
-
-export const StopInputSchema = z.strictObject({
-  runId: z.string().min(1).max(120),
-  reason: z.string().max(2000).default(""),
-});
-
-export const RecipeRowSchema = z.strictObject({
-  id: z.string(),
-  /** Empty when the policy payload carries no recipe map; the list then shows the id. */
-  title: z.string(),
-  /** One line of what this recipe looks for, from the policy payload. */
-  looksFor: z.string(),
-  enabled: z.boolean(),
-  /** ISO instant of the newest run under this recipe, or empty: never run. */
-  lastRanAt: z.string(),
-  lastRunId: z.string(),
-  runs: z.number().int(),
-});
-export type RecipeRow = z.infer<typeof RecipeRowSchema>;
-
-export const PolicyResultSchema = z.strictObject({
-  version: z.string(),
-  seq: z.number().int(),
-  recordedAt: z.string(),
-  actorId: z.string(),
-  reason: z.string(),
-  ceilings: z.strictObject({
-    perRunUsd: z.number(),
-    perDayUsd: z.number(),
-    concurrent: z.number().int(),
-  }),
-  spentTodayUsd: z.number(),
-  lanes: z.array(z.strictObject({ lane: z.string(), role: z.string(), share: z.number() })),
-  recipes: z.array(RecipeRowSchema),
-  payload: z.record(z.string(), z.unknown()),
-});
-export type PolicyResult = z.infer<typeof PolicyResultSchema>;
-
-/** The contract's launch input plus the dry-preview flag. */
-export const LaunchRequestSchema = LaunchInputSchema.extend({ preview: z.boolean().default(false) });
-
-export type Preset = z.infer<typeof PresetSchema>;
 
 // ---------------------------------------------------------------------------- knocking on a door
 

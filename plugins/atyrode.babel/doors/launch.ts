@@ -4,11 +4,13 @@ import {
   ACTIONS,
   BABEL_PLUGIN_ID,
   INPUT_FIELD,
-  LaunchInputSchema,
+  LaunchRequestSchema,
   LaunchResultSchema,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
+  StopInputSchema,
+  StopResultSchema,
   type LaunchInput,
   type OperationName,
 } from "../contract.ts";
@@ -66,24 +68,6 @@ import { defineDoor, type Door } from "./door.ts";
 
 /** A launch is a write into the workspace this plugin serves; the job's own authority is the caller's. */
 const LAUNCH_CAPS = ["containers:write"] as const;
-
-/** The contract's launch input plus Watch's dry read; the panel's `LaunchRequestSchema`. */
-export const LaunchRequestSchema = LaunchInputSchema.extend({
-  preview: z.boolean().default(false),
-});
-
-/** `ACTIONS.stop` is named in the contract with no input shape; this is the one Watch posts. */
-export const StopInputSchema = z.strictObject({
-  runId: z.string().min(1).max(200),
-  reason: z.string().max(2000).default(""),
-});
-
-export const StopResultSchema = z.strictObject({
-  runId: z.string(),
-  jobId: z.string(),
-  machineId: z.string(),
-  closure: z.literal("stopped"),
-});
 
 /** What a preset is, in one row: the run's kind, the operation it becomes, how it is started. */
 type Start = "explore" | "draw" | "beat";

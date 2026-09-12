@@ -187,6 +187,9 @@ export type RecordPeel = z.infer<typeof RecordPeelSchema>;
 
 // ---------------------------------------------------------------------------- the thread
 
+/** `thread` takes the record whose conversation is wanted; the same identifier `record` takes. */
+export const ThreadQuerySchema = z.strictObject({ id: RecordIdSchema });
+
 export const CommentSchema: z.ZodType<Comment> = z.lazy(() =>
   z.strictObject({
     id: z.string(),
@@ -226,6 +229,9 @@ export const ThreadResultSchema = z.strictObject({
 
 // ---------------------------------------------------------------------------- topics
 
+/** `topic` takes an entity id, a topic name, or the reserved `unfiled`. */
+export const TopicQuerySchema = z.strictObject({ topic: z.string().trim().min(1).max(200) });
+
 export const TopicRowSchema = z.strictObject({
   id: EntityIdSchema,
   name: z.string(),
@@ -255,6 +261,18 @@ export const TopicsResultSchema = z.strictObject({
   topics: z.array(TopicRowSchema),
   proposed: z.array(TopicProposalSchema),
   unfiled: z.number().int(),
+});
+
+/**
+ * One topic, its open proposals and its own feed, in one answer, because they are one decision:
+ * a reader on a topic page is choosing between what is filed under it, what Babel proposes to do
+ * to it, and where he stands toward it, and a page that had to ask three times would let the
+ * three disagree about what exists.
+ */
+export const TopicResultSchema = z.strictObject({
+  topic: TopicRowSchema.nullable(),
+  proposed: z.array(TopicProposalSchema),
+  feed: FeedResultSchema,
 });
 
 // ---------------------------------------------------------------------------- the operator's acts
@@ -381,6 +399,10 @@ export const ImportChunkSchema = z.strictObject({
 export const PRESETS = ["read-whats-new", "explore-topic", "review-backlog", "file-and-tidy", "keep-going"] as const;
 export const PresetSchema = z.enum(PRESETS);
 
+/** The five states a run passes through; `stopped` is the only one an operator can cause. */
+export const RUN_STATES = ["queued", "running", "finished", "failed", "stopped"] as const;
+export const RunStateSchema = z.enum(RUN_STATES);
+
 export const LaunchInputSchema = z.strictObject({
   machineId: bounded(120),
   preset: PresetSchema,
@@ -397,6 +419,14 @@ export const LaunchInputSchema = z.strictObject({
 });
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 
+/**
+ * What the `launch` door takes: the input above plus the dry read. A preview executes nothing
+ * and asks nothing — it answers from the store and the policy alone, with the same result shape
+ * and `runId`/`jobId` empty, so Watch can state the profile, the model and the ceilings BEFORE
+ * the run exists without a second description of a launch.
+ */
+export const LaunchRequestSchema = LaunchInputSchema.extend({ preview: z.boolean().default(false) });
+
 export const LaunchResultSchema = z.strictObject({
   runId: z.string(),
   jobId: z.string(),
@@ -407,13 +437,26 @@ export const LaunchResultSchema = z.strictObject({
   ceiling: z.strictObject({ perRunUsd: z.number(), perDayUsd: z.number() }),
 });
 
+/** What `stop` takes: the run to end, and why — the reason is recorded, never required. */
+export const StopInputSchema = z.strictObject({
+  runId: z.string().min(1).max(200),
+  reason: z.string().max(2000).default(""),
+});
+
+export const StopResultSchema = z.strictObject({
+  runId: z.string(),
+  jobId: z.string(),
+  machineId: z.string(),
+  closure: z.literal("stopped"),
+});
+
 export const RunRowSchema = z.strictObject({
   id: z.string(),
   kind: z.string(),
   machineId: z.string(),
   jobId: z.string(),
   recipe: z.string(),
-  state: z.enum(["queued", "running", "finished", "failed", "stopped"]),
+  state: RunStateSchema,
   startedAt: z.string(),
   finishedAt: z.string(),
   costUsd: z.number().nullable(),
@@ -422,9 +465,69 @@ export const RunRowSchema = z.strictObject({
   lastWord: z.string(),
 });
 
+/** `runs` serves all five narrowings; Watch sends the first three. */
+export const RunsQuerySchema = z.strictObject({
+  limit: z.number().int().min(1).max(100).default(25),
+  offset: z.number().int().min(0).default(0),
+  state: RunStateSchema.optional(),
+  machineId: z.string().max(120).optional(),
+  kind: z.string().max(40).optional(),
+});
+
 export const RunsResultSchema = z.strictObject({
   runs: z.array(RunRowSchema),
   total: z.number().int(),
+});
+
+export const RunQuerySchema = z.strictObject({ id: z.string().min(1).max(200) });
+
+/**
+ * One run and the receipt it wrote. The receipt travels as the document the machine half
+ * produced rather than as a projection of it: §7 makes the receipt the run's own account of what
+ * it was asked, read, produced and cost, and a surface that re-stated it in its own fields would
+ * be a second answer to a question the run already answered.
+ */
+export const RunResultSchema = z.strictObject({
+  run: RunRowSchema.nullable(),
+  receipt: z.record(z.string(), z.unknown()).nullable(),
+});
+
+// ---------------------------------------------------------------------------- the policy
+
+export const RecipeRowSchema = z.strictObject({
+  id: z.string(),
+  /** Empty when the policy payload carries no recipe map; the list then shows the id. */
+  title: z.string(),
+  /** One line of what this recipe looks for, from the policy payload. */
+  looksFor: z.string(),
+  enabled: z.boolean(),
+  /** ISO instant of the newest run under this recipe, or empty: never run. */
+  lastRanAt: z.string(),
+  lastRunId: z.string(),
+  runs: z.number().int(),
+});
+
+/**
+ * The evaluation policy in force, as Watch reads it: the ceilings and the lanes projected out of
+ * the stored document, what has been spent against them today, the recipes joined to what has
+ * actually run under them — and the document itself, so the projection above can be checked
+ * against the row it came from rather than believed.
+ */
+export const PolicyResultSchema = z.strictObject({
+  version: z.string(),
+  seq: z.number().int(),
+  actorId: z.string(),
+  reason: z.string(),
+  recordedAt: z.string(),
+  ceilings: z.strictObject({
+    perRunUsd: z.number(),
+    perDayUsd: z.number(),
+    concurrent: z.number(),
+  }),
+  spentTodayUsd: z.number(),
+  lanes: z.array(z.strictObject({ lane: z.string(), role: z.string(), share: z.number() })),
+  recipes: z.array(RecipeRowSchema),
+  payload: z.record(z.string(), z.unknown()),
 });
 
 // ---------------------------------------------------------------------------- job outputs
