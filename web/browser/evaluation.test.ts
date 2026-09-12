@@ -108,11 +108,13 @@ function ids(): Promise<string[]> {
 }
 
 // order chooses one of the served orderings through the control an operator
-// uses, then waits for the listing to be the answer to that choice rather than
-// the one still on screen.
+// uses — the ordering menu, which names what each order is computed from —
+// then waits for the listing to be the answer to that choice rather than the
+// one still on screen.
 async function order(sort: string): Promise<void> {
   const before = await ids();
-  await page.select("[data-filter='sort']", sort);
+  await page.click(".read-order > summary");
+  await page.click(`[data-order='${sort}']`);
   await page.waitForFunction(
     (first: string) =>
       (document.querySelector("[data-item]")?.getAttribute("data-item") ?? "") !== first,
@@ -180,7 +182,7 @@ test.skipIf(!chrome)("sorts, filters and pages live in the URL and survive reloa
   // The first answer pins the ranked set so paging stays inside one ordering.
   await page.waitForFunction(() => window.location.hash.includes("snapshot="));
 
-  await page.select("[data-filter='lane']", "accepted");
+  await page.click("[data-chip='lane-accepted']");
   await page.waitForFunction(() => window.location.hash.includes("lane=accepted"));
 
   // A reload re-reads the same view rather than dropping to the default.
@@ -267,10 +269,10 @@ test.skipIf(!chrome)("a stale projection still answers and says it is not curren
     await bare.setViewport({ width: 1440, height: 900 });
     await bare.goto(`${degraded.base}/#/read`, { waitUntil: "networkidle2" });
     await bare.reload({ waitUntil: "networkidle2" });
-    await bare.waitForSelector(".output-row", { timeout: 15_000 });
+    await bare.waitForSelector(".read-row", { timeout: 15_000 });
     const state = await bare.evaluate(() => ({
       text: document.body.innerText,
-      rows: document.querySelectorAll(".output-row").length,
+      rows: document.querySelectorAll(".read-row").length,
       banner: document.querySelectorAll(".error-banner").length,
     }));
     // It answered: the rows are there. It is labelled: the reader is told the

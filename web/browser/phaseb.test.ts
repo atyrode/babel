@@ -201,22 +201,25 @@ afterAll(async () => {
 });
 
 test.skipIf(!chrome)("every area of the reading surface renders against the mock", async () => {
-  // Decide: the queue, mixed kinds, with the three numbers above it.
+  // Decide: the queue, mixed kinds, with the figures above it.
   await open("");
   await page.waitForFunction(
-    () => document.querySelectorAll("ol.queue > li.queue-row").length >= 4,
+    () => document.querySelectorAll("ol.decide-queue > li.decide-row").length >= 4,
     { timeout: 15_000 },
   );
-  const tally = await page.evaluate(() => document.querySelectorAll(".tally .tally-item").length);
-  expect(tally).toBe(3);
+  // Three at minimum — what is waiting, what is asked, what changed. The
+  // figures about this operator's own visit are conditional, so the count is
+  // a floor rather than an equality.
+  const figures = await page.evaluate(() => document.querySelectorAll(".decide-stat").length);
+  expect(figures).toBeGreaterThanOrEqual(3);
 
   // Read: one listing of output, filtered by kind rather than split into four
-  // pages. Nine hypotheses — six this machine holds and the three the catalog
-  // merged — because a listing reads the deployment and not one computer's
-  // share of it.
+  // pages. More than this machine's own six hypotheses, because a listing
+  // reads the deployment and not one computer's share of it: the rows the
+  // catalog merged are in the same list as the rows held here.
   await open("read?kind=hypothesis");
   await page.waitForFunction(
-    () => document.querySelectorAll("ol.output-list > li.output-row").length === 9,
+    () => document.querySelectorAll("ol.read-list > li.read-row").length >= 9,
     { timeout: 15_000 },
   );
 
@@ -507,13 +510,13 @@ test.skipIf(!chrome)("keyboard navigation reaches every control", async () => {
   // Read: the filters and the rows are tabbable, Enter opens the focused row
   // on the record page.
   await open("read");
-  await page.waitForSelector("ol.output-list a.output-claim", { timeout: 15_000 });
+  await page.waitForSelector("ol.read-list a.read-claim", { timeout: 15_000 });
   const walk: string[] = [];
   for (let step = 0; step < 40 && !walk.includes("A"); step += 1) {
     await page.keyboard.press("Tab");
     walk.push(await page.evaluate(() => document.activeElement?.tagName ?? ""));
   }
-  expect(walk).toContain("SELECT");
+  expect(walk).toContain("BUTTON");
   expect(walk).toContain("A");
   await page.keyboard.press("Enter");
   await page.waitForFunction(
@@ -737,7 +740,7 @@ test.skipIf(!chrome)("a partial catalog read says the list may be incomplete, an
   await open("read", degradedMock?.base);
   await visible("This list may be incomplete");
   const state = await page.evaluate(() => ({
-    rows: document.querySelectorAll("ol.output-list > li.output-row").length,
+    rows: document.querySelectorAll("ol.read-list > li.read-row").length,
     text: document.body.innerText,
   }));
   // The records still render in full: a partial read costs the rows it could

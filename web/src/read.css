@@ -1,0 +1,255 @@
+/* Read, in the observatory register (decision 90).
+   ---------------------------------------------------------------------------
+   A list of what Babel has found, with the controls as chips rather than as a
+   query form, and a figure wherever the response holds one. Colour, type and
+   spacing come from styles.css's tokens only.
+
+   The container vocabulary is unchanged. The one thing here that needs a box
+   is the ordering menu, and it is a `.surface` that this file positions —
+   not a fourth kind of container with its own border and background. */
+
+.read-page .read-controls {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 var(--space-3);
+}
+
+/* A chip row. It wraps rather than scrolling: an operator has to be able to
+   see that "Duplicate" is a standing he can ask for, and a control he has to
+   scroll sideways to find is a control he does not know about. */
+.read-page .read-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.read-page .read-chips-label {
+  margin-right: var(--space-1);
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.read-page .read-trailing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+}
+
+.read-page .read-order {
+  position: relative;
+}
+
+.read-page .read-order > summary,
+.read-page .read-more > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill);
+  color: var(--ink-muted);
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.read-page .read-order > summary::-webkit-details-marker,
+.read-page .read-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.read-page .read-order > summary:hover,
+.read-page .read-more > summary:hover,
+.read-page .read-order[open] > summary,
+.read-page .read-more[open] > summary {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+/* Which folded filter is on. A hidden filter an operator forgot about is a
+   list he cannot explain, so the fold says so on its own face. */
+.read-page .read-on {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+/* The ordering menu. It is a `.surface` lifted off the page: the border, the
+   radius and the background are the container's, and this rule only decides
+   where it hangs and that it sits above the list. */
+.read-page .read-menu {
+  display: grid;
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  gap: var(--space-1);
+  width: max-content;
+  max-width: min(28rem, 90vw);
+  padding: var(--space-2);
+  box-shadow: var(--shadow-raised);
+}
+
+/* Each ordering names what it is computed from. §8.5 requires the basis to be
+   stated; stating it inside the chooser is the one place a reader is asking
+   the question. */
+.read-page .read-menu button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: start;
+  justify-items: start;
+  gap: var(--space-1);
+  min-height: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius);
+  text-align: left;
+}
+
+.read-page .read-menu button strong {
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+}
+
+.read-page .read-menu button span {
+  color: var(--ink-muted);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.read-page .read-menu button.active strong {
+  color: var(--accent);
+}
+
+/* What the list is made of. Every figure is the corpus's own count under the
+   filters in force, so the numbers move when a standing is chosen and stay
+   put when a kind is. */
+.read-page .read-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-5) 0 var(--space-2);
+  color: var(--ink-muted);
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+}
+
+.read-page .read-figure strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.read-page .read-figure + .read-figure::before {
+  margin-right: var(--space-3);
+  color: var(--rule-strong);
+  content: "·";
+}
+
+.read-page .read-matching strong {
+  color: var(--accent);
+}
+
+.read-page .read-basis {
+  max-width: var(--measure);
+  margin: 0 0 var(--space-3);
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.read-page .read-list {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  list-style: none;
+}
+
+.read-page .read-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--rule);
+  transition: background var(--motion-fast) ease;
+}
+
+.read-page .read-row:hover {
+  background: var(--bg-raised);
+}
+
+/* Two lines and then stop. A claim is a model's wording and some of them run
+   to a paragraph; a row is for deciding whether to open the record. */
+.read-page .read-claim {
+  display: -webkit-box;
+  overflow: hidden;
+  min-width: 0;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+  line-height: 1.4;
+  text-decoration: none;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.read-page .read-claim:hover {
+  color: var(--accent);
+}
+
+.read-page .read-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2) var(--space-3);
+}
+
+/* The reception chart. Fixed width because it sits in a column of rows and a
+   figure that changed width per row would be unreadable as a column. */
+.read-page .read-spark {
+  display: inline-block;
+  width: 2.4rem;
+  color: var(--ink-faint);
+  --spark-height: 1.1rem;
+}
+
+.read-page .read-spark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.read-page .read-spark-support {
+  fill: var(--good);
+}
+
+.read-page .read-spark-oppose {
+  fill: var(--bad);
+}
+
+.read-page .read-spark-unsure {
+  fill: var(--ink-faint);
+}
+
+@media (max-width: 60rem) {
+  .read-page .read-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .read-page .read-facts {
+    justify-content: flex-start;
+  }
+}

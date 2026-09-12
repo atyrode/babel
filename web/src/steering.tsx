@@ -86,8 +86,9 @@ export function SteeringSection() {
   return (
     <section className="steering-section">
       <article className="surface">
-        <p className="eyebrow">Operator steering</p>
-        <h2>Tell Babel</h2>
+        {/* No heading of its own. The surface that carries this box names it —
+            Decide folds it behind a peel titled "Tell Babel" — and a heading
+            under a summary that says the same words says it twice. */}
         <p className="muted">
           Say what is going badly. This is steering pressure, not a ticket: it opens nothing,
           assigns nothing and schedules nothing, and it has no status to close.
@@ -190,6 +191,12 @@ function ComplaintListing({
 
   const items = listing?.items ?? [];
 
+  // A listing of nothing is not a listing. Complaints appear when there are
+  // any: an empty panel headed "Complaints" over a sentence explaining that
+  // the box above is where they come from is a paragraph telling the operator
+  // what he just read, and on Decide it sat between him and the queue.
+  if (listing && items.length === 0 && !error) return null;
+
   return (
     <article className="surface steering-list">
       <div className="section-heading">
@@ -208,13 +215,6 @@ function ComplaintListing({
       )}
       {!listing && !error && (
         <p className="muted"><span className="spinner" /> Reading what has been told…</p>
-      )}
-      {listing && items.length === 0 && (
-        <div className="surface state-note empty-state">
-          <span className="empty-icon" aria-hidden="true">◇</span>
-          <strong>Nothing has been told yet</strong>
-          <span>The box above is where steering pressure enters: tell Babel what is going badly and it is recorded here.</span>
-        </div>
       )}
       {items.length > 0 && (
         <div className="table-scroll">

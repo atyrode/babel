@@ -7,6 +7,8 @@ package transcript
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -82,6 +84,71 @@ func Events(path, harnessName string, offset, limit int) (total int, events []Ev
 			return total, events, readErr
 		}
 	}
+}
+
+// Cited reads the one record a citation's locator names, in display form,
+// reporting whether the cited bytes were recovered.
+//
+// It seeks where Events scans, and the difference is what each is for. Events
+// answers "show me the conversation from here" and pays one pass over the log
+// to number every record in it, which is right for a page rendering a window
+// of a transcript. A record page wants one line out of each of the nine logs
+// its citations name — logs that run to tens of megabytes in this corpus — and
+// paying nine passes to render nine sentences would make the evidence the most
+// expensive read on that surface. A locator carries the record's byte offset,
+// so the read is one seek and one line.
+//
+// The digest is what makes the bytes quotable. internal/event hashes every
+// record it classifies and stores that hash in the locator beside the offset,
+// so this can check that the bytes at that offset are still the bytes that
+// were cited: a log that was appended to, rotated, or re-materialized from an
+// archive moves every offset after the change, and quoting whatever now sits
+// there would attribute words to somebody who never wrote them. A record whose
+// digest does not match is reported as not recovered rather than as an error —
+// the citation is still evidence, and what this host cannot do is show it.
+//
+// The event carries no Index, because a seek learns no position: the locator's
+// line is what names the record, and the caller already holds it.
+func Cited(path, harnessName string, offset int64, digest string) (Event, bool, error) {
+	if offset < 0 {
+		return Event{}, false, fmt.Errorf("byte offset must not be negative")
+	}
+	if digest == "" {
+		// A citation with no digest cannot be checked, and an unchecked
+		// excerpt is exactly the quotation this function refuses to
+		// produce. Nothing in this corpus writes one: internal/event
+		// requires a digest for every locator it mints.
+		return Event{}, false, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return Event{}, false, err
+	}
+	defer f.Close()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return Event{}, false, err
+	}
+	line, oversized, present, readErr := readRecordLine(bufio.NewReaderSize(f, 64<<10))
+	if readErr != nil && readErr != io.EOF {
+		return Event{}, false, readErr
+	}
+	if !present || oversized {
+		// An oversized record is not recovered even though its offset is
+		// right: the retained prefix is not the record, so neither the
+		// digest over it nor a parse of it would be about the citation.
+		return Event{}, false, nil
+	}
+	if sum := sha256.Sum256(line); hex.EncodeToString(sum[:]) != digest {
+		return Event{}, false, nil
+	}
+	declared, known := harness.Lookup(harnessName)
+	if !known {
+		return rawEvent(line), true, nil
+	}
+	if event, ok := parse(line, declared.Format); ok {
+		return event, true, nil
+	}
+	return rawEvent(line), true, nil
 }
 
 // readRecordLine retains a bounded prefix while draining one logical line.

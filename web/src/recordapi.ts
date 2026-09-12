@@ -97,12 +97,23 @@ export interface RecordCase {
 // conflicting excerpt the same way as a supporting one would invert the
 // record's own argument.
 //
-// There is one prose field, and it is the citing record's words about the
-// cited bytes — which in practice carries the excerpt itself. The surface does
-// not go and read the transcript for a second one: the cited sessions run to
-// tens of megabytes and a record cites up to nine of them, so the bytes stay
-// where they are and `href` is how a reader reaches them.
+// Two prose fields, in the order they matter. `excerpt` is the cited bytes —
+// what a person actually said, recovered by the server from the session log at
+// the locator and checked against the digest the citation carries — and
+// `quote` is the citing record's note about them. The note used to be the only
+// one, which meant the page showed Babel's paraphrase of a human sentence and
+// kept the sentence itself behind a link.
+//
+// `excerpt` is absent, never empty, when this deployment cannot recover the
+// bytes: the session is on another machine, the log was rotated, or what sits
+// at that offset no longer hashes to what was cited. A blank pull-quote would
+// read as somebody who said nothing.
 export type EvidenceKind = "supporting" | "conflicting" | "evidence" | "counter-evidence";
+
+// The three speakers an excerpt can have. A harness spells its roles its own
+// way — `toolResult` in one, `tool` in another — and the server normalizes to
+// these three or omits the field rather than guessing.
+export type Speaker = "user" | "assistant" | "tool";
 
 // `href` is computed by the server rather than assembled here: the route that
 // a citation opens is the router's business, and a client that built the
@@ -112,11 +123,57 @@ export type EvidenceKind = "supporting" | "conflicting" | "evidence" | "counter-
 export interface RecordEvidence {
   quote: string;
   kind?: EvidenceKind;
+  excerpt?: string;
+  speaker?: Speaker;
+  session_title?: string;
   session_id?: string;
   path?: string;
   line?: number;
   event?: number;
   href?: string;
+}
+
+// Where a record came from: the first conversation it cites that this
+// deployment holds, with that session's own title, workspace, date and cost.
+//
+// `cost_usd` and `turns` are nullable rather than optional because the server
+// distinguishes two different absences and only one of them is "this record
+// has no origin": a session Babel holds but whose harness recorded no usage
+// has an origin with no cost, and rendering that as $0.00 would print a
+// measurement nobody took.
+export interface RecordOrigin {
+  session_id: string;
+  session_title?: string;
+  workspace?: string;
+  at?: string;
+  cost_usd: number | null;
+  turns: number | null;
+  href?: string;
+}
+
+// One record on the far side of a relation. Which fields are filled depends on
+// the relation, and the server documents that at each: a competing remedy
+// carries its standing, a suspected duplicate carries the overlap where a
+// heuristic measured one, a sibling carries its kind.
+export interface RelatedRecord {
+  id: string;
+  kind?: RecordKind;
+  title?: string;
+  standing?: StandingLabel;
+  overlap?: number;
+}
+
+// Every connection the record has that its own words do not state. Five
+// relations rather than one list because a reader acts differently on each: a
+// competing remedy is a choice, a suspected duplicate is a comparison, a
+// supersession is a warning that he may be reading the wrong wording, and a
+// sibling is the rest of one run's thought.
+export interface RecordRelated {
+  addressing?: RelatedRecord[];
+  duplicates?: RelatedRecord[];
+  supersedes?: RelatedRecord[];
+  superseded_by?: RelatedRecord[];
+  siblings?: RelatedRecord[];
 }
 
 export interface OperatorReception {
@@ -155,12 +212,27 @@ export interface ReceptionCounts {
   unsure: number;
 }
 
+// One role's answer to its own question, which is the only tally over Babel's
+// reviewers that means anything. A role is what a reviewer was authorized to
+// answer, so four supports across four roles are four answers to four
+// questions; summing them is how a record with one satisfied evidence check
+// came to read as broadly supported. Disagreement inside one role is the
+// signal, and `contested` is exactly that.
+export interface RoleReception {
+  role: ModelRole;
+  support: number;
+  oppose: number;
+  unsure: number;
+  opposing_rationales?: string[];
+}
+
 export interface RecordReception {
   operator?: OperatorReception;
   history?: OperatorHistory;
   model?: ModelReception[];
   decisions?: ReceptionDecision[];
   counts?: ReceptionCounts;
+  by_role?: RoleReception[];
   contested?: boolean;
 }
 
@@ -183,6 +255,18 @@ export interface MachineryRevision {
   at?: string;
 }
 
+// What one run spent, as its receipt recorded it. The duration is Babel's own
+// clock over the whole run — preparation and storage included — because that
+// is the number the receipt states and a narrower one derived here would
+// disagree with it.
+export interface RecordCost {
+  usd: number | null;
+  input_tokens?: number;
+  output_tokens?: number;
+  model?: string;
+  duration_s?: number;
+}
+
 // Everything a person debugging Babel needs and a person reading a record does
 // not. `host` is present only for a record this deployment resolved through the
 // shared catalog rather than holding itself.
@@ -197,6 +281,14 @@ export interface RecordMachinery {
   links?: MachineryLink[];
   receipts?: MachineryReceipt[];
   revisions?: MachineryRevision[];
+  // What producing this record cost, out of the producing run's own receipt.
+  // Absent for a record this machine did not produce: §9 seals the worker's
+  // accounting before a receipt leaves its host, so only the producing
+  // machine can be asked — and an absent block means nobody here can price
+  // it, never that it was free. `usd` is null for the same reason at one
+  // level down: an engine that never reported its own session accounting
+  // leaves a receipt whose usage is zeros.
+  cost?: RecordCost;
 }
 
 export interface RecordPeel {
@@ -210,7 +302,9 @@ export interface RecordPeel {
   // sentence that says on what terms the record is being shown.
   notice?: string;
   case?: RecordCase;
+  origin?: RecordOrigin;
   evidence?: RecordEvidence[];
+  related?: RecordRelated;
   reception?: RecordReception;
   machinery?: RecordMachinery;
 }

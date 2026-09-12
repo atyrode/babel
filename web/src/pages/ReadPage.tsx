@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import {
   getEvaluationList,
   type EvaluationCoverageCounts,
   type EvaluationItem,
   type EvaluationListResponse,
+  type EvaluationReception,
 } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge } from "../analysis";
@@ -21,6 +22,7 @@ import {
   sortLabel,
   StaleNotice,
 } from "../evaluation";
+import "../read.css";
 
 // Read answers one question: what has Babel found?
 //
@@ -32,12 +34,19 @@ import {
 // is what they always were.
 //
 // Every filter and every ordering those four pages offered survives as a
-// control here. The frontier's exploration statuses — untriaged, queued,
-// investigating, promoted — do not, and their absence is deliberate: they are
-// the pipeline's own bookkeeping about a candidate, not a standing anybody
-// rules on, and the one that matters to a reader rides each hypothesis row as
-// a fact. What a reader filters by is the standing: open, accepted, rejected,
-// deferred, duplicate, refine-requested, and the outcome lanes beyond them.
+// control here, but not as a query form. Five dropdowns is a database client:
+// the first thing an operator wanted was a Proposals chip, and a dropdown
+// hides both the vocabulary and the fact that anything is selected. So kind
+// and standing are chips — the choice and the options are the same pixels —
+// the ordering is a menu that names what each order is computed from, and the
+// two facets nobody starts from, coverage and review role, are behind a
+// disclosure that says when one of them is on.
+//
+// The frontier's exploration statuses — untriaged, queued, investigating,
+// promoted — are absent, and their absence is deliberate: they are the
+// pipeline's own bookkeeping about a candidate, not a standing anybody rules
+// on, and the one that matters to a reader rides each hypothesis row as a
+// fact. What a reader filters by is the standing.
 //
 // Paging is the server's, and the snapshot is pinned in the URL, because §8.5
 // requires pagination to stay consistent while publication continues. Without
@@ -48,10 +57,41 @@ import {
 
 const PAGE_SIZE = 25;
 
+// Plurals for the summary line. They are written down rather than derived
+// because English does not derive them — a hypothesis does not take an s —
+// and the singular labels are the server's vocabulary rather than this page's.
+// A kind this build has no plural for reads as its own label, which is wrong
+// English and still the right value.
+const KIND_PLURALS: Record<string, string> = {
+  proposal: "proposals",
+  hypothesis: "hypotheses",
+  observation: "observations",
+  finding: "findings",
+  evaluation: "evaluations",
+};
+
+// What the list is made of, beside how many rows it has.
+//
+// It is a separate read per kind rather than a field of the listing, because
+// the listing answers "how many match this query" and this line answers "what
+// is in the corpus" — and an operator looking at 90 proposals wants to know
+// there are 5,544 records behind them. The reads are `limit=1` counts and they
+// depend only on the facets other than kind, so flipping a kind chip — the
+// thing an operator does most here — costs nothing at all.
+//
+// A count that did not answer is absent from the line rather than zero.
+interface Breakdown {
+  facets: string;
+  total: number | null;
+  byKind: Record<string, number>;
+}
+
 function ReadPage() {
   const [params, setParams] = useSearchParams();
   const { pathname } = useLocation();
   const [data, setData] = useState<EvaluationListResponse | null>(null);
+  const [breakdown, setBreakdown] = useState<Breakdown | null>(null);
+  const [ordering, setOrdering] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -96,19 +136,62 @@ function ReadPage() {
   // replacing navigation: pinning is not something the operator did, so it
   // must not cost him a Back press to undo.
   //
-  // The path guard is load-bearing rather than defensive. The pin writes a URL
-  // built from this page's own captured query, and `replace` overwrites
+  // Both path guards are load-bearing rather than defensive. The pin writes a
+  // URL built from this page's own captured query, and `replace` overwrites
   // whatever entry is current — so if the answer lands in the same tick as a
   // click into a record, the pin replaces the record's URL with the listing's
   // and the reader is silently returned to the list he just left. Measured:
   // walking /findings/:id straight after /findings reproduced it every time.
+  //
+  // The router's pathname is the route this render was built from, and the
+  // second check is the route the browser is on at the instant the pin runs.
+  // They differ for one batch when the answer and the click land together:
+  // React has re-rendered on the new data but not yet on the new location, so
+  // the first guard still reads "/read" while the address bar already holds
+  // the record. Measured too, as a browser suite failure that only appeared
+  // once the listing made a second read and the timing shifted.
   useEffect(() => {
     if (pathname !== "/read") return;
     if (!data || snapshot || !data.snapshot) return;
+    if (window.location.hash.replace(/^#/u, "").split("?")[0] !== "/read") return;
     const next = new URLSearchParams(params);
     next.set("snapshot", data.snapshot);
     setParams(next, { replace: true });
   }, [data, snapshot, params, setParams, pathname]);
+
+  const vocabulary = data?.vocabulary;
+  const kinds = vocabulary?.kinds;
+  const facets = `${lane}|${coverage}|${role}`;
+
+  // The breakdown is keyed by the facets it was counted under, so a kind chip
+  // never invalidates it: the numbers on the summary line are what the corpus
+  // holds under the standing and coverage in force, and the kind chips choose
+  // between them.
+  useEffect(() => {
+    if (!kinds || kinds.length === 0) return;
+    if (breakdown?.facets === facets) return;
+    let live = true;
+    Promise.allSettled([
+      getEvaluationList({ lane, coverage, role, limit: 1 }),
+      ...kinds.map((name) => getEvaluationList({ kind: name, lane, coverage, role, limit: 1 })),
+    ]).then((answers) => {
+      if (!live) return;
+      const byKind: Record<string, number> = {};
+      answers.slice(1).forEach((answer, index) => {
+        const name = kinds[index];
+        if (answer.status === "fulfilled") byKind[name] = answer.value.total;
+      });
+      const all = answers[0];
+      setBreakdown({
+        facets,
+        total: all.status === "fulfilled" ? all.value.total : null,
+        byKind,
+      });
+    });
+    return () => {
+      live = false;
+    };
+  }, [breakdown, coverage, facets, kinds, lane, role]);
 
   // select changes one facet and starts the ordering again from its first
   // page. The snapshot is dropped with it: a snapshot identifies one ranked
@@ -131,10 +214,32 @@ function ReadPage() {
   }
 
   const items = data?.items ?? [];
-  const vocabulary = data?.vocabulary;
   const total = data?.total ?? 0;
   const shownSort = data?.query.sort || "recommended";
   const basis = sortBasis(shownSort);
+
+  // Proposals first. The rest keep the order internal/evaluation defines,
+  // which is the corpus's own order of development; `sort` is stable, so
+  // hoisting one name leaves the others alone.
+  const kindOrder = useMemo(
+    () =>
+      [...(kinds ?? [])].sort(
+        (left, right) => Number(right === "proposal") - Number(left === "proposal"),
+      ),
+    [kinds],
+  );
+
+  // Records on this page where reviewers said both things. It is counted here
+  // and said to be counted here, because the listing carries no contested
+  // total: the page's own rows are what this client can honestly add up.
+  const contested = items.filter(
+    (item) => item.reception.support > 0 && item.reception.oppose > 0,
+  ).length;
+
+  const hidden = [
+    coverage ? coverageLabel(coverage) : "",
+    role ? roleLabel(role) : "",
+  ].filter(Boolean);
 
   return (
     <section className="page read-page">
@@ -143,92 +248,183 @@ function ReadPage() {
           <p className="eyebrow">Output</p>
           <h1>What has Babel found?</h1>
         </div>
-        <div className="heading-meta">
-          {data && (
-            <span className="count-label">
-              {total.toLocaleString()} {total === 1 ? "record" : "records"}
-            </span>
-          )}
-        </div>
       </div>
 
       {vocabulary && (
-        <div className="toolbar surface read-filters">
-          <label>
-            <span>Kind</span>
-            <select
-              data-filter="kind"
-              value={kind}
-              onChange={(event) => select("kind", event.target.value)}
+        <div className="read-controls">
+          <div className="read-chips" role="group" aria-label="Kind">
+            <button
+              type="button"
+              className={kind === "" ? "chip active" : "chip"}
+              aria-pressed={kind === ""}
+              onClick={() => select("kind", "")}
             >
-              <option value="">Every kind</option>
-              {vocabulary.kinds.map((name) => (
-                <option value={name} key={name}>{kindLabel(name)}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Standing</span>
-            <select
-              data-filter="lane"
-              value={lane}
-              onChange={(event) => select("lane", event.target.value)}
+              Everything
+            </button>
+            {kindOrder.map((name) => (
+              <button
+                type="button"
+                key={name}
+                data-chip={`kind-${name}`}
+                className={kind === name ? "chip active" : "chip"}
+                aria-pressed={kind === name}
+                onClick={() => select("kind", kind === name ? "" : name)}
+              >
+                {kindLabel(name)}
+              </button>
+            ))}
+          </div>
+
+          <div className="read-chips" role="group" aria-label="Standing">
+            <button
+              type="button"
+              className={lane === "" ? "chip active" : "chip"}
+              aria-pressed={lane === ""}
+              onClick={() => select("lane", "")}
             >
-              <option value="">Any standing</option>
-              {vocabulary.lanes.map((name) => (
-                <option value={name} key={name}>{laneLabel(name)}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Order</span>
-            <select
-              data-filter="sort"
-              value={shownSort === "recommended" ? "" : shownSort}
-              onChange={(event) => select("sort", event.target.value)}
+              Any standing
+            </button>
+            {vocabulary.lanes.map((name) => (
+              <button
+                type="button"
+                key={name}
+                data-chip={`lane-${name}`}
+                className={lane === name ? "chip active" : "chip"}
+                aria-pressed={lane === name}
+                title={laneLabel(name)}
+                onClick={() => select("lane", lane === name ? "" : name)}
+              >
+                {shortLane(name)}
+              </button>
+            ))}
+          </div>
+
+          <div className="read-trailing">
+            {/* The ordering, and what each ordering is computed from. §8.5
+                requires every order to name its basis; a menu can carry the
+                sentence beside the choice, which is the one thing five
+                dropdowns could not do. */}
+            <details
+              className="read-order"
+              open={ordering}
+              onToggle={(event) => setOrdering(event.currentTarget.open)}
             >
-              {vocabulary.sorts.map((name) => (
-                <option value={name === "recommended" ? "" : name} key={name}>
-                  {sortLabel(name)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Reviewed</span>
-            <select
-              data-filter="coverage"
-              value={coverage}
-              onChange={(event) => select("coverage", event.target.value)}
-            >
-              <option value="">Any coverage</option>
-              {vocabulary.coverage.map((name) => (
-                <option value={name} key={name}>{coverageLabel(name)}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>By role</span>
-            <select
-              data-filter="role"
-              value={role}
-              onChange={(event) => select("role", event.target.value)}
-            >
-              <option value="">Every role</option>
-              {vocabulary.roles.map((name) => (
-                <option value={name} key={name}>{roleLabel(name)}</option>
-              ))}
-            </select>
-          </label>
+              <summary data-control="sort">Order: {sortLabel(shownSort)}</summary>
+              <div className="surface read-menu">
+                {vocabulary.sorts.map((name) => (
+                  <button
+                    type="button"
+                    key={name}
+                    data-order={name}
+                    className={name === shownSort ? "active" : undefined}
+                    aria-pressed={name === shownSort}
+                    onClick={() => {
+                      select("sort", name === "recommended" ? "" : name);
+                      setOrdering(false);
+                    }}
+                  >
+                    <strong>{sortLabel(name)}</strong>
+                    <span>{sortBasis(name)}</span>
+                  </button>
+                ))}
+              </div>
+            </details>
+
+            {/* Coverage and review role. They are folded because nobody starts
+                a reading from them, and the fold names what is on: a hidden
+                filter an operator forgot about is a list he cannot explain. */}
+            <details className="read-more">
+              <summary>
+                More
+                {hidden.length > 0 && <span className="read-on">{hidden.join(" · ")}</span>}
+              </summary>
+              <div className="read-more-body">
+                <div className="read-chips" role="group" aria-label="Reviewed">
+                  <span className="read-chips-label">Reviewed</span>
+                  <button
+                    type="button"
+                    className={coverage === "" ? "chip active" : "chip"}
+                    aria-pressed={coverage === ""}
+                    onClick={() => select("coverage", "")}
+                  >
+                    Any
+                  </button>
+                  {vocabulary.coverage.map((name) => (
+                    <button
+                      type="button"
+                      key={name}
+                      className={coverage === name ? "chip active" : "chip"}
+                      aria-pressed={coverage === name}
+                      onClick={() => select("coverage", coverage === name ? "" : name)}
+                    >
+                      {coverageLabel(name)}
+                    </button>
+                  ))}
+                </div>
+                <div className="read-chips" role="group" aria-label="By role">
+                  <span className="read-chips-label">By role</span>
+                  <button
+                    type="button"
+                    className={role === "" ? "chip active" : "chip"}
+                    aria-pressed={role === ""}
+                    onClick={() => select("role", "")}
+                  >
+                    Every role
+                  </button>
+                  {vocabulary.roles.map((name) => (
+                    <button
+                      type="button"
+                      key={name}
+                      className={role === name ? "chip active" : "chip"}
+                      aria-pressed={role === name}
+                      title={roleBasis(name)}
+                      onClick={() => select("role", role === name ? "" : name)}
+                    >
+                      {roleLabel(name)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </details>
+          </div>
         </div>
       )}
 
-      {/* The basis is stated rather than implied, and it is one line. §8.5
-          requires every ordering to name what it is computed from: a row of
-          words with no explanation is the ranking an operator cannot argue
-          with, and a tooltip is an explanation only for the reader who
-          already suspected there was one. */}
-      {basis && <p className="muted read-basis">{basis}</p>}
+      {data && (
+        <p className="read-summary">
+          <span className="read-figure">
+            <strong>{(breakdown?.total ?? total).toLocaleString()}</strong> records
+          </span>
+          {kindOrder.map((name) => {
+            const count = breakdown?.byKind[name];
+            if (count === undefined) return null;
+            const word =
+              count === 1
+                ? kindLabel(name).toLocaleLowerCase()
+                : (KIND_PLURALS[name] ?? kindLabel(name).toLocaleLowerCase());
+            return (
+              <span className="read-figure" key={name}>
+                <strong>{count.toLocaleString()}</strong> {word}
+              </span>
+            );
+          })}
+          {contested > 0 && (
+            <span
+              className="read-figure"
+              title="Records on this page where reviewers recorded both support and opposition."
+            >
+              <strong>{contested.toLocaleString()}</strong> contested here
+            </span>
+          )}
+          {kind || lane || coverage || role ? (
+            <span className="read-figure read-matching">
+              <strong>{total.toLocaleString()}</strong> match this view
+            </span>
+          ) : null}
+        </p>
+      )}
+
+      {basis && <p className="read-basis">{basis}</p>}
 
       {data && <StaleNotice stale={data.stale} unavailable={data.unavailable} />}
 
@@ -257,7 +453,7 @@ function ReadPage() {
       )}
 
       {items.length > 0 && (
-        <ol className="output-list">
+        <ol className="read-list">
           {items.map((item) => (
             <OutputRow item={item} key={`${item.artifact.subject.kind}-${item.artifact.subject.id}`} />
           ))}
@@ -311,31 +507,88 @@ function ReadPage() {
   );
 }
 
-// One row: the record's own claim, and three facts.
+// A standing in chip length. The full sentence a lane carries — "Accepted —
+// awaiting implementation" — is a caption and not a control; it stays on the
+// chip's title, where an operator who wants the consequence can read it.
+function shortLane(name: string): string {
+  const head = laneLabel(name).split(" — ")[0];
+  if (head.length <= 16) return head;
+  const words = name.replace(/[-_]/g, " ");
+  return words.charAt(0).toLocaleUpperCase() + words.slice(1);
+}
+
+// One row: the record's own claim, three facts, and the shape of its
+// reception.
 //
-// The three are what decide whether to open it — what kind of thing it is,
-// where it stands, and who has said anything about it. The score it was ranked
-// by is deliberately not among them: a decimal beside a vote count reads as a
-// measurement of the idea, when it is a position in one ordering under one
-// recorded policy. Everything else this record holds is a peel down on its own
-// page, which is one click away and never four.
+// The three facts are what decide whether to open it — what kind of thing it
+// is, where it stands, and who has said anything about it. The score it was
+// ranked by is deliberately not among them: a decimal beside a vote count
+// reads as a measurement of the idea, when it is a position in one ordering
+// under one recorded policy. Everything else this record holds is a peel down
+// on its own page, which is one click away and never four.
 function OutputRow({ item }: { item: EvaluationItem }) {
   const created = formatTime(item.artifact.created_at);
   return (
-    <li className="output-row" data-item={item.artifact.subject.id}>
+    <li className="read-row" data-item={item.artifact.subject.id}>
       <Link
-        className="output-claim untrusted-inline"
+        className="read-claim untrusted-inline"
         to={`/r/${encodeURIComponent(item.artifact.subject.id)}`}
         title={created ? `Recorded ${created.absolute}` : undefined}
       >
         {item.artifact.title || "a record with no title recorded"}
       </Link>
-      <span className="output-facts">
+      <span className="read-facts">
         <Badge label={kindLabel(item.artifact.subject.kind)} tone="neutral" />
         <Badge label={laneLabel(item.lane)} tone={laneTone(item.lane)} />
+        <ReceptionSpark reception={item.reception} />
         <Reception reception={item.reception} />
       </span>
     </li>
+  );
+}
+
+// The shape of one row's reception, in about twenty pixels.
+//
+// Three bars, one per thing a reviewer can say, drawn against the largest of
+// them. It is not a time series and it is not a percentage, and both absences
+// are deliberate: the listing carries the totals and no history of them, so a
+// line with a slope would be a trend this client invented, and a normalized
+// bar would report one supporting vote as unanimity. A vote nobody cast is a
+// baseline tick rather than nothing, so absence reads as absence rather than
+// as a missing bar.
+//
+// A record nobody has reviewed gets no chart at all. §4.12's rule holds here
+// as it does in `Reception`: three zeroes would read as unopposed.
+function ReceptionSpark({ reception }: { reception: EvaluationReception }) {
+  if (reception.reviews === 0) return null;
+  const votes: Array<[string, number]> = [
+    ["support", reception.support],
+    ["oppose", reception.oppose],
+    ["unsure", reception.unsure],
+  ];
+  const most = Math.max(...votes.map(([, count]) => count));
+  if (most === 0) return null;
+  return (
+    <span
+      className="spark read-spark"
+      title={`${reception.support} support · ${reception.oppose} oppose · ${reception.unsure} unsure, against the largest of the three`}
+    >
+      <svg viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true">
+        {votes.map(([name, count], index) => {
+          const height = Math.max(2, (count / most) * 24);
+          return (
+            <rect
+              key={name}
+              className={`read-spark-${name}`}
+              x={index * 37}
+              y={24 - height}
+              width={26}
+              height={height}
+            />
+          );
+        })}
+      </svg>
+    </span>
   );
 }
 

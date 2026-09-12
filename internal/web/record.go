@@ -50,10 +50,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/atyrode/babel/internal/evaluation"
+	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reference"
 	"github.com/atyrode/babel/internal/sharedcatalog"
+	"github.com/atyrode/babel/internal/transcript"
 )
 
 // recordPathPrefix is where the peel and the operator's reception live.
@@ -139,11 +141,25 @@ type recordPeel struct {
 	// a sentence about the record rather than about the deployment, and it is
 	// this surface's own words rather than a service's, for detail.go's
 	// reason: a wrapped catalog error can carry a connection string.
-	Notice    string         `json:"notice,omitempty"`
-	Standing  *standingView  `json:"standing,omitempty"`
-	Action    *askView       `json:"action,omitempty"`
-	Case      *caseView      `json:"case,omitempty"`
-	Evidence  []evidenceView `json:"evidence,omitempty"`
+	Notice   string        `json:"notice,omitempty"`
+	Standing *standingView `json:"standing,omitempty"`
+	Action   *askView      `json:"action,omitempty"`
+	Case     *caseView     `json:"case,omitempty"`
+	// Origin is the conversation this record was born in, which is the one
+	// thing about a record that a reader consistently wants and no store
+	// holds in one place: the session a citation names, that session's own
+	// title, workspace and date, and what it cost. It sits between the case
+	// and the evidence because that is where it belongs in the reading — the
+	// argument, then where the argument came from, then what it rests on.
+	Origin   *originView    `json:"origin,omitempty"`
+	Evidence []evidenceView `json:"evidence,omitempty"`
+	// Related is every connection this record has that its own words do not
+	// state: the other remedies for the same problem, what Babel suspects it
+	// restates, the wording it replaced, and the rest of what its run wrote.
+	// None of it is derivable from the record, and all of it changes what a
+	// reader decides, which is why it is served rather than left to the
+	// citation graph at depth five.
+	Related   *relatedView   `json:"related,omitempty"`
 	Reception *receptionView `json:"reception,omitempty"`
 	Machinery *machineryView `json:"machinery,omitempty"`
 }
@@ -239,14 +255,21 @@ type targetView struct {
 
 // evidenceView is one citation at depth three.
 //
-// Quote is the citing record's own words about the cited bytes, which is the
-// one prose field a frontier.Evidence has. It is not the bytes: recovering
-// those means scanning the session log the locator names, and in this corpus
-// those run to tens of megabytes with a single proposal citing nine of them,
-// so a page that opened them would be the most expensive read on this surface
-// by two orders of magnitude. The locator travels instead, with the route that
-// opens the transcript at the cited line, which is what "expandable to the
-// transcript" means.
+// Excerpt is the cited bytes and Quote is the citing record's note about them,
+// in that order, because that is the order they matter in. The note is a
+// model's sentence about what a human said; the excerpt is what the human
+// said. An operator walking the surface found the best moment in the whole
+// corpus behind a link — his own words, six months old, which a proposal had
+// grown out of — and the page was showing him Babel's paraphrase of them.
+//
+// The excerpt is read rather than scanned for, which is what makes it
+// affordable. A locator carries the record's byte offset and the digest of its
+// bytes, so transcript.Cited seeks, reads one line and checks the hash: a
+// citation costs one seek instead of the pass over a log of tens of megabytes
+// that made this section impossible before. An excerpt that could not be
+// recovered — the session is not on this machine, the log was rotated, the
+// bytes at that offset are no longer the bytes that were cited — is absent,
+// never empty: a blank pull-quote reads as a person who said nothing.
 //
 // Kind is which side of the argument this citation is on, and it is not
 // decoration. §4.3 and §4.5 require a record to state its counter-evidence,
@@ -255,6 +278,15 @@ type targetView struct {
 type evidenceView struct {
 	Quote string `json:"quote,omitempty"`
 	Kind  string `json:"kind"`
+	// Excerpt is the cited record's own text, bounded to what a pull-quote
+	// can be read as. Speaker is who said it, in the three words a reader
+	// needs — a person, the model, or a tool's output — and is absent when
+	// the harness named a role this surface will not translate.
+	Excerpt string `json:"excerpt,omitempty"`
+	Speaker string `json:"speaker,omitempty"`
+	// SessionTitle names the conversation an excerpt is quoted from, so a
+	// pull-quote can say where it came from without a selector in it.
+	SessionTitle string `json:"session_title,omitempty"`
 	// SessionID is the selector the session page routes on, present only when
 	// this host's catalog holds the session the locator names. An edge may
 	// cite another machine's conversation, and a link into nothing is worse
@@ -268,6 +300,98 @@ type evidenceView struct {
 	// offset that happens to look right.
 	Event int    `json:"event,omitempty"`
 	Href  string `json:"href,omitempty"`
+}
+
+// maxExcerpt bounds one quoted excerpt.
+//
+// It is a pull-quote's length rather than a record's: the cited record may be
+// a whole tool output of several hundred kilobytes, and a reader checking
+// evidence reads the first sentences and then follows the link. Four hundred
+// characters is about the longest thing that still reads as a quotation at
+// editorial measure, and the transcript is one click away for the rest.
+const maxExcerpt = 400
+
+// The three speakers an excerpt can have. A harness names roles its own way —
+// `toolResult` in one, `tool` in another — and a reader does not need the
+// harness's vocabulary, he needs to know whether he is reading a person, a
+// model, or a machine's output.
+const (
+	speakerUser      = "user"
+	speakerAssistant = "assistant"
+	speakerTool      = "tool"
+)
+
+// originView is the conversation a record was born in.
+//
+// Every field of it is the session's own and none of it is derived from the
+// record: the title the harness recorded or Babel derived, the workspace the
+// work happened in, when it happened, and what the session cost. It is the
+// first cited session rather than every cited one, because the question it
+// answers is "where did this come from" and a list of nine answers to that is
+// not an answer.
+//
+// Cost and Turns are pointers because most harnesses record no usage at all.
+// A dollar figure of zero would be a measurement nobody took, which is the one
+// thing a page showing money must never print.
+type originView struct {
+	SessionID    string   `json:"session_id"`
+	SessionTitle string   `json:"session_title,omitempty"`
+	Workspace    string   `json:"workspace,omitempty"`
+	At           string   `json:"at,omitempty"`
+	CostUSD      *float64 `json:"cost_usd"`
+	Turns        *int64   `json:"turns"`
+	// Href opens the transcript at the cited record, which is the same route
+	// the evidence rows carry and is emitted here for the same reason: the
+	// route belongs to the server that resolved the selector.
+	Href string `json:"href,omitempty"`
+}
+
+// relatedView is every connection a record has that its own text does not
+// state.
+//
+// Five relations rather than one list, because they mean five different things
+// and a reader acts differently on each. A competing remedy is a choice to
+// make; a suspected duplicate is a comparison to perform; a supersession is a
+// warning that he may be reading the wrong wording; a sibling is the rest of
+// one run's thought. Flattening them into "related records" would leave the
+// reader to guess which of those he was looking at.
+type relatedView struct {
+	// Addressing is the other remedies offered for the same claim (#114),
+	// with each one's standing so a reader can see that three of the four
+	// were already rejected.
+	Addressing []relatedRecord `json:"addressing,omitempty"`
+	// Duplicates is what Babel suspects this record restates: the overlap a
+	// dedup heuristic recorded when the candidate was written, and the peers
+	// a triage pass read as saying the same thing. Neither is a ruling —
+	// §4.7's `duplicate` is the operator's — so both travel as a suspicion
+	// with its strength attached.
+	Duplicates   []relatedRecord `json:"duplicates,omitempty"`
+	Supersedes   []relatedRecord `json:"supersedes,omitempty"`
+	SupersededBy []relatedRecord `json:"superseded_by,omitempty"`
+	// Siblings is the rest of what this record's run wrote, head revisions
+	// only. It is the one relation that needs no assertion at all: the run
+	// id has been on every record since the frontier's first migration, and
+	// nothing until now could ask it a question.
+	Siblings []relatedRecord `json:"siblings,omitempty"`
+}
+
+// relatedRecord is one record on the far side of a relation.
+//
+// One shape for five relations, with the fields each fills documented at the
+// relation rather than repeated in five near-identical types: Addressing fills
+// Standing, Duplicates fills Overlap where a heuristic recorded one, Siblings
+// fills Kind, and every one of them fills the id and the line.
+type relatedRecord struct {
+	ID    string `json:"id"`
+	Kind  string `json:"kind,omitempty"`
+	Title string `json:"title,omitempty"`
+	// Standing is where the far record stands, for a reader choosing between
+	// remedies. It is the review status this surface already renders and not
+	// a second vocabulary.
+	Standing string `json:"standing,omitempty"`
+	// Overlap is the recorded fraction of shared vocabulary between two
+	// candidates, absent when the relation was asserted rather than measured.
+	Overlap float64 `json:"overlap,omitempty"`
 }
 
 // The four citation kinds, spelled as the payload fields that hold them so a
@@ -299,9 +423,35 @@ type receptionView struct {
 	Model     []modelStanceView       `json:"model,omitempty"`
 	Decisions []receptionDecisionView `json:"decisions,omitempty"`
 	Counts    *receptionCounts        `json:"counts,omitempty"`
+	// ByRole is the tally per §4.12 role, which is the tally that means
+	// something. Four reviewers voting support is not four agreements about
+	// one question: a role is what a reviewer was authorized to answer, so
+	// one vote on whether the evidence holds and one on whether the record
+	// matters are two answers to two questions, and summing them was how a
+	// weak record with one satisfied evidence check came to read as broadly
+	// supported. Disagreement within a role is the signal — that is two
+	// reviewers answering the same question differently.
+	ByRole []roleReceptionView `json:"by_role,omitempty"`
 	// Contested reports recorded disagreement among Babel's reviewers: both
-	// sides present, which is the one thing a tally cannot say by itself.
+	// sides present within one role, which is the one thing a tally cannot
+	// say by itself. It is per role rather than across the whole reception,
+	// because support on relevance beside opposition on evidence is two
+	// reviewers agreeing about different things.
 	Contested bool `json:"contested,omitempty"`
+}
+
+// roleReceptionView is one role's answer to its own question.
+//
+// OpposingRationales carries only what the opposing votes said. A reader
+// looking at a contested role needs the argument against, and the arguments
+// for are already beside every reviewer's own line; repeating both here would
+// make this block a second copy of the history rather than a summary of it.
+type roleReceptionView struct {
+	Role               string   `json:"role"`
+	Support            int      `json:"support"`
+	Oppose             int      `json:"oppose"`
+	Unsure             int      `json:"unsure"`
+	OpposingRationales []string `json:"opposing_rationales,omitempty"`
 }
 
 // operatorStanceView is one attributed operator reception.
@@ -373,12 +523,47 @@ type machineryView struct {
 	Links     []machineryLink     `json:"links,omitempty"`
 	Receipts  []machineryReceipt  `json:"receipts,omitempty"`
 	Revisions []machineryRevision `json:"revisions,omitempty"`
+	// Cost is what producing this record cost, out of the producing run's
+	// own receipt. It is the one number on this page that is about Babel
+	// rather than about the corpus, which is why it is at depth five: a
+	// reader deciding whether a suggestion is right does not price it, and a
+	// reader asking what his machines are spending on analysis is asking a
+	// different question in the same place.
+	//
+	// It is present only for a record this machine produced and whose
+	// receipt it can still read. §9 seals the worker's accounting before it
+	// leaves the host, so a record another instance published carries no
+	// cost here — and an absent block says nobody here can price it rather
+	// than that it was free.
+	Cost *costView `json:"cost,omitempty"`
 }
 
 func (m machineryView) empty() bool {
 	return m.Revision == "" && m.Digest == "" && m.Schema == 0 && m.CreatedAt == "" &&
 		m.RunID == "" && m.PolicyVersion == "" && m.Host == "" && len(m.Links) == 0 &&
-		len(m.Receipts) == 0 && len(m.Revisions) == 0
+		len(m.Receipts) == 0 && len(m.Revisions) == 0 && m.Cost == nil
+}
+
+// costView is what one run spent, as its receipt recorded it.
+//
+// USD is a pointer and the token counts are omitted when zero, which is the
+// same rule the rest of this file applies to absence: an engine that never
+// answered for its own session accounting reports nothing, and a receipt whose
+// usage block is all zeros is that engine rather than a free run. The duration
+// is Babel's own clock over the whole run — preparation, authorization and
+// storage included — because that is the number a receipt states and a second,
+// narrower one derived here would disagree with it.
+type costView struct {
+	USD          *float64 `json:"usd"`
+	InputTokens  int64    `json:"input_tokens,omitempty"`
+	OutputTokens int64    `json:"output_tokens,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	DurationS    float64  `json:"duration_s,omitempty"`
+}
+
+func (c costView) empty() bool {
+	return c.USD == nil && c.InputTokens == 0 && c.OutputTokens == 0 &&
+		c.Model == "" && c.DurationS == 0
 }
 
 // machineryLink is one typed citation, as an identity and never as a URL.
@@ -473,10 +658,26 @@ func (s *Server) peelRecord(r *http.Request, wide bool, ref frontier.Ref) (recor
 	if !core.details.empty() {
 		peel.Case = &core.details
 	}
-	peel.Evidence = s.resolveEvidence(ctx, core.evidence)
+	// The session listing is read once for the whole document, because two
+	// sections need it: an excerpt is quoted from a cited session and the
+	// origin strip is about the first of them. Reading it twice would be two
+	// enumerations of this host's catalog for one page.
+	sessions := s.sessionsBySourceID(ctx)
+	peel.Evidence = s.resolveEvidence(core.evidence, sessions)
+	peel.Origin = recordOrigin(core.evidence, sessions)
 	peel.Standing, peel.Action = s.standing(ctx, ref)
 	peel.Reception = s.reception(ctx, ref)
-	machinery := s.machinery(ctx, ref, identity)
+	// The revision chain is read once and used twice, for the same reason:
+	// depth five lists it and the related strip reads the supersession out
+	// of it, and two reads of an append-only chain are two chances to render
+	// a record as current in one section and replaced in another.
+	chain, chainErr := s.opts.Frontier.Revisions(ctx, ref)
+	if chainErr != nil {
+		s.logf("record %s revision chain unread", ref.ID)
+		chain = nil
+	}
+	peel.Related = s.related(ctx, ref, identity, chain)
+	machinery := s.machinery(ctx, ref, identity, chain)
 	// The deployment is asked what it holds of a record this machine already
 	// answered for, which is one catalog row rather than the object: the
 	// digest and the publishing host are the deployment's facts about this
@@ -578,7 +779,13 @@ func (s *Server) peelCatalogRecord(ctx context.Context, ref frontier.Ref,
 	if !core.details.empty() {
 		peel.Case = &core.details
 	}
-	peel.Evidence = s.resolveEvidence(ctx, core.evidence)
+	// The cited sessions may well be on this machine even though the record
+	// is not: an instance that published a proposal read the same archived
+	// conversations. So the excerpts and the origin are resolved exactly as
+	// they are locally, and what this host cannot open is simply absent.
+	sessions := s.sessionsBySourceID(ctx)
+	peel.Evidence = s.resolveEvidence(core.evidence, sessions)
+	peel.Origin = recordOrigin(core.evidence, sessions)
 	peel.Reception = s.reception(ctx, ref)
 	machinery := machineryView{
 		Digest:    found.record.Record.ObjectDigest,
@@ -773,18 +980,19 @@ func appendCitations(into []citedEvidence, items []frontier.Evidence, kind strin
 	return into
 }
 
-// resolveEvidence turns citations into rows a reader can open.
+// resolveEvidence turns citations into rows a reader can open, each carrying
+// the cited text where this host can still recover it.
 //
-// The session catalog is read once for the whole record rather than once per
-// citation, because it answers by enumeration: one call for nine locators is
-// one pass and nine calls are nine. A catalog that could not answer costs the
-// links and nothing else — the locator is what makes a claim evidence (§4.3),
-// and it travels whether or not this host can open the conversation it names.
-func (s *Server) resolveEvidence(ctx context.Context, cited []citedEvidence) []evidenceView {
+// The session listing arrives already read, because the origin strip is about
+// the same rows and this host's catalog answers by enumeration: one pass for a
+// document rather than one per section. A catalog that could not answer costs
+// the links and the excerpts and nothing else — the locator is what makes a
+// claim evidence (§4.3), and it travels whether or not this host can open the
+// conversation it names.
+func (s *Server) resolveEvidence(cited []citedEvidence, sessions map[string][]SessionRow) []evidenceView {
 	if len(cited) == 0 {
 		return nil
 	}
-	sessions := s.sessionsBySourceID(ctx)
 	views := make([]evidenceView, 0, len(cited))
 	for _, item := range cited {
 		locator := item.evidence.Locator()
@@ -794,16 +1002,140 @@ func (s *Server) resolveEvidence(ctx context.Context, cited []citedEvidence) []e
 			Path:  locator.Path,
 			Line:  locator.Line,
 		}
-		if selector, ok := matchSession(sessions, locator.Path); ok {
-			view.SessionID = selector
+		row, ok := matchSession(sessions, locator.Path)
+		if ok {
+			view.SessionID = row.Selector
 			if locator.Line > 0 {
 				view.Event = locator.Line - 1
 			}
-			view.Href = sessionHref(selector, view.Event)
+			view.Href = sessionHref(row.Selector, view.Event)
+			if row.Title != nil {
+				view.SessionTitle = boundedLine(*row.Title)
+			}
+			view.Excerpt, view.Speaker = s.citedExcerpt(locator, row.Harness)
 		}
 		views = append(views, view)
 	}
 	return views
+}
+
+// citedExcerpt recovers the cited record's own text and who said it.
+//
+// It is named apart from review.go's excerpt because the two quote different
+// things: that one is a record's own first line, read out of the frontier for
+// a listing, and this one is the conversation the record cites, read out of a
+// session log at a locator.
+//
+// The read is one seek because the locator says where the record starts and
+// what it hashes to (transcript.Cited). What this function adds is the
+// judgement about what may be shown: a record the display parser could not
+// read is a raw log line, and a raw log line rendered as a pull-quote is a
+// page quoting JSON at a reader who came to check a citation. So an
+// unrecognized record produces no excerpt, exactly as an unreadable file does,
+// and the note beside it plus the transcript link stay as they were.
+//
+// A failure is logged and not returned. The evidence row is still correct
+// without an excerpt, and a record page that failed because one of nine cited
+// logs had been rotated would be a page lost to a fact it was reporting.
+func (s *Server) citedExcerpt(locator event.Locator, harnessName string) (string, string) {
+	if locator.ByteOffset <= 0 && locator.Line > 1 {
+		// Nothing to seek to: a zero offset is only the file's first record,
+		// and a locator whose line says otherwise is one this surface
+		// cannot place without the pass it exists to avoid.
+		return "", ""
+	}
+	cited, found, err := transcript.Cited(locator.Path, harnessName, locator.ByteOffset, locator.Digest)
+	if err != nil {
+		s.logf("citation at %s line %d unread", fileStem(locator.Path), locator.Line)
+		return "", ""
+	}
+	if !found || cited.Kind != transcriptMessage {
+		return "", ""
+	}
+	text := strings.TrimSpace(cited.Text)
+	if text == "" {
+		return "", ""
+	}
+	return boundedText(text, maxExcerpt), speakerOf(cited.Role)
+}
+
+// transcriptMessage is the one event kind an excerpt may quote: a record the
+// harness's display parser read as a message. internal/transcript's other kind
+// is `raw`, which is a log line it could not read.
+const transcriptMessage = "message"
+
+// speakerOf translates a harness's own role name into the three a reader
+// needs. An unrecognized role is absent rather than guessed: a label invented
+// here would attribute the quotation to whoever the guess named.
+func speakerOf(role string) string {
+	switch lowered := strings.ToLower(role); {
+	case lowered == speakerUser:
+		return speakerUser
+	case lowered == speakerAssistant:
+		return speakerAssistant
+	case strings.Contains(lowered, speakerTool):
+		// `tool`, `toolResult`, `tool_use`: the harnesses spell a tool's
+		// turn several ways and a reader needs none of the spellings.
+		return speakerTool
+	}
+	return ""
+}
+
+// boundedText collapses one quotation to at most limit bytes, cutting on a
+// rune boundary and preferring the last word boundary before it: a quotation
+// cut mid-word reads as a transcription error rather than as an excerpt.
+func boundedText(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	if space := strings.LastIndexAny(value[:cut], " \t\n"); space > limit/2 {
+		cut = space
+	}
+	return strings.TrimRight(value[:cut], " \t\n") + "…"
+}
+
+// recordOrigin is the conversation a record was born in: the first citation
+// whose session this host holds.
+//
+// First rather than most-cited or newest, because the ordering it comes from
+// is the record's own — appendCitations walks supporting evidence before
+// conflicting, and a record's first citation is the material it was written
+// from. A record whose citations all name sessions this machine has never had
+// gets no origin strip at all, which is the honest answer: the conversation
+// exists and this host cannot say anything about it.
+func recordOrigin(cited []citedEvidence, sessions map[string][]SessionRow) *originView {
+	for _, item := range cited {
+		locator := item.evidence.Locator()
+		row, ok := matchSession(sessions, locator.Path)
+		if !ok {
+			continue
+		}
+		view := &originView{
+			SessionID: row.Selector,
+			CostUSD:   row.CostUSD,
+			Turns:     row.Turns,
+		}
+		if row.Title != nil {
+			view.SessionTitle = boundedLine(*row.Title)
+		}
+		if row.Workspace != nil {
+			view.Workspace = *row.Workspace
+		}
+		if row.Modified != nil {
+			view.At = *row.Modified
+		}
+		event := 0
+		if locator.Line > 0 {
+			event = locator.Line - 1
+		}
+		view.Href = sessionHref(row.Selector, event)
+		return view
+	}
+	return nil
 }
 
 // sessionsBySourceID indexes this host's catalog by the cited file's own name.
@@ -830,19 +1162,20 @@ func (s *Server) sessionsBySourceID(ctx context.Context) map[string][]SessionRow
 	return index
 }
 
-// matchSession resolves one locator path to the selector its session routes
-// on.
-func matchSession(index map[string][]SessionRow, locatorPath string) (string, bool) {
+// matchSession resolves one locator path to the session row it names, which
+// carries both the selector the transcript routes on and the harness whose
+// language the cited record is written in.
+func matchSession(index map[string][]SessionRow, locatorPath string) (SessionRow, bool) {
 	if len(index) == 0 || locatorPath == "" {
-		return "", false
+		return SessionRow{}, false
 	}
 	stripped := strings.TrimSuffix(locatorPath, path.Ext(locatorPath))
 	for _, row := range index[fileStem(locatorPath)] {
 		if row.SourceID != "" && strings.HasSuffix(stripped, row.SourceID) {
-			return row.Selector, true
+			return row, true
 		}
 	}
-	return "", false
+	return SessionRow{}, false
 }
 
 // fileStem is a path's last element without its extension.
@@ -890,6 +1223,238 @@ func (s *Server) standing(ctx context.Context, ref frontier.Ref) (*standingView,
 		return view, &askView{Verb: "rule", Label: "Rule on this"}
 	}
 	return view, nil
+}
+
+// related assembles the connections a record's own words do not state.
+//
+// Every one of them is a read of a relation somebody or something already
+// asserted, and none of them is computed here. The competing remedies are
+// #114's stored relation, the suspected duplicates are what a dedup heuristic
+// recorded when the candidate was written and what a triage pass read as the
+// same thing, the supersessions are the revision chain plus the typed links,
+// and the siblings are the run id every record has carried since the
+// frontier's first migration. A strip with nothing in it is absent, which is
+// the honest answer for a record that stands alone.
+//
+// A relation this surface could not read is skipped rather than reported. The
+// strip is context beside the record, so a store that would not answer costs
+// one line of it; a page that failed because a duplicate warning could not be
+// read would lose the record over its footnote.
+func (s *Server) related(ctx context.Context, ref frontier.Ref, identity recordIdentity,
+	chain []frontier.Revision) *relatedView {
+	view := relatedView{
+		Addressing: s.competingRemedies(ctx, ref),
+		Duplicates: s.suspectedDuplicates(ctx, ref),
+		Siblings:   s.runSiblings(ctx, ref, identity.runID),
+	}
+	view.Supersedes, view.SupersededBy = s.supersession(ctx, ref, chain)
+	if len(view.Addressing) == 0 && len(view.Duplicates) == 0 && len(view.Supersedes) == 0 &&
+		len(view.SupersededBy) == 0 && len(view.Siblings) == 0 {
+		return nil
+	}
+	return &view
+}
+
+// competingRemedies lists the other proposals offered for the same claim.
+//
+// A candidate's remedies are read directly; a proposal's competitors are the
+// remedies of the claims it addresses, minus itself. That asymmetry is #114's:
+// the relation is stored from remedy to claim, so "what else answers this
+// problem" is one query from a hypothesis and one query per addressed
+// hypothesis from a proposal.
+//
+// A finding has none, and that is the split §4.4 draws rather than a gap: a
+// finding proposes nothing, so nothing competes with it. The remedies are
+// reached from the candidates its observations developed, which is the
+// candidates' own page.
+func (s *Server) competingRemedies(ctx context.Context, ref frontier.Ref) []relatedRecord {
+	var claims []string
+	switch ref.Type {
+	case frontier.EntityHypothesis:
+		claims = []string{ref.ID}
+	case frontier.EntityProposal:
+		record, err := s.opts.Frontier.Proposal(ctx, ref.ID)
+		if err != nil {
+			return nil
+		}
+		claims = record.HypothesisIDs
+	default:
+		return nil
+	}
+	seen := make(map[string]struct{}, len(claims))
+	var out []relatedRecord
+	for _, claim := range claims {
+		remedies, err := s.opts.Frontier.ProposalsAddressing(ctx, claim)
+		if err != nil {
+			s.logf("record %s competing remedies unread", ref.ID)
+			continue
+		}
+		for _, remedy := range remedies {
+			if remedy.ID == ref.ID {
+				continue
+			}
+			if _, dup := seen[remedy.ID]; dup {
+				continue
+			}
+			seen[remedy.ID] = struct{}{}
+			out = append(out, relatedRecord{
+				ID:       remedy.ID,
+				Kind:     string(frontier.EntityProposal),
+				Title:    boundedLine(remedy.Payload.Title),
+				Standing: string(remedy.ReviewStatus),
+			})
+		}
+	}
+	return out
+}
+
+// suspectedDuplicates lists what Babel suspects this record restates.
+//
+// Two sources, because two different things in Babel form the suspicion. A
+// candidate carries the overlap its dedup heuristic measured when it was
+// written, stored beside it and — until now — served to nobody; a proposal
+// carries the cluster a triage pass read as saying the same thing, which is a
+// judgement rather than a measurement and therefore travels without a number.
+// Neither is a ruling: §4.7's `duplicate` disposition is the operator's, and
+// this is the comparison being put in front of him.
+func (s *Server) suspectedDuplicates(ctx context.Context, ref frontier.Ref) []relatedRecord {
+	switch ref.Type {
+	case frontier.EntityHypothesis:
+		record, err := s.opts.Frontier.Hypothesis(ctx, ref.ID)
+		if err != nil {
+			return nil
+		}
+		out := make([]relatedRecord, 0, len(record.Duplicates))
+		for _, warning := range record.Duplicates {
+			out = append(out, relatedRecord{
+				ID:      warning.DuplicateOf,
+				Kind:    string(frontier.EntityHypothesis),
+				Title:   s.titleOf(ctx, frontier.Ref{Type: frontier.EntityHypothesis, ID: warning.DuplicateOf}),
+				Overlap: warning.Overlap,
+			})
+		}
+		return out
+	case frontier.EntityProposal:
+		advice, err := s.opts.Frontier.TriageAdvice(ctx, ref.ID)
+		if err != nil {
+			s.logf("record %s triage advice unread", ref.ID)
+			return nil
+		}
+		seen := make(map[string]struct{})
+		var out []relatedRecord
+		for _, entry := range advice {
+			for _, peer := range entry.Cluster {
+				if peer == ref.ID {
+					continue
+				}
+				if _, dup := seen[peer]; dup {
+					continue
+				}
+				seen[peer] = struct{}{}
+				out = append(out, relatedRecord{
+					ID:    peer,
+					Kind:  string(frontier.EntityProposal),
+					Title: s.titleOf(ctx, frontier.Ref{Type: frontier.EntityProposal, ID: peer}),
+				})
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// supersession reports the wording this record replaced and the wording that
+// replaced it.
+//
+// The revision chain is the source for every kind, because that is where #87
+// puts supersession: a chain has one leaf, the entry before this record is
+// what it revised and the entry after is what revised it. A candidate's typed
+// links add the cross-chain case the chain cannot carry — one investigator
+// asserting that a different candidate supersedes this one — and they are
+// unioned rather than preferred, since a record can be both revised and
+// replaced by another line of thought.
+func (s *Server) supersession(ctx context.Context, ref frontier.Ref,
+	chain []frontier.Revision) (before, after []relatedRecord) {
+	for i, entry := range chain {
+		if entry.Entity.ID != ref.ID {
+			continue
+		}
+		if i > 0 {
+			before = append(before, s.relatedRef(ctx, chain[i-1].Entity))
+		}
+		if i+1 < len(chain) {
+			after = append(after, s.relatedRef(ctx, chain[i+1].Entity))
+		}
+		break
+	}
+	if ref.Type != frontier.EntityHypothesis {
+		return before, after
+	}
+	if links, err := s.opts.Frontier.LinksFrom(ctx, ref.ID); err == nil {
+		for _, link := range links {
+			if link.Type == frontier.LinkSupersedes {
+				before = append(before, s.relatedRef(ctx,
+					frontier.Ref{Type: frontier.EntityHypothesis, ID: link.ToID}))
+			}
+		}
+	}
+	if links, err := s.opts.Frontier.LinksTo(ctx, ref.ID); err == nil {
+		for _, link := range links {
+			if link.Type == frontier.LinkSupersedes {
+				after = append(after, s.relatedRef(ctx,
+					frontier.Ref{Type: frontier.EntityHypothesis, ID: link.FromID}))
+			}
+		}
+	}
+	return before, after
+}
+
+// runSiblings lists the rest of what this record's run wrote.
+//
+// Head revisions only and this record excluded, both from the store's own
+// query: a siblings list that included the record a reader is looking at would
+// be offering him a link to the page he is on.
+func (s *Server) runSiblings(ctx context.Context, ref frontier.Ref, runID string) []relatedRecord {
+	if runID == "" {
+		return nil
+	}
+	outputs, err := s.opts.Frontier.OutputsOfRun(ctx, runID)
+	if err != nil {
+		s.logf("record %s run siblings unread", ref.ID)
+		return nil
+	}
+	out := make([]relatedRecord, 0, len(outputs))
+	for _, output := range outputs {
+		if output.ID == ref.ID {
+			continue
+		}
+		out = append(out, relatedRecord{
+			ID:    output.ID,
+			Kind:  string(output.Kind),
+			Title: boundedLine(output.Title),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// relatedRef is one record named by identity alone, with its own line read
+// where this host holds it.
+func (s *Server) relatedRef(ctx context.Context, ref frontier.Ref) relatedRecord {
+	return relatedRecord{ID: ref.ID, Kind: string(ref.Type), Title: s.titleOf(ctx, ref)}
+}
+
+// titleOf is one record's own bounded line, empty when this host holds no such
+// record — which on a fleet-wide graph is the expected case rather than a
+// failure, exactly as it is for a link at depth five.
+func (s *Server) titleOf(ctx context.Context, ref frontier.Ref) string {
+	core, _, err := s.localRecord(ctx, ref)
+	if err != nil {
+		return ""
+	}
+	return boundedLine(core.title)
 }
 
 // reviewableRecord mirrors §6.7's reviewable set. It is spelled here rather
@@ -951,8 +1516,9 @@ func (s *Server) reception(ctx context.Context, ref frontier.Ref) *receptionView
 	if s.opts.Evaluation != nil {
 		subject := evaluation.Subject{Kind: string(ref.Type), ID: ref.ID}
 		if detail, err := s.opts.Evaluation.Detail(ctx, subject); err == nil {
+			roles := rolesByAssignment(detail.Assignments)
 			view.Operator, view.History = operatorStances(detail.History)
-			view.Model = modelStances(detail.History, rolesByAssignment(detail.Assignments))
+			view.Model = modelStances(detail.History, roles)
 			counts := receptionCounts{
 				Support: detail.Item.Reception.Support,
 				Oppose:  detail.Item.Reception.Oppose,
@@ -961,7 +1527,8 @@ func (s *Server) reception(ctx context.Context, ref frontier.Ref) *receptionView
 			if !counts.empty() {
 				view.Counts = &counts
 			}
-			view.Contested = counts.Support > 0 && counts.Oppose > 0
+			view.ByRole = roleReceptions(detail.History, roles)
+			view.Contested = contestedRoles(view.ByRole)
 		}
 	}
 	if s.opts.Review != nil && reviewableRecord(ref.Type) {
@@ -981,6 +1548,76 @@ func (s *Server) reception(ctx context.Context, ref frontier.Ref) *receptionView
 		return nil
 	}
 	return &view
+}
+
+// roleReceptions groups Babel's reviewers by what each was asked.
+//
+// The join is §4.12's own: a vote's authority comes from the grant that drew
+// it, so the role is read off the assignment rather than off the assessment,
+// and a vote whose grant this instance cannot see is left out of the grouping
+// rather than credited to a role it might not have held. Its own line still
+// renders beside the others, roleless, in the reviewer list above.
+//
+// The order is the roles' first appearance in the history, which is the order
+// the reviews were drawn in. Sorting alphabetically would put `challenge`
+// before `evidence` and read as a ranking of questions.
+func roleReceptions(history []evaluation.Record, roles map[string]string) []roleReceptionView {
+	index := make(map[string]int, len(roles))
+	var out []roleReceptionView
+	for _, record := range history {
+		if record.Kind != evaluation.KindAssessment || record.Assessment == nil {
+			continue
+		}
+		if record.ActorKind != evaluation.ActorRun {
+			continue
+		}
+		role := roles[record.AssignmentID]
+		if role == "" {
+			continue
+		}
+		position, seen := index[role]
+		if !seen {
+			position = len(out)
+			index[role] = position
+			out = append(out, roleReceptionView{Role: role})
+		}
+		switch record.Assessment.Vote {
+		case voteSupport:
+			out[position].Support++
+		case voteOppose:
+			out[position].Oppose++
+			if rationale := assessmentRationale(*record.Assessment); rationale != "" {
+				out[position].OpposingRationales = append(out[position].OpposingRationales, rationale)
+			}
+		case voteUnsure:
+			out[position].Unsure++
+		}
+	}
+	return out
+}
+
+// The three votes §4.12 gives a reviewer, spelled here because this file
+// groups by them. internal/evaluation owns the vocabulary and refuses anything
+// outside it; a vote this build does not recognize is counted in no column
+// rather than counted as support.
+const (
+	voteSupport = "support"
+	voteOppose  = "oppose"
+	voteUnsure  = "unsure"
+)
+
+// contestedRoles reports disagreement where it means something: one role with
+// both a support and an opposition in it, which is two reviewers answering the
+// same question differently. Support on one question beside opposition on
+// another is two reviewers agreeing about different things, and calling that
+// contested would make almost every reviewed record contested.
+func contestedRoles(byRole []roleReceptionView) bool {
+	for _, role := range byRole {
+		if role.Support > 0 && role.Oppose > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // operatorStances splits the operator's reception into the current one and the
@@ -1079,27 +1716,79 @@ func assessmentRationale(assessment evaluation.Assessment) string {
 }
 
 // machinery assembles depth five for a record this machine holds.
+//
+// The revision chain arrives already read, because the related strip reads the
+// supersession out of the same chain: one read of an append-only history
+// cannot disagree with itself.
 func (s *Server) machinery(ctx context.Context, ref frontier.Ref,
-	identity recordIdentity) machineryView {
+	identity recordIdentity, chain []frontier.Revision) machineryView {
 	view := machineryView{
 		Schema:    identity.schema,
 		CreatedAt: timeText(identity.createdAt),
 		RunID:     identity.runID,
 	}
-	if chain, err := s.opts.Frontier.Revisions(ctx, ref); err == nil {
-		for _, revision := range chain {
-			view.Revisions = append(view.Revisions, machineryRevision{
-				ID: revision.Entity.ID,
-				At: timeText(revision.RecordedAt),
-			})
-		}
-		if len(chain) > 0 {
-			view.Revision = chain[len(chain)-1].Entity.ID
-		}
+	for _, revision := range chain {
+		view.Revisions = append(view.Revisions, machineryRevision{
+			ID: revision.Entity.ID,
+			At: timeText(revision.RecordedAt),
+		})
+	}
+	if len(chain) > 0 {
+		view.Revision = chain[len(chain)-1].Entity.ID
 	}
 	view.Links = s.machineryLinks(ctx, ref)
+	view.Cost = s.runCost(ctx, identity.runID)
 	s.addEvaluationMachinery(ctx, ref, &view)
 	return view
+}
+
+// runCost reads what producing this record cost, out of the producing run's
+// own receipt.
+//
+// It is the newest revision of the receipt because a receipt is amended rather
+// than edited: revision 2 exists to correct revision 1, and a page showing the
+// first figure would show the number its own store has already superseded.
+//
+// Everything here is local by construction. §9 seals the worker's accounting
+// before a receipt leaves the machine, so the body this reads is plaintext
+// only on the host that wrote it — which is also the only host that can be
+// asked what its own analysis cost. A record from elsewhere, a receipt this
+// build cannot open, a run that never reached the worker: all three produce no
+// cost block, because none of them is a free run.
+func (s *Server) runCost(ctx context.Context, runID string) *costView {
+	if s.opts.Receipts == nil || runID == "" {
+		return nil
+	}
+	receipts, err := s.opts.Receipts.Revisions(ctx, runID)
+	if err != nil || len(receipts) == 0 {
+		return nil
+	}
+	body := receipts[len(receipts)-1].Body
+	view := costView{}
+	if seconds := body.Timing.Duration().Seconds(); seconds > 0 {
+		view.DurationS = seconds
+	}
+	if body.Worker != nil {
+		// The model is the resolved one Code reported rather than the one a
+		// profile asked for (§7): what a reader wants to know is which model
+		// wrote this, and a profile names a preference.
+		view.Model = body.Worker.Metadata["model"]
+		if usage := body.Worker.Usage; usage != nil {
+			view.InputTokens, view.OutputTokens = usage.InputTokens, usage.OutputTokens
+			if usage.Cost > 0 {
+				// Zero is the engine declining to price its own session,
+				// which every receipt in this corpus with no usage report
+				// records as a zero — so a zero renders as unknown and
+				// never as free.
+				cost := usage.Cost
+				view.USD = &cost
+			}
+		}
+	}
+	if view.empty() {
+		return nil
+	}
+	return &view
 }
 
 // machineryLinks renders the typed citation graph as a depth-five index.
@@ -1307,7 +1996,7 @@ func (s *Server) handleRecordReception(w http.ResponseWriter, r *http.Request, i
 	// terms: internal/evaluation owns the vocabulary and refuses a value
 	// outside it, and a second gate here is a second place for the two to
 	// come to disagree about what an operator may say.
-	record, err := s.opts.Evaluation.Operator(r.Context(), evaluation.OperatorInput{
+	record, refresh, err := s.opts.Evaluation.OperatorDeferred(r.Context(), evaluation.OperatorInput{
 		Subject:  evaluation.Subject{Kind: string(kind), ID: id},
 		Kind:     evaluation.KindFeedback,
 		Operator: by.ID(),
@@ -1318,8 +2007,78 @@ func (s *Server) handleRecordReception(w http.ResponseWriter, r *http.Request, i
 		s.serviceError(w, r, err)
 		return
 	}
+	// The refresh is started before the response and waited on only briefly.
+	// A reader who agrees and then reloads must see his own stance, and a
+	// reader whose machine is busy must not wait on bookkeeping to find out
+	// that it was recorded; those are both true of a refresh that gets a
+	// short head start and then stops being his problem.
+	s.refreshReception(record.Subject, refresh)
 	s.writeJSON(w, http.StatusOK, receptionResult{
 		Stance: record.Stance,
 		At:     timeText(record.CreatedAt),
 	})
 }
+
+// refreshReception brings the evaluation projection up to date with a stance
+// that has already been recorded, and gives the response a deadline rather
+// than the work.
+//
+// The two halves of the write are separated because only one of them is the
+// act. The durable record is the operator's position the instant its
+// transaction commits; the projection is a rebuildable cache, and refreshing
+// it reads this instance's evaluation records, assignments, attempts, the
+// subject's artifact and the effective policy in order to replace one row —
+// six of the six and a half seconds an upvote took on the live catalog, spent
+// after the thing the operator asked for was already true.
+//
+// So the refresh runs on its own goroutine, under a context of its own, and
+// the handler waits for it for as long as an instant lasts. That ordering is
+// what keeps both properties: a reload right after clicking shows the stance,
+// because on an idle machine the refresh finishes in tens of milliseconds and
+// the response waits for it; and a machine with three lanes writing does not
+// make the operator watch a projection catch up, because the wait expires and
+// the work continues without him.
+//
+// The work is never cancelled by the wait expiring. A refresh abandoned
+// halfway is the one outcome worse than a refresh that is late, so the
+// goroutine holds a context detached from the request — the request's is
+// cancelled the moment the handler returns — with a deadline long enough to
+// be nobody's latency and short enough that a wedged store leaks one
+// goroutine rather than one per click.
+//
+// A failure is logged and nothing else. The projection is rebuilt from the
+// durable records on the launch's own schedule, so what a failed refresh costs
+// is a listing that lags until then — never the stance, which is already
+// durable, and never the request, which is answered either way.
+func (s *Server) refreshReception(subject evaluation.Subject, refresh func(context.Context) error) {
+	if refresh == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()),
+			receptionRefreshTimeout)
+		defer cancel()
+		if err := refresh(ctx); err != nil {
+			s.logf("reception of %s %s recorded; evaluation projection not refreshed",
+				subject.Kind, subject.ID)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(receptionRefreshBudget):
+	}
+}
+
+// receptionRefreshBudget is how long a click waits for the projection to catch
+// up with it. It is the width of an instant rather than a service level: past
+// it the operator is watching a progress indicator for work he did not ask
+// for, and the work is no more correct for being waited on.
+const receptionRefreshBudget = 150 * time.Millisecond
+
+// receptionRefreshTimeout bounds the refresh itself. It is long because by
+// then the refresh is not in anybody's way, and finite so that a store which
+// has stopped answering does not accumulate goroutines for the life of the
+// launch.
+const receptionRefreshTimeout = time.Minute

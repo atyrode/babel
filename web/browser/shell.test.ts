@@ -254,66 +254,77 @@ test.skipIf(!chrome)("no page of the four overflows a viewport, and none runs lo
   await page.setViewport(WIDE);
 });
 
-test.skipIf(!chrome)("Decide's header is three numbers and its rows are one line each", async () => {
+// The operator's first complaint about the landing page was its order: the
+// capture box and an empty Complaints panel sat above the queue, which started
+// at y=1117. What has to hold is that the queue is the first thing under the
+// header, that every row is a real link, and that every row says why it is
+// next — the one fact a reader cannot reconstruct from the claim.
+test.skipIf(!chrome)("Decide leads with the queue, and every row says why it is next", async () => {
   await open("");
-  await page.waitForSelector(".queue-row", { timeout: 15_000 });
+  await page.waitForSelector(".decide-row", { timeout: 15_000 });
   const state = await page.evaluate(() => {
-    const tallies = Array.from(document.querySelectorAll(".tally-item")).map((item) => ({
-      count: item.querySelector(".tally-count")?.textContent ?? "",
-      sentence: item.querySelector(".tally-sentence")?.textContent ?? "",
-    }));
-    const rows = Array.from(document.querySelectorAll(".queue-row")).map((row) => ({
-      // One line: the claim is clamped to a single line, so its rendered box is
-      // one line-height tall however long the model's wording is.
-      lines: Math.round(
-        (row.querySelector(".queue-claim") as HTMLElement).getBoundingClientRect().height /
-          parseFloat(getComputedStyle(row.querySelector(".queue-claim") as HTMLElement).lineHeight),
-      ),
-      facts: row.querySelectorAll(".queue-facts > *").length,
-      href: row.querySelector("a")?.getAttribute("href") ?? "",
-    }));
-    return { tallies, rows };
+    const queue = document.querySelector(".decide-queue") as HTMLElement;
+    const capture = document.querySelector(".decide-tell") as HTMLElement | null;
+    return {
+      queueTop: queue.getBoundingClientRect().top + window.scrollY,
+      captureTop: capture ? capture.getBoundingClientRect().top + window.scrollY : null,
+      figures: Array.from(document.querySelectorAll(".decide-stat")).map((item) => ({
+        value: item.querySelector(".stat-value")?.textContent ?? "",
+        note: item.querySelector(".stat-note")?.textContent ?? "",
+      })),
+      rows: Array.from(document.querySelectorAll(".decide-row")).map((row) => ({
+        why: row.querySelector(".decide-why")?.textContent ?? "",
+        href: row.querySelector("a")?.getAttribute("href") ?? "",
+      })),
+    };
   });
-  expect(state.tallies).toHaveLength(3);
-  for (const tally of state.tallies) {
-    expect(tally.count.length).toBeGreaterThan(0);
-    // One sentence each, and a sentence rather than a label.
-    expect(tally.sentence.length).toBeGreaterThan(20);
+  // The queue is above the fold of a 900px viewport, and capture is below it.
+  expect(state.queueTop).toBeLessThan(600);
+  expect(state.captureTop).toBeGreaterThan(state.queueTop);
+  expect(state.figures.length).toBeGreaterThanOrEqual(3);
+  for (const figure of state.figures) {
+    expect(figure.value.length).toBeGreaterThan(0);
+    // A sentence saying what the figure is about, not a label repeating it.
+    expect(figure.note.length).toBeGreaterThan(20);
   }
   expect(state.rows.length).toBeGreaterThan(0);
   for (const row of state.rows) {
-    expect(row.lines).toBe(1);
-    // The density rule, measured: a claim and at most three facts.
-    expect(row.facts).toBeLessThanOrEqual(3);
+    expect(row.why.length).toBeGreaterThan(0);
     expect(row.href).toMatch(/^#\/(r|ask)\//u);
   }
 });
 
-test.skipIf(!chrome)("Read is one list with the filters the four listings had", async () => {
+// Read's controls were five dropdowns, which is a database query form: the
+// first thing the operator wanted was a Proposals chip. Every facet the four
+// listings offered still has to be reachable — kind and standing as chips, the
+// ordering as a menu that names its basis, coverage and role behind a fold —
+// and no facet may be a select.
+test.skipIf(!chrome)("Read is one list whose facets are chips, not a query form", async () => {
   await open("read");
-  await page.waitForSelector(".output-row", { timeout: 15_000 });
+  await page.waitForSelector(".read-row", { timeout: 15_000 });
   const state = await page.evaluate(() => ({
-    // Kind, standing, order, coverage and review role: every facet the four
-    // separate listings offered, as controls on one list.
-    filters: Array.from(document.querySelectorAll(".read-filters label > span")).map(
-      (label) => label.textContent ?? "",
+    selects: document.querySelectorAll("select").length,
+    kindChips: Array.from(document.querySelectorAll("[data-chip^='kind-']")).map(
+      (chip) => chip.getAttribute("data-chip") ?? "",
     ),
-    kinds: Array.from(
-      document.querySelectorAll<HTMLSelectElement>(".read-filters select"),
-    )[0].options.length,
-    rows: Array.from(document.querySelectorAll(".output-row")).map((row) => ({
-      facts: row.querySelectorAll(".output-facts > *").length,
+    laneChips: document.querySelectorAll("[data-chip^='lane-']").length,
+    orders: document.querySelectorAll("[data-order]").length,
+    folded: Array.from(document.querySelectorAll(".read-more-body [aria-pressed]")).length,
+    rows: Array.from(document.querySelectorAll(".read-row")).map((row) => ({
       href: row.querySelector("a")?.getAttribute("href") ?? "",
     })),
     paged: document.querySelector(".pager") !== null,
   }));
-  expect(state.filters).toEqual(["Kind", "Standing", "Order", "Reviewed", "By role"]);
-  // Every kind plus the "every kind" default: the listing pages this replaced
-  // were one destination per kind.
-  expect(state.kinds).toBeGreaterThan(3);
+  expect(state.selects).toBe(0);
+  // Proposals first, because that is what the operator reached for.
+  expect(state.kindChips[0]).toBe("kind-proposal");
+  expect(state.kindChips.length).toBeGreaterThan(3);
+  expect(state.laneChips).toBeGreaterThan(3);
+  expect(state.orders).toBeGreaterThan(3);
+  // Coverage and review role survive the move behind the fold.
+  expect(state.folded).toBeGreaterThan(8);
   expect(state.rows.length).toBeGreaterThan(0);
   for (const row of state.rows) {
-    expect(row.facts).toBeLessThanOrEqual(3);
     expect(row.href).toMatch(/^#\/r\//u);
   }
   // Server-side paging survives: the fixture holds more than one page and the

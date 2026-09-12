@@ -286,6 +286,16 @@ type EvaluationService interface {
 	Policy(context.Context) (evaluation.Policy, error)
 	Configure(context.Context, string, evaluation.Policy) (evaluation.Record, error)
 	Operator(context.Context, evaluation.OperatorInput) (evaluation.Record, error)
+	// OperatorDeferred is Operator with the projection refresh handed back
+	// instead of performed, and it is here because a click is not a command.
+	// The stance an operator records is durable when the transaction commits;
+	// what followed it inline was a refresh of a rebuildable projection that
+	// reads this instance's evaluation records, assignments, attempts and
+	// effective policy in order to replace one row, and on the live catalog
+	// that was six of the six and a half seconds an upvote took. The route
+	// answers on the write and runs the refresh after the response.
+	OperatorDeferred(context.Context, evaluation.OperatorInput) (
+		evaluation.Record, func(context.Context) error, error)
 }
 
 // FrontierReader is the read-only subset of *frontier.Store the API renders
@@ -361,7 +371,12 @@ type FrontierReader interface {
 	// neither is reachable from a browser.
 	Revisions(context.Context, frontier.Ref) ([]frontier.Revision, error)
 	Head(context.Context, frontier.Ref) (frontier.Ref, error)
-	// OutputsOfRun lists the records one run wrote (#235's siblings strip).
+	// OutputsOfRun lists the head revisions one run wrote, which is the one
+	// connection a record carries that no page could follow: every record
+	// names its run, and until now nothing could ask a run what else it
+	// said. A reader who has just read a finding wants the observations it
+	// consolidated and the remedy proposed beside it, and they are the same
+	// pass's work rather than four unrelated rows.
 	OutputsOfRun(context.Context, string) ([]frontier.RunOutput, error)
 }
 

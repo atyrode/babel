@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   getEvaluationList,
   getRealityInbox,
@@ -9,10 +9,13 @@ import {
   type QueueItem,
 } from "../api";
 import { errorMessage, formatTime } from "../format";
-import { Badge, PartialListNotice, reviewTone } from "../analysis";
+import { Badge, PartialListNotice, type Tone } from "../analysis";
 import { kindLabel } from "../evaluation";
 import { answerableStates } from "../reality";
 import { SteeringSection } from "../steering";
+import { RuleBar } from "../record";
+import { putReception, type OperatorStance, type RecordKind } from "../recordapi";
+import "../decide.css";
 
 // Decide answers one question: what needs me?
 //
@@ -23,14 +26,22 @@ import { SteeringSection } from "../steering";
 // problem and was never the reader's: an operator with something to rule on
 // does not know, and must not have to know, which store is holding it.
 //
-// So there is one queue of mixed kinds. Each row is one line of the record's
-// own claim and at most three facts, because a row is for deciding whether to
-// open the thing, not for deciding the thing. Everything else is a peel down
-// on the record's own page.
+// So there is one queue of mixed kinds, and it is the first thing on the page.
+// Each row is one line of the record's own claim, the kind of thing it is, and
+// why it is next — because a row is for deciding whether to open the thing,
+// and the reason it is at the top is the one fact a reader cannot reconstruct
+// for himself. Everything else is a peel down on the record's own page.
 //
-// The header is three numbers. It is what is left of the dashboard, which was
-// a six-panel grid summarizing five other pages: a page that reports on other
-// pages is a page that has nothing of its own to say.
+// The header is what the operator asked the page for: since you last looked,
+// this much arrived, this much is waiting, this much was spent. Capture — the
+// box he tells Babel what is going badly into — moved to a collapsed peel at
+// the foot, because it is the second thing he does here and it used to push
+// the queue a thousand pixels down the page.
+//
+// Triage happens without leaving the list: j/k move, Enter opens, a/d/u record
+// a stance, r opens the record's own rule bar on the row. The same controls
+// are on every row under the pointer, so the keyboard is a shortcut and never
+// the only way in.
 
 const PAGE_SIZE = 20;
 
@@ -39,6 +50,119 @@ const PAGE_SIZE = 20;
 // the whole set in practice, and drawing more would cost a request to render
 // rows below the fold of a queue whose point is the top of it.
 const RECONSIDER_LIMIT = 25;
+
+// Where the "since you last looked" mark is kept, and where this browser
+// remembers the stances it recorded.
+//
+// Both are local by necessity rather than by preference. The mark is one
+// person's reading history on one machine and Babel stores no such thing; the
+// stance echo exists because the queue row carries no reception, so a row the
+// operator voted on a minute ago would come back from the server looking
+// exactly like one he had never seen. The record's own page remains the
+// authority for what was recorded — this is a receipt, not a store.
+const SEEN_KEY = "babel.decide.seen";
+const STANCE_KEY = "babel.decide.stance";
+
+// How many stance receipts to keep. The queue is drained, so old entries name
+// records that will never appear in it again; a few hundred covers every row
+// an operator can see and keeps the key small.
+const STANCE_LIMIT = 200;
+
+// The widest window the spend figure will ask for. Contract W's series is
+// per-day, so an operator returning after a year would otherwise ask for 365
+// rows to add up four of them.
+const SPEND_DAYS_MAX = 90;
+
+// The window the spend figure covers when there is no mark yet — a first look
+// has no "since", and a month is the period the rest of the surface reports
+// spend over.
+const SPEND_DAYS_DEFAULT = 30;
+
+// The mark this visit reads from, captured once per page load.
+//
+// Following a row into a record and coming back is one visit and not two.
+// Reading the mark on every mount would reset the figure to "0 new, moments
+// ago" at exactly the moment the operator wants it — the return from the first
+// record he opened. A reload or a new tab is a new visit and picks up the mark
+// written on the way out.
+let visitMark: string | null | undefined;
+
+function visitSeen(): string | null {
+  if (visitMark === undefined) visitMark = readStored(SEEN_KEY);
+  return visitMark;
+}
+
+function readStored(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    // A browser that refuses storage loses the mark and nothing else: every
+    // figure derived from it is simply not shown.
+    return null;
+  }
+}
+
+function writeStored(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Same bargain as reading it.
+  }
+}
+
+// One stance this browser recorded, and when.
+interface StanceMark {
+  stance: OperatorStance;
+  at: string;
+}
+
+const STANCES: OperatorStance[] = ["agree", "disagree", "unsure"];
+
+function readStances(): Record<string, StanceMark> {
+  const raw = readStored(STANCE_KEY);
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object") return {};
+  // Every entry is validated on the way in, because this key is writable by
+  // anything else running on the origin and a stance word is rendered.
+  const marks: Record<string, StanceMark> = {};
+  for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") continue;
+    const mark = value as { stance?: unknown; at?: unknown };
+    if (typeof mark.at !== "string") continue;
+    if (!STANCES.includes(mark.stance as OperatorStance)) continue;
+    marks[id] = { stance: mark.stance as OperatorStance, at: mark.at };
+  }
+  return marks;
+}
+
+function writeStances(marks: Record<string, StanceMark>) {
+  const kept = Object.entries(marks)
+    .sort((left, right) => right[1].at.localeCompare(left[1].at))
+    .slice(0, STANCE_LIMIT);
+  writeStored(STANCE_KEY, JSON.stringify(Object.fromEntries(kept)));
+}
+
+// Contract W's series, declared beside its only reader here rather than in the
+// shared client: /api/watch/series belongs to Watch, and this page consumes
+// one field of it for one figure.
+//
+// `spend_usd` is nullable on the wire and the null is load-bearing — a day
+// whose receipts hold no cost is unknown, not free — so a day that reports
+// nothing contributes nothing and is not summed as zero.
+interface WatchSeriesDay {
+  day: string;
+  spend_usd: number | null;
+}
+
+interface WatchSeries {
+  days: WatchSeriesDay[] | null;
+}
 
 // One row of the merged queue, flattened from whichever store produced it.
 //
@@ -51,21 +175,96 @@ interface Row {
   rank: number;
   claim: string;
   href: string;
-  // At most three, enforced where they are built rather than where they are
-  // rendered, so a row that grows a fourth fact fails review here.
-  facts: Fact[];
+  // The kind of thing this is, and the row's only badge. Questions and
+  // reconsiderations ride the same queue and are told apart by this word.
+  kind: { label: string; tone: Tone };
+  // Why this row is next, in five words at most, from the basis the row's own
+  // store returned. Never a score: the queue is grouped, not rated.
+  why: string;
+  whyTitle?: string;
   at: string;
+  // Present when the row is a record. A question is answered on its own page
+  // and carries neither a reception nor a disposition, so the triage controls
+  // are absent for it rather than present and refused.
+  record?: { id: string; kind: RecordKind };
 }
 
-interface Fact {
-  label: string;
-  tone?: "badge" | "text";
-  badgeTone?: "neutral" | "green" | "amber" | "red" | "violet" | "blue" | "cyan";
-  title?: string;
+// The record kinds a row can carry a stance and a ruling on. A reconsideration
+// names its subject kind as a bare string, and a kind this build does not know
+// is a row with no controls rather than a cast that lies.
+const RECORD_KINDS: Record<string, true> = {
+  proposal: true,
+  finding: true,
+  hypothesis: true,
+  observation: true,
+};
+
+// The age of something in two words. `formatTime`'s "6 days ago" spends a
+// third of a five-word explanation on the tense.
+function elapsed(at: string): string | null {
+  const started = new Date(at).getTime();
+  if (Number.isNaN(started)) return null;
+  const seconds = Math.max(0, (Date.now() - started) / 1000);
+  const spans: Array<[string, number]> = [
+    ["year", 31_536_000],
+    ["month", 2_592_000],
+    ["week", 604_800],
+    ["day", 86_400],
+    ["hour", 3_600],
+    ["minute", 60],
+  ];
+  for (const [unit, span] of spans) {
+    if (seconds < span) continue;
+    const value = Math.floor(seconds / span);
+    return `${value} ${unit}${value === 1 ? "" : "s"}`;
+  }
+  return "moments";
+}
+
+// The first few words of a model's or a policy's sentence, for the one line of
+// a row that has to be scannable. The whole sentence rides the row's title, so
+// nothing is lost by cutting it here.
+function clipWords(text: string, words: number): string {
+  const parts = text.trim().split(/\s+/);
+  if (parts.length <= words) return parts.join(" ");
+  return `${parts.slice(0, words).join(" ")}…`;
+}
+
+// The stance in the words the page speaks it in. Three call sites — the
+// button, the mark on the row, and the announcement — have to agree, because
+// an operator reading "you are unsure" beside a button labelled "Unsure" must
+// be reading about the same act.
+function stanceWord(stance: OperatorStance): string {
+  switch (stance) {
+    case "agree":
+      return "agree";
+    case "disagree":
+      return "disagree";
+    default:
+      return "are unsure";
+  }
+}
+
+// How many days of series to ask for to cover the mark. One day minimum,
+// because a mark set an hour ago still needs today's row.
+function spendDays(seen: string | null): number {
+  if (!seen) return SPEND_DAYS_DEFAULT;
+  const since = new Date(seen).getTime();
+  if (Number.isNaN(since)) return SPEND_DAYS_DEFAULT;
+  const days = Math.ceil((Date.now() - since) / 86_400_000);
+  return Math.min(SPEND_DAYS_MAX, Math.max(1, days));
+}
+
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
 function DecidePage() {
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const [queue, setQueue] = useState<QueueItem[] | null>(null);
   const [queueTotal, setQueueTotal] = useState(0);
   const [degraded, setDegraded] = useState(false);
@@ -73,9 +272,37 @@ function DecidePage() {
   const [reconsider, setReconsider] = useState<EvaluationItem[] | null>(null);
   const [reconsiderTotal, setReconsiderTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  // Whether the shared client has finished a request, which is how this page
+  // knows the bootstrap exchange is behind it.
+  const [settled, setSettled] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // `undefined` is no answer at all — this deployment serves no series, or the
+  // read failed — and the figure is then not drawn. `null` is an answer with
+  // nothing in it, which says so rather than claiming nothing was spent.
+  const [spend, setSpend] = useState<number | null | undefined>(undefined);
+
+  const [seen] = useState(visitSeen);
+  const [stances, setStances] = useState<Record<string, StanceMark>>(readStances);
+  const [focus, setFocus] = useState(-1);
+  const [ruling, setRuling] = useState<string | null>(null);
+  const [pending, setPending] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState<string | null>(null);
+  const rows = useRef(new Map<string, HTMLLIElement>());
+
   const page = Math.max(0, Number(params.get("page") ?? 0) || 0);
+
+  // Leaving the page moves the mark. It is written on the way out rather than
+  // on arrival so that what the operator saw on this visit stays counted as
+  // new for the whole of it.
+  useEffect(
+    () => () => {
+      const now = new Date().toISOString();
+      visitMark = now;
+      writeStored(SEEN_KEY, now);
+    },
+    [],
+  );
 
   // Three reads, three stores, and a failure in one must not blank the other
   // two: an operator whose ledger is unreachable still has records enrolled
@@ -121,18 +348,179 @@ function DecidePage() {
           setError(errorMessage(reviewed.reason));
         }
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setSettled(true);
+      });
   }, []);
 
   useEffect(load, [load]);
 
-  const rows = useMemo(
+  // The spend figure. It is one number from a sibling surface's series and it
+  // is optional in the strong sense: a deployment whose build has no Watch API
+  // answers 404 and this page shows three figures instead of four.
+  //
+  // It is a bare fetch rather than the shared client, and that is the point of
+  // it: the client publishes every failure to the chrome's error banner, and a
+  // 404 for a figure the operator did not ask for is not an error he needs to
+  // see. This read asks whether the endpoint is there, so its absence is an
+  // answer rather than a fault.
+  //
+  // It waits for the queue to answer because the shared client performs §2.7's
+  // bootstrap exchange: a request that overtook it would be refused for want
+  // of a session cookie and read as a missing endpoint.
+  useEffect(() => {
+    if (!settled) return;
+    let live = true;
+    const from = seen ? seen.slice(0, 10) : "";
+    fetch(`/api/watch/series?days=${spendDays(seen)}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`series unavailable: ${response.status}`);
+        return (await response.json()) as WatchSeries;
+      })
+      .then((answer) => {
+        if (!live) return;
+        let total: number | null = null;
+        for (const day of answer.days ?? []) {
+          if (day.day < from) continue;
+          if (typeof day.spend_usd !== "number") continue;
+          total = (total ?? 0) + day.spend_usd;
+        }
+        setSpend(total);
+      })
+      .catch(() => {
+        if (live) setSpend(undefined);
+      });
+    return () => {
+      live = false;
+    };
+  }, [seen, settled]);
+
+  const merged = useMemo(
     () => merge(queue ?? [], questions ?? [], reconsider ?? []),
     [queue, questions, reconsider],
   );
 
-  const shown = rows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-  const pages = Math.ceil(rows.length / PAGE_SIZE);
+  // What arrived since the mark, counted from the timestamps the rows already
+  // carry. It is deliberately the count of rows and not of records in the
+  // corpus: this is the queue's own arrivals, which is what "since you last
+  // looked" means on a page about the queue.
+  const arrived = useMemo(() => {
+    if (!seen) return null;
+    return merged.filter((row) => row.at > seen).length;
+  }, [merged, seen]);
+
+  // How long ago the mark was set, in the same two words the rows use for
+  // their own ages. `formatTime` renders anything under a minute as "now",
+  // and "new since now" is not a sentence.
+  const since = seen ? elapsed(seen) : null;
+
+  const shown = merged.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+  const pages = Math.ceil(merged.length / PAGE_SIZE);
+  const focused = focus >= 0 ? shown[focus] : undefined;
+  const focusKey = focused?.key ?? null;
+
+  const act = useCallback(
+    async (row: Row, stance: OperatorStance) => {
+      if (!row.record) {
+        setAnnouncement("A question is answered on its own page. It carries no stance.");
+        return;
+      }
+      const id = row.record.id;
+      setPending(row.key);
+      setAnnouncement(null);
+      try {
+        await putReception(id, stance);
+        const mark: StanceMark = { stance, at: new Date().toISOString() };
+        setStances((previous) => {
+          const next = { ...previous, [id]: mark };
+          writeStances(next);
+          return next;
+        });
+        setAnnouncement(`Recorded: you ${stanceWord(stance)}. It decides nothing.`);
+      } catch (reason) {
+        setAnnouncement(`The stance was not recorded: ${errorMessage(reason)}`);
+      } finally {
+        setPending(null);
+      }
+    },
+    [],
+  );
+
+  // The focus ring is a real DOM focus, so the browser scrolls the row into
+  // view and a screen reader follows the same row the ring is on. It is not
+  // re-taken when something inside the row already holds it: a pointer user
+  // who clicked a stance button on the row would otherwise have it snatched
+  // back the instant the ring moved to his row.
+  useEffect(() => {
+    if (!focusKey) return;
+    const element = rows.current.get(focusKey);
+    if (!element || element.contains(document.activeElement)) return;
+    element.focus();
+  }, [focusKey]);
+
+  // Turning the page or reloading the queue drops the ring rather than moving
+  // it onto whatever row inherited the index.
+  useEffect(() => {
+    setFocus(-1);
+    setRuling(null);
+  }, [page]);
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isTyping(event.target)) return;
+      if (shown.length === 0) return;
+      const target = event.target;
+      const inControl =
+        target instanceof HTMLElement && target.closest("a, button, summary") !== null;
+      switch (event.key) {
+        case "j":
+          event.preventDefault();
+          setFocus((current) => Math.min(shown.length - 1, current + 1));
+          return;
+        case "k":
+          event.preventDefault();
+          setFocus((current) => (current <= 0 ? 0 : current - 1));
+          return;
+        case "Enter": {
+          // A link or a button under the cursor has its own meaning for
+          // Enter, and this must not double it.
+          if (inControl || !focused) return;
+          event.preventDefault();
+          navigate(focused.href);
+          return;
+        }
+        case "a":
+        case "d":
+        case "u": {
+          if (!focused) return;
+          event.preventDefault();
+          const stance: OperatorStance =
+            event.key === "a" ? "agree" : event.key === "d" ? "disagree" : "unsure";
+          void act(focused, stance);
+          return;
+        }
+        case "r": {
+          if (!focused) return;
+          if (!focused.record) {
+            setAnnouncement("A question is answered on its own page. There is nothing to rule.");
+            return;
+          }
+          event.preventDefault();
+          setRuling((current) => (current === focused.key ? null : focused.key));
+          return;
+        }
+        default:
+          return;
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [act, focused, navigate, shown.length]);
 
   function turn(next: number) {
     const query = new URLSearchParams(params);
@@ -150,34 +538,46 @@ function DecidePage() {
         </div>
       </div>
 
-      {/* Three numbers, one sentence each. The sentence says what the number
-          is about, not how Babel derived it. */}
-      <div className="tally">
-        <Tally
-          count={queue === null ? null : queueTotal}
+      {/* What the operator came for, in four figures. The first is the only
+          one about him rather than about the corpus: it is what arrived while
+          he was away, which is the question he opens Babel with. */}
+      <div className="decide-stats">
+        {arrived !== null && (
+          <Stat
+            label={since ? `new since ${since} ago` : "new since your last look"}
+            value={arrived.toLocaleString()}
+            note="Rows that arrived in the queue after you left it."
+            title={formatTime(seen)?.absolute}
+            hero
+          />
+        )}
+        <Stat
           label="awaiting a ruling"
-          sentence="Records Babel developed far enough to ask you about."
+          value={queue === null ? null : queueTotal.toLocaleString()}
+          note="Records Babel developed far enough to ask you about."
         />
-        <Tally
-          count={questions === null ? null : questions.length}
+        <Stat
           label="questions for you"
-          sentence="Things only you can answer, so Babel stopped guessing."
+          value={questions === null ? null : questions.length.toLocaleString()}
+          note="Things only you can answer, so Babel stopped guessing."
         />
-        <Tally
-          count={reconsider === null ? null : reconsiderTotal}
+        <Stat
           label="worth reconsidering"
-          sentence="Records you already decided that something has changed about."
+          value={reconsider === null ? null : reconsiderTotal.toLocaleString()}
+          note="Records you already decided that something has changed about."
         />
+        {spend !== undefined && (
+          <Stat
+            label={seen ? "spent since then" : `spent, ${SPEND_DAYS_DEFAULT} days`}
+            value={spend === null ? null : `$${spend.toFixed(2)}`}
+            note="Model spend from this machine's own receipts."
+          />
+        )}
       </div>
-
-      {/* #115's capture box rides this surface by operator decision
-          (2026-08-31), above the queue rather than below it: the operator who
-          came to decide is the operator with something to say. */}
-      <SteeringSection />
 
       {degraded && <PartialListNotice />}
 
-      {loading && rows.length === 0 && (
+      {loading && merged.length === 0 && (
         <div className="surface state-note"><span className="spinner" /> Reading what is waiting…</div>
       )}
       {error && (
@@ -187,7 +587,7 @@ function DecidePage() {
           <button type="button" onClick={load}>Try again</button>
         </div>
       )}
-      {!loading && !error && rows.length === 0 && (
+      {!loading && !error && merged.length === 0 && (
         <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>Nothing awaits a decision</strong>
@@ -198,24 +598,63 @@ function DecidePage() {
         </div>
       )}
 
-      {rows.length > 0 && (
+      {merged.length > 0 && (
         <>
-          <p
-            className="muted queue-order"
-            title={
-              "Questions Babel is blocked on come first, then decisions something has changed " +
-              "about, then records enrolled for a ruling, oldest first. Curiosities are last."
-            }
-          >
-            Blocked first, then what changed, then what has waited longest.
-          </p>
-          <ol className="queue">
-            {shown.map((row) => (
-              <QueueRow row={row} key={row.key} />
+          <div className="decide-bar">
+            <p
+              className="decide-order"
+              title={
+                "Questions Babel is blocked on come first, then decisions something has changed " +
+                "about, then records enrolled for a ruling, oldest first. Curiosities are last."
+              }
+            >
+              Blocked first, then what changed, then what has waited longest.
+            </p>
+            <p className="decide-keys">
+              <span><kbd className="kbd">j</kbd><kbd className="kbd">k</kbd> move</span>
+              <span><kbd className="kbd">↵</kbd> open</span>
+              <span>
+                <kbd className="kbd">a</kbd>
+                <kbd className="kbd">d</kbd>
+                <kbd className="kbd">u</kbd> stance
+              </span>
+              <span><kbd className="kbd">r</kbd> rule</span>
+            </p>
+            {/* Every act on a row happens in place, so the page says what it
+                did — in the bar that stays on screen while the queue scrolls
+                under it, because a confirmation below twenty rows is a
+                confirmation the operator never sees. */}
+            <p className="decide-said" role="status" aria-live="polite">
+              {announcement}
+            </p>
+          </div>
+          <ol className="decide-queue">
+            {shown.map((row, index) => (
+              <QueueRow
+                row={row}
+                key={row.key}
+                index={index}
+                focused={index === focus}
+                mark={row.record ? stances[row.record.id] : undefined}
+                pending={pending === row.key}
+                ruling={ruling === row.key}
+                onFocus={() => setFocus(index)}
+                onStance={(stance) => void act(row, stance)}
+                onRule={() => setRuling((current) => (current === row.key ? null : row.key))}
+                onActed={(message) => {
+                  setAnnouncement(message);
+                  load();
+                }}
+                register={(element) => {
+                  if (element) rows.current.set(row.key, element);
+                  else rows.current.delete(row.key);
+                }}
+              />
             ))}
           </ol>
         </>
       )}
+
 
       {pages > 1 && (
         <div className="pager surface">
@@ -224,57 +663,165 @@ function DecidePage() {
           </button>
           <span className="muted">
             {(page * PAGE_SIZE + 1).toLocaleString()}–
-            {Math.min(page * PAGE_SIZE + shown.length, rows.length).toLocaleString()} of{" "}
-            {rows.length.toLocaleString()}
+            {Math.min(page * PAGE_SIZE + shown.length, merged.length).toLocaleString()} of{" "}
+            {merged.length.toLocaleString()}
           </span>
           <button type="button" disabled={page + 1 >= pages} onClick={() => turn(page + 1)}>
             Next →
           </button>
         </div>
       )}
+
+      {/* #115's capture box rides this surface by operator decision
+          (2026-08-31) and stays folded: the operator who came to decide is the
+          operator with something to say, but he came to decide. */}
+      <details className="peel decide-tell">
+        <summary>
+          Tell Babel
+          <span className="peel-count">say what is going badly</span>
+        </summary>
+        <div className="peel-body">
+          <SteeringSection />
+        </div>
+      </details>
     </section>
   );
 }
 
-function Tally({
-  count,
+// One figure with its label, and the sentence that says what it is about
+// rather than how Babel derived it.
+//
+// A store that did not answer says so. A zero here would claim nothing is
+// waiting, which is a different thing from not having looked.
+function Stat({
   label,
-  sentence,
+  value,
+  note,
+  title,
+  hero,
 }: {
-  count: number | null;
   label: string;
-  sentence: string;
+  value: string | null;
+  note: string;
+  title?: string;
+  // The one figure that is about the operator rather than about the corpus.
+  // It is marked rather than positional because it is conditional: a first
+  // look has no "since", and whatever lands first must not inherit the size.
+  hero?: boolean;
 }) {
   return (
-    <div className="tally-item">
-      {/* A store that did not answer says so. A zero here would claim nothing
-          is waiting, which is a different thing from not having looked. */}
-      <span className="tally-count">
-        {count === null ? <span className="not-observed" title={sentence}>unread</span> : count.toLocaleString()}
-      </span>
-      <span className="tally-label">{label}</span>
-      <span className="tally-sentence">{sentence}</span>
+    <div className={hero ? "stat big decide-stat" : "stat decide-stat"}>
+      <span className="stat-label" title={title}>{label}</span>
+      <strong className="stat-value">
+        {value === null ? <span className="not-observed" title={note}>unread</span> : value}
+      </strong>
+      <span className="stat-note">{note}</span>
     </div>
   );
 }
 
-function QueueRow({ row }: { row: Row }) {
+function QueueRow({
+  row,
+  index,
+  focused,
+  mark,
+  pending,
+  ruling,
+  onFocus,
+  onStance,
+  onRule,
+  onActed,
+  register,
+}: {
+  row: Row;
+  index: number;
+  focused: boolean;
+  mark: StanceMark | undefined;
+  pending: boolean;
+  ruling: boolean;
+  onFocus: () => void;
+  onStance: (stance: OperatorStance) => void;
+  onRule: () => void;
+  onActed: (message: string) => void;
+  register: (element: HTMLLIElement | null) => void;
+}) {
+  const recorded = mark ? formatTime(mark.at) : null;
   return (
-    <li className="queue-row">
-      <Link className="queue-claim untrusted-inline" to={row.href}>
+    <li
+      className="decide-row"
+      // The ring is the same state whether the keyboard or the pointer put it
+      // there, so both drive one attribute rather than two styles.
+      data-focused={focused ? "" : undefined}
+      data-stance={mark?.stance}
+      tabIndex={-1}
+      ref={register}
+      onFocus={onFocus}
+      aria-label={`${row.kind.label}: ${row.claim}`}
+    >
+      <Link className="decide-claim untrusted-inline" to={row.href}>
         {row.claim}
       </Link>
-      <span className="queue-facts">
-        {row.facts.map((fact) =>
-          fact.tone === "badge" ? (
-            <Badge label={fact.label} tone={fact.badgeTone ?? "neutral"} key={fact.label} />
-          ) : (
-            <span className="queue-fact" title={fact.title} key={fact.label}>
-              {fact.label}
-            </span>
-          ),
+      <span className="decide-meta">
+        <Badge label={row.kind.label} tone={row.kind.tone} />
+        <span className="decide-why" title={row.whyTitle}>{row.why}</span>
+        {mark && (
+          <span
+            className="decide-mark"
+            title={recorded ? `Recorded ${recorded.absolute}` : undefined}
+          >
+            you {stanceWord(mark.stance)}
+          </span>
         )}
       </span>
+      {/* The controls a pointer reaches for, labelled with the keys that do
+          the same thing: an operator who clicks "A" twice has been told what
+          to press the third time. The letters keep the reserved column narrow
+          enough that the claim keeps the width of the row. */}
+      {row.record && !ruling && (
+        <span className="decide-acts">
+          <span className="rule-bar" role="group" aria-label="Your stance on this record">
+            {STANCES.map((stance) => (
+              <button
+                type="button"
+                key={stance}
+                className={mark?.stance === stance ? "active" : undefined}
+                aria-pressed={mark?.stance === stance}
+                aria-label={`Record that you ${stanceWord(stance)}`}
+                disabled={pending}
+                onClick={() => onStance(stance)}
+                title={`${stance} — record that you ${stanceWord(stance)}. It decides nothing.`}
+              >
+                {stance.charAt(0)}
+              </button>
+            ))}
+          </span>
+          <button
+            type="button"
+            className="decide-rule-open"
+            aria-label="Rule on this record"
+            title="rule — the five dispositions, with their confirmation"
+            onClick={onRule}
+          >
+            r
+          </button>
+        </span>
+      )}
+      {row.record && ruling && (
+        <div className="decide-ruling">
+          <RuleBar
+            id={row.record.id}
+            kind={row.record.kind}
+            stance={mark?.stance}
+            onActed={onActed}
+          />
+          <button type="button" className="decide-rule-close" onClick={onRule}>
+            Close
+          </button>
+        </div>
+      )}
+      {/* The index is the row's position under the ring, so a reader who
+          pressed j four times can see where he is. */}
+      <span className="decide-index" aria-hidden="true">{index + 1}</span>
     </li>
   );
 }
@@ -290,6 +837,12 @@ function QueueRow({ row }: { row: Row }) {
 //
 // Within a rank the oldest is first, on the ordinary grounds that a queue
 // nobody drains from the bottom is a queue with a permanent bottom.
+//
+// Each row's `why` is built from the fields the row's own endpoint returned and
+// from nothing else. The review queue is ordered by how long something has
+// waited and how often it has been ruled on; the reconsider lane carries
+// §8.5's why-now sentences; a question carries the class that decides whether
+// Babel is stuck. Those are the three bases, and a row states its own.
 function merge(
   queue: QueueItem[],
   questions: QuestionSummary[],
@@ -300,69 +853,81 @@ function merge(
   for (const item of questions) {
     const asked = formatTime(item.created_at);
     const blocking = item.class === "blocking";
+    const age = elapsed(item.created_at);
+    const stuck = blocking
+      ? "blocks a run"
+      : item.class === "maintenance"
+        ? "upkeep"
+        : "curiosity";
     rows.push({
       key: `q-${item.id}`,
       rank: blocking ? 0 : 3,
       claim: item.prompt || "a question with no prompt recorded",
       href: `/ask/questions/${encodeURIComponent(item.id)}`,
-      facts: [
-        { label: "Question", tone: "badge", badgeTone: blocking ? "amber" : "cyan" },
-        ...(asked
-          ? [{ label: `asked ${asked.relative}`, tone: "text" as const, title: asked.absolute }]
-          : []),
-      ],
+      kind: { label: "Question", tone: blocking ? "amber" : "cyan" },
+      why: [stuck, age ? `asked ${age}` : null].filter(Boolean).join(" · "),
+      whyTitle: item.why_asked || asked?.absolute,
       at: item.created_at,
     });
   }
 
   for (const item of reconsider) {
-    const revised = formatTime(item.artifact.created_at);
+    const subject = item.artifact.subject;
+    const at = item.artifact.created_at;
+    const age = elapsed(at);
+    const reception = item.reception;
+    const contested = reception.support > 0 && reception.oppose > 0;
+    const reason = item.reasons?.[0];
+    // The why-now sentence is the store's own where there is one; where there
+    // is not, the lane itself is the reason and says so in two words.
+    const head = contested ? "contested" : reason ? clipWords(reason, 3) : "something changed";
+    const tail =
+      reception.reviews > 0
+        ? `${reception.reviews} ${reception.reviews === 1 ? "review" : "reviews"}`
+        : age
+          ? `decided ${age}`
+          : null;
     rows.push({
-      key: `x-${item.artifact.subject.kind}-${item.artifact.subject.id}`,
+      key: `x-${subject.kind}-${subject.id}`,
       rank: 1,
       claim: item.artifact.title || "a record with no title recorded",
-      href: `/r/${encodeURIComponent(item.artifact.subject.id)}`,
-      facts: [
-        { label: kindLabel(item.artifact.subject.kind), tone: "badge" },
-        { label: "something changed", tone: "text", title: item.reasons?.[0] },
-        ...(revised
-          ? [{ label: revised.relative, tone: "text" as const, title: revised.absolute }]
-          : []),
-      ],
-      at: item.artifact.created_at,
+      href: `/r/${encodeURIComponent(subject.id)}`,
+      kind: { label: kindLabel(subject.kind), tone: "violet" },
+      why: [head, tail].filter(Boolean).join(" · "),
+      whyTitle: reason,
+      at,
+      record: RECORD_KINDS[subject.kind]
+        ? { id: subject.id, kind: subject.kind as RecordKind }
+        : undefined,
     });
   }
 
   for (const item of queue) {
     const enrolled = formatTime(item.enrolled_at);
+    const age = elapsed(item.enrolled_at);
     // A merged row arrives without the append-only decision history, which is
-    // derived beside the record and does not travel with it. Its standing is
-    // absent rather than "new": a record decided on another host is not an
-    // undecided one.
+    // derived beside the record and does not travel with it. Its ruling count
+    // is absent rather than zero: a record decided on another host is not one
+    // nobody has looked at.
     const derived = item.local_host !== false;
+    const head = !derived
+      ? "held elsewhere"
+      : item.refinements > 0
+        ? `refined ${item.refinements}×`
+        : item.decisions === 0
+          ? "never ruled on"
+          : `${item.decisions} ${item.decisions === 1 ? "ruling" : "rulings"}`;
+    const standing = derived && item.status && item.status !== "new" ? item.status : null;
     rows.push({
       key: `r-${item.subject.type}-${item.subject.id}`,
       rank: 2,
       claim: item.excerpt || `a ${item.subject.type} with no summary recorded`,
       href: `/r/${encodeURIComponent(item.subject.id)}`,
-      facts: [
-        { label: kindLabel(item.subject.type), tone: "badge" },
-        ...(derived && item.status && item.status !== "new"
-          ? [{
-              label: item.status,
-              tone: "badge" as const,
-              badgeTone: reviewTone(item.status) as Fact["badgeTone"],
-            }]
-          : []),
-        ...(enrolled
-          ? [{
-              label: `waiting ${enrolled.relative}`,
-              tone: "text" as const,
-              title: enrolled.absolute,
-            }]
-          : []),
-      ],
+      kind: { label: kindLabel(item.subject.type), tone: "neutral" },
+      why: [head, standing, age ? `waiting ${age}` : null].filter(Boolean).join(" · "),
+      whyTitle: enrolled ? `Enrolled ${enrolled.absolute}` : undefined,
       at: item.enrolled_at,
+      record: { id: item.subject.id, kind: item.subject.type },
     });
   }
 

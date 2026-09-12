@@ -1,4 +1,12 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { Link } from "react-router-dom";
 import {
   addReviewContext,
@@ -6,8 +14,8 @@ import {
   type Disposition,
   type ReviewSubjectType,
 } from "./api";
-import { Badge, FallibilityNote, unescapeWhitespace, type Tone } from "./analysis";
-import { errorMessage, formatTime } from "./format";
+import { Badge, unescapeWhitespace, type Tone } from "./analysis";
+import { errorMessage, formatDuration, formatTime } from "./format";
 import {
   putReception,
   type EvidenceKind,
@@ -15,13 +23,20 @@ import {
   type ModelRole,
   type OperatorStance,
   type RecordCase,
+  type RecordCost,
   type RecordEvidence,
   type RecordKind,
   type RecordMachinery,
+  type RecordOrigin,
   type RecordPeel,
   type RecordReception,
+  type RecordRelated,
+  type RelatedRecord,
+  type RoleReception,
+  type Speaker,
   type StandingTone,
 } from "./recordapi";
+import "./record.css";
 
 // One record, peeled.
 //
@@ -29,45 +44,49 @@ import {
 // the surface, and to be able to dig when needed." Everything in this file
 // follows from that sentence. A record has five depths and the reader chooses
 // one; he does not choose a page. Depth 1 is the claim, its standing and the
-// single act it wants. Depth 2 is the case, in prose, with no identifiers in
-// it. Depth 3 is the evidence. Depth 4 is the reception. Depth 5 is the
-// machinery — every id, digest and receipt the object carries.
+// acts it invites. Depth 2 is the case, in prose, and where it came from.
+// Depth 3 is the evidence, in the words of whoever said it. Depth 4 is the
+// reception. Depth 5 is the machinery — every id, digest, receipt and dollar
+// the object carries.
 //
-// The three rules that shape the code rather than the layout:
+// Decision 90 splits the register at depth 3: editorial above — serif claim,
+// one measure of prose, evidence as pull-quotes — and an observatory below,
+// where reception and machinery are tabular mono figures. The peel decides the
+// register, so the CSS does too: record.css is this file's, styles.css is the
+// shell's, and neither reaches into the other.
 //
-//   - Nothing here fetches. The whole record arrives in one response, so
-//     opening depth 4 is a disclosure and never a request; a reader who digs
-//     waits for nothing and a slow section cannot exist.
+// The four rules that shape the code rather than the layout:
+//
+//   - Nothing here fetches on open. The whole record arrives in one response,
+//     so opening depth 4 is a disclosure and never a request; a reader who
+//     digs waits for nothing and a slow section cannot exist.
 //   - An absent section is absent. Not an empty heading, not a zero: a
 //     proposal that names no risk is not a proposal whose risks are none, and
 //     a heading reading "What could go wrong" over nothing claims that nothing
 //     could. Every renderer below returns null rather than a frame.
-//   - Ids live at depth 5 only. A reader at depths 1-3 sees no hex, because a
-//     person deciding whether a suggestion is right has no use for its digest,
-//     and a page that shows him one is asking him to rule on an identifier.
+//   - Ids live at depth 5 only, with one deliberate exception: the connections
+//     strip links to other records, and a link needs an identity. It shows the
+//     other record's own words and keeps its id out of the sentence.
+//   - The excerpt outranks the note. What a person said is the record's
+//     evidence; what a model said about it is a gloss, set smaller, beneath.
 //
-// Class inventory, so the markup and the stylesheet can be checked against
-// each other. styles.css is NavShell's file and every rule named here lives in
-// it; this file adds no stylesheet of its own:
+// Class inventory, so the markup and the stylesheets can be checked against
+// each other. The containers and utilities are the shell's (styles.css):
 //
 //   surface        a plain container
 //   panel          a labelled group — the blocks inside a depth
 //   quote          untrusted model text, always via unescapeWhitespace
-//   peel           the <details> of one depth
-//   peel-open      that <details> while open
-//   peel-body      the body wrapper inside a <details>
-//   peel-count     the count in a <summary>
-//   peel-voice     the operator's stance row and its reason field
-//   peel-stance    one stance button; selected is [aria-pressed="true"]
+//   peel           the <details> of one depth, with peel-body/peel-count
 //   peel-list      a ul/ol of prose items
-//   peel-cite      an evidence source line
+//   peel-cite      a source line
 //   peel-rows      a dl of dt/dd machinery pairs
+//   rule-bar       a segmented button group (Contract T primitive)
+//   stat           a figure with a label (Contract T primitive)
+//   kbd            a key hint (Contract T primitive)
 //
 // plus the surviving utilities — muted, secondary, mono, sr-only, spinner,
 // primary-button, inline-error, untrusted-inline, badge tone-* through
-// analysis.tsx's Badge — and the disposition form's own four names, which move
-// here with the form itself: disposition-set, disposition-option, active,
-// decide-field.
+// analysis.tsx's Badge. Everything prefixed `record-` is in record.css.
 
 // standingTone maps the record's own four-tone judgement onto the interface's
 // colour scale. The judgement is the server's: whether "superseded" reads as
@@ -108,25 +127,25 @@ const STANDING_SENTENCES: Record<string, string> = {
   superseded: "Superseded by a later revision of the same record.",
 };
 
-// The operator's three receptions. The explanatory sentence is four words
-// because that is the honest length: a paragraph explaining that an opinion is
-// not an authority would be longer than the opinion.
-const STANCES: Array<{ value: OperatorStance; label: string }> = [
-  { value: "agree", label: "Agree" },
-  { value: "disagree", label: "Disagree" },
-  { value: "unsure", label: "Unsure" },
+// The operator's three receptions, as the rule bar's first group. The stance is
+// attributed, reversible and without authority, which is why it needs no
+// confirmation and sits apart from the five that do.
+const STANCES: Array<{ value: OperatorStance; label: string; key: string }> = [
+  { value: "agree", label: "Agree", key: "a" },
+  { value: "disagree", label: "Disagree", key: "d" },
+  { value: "unsure", label: "Unsure", key: "u" },
 ];
 
 // The §4.12 assessment roles, as what the reviewer was asked. A role is the
 // question a run answered, and naming it is what keeps four assessments from
 // reading as four votes on the same thing.
 const ROLE_WORDS: Record<ModelRole, string> = {
-  reception: "on whether it holds up",
-  evidence: "on whether the evidence supports it",
-  challenge: "challenging it",
-  comparison: "comparing it with others",
-  outcome: "on what came of it",
-  relevance: "on whether it matters",
+  reception: "whether it holds up",
+  evidence: "whether the evidence supports it",
+  challenge: "the case against it",
+  comparison: "how it compares with others",
+  outcome: "what came of it",
+  relevance: "whether it matters",
 };
 
 // Which side of the claim an excerpt is on, said in words. §4.5 requires a
@@ -140,6 +159,15 @@ const EVIDENCE_SIDES: Record<EvidenceKind, string> = {
   "counter-evidence": "Counter-evidence, cited by the record against itself",
 };
 
+// Who said the words in a pull-quote. The operator is "you" nowhere here: a
+// cited session may be anybody's, so the speaker is named by what they are in
+// the conversation rather than by an identity Babel would be inventing.
+const SPEAKER_WORDS: Record<Speaker, string> = {
+  user: "The person",
+  assistant: "The model",
+  tool: "A tool's output",
+};
+
 // What a reviewer's vote says. Kept separate from the operator's words on
 // purpose: a run voting support and a person agreeing are not the same act,
 // and §4.12 separates them by attribution. Nothing sums the two.
@@ -149,25 +177,43 @@ const MODEL_STANCE_WORDS: Record<string, string> = {
   unsure: "is unsure",
 };
 
-// The five §4.7 dispositions, each with the sentence a reviewer needs before
-// choosing it, carried here unchanged from the review page this record page
-// replaces. `reject-and-refine` is deliberately absent: it authorizes a
-// refinement request and belongs to the CLI until this surface grows the full
-// guidance flow.
+// The five §4.7 dispositions and the one sentence each needs at the moment of
+// confirming it. The vocabulary is unchanged — it is the review service's —
+// and so is the requirement to confirm; what changed is the size of the act.
+// Five radios carrying two sentences each, two textareas and a full-width
+// button occupied 677 pixels and 95 words before a reader had decided
+// anything; this is five buttons and, on the one he presses, a sentence.
 //
-// `reopen` is the one that opens rather than closes, and its sentence says so
-// plainly: it is offered because an operator who is told a record has been
-// reconsidered needs somewhere to act on that, and accepting a record he has
-// not re-read would be the only alternative.
-const DISPOSITIONS: Array<{ value: Disposition; label: string; hint: string }> = [
-  { value: "accept", label: "Accept", hint: "Endorse this record for projection and follow-on work." },
-  { value: "reject", label: "Reject", hint: "Record disagreement. The record is kept, visibly rejected." },
-  { value: "defer", label: "Defer", hint: "Not now. The record stays in the queue's history." },
-  { value: "duplicate", label: "Duplicate", hint: "Points at an original record, which you name below." },
+// `reject-and-refine` is deliberately absent: it authorizes a refinement
+// request and belongs to the CLI until this surface grows the full guidance
+// flow. `reopen` is the one that opens rather than closes, and its sentence
+// says so plainly.
+const DISPOSITIONS: Array<{ value: Disposition; label: string; confirm: string }> = [
+  {
+    value: "accept",
+    label: "Accept",
+    confirm: "Endorse this record for projection and follow-on work. The event is appended permanently.",
+  },
+  {
+    value: "reject",
+    label: "Reject",
+    confirm: "Record disagreement. The record is kept, visibly rejected, and the event is appended permanently.",
+  },
+  {
+    value: "defer",
+    label: "Defer",
+    confirm: "Not now. The record stays in the queue's history and the event is appended permanently.",
+  },
+  {
+    value: "duplicate",
+    label: "Duplicate",
+    confirm: "Point this record at an original, which you name below. The event is appended permanently.",
+  },
   {
     value: "reopen",
     label: "Reopen",
-    hint: "Undecide it. The earlier decision stays in the history, the status returns to new, and your reason is required.",
+    confirm:
+      "Undecide it. The earlier decision stays in the history, the record's status returns to new, and your reason is required.",
   },
 ];
 
@@ -192,28 +238,30 @@ function reviewSubject(kind: RecordKind): ReviewSubjectType | null {
 // click handler and aria-expanded would be a reimplementation with fewer
 // keyboard bindings.
 //
-// The open state is mirrored into React state so `peel-open` tracks the native
-// `open` attribute; the stylesheet defines both and either would do, but a
-// reader collapsing a depth should not depend on which one a browser honours.
+// The open state is the page's rather than the element's, because Contract K
+// gives the reader `1`-`5` to toggle a depth from anywhere on the page: a
+// <details> that owned its own state could be opened by a key and then
+// disagree with the key the next time it was pressed.
 function Peel({
   title,
   count,
   note,
-  open: initiallyOpen = false,
+  open,
+  onToggle,
   children,
 }: {
   title: string;
   count?: number;
   note?: string;
-  open?: boolean;
+  open: boolean;
+  onToggle: (open: boolean) => void;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(initiallyOpen);
   return (
     <details
       className={open ? "peel peel-open" : "peel"}
       open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
+      onToggle={(event) => onToggle(event.currentTarget.open)}
     >
       <summary>
         {title}
@@ -270,199 +318,242 @@ function Row({ label, value, mono }: { label: string; value: string | undefined;
   );
 }
 
-// OperatorVoice is the missing upvote, and it is honest about being one.
+// Figure is one labelled number in the observatory register: the design
+// system's `.stat`, with the value in tabular mono so two of them line up.
+function Figure({ label, value, note }: { label: string; value: string; note?: string }) {
+  return (
+    <div className="stat">
+      <span className="stat-label">{label}</span>
+      <strong className="stat-value">{value}</strong>
+      {note && <span className="stat-note">{note}</span>}
+    </div>
+  );
+}
+
+// money renders a dollar figure, or says that nobody measured one. A null cost
+// is an engine that never reported its own accounting, and "$0.00" would be a
+// measurement this deployment did not take.
+function money(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "unpriced";
+  return `$${value.toFixed(2)}`;
+}
+
+// RuleBar is the whole act of deciding, in one bar.
 //
-// It posts an attributed operator reception and it decides nothing — the
-// authority to rule stays with the disposition events beside it. The control
-// is optimistic because it is cheap and reversible: the stance a reader
-// clicked is selected immediately, and a refused post puts the previous one
-// back and shows the server's own sentence rather than leaving a lie on
-// screen. There is no confirmation, because there is nothing to confirm.
-function OperatorVoice({
+// Two groups, never one: the operator's reception on the left and the §4.7
+// authority on the right, separated by a rule because agreeing is not
+// accepting. A stance posts immediately and optimistically — it is attributed,
+// reversible and decides nothing, so there is nothing to confirm — and a
+// ruling opens a one-sentence confirmation where the button was, because a
+// disposition is an appended, attributed event that cannot be edited or
+// undone.
+//
+// It is exported because the same act belongs on a queue row: Contract K gives
+// Decide and Read `a`/`d`/`u` and `r` on the focused row, and a second
+// implementation of this bar would be a second confirmation flow over one
+// authority. Nothing in it renders a heading or a container, so it drops into
+// a row as well as into a page.
+export function RuleBar({
   id,
+  kind,
   stance: recorded,
-  reason: recordedReason,
-  onRecorded,
+  onActed,
+  barRef,
 }: {
   id: string;
-  stance: OperatorStance | undefined;
-  reason: string | undefined;
-  onRecorded: (message: string) => void;
+  kind: RecordKind;
+  stance?: OperatorStance;
+  onActed: (message: string) => void;
+  // barRef lets the page that owns the keyboard reach the real controls
+  // rather than reimplementing what they do. The record page's `a`/`d`/`u`
+  // press this bar's own buttons, so a stance recorded by key and a stance
+  // recorded by click are the same code path — including the optimistic
+  // selection and the refusal handling.
+  barRef?: RefObject<HTMLDivElement | null>;
 }) {
+  const subject = reviewSubject(kind);
   const [stance, setStance] = useState<OperatorStance | undefined>(recorded);
-  const [reason, setReason] = useState(recordedReason ? unescapeWhitespace(recordedReason) : "");
   const [pending, setPending] = useState<OperatorStance | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  const [stanceError, setStanceError] = useState<string | null>(null);
+  const [ruling, setRuling] = useState<Disposition | null>(null);
+
+  useEffect(() => setStance(recorded), [recorded]);
 
   async function choose(next: OperatorStance) {
     const previous = stance;
     setStance(next);
     setPending(next);
-    setFailure(null);
+    setStanceError(null);
     try {
-      await putReception(id, next, reason);
-      onRecorded(`Your stance is recorded: ${next}. It decides nothing.`);
+      await putReception(id, next);
+      onActed(`Your stance is recorded: ${next}. It decides nothing.`);
     } catch (error) {
       setStance(previous);
-      setFailure(errorMessage(error));
+      setStanceError(errorMessage(error));
     } finally {
       setPending(null);
     }
   }
 
   return (
-    <section className="panel">
-      <h3>Your take</h3>
-      <div className="peel-voice" role="group" aria-label="Your stance on this record">
-        {STANCES.map((option) => (
-          <button
-            type="button"
-            className="peel-stance"
-            key={option.value}
-            aria-pressed={stance === option.value}
-            disabled={pending !== null}
-            onClick={() => choose(option.value)}
-          >
-            {pending === option.value && <span className="spinner small" />}
-            {option.label}
-          </button>
-        ))}
-        {/* The whole explanation. A reception is attributed, reversible, and
-            without authority; four words say that and a paragraph would only
-            make it sound like more than it is. */}
-        <p className="muted">Your take. Decides nothing.</p>
-        <label className="decide-field">
-          Why <span className="muted">(optional, kept verbatim)</span>
-          <textarea value={reason} onChange={(event) => setReason(event.target.value)} rows={2} />
-        </label>
+    <>
+      <div className="record-acts" ref={barRef}>
+        <div className="rule-bar" role="group" aria-label="Your stance on this record">
+          {STANCES.map((option) => (
+            <button
+              type="button"
+              key={option.value}
+              data-stance={option.value}
+              className={stance === option.value ? "active" : undefined}
+              aria-pressed={stance === option.value}
+              disabled={pending !== null}
+              onClick={() => choose(option.value)}
+            >
+              {pending === option.value && <span className="spinner small" />}
+              {option.label}
+            </button>
+          ))}
+        </div>
+        {/* The whole explanation of the left-hand group. A reception is
+            attributed, reversible and without authority; three words say that
+            and a paragraph would make it sound like more than it is. */}
+        <span className="record-acts-label">your take · decides nothing</span>
+        {subject && (
+          <>
+            <span className="record-acts-split" aria-hidden="true" />
+            <div className="rule-bar" role="group" aria-label={`Rule on this ${subject}`}>
+              {DISPOSITIONS.map((option) => (
+                <button
+                  type="button"
+                  key={option.value}
+                  data-ruling={option.value}
+                  className={ruling === option.value ? "active" : undefined}
+                  aria-expanded={ruling === option.value}
+                  onClick={() => setRuling(ruling === option.value ? null : option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <span className="record-acts-label">the ruling · permanent</span>
+          </>
+        )}
       </div>
-      {failure && <p className="inline-error" role="alert">{failure}</p>}
-    </section>
+      {stanceError && (
+        <p className="inline-error" role="alert">
+          {stanceError}
+        </p>
+      )}
+      {ruling && subject && (
+        <RuleConfirm
+          disposition={ruling}
+          subject={subject}
+          id={id}
+          onCancel={() => setRuling(null)}
+          onDecided={(message) => {
+            setRuling(null);
+            onActed(message);
+          }}
+        />
+      )}
+    </>
   );
 }
 
-// RuleForm is the §4.7 authority, carried here from the review page with its
-// behaviour intact: the same five dispositions, the same confirmation, the same
-// append-only semantics, the same attributed-context field. It moved because
-// the record moved; nothing about what it does changed.
-function RuleForm({
-  type,
+// RuleConfirm is the confirmation, and it is the whole of it: one sentence
+// saying what the ruling does, the note the reviewer may leave, and two
+// buttons.
+//
+// The requirement it keeps is unchanged. A disposition is still confirmed
+// before it is recorded, still appended rather than edited, still attributed
+// to the launch session's operator; a reopen still requires a reason, because
+// the service refuses one without and asking here says why instead of letting
+// the server say no. What is gone is the ballot: the reader has already
+// decided, and the form's job is to take the decision rather than to present
+// the options again.
+//
+// The guidance field stays, folded. It is the one input that is not about this
+// decision — attributed context is what a later refinement run will see — so
+// it is available and out of the way, rather than removed or in the path.
+function RuleConfirm({
+  disposition,
+  subject,
   id,
+  onCancel,
   onDecided,
 }: {
-  type: ReviewSubjectType;
+  disposition: Disposition;
+  subject: ReviewSubjectType;
   id: string;
+  onCancel: () => void;
   onDecided: (message: string) => void;
 }) {
-  const [disposition, setDisposition] = useState<Disposition>("accept");
+  const option = DISPOSITIONS.find((entry) => entry.value === disposition);
   const [note, setNote] = useState("");
   const [contextText, setContextText] = useState("");
   const [duplicateOf, setDuplicateOf] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+
+  // The confirmation takes the focus it asks for. A panel that appeared under
+  // the pointer while the keyboard stayed where it was would be a dialogue a
+  // keyboard reader could not answer.
+  useEffect(() => confirmRef.current?.focus(), []);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    // The prompt says what this decision does, and a reopen does something
-    // the other four do not: it returns the record to undecided. An operator
-    // confirming "reopen" must be told that and not the generic sentence.
-    const prompt = disposition === "reopen"
-      ? `Reopen this ${type}?\n\nThe decision you are reopening stays in the history — nothing ` +
-        "is edited or removed — and the record's status returns to new, so it can be decided " +
-        "again on its merits."
-      : `Record "${disposition}" for this ${type}?\n\nReview decisions are append-only: the ` +
-        "event is recorded permanently, and reconsidering later appends another event rather " +
-        "than replacing this one.";
-    if (!window.confirm(prompt)) return;
     setSubmitting(true);
-    setSubmitError(null);
+    setFailure(null);
     try {
       let contextId: string | undefined;
       if (contextText.trim()) {
         contextId = (await addReviewContext(contextText.trim())).id;
       }
       const result = await decideReview({
-        subject: { type, id },
+        subject: { type: subject, id },
         disposition,
         contextId,
         duplicateOfId: disposition === "duplicate" ? duplicateOf.trim() || undefined : undefined,
         note: note.trim() || undefined,
       });
       onDecided(`Recorded ${disposition}. The record's status is now ${result.status}.`);
-      setNote("");
-      setContextText("");
-      setDuplicateOf("");
     } catch (reason) {
-      setSubmitError(errorMessage(reason));
+      setFailure(errorMessage(reason));
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <>
-      <p className="muted">
-        A disposition is an appended, attributed event — not a toggle. It cannot be edited or
-        undone, only followed by another event.
-      </p>
-      {/* The form's grid lives on the form itself: the rule it used to carry
-          hung off a `*-card` container class that no longer exists. */}
-      <form className="decide-form" onSubmit={submit}>
-        <fieldset className="disposition-set">
-          <legend className="sr-only">Disposition</legend>
-          {DISPOSITIONS.map((option) => (
-            <label
-              className={disposition === option.value ? "disposition-option active" : "disposition-option"}
-              key={option.value}
-            >
-              <input
-                type="radio"
-                name="disposition"
-                value={option.value}
-                checked={disposition === option.value}
-                onChange={() => setDisposition(option.value)}
-              />
-              <span>
-                <strong>{option.label}</strong>
-                <span className="muted">{option.hint}</span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
-
-        {disposition === "duplicate" && (
-          <label className="decide-field">
-            Original record ID
-            <input
-              value={duplicateOf}
-              onChange={(event) => setDuplicateOf(event.target.value)}
-              placeholder="The record this duplicates"
-              required
-            />
-          </label>
-        )}
-
-        {/* The note is the reviewer's own words, and optional on the four
-            closing decisions. A reopen requires it: the service refuses a
-            reopen with no reason, and asking here says why rather than
-            letting the server say no. */}
-        <label className="decide-field">
-          Note{" "}
-          <span className="muted">
-            {disposition === "reopen"
-              ? "(required: why the earlier decision stopped holding)"
-              : "(optional, recorded with the event)"}
-          </span>
-          <textarea
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            rows={2}
-            required={disposition === "reopen"}
+    <form className="record-confirm" onSubmit={submit}>
+      <p>{option?.confirm}</p>
+      {disposition === "duplicate" && (
+        <label>
+          The original record's id
+          <input
+            value={duplicateOf}
+            onChange={(event) => setDuplicateOf(event.target.value)}
+            placeholder="The record this duplicates"
+            required
           />
         </label>
-
-        <label className="decide-field">
-          Attributed context <span className="muted">(optional)</span>
+      )}
+      <label>
+        {disposition === "reopen"
+          ? "Why the earlier decision stopped holding (required)"
+          : "Note (optional, recorded with the event)"}
+        <textarea
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          rows={2}
+          required={disposition === "reopen"}
+        />
+      </label>
+      <details>
+        <summary className="record-acts-label">Attach guidance for later runs</summary>
+        <label>
+          Attributed context
           <textarea
             value={contextText}
             onChange={(event) => setContextText(event.target.value)}
@@ -470,74 +561,67 @@ function RuleForm({
             placeholder="Guidance later refinement runs will see. Guidance is never evidence."
           />
         </label>
-
-        <button type="submit" className="primary-button" disabled={submitting}>
+      </details>
+      <div className="record-confirm-acts">
+        <button type="submit" className="primary-button" ref={confirmRef} disabled={submitting}>
           {submitting && <span className="spinner small" />}
-          {submitting ? "Recording…" : `Record ${disposition}`}
+          {submitting ? "Recording…" : `Confirm ${disposition}`}
         </button>
-        {submitError && <p className="inline-error" role="alert">{submitError}</p>}
-      </form>
-    </>
+        <button type="button" onClick={onCancel} disabled={submitting}>
+          Cancel
+        </button>
+      </div>
+      {failure && (
+        <p className="inline-error" role="alert">
+          {failure}
+        </p>
+      )}
+    </form>
   );
 }
 
-// ClaimPeel is depth 1: the sentence, the standing, and the one act the record
-// wants. The operator's two voices live here rather than at the foot of the
-// page, because the act follows the reading and a reader who has to scroll
+// ClaimPeel is depth 1: the claim, what its standing does to it, and the acts
+// it invites. The operator's two voices live here rather than at the foot of
+// the page, because the act follows the reading and a reader who has to scroll
 // past four depths to rule is being asked to rule on his memory of the claim.
-//
-// The heavy control stays folded until it is asked for. The record wants one
-// act and names it; the five dispositions with their consequences appear when
-// the operator says he is ruling, which keeps depth 1 to the claim without
-// putting the authority on another page.
 function ClaimPeel({
   record,
+  open,
+  onToggle,
   onActed,
+  barRef,
 }: {
   record: RecordPeel;
+  open: boolean;
+  onToggle: (open: boolean) => void;
   onActed: (message: string) => void;
+  barRef: RefObject<HTMLDivElement | null>;
 }) {
-  const subject = reviewSubject(record.kind);
   const standing = record.standing;
   const action = record.action;
 
   return (
-    <Peel title="The claim" open>
+    <Peel title="The claim" open={open} onToggle={onToggle}>
       {/* The claim, unless the heading is already it. A hypothesis and an
           observation are bare claims — the server sends the same sentence as
           both title and claim rather than manufacturing a second line — and
           printing it twice, one line apart, would read as two claims. */}
       {record.claim && record.claim !== record.title && (
-        <p className="quote untrusted-inline">{unescapeWhitespace(record.claim)}</p>
+        <p className="quote untrusted-inline record-claim">{unescapeWhitespace(record.claim)}</p>
       )}
       {standing && (
-        <p>{STANDING_SENTENCES[standing.label] ?? `Its standing is ${standing.label}.`}</p>
+        <p className="record-standing">
+          {STANDING_SENTENCES[standing.label] ?? `Its standing is ${standing.label}.`}
+        </p>
       )}
 
-      {/* §1's frame, beside the claim rather than on an about page: what a
-          reader has in front of him is a creative, fallible, incomplete
-          interpretation recorded for his review, and the sentence that says so
-          belongs where the claim is. It is the same note every analytical
-          surface in the app carries, not a variant written for this one. */}
-      <FallibilityNote />
-
-      <OperatorVoice
+      <RuleBar
         id={record.id}
+        kind={record.kind}
         stance={record.reception?.operator?.stance}
-        reason={record.reception?.operator?.reason}
-        onRecorded={onActed}
+        onActed={onActed}
+        barRef={barRef}
       />
-
-      {/* The act the record wants, named by the record itself and folded
-          until it is asked for. Depth 1 is the claim; five dispositions with
-          their consequences spread under a one-sentence claim would bury it.
-          Opening the control is a disclosure like every other on this page,
-          so ruling still costs no page change. */}
-      {action?.verb === "rule" && subject && (
-        <Peel title={action.label}>
-          <RuleForm type={subject} id={record.id} onDecided={onActed} />
-        </Peel>
-      )}
 
       {/* A question is answered where answers are written, which is the one
           act on this page that is not about this object: the operator is
@@ -555,9 +639,24 @@ function ClaimPeel({
 // labels are questions rather than field names — `verification_criteria` is
 // "how you would know it worked" — because the reader deciding needs the
 // question and the schema name answers a different one.
-function CasePeel({ detail }: { detail: RecordCase }) {
+//
+// The origin strip closes it. Where an argument came from is part of reading
+// the argument: the same case is worth more when it grew out of an hour of the
+// operator's own work than when it grew out of a passing remark, and until now
+// the page could not say which.
+function CasePeel({
+  detail,
+  origin,
+  open,
+  onToggle,
+}: {
+  detail: RecordCase;
+  origin: RecordOrigin | undefined;
+  open: boolean;
+  onToggle: (open: boolean) => void;
+}) {
   return (
-    <Peel title="The case" open>
+    <Peel title="The case" open={open} onToggle={onToggle}>
       <Prose label="The problem" text={detail.problem} />
       <Prose label="What it proposes" text={detail.outcome} />
       {/* One field, two shapes: a proposal and an observation record a
@@ -588,7 +687,36 @@ function CasePeel({ detail }: { detail: RecordCase }) {
           </ul>
         </section>
       )}
+      <OriginStrip origin={origin} />
     </Peel>
+  );
+}
+
+// OriginStrip is one line: born from this conversation, in this workspace, on
+// this day, for this much. Every part of it is the session's own fact, and the
+// title links to the transcript at the cited record.
+function OriginStrip({ origin }: { origin: RecordOrigin | undefined }) {
+  if (!origin) return null;
+  const at = formatTime(origin.at);
+  const title = origin.session_title ? unescapeWhitespace(origin.session_title) : "an untitled session";
+  return (
+    <p className="record-origin">
+      <span>Born from</span>
+      <cite>{origin.href ? <a href={origin.href}>{title}</a> : title}</cite>
+      {origin.workspace && (
+        <>
+          <span>in</span>
+          <span className="record-origin-where">{origin.workspace}</span>
+        </>
+      )}
+      {at && <span>· {at.absolute}</span>}
+      {origin.cost_usd !== null && (
+        <span>
+          · <span className="record-figure">{money(origin.cost_usd)}</span>
+        </span>
+      )}
+      {origin.turns !== null && <span>· {origin.turns} turns</span>}
+    </p>
   );
 }
 
@@ -611,27 +739,68 @@ function hasCase(detail: RecordCase | undefined): detail is RecordCase {
   );
 }
 
-// EvidencePeel is depth 3: what the record rests on, quoted, each excerpt one
-// click from the transcript line it came from.
+// EvidencePeel is depth 3: what the record rests on, in the words of whoever
+// said it, each excerpt one click from the transcript line it came from.
+//
+// The excerpt is the hero and the note is a gloss. The server recovers the
+// cited bytes from the session log at the locator and checks them against the
+// digest the citation carries, so what is quoted here is provably the material
+// the record cited — and when it cannot be recovered the note and the link
+// stand alone, exactly as they did before.
 //
 // The link is a plain anchor with the href the server computed. The route a
 // citation opens belongs to the router, and a client that reassembled the
 // fragment from a session id and an event index would have to be edited every
 // time that route changed — and would be the only place on the page that
 // needed the session id, which lives at depth 5.
-function EvidencePeel({ items }: { items: RecordEvidence[] }) {
+function EvidencePeel({
+  items,
+  open,
+  onToggle,
+}: {
+  items: RecordEvidence[];
+  open: boolean;
+  onToggle: (open: boolean) => void;
+}) {
+  const quoted = items.filter((item) => item.excerpt).length;
   return (
-    <Peel title="The evidence" count={items.length}>
-      <ul className="peel-list">
+    <Peel
+      title="The evidence"
+      count={items.length}
+      note={quoted > 0 ? `${quoted} quoted from the transcript` : undefined}
+      open={open}
+      onToggle={onToggle}
+    >
+      <ul className="record-evidence">
         {items.map((item, index) => {
           const conflicting = item.kind === "conflicting" || item.kind === "counter-evidence";
           return (
             <li
-              className={conflicting ? "peel-counter" : undefined}
+              className={conflicting ? "record-counter" : undefined}
               key={`${index}-${item.href ?? item.line ?? ""}`}
             >
-              {item.kind && <p className="peel-cite">{EVIDENCE_SIDES[item.kind]}</p>}
-              <p className="quote untrusted-inline">{unescapeWhitespace(item.quote)}</p>
+              {item.kind && <p className="record-side">{EVIDENCE_SIDES[item.kind]}</p>}
+              {item.excerpt ? (
+                <>
+                  <blockquote className="record-excerpt quote untrusted-inline">
+                    {unescapeWhitespace(item.excerpt)}
+                  </blockquote>
+                  <p className="record-speaker">
+                    {item.speaker && <strong>{SPEAKER_WORDS[item.speaker]}</strong>}
+                    {item.session_title && (
+                      <>
+                        {item.speaker ? ", in " : "In "}
+                        <span className="untrusted-inline">
+                          {unescapeWhitespace(item.session_title)}
+                        </span>
+                      </>
+                    )}
+                  </p>
+                </>
+              ) : null}
+              {item.quote && (
+                <p className="record-note quote untrusted-inline">{unescapeWhitespace(item.quote)}</p>
+              )}
               <p className="peel-cite">
                 {item.href ? (
                   <a href={item.href}>{citationLabel(item)}</a>
@@ -654,23 +823,112 @@ function EvidencePeel({ items }: { items: RecordEvidence[] }) {
 // The line, or the event, is the part a reader checking evidence uses; the
 // identifier is the part the machinery uses.
 function citationLabel(item: RecordEvidence): string {
+  if (item.excerpt) {
+    if (item.line) return `Read it in context, at line ${item.line}`;
+    return "Read it in context";
+  }
   if (item.line) return `Read it in the transcript, at line ${item.line}`;
   if (item.event !== undefined) return `Read it in the transcript, at event ${item.event}`;
   return "Read it in the transcript";
 }
 
-// ReceptionPeel is depth 4: who received the claim and what they said.
+// RelatedStrip is every connection the record has that its own words do not
+// state, between the evidence and the reception.
 //
-// Three blocks, never one. The operator's own stance is his; the reviewers'
-// assessments are runs'; the rulings are the authority. §4.12 keeps them apart
-// by attribution, so they are separate panels with their own words — a person
-// agreeing and a run voting support are not the same act, and no number on
-// this page adds one to the other.
-function ReceptionPeel({ reception }: { reception: RecordReception }) {
+// It is a strip rather than a depth because a reader does not open it: he
+// glances at it while deciding, and each of the five relations changes the
+// decision differently. Three other proposals answer this problem and two were
+// already rejected; Babel suspects this restates a candidate from March; a
+// later revision replaced this wording; the rest of the run's output is one
+// click away. None of that is in the record, and all of it is in the stores.
+function RelatedStrip({ related }: { related: RecordRelated | undefined }) {
+  if (!related) return null;
+  const groups: Array<{ label: string; items: RelatedRecord[] | undefined; overlap?: boolean; standing?: boolean }> = [
+    { label: "Other remedies for this problem", items: related.addressing, standing: true },
+    { label: "Babel suspects this restates", items: related.duplicates, overlap: true },
+    { label: "Replaces", items: related.supersedes },
+    { label: "Replaced by", items: related.superseded_by },
+    { label: "Made in the same run", items: related.siblings },
+  ].filter((group) => group.items && group.items.length > 0);
+  if (groups.length === 0) return null;
+
+  return (
+    <section className="record-related" aria-label="Connections">
+      <h2>The connections</h2>
+      {groups.map((group) => (
+        <div className="record-related-group" key={group.label}>
+          <h3>
+            {group.label}
+            <span className="muted"> · {group.items?.length}</span>
+          </h3>
+          <ul>
+            {(group.items ?? []).map((item) => (
+              <li key={item.id}>
+                <Link to={`/r/${encodeURIComponent(item.id)}`}>
+                  {item.title ? (
+                    <span className="untrusted-inline">{unescapeWhitespace(item.title)}</span>
+                  ) : (
+                    <span className="mono">{item.id}</span>
+                  )}
+                </Link>
+                {group.standing && item.standing && (
+                  <Badge label={item.standing} tone={standingBadge(item.standing)} />
+                )}
+                {group.overlap && item.overlap !== undefined && (
+                  <span className="record-figure">{item.overlap.toFixed(2)} overlap</span>
+                )}
+                {item.kind && <span className="muted">{KIND_WORDS[item.kind] ?? item.kind}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+// standingBadge tints a competing remedy's standing. It is the same mapping
+// the record's own badge uses, applied to a label rather than to the server's
+// tone: the related strip carries standings the server did not tone, and a
+// second table here is the price of not asking it to tone a list of five.
+function standingBadge(label: string): Tone {
+  switch (label) {
+    case "accepted":
+      return "green";
+    case "rejected":
+      return "red";
+    case "deferred":
+    case "refine-requested":
+    case "reopened":
+      return "amber";
+    default:
+      return "neutral";
+  }
+}
+
+// ReceptionPeel is depth 4: who received the claim and what they said, in the
+// observatory register.
+//
+// The operator's own stance is first and separate, and the reviewers are a
+// table of figures rather than a list of sentences. That is the whole shape of
+// §4.12's boundary made visible: a person agrees with something he chose to
+// read, and a run votes on content it was served under a claim — and now the
+// table says which question each run was answering, because four supports
+// across four roles are four answers to four different questions.
+function ReceptionPeel({
+  reception,
+  open,
+  onToggle,
+}: {
+  reception: RecordReception;
+  open: boolean;
+  onToggle: (open: boolean) => void;
+}) {
   const operator = reception.operator;
   const earlier = reception.history ?? [];
   const reviewers = reception.model ?? [];
   const decisions = reception.decisions ?? [];
+  const byRole = reception.by_role ?? [];
   const counts = reception.counts;
   // The count is how many things are in here, not a tally of anything: the
   // operator's own stance, the reviewers' assessments and the rulings are
@@ -683,7 +941,9 @@ function ReceptionPeel({ reception }: { reception: RecordReception }) {
     <Peel
       title="The reception"
       count={entries}
-      note={reception.contested ? "reviewers disagree" : undefined}
+      note={reception.contested ? "a role is contested" : undefined}
+      open={open}
+      onToggle={onToggle}
     >
       {(operator || earlier.length > 0) && (
         <section className="panel">
@@ -727,17 +987,17 @@ function ReceptionPeel({ reception }: { reception: RecordReception }) {
         </section>
       )}
 
+      {byRole.length > 0 && <RoleTable byRole={byRole} />}
+
       {reviewers.length > 0 && (
         <section className="panel">
-          <h3>Babel's reviewers</h3>
+          <h3>Babel's reviewers, one by one</h3>
           {counts && (
             <p className="muted">
-              {counts.support} support, {counts.oppose} oppose, {counts.unsure} unsure — across
-              Babel's own runs, and never counting your stance.
+              {counts.support} support, {counts.oppose} oppose, {counts.unsure} unsure across
+              Babel's own runs — never counting your stance, and never summed across the
+              questions above.
             </p>
-          )}
-          {reception.contested && (
-            <p>Contested: the reviewers do not agree with each other.</p>
           )}
           <ol className="peel-list">
             {reviewers.map((reviewer, index) => (
@@ -779,6 +1039,77 @@ function ReceptionPeel({ reception }: { reception: RecordReception }) {
   );
 }
 
+// RoleTable is the reception as an instrument: one row per question a reviewer
+// was asked, figures in tabular mono, and the arguments against folded under
+// the row that is contested.
+//
+// A role with support on one side and opposition on the other is the one thing
+// a flat tally cannot say, so it is marked and its opposing rationales are the
+// only prose in the table.
+function RoleTable({ byRole }: { byRole: RoleReception[] }) {
+  return (
+    <section className="panel">
+      <h3>What each reviewer was asked</h3>
+      <table className="record-roles">
+        <thead>
+          <tr>
+            <th scope="col">The question</th>
+            <th scope="col" className="record-num">
+              Support
+            </th>
+            <th scope="col" className="record-num">
+              Oppose
+            </th>
+            <th scope="col" className="record-num">
+              Unsure
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {byRole.map((role) => {
+            const contested = role.support > 0 && role.oppose > 0;
+            const rationales = role.opposing_rationales ?? [];
+            return (
+              <tr key={role.role} className={contested ? "record-contested" : undefined}>
+                <td>
+                  {ROLE_WORDS[role.role] ?? role.role}
+                  {contested && <span className="muted"> · reviewers disagree</span>}
+                  {rationales.length > 0 && (
+                    <details className="record-rationales">
+                      <summary>
+                        The case against ({rationales.length})
+                      </summary>
+                      <ul>
+                        {rationales.map((rationale, index) => (
+                          <li className="quote untrusted-inline" key={`${index}-${rationale.slice(0, 24)}`}>
+                            {unescapeWhitespace(rationale)}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </td>
+                <td className={figureClass(role.support, "record-support")}>{role.support}</td>
+                <td className={figureClass(role.oppose, "record-oppose")}>{role.oppose}</td>
+                <td className={figureClass(role.unsure)}>{role.unsure}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+// figureClass dims a zero. Nought opposed is a real answer and it must not
+// shout as loudly as a count does.
+function figureClass(value: number, tint?: string): string {
+  const classes = ["record-num"];
+  if (value === 0) classes.push("record-zero");
+  else if (tint) classes.push(tint);
+  return classes.join(" ");
+}
+
 // ReviewerLine says what a run was asked and how it answered, and does not
 // name it. The actor is a run id — an opaque identifier with no honest display
 // name, because inventing a friendly label for a run would be Babel naming its
@@ -786,12 +1117,12 @@ function ReceptionPeel({ reception }: { reception: RecordReception }) {
 // number and the id sit together.
 function ReviewerLine({ reviewer, index }: { reviewer: ModelReception; index: number }) {
   const at = formatTime(reviewer.at);
-  const role = ROLE_WORDS[reviewer.role] ?? `on ${reviewer.role}`;
+  const role = ROLE_WORDS[reviewer.role] ?? reviewer.role;
   const stance = MODEL_STANCE_WORDS[reviewer.stance] ?? reviewer.stance;
   return (
     <>
       <span>
-        Reviewer {index + 1}, {role}: {stance}
+        Reviewer {index + 1}, asked {role}: {stance}
         {at && <span className="secondary"> · {at.relative}</span>}
       </span>
       {reviewer.rationale && (
@@ -801,11 +1132,19 @@ function ReviewerLine({ reviewer, index }: { reviewer: ModelReception; index: nu
   );
 }
 
-// MachineryPeel is depth 5: everything that identifies the object, and nothing
-// a reader needs to understand it. It is one section rather than five so that
-// a person debugging has one place to open, and it is collapsed so that a
-// person reading never opens it.
-function MachineryPeel({ record }: { record: RecordPeel }) {
+// MachineryPeel is depth 5: everything that identifies the object, what it
+// cost to produce, and nothing a reader needs to understand it. It is one
+// section rather than six so that a person debugging has one place to open,
+// and it is collapsed so that a person reading never opens it.
+function MachineryPeel({
+  record,
+  open,
+  onToggle,
+}: {
+  record: RecordPeel;
+  open: boolean;
+  onToggle: (open: boolean) => void;
+}) {
   const machinery: RecordMachinery = record.machinery ?? {};
   const created = formatTime(machinery.created_at);
   const links = machinery.links ?? [];
@@ -815,7 +1154,9 @@ function MachineryPeel({ record }: { record: RecordPeel }) {
   const located = (record.evidence ?? []).filter((item) => item.session_id || item.path);
 
   return (
-    <Peel title="The machinery">
+    <Peel title="The machinery" open={open} onToggle={onToggle}>
+      <CostBlock cost={machinery.cost} />
+
       <dl className="peel-rows">
         <Row label="Record" value={record.id} mono />
         <Row label="Kind" value={record.kind} />
@@ -881,7 +1222,7 @@ function MachineryPeel({ record }: { record: RecordPeel }) {
 
       {receipts.length > 0 && (
         <section className="panel">
-          <h3>Receipts</h3>
+          <h3>Review receipts</h3>
           <ul className="peel-list">
             {receipts.map((receipt) => {
               const at = formatTime(receipt.at);
@@ -933,9 +1274,49 @@ function MachineryPeel({ record }: { record: RecordPeel }) {
   );
 }
 
-// RecordPeels is the record itself, five depths deep. The order is the reading
-// order — claim, case, evidence, reception, machinery — and the two shallow
-// depths are open because they are what the reader came for.
+// CostBlock is what producing this record cost, as figures.
+//
+// Absent for a record this machine did not produce, because §9 seals the
+// worker's accounting before a receipt leaves its host — so an absent block
+// means nobody here can price it, and an unpriced figure means the engine
+// never reported what it spent. Neither is zero, and this is the one place on
+// the page where a fabricated zero would be a claim about money.
+function CostBlock({ cost }: { cost: RecordCost | undefined }) {
+  if (!cost) return null;
+  const tokens = (cost.input_tokens ?? 0) + (cost.output_tokens ?? 0);
+  return (
+    <section className="panel">
+      <h3>What it cost to produce</h3>
+      <div className="record-cost">
+        <Figure label="spent" value={money(cost.usd)} />
+        {tokens > 0 && (
+          <Figure
+            label="tokens"
+            value={tokens.toLocaleString()}
+            note={`${(cost.input_tokens ?? 0).toLocaleString()} in · ${(cost.output_tokens ?? 0).toLocaleString()} out`}
+          />
+        )}
+        {cost.duration_s !== undefined && cost.duration_s > 0 && (
+          <Figure label="took" value={formatDuration(cost.duration_s * 1000)} />
+        )}
+        {cost.model && <Figure label="model" value={cost.model} />}
+      </div>
+    </section>
+  );
+}
+
+// The five depths, in reading order. The array is the keyboard's map as well
+// as the page's: Contract K gives a reader `1`-`5` to open and close a depth,
+// and an index that meant one thing to the key handler and another to the
+// renderer would be a page whose keys drift from its layout.
+const DEPTHS = 5;
+
+// Depths 1 and 2 are open because they are what the reader came for; the rest
+// are folded because digging is a choice.
+const INITIAL_DEPTHS = [true, true, false, false, false];
+
+// RecordPeels is the record itself, five depths deep, with the connections
+// strip between the evidence and the reception.
 export function RecordPeels({
   record,
   onActed,
@@ -945,21 +1326,129 @@ export function RecordPeels({
 }) {
   const reception = record.reception;
   const evidence = record.evidence ?? [];
+  const [open, setOpen] = useState<boolean[]>(INITIAL_DEPTHS);
+  const bar = useRef<HTMLDivElement | null>(null);
   const received = Boolean(
     reception &&
       (reception.operator ||
         reception.history?.length ||
         reception.model?.length ||
-        reception.decisions?.length),
+        reception.decisions?.length ||
+        reception.by_role?.length),
   );
+
+  const toggle = useCallback((depth: number) => {
+    setOpen((current) => current.map((value, index) => (index === depth ? !value : value)));
+  }, []);
+
+  const setDepth = useCallback((depth: number, value: boolean) => {
+    setOpen((current) => current.map((entry, index) => (index === depth ? value : entry)));
+  }, []);
+
+  // Contract K, for this page. The handler presses the real controls rather
+  // than duplicating what they do: a stance recorded by key goes through the
+  // same optimistic post and the same refusal handling as a stance recorded by
+  // click, and `r` moves the focus to the ruling the reader is about to make
+  // instead of recording one for him — a permanent, attributed event is never
+  // one keystroke away.
+  useEffect(() => {
+    function act(selector: string, press: boolean) {
+      setDepth(0, true);
+      // The claim may have been folded, so the control is reached on the next
+      // frame rather than in this one, when it may not be mounted yet.
+      requestAnimationFrame(() => {
+        const node = bar.current?.querySelector<HTMLElement>(selector);
+        if (!node) return;
+        node.focus();
+        if (press) node.click();
+      });
+    }
+
+    function onKey(event: KeyboardEvent) {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) {
+          return;
+        }
+      }
+      const depth = Number.parseInt(event.key, 10);
+      if (Number.isInteger(depth) && depth >= 1 && depth <= DEPTHS) {
+        toggle(depth - 1);
+        event.preventDefault();
+        return;
+      }
+      const stance = STANCES.find((option) => option.key === event.key);
+      if (stance) {
+        act(`[data-stance="${stance.value}"]`, true);
+        event.preventDefault();
+        return;
+      }
+      if (event.key === "r") {
+        act("[data-ruling]", false);
+        event.preventDefault();
+      }
+    }
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setDepth, toggle]);
 
   return (
     <div className="surface">
-      <ClaimPeel record={record} onActed={onActed} />
-      {hasCase(record.case) && <CasePeel detail={record.case} />}
-      {evidence.length > 0 && <EvidencePeel items={evidence} />}
-      {received && reception && <ReceptionPeel reception={reception} />}
-      <MachineryPeel record={record} />
+      <ClaimPeel
+        record={record}
+        open={open[0]}
+        onToggle={(value) => setDepth(0, value)}
+        onActed={onActed}
+        barRef={bar}
+      />
+      {hasCase(record.case) && (
+        <CasePeel
+          detail={record.case}
+          origin={record.origin}
+          open={open[1]}
+          onToggle={(value) => setDepth(1, value)}
+        />
+      )}
+      {/* A record with no case still says where it came from: a candidate is a
+          bare claim, and the conversation it was born in is the most useful
+          thing on its page. */}
+      {!hasCase(record.case) && <OriginStrip origin={record.origin} />}
+      {evidence.length > 0 && (
+        <EvidencePeel
+          items={evidence}
+          open={open[2]}
+          onToggle={(value) => setDepth(2, value)}
+        />
+      )}
+      <RelatedStrip related={record.related} />
+      {received && reception && (
+        <ReceptionPeel
+          reception={reception}
+          open={open[3]}
+          onToggle={(value) => setDepth(3, value)}
+        />
+      )}
+      <MachineryPeel record={record} open={open[4]} onToggle={(value) => setDepth(4, value)} />
+
+      {/* How a reader learns the page has a keyboard. It is the last thing on
+          the page and the smallest type on it, because it is never what he
+          came for. */}
+      <p className="record-keys">
+        <span>
+          <kbd className="kbd">1</kbd>–<kbd className="kbd">5</kbd> depth
+        </span>
+        <span>
+          <kbd className="kbd">a</kbd>
+          <kbd className="kbd">d</kbd>
+          <kbd className="kbd">u</kbd> your stance
+        </span>
+        <span>
+          <kbd className="kbd">r</kbd> rule
+        </span>
+      </p>
     </div>
   );
 }
@@ -969,11 +1458,13 @@ export function RecordPeels({
 // — standing and kind — and nothing else wears one.
 //
 // The heading is the record's own words, so it carries the quoted frame even
-// as an h1. It is the title when the record wrote one; a hypothesis and an
-// observation write none — the statement is the record, not a name for it —
-// so their claim is the heading instead. The kind is not a fallback heading:
-// the badge beside it already says "Observation", and an h1 repeating that
-// would name the class of thing twice and the thing itself never.
+// as an h1, and it is set in the editorial face at one measure: decision 90
+// makes depth 1 editorial, and the claim is what that decision is about. It is
+// the title when the record wrote one; a hypothesis and an observation write
+// none — the statement is the record, not a name for it — so their claim is
+// the heading instead. The kind is not a fallback heading: the badge beside it
+// already says "Observation", and an h1 repeating that would name the class of
+// thing twice and the thing itself never.
 export function RecordHeading({ record }: { record: RecordPeel }) {
   const standing = record.standing;
   const headline = record.title ?? record.claim;
@@ -984,7 +1475,7 @@ export function RecordHeading({ record }: { record: RecordPeel }) {
         {standing && <Badge label={standing.label} tone={standingTone(standing.tone)} />}
       </div>
       {headline ? (
-        <h1 className="quote untrusted-inline">{unescapeWhitespace(headline)}</h1>
+        <h1 className="quote untrusted-inline record-claim">{unescapeWhitespace(headline)}</h1>
       ) : (
         <h1>{KIND_WORDS[record.kind] ?? "Record"}</h1>
       )}

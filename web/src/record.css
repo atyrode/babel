@@ -1,0 +1,396 @@
+/* The record page's own rules.
+ *
+ * Decision 90 splits the register by depth and this file is where that split
+ * is actually spent: depths 1-3 are editorial — serif claim, one measure of
+ * prose, evidence as pull-quotes — and depths 4-5 are an observatory of
+ * tabular mono figures. The container vocabulary is unchanged and shared
+ * (surface, panel, quote, peel), the six primitives are the design system's
+ * (.stat, .spark, .kbd, .live-dot, .rule-bar, .chip), and everything here is
+ * prefixed `record-` so nothing in this file can be mistaken for a global.
+ *
+ * Every colour, type and space value is a Contract T variable. There is no
+ * literal hex, no literal pixel spacing and no font stack in this file: a
+ * component that names its own grey is a component that drifts the first time
+ * the palette moves.
+ */
+
+/* Depth 1. The claim is the record's own sentence and it is set as a claim:
+ * serif, one measure wide, tight leading. Its size is the shell's — an h1 in a
+ * page has one display size and this page does not get a second one. */
+.record-claim {
+  font-family: var(--font-editorial);
+  max-width: var(--measure);
+  text-wrap: pretty;
+}
+
+/* What the standing does to the record, in words, directly under the claim.
+ * The badge above says which standing it is; this says what it means, which is
+ * the part somebody deciding actually needs. */
+.record-standing {
+  font-family: var(--font-editorial);
+  font-size: 1.05rem;
+  color: var(--ink-muted);
+  max-width: var(--measure);
+  margin: var(--space-2) 0 var(--space-4);
+}
+
+.record-standing strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* The act. Two `.rule-bar` groups on one line — the reception the operator may
+ * give and the ruling only he may make — separated rather than merged, because
+ * agreeing is not accepting and a single bar of eight buttons would say it is.
+ */
+.record-acts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+}
+
+.record-acts-label {
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* The rule bar's own divider between the two groups: a rule rather than a gap,
+ * so the split reads as deliberate at a glance. */
+.record-acts-split {
+  align-self: stretch;
+  width: 1px;
+  background: var(--rule);
+}
+
+/* The inline confirmation. A ruling is permanent and append-only, so it is
+ * confirmed — but a confirmation is one sentence and two buttons, not the
+ * 677-pixel ballot of five radios and two textareas this replaces. It opens
+ * where the button was, so the claim being ruled on is still on screen. */
+.record-confirm {
+  border: 1px solid var(--accent-line, var(--rule));
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-raised);
+  padding: var(--space-4);
+  margin: var(--space-3) 0;
+  max-width: var(--measure);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.record-confirm p {
+  margin: 0;
+  font-family: var(--font-editorial);
+  color: var(--ink);
+}
+
+.record-confirm label {
+  display: grid;
+  gap: var(--space-1);
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+}
+
+.record-confirm textarea,
+.record-confirm input {
+  font: inherit;
+  font-family: var(--font-ui);
+  color: var(--ink);
+  background: var(--bg-sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm, var(--radius));
+  padding: var(--space-2);
+}
+
+.record-confirm-acts {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* Depth 2. "Born from this conversation, there, then, for this much" — one
+ * line, because the answer to "where did this come from" is one line. */
+.record-origin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+  color: var(--ink-muted);
+}
+
+.record-origin cite {
+  font-family: var(--font-editorial);
+  font-style: normal;
+  color: var(--ink);
+}
+
+.record-origin .record-origin-where {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+}
+
+/* A figure inside a sentence: the session's cost, tabular so two of them line
+ * up, and never rendered at all when nobody measured it. */
+.record-figure {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+/* Depth 3. The excerpt is the hero: what the human actually said, set as a
+ * pull-quote, with the model's note about it beneath in smaller type. The
+ * order is deliberate and so is the size difference — the note is Babel's
+ * paraphrase and it must never be the thing a reader's eye lands on. */
+.record-evidence {
+  display: grid;
+  gap: var(--space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.record-evidence > li {
+  display: grid;
+  gap: var(--space-2);
+  max-width: var(--measure);
+}
+
+.record-side {
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.record-counter .record-side {
+  color: var(--warn);
+}
+
+.record-excerpt {
+  font-family: var(--font-editorial);
+  font-size: 1.22rem;
+  line-height: 1.45;
+  color: var(--ink);
+  border-left: 3px solid var(--accent);
+  padding: var(--space-1) 0 var(--space-1) var(--space-4);
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* Counter-evidence is quoted in the record's own words too, and the rule down
+ * its left says which side it is on without restating it. */
+.record-counter .record-excerpt {
+  border-left-color: var(--warn);
+}
+
+.record-speaker {
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
+.record-speaker strong {
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.record-note {
+  font-family: var(--font-ui);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--ink-muted);
+  margin: 0;
+}
+
+.record-note::before {
+  content: "Babel's note: ";
+  color: var(--ink-faint);
+}
+
+/* The connections strip, between the evidence and the reception. It is not a
+ * depth: a reader does not open it, he glances at it, because the things in it
+ * change what he decides and none of them is in the record's own words. */
+.record-related {
+  display: grid;
+  gap: var(--space-4);
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.record-related h2 {
+  font-family: var(--font-ui);
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0;
+}
+
+.record-related-group {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.record-related-group h3 {
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  margin: 0;
+}
+
+.record-related-group ul {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.record-related-group li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: 0.92rem;
+}
+
+.record-related-group a {
+  color: var(--ink);
+  max-width: var(--measure);
+}
+
+/* Depths 4 and 5 are the observatory: figures in mono, tabular, dense. */
+.record-roles {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+}
+
+.record-roles th {
+  text-align: left;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 600;
+  padding: var(--space-1) var(--space-3) var(--space-2) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.record-roles th.record-num,
+.record-roles td.record-num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  padding-right: var(--space-4);
+}
+
+.record-roles td {
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink);
+  vertical-align: baseline;
+}
+
+.record-roles tr:last-child td {
+  border-bottom: none;
+}
+
+.record-roles td.record-num.record-oppose {
+  color: var(--bad);
+}
+
+.record-roles td.record-num.record-support {
+  color: var(--good);
+}
+
+/* A zero is a real answer here — nobody opposed — and it must not read as
+ * loudly as a count. */
+.record-roles td.record-num.record-zero {
+  color: var(--ink-faint);
+}
+
+.record-roles tr.record-contested td {
+  background: var(--warn-soft, transparent);
+}
+
+/* The arguments against, folded. A contested role is the one place a reader
+ * needs the opposing case in full, and every other reader needs it never. */
+.record-rationales {
+  margin: var(--space-2) 0 0;
+}
+
+.record-rationales > summary {
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.record-rationales ul {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Depth 5's cost block: the run's own figures, side by side, as statistics
+ * rather than as a sentence. `.stat` is the design system's. */
+.record-cost {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin: var(--space-2) 0;
+}
+
+/* The keyboard hints, at the foot of the page, in the smallest type that is
+ * still readable: they are how a reader learns the page has a keyboard, and
+ * they are never what he came for. */
+.record-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: center;
+  margin-top: var(--space-5);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+}
+
+.record-keys span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+@media (max-width: 40rem) {
+  .record-acts-split {
+    display: none;
+  }
+
+  .record-excerpt {
+    font-size: 1.08rem;
+    padding-left: var(--space-3);
+  }
+}
