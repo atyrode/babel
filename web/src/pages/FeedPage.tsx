@@ -603,6 +603,9 @@ function FeedPage({ heading, topic: fixed }: { heading?: ReactNode; topic?: stri
     flushSync(() => {
       setAnswer(next);
       setPosts(arriving);
+      // An answer is the end of whatever a failed read said: the rows on
+      // screen are true again, so the note that said they might not be goes.
+      setError(null);
       if (mode === "resort") {
         setFocus(-1);
         // The receipts a ruling left on the rows belong to the list they were
@@ -1472,15 +1475,19 @@ function Votes({
             aria-label="Babel's reviewers are split on this"
           />
         )}
-        <span
-          className="feed-score"
-          data-zero={post.score === 0 ? "" : undefined}
-          data-ticked={ticked ? "" : undefined}
-          title={breakdown}
-          aria-label={breakdown}
-        >
-          {post.score}
-        </span>
+        {/* A record nobody assessed shows the ring alone: a nought over it
+            would read as a tally of nothing objected to. */}
+        {votes.length > 0 && (
+          <span
+            className="feed-score"
+            data-zero={post.score === 0 ? "" : undefined}
+            data-ticked={ticked ? "" : undefined}
+            title={breakdown}
+            aria-label={breakdown}
+          >
+            {post.score}
+          </span>
+        )}
       </span>
       <span className="feed-dots">
         {votes.length === 0 ? (
