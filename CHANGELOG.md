@@ -40,14 +40,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   words. §4.12's boundary does not move: a person still cannot author an
   assessment. The ruling — accept, reject, defer, duplicate, reopen — is a
   rule bar with a one-sentence confirm instead of a five-radio ballot.
-- **Navigation names decisions.** Decide (what needs me), Read (what has
-  Babel found), Watch (what is it doing and what did it cost), Ask (what
-  does it know and need from me) and Settings replace eleven destinations
-  named after record kinds and storage concepts. Every old path redirects.
-  Decide leads with the queue, tiered so a proposal outranks a finding
-  outranks a candidate at equal urgency, with *why it is next* on every row
-  and *since you last looked* in its header. Read is one list with chips,
-  not four pages with selects.
+- **The front page is a feed.** Home lists every record Babel has produced —
+  hypothesis, observation, finding, proposal and the questions it asks — as
+  one line with its arrows, score, kind, topics, author run, age and comment
+  count, under one sort bar: hot, new, top and controversial over an hour,
+  day, week, month, year or all time, and rising. Kind is a chip over the
+  list, never a page; the state lives in the URL so a view is a link. A
+  topic is a community — today a repository, named by the workspace of the
+  sessions a record's evidence cites and inherited down the lineage, so a
+  proposal sits in the topic of the observation behind it — with its own
+  page at `/t/<name>` and a rail of topics with counts beside the feed.
+  Navigation is Home, Mod queue (what awaits a ruling), Watch and Settings;
+  Read and Ask are the feed with a filter, and every old path redirects. The
+  queue keeps its tiering — a proposal outranks a finding outranks a
+  candidate at equal urgency — with *why it is next* on every row. Asked for
+  in one sentence by the operator on 2026-09-12 and answered by SPEC §8.7.
 - **Keyboard triage.** `j`/`k` move, `Enter` opens, `a`/`d`/`u` record a
   stance without leaving the list, `r` opens the rule bar, `1`–`5` toggle a
   record's depths, `?` shows the keys, and `⌘K` opens a palette that finds
