@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, Navigate, useParams } from "react-router-dom";
 import { Badge } from "../analysis";
-import { getComplaints, tellComplaint, type ComplaintSummary } from "../api";
+import {
+  getComplaints,
+  getRealityEntity,
+  tellComplaint,
+  type ComplaintSummary,
+  type EntityDetail,
+} from "../api";
 import {
   getTopics,
   INTEREST_LABEL,
@@ -44,11 +50,28 @@ import "../topic.css";
 // evidence about a topic and never the topic — so the row carries the remote
 // and a count of checkouts, and the paths themselves are in the fold.
 
+// It also serves /ask/entities/:id, because an entity and a topic are one
+// thing (§4.13: a topic *is* a Reality Ledger entity). A subject something has
+// been filed under, or the operator has said where he stands on, is a topic
+// and redirects to the name it is read under; a subject neither is true of is
+// rendered here as what it is — its kind, its binding, the stance control, and
+// a feed with nothing in it yet. There is no second page about a subject: the
+// one that existed was a fact timeline nobody reached from the reading path,
+// and what the ledger believes is read under Ask's beliefs, which the identity
+// fold links to.
 export default function TopicPage() {
   const routed = useParams();
-  const name = (routed.topic ?? "").trim();
+  // Which route this is. `/t/:topic` names a topic and `/ask/entities/:id`
+  // names an entity; they resolve to the same row and differ only in what the
+  // page does when the row turns out to be a topic with filings.
+  const entityID = (routed.id ?? "").trim();
   const [answer, setAnswer] = useState<TopicsResponse | null>(null);
   const [failed, setFailed] = useState(false);
+  // What the ledger calls an entity nothing is filed under. It is read only on
+  // the entity route, and only when the topics do not already hold the row:
+  // the name and the kind are the two things the header needs and the topics
+  // read does not carry for an unfiled subject.
+  const [subject, setSubject] = useState<EntityDetail | null>(null);
 
   const load = useCallback(() => {
     getTopics()
@@ -57,25 +80,76 @@ export default function TopicPage() {
         setFailed(false);
       })
       .catch(() => setFailed(true));
-  }, [name]);
+  }, []);
 
   useEffect(load, [load]);
+
+  useEffect(() => {
+    if (!entityID) return;
+    let live = true;
+    getRealityEntity(entityID)
+      .then((value) => {
+        if (live) setSubject(value);
+      })
+      // An entity the ledger cannot open is not a page-level failure: the
+      // header says nothing answers to the name, which is what is true.
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [entityID]);
 
   // The row is found by name because the name is what the reader typed and
   // what every link carries; the id is accepted too, so a link built from an
   // entity id opens the page it names.
-  const topic = (answer?.topics ?? []).find((row) => row.name === name || row.id === name);
+  const asked = entityID || (routed.topic ?? "").trim();
+  const row = (answer?.topics ?? []).find((entry) => entry.name === asked || entry.id === asked);
+
+  // A subject with filings under it, or a stance stated on it, is a topic and
+  // is read under its name: the entity id is an identifier, and a reader who
+  // followed one from a question should land where the topic lives rather than
+  // on a second URL for it.
+  if (entityID && row && (row.posts > 0 || row.interest.state !== "")) {
+    return <Navigate to={`/t/${encodeURIComponent(row.name)}`} replace />;
+  }
+
+  // An entity the topics read does not hold, rendered as the topic it is not
+  // yet: a name, a kind, no binding, no filings, and the stance control —
+  // which applies to any entity, because §4.13 records the stance as facts on
+  // the entity rather than on a topic-shaped thing.
+  const entity = subject?.entity;
+  const topic: TopicRow | undefined = row ??
+    (entity
+      ? {
+          id: entity.id,
+          name: entity.display_name || entity.id,
+          kind: entity.kind,
+          binding: null,
+          posts: 0,
+          awaiting: 0,
+          latest_at: entity.created_at,
+          interest: { state: "", reason: "", at: "", by: "" },
+        }
+      : undefined);
+  const name = topic?.name ?? asked;
 
   return (
     <FeedPage
+      // The feed is narrowed by the topic's own name, or — on the entity route
+      // for a subject nothing is filed under — by its identifier, which
+      // matches nothing and says so. Neither ever reaches the address bar: a
+      // display name can be a thousand characters of model text, and a URL is
+      // not where that belongs.
+      topic={entityID && !row ? entityID : name}
       heading={
         <TopicHeader
+          subject={entityID !== "" && row === undefined}
           name={name}
           topic={topic}
           // A read that has not answered yet is not an absence. Saying "no
           // topic answers to this name" before the list has arrived would
           // accuse the deployment of something it has not been asked.
-          read={answer !== null}
+          read={answer !== null && (!entityID || subject !== null)}
           failed={failed}
           onStated={(interest) => {
             if (!topic) return;
@@ -84,11 +158,16 @@ export default function TopicPage() {
                 ? current
                 : {
                     ...current,
-                    topics: (current.topics ?? []).map((row) =>
-                      row.id === topic.id ? { ...row, interest } : row,
+                    topics: (current.topics ?? []).map((entry) =>
+                      entry.id === topic.id ? { ...entry, interest } : entry,
                     ),
                   },
             );
+            // Stating a stance on a subject nothing is filed under is what
+            // makes it a topic, so the topics are read again: the row arrives
+            // with the stance on it and the entity route moves to the name it
+            // is now read under.
+            if (entityID) load();
           }}
         />
       }
@@ -102,12 +181,17 @@ export default function TopicPage() {
 function TopicHeader({
   name,
   topic,
+  subject,
   read,
   failed,
   onStated,
 }: {
   name: string;
   topic: TopicRow | undefined;
+  // Whether this is a subject the ledger holds and nothing has been filed
+  // under. It is not a topic yet — nobody has said a record is about it and
+  // the operator has not said where he stands — so it is not named as one.
+  subject: boolean;
   read: boolean;
   failed: boolean;
   onStated: (interest: TopicRow["interest"]) => void;
@@ -116,8 +200,10 @@ function TopicHeader({
     <header className="surface topic-header">
       <div className="page-heading">
         <div>
-          <p className="eyebrow">Topic</p>
-          <h1>t/{name}</h1>
+          <p className="eyebrow">{subject ? "Subject" : "Topic"}</p>
+          <h1 className={subject ? "topic-subject-name" : undefined}>
+            {subject ? name : `t/${name}`}
+          </h1>
         </div>
         {topic && (
           <p className="topic-posts">
@@ -146,11 +232,16 @@ function TopicHeader({
       {failed && <p className="topic-honest">The topics could not be read, so this page shows the feed alone.</p>}
 
       {/* An accepted topic with nothing filed under it reads as what it is:
-          an identity the operator created and the corpus has not reached. */}
+          an identity the operator created and the corpus has not reached. A
+          subject reads as one step further back: the ledger knows it, and
+          nothing has claimed to be about it. */}
       {topic && topic.posts === 0 && (
         <p className="topic-honest">
-          Nothing is filed under this topic yet. It exists, and no record has been said to be
-          about it.
+          {subject
+            ? "The ledger holds this subject and nothing is filed under it, so it is not a " +
+              "topic yet. Saying where you stand makes it one."
+            : "Nothing is filed under this topic yet. It exists, and no record has been said " +
+              "to be about it."}
         </p>
       )}
 

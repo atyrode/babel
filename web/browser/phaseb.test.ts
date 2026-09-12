@@ -512,16 +512,20 @@ test.skipIf(!chrome)("the operator rules rather than votes, and his retired stan
       ).length,
       score: scored?.tagName ?? "",
       breakdown: scored?.getAttribute("title") ?? "",
-      // A record no reviewer has assessed carries no figure at all. The em
-      // dash that used to stand in its place was a value-shaped mark for an
-      // absence, and on the arriving front page it was most of the column.
-      unassessed: item.querySelector(".feed-score") === null,
+      // A record no reviewer has assessed carries a dimmed nought and a hollow
+      // ring that says so. The figure used to vanish entirely, which kept the
+      // column the eye was learning from existing on an arriving front page;
+      // what §8.5 forbids is an unreviewed record reading as an unopposed one,
+      // and the ring is what says which it is.
+      dimmed: item.querySelector(".feed-score[data-zero]") !== null,
+      ring: item.querySelector('.feed-dot[data-tone="none"]')?.getAttribute("title") ?? "",
     };
   }, row);
   expect(votes.stances).toBe(0);
   expect(votes.score).toBe("SPAN");
   expect(votes.breakdown).toMatch(/Babel's reviewers/u);
-  expect(votes.unassessed).toBe(true);
+  expect(votes.dimmed).toBe(true);
+  expect(votes.ring).toBe("not yet reviewed");
 
   // The ruling is confirmed before it is recorded — it is an appended,
   // attributed event that cannot be edited — and the row then says what was
@@ -538,12 +542,15 @@ test.skipIf(!chrome)("the operator rules rather than votes, and his retired stan
     await page.waitForSelector(`${row} .record-confirm`, { timeout: 15_000 });
     expect(decides).toEqual([]);
     await page.click(`${row} .record-confirm button[type='submit']`);
+    // The row leaves the list it was waiting in, and the receipt that stands
+    // in its place carries the one act that undoes a permanent ruling.
     await page.waitForFunction(
-      (selector: string) =>
-        (document.querySelector(`${selector} .feed-acted`)?.textContent ?? "").includes("accepted"),
+      (selector: string) => document.querySelector(selector) === null,
       { timeout: 15_000 },
       row,
     );
+    expect(await page.$eval(".feed-toast", (note) => (note as HTMLElement).innerText))
+      .toContain("accepted");
     expect(decides).toHaveLength(1);
   } finally {
     page.off("request", watch);
@@ -869,14 +876,19 @@ test.skipIf(!chrome)("plan acceptance is explicit and flips proposed to applied"
     Array.from(document.querySelectorAll(".badge")).filter((badge) => badge.textContent === "applied").length);
   expect(applied).toBe(2);
 
-  // The accepted assertion is now a fact on the entity, visibly active —
-  // and the plan-proposed fixture fact remains visibly "proposed".
-  await open("ask/entities/ent_atlas");
+  // The accepted assertion is now a fact in the ledger, readable as its own
+  // belief with the reasoning the acceptance recorded. A subject's own page is
+  // the topic page now (§4.13 — a topic *is* an entity), so what the ledger
+  // believes is read where beliefs are: under Ask, as revisions.
+  await open("ask/facts/fct_policy-2");
   await visible("Applied by accepting the synthetic interpreter plan");
 });
 
 test.skipIf(!chrome)("an answer records verbatim and moves the question state", async () => {
   await open("ask/questions/qst_long-entity");
+  // The act comes before the words: the three outcomes are the question's rule
+  // bar, and the box unfolds under the one he pressed.
+  await page.click('[data-outcome="answered"]');
   await page.waitForSelector(".answer-form textarea", { timeout: 15_000 });
   await page.type(".answer-form textarea", "Yes, they are the same synthetic service.");
   await page.click(".answer-form button[type=submit]");

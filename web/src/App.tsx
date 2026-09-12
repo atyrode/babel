@@ -17,11 +17,9 @@ import {
   type APIFailure,
   type VersionInfo,
 } from "./api";
-import AskPage from "./pages/AskPage";
 import ComplaintPage from "./pages/ComplaintPage";
 import FeedPage, { TopicsIndex } from "./pages/FeedPage";
 import RealityEntitiesPage from "./pages/RealityEntitiesPage";
-import RealityEntityPage from "./pages/RealityEntityPage";
 import RealityFactPage from "./pages/RealityFactPage";
 import RealityFactsPage from "./pages/RealityFactsPage";
 import RealityQuestionPage from "./pages/RealityQuestionPage";
@@ -88,6 +86,24 @@ function SettingsRedirect({ section }: { section: string }) {
   query.set("section", section);
   return <Navigate to={`/settings?${query.toString()}`} replace />;
 }
+
+// One page becomes another, and the reader can see which.
+//
+// The route changes and the whole of `main` is replaced in one frame, which is
+// the one moment an interface can look like a slide projector: the header and
+// the rail are identical either side of it, and the body is completely
+// different. So the body arrives — a hundred and sixty milliseconds of fade
+// and a six-pixel rise, in styles.css, on the section each route renders.
+//
+// It is CSS on the arriving page rather than `document.startViewTransition`,
+// and that is a measured retreat rather than a preference. The transition ran
+// — it cross-faded exactly as asked — but a document is inert for its whole
+// duration: every press that landed inside those 160ms was swallowed, which on
+// this surface is a reader pressing "File under…" the instant a record opens
+// and getting a fold that never reads the topics. A page committed inside the
+// transition callback also lost its `<details onToggle>` wiring. A cross-fade
+// is not worth a dropped act, so the outgoing page leaves at once and the
+// arriving one is what moves.
 
 function App() {
   const location = useLocation();
@@ -329,24 +345,24 @@ function App() {
               declined and what it cost. It hangs under Watch because a run is
               only ever reached from the control room that lists it. */}
           <Route path="/watch/runs/:id" element={<RunPage />} />
-          {/* Ask is one nav entry and seven destinations, nested under a
-              layout so the ledger's own row is present on every one of them
-              — including a belief or a question reached by clicking a
-              record, which is where a reader most needs to know what else
-              the ledger holds (§8.4). */}
-          <Route path="/ask" element={<AskPage />}>
-            {/* The questions Babel is asking are posts, so the inbox that
-                used to sit here is the feed filtered to them. The ledger's
-                own destinations below stay: they are reached from the
-                records and the questions that cite them. */}
-            <Route index element={<Navigate to="/?kind=question" replace />} />
-            <Route path="questions" element={<RealityQuestionsPage />} />
-            <Route path="questions/:id" element={<RealityQuestionPage />} />
-            <Route path="entities" element={<RealityEntitiesPage />} />
-            <Route path="entities/:id" element={<RealityEntityPage />} />
-            <Route path="facts" element={<RealityFactsPage />} />
-            <Route path="facts/:id" element={<RealityFactPage />} />
-          </Route>
+          {/* The ledger, reached from the records and questions that cite it.
+
+              Two of its destinations are no longer pages of their own, because
+              neither was a different kind of thing. A question is a post and
+              reads through the record page's depths (§8.7); a subject is an
+              entity and a topic *is* an entity (§4.13), so it reads through the
+              topic page — redirecting to /t/<name> when something is filed
+              under it, and rendering under its own identifier when nothing is.
+              The layout that used to wrap all of this carried three tabs above
+              every one of them; the questions are in the feed and the subjects
+              are reached from what cites them, so the row is gone with it. */}
+          <Route path="/ask" element={<Navigate to="/?kind=question" replace />} />
+          <Route path="/ask/questions" element={<RealityQuestionsPage />} />
+          <Route path="/ask/questions/:id" element={<RealityQuestionPage />} />
+          <Route path="/ask/entities" element={<RealityEntitiesPage />} />
+          <Route path="/ask/entities/:id" element={<TopicPage />} />
+          <Route path="/ask/facts" element={<RealityFactsPage />} />
+          <Route path="/ask/facts/:id" element={<RealityFactPage />} />
           <Route path="/r/:id" element={<RecordPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/sessions" element={<SessionsPage />} />

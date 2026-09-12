@@ -146,8 +146,12 @@ interface Row {
   // because the row is what the reader acts on.
   awaiting: boolean;
   why: string;
-  // What the row offers to do about it, in the order it offers them.
+  // What the row offers to do about it, in the order it offers them: the
+  // rulings for a record, and the three answers for a question — a question is
+  // answered rather than ruled on, and §8.4 puts the decision where the record
+  // is read.
   acts: string[];
+  answers: string[];
 }
 
 interface ServedPost {
@@ -181,6 +185,9 @@ async function listed(): Promise<Row[]> {
       why: row.querySelector(".feed-why")?.textContent ?? "",
       acts: Array.from(row.querySelectorAll("[data-ruling]")).map(
         (button) => button.getAttribute("data-ruling") ?? "",
+      ),
+      answers: Array.from(row.querySelectorAll("[data-answer]")).map(
+        (button) => button.getAttribute("data-answer") ?? "",
       ),
     })));
 }
@@ -502,15 +509,15 @@ test.skipIf(!chrome)("the front page arrives showing what needs the operator", a
     // punctuation rather than one of them.
     const words = row.why.split(/\s+/u).filter((word) => word !== "·");
     expect(`${row.id}:${words.length <= 5}`).toBe(`${row.id}:true`);
-    // A question is answered where answers are written — it is not a record
-    // in the corpus, carries no disposition and has no thread of its own — so
-    // its row offers no acts and its claim opens the page that takes the
-    // answer. Every record that is waiting offers the four rulings and the
-    // question.
-    const expected = row.kind === "Question"
+    // A question carries no review disposition — it is answered, not ruled on
+    // — so its row offers §4.8's three outcomes rather than the four rulings.
+    // Every record that is waiting offers the rulings and the question.
+    const rulings = row.kind === "Question"
       ? []
       : ["accept", "reject", "defer", "refine", "ask"];
-    expect(`${row.id}:${row.acts.join(",")}`).toBe(`${row.id}:${expected.join(",")}`);
+    const answers = row.kind === "Question" ? ["answered", "unknown", "declined"] : [];
+    expect(`${row.id}:${row.acts.join(",")}`).toBe(`${row.id}:${rulings.join(",")}`);
+    expect(`${row.id}:${row.answers.join(",")}`).toBe(`${row.id}:${answers.join(",")}`);
   }
 
   // One gesture widens it to everything, and the ordering follows: a reader
@@ -631,16 +638,24 @@ test.skipIf(!chrome)("a ruling from a row is confirmed, recorded once, and shown
     expect(asked).toContain("appended permanently");
 
     await page.click(`${row} .record-confirm button[type='submit']`);
-    // The row says what was done, in place of what could be done: a permanent
-    // act that left the list looking the same is an act performed twice.
+    // The row leaves the list it was waiting in: under "what needs me" the
+    // list is what is left to do, and a row sitting in it with "accepted" on
+    // it is a line the reader skips past for the rest of the session. What
+    // stands in its place is the receipt, bottom-left, with the one act that
+    // undoes a permanent ruling — reopening it.
     await page.waitForFunction(
-      (selector: string) =>
-        (document.querySelector(`${selector} .feed-acted`)?.textContent ?? "").includes("accepted"),
+      (selector: string) => document.querySelector(selector) === null,
       { timeout: 15_000 },
       row,
     );
+    const receipt = await page.$eval(".feed-toast", (note) => (note as HTMLElement).innerText);
+    expect(receipt).toContain("accepted");
+    expect(receipt).toContain("reopen");
+    // And the count at the end of the sentence is one shorter, because the
+    // list it counts is.
+    expect(await page.$eval(".feed-ruled", (note) => (note as HTMLElement).innerText))
+      .toContain("ruled today 1");
     expect(decides).toEqual(["POST"]);
-    expect(await page.$(`${row} [data-ruling='accept']`)).toBeNull();
   } finally {
     page.off("request", watch);
   }
@@ -874,7 +889,9 @@ test.skipIf(!chrome)("the rail groups topics by interest, folds what is parked, 
   });
   expect(rail.labels).toContain("Working on it");
   expect(rail.labels).toContain("Keep an eye");
-  expect(rail.labels).toContain("Babel proposes");
+  // "Babel proposes" carries the count of decisions under it, because a reader
+  // deciding whether to look wants the number.
+  expect(rail.labels.some((label: string) => /^Babel proposes\s*\d+$/u.test(label))).toBe(true);
   // Parked and excluded are folded, closed, and say how many they hold.
   expect(rail.folds.length).toBe(2);
   for (const fold of rail.folds) {
@@ -906,7 +923,7 @@ test.skipIf(!chrome)("the rail groups topics by interest, folds what is parked, 
   const unfiled = await page.evaluate(async () => {
     const rail_ = document.querySelector(".feed-rail") as HTMLElement;
     const row = Array.from(rail_.querySelectorAll(".topic-list > li > a")).find((link) =>
-      (link.textContent ?? "").startsWith("no topic")) as HTMLAnchorElement | undefined;
+      (link.textContent ?? "").startsWith("unfiled")) as HTMLAnchorElement | undefined;
     const answer = await fetch("/api/feed?topic=unfiled&limit=1").then((r) => r.json());
     return {
       href: row?.getAttribute("href") ?? "",

@@ -116,14 +116,21 @@
   color-scheme: dark;
 
   /* Base. Six untinted greys: the page, the thing lifted off it, the well
-     sunk into it, two rules and three inks. Every one of them is neutral by
+     sunk into it, two rules and four inks. Every one of them is neutral by
      construction — equal parts in a cool-grey ramp — so nothing on the screen
-     carries a hue it was not given on purpose. */
+     carries a hue it was not given on purpose.
+
+     `--ink-strong` is the one step above the body ink, and it is for a
+     headline the reader is scanning: the feed's fifteen titles at 16px, where
+     `--ink` measured one notch too quiet against the graphite to read as the
+     brightest thing in the row. Nothing else uses it — an interface with two
+     body inks has no body ink. */
   --bg: #0d0f12;
   --bg-raised: #14171c;
   --bg-sunken: #0a0b0e;
   --rule: #23272e;
   --rule-strong: #2e343c;
+  --ink-strong: #f2f4f7;
   --ink: #e8eaed;
   --ink-muted: #9aa3ad;
   --ink-faint: #6b7480;
@@ -298,8 +305,22 @@ button:focus-visible {
   background: color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
+/* The press. A control has to answer the finger in the frame it is pressed,
+   and a one-pixel drop is not an answer on a word with no box: it is 80ms of
+   scale, which is short enough that a reader never waits for it and long
+   enough that a press that recorded nothing still felt like a press. */
 button:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: scale(0.98);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button {
+    transition:
+      border-color var(--motion-fast) ease,
+      background var(--motion-fast) ease,
+      color var(--motion-fast) ease,
+      transform 80ms ease-out;
+  }
 }
 
 button:disabled {
@@ -366,6 +387,21 @@ input:focus {
 
 a {
   color: var(--accent);
+}
+
+/* The underline arrives rather than appearing. 120ms of thickness under a
+   link the pointer is on is the smallest honest statement an interface can
+   make about "this is a door"; it is decoration for nothing else, which is
+   why it is on the underline and not on the colour. */
+@media (prefers-reduced-motion: no-preference) {
+  a {
+    text-decoration-thickness: from-font;
+    transition: text-decoration-thickness 120ms ease-out, text-decoration-color 120ms ease-out;
+  }
+
+  a:hover {
+    text-decoration-thickness: 2px;
+  }
 }
 
 /* The wordmark is a link to the feed, so it must not look like body prose
@@ -489,6 +525,23 @@ time {
 
 .live-indicator:hover {
   border-color: color-mix(in srgb, var(--live) 52%, transparent);
+}
+
+/* One pulse per poll that changed something. The dot inside it breathes
+   continuously — that is "a run is live" — and this is the different claim:
+   "the answer just moved". It runs once and stops, because a mark that keeps
+   pulsing is reporting the clock rather than the deployment. */
+@media (prefers-reduced-motion: no-preference) {
+  .live-indicator[data-changed] {
+    animation: live-changed 900ms ease-out 1;
+  }
+}
+
+@keyframes live-changed {
+  from {
+    border-color: var(--live);
+    background: color-mix(in srgb, var(--live) 26%, transparent);
+  }
 }
 
 .live-indicator .live-spend {
@@ -780,6 +833,35 @@ time {
 
 main {
   width: 100%;
+}
+
+/* ---------------------------------------------------------------------------
+   ONE PAGE BECOMES ANOTHER.
+
+   The body is the only thing that changes on a route change — the header and
+   the rail are identical either side of it — so the body is the only thing
+   that animates: a hundred and sixty milliseconds of fade and a six-pixel
+   rise, on the section the new route renders. The chrome holds still because
+   nothing about it moved.
+
+   It is the arriving page and not a cross-fade, for the reason App.tsx states
+   where the transition used to be: a document is inert for the length of a
+   view transition, and a reader who presses something in those 160ms loses the
+   press. A filter change does not re-render the section, so re-ordering the
+   feed does not fade the page under the rows — the rows' own slide is
+   FeedPage's.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+  main > .page {
+    animation: page-arrive 160ms ease-out both;
+  }
+}
+
+@keyframes page-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
 .page {
@@ -3852,9 +3934,13 @@ a.link-target:hover {
     border-bottom: 0;
   }
 
+  /* Two badges are a row, not a stack. They were a column below 560px, which
+     on a post's header spent two lines on "Question" and "open" — and the one
+     case it was protecting against, a badge whose word is a sentence, wraps on
+     its own. */
   .heading-badges {
     align-items: flex-start;
-    flex-direction: column;
+    flex-wrap: wrap;
   }
 
   .event-heading {

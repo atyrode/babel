@@ -70,6 +70,11 @@ const LIVE_RETRY_MS = 2_000;
 // broken: the reader did not ask for it, and its failure costs them nothing.
 export function LiveIndicator() {
   const [runs, setRuns] = useState<LiveRun[]>([]);
+  // Whether the last answer said something new. It is a counter rather than a
+  // flag because the mark has to be able to pulse twice in a row: a key on the
+  // element is what restarts a CSS animation, and "changed again" is a
+  // different key from "changed".
+  const [changes, setChanges] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -79,6 +84,11 @@ export function LiveIndicator() {
     // spent launch link, a locked server — and it must not knock every two
     // seconds for as long as it stays open.
     let refusals = 0;
+    // What the last answer said, as the two figures the mark draws. A poll
+    // that answers with the same runs and the same spend changes nothing on
+    // screen, and a mark that pulsed on it would be reporting the poll rather
+    // than the deployment.
+    let last = "";
 
     async function poll(): Promise<void> {
       let next = LIVE_POLL_MS;
@@ -98,7 +108,15 @@ export function LiveIndicator() {
           refusals = 0;
           const body = (await response.json()) as LiveResponse;
           if (!live) return;
-          setRuns(Array.isArray(body.runs) ? body.runs : []);
+          const rows = Array.isArray(body.runs) ? body.runs : [];
+          setRuns(rows);
+          const said = rows
+            .filter(heardFromRecently)
+            .map((run) => `${run.run_id}:${run.spend_usd ?? ""}`)
+            .sort()
+            .join(",");
+          if (last !== "" && said !== last) setChanges((count) => count + 1);
+          last = said;
         }
       } catch {
         // Offline, aborted, or malformed: the mark simply keeps its last state
@@ -142,7 +160,16 @@ export function LiveIndicator() {
     .filter(Boolean)
     .join(" · ");
   return (
-    <Link className="live-indicator" to="/watch" title={title}>
+    // Keyed by the number of changed polls, so the mark's own pulse restarts
+    // exactly when the deployment said something new — once per change, not
+    // once per poll and never as a permanent shimmer.
+    <Link
+      key={changes}
+      className="live-indicator"
+      data-changed={changes > 0 ? "" : undefined}
+      to="/watch"
+      title={title}
+    >
       <span className="live-dot" aria-hidden="true" />
       {/* "live" rather than "runs": the number is how many runs were heard
           from recently, and the word has to say which set it counts. */}
@@ -343,8 +370,20 @@ export function TopicList({ current }: { current: string }) {
 
   const topics = answer.topics ?? [];
   const proposed = (answer.proposed ?? []).filter((row) => !(row.proposal_id in ruled));
-  const flat = topics.filter((topic) => !PARKED.includes(topic.interest.state));
+  // A name the ledger holds is not a topic yet. §4.13 makes a topic a name
+  // *something has been filed under* or one the operator has said where he
+  // stands on; an entity with neither is a subject analysis recognised in a
+  // session, and fifteen of those in the rail is a list of everything Babel
+  // has ever seen named. They stay reachable — the subjects listing holds
+  // them, and so does every record that cites one — and they are not a
+  // destination here.
+  const named = topics.filter((topic) => topic.posts > 0 || topic.interest.state !== "");
+  const flat = named.filter((topic) => !PARKED.includes(topic.interest.state));
   const shown = flat.slice(0, RAIL_TOPICS);
+  const groups = RAIL_GROUPS.map(({ state, label }) => ({
+    label,
+    rows: shown.filter((topic) => interestOf(topic) === state),
+  })).filter((group) => group.rows.length > 0);
   const row = (topic: TopicRow) => (
     <li key={topic.id || topic.name}>
       <Link
@@ -367,16 +406,16 @@ export function TopicList({ current }: { current: string }) {
           </Link>
         </li>
       </ul>
-      {RAIL_GROUPS.map(({ state, label }) => {
-        const group = shown.filter((topic) => interestOf(topic) === state);
-        if (group.length === 0) return null;
-        return (
-          <section className="topic-group" key={label || "unset"}>
-            <p className="topic-group-label">{label}</p>
-            <ul className="topic-list">{group.map(row)}</ul>
-          </section>
-        );
-      })}
+      {/* The stance labels are a division of the list, so they render only
+          when there is something to divide: one group under one label is a
+          heading over the whole list, which says nothing and costs a line of
+          the rail. */}
+      {groups.map((group) => (
+        <section className="topic-group" key={group.label || "unset"}>
+          {groups.length > 1 && <p className="topic-group-label">{group.label}</p>}
+          <ul className="topic-list">{group.rows.map(row)}</ul>
+        </section>
+      ))}
       {/* Parked and excluded, folded with their counts. They are here rather
           than gone because §4.13 keeps them: the topic, its filings and its
           history all survive a stance, and a reader has to be able to find
@@ -398,7 +437,12 @@ export function TopicList({ current }: { current: string }) {
       })}
       {/* The posts nothing has filed. They are in the feed rather than hidden
           (§8.7) and this is the filter that selects exactly them — the triage
-          backlog, not a bin; a deployment with none says nothing. */}
+          backlog, not a bin; a deployment with none says nothing.
+
+          It says "unfiled" because that is the state's name: "no topic" reads
+          as the absence of a row rather than as a place to go, and the row is
+          a place to go — on the walked deployment it was 2,982 of the 2,980
+          posts on the front page. */}
       {answer.unfiled > 0 && (
         <ul className="topic-list">
           <li>
@@ -407,7 +451,7 @@ export function TopicList({ current }: { current: string }) {
               aria-current={current === UNFILED ? "page" : undefined}
               title="Posts nothing has said what they are about. Unfiled is the triage backlog, not a bin."
             >
-              <span>no topic</span>
+              <span>unfiled</span>
               <span className="topic-count">{answer.unfiled.toLocaleString()}</span>
             </Link>
           </li>
@@ -415,13 +459,22 @@ export function TopicList({ current }: { current: string }) {
       )}
       {flat.length > RAIL_TOPICS && (
         <Link className="topic-all" to="/t">
-          all {topics.length.toLocaleString()} topics →
+          all {named.length.toLocaleString()} topics →
         </Link>
       )}
 
+      {/* What Babel has proposed and nobody has ruled on. The label carries
+          the count, because the reader deciding whether to look wants to know
+          how many decisions are under it — and the whole section is absent on
+          a deployment with none rather than a heading over nothing. */}
       {(proposed.length > 0 || Object.keys(ruled).length > 0) && (
         <section className="topic-group topic-proposed">
-          <p className="topic-group-label">Babel proposes</p>
+          <p className="topic-group-label">
+            Babel proposes
+            {proposed.length > 0 && (
+              <span className="topic-group-count">{proposed.length.toLocaleString()}</span>
+            )}
+          </p>
           <ul className="topic-list">
             {proposed.map((proposal) => (
               <li key={proposal.proposal_id} className="topic-proposal">

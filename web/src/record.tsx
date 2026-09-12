@@ -188,7 +188,12 @@ const MODEL_STANCE_WORDS: Record<string, string> = {
 // gives the reader `1`-`5` to toggle a depth from anywhere on the page: a
 // <details> that owned its own state could be opened by a key and then
 // disagree with the key the next time it was pressed.
-function Peel({
+//
+// It is exported because a question is a post too (§8.7): /ask/questions/:id
+// reads through the same depths — the claim, the evidence it was asked on the
+// strength of, and the machinery — and a second disclosure control there
+// would be a second idea of what a depth looks like.
+export function Peel({
   title,
   count,
   note,
@@ -224,7 +229,7 @@ function Peel({
 // They were ten boxed panels each padded like a surface, and a proposal's
 // case ran 1,600 px for eleven short answers; the argument is one thing and
 // reads as one. A field the record does not hold renders nothing.
-function Prose({ label, text }: { label: string; text: string | undefined }) {
+export function Prose({ label, text }: { label: string; text: string | undefined }) {
   if (!text || !text.trim()) return null;
   return (
     <div className="record-field">
@@ -1260,7 +1265,7 @@ export function RecordPeels({
 // heading says it is long and the shell sets it at an editorial reading size.
 // The test is the length rather than the presence of a title, because the
 // length is what breaks the type.
-const LONG_CLAIM = 120;
+export const LONG_CLAIM = 120;
 
 // RecordHeading is the post: Babel's score, what kind of thing this is, where
 // it stands, the sentence it is, and the one line of facts §8.7 gives a post —

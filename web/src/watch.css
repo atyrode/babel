@@ -311,39 +311,59 @@
   text-transform: uppercase;
 }
 
+/* A quiet field: the value, and the word for what it counts, on one rule.
+ * A bordered box for "3" reads as a form to be filled in; a rule under the
+ * figure reads as a dial that has a default. */
+.watch-page .launch-input {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--rule);
+}
+
 .watch-page .launch-field input[type="text"],
 .watch-page .launch-field input[type="number"] {
   width: 100%;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm, var(--radius));
-  background: var(--bg-sunken);
+  min-width: 0;
+  padding: var(--space-1) 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   color: var(--ink);
   font-family: var(--font-mono);
   font-size: 0.8125rem;
 }
 
 .watch-page .launch-field input:focus-visible {
-  border-color: var(--accent);
   outline: none;
 }
 
-.watch-page .launch-toggle {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-2);
-  width: auto;
-  padding-bottom: var(--space-1);
-  color: var(--ink-muted);
-  font-size: 0.8125rem;
+/* The rule is what takes the focus, because the input has no box to take it. */
+.watch-page .launch-input:focus-within {
+  border-bottom-color: var(--accent);
+}
+
+.watch-page .launch-unit {
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 0.6875rem;
   white-space: nowrap;
 }
 
-/* The action sits at the end of the row, and stays there when the dials wrap
- * to a line of their own: a start button that moves as fields are added is a
- * target the hand has to re-find. */
+/* The passes, as the shell's one chip. They sit on the dials' own baseline
+ * rather than above it, because a row of controls with one of them half a line
+ * high is a row that looks broken. */
+.watch-page .launch-chip {
+  align-self: end;
+  margin-bottom: 2px;
+}
+
+/* The action sits at the end of the dials rather than at the far edge of the
+ * surface: `margin-left: auto` parked it six hundred pixels from the last
+ * field, which reads as a button belonging to something else. */
 .watch-page .launch-submit {
-  margin-left: auto;
+  align-self: end;
 }
 
 .watch-page .launch-footnote {

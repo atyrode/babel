@@ -846,6 +846,15 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* The interface's own sentence inside a field — "suspected of drift", "§4.8
+ * records the disagreement" — is not the record's words and must not wear the
+ * rule that marks them. */
+.peel-body .record-field > p.muted {
+  padding-left: 0;
+  border-left: 0;
+  white-space: normal;
+}
 .peel-body .record-field-list {
   list-style: none;
 }
@@ -868,4 +877,61 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   margin-right: var(--space-2);
+}
+
+/* ---------------------------------------------------------------------------
+ * A QUESTION IS A POST. /ask/questions/:id reads through the depths above, so
+ * it needs no layout of its own — only the two differences a question really
+ * has from a record: no reviewer score, and a class instead of a standing.
+ * --------------------------------------------------------------------------- */
+
+/* No vote gutter, because Babel's reviewers do not assess a question: the
+ * column would be an empty 44 pixels claiming a figure is missing. */
+.record-post.question-post {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* That it is his to move, in the one word the feed row uses for the same
+ * fact. It leads the meta line because it is the reason the page is open. */
+.question-post .question-waiting {
+  color: var(--accent);
+}
+
+/* What the question is about, at depth 1: a subject reached as the place it
+ * is read — a topic under its name, an entity under its own page. */
+.peel-body .question-about {
+  margin: var(--space-3) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+
+.peel-body .question-about a {
+  margin-left: var(--space-1);
+}
+
+/* What class of question it is, as words. Two coloured badges used to carry
+ * this — the class and the ledger's noun for the kind — which made
+ * "blocking · acquire-context" the loudest thing on a page whose subject is a
+ * sentence somebody has to answer. */
+.peel-body .question-class {
+  margin: var(--space-1) 0 var(--space-4);
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* The records it was asked on the strength of. They are identifiers and they
+ * are links, which is exactly how the machinery depth sets an id — except
+ * that here the reader is meant to follow them. */
+.peel-body .question-strength a {
+  font-size: 0.8rem;
+}
+
+/* The interpretations, under the answers in the same thread: one heading
+ * rhythm, because they are the second half of one conversation. */
+.record-thread .question-plans-heading {
+  margin-top: var(--space-5);
 }

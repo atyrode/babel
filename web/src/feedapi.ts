@@ -63,6 +63,19 @@ export interface FeedAuthor {
   href: string;
 }
 
+// One reviewer's vote on one exact revision, as the row draws it: which
+// question the run was answering (§4.12's role) and what it answered.
+//
+// The dots on a row are these, not the totals: four supports across four roles
+// are four answers to four different questions, and a row that drew four
+// identical dots would be summing them in the reader's eye. A build whose feed
+// does not carry them draws the totals instead — same colours, no role shape —
+// because a score with no parts at all is the figure §8.5 refuses.
+export interface FeedVote {
+  role: string;
+  vote: string;
+}
+
 export interface FeedPost {
   id: string;
   kind: FeedKind;
@@ -94,6 +107,17 @@ export interface FeedPost {
   // `awaiting` is false, because a reason to act now on something nobody is
   // waiting for is a sentence the server would have to invent.
   why: string;
+  // Whether Babel's reviewers disagree about it: support on one side and
+  // opposition on the other, which is the one thing a summed score cannot
+  // say. Absent on a build that does not compute it, and then unmarked.
+  contested?: boolean;
+  // Whether a reviewer is assessing it right now. It is the only fact on a
+  // row that is about this moment rather than about the record, so it is the
+  // only mark on a row that moves.
+  reviewing?: boolean;
+  // The individual assessments behind the score, newest first. Absent on a
+  // build that serves only the totals.
+  votes?: FeedVote[] | null;
 }
 
 export interface FeedResponse {

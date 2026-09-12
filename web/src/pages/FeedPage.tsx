@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { answerQuestion, decideReview } from "../api";
 import { kindLabel } from "../evaluation";
 import {
   FEED_KINDS,
@@ -14,13 +16,15 @@ import {
   type FeedPost,
   type FeedResponse,
   type FeedSort,
+  type FeedVote,
   type FeedWindow,
   type InterestState,
   type TopicRow,
   type TopicsResponse,
 } from "../feedapi";
 import { errorMessage, formatTime } from "../format";
-import { ACT_DONE, ROW_ACTS, RULE_KEYS, RuleActs, type RuleAct } from "../ruling";
+import { ANSWER_OUTCOMES } from "../reality";
+import { ACT_DONE, ROW_ACTS, RULE_KEYS, RuleActs, reviewSubject } from "../ruling";
 import type { RecordKind } from "../recordapi";
 import { TopicList, useWideViewport } from "../shell";
 import "../feed.css";
@@ -179,12 +183,196 @@ function isTyping(target: EventTarget | null): boolean {
   return target.closest("input, textarea, select, [contenteditable='true']") !== null;
 }
 
+// The shapes a reviewer's vote is drawn with, one per §4.12 role. A role is
+// the question a run was asked, and four supports across four roles are four
+// answers to four different questions: same colour, different mark, so a row
+// says how broadly it was assessed without a table.
+//
+// A role this build has no shape for is a plain dot rather than nothing: the
+// vote is real, and the shape is how it is qualified.
+const ROLE_SHAPES: Record<string, string> = {
+  reception: "●",
+  evidence: "■",
+  challenge: "▲",
+  relevance: "◆",
+  comparison: "▬",
+  outcome: "★",
+};
+
+// How many votes a row draws before it counts them instead. Five marks read
+// as a set at a glance; a row of eleven reads as a chart.
+const VOTES_SHOWN = 5;
+
+// What a vote's colour says, in the palette's own three signals.
+const VOTE_TONES: Record<string, string> = {
+  support: "good",
+  oppose: "bad",
+  unsure: "faint",
+};
+
 // One act this browser recorded on one post, and when. It stands in the row's
 // controls until the next read, because a permanent act that left the list
 // looking exactly as it did is an act the operator performs twice.
+//
+// `done` is the past-tense word rather than the act, because a row records
+// two kinds of thing now: a ruling on a record and an answer to a question,
+// and the second is not a disposition.
 interface Acted {
-  act: RuleAct;
+  act: string;
+  done: string;
   at: number;
+}
+
+// The why, shortened to the half that distinguishes it.
+//
+// The server sends two clauses — a standing and a wait — and on the front page
+// the first one was "never ruled on" for almost every row: fifteen rows each
+// beginning with the same four words, which is a column of noise where the
+// reason should be. So the empty half goes: a record nobody has ruled on says
+// how long it has waited, one that was reopened says that and when, and one
+// that blocks a run says so.
+function whyShort(why: string): string {
+  const parts = why
+    .split("·")
+    .map((part) => part.trim())
+    .filter((part) => part !== "" && part !== "never ruled on");
+  if (parts.length < 2) return parts[0] ?? "";
+  const last = parts[parts.length - 1];
+  const head = parts.slice(0, -1).join(" · ");
+  // "reopened · waiting 1d" is one fact said twice; "blocks a run · asked 1d"
+  // is two facts. The word "waiting" is what the qualifier already implies.
+  const waited = /^waiting\s+(?<age>.+)$/u.exec(last);
+  return waited ? `${head} ${waited.groups?.age ?? ""}` : `${head} · ${last}`;
+}
+
+// The three answers a row offers, which are the question page's own: one
+// table, in reality.tsx, so the consequence each records is worded once.
+const ROW_OUTCOMES = ANSWER_OUTCOMES;
+
+// One ruling this browser recorded, and what it takes to undo it. A ruling is
+// an appended, attributed event, so "undo" is the reopen ruling rather than a
+// deletion — which is why the receipt carries the kind: the reopen is recorded
+// against the same review subject the accept was.
+interface Ruled {
+  id: string;
+  kind: string;
+  done: string;
+  at: number;
+}
+
+// ---------------------------------------------------------------------------
+// THE LIST MOVES, AND EVERY MOTION MEANS SOMETHING.
+//
+// Four, and no more: a row that stays slides to its new place, a row that
+// arrives fades up into it, a row that leaves goes (fading under a re-sort,
+// folding under a live read, because one is the reader changing the question
+// and the other is the world changing the answer), and a figure that changed
+// ticks. Nothing here animates a colour, a size or a shadow for its own sake.
+//
+// It is the Web Animations API on the real elements rather than CSS
+// transitions, because a list whose rows are re-ordered by a re-render has no
+// transition to hang a transition on: the element that was third is the same
+// element, at a new offset, in one frame. FLIP is what makes that one frame
+// legible — measure where every row was, commit the new order, then animate
+// each row from where it was to where it is.
+//
+// Every one of them is skipped outright when the reader asked for no motion.
+// ---------------------------------------------------------------------------
+
+// How long a row takes to reach its new place, and how long the two marks of a
+// live read stay up. The slide is the peel's own duration because it is the
+// same gesture — a thing moving to where it belongs — and the halo is four
+// seconds because it has to survive the reader looking away from the row he
+// was reading to the row that arrived above it.
+const SLIDE_MS = 220;
+const FADE_MS = 120;
+const TICK_MS = 200;
+const HALO_MS = 4_000;
+
+// How often the list re-reads itself while the reader is on it. It is the
+// header's own cadence (shell.tsx's LIVE_POLL_MS): what is running and what it
+// has produced are one deployment, and two clocks would have the pill and the
+// list disagreeing about what moment it is.
+const LIVE_MS = 15_000;
+
+// How long a ruling's way back stays offered. Six seconds is long enough to
+// notice the row leave and change your mind, and short enough that it is gone
+// before the next ruling.
+const TOAST_MS = 6_000;
+
+const EASE = "cubic-bezier(0.2, 0.7, 0.2, 1)";
+
+function stillness(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+// Where every row is, before the list becomes a different list.
+function positions(rows: Map<string, HTMLLIElement>): Map<string, number> {
+  const at = new Map<string, number>();
+  for (const [id, element] of rows) at.set(id, element.getBoundingClientRect().top);
+  return at;
+}
+
+// The second half of a FLIP. A row that was on screen slides from where it was
+// to where it is; a row that was not fades up into place. A row that did not
+// move is left alone, because animating it to its own position is a frame of
+// work that says nothing.
+function slide(rows: Map<string, HTMLLIElement>, before: Map<string, number>): void {
+  for (const [id, element] of rows) {
+    const was = before.get(id);
+    if (was === undefined) {
+      element.animate(
+        [{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }],
+        { duration: SLIDE_MS, easing: EASE },
+      );
+      continue;
+    }
+    const shift = was - element.getBoundingClientRect().top;
+    if (Math.abs(shift) < 1) continue;
+    element.animate([{ transform: `translateY(${shift}px)` }, { transform: "none" }], {
+      duration: SLIDE_MS,
+      easing: EASE,
+    });
+  }
+}
+
+// A row the reader's own filter no longer admits: it fades where it stands,
+// and the rows under it close the gap on the next frame.
+function fade(rows: Map<string, HTMLLIElement>, ids: string[]): Promise<unknown> {
+  return Promise.all(
+    ids
+      .map((id) => rows.get(id))
+      .filter((element): element is HTMLLIElement => element !== undefined)
+      .map((element) =>
+        element.animate([{ opacity: 1 }, { opacity: 0 }], {
+          duration: FADE_MS,
+          easing: "ease-in",
+          fill: "forwards",
+        }).finished,
+      ),
+  ).catch(() => undefined);
+}
+
+// A row that stopped waiting on him — ruled on, or answered elsewhere while he
+// read. It folds: the height is what leaves, so the list closes over it rather
+// than the page reflowing under the reader's eye.
+function fold(rows: Map<string, HTMLLIElement>, ids: string[]): Promise<unknown> {
+  return Promise.all(
+    ids
+      .map((id) => rows.get(id))
+      .filter((element): element is HTMLLIElement => element !== undefined)
+      .map((element) => {
+        const height = element.getBoundingClientRect().height;
+        element.style.overflow = "hidden";
+        return element.animate(
+          [
+            { height: `${height}px`, opacity: 1 },
+            { height: "0px", opacity: 0, paddingTop: "0px", paddingBottom: "0px" },
+          ],
+          { duration: SLIDE_MS, easing: "ease-in", fill: "forwards" },
+        ).finished;
+      }),
+  ).catch(() => undefined);
 }
 
 // Which of the sentence's three segments is open. One at a time, held by the
@@ -289,7 +477,11 @@ function FeedMenu({
 // the operator's stance — and everything below it is this feed, narrowed by
 // the same route parameter: one list, one set of controls, one pagination,
 // whichever heading stands above it.
-function FeedPage({ heading }: { heading?: ReactNode } = {}) {
+//
+// `topic` is that page's own narrowing, passed rather than read from the URL:
+// a subject page narrows by an entity identifier, and §4.8's display names are
+// model text that has no business in an address bar.
+function FeedPage({ heading, topic: fixed }: { heading?: ReactNode; topic?: string } = {}) {
   const [params, setParams] = useSearchParams();
   const routed = useParams();
   const navigate = useNavigate();
@@ -298,7 +490,7 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
   // page, and both mean the same read. The query form exists because the
   // reserved `unfiled` is a filter over the whole feed rather than a
   // community with a page of its own.
-  const topic = (routed.topic ?? params.get("topic") ?? "").trim();
+  const topic = (fixed ?? routed.topic ?? params.get("topic") ?? "").trim();
 
   // What awaits him is what he arrives to, on the front page. A topic is the
   // same feed narrowed to one community and arrives whole: the reader who
@@ -339,7 +531,101 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
   const [acted, setActed] = useState<Record<string, Acted>>({});
   const [announcement, setAnnouncement] = useState("");
   const [pick, setPick] = useState<PickName | null>(null);
+  // What the last live read changed: scores that moved, and rows that arrived.
+  // They are the page's state rather than the post's because they are facts
+  // about the last fifteen seconds and not about the record.
+  const [ticked, setTicked] = useState<string[]>([]);
+  const [arrived, setArrived] = useState<string[]>([]);
+  // Whether the count at the end of the sentence just changed, which is the
+  // one figure on the page a ruling moves.
+  const [counted, setCounted] = useState(false);
+  // The ruling this browser recorded last, and the way back from it.
+  const [toast, setToast] = useState<Ruled | null>(null);
+  // How many rulings this reading has recorded. It is the session's own count
+  // and says so: the store's figure is a projection with a stated freshness,
+  // and a "ruled today" read off it would go backwards.
+  const [ruledToday, setRuledToday] = useState(0);
   const rows = useRef(new Map<string, HTMLLIElement>());
+  const list = useRef<HTMLOListElement | null>(null);
+
+  const shown = posts ?? [];
+  const total = answer?.total ?? 0;
+
+  // What is on screen, for the three readers that are not a render: the live
+  // poll diffs against it, the motion below measures it, and the scroll anchor
+  // needs the row the keyboard is on. They are refs because `settle` must not
+  // be re-created by a keystroke: it is what `load` is built from, and a
+  // `load` that changed identity when the focus moved would re-read the feed
+  // on every press of `j`.
+  const drawn = useRef<FeedPost[]>(shown);
+  const open = useRef<PickName | null>(pick);
+  const standing = useRef(focus);
+  useEffect(() => {
+    drawn.current = shown;
+    open.current = pick;
+    standing.current = focus;
+  });
+
+  // A newer answer, put on screen with the motion the change deserves.
+  //
+  // `resort` is the reader changing the question: rows he filtered out fade,
+  // the rest slide to their new places. `live` is the world changing the
+  // answer while he reads: a row that stopped waiting on him folds, a row that
+  // arrived wears a halo, a score that moved ticks — and the scroll is held
+  // against the row he is standing on, because a list that re-orders under a
+  // reader must not move the line he was reading.
+  const settle = useCallback(async (next: FeedResponse, mode: "resort" | "live") => {
+    const previous = drawn.current;
+    const arriving = next.posts ?? [];
+    const leaving = previous
+      .filter((post) => !arriving.some((row) => row.id === post.id))
+      .map((post) => post.id);
+    const fresh = arriving
+      .filter((post) => !previous.some((row) => row.id === post.id))
+      .map((post) => post.id);
+    const moved = arriving
+      .filter((post) => previous.some((row) => row.id === post.id && row.score !== post.score))
+      .map((post) => post.id);
+    const motion = !stillness();
+
+    if (motion && leaving.length > 0 && previous.length > 0) {
+      await (mode === "live" ? fold(rows.current, leaving) : fade(rows.current, leaving));
+    }
+
+    // Where the reader's eye is, and where every row was, both measured
+    // before the list becomes a different list.
+    const held = mode === "live"
+      ? rows.current.get(drawn.current[standing.current]?.id ?? "")
+      : undefined;
+    const heldAt = held?.getBoundingClientRect().top;
+    const before = positions(rows.current);
+
+    flushSync(() => {
+      setAnswer(next);
+      setPosts(arriving);
+      if (mode === "resort") {
+        setFocus(-1);
+        // The receipts a ruling left on the rows belong to the list they were
+        // recorded in. A read carries the new standing, so keeping them would
+        // be showing the act twice.
+        setActed({});
+      }
+    });
+
+    if (held !== undefined && heldAt !== undefined) {
+      const now = held.getBoundingClientRect().top;
+      if (Math.abs(now - heldAt) > 1) window.scrollBy(0, now - heldAt);
+    }
+    if (motion) slide(rows.current, before);
+    if (fresh.length > 0 && mode === "live") {
+      setArrived(fresh);
+      window.setTimeout(() => setArrived([]), HALO_MS);
+    }
+    if (moved.length > 0) {
+      setTicked(moved);
+      window.setTimeout(() => setTicked([]), TICK_MS * 2);
+    }
+  }, []);
 
   // A read replaces the rows when it answers and not before. Changing the
   // order used to blank the list, paint a "Reading the feed…" note where
@@ -351,27 +637,123 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
     setLoading(true);
     setError(null);
     getFeed({ sort, t, topic, needs, kind: kindKey ? kindKey.split(",") : [], limit: PAGE_SIZE })
-      .then((next) => {
-        setAnswer(next);
-        setPosts(next.posts ?? []);
-        setFocus(-1);
-        // The receipts a ruling left on the rows belong to the list they were
-        // recorded in. A read carries the new standing, so keeping them would
-        // be showing the act twice.
-        setActed({});
-      })
+      .then((next) => settle(next, "resort"))
       .catch((reason) => setError(errorMessage(reason)))
       .finally(() => setLoading(false));
-  }, [kindKey, needs, sort, t, topic]);
+  }, [kindKey, needs, settle, sort, t, topic]);
 
   useEffect(load, [load]);
+
+  // The list reads itself again while he stays on it, because the corpus does
+  // not stop when he opens the page: a run publishes, a reviewer votes, a
+  // question he answered in another tab stops waiting on him.
+  //
+  // Three things stop the poll, and each of them is a reader mid-gesture: a
+  // tab nobody is looking at (there is nothing to keep fresh), an open menu
+  // (the list under it must not move while he chooses), and an open
+  // confirmation or answer box (a permanent act is being written, and the row
+  // it belongs to must still be there when it is recorded).
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.hidden || open.current !== null) return;
+      if (list.current?.querySelector(".record-confirm") != null) return;
+      if (drawn.current.length === 0) return;
+      getFeed({
+        sort,
+        t,
+        topic,
+        needs,
+        kind: kindKey ? kindKey.split(",") : [],
+        limit: Math.max(PAGE_SIZE, drawn.current.length),
+      })
+        .then((next) => settle(next, "live"))
+        // A poll the reader did not ask for must never accuse the page of
+        // being broken: the rows on screen stay true and it tries again.
+        .catch(() => undefined);
+    }, LIVE_MS);
+    return () => window.clearInterval(timer);
+  }, [kindKey, needs, settle, sort, t, topic]);
+
+  // What a row's act did, and what the list does about it.
+  //
+  // A ruling under "what needs me" takes the row out of the list: the list is
+  // what is left to do, and a row sitting in it with "accepted" on it is a
+  // line the reader has to skip past for the rest of the session. It folds,
+  // the count ticks down, and the way back is offered for six seconds —
+  // because the act is permanent and append-only, and "reopen" is the act
+  // that undoes it rather than a deletion.
+  //
+  // An answer is different and stays: a question the operator answered is a
+  // question whose answer he may want to read back, and the receipt is the
+  // only trace of it until the projection is rebuilt.
+  function recorded(post: FeedPost, act: string, done: string, message: string) {
+    setAnnouncement(message);
+    // A question asked from a row is a comment, and the count beside the claim
+    // is the one number on the row that moves the moment it is recorded: the
+    // thread is read live, while the feed's own projection is rebuilt on its
+    // own schedule.
+    if (act === "ask") {
+      setPosts((current) =>
+        (current ?? []).map((row) =>
+          row.id === post.id ? { ...row, comments: row.comments + 1 } : row,
+        ),
+      );
+    }
+    if (act === "accept" || act === "reject") {
+      setRuledToday((count) => count + 1);
+      setToast({ id: post.id, kind: post.kind, done, at: Date.now() });
+      if (needsMe) {
+        const leave = () => {
+          setPosts((current) => (current ?? []).filter((row) => row.id !== post.id));
+          setAnswer((current) =>
+            current === null ? current : { ...current, total: Math.max(0, current.total - 1) },
+          );
+          setCounted(true);
+          window.setTimeout(() => setCounted(false), TICK_MS * 2);
+        };
+        if (stillness()) leave();
+        else void fold(rows.current, [post.id]).then(leave);
+        return;
+      }
+    }
+    setActed((current) => ({ ...current, [post.id]: { act, done, at: Date.now() } }));
+  }
+
+  // The way back from a ruling, which is a ruling: §4.7's log is append-only,
+  // so reopening is a new attributed event and never an erasure of the last
+  // one. The note says where it came from, because a reopen with no reason is
+  // refused and "I pressed the wrong thing" is the truth.
+  async function reopen(entry: Ruled) {
+    const subject = reviewSubject(RECORD_KINDS[entry.kind] ?? "proposal");
+    if (!subject) return;
+    setToast(null);
+    try {
+      await decideReview({
+        subject: { type: subject, id: entry.id },
+        disposition: "reopen",
+        note: "reopened from the feed",
+      });
+      setAnnouncement("Reopened. It is waiting on you again.");
+      setRuledToday((count) => Math.max(0, count - 1));
+      load();
+    } catch (reason) {
+      setAnnouncement(errorMessage(reason));
+    }
+  }
+
+  // The toast goes on its own, because it is a receipt and not a dialogue.
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), TOAST_MS);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   // More of the same order, appended. The offset is how many rows are already
   // on screen rather than a page number, so a post published while the
   // operator was reading cannot make the next batch start inside the last one
   // — and the ids already drawn are skipped if it does anyway.
   function more() {
-    const drawn = posts ?? [];
+    const already = shown.length;
     setAppending(true);
     getFeed({
       sort,
@@ -380,7 +762,7 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
       needs,
       kind: kindKey ? kindKey.split(",") : [],
       limit: PAGE_SIZE,
-      offset: drawn.length,
+      offset: already,
     })
       .then((next) => {
         setAnswer(next);
@@ -422,8 +804,6 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
     chooseNeeds(!needsMe);
   }
 
-  const shown = posts ?? [];
-  const total = answer?.total ?? 0;
   const focused = focus >= 0 ? shown[focus] : undefined;
   const focusID = focused?.id ?? null;
 
@@ -486,6 +866,19 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
           navigate(focused.href);
           return;
         }
+        // The answer, for the one kind of post that takes one. It presses the
+        // row's own control, like every other key here, so the words are typed
+        // into the box the pointer would have opened.
+        case "a": {
+          if (!focused || focused.kind !== "question") return;
+          const control = rows.current
+            .get(focused.id)
+            ?.querySelector<HTMLButtonElement>('[data-answer="answered"]');
+          if (!control) return;
+          event.preventDefault();
+          control.click();
+          return;
+        }
         default: {
           const act = RULE_KEYS[event.key];
           if (!act || !focused) return;
@@ -512,7 +905,6 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
   const built = formatTime(answer?.built_at);
   const filtered =
     kinds.length > 0 || topic !== "" || needsMe || (windowed(sort) && t !== "all");
-  const where = topic === UNFILED ? "No topic" : topic ? `t/${topic}` : "Home";
   // Where the topics go. Above 1024px they are a rail beside the feed and
   // below it they are a fold above it — one list either way, mounted once,
   // because two copies of it is two copies for a screen reader that reads
@@ -523,14 +915,13 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
     <section className="page feed-page">
       <div className="feed-layout">
         <div className="feed-column">
-          {heading ?? (
-            <div className="page-heading">
-              <div>
-                <p className="eyebrow">The feed</p>
-                <h1>{where}</h1>
-              </div>
-            </div>
-          )}
+          {/* No title on the front page. "THE FEED / Home" was an eyebrow
+              naming the application over an h1 naming the place — two lines of
+              chrome saying what the reader had just pressed Home to get, above
+              a sentence that says what is actually in the list. The sentence is
+              the heading now, set at reading size; a topic keeps its own header
+              and the sentence sits under it, where it is a control again. */}
+          {heading}
 
           {!wide && (
             <details className="peel topics-peel">
@@ -553,7 +944,7 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
               ordering's freshness end the sentence, because §8.5 asks a
               ranked list to say what it is ranked by and when, and the answer
               to the first is on the word "sorted by". */}
-          <p className="feed-sentence">
+          <p className="feed-sentence" data-heading={heading === undefined ? "" : undefined}>
             Showing{" "}
             <FeedMenu
               name="needs"
@@ -687,8 +1078,21 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
                 </button>
               ))}
             </FeedMenu>
-            {answer && <span className="feed-count"> · {total.toLocaleString()}</span>}
+            {answer && (
+              <span className="feed-count" data-ticked={counted ? "" : undefined}>
+                {" "}· {total.toLocaleString()}
+              </span>
+            )}
             {built && <span className="feed-ranked"> · ranked {built.relative}</span>}
+            {/* What this reading has decided. It appears when there is
+                something to count and says whose count it is: the store's own
+                figure is a projection with a stated freshness, and a number
+                read off it would go backwards while he worked. */}
+            {ruledToday > 0 && (
+              <span className="feed-ruled" title="Rulings you have recorded in this reading">
+                {" "}· ruled today {ruledToday.toLocaleString()}
+              </span>
+            )}
           </p>
 
           {/* Every act on a row happens in place, so the page says what it
@@ -728,12 +1132,17 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
               <ol className="feed-waiting" aria-hidden="true">
                 {SKELETON_ROWS.map((row) => (
                   <li className="feed-row feed-skeleton" key={row}>
-                    <span className="feed-claim">
-                      <span className="feed-skeleton-block">&nbsp;</span>
-                    </span>
-                    <span className="feed-facts">
-                      <span className="feed-skeleton-block">&nbsp;</span>
-                    </span>
+                    <div className="feed-votes">
+                      <span className="feed-skeleton-block feed-skeleton-score">&nbsp;</span>
+                    </div>
+                    <div className="feed-body">
+                      <span className="feed-claim">
+                        <span className="feed-skeleton-block">&nbsp;</span>
+                      </span>
+                      <span className="feed-facts">
+                        <span className="feed-skeleton-block">&nbsp;</span>
+                      </span>
+                    </div>
                   </li>
                 ))}
               </ol>
@@ -802,32 +1211,17 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
               ))}
 
             {shown.length > 0 && (
-              <ol className="feed-list">
+              <ol className="feed-list" ref={list}>
                 {shown.map((post, index) => (
                   <FeedRow
                     key={post.id}
                     post={post}
                     focused={index === focus}
                     acted={acted[post.id]}
+                    ticked={ticked.includes(post.id)}
+                    arrived={arrived.includes(post.id)}
                     onFocus={() => setFocus(index)}
-                    onActed={(act, message) => {
-                      setActed((current) => ({
-                        ...current,
-                        [post.id]: { act, at: Date.now() },
-                      }));
-                      setAnnouncement(message);
-                      // A question is a comment, and the count beside the claim
-                      // is the one number on the row that moves the moment it is
-                      // recorded: the thread is read live, while the feed's own
-                      // projection is rebuilt on its own schedule.
-                      if (act === "ask") {
-                        setPosts((current) =>
-                          (current ?? []).map((row) =>
-                            row.id === post.id ? { ...row, comments: row.comments + 1 } : row,
-                          ),
-                        );
-                      }
-                    }}
+                    onActed={(act, done, message) => recorded(post, act, done, message)}
                     register={(element) => {
                       if (element) rows.current.set(post.id, element);
                       else rows.current.delete(post.id);
@@ -852,6 +1246,19 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
               <p className="feed-end">That is all {total.toLocaleString()} of them.</p>
             )}
           </div>
+
+          {/* The way back from the last ruling. It is bottom-left and small:
+              the act is recorded and the list has moved on, and this is a
+              receipt with one control on it rather than a dialogue asking him
+              to confirm something he has already done. */}
+          {toast && (
+            <div className="feed-toast" role="status">
+              <span>{toast.done}</span>
+              <button type="button" onClick={() => void reopen(toast)}>
+                reopen
+              </button>
+            </div>
+          )}
         </div>
 
         {wide && (
@@ -867,31 +1274,38 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
 
 // One post.
 //
-// Two lines and no box: the claim as a link, then the facts a reader decides
-// with — Babel's score when there is one, what kind of thing it is, where it
-// is filed, who wrote it, how old it is, how much has been said about it. A
-// fact this record does not have is absent rather than empty: an unattributed
-// record carries no "by", an unfiled one carries no topic, and an unassessed
-// one carries no score.
+// Two lines and a gutter. The gutter is what Babel's reviewers said: the score
+// as a figure, and under it one mark per assessment — the colour is the vote
+// and the shape is the role. It is the row's left column at every sort, so the
+// eye learns where the number is; a score that only appeared under `top` was a
+// figure the reader had to go looking for, and one that rode inside the fact
+// line read as a stray digit in front of the kind.
 //
-// The score used to hold a column of its own with an em dash in it wherever
-// no reviewer had voted, which on the arriving front page was most rows: a
-// 44px gutter of dashes down the left of the list, spending the reader's first
-// glance on an absence. It is a figure at the head of the fact line now, and
-// a record nobody has assessed simply has no figure.
+// Line one is the claim. Line two is what a reader decides with — what kind of
+// thing it is, where it is filed, how old it is, how much has been said about
+// it, and, when it is waiting on him, why. A fact this record does not have is
+// absent rather than empty: an unfiled record carries no topic and an
+// unanswered question carries no comment count.
+//
+// The run that wrote it is not on the row. Fifteen rows each ending in
+// `by run-20260910T165022Z` was a column of identifiers down a list of
+// sentences, and the byline is on the post — which is where a reader who cares
+// which run wrote it is going anyway.
 //
 // The acts are hidden until the row is under the pointer, holds the keyboard,
 // or is the row `j`/`k` put the focus on. Five controls on every waiting row
 // meant seventy-five buttons on the first screen — the operator asked whether
 // a row needs its acts "at all time, or only on hover", and the answer a list
-// of fifteen gives is on hover. They are still on the awaiting rows only: a
-// row that offered a ruling on a record already ruled on would be offering to
-// overwrite an append-only decision, and one that offered it on a question
-// would be offering to rule on something answered somewhere else.
+// of fifteen gives is on hover. A question's acts are its own three, because a
+// question is answered rather than ruled on, and it is answered here: §8.4
+// asks for the decision where the record is read, and the row is where it is
+// read first.
 function FeedRow({
   post,
   focused,
   acted,
+  ticked,
+  arrived,
   onFocus,
   onActed,
   register,
@@ -899,102 +1313,308 @@ function FeedRow({
   post: FeedPost;
   focused: boolean;
   acted: Acted | undefined;
+  // Whether the score changed on the last live read, and whether the row
+  // itself arrived on it. Both are about the last fifteen seconds rather than
+  // about the record, which is why they are the page's state and not fields.
+  ticked: boolean;
+  arrived: boolean;
   onFocus: () => void;
-  onActed: (act: RuleAct, message: string) => void;
+  onActed: (act: string, done: string, message: string) => void;
   register: (element: HTMLLIElement | null) => void;
 }) {
   const created = formatTime(post.created_at);
   const [first, second, ...rest] = post.topics;
   const kind = RECORD_KINDS[post.kind];
-  // What Babel's reviewers said, for the one gesture that explains the
-  // number. A record no reviewer has assessed carries no figure rather than a
-  // zero, which §8.5 refuses: an unreviewed record rendered as a zero reads as
-  // one nobody objected to.
-  const voted = post.support + post.oppose + post.unsure > 0;
   const breakdown = `Babel's reviewers: ${post.support} support, ${post.oppose} oppose, ${post.unsure} unsure`;
   const recorded = acted ? formatTime(new Date(acted.at).toISOString()) : null;
+  const why = post.awaiting ? whyShort(post.why) : "";
   return (
     <li
       className="feed-row"
       data-focused={focused ? "" : undefined}
       data-post={post.id}
+      data-kind={post.kind}
       data-awaiting={post.awaiting ? "" : undefined}
+      data-arrived={arrived ? "" : undefined}
       tabIndex={-1}
       ref={register}
       onFocus={onFocus}
       aria-label={`${kindLabel(post.kind)}: ${post.title}`}
     >
-      {/* The row's own filings travel with the click. There is no route
-          that reads one record's filings — the peel carries none — so the
-          topics a reader can see on the row are the topics the page he
-          opens can show, and the alternative is a post that loses what it
-          is about by being opened. */}
-      <Link className="feed-claim untrusted-inline" to={post.href} state={{ topics: post.topics }}>
-        {post.title || "a record with no title recorded"}
-      </Link>
-      <span className="feed-facts">
-        {/* Babel's score, read-only, with what it is made of one gesture
-            away. It is a figure and is set as one; it is not a control,
-            because the operator does not vote. */}
-        {voted && (
-          <span className="feed-score" title={breakdown} aria-label={breakdown}>
-            {post.score}
+      <Votes post={post} breakdown={breakdown} ticked={ticked} />
+      <div className="feed-body">
+        {/* The row's own filings travel with the click. There is no route
+            that reads one record's filings — the peel carries none — so the
+            topics a reader can see on the row are the topics the page he
+            opens can show, and the alternative is a post that loses what it
+            is about by being opened. */}
+        <Link
+          className="feed-claim untrusted-inline"
+          to={post.href}
+          state={{ topics: post.topics }}
+        >
+          {post.title || "a record with no title recorded"}
+        </Link>
+        <span className="feed-facts">
+          <span className="feed-kind" data-tone={KIND_TONES[post.kind]}>
+            {kindLabel(post.kind)}
           </span>
-        )}
-        <span className="feed-kind" data-tone={KIND_TONES[post.kind]}>
-          {kindLabel(post.kind)}
+          {first && (
+            <Link className="feed-topic" to={`/t/${encodeURIComponent(first)}`}>
+              t/{first}
+            </Link>
+          )}
+          {second && (
+            <Link className="feed-topic" to={`/t/${encodeURIComponent(second)}`}>
+              t/{second}
+            </Link>
+          )}
+          {rest.length > 0 && (
+            <span className="feed-topic" title={rest.map((name) => `t/${name}`).join(" · ")}>
+              +{rest.length}
+            </span>
+          )}
+          {created && (
+            <time className="feed-age" dateTime={post.created_at} title={created.absolute}>
+              {created.relative}
+            </time>
+          )}
+          {post.comments > 0 && (
+            <Link className="feed-comments" to={`${post.href}#comments`}>
+              {post.comments.toLocaleString()} {post.comments === 1 ? "comment" : "comments"}
+            </Link>
+          )}
+          {/* Why it is next, from the fields the post's own store returned. It
+              is the one fact on the row a reader cannot reconstruct for
+              himself, so it closes the line rather than taking a third one —
+              and it is absent rather than empty for a post nobody is waiting
+              on. */}
+          {why && <span className="feed-why">{why}</span>}
+          {/* Somebody is reading it right now. The only mark on a row that
+              moves, because it is the only fact on a row that is about this
+              moment. */}
+          {post.reviewing && (
+            <span
+              className="feed-reviewing"
+              title="a reviewer is reading this now"
+              aria-label="a reviewer is reading this now"
+            />
+          )}
         </span>
-        {first && (
-          <Link className="feed-topic" to={`/t/${encodeURIComponent(first)}`}>
-            t/{first}
-          </Link>
-        )}
-        {second && (
-          <Link className="feed-topic" to={`/t/${encodeURIComponent(second)}`}>
-            t/{second}
-          </Link>
-        )}
-        {rest.length > 0 && (
-          <span className="feed-topic" title={rest.map((name) => `t/${name}`).join(" · ")}>
-            +{rest.length}
+        {/* What he did, in place of what he could do. It stays until the next
+            read: the standing the read carries is the store's answer, and
+            this is the receipt for the moment in between. */}
+        {acted && (
+          <span className="feed-acted" data-act={acted.act}>
+            {acted.done}
+            {recorded && ` · ${recorded.relative}`}
           </span>
         )}
-        {post.author && (
-          <Link className="feed-author" to={post.author.href}>
-            by {post.author.run_id}
-          </Link>
+        {!acted && post.awaiting && kind && (
+          <div className="feed-acts">
+            <RuleActs
+              id={post.id}
+              kind={kind}
+              acts={ROW_ACTS}
+              onActed={(act, message) => onActed(act, ACT_DONE[act], message)}
+              plain
+            />
+          </div>
         )}
-        {created && (
-          <time className="feed-age" dateTime={post.created_at} title={created.absolute}>
-            {created.relative}
-          </time>
+        {!acted && post.awaiting && post.kind === "question" && (
+          <div className="feed-acts">
+            <RowAnswer id={post.id} onActed={onActed} />
+          </div>
         )}
-        {post.comments > 0 && (
-          <Link className="feed-comments" to={`${post.href}#comments`}>
-            {post.comments.toLocaleString()} {post.comments === 1 ? "comment" : "comments"}
-          </Link>
+      </div>
+    </li>
+  );
+}
+
+// What Babel's reviewers said, as the row's left column.
+//
+// The figure is the score and the marks under it are what it is made of: one
+// per assessment, coloured by the vote and shaped by the role. A record no
+// reviewer has assessed carries a hollow ring that says so — which is the
+// distinction §8.5 turns on, because a nought with nothing under it reads as a
+// record nobody objected to.
+function Votes({
+  post,
+  breakdown,
+  ticked,
+}: {
+  post: FeedPost;
+  breakdown: string;
+  ticked: boolean;
+}) {
+  // The assessments themselves when the feed carries them, and the totals when
+  // it does not: same colours, no role shape, because a dot whose shape was
+  // invented would be a claim about which question was answered.
+  const served = post.votes ?? [];
+  const votes: FeedVote[] = served.length > 0
+    ? served
+    : [
+        ...Array.from({ length: post.support }, () => ({ role: "", vote: "support" })),
+        ...Array.from({ length: post.oppose }, () => ({ role: "", vote: "oppose" })),
+        ...Array.from({ length: post.unsure }, () => ({ role: "", vote: "unsure" })),
+      ];
+  const shown = votes.slice(0, VOTES_SHOWN);
+  const more = votes.length - shown.length;
+  return (
+    <div className="feed-votes">
+      <span className="feed-score-line">
+        {/* Reviewers on both sides of one claim, which a single figure cannot
+            say. It leads the number because it qualifies it. */}
+        {post.contested && (
+          <span
+            className="feed-contested"
+            title="Babel's reviewers are split on this"
+            aria-label="Babel's reviewers are split on this"
+          />
+        )}
+        <span
+          className="feed-score"
+          data-zero={post.score === 0 ? "" : undefined}
+          data-ticked={ticked ? "" : undefined}
+          title={breakdown}
+          aria-label={breakdown}
+        >
+          {post.score}
+        </span>
+      </span>
+      <span className="feed-dots">
+        {votes.length === 0 ? (
+          <span className="feed-dot" data-tone="none" title="not yet reviewed" aria-label="not yet reviewed">
+            ◯
+          </span>
+        ) : (
+          <>
+            {shown.map((vote, index) => (
+              <span
+                className="feed-dot"
+                key={`${vote.role}-${vote.vote}-${index}`}
+                data-tone={VOTE_TONES[vote.vote] ?? "faint"}
+                title={vote.role ? `${vote.role}: ${vote.vote}` : vote.vote}
+              >
+                {ROLE_SHAPES[vote.role] ?? "●"}
+              </span>
+            ))}
+            {more > 0 && <span className="feed-dots-more">+{more}</span>}
+          </>
         )}
       </span>
-      {/* Why it is next, from the fields the post's own store returned. It
-          is the one fact on the row a reader cannot reconstruct for
-          himself, and it is absent rather than empty for a post nobody is
-          waiting on. */}
-      {post.awaiting && post.why && <span className="feed-why">{post.why}</span>}
-      {/* What he did, in place of what he could do. It stays until the next
-          read: the standing the read carries is the store's answer, and
-          this is the receipt for the moment in between. */}
-      {acted && (
-        <span className="feed-acted" data-act={acted.act}>
-          {ACT_DONE[acted.act]}
-          {recorded && ` · ${recorded.relative}`}
-        </span>
-      )}
-      {!acted && post.awaiting && kind && (
-        <div className="feed-acts">
-          <RuleActs id={post.id} kind={kind} acts={ROW_ACTS} onActed={onActed} plain />
+    </div>
+  );
+}
+
+// The three things an operator can do with a question, on the row.
+//
+// A question is not ruled on — it is answered, and §4.8 gives exactly three
+// outcomes: the answer itself, "I don't know", and "stop asking". They are the
+// same three the question's own page offers, in the same order and through the
+// same route; what differs is that the words are typed into a box that unfolds
+// under the row, so answering the question at the top of the feed does not cost
+// a page change.
+function RowAnswer({
+  id,
+  onActed,
+}: {
+  id: string;
+  onActed: (act: string, done: string, message: string) => void;
+}) {
+  const [outcome, setOutcome] = useState("");
+  const [text, setText] = useState("");
+  const [working, setWorking] = useState(false);
+  const [failure, setFailure] = useState("");
+  const chosen = ROW_OUTCOMES.find((entry) => entry.value === outcome);
+
+  async function record() {
+    if (!chosen || working) return;
+    if (chosen.value === "answered" && text.trim() === "") return;
+    setWorking(true);
+    setFailure("");
+    try {
+      const result = await answerQuestion(id, text, chosen.value);
+      setOutcome("");
+      setText("");
+      onActed("answer", chosen.done, `Answer recorded. The question is now ${result.state}.`);
+    } catch (reason) {
+      setFailure(errorMessage(reason));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="record-acts record-acts-text">
+        <div>
+          {ROW_OUTCOMES.map((entry) => (
+            <button
+              type="button"
+              key={entry.value}
+              data-answer={entry.value}
+              className={entry.value === outcome ? "active" : undefined}
+              aria-expanded={entry.value === outcome}
+              title={entry.note}
+              onClick={() => setOutcome(entry.value === outcome ? "" : entry.value)}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {chosen && (
+        <div className="record-confirm-fold">
+          <form
+            className="record-confirm feed-answer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void record();
+            }}
+          >
+            <p>{chosen.note}</p>
+            <label>
+              {chosen.value === "answered" ? "Your answer" : "Why, if you want to say (optional)"}
+              <textarea
+                value={text}
+                rows={2}
+                autoFocus
+                placeholder="Kept verbatim and attributed to you. ⌘↵ records it."
+                onChange={(event) => setText(event.target.value)}
+                // The keyboard's own way out of a box inside a list: the
+                // pointer never has to find the button, and Escape gives the
+                // row back without recording anything.
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    void record();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setOutcome("");
+                  }
+                }}
+              />
+            </label>
+            <div className="record-confirm-acts">
+              <button
+                type="submit"
+                className="primary-button"
+                disabled={working || (chosen.value === "answered" && text.trim() === "")}
+              >
+                {working && <span className="spinner small" />}
+                {working ? "Recording…" : chosen.verb}
+              </button>
+              <button type="button" onClick={() => setOutcome("")} disabled={working}>
+                Cancel
+              </button>
+            </div>
+            {failure && <p className="inline-error" role="alert">{failure}</p>}
+          </form>
         </div>
       )}
-    </li>
+    </>
   );
 }
 

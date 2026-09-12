@@ -19,7 +19,12 @@
 
 /* The feed and the topics beside it. One column until the rail has room; the
    rail is mounted by the page only above the same width, so the two cannot
-   disagree about whether it is there. */
+   disagree about whether it is there.
+
+   The reading column is bounded to a measure rather than to the page, and the
+   rail follows it rather than the right edge: a list of titles set across
+   1,100 pixels runs to 140 characters a line, and a rail parked five hundred
+   pixels away from the list it belongs to reads as two pages. */
 .feed-page .feed-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -29,7 +34,7 @@
 
 @media (min-width: 1024px) {
   .feed-page .feed-layout {
-    grid-template-columns: minmax(0, 1fr) 15rem;
+    grid-template-columns: minmax(0, 72ch) 15rem;
   }
 }
 
@@ -64,6 +69,19 @@
   color: var(--ink-muted);
   font-size: 0.86rem;
   line-height: 2;
+}
+
+/* On the front page the sentence *is* the heading: there is no eyebrow and no
+   h1 above it, because "THE FEED / Home" said what the reader had just pressed
+   Home to get while this line says what is actually in the list. It is set at
+   reading size and in the body ink, so the page has one thing at the top and
+   it is the true one. On a topic's page the header above it says where he is,
+   and the sentence goes back to being a control. */
+.feed-page .feed-sentence[data-heading] {
+  margin-bottom: var(--space-4);
+  color: var(--ink);
+  font-size: 1.05rem;
+  line-height: 1.9;
 }
 
 .feed-page .feed-pick {
@@ -111,13 +129,22 @@
   color: var(--accent);
 }
 
+/* The menu a word in the sentence opens.
+
+   It is sized to the words inside it and not to the word that opened it. It
+   used to inherit a 12rem minimum from a menu whose items were single words,
+   so the two items that carry a sentence of explanation — "a ruling or an
+   answer is waiting" — were laid out in a 1rem tick column and printed on top
+   of their own labels. An item is a block now: the word, and under it what
+   choosing it means. */
 .feed-page .feed-menu {
   position: absolute;
   z-index: 25;
   top: calc(100% + var(--space-1));
   left: 0;
   display: grid;
-  min-width: 12rem;
+  min-width: 18rem;
+  max-width: 24rem;
   padding: var(--space-1);
   gap: 1px;
   box-shadow: var(--shadow-raised);
@@ -131,6 +158,9 @@
 .feed-page .feed-menu-wide {
   grid-auto-flow: column;
   gap: var(--space-3);
+  /* Two columns of single words need less room than one column of
+     sentences, and more than the trigger word. */
+  min-width: 20rem;
 }
 
 .feed-page .feed-menu-column {
@@ -152,11 +182,11 @@
 .feed-page .feed-menu button {
   display: grid;
   grid-template-columns: 1rem minmax(0, 1fr);
-  align-items: baseline;
+  align-items: start;
   justify-content: start;
   gap: 0 var(--space-2);
   min-height: 1.9rem;
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2);
   border: 0;
   border-radius: var(--radius-sm);
   color: var(--ink-muted);
@@ -164,7 +194,13 @@
   font-size: 0.82rem;
   font-weight: 500;
   text-align: left;
-  white-space: nowrap;
+  white-space: normal;
+}
+
+/* The item's own words, in the column beside the tick: the label on its own
+   line and the consequence under it. */
+.feed-page .feed-menu button > span:not(.feed-menu-tick) {
+  grid-column: 2;
 }
 
 /* The order and the period are a single choice each, so their items carry no
@@ -257,7 +293,10 @@
   inset: 0 auto 0 0;
   width: 30%;
   background: var(--accent);
-  animation: feed-progress 1.1s ease-in-out infinite;
+  /* Eased rather than linear: a line that slides at a constant speed reads as
+     a progress bar making a claim about how far along the read is, and this
+     one knows nothing of the sort — it says only that a read is in flight. */
+  animation: feed-progress 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
   content: "";
 }
 
@@ -284,13 +323,22 @@
   list-style: none;
 }
 
-/* One row: the claim, the facts, and — when it is waiting and the reader is
-   on it — the acts. Twelve pixels of air above and below, a hairline between,
-   and no column of its own for anything: the score joined the fact line when
-   its column turned out to be mostly em dashes. */
+/* One row: what Babel's reviewers said in a gutter of its own, then the claim,
+   the facts, and — when it is waiting and the reader is on it — the acts.
+
+   Fourteen pixels of air above and below. It is the one measurement on this
+   page that is not a step on the four-pixel scale, and it is deliberate: at
+   twelve the titles at their new size touched each other, and at sixteen
+   fifteen rows no longer fit the density contract. */
 .feed-page .feed-row {
-  display: block;
-  padding: var(--space-3);
+  --feed-row-pad: 14px;
+
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+  padding: var(--feed-row-pad) var(--space-3);
   border-bottom: 1px solid var(--rule-soft);
   transition:
     background var(--motion-fast) ease,
@@ -313,17 +361,106 @@
   outline: none;
 }
 
+.feed-page .feed-body {
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   THE VOTE GUTTER. Babel's reception, as the row's left column: the score as
+   a figure, and under it one mark per assessment.
+
+   It is always there, at every sort. The score used to appear inside the fact
+   line and only when somebody had voted, which made it a stray blue digit in
+   front of the kind on some rows and absent on others — a number the eye had
+   to hunt for. A column is how a list of figures becomes comparable.
+   --------------------------------------------------------------------------- */
+.feed-page .feed-votes {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.feed-page .feed-score-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  /* The same line box as the claim's first line, so the figure sits on the
+     title rather than above or below it. */
+  line-height: 1.45;
+}
+
+/* One mark per assessment: the colour is what the reviewer answered and the
+   shape is which question it was asked (§4.12's roles). Four supports across
+   four roles are four answers to four different questions, and four identical
+   dots would be summing them in the reader's eye. */
+.feed-page .feed-dots {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  line-height: 1;
+}
+
+.feed-page .feed-dot {
+  font-size: 7px;
+  line-height: 1;
+  cursor: help;
+}
+
+.feed-page .feed-dot[data-tone="good"] {
+  color: var(--good);
+}
+
+.feed-page .feed-dot[data-tone="bad"] {
+  color: var(--bad);
+}
+
+.feed-page .feed-dot[data-tone="faint"] {
+  color: var(--ink-faint);
+}
+
+/* Nobody has assessed it. A hollow ring rather than nothing, because "no
+   reviewer has looked at this" is a fact about the record and the difference
+   §8.5 turns on — an unreviewed record must not read as an unopposed one. */
+.feed-page .feed-dot[data-tone="none"] {
+  color: var(--rule-strong);
+}
+
+.feed-page .feed-dots-more {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  line-height: 1;
+}
+
+/* Reviewers on both sides of one claim, which a single figure cannot say. Two
+   tones split across one small square: support and opposition, together. */
+.feed-page .feed-contested {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  background: linear-gradient(135deg, var(--good) 0 50%, var(--bad) 50% 100%);
+  cursor: help;
+}
+
 /* The claim wraps to two lines and then stops — the same rule the queue's
    rows keep, for the same measured reason: one truncated line cuts a sentence
    mid-clause on rows that had room for all of it, and a third line turns a
-   list into paragraphs. */
+   list into paragraphs.
+
+   It is the brightest thing in the row and the largest, because it is the only
+   thing on the row a reader is actually reading. */
 .feed-page .feed-claim {
   display: -webkit-box;
   overflow: hidden;
-  color: var(--ink);
+  color: var(--ink-strong);
   font-family: var(--font-ui);
-  font-size: 0.94rem;
-  line-height: 1.4;
+  font-size: 1rem;
+  line-height: 1.45;
   text-decoration: none;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -335,9 +472,9 @@
   color: var(--accent);
 }
 
-/* The facts under the claim, in one line: what it scored, what kind of thing
-   it is, where it came from, how old it is, and how much has been said about
-   it. */
+/* The facts under the claim, in one line: what kind of thing it is, where it
+   is filed, how old it is, how much has been said about it, and why it is
+   waiting. */
 .feed-page .feed-facts {
   display: flex;
   flex-wrap: wrap;
@@ -345,7 +482,7 @@
   gap: var(--space-1) var(--space-3);
   margin-top: var(--space-1);
   color: var(--ink-muted);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
 }
 
 .feed-page .feed-facts a {
@@ -361,20 +498,24 @@
 /* Babel's score: a figure, not a control. It is mono and tabular because it
    is a number the reader compares down a column, and it is `cursor: help`
    rather than a button because the one gesture it answers is "what is this
-   made of" (§8.7's breakdown, in the title). A record no reviewer has
-   assessed carries no figure at all — the em dash that used to stand there
-   was a value-shaped mark for an absence. */
+   made of" (§8.7's breakdown, in the title).
+
+   A nought is dimmed rather than absent. The figure used to disappear on any
+   record nobody had assessed, which is most of an arriving front page, so the
+   column the eye was learning kept vanishing; the ring under it is what says
+   "unreviewed", and the dim nought is what keeps the column. */
 .feed-page .feed-score {
-  color: var(--ink);
+  color: var(--ink-strong);
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-size: 0.95rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   cursor: help;
 }
 
-.feed-page .feed-row[data-awaiting] .feed-score {
-  color: var(--accent);
+.feed-page .feed-score[data-zero] {
+  color: var(--ink-faint);
+  font-weight: 500;
 }
 
 /* The kind, as a word in its own tone. It was a filled badge, and fifteen
@@ -405,24 +546,36 @@
 }
 
 /* A topic is a community and reads like one: the prefix is part of the name,
-   so it is set with it. The run and the age are identifiers and figures, which
-   is the other half of what the mono face is for. */
+   so it is set with it. The age is a figure, which is the other half of what
+   the mono face is for. */
 .feed-page .feed-topic,
-.feed-page .feed-author,
 .feed-page .feed-age,
 .feed-page .feed-comments {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.76rem;
 }
 
-/* Why this post is next, in the five words the server sent. Muted, because it
-   is the reason the row is where it is and not part of the claim. */
+/* Why this post is next, shortened to its distinguishing half and set at the
+   end of the fact line. It had a line of its own under the facts, which made
+   every waiting row three lines tall for a clause that is usually three words
+   — and on the front page the clause it led with was "never ruled on" for
+   almost every row. It is the faintest ink on the row because it is the reason
+   the row is where it is, not part of what the row says. */
 .feed-page .feed-why {
-  display: block;
-  margin-top: var(--space-1);
   color: var(--ink-faint);
   font-family: var(--font-ui);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
+}
+
+/* Somebody is reading it right now: the only mark on a row that moves,
+   because it is the only fact on a row that is about this moment. */
+.feed-page .feed-reviewing {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--live);
+  cursor: help;
 }
 
 /* The acts, on the rows that are waiting — and only while the reader is on
@@ -456,11 +609,132 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   WHAT THE LAST FIFTEEN SECONDS DID.
+
+   The list re-reads itself while the reader is on it, so the three things that
+   can change say so: a row that arrived wears a halo that fades over four
+   seconds, a figure that moved ticks once, and a reviewer at work breathes.
+   Everything below is behind `no-preference`, and the reduced-motion rule at
+   the foot of styles.css is the second belt: a reader who asked for stillness
+   gets the same information and none of the movement.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+  /* A row that arrived on a live read. The halo is an overlay rather than the
+     row's own background, so it fades over the hover tint instead of fighting
+     it. */
+  .feed-page .feed-row[data-arrived]::after {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    background: var(--accent-soft);
+    animation: feed-halo 4s ease-out forwards;
+    content: "";
+    pointer-events: none;
+  }
+
+  /* A figure that changed: it lifts and takes the accent for a fifth of a
+     second. Long enough to catch the eye that was elsewhere, short enough not
+     to be a state. */
+  .feed-page .feed-score[data-ticked],
+  .feed-page .feed-count[data-ticked] {
+    animation: feed-tick 200ms ease-out;
+  }
+
+  .feed-page .feed-reviewing {
+    animation: feed-breathe 1.6s ease-in-out infinite;
+  }
+
+  .feed-page .feed-toast {
+    animation: feed-toast-in 160ms ease-out;
+  }
+}
+
+@keyframes feed-halo {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes feed-tick {
+  from {
+    color: var(--accent);
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes feed-breathe {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes feed-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-2));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .feed-page .feed-acts .record-acts-text,
   .feed-page .feed-progress::after {
     animation: none;
   }
+}
+
+/* The way back from the last ruling: bottom-left, small, six seconds.
+
+   It is a receipt with one control on it and not a dialogue — the act is
+   already recorded, and §4.7's log is append-only, so "reopen" is a new
+   attributed ruling rather than an undo. Bottom-left because the rows are
+   top-left and the reader's eye has just left the one that went. */
+.feed-page .feed-toast {
+  position: fixed;
+  z-index: 30;
+  bottom: var(--space-5);
+  left: var(--space-5);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-raised);
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.feed-page .feed-toast button {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--accent);
+  background: none;
+  font-size: 0.78rem;
+}
+
+.feed-page .feed-toast button:hover:not(:disabled),
+.feed-page .feed-toast button:focus-visible {
+  border: 0;
+  background: none;
+  text-decoration: underline;
+}
+
+/* What this reading has ruled, at the end of the sentence. It is the session's
+   own count and the title says so. */
+.feed-page .feed-ruled {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  white-space: nowrap;
 }
 
 /* What was recorded, in place of what could be. It is the receipt for the
@@ -490,6 +764,11 @@
   border-radius: var(--radius-sm);
   background: var(--rule);
   animation: feed-skeleton 1.4s ease-in-out infinite;
+}
+
+.feed-page .feed-skeleton .feed-skeleton-score {
+  width: 1.4rem;
+  height: 0.95rem;
 }
 
 .feed-page .feed-skeleton .feed-claim .feed-skeleton-block {
@@ -648,6 +927,17 @@
   font-weight: 500;
   letter-spacing: 0.09em;
   text-transform: uppercase;
+}
+
+/* The count beside a rail label: how many decisions are under it. It is the
+   faintest figure on the page, because the label it qualifies is already
+   quiet — but a reader deciding whether to look wants the number. */
+.feed-page .topic-group-count {
+  margin-left: var(--space-2);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
 }
 
 /* Parked and excluded, folded. The fold is the shell's `.peel` and takes only
