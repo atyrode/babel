@@ -21,9 +21,8 @@
 // That an edge note reaches the page as inert text: hostile markup renders as
 // characters, executes nothing, and never becomes a link destination.
 //
-// That the disposition inbox carries the same counts the record page's panel
-// does, and that a launch with no reference graph shows no section and no chip
-// rather than an error over a panel it never had.
+// That a launch with no reference graph shows no section at all rather than an
+// error over a panel it never had.
 //
 // The corpus is synthetic and disposable. Nothing here reads a real session.
 
@@ -43,7 +42,6 @@ const chrome = resolveChrome({
     "that an endpoint this host cannot open renders as inert identified text with the reason, and carries no link",
     "that a session citation links on the local selector while the edge keeps its durable key",
     "that an edge note reaches the page as inert text and never as markup or a destination",
-    "that the disposition inbox reports the same citation counts the record page shows",
     "that a launch with no reference graph renders no citation section at all",
   ],
 });
@@ -104,7 +102,7 @@ function visible(text: string): Promise<unknown> {
 // so a text wait on "Cited by" would hang on a panel that rendered correctly;
 // a row's own class is the thing the assertions below then read.
 function citationsRendered(): Promise<unknown> {
-  return page.waitForSelector(".references-card .citation-entry", { timeout: 15_000 });
+  return page.waitForSelector("article:has(.citation-direction) .citation-entry", { timeout: 15_000 });
 }
 
 // shoot photographs one element rather than the viewport. A panel that sits
@@ -166,11 +164,11 @@ afterAll(async () => {
 });
 
 test.skipIf(!chrome)("a record's citations render as two directions with edge-kind chips", async () => {
-  await open("hypotheses/hyp_unverified-closures");
+  await open("r/hyp_unverified-closures");
   await visible("Citations");
 
   const state = await page.evaluate(() => {
-    const panel = document.querySelector(".references-card");
+    const panel = document.querySelector("article:has(.citation-direction)");
     const directions = Array.from(panel?.querySelectorAll(".citation-direction") ?? []);
     return {
       framing: (panel as HTMLElement | null)?.innerText ?? "",
@@ -219,17 +217,17 @@ test.skipIf(!chrome)("a record's citations render as two directions with edge-ki
   expect(state.attribution).toContain("Asserted by run run_discovery-07");
   expect(state.attribution).toContain("Asserted by operator operator");
 
-  await shoot(".references-card", "record-citations.png");
+  await shoot("article:has(.citation-direction)", "record-citations.png");
 });
 
 test.skipIf(!chrome)(
   "an endpoint this host cannot open is inert, states why, and is not a link",
   async () => {
-    await open("hypotheses/hyp_unverified-closures");
+    await open("r/hyp_unverified-closures");
     await citationsRendered();
 
     const targets = await page.evaluate(() =>
-      Array.from(document.querySelectorAll(".references-card .citation-entry")).map((entry) => {
+      Array.from(document.querySelectorAll("article:has(.citation-direction) .citation-entry")).map((entry) => {
         const target = entry.querySelector(".citation-target");
         return {
           edge: entry.getAttribute("data-citation") ?? "",
@@ -278,7 +276,7 @@ test.skipIf(!chrome)(
     // destination is derived from a namespace and an identifier, so no absolute
     // URL and no scriptable scheme can appear even though a note contains one.
     const hrefs = await page.evaluate(() =>
-      Array.from(document.querySelectorAll(".references-card a")).map(
+      Array.from(document.querySelectorAll("article:has(.citation-direction) a")).map(
         (link) => link.getAttribute("href") ?? "",
       ),
     );
@@ -287,14 +285,14 @@ test.skipIf(!chrome)(
       expect(href.startsWith("#/")).toBe(true);
     }
 
-    await shoot(".references-card", "record-citations-inert.png");
+    await shoot("article:has(.citation-direction)", "record-citations-inert.png");
   },
 );
 
 test.skipIf(!chrome)(
   "a session citation links on the local selector and keeps its durable key",
   async () => {
-    await open("hypotheses/hyp_unverified-closures");
+    await open("r/hyp_unverified-closures");
     await citationsRendered();
 
     const session = await page.evaluate(() => {
@@ -325,18 +323,18 @@ test.skipIf(!chrome)(
 );
 
 test.skipIf(!chrome)("an edge note renders as inert text, never as markup", async () => {
-  await open("hypotheses/hyp_hostile-content");
+  await open("r/hyp_hostile-content");
   await visible("Citations");
 
   const note = await page.evaluate(() => {
-    const element = document.querySelector(".references-card .citation-note");
+    const element = document.querySelector("article:has(.citation-direction) .citation-note");
     return {
       text: (element as HTMLElement | null)?.innerText ?? "",
       // The hostile fixture is markup. If any of it were parsed, the note
       // would contain child elements and the document would contain the tags
       // it names; both are measured rather than assumed.
       children: element?.children.length ?? -1,
-      injected: document.querySelectorAll(".references-card script, .references-card img").length,
+      injected: document.querySelectorAll("article:has(.citation-direction) script, article:has(.citation-direction) img").length,
       untrusted: element?.classList.contains("untrusted-inline") ?? false,
     };
   });
@@ -349,15 +347,15 @@ test.skipIf(!chrome)("an edge note renders as inert text, never as markup", asyn
   // editing the corpus rather than neutralizing it.
   expect(note.text).toContain(HOSTILE_HTML.slice(0, 12));
 
-  await shoot(".references-card", "record-citations-hostile-note.png");
+  await shoot("article:has(.citation-direction)", "record-citations-hostile-note.png");
 });
 
 test.skipIf(!chrome)("a record with no citations says so in both directions", async () => {
-  await open("hypotheses/hyp_promoted-pattern");
+  await open("r/hyp_promoted-pattern");
   await visible("Citations");
 
   const state = await page.evaluate(() => {
-    const panel = document.querySelector(".references-card");
+    const panel = document.querySelector("article:has(.citation-direction)");
     return {
       text: (panel as HTMLElement | null)?.innerText ?? "",
       rows: panel?.querySelectorAll(".citation-entry").length ?? -1,
@@ -371,73 +369,30 @@ test.skipIf(!chrome)("a record with no citations says so in both directions", as
   expect(state.text).toContain("Nothing cites this record.");
 });
 
-test.skipIf(!chrome)("the disposition inbox reports each record's citation counts", async () => {
-  // The inbox opens on proposals: a first screen of enrolled candidates
-  // buried the handful of records worth a verdict. The counts are a property
-  // of every row whatever its kind, so the type filter is widened here to put
-  // a hypothesis and a proposal on one page. It is widened through the
-  // control an operator uses, because the page's filters are its own state
-  // and no route carries them.
-  await open("review");
-  await page.waitForSelector(".review-toolbar .filter-chips button", { timeout: 15_000 });
-  const widened = await page.evaluate(() => {
-    const chip = Array.from(
-      document.querySelectorAll(
-        '.review-toolbar .filter-chips[aria-label="Filter by record type"] button',
-      ),
-    ).find((button) => (button as HTMLElement).innerText.trim() === "All types");
-    (chip as HTMLElement | undefined)?.click();
-    return chip !== undefined;
-  });
-  expect(widened).toBe(true);
-  await visible("hyp_unverified-closures");
-
-  const counts = await page.evaluate(() => {
-    const rows = Array.from(document.querySelectorAll(".frontier-table tbody tr"));
-    return rows.map((row) => ({
-      record: row.querySelector(".statement-cell .mono")?.textContent ?? "",
-      citations: row.querySelector(".citation-count")?.getAttribute("data-citations") ?? "",
-      text: (row.querySelector(".citation-count") as HTMLElement | null)?.innerText ?? "",
-    }));
-  });
-
-  const cited = counts.find((row) => row.record === "hyp_unverified-closures");
-  // The same five out and two in the record page's panel showed: one graph,
-  // two surfaces, no second count.
-  expect(cited?.citations).toBe("5/2");
-  expect(cited?.text).toContain("5");
-  expect(cited?.text).toContain("2");
-
-  // A counted zero is stated as one rather than left blank, because on a wired
-  // build "nothing cites this" is a measurement. The proposal is used rather
-  // than a decided candidate because the inbox's default filter is records
-  // awaiting a first decision, and a row that is not on the page cannot be
-  // asserted about.
-  const isolated = counts.find((row) => row.record === "prp_criteria-template");
-  expect(isolated?.text).toBe("no citations");
-
-  await shoot(".table-card", "inbox-citation-counts.png");
-});
+// The inbox's per-row citation chip is gone with the review queue's five-column
+// table (#235). A Decide row is one line of the record's claim and at most
+// three facts — its kind, its standing and how long it has waited — and the
+// citation count was the fourth. The counts themselves are unchanged and still
+// read on the record's own page, which the tests above cover; what is no longer
+// true, and so is no longer asserted, is that a listing row carries them.
 
 test.skipIf(!chrome)("a launch with no reference graph renders no citation section", async () => {
   const unwired = await startMock({ MOCK_UNWIRED: "frontier" });
   const bare = await browser!.newPage();
   try {
     await bare.setViewport({ width: 1440, height: 900 });
-    await bare.goto(`${unwired.base}/#/review?status=all`, { waitUntil: "networkidle2" });
+    await bare.goto(`${unwired.base}/#/`, { waitUntil: "networkidle2" });
     await bare.reload({ waitUntil: "networkidle2" });
     const state = await bare.evaluate(() => ({
       // The section is absent, not empty: a build with no graph has one fewer
       // panel rather than a panel reporting a feature it does not have.
-      panels: document.querySelectorAll(".references-card").length,
-      chips: document.querySelectorAll(".citation-count").length,
+      panels: document.querySelectorAll("article:has(.citation-direction)").length,
       // And no error banner, which is the reason the route answers 200 with
       // `available: false` instead of refusing.
       banner: document.querySelectorAll(".error-banner").length,
       text: document.body.innerText,
     }));
     expect(state.panels).toBe(0);
-    expect(state.chips).toBe(0);
     expect(state.banner).toBe(0);
     expect(state.text).not.toContain("Citations");
   } finally {

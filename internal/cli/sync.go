@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/config"
@@ -804,27 +805,168 @@ func (a *app) syncAfterPush(ctx context.Context, d dirs) {
 	}
 	rep, err := pub.Retry(ctx)
 	if err != nil {
-		a.diagf("warning: could not read the sync journal: %s\n", Sanitize(err.Error()))
+		a.reportJournalFailure(err)
 		return
 	}
 	res := syncReport(rep)
-	committed, pending := syncTotal(res.Committed), syncTotal(res.Pending)
-	if committed == 0 && pending == 0 && len(res.Failures) == 0 && len(res.Sealed) == 0 {
+	if syncTotal(res.Committed) == 0 && syncTotal(res.Pending) == 0 &&
+		len(res.Failures) == 0 && len(res.Sealed) == 0 {
 		// A push that had no durable records to carry says nothing, on the
 		// same terms as the catalog row a local-mode push omits: an operator
 		// reading an hourly log does not need a line reporting two zeroes.
 		return
 	}
+	a.writeDrained(res)
+}
+
+// The rest of this file is publication that nobody asked for, which is what
+// SPEC.md §9.1 requires of it: every record reaches the shared catalog with no
+// operator action. Three paths already did that and all three need something
+// else to be running - a conductor cycle, an archive push, a `babel runs`
+// reconcile. A workstation running bare `explore` and `evaluate` lanes has
+// none of them, so its records waited for a person: on 2026-09-12, 379
+// finished runs had declared no closure and 300 staged records sat here until
+// one was typed.
+//
+// So the two surfaces that do exist on such a machine carry them. The browser
+// an operator keeps open drains on a timer, and every run command drains once
+// on its way out, which between them means a stranded record leaves on the
+// next thing that happens rather than on the next thing somebody remembers.
+// `babel sync` is unchanged and stays the diagnostic and the force.
+
+// servedDrainInterval is how often a served surface drains what this machine
+// owes the fleet.
+//
+// The value answers what the operator is doing rather than what the catalog
+// costs. A drain that finds nothing owed is two indexed reads of a local
+// SQLite file, so the frequency is nearly free; what it buys is that a lane
+// finishing while the browser is open publishes before the operator has
+// finished reading the page that named it.
+const servedDrainInterval = time.Minute
+
+// exitDrainDeadline bounds the drain a finishing run command performs on its
+// way out.
+//
+// It is short because the records are already durable and already visibly
+// pending: this drain is an opportunity rather than an obligation, and an
+// opportunity that held the operator's prompt would be paid for on every
+// single run.
+const exitDrainDeadline = 5 * time.Second
+
+// startDrain begins this machine's automatic publication and returns the
+// function that ends it.
+//
+// Every reason there is nothing to drain - local mode, no catalog, no payload
+// keys - arrives here as a nil publisher, becomes a nil drainer, and schedules
+// nothing without a branch of its own. None of them is worth a line either:
+// `babel sync` is where an absence is explained, and a local-only deployment
+// is not missing anything.
+//
+// The returned stop releases the publisher's handles, and does so strictly
+// after the drainer's attempt in flight has returned. That ordering is the
+// reason it is one function and not two: the journal and the catalog pool this
+// loop publishes through are closed here, and a caller that could close them
+// while an attempt still held a transaction would have a use-after-close it
+// could only reproduce under load.
+func (a *app) startDrain(ctx context.Context, interval time.Duration) (stop func()) {
+	d, err := babelDirs()
+	if err != nil {
+		a.diagf("warning: could not publish durable records: %s\n", Sanitize(err.Error()))
+		return func() {}
+	}
+	pub, cleanup, err := a.openPublisher(ctx, d)
+	if err != nil {
+		cleanup()
+		a.diagf("warning: could not publish durable records: %s\n", Sanitize(err.Error()))
+		a.diagf("note: they stay durable and pending; run `babel sync` once the reason is fixed\n")
+		return func() {}
+	}
+	stopDrainer := babelsync.NewDrainer(pub, a.reportDrain, a.reportJournalFailure).Start(ctx, interval)
+	return func() {
+		stopDrainer()
+		cleanup()
+	}
+}
+
+// drainOnExit carries what this machine owes the fleet as a run command
+// finishes, and never delays or fails it.
+//
+// The command's own records are staged by the writers and declared by its
+// receipt, and on a machine holding only a staging hook nothing has published
+// them yet (#137) - this is the attempt that does. It carries a sibling's
+// stranded records along with them, which is the point: a lane that died
+// badly is drained by the next lane that finishes rather than by the next
+// person who types `babel sync`.
+//
+// The deadline is the whole of the contract. The command has already
+// succeeded and its output is already durable and visibly pending, so a drain
+// that ran long would only be a run command made slower by the fleet's
+// database. A deadline exceeded is not an error here, and the next finishing
+// run tries again.
+//
+// The context is detached from the command's own because the case this closes
+// includes the interrupted one. A run stopped with Ctrl-C has staged records
+// and a declared closure like any other, and inheriting that cancellation
+// would publish nothing at exactly the moment there is most to publish.
+func (a *app) drainOnExit(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), exitDrainDeadline)
+	defer cancel()
+	d, err := babelDirs()
+	if err != nil {
+		// The command reached its own durable file through these same
+		// directories, so a failure here is that one arriving late. A second
+		// line about it would tell the operator nothing they were not told.
+		return
+	}
+	pub, cleanup, err := a.openPublisher(ctx, d)
+	defer cleanup()
+	if err != nil {
+		a.diagf("warning: could not publish durable records: %s\n", Sanitize(err.Error()))
+		a.diagf("note: they stay durable and pending; run `babel sync` once the reason is fixed\n")
+		return
+	}
+	babelsync.NewDrainer(pub, a.reportDrain, a.reportJournalFailure).Drain(ctx)
+}
+
+// reportDrain says what one automatic drain achieved, and says nothing at all
+// when it achieved nothing.
+//
+// The silence rule is stricter than an archive push's, and the cadence is why.
+// A push happens hourly and can afford a line stating what is still owed; a
+// served surface drains every minute, and a line per minute restating an
+// unchanged backlog is how an operator learns to stop reading the stream. What
+// is still owed is `babel sync`'s answer and it is one command away, so this
+// speaks only when something moved: records published, or a run abandoned.
+func (a *app) reportDrain(rep babelsync.Report) {
+	res := syncReport(rep)
+	if syncTotal(res.Committed) == 0 && len(res.Sealed) == 0 {
+		return
+	}
+	a.writeDrained(res)
+}
+
+// writeDrained states what one publish attempt achieved, in the one voice
+// every automatic publish path uses.
+//
+// The abandonments are said out loud even where the report is otherwise terse.
+// These are the publish channels that run on a schedule rather than on an
+// operator's command, so a seal that went unmentioned would be the measurement
+// arriving nowhere: the cause belongs in whatever log the operator keeps, and
+// `babel sync --json` is where the whole row lives (issue #152).
+func (a *app) writeDrained(res syncResult) {
+	committed, pending := syncTotal(res.Committed), syncTotal(res.Pending)
 	a.diagf("note: published %d durable %s to the shared catalog; %d still pending\n",
 		committed, plural(committed, "record", "records"), pending)
-	// An abandonment is said out loud even here, where the push is otherwise
-	// terse. This is the one publish channel that runs on a schedule rather
-	// than on an operator's command, so a seal that went unmentioned would be
-	// the measurement arriving nowhere: the reason is in the hourly log, and
-	// `babel sync --json` is where the whole row lives (issue #152).
 	for _, s := range res.Sealed {
 		a.diagf("note: run %s was over without declaring a closure; its %d %s were sealed and "+
 			"published because %s\n",
 			s.RunID, s.Records, plural(s.Records, "record", "records"), s.Reason)
 	}
+}
+
+// reportJournalFailure names the one failure a publish attempt's report cannot
+// carry: a journal this machine could not read at all, which leaves every
+// count in that report unstated rather than zero.
+func (a *app) reportJournalFailure(err error) {
+	a.diagf("warning: could not read the sync journal: %s\n", Sanitize(err.Error()))
 }

@@ -59,7 +59,7 @@ function RealityFactsPage() {
       </div>
 
       {statuses.length > 0 && (
-        <div className="toolbar card">
+        <div className="toolbar surface">
           <div className="filter-chips" aria-label="Filter by status">
             <button
               type="button"
@@ -83,17 +83,17 @@ function RealityFactsPage() {
       )}
 
       {loading && !data && (
-        <div className="state-card"><span className="spinner" /> Reading the ledger…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading the ledger…</div>
       )}
       {error && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>The ledger could not be read.</strong>
           <span>{error}</span>
           <button type="button" onClick={load}>Try again</button>
         </div>
       )}
       {!loading && !error && items.length === 0 && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>{status ? `Nothing is ${status}` : "Babel believes nothing yet"}</strong>
           <span>
@@ -107,7 +107,7 @@ function RealityFactsPage() {
       )}
 
       {items.length > 0 && (
-        <div className="table-card">
+        <div className="surface flush">
           <div className="table-scroll">
             <table className="frontier-table">
               <thead>
@@ -132,7 +132,7 @@ function RealityFactsPage() {
                         {/* The predicate is the link to the revision's own
                             page, which is where the chain it sits in — what
                             it replaced and what replaced it — is readable. */}
-                        <Link className="mono" to={`/reality/facts/${encodeURIComponent(row.fact.id)}`}>
+                        <Link className="mono" to={`/ask/facts/${encodeURIComponent(row.fact.id)}`}>
                           {row.fact.predicate}
                         </Link>
                         <FactValue fact={row.fact} />

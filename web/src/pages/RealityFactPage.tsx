@@ -45,8 +45,8 @@ function RealityFactPage() {
   if (error && !detail) {
     return (
       <section className="page">
-        <Link className="back-link" to="/reality/facts">← Beliefs</Link>
-        <div className="state-card error-state">
+        <Link className="back-link" to="/ask/facts">← Beliefs</Link>
+        <div className="surface state-note error-state">
           <strong>This fact could not be loaded.</strong>
           <span>{error}</span>
         </div>
@@ -57,7 +57,7 @@ function RealityFactPage() {
   if (!detail) {
     return (
       <section className="page">
-        <div className="state-card"><span className="spinner" /> Loading fact…</div>
+        <div className="surface state-note"><span className="spinner" /> Loading fact…</div>
       </section>
     );
   }
@@ -72,7 +72,7 @@ function RealityFactPage() {
 
   return (
     <section className="page detail-page fact-page">
-      <Link className="back-link" to="/reality/facts">← Beliefs</Link>
+      <Link className="back-link" to="/ask/facts">← Beliefs</Link>
       <div className="page-heading detail-heading">
         <div>
           <div className="heading-badges">
@@ -89,14 +89,14 @@ function RealityFactPage() {
         <div className="heading-meta">
           <Link
             className="secondary-button"
-            to={`/reality/entities/${encodeURIComponent(fact.subject_id)}`}
+            to={`/ask/entities/${encodeURIComponent(fact.subject_id)}`}
           >
             Everything about this subject
           </Link>
         </div>
       </div>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Who says so</p>
@@ -137,7 +137,7 @@ function RealityFactPage() {
         )}
       </article>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">When it holds</p>
@@ -181,7 +181,7 @@ function RealityFactPage() {
         </dl>
       </article>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Append-only</p>
@@ -206,7 +206,7 @@ function RealityFactPage() {
         </div>
       </article>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">History</p>
@@ -234,7 +234,7 @@ function RealityFactPage() {
       </article>
 
       {detail.disputes.length > 0 && (
-        <article className="card">
+        <article className="surface">
           <div className="section-heading">
             <div>
               <p className="eyebrow">Contradiction</p>
@@ -262,7 +262,7 @@ function RealityFactPage() {
                     {factID === fact.id ? (
                       <span className="mono">this revision</span>
                     ) : (
-                      <Link className="mono" to={`/reality/facts/${encodeURIComponent(factID)}`}>
+                      <Link className="mono" to={`/ask/facts/${encodeURIComponent(factID)}`}>
                         {factID}
                       </Link>
                     )}
@@ -304,7 +304,7 @@ function ChainLink({
       <p className="eyebrow">{label}</p>
       <div className="fact-heading">
         <Badge label={fact.status} tone={factTone(fact.status)} />
-        <Link className="fact-predicate mono" to={`/reality/facts/${encodeURIComponent(fact.id)}`}>
+        <Link className="fact-predicate mono" to={`/ask/facts/${encodeURIComponent(fact.id)}`}>
           {fact.predicate}
         </Link>
         <FactValue fact={fact} />

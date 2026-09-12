@@ -65,24 +65,24 @@ function RealityPage() {
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       {loading && !items && (
-        <div className="state-card"><span className="spinner" /> Reading the inbox…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading the inbox…</div>
       )}
       {error && !items && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>The Reality inbox could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={() => load("blocking")}>Try again</button>
         </div>
       )}
       {items && items.length === 0 && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>Nothing is waiting on you</strong>
           <span>
             Analysis has nothing it needs to ask. Questions appear here when exploration hits
             missing, stale, or conflicting knowledge about your systems — and every question
             ever asked, answered or not, stays readable under{" "}
-            <Link to="/reality/questions">Asked</Link>.
+            <Link to="/ask/questions">Asked</Link>.
           </span>
         </div>
       )}
@@ -117,7 +117,7 @@ function QuestionCard({
   const terms = Object.entries(question.terms).filter(([, value]) => value !== 0);
 
   return (
-    <article className="card question-card">
+    <article className="surface">
       <div className="question-heading">
         <Badge label={question.class} tone={classTone(question.class)} />
         <Badge label={question.state} tone={questionStateTone(question.state)} />
@@ -142,7 +142,7 @@ function QuestionCard({
         {/* The way to this question's own page, where its whole history, the
             facts that prompted it and every answer it has ever had are read.
             The card is the inbox's working view; the page is the record. */}
-        <Link className="mono event-index" to={`/reality/questions/${encodeURIComponent(question.id)}`}>
+        <Link className="mono event-index" to={`/ask/questions/${encodeURIComponent(question.id)}`}>
           {question.id}
         </Link>
       </div>
@@ -156,7 +156,7 @@ function QuestionCard({
           {question.target_entity_ids.map((entityID, index) => (
             <span key={entityID}>
               {index > 0 && ", "}
-              <Link className="mono" to={`/reality/entities/${encodeURIComponent(entityID)}`}>
+              <Link className="mono" to={`/ask/entities/${encodeURIComponent(entityID)}`}>
                 {entityID}
               </Link>
             </span>

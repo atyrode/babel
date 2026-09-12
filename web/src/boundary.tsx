@@ -37,7 +37,7 @@ class RenderBoundary extends Component<Props, State> {
     if (!error) return this.props.children;
     return (
       <section className="page">
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>This page could not be rendered.</strong>
           <span>
             The record was read successfully; displaying it is what failed, so nothing is

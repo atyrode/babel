@@ -36,7 +36,7 @@ function AdviceCard({ advice, subject }: { advice: Advice; subject: string }) {
         ) : (
           <>
             Babel offered this instead of{" "}
-            <Link className="mono" to={`/proposals/${encodeURIComponent(advice.proposal_id)}`}>
+            <Link className="mono" to={`/r/${encodeURIComponent(advice.proposal_id)}`}>
               {advice.proposal_id}
             </Link>
             . The argument below is against that record, not this one.
@@ -56,7 +56,7 @@ function AdviceCard({ advice, subject }: { advice: Advice; subject: string }) {
           {advice.cluster.map((id, index) => (
             <span key={id}>
               {index > 0 && " · "}
-              <Link className="mono" to={`/proposals/${encodeURIComponent(id)}`}>{id}</Link>
+              <Link className="mono" to={`/r/${encodeURIComponent(id)}`}>{id}</Link>
             </span>
           ))}{" "}
           <span className="muted">— worth comparing before deciding either way.</span>
@@ -65,7 +65,7 @@ function AdviceCard({ advice, subject }: { advice: Advice; subject: string }) {
       {aboutThis && advice.alternative_id && (
         <p className="triage-alternative">
           <span className="muted">Babel also wrote a different proposal for the same material:</span>{" "}
-          <Link className="mono" to={`/proposals/${encodeURIComponent(advice.alternative_id)}`}>
+          <Link className="mono" to={`/r/${encodeURIComponent(advice.alternative_id)}`}>
             {advice.alternative_id}
           </Link>
           <span className="muted">
@@ -105,7 +105,7 @@ export function TriageAdvice({
 }) {
   if (!advice || advice.length === 0) return null;
   return (
-    <article className="card triage-card">
+    <article className="surface">
       <p className="eyebrow">Babel's own reading</p>
       <h2>What Babel thinks of this, before you decide</h2>
       <p className="muted">

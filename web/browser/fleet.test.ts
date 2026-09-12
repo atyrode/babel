@@ -114,7 +114,7 @@ function readRows(): Promise<
   Array<{ id: string; freshness: string; state: string; text: string; doubt: string; host: string }>
 > {
   return page.evaluate(() =>
-    Array.from(document.querySelectorAll(".presence-host-card")).flatMap((card) => {
+    Array.from(document.querySelectorAll(".presence-host")).flatMap((card) => {
       const host = card.querySelector<HTMLElement>("h2")?.innerText ?? "";
       return Array.from(card.querySelectorAll<HTMLElement>("tbody tr")).map((row) => ({
         id: row.className,
@@ -174,7 +174,7 @@ afterAll(async () => {
 });
 
 test.skipIf(!chrome)("a quiet run says in words that this host cannot tell", async () => {
-  await open("fleet");
+  await open("watch?view=fleet");
   await rowsRendered();
   const rows = await readRows();
 
@@ -194,11 +194,11 @@ test.skipIf(!chrome)("a quiet run says in words that this host cannot tell", asy
     expect(row.text).not.toContain(DISCLAIMER);
   }
 
-  await shoot(".fleet-presence-page", "fleet-presence.png");
+  await shoot(".fleet-section", "fleet-presence.png");
 });
 
 test.skipIf(!chrome)("the classification and its thresholds are the server's, not the page's", async () => {
-  await open("fleet");
+  await open("watch?view=fleet");
   await rowsRendered();
 
   const state = await page.evaluate(() => ({
@@ -209,7 +209,7 @@ test.skipIf(!chrome)("the classification and its thresholds are the server's, no
     // A liveness dot is the thing that must never appear. The dashboard's own
     // vocabulary for "this is happening now" is .pulse-dot, and its presence
     // on this page would be an observation nobody made.
-    pulses: document.querySelectorAll(".fleet-presence-page .pulse-dot").length,
+    pulses: document.querySelectorAll(".fleet-section .pulse-dot").length,
   }));
 
   // Every row's badge is one of internal/presence's four words and nothing else.
@@ -227,13 +227,13 @@ test.skipIf(!chrome)("the classification and its thresholds are the server's, no
 });
 
 test.skipIf(!chrome)("this machine's own runs appear among the fleet's, marked as this host", async () => {
-  await open("fleet");
+  await open("watch?view=fleet");
   await rowsRendered();
 
   const hosts = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".presence-host-card")).map((card) => ({
+    Array.from(document.querySelectorAll(".presence-host")).map((card) => ({
       heading: card.querySelector<HTMLElement>("h2")?.innerText ?? "",
-      local: card.classList.contains("local-host-card"),
+      local: card.classList.contains("local-host"),
       rows: card.querySelectorAll("tbody tr").length,
     })),
   );
@@ -250,11 +250,11 @@ test.skipIf(!chrome)("this machine's own runs appear among the fleet's, marked a
 });
 
 test.skipIf(!chrome)("a remote recipe and authority render as inert characters", async () => {
-  await open("fleet");
+  await open("watch?view=fleet");
   await rowsRendered();
 
   const hostile = await page.evaluate((markup: string) => {
-    const surface = document.querySelector<HTMLElement>(".fleet-presence-page");
+    const surface = document.querySelector<HTMLElement>(".fleet-section");
     return {
       // The exact bytes reached the page as text.
       text: surface?.innerText.includes(markup) ?? false,
@@ -281,7 +281,7 @@ test.skipIf(!chrome)("local mode and an unreachable catalog are two different st
       [degraded, "cannot see what the fleet is running"],
     ];
     for (const [server, expected] of cases) {
-      await page.goto(`${server.base}/#/fleet`, { waitUntil: "networkidle2" });
+      await page.goto(`${server.base}/#/watch?view=fleet`, { waitUntil: "networkidle2" });
       await page.reload({ waitUntil: "networkidle2" });
       await page.waitForSelector(".presence-notice", { timeout: 15_000 });
       const state = await page.evaluate(() => ({

@@ -14,6 +14,7 @@ import type {
 
 import { evaluationResponse } from "./evaluation";
 import { OVERVIEW_ROWS, overviewPhaseB, phasebResponse } from "./phaseb";
+import { recordResponse } from "./record";
 
 const distRoot = resolve(import.meta.dir, "..", "dist");
 const port = Number(Bun.env.PORT ?? 4174);
@@ -692,6 +693,12 @@ const server = Bun.serve({
     // their own and do not belong in either of the other two.
     const evaluation = await evaluationResponse(request, url);
     if (evaluation) return evaluation;
+    // The record peel, last of the three: /api/record/{id} is an id-shaped
+    // route and the sub-resources above it — revisions, dispositions, links —
+    // are exact paths ./phaseb.ts answers first, so ordering is what keeps an
+    // id from swallowing one of them.
+    const record = await recordResponse(request, url);
+    if (record) return record;
     const api = apiResponse(request, url);
     return api ?? staticResponse(url);
   },

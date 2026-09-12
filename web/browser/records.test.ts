@@ -100,7 +100,7 @@ afterAll(async () => {
 });
 
 test.skipIf(!chrome)("a record's revision chain renders with its authors and reasons", async () => {
-  await open("hypotheses/hyp_unverified-closures");
+  await open("r/hyp_unverified-closures");
   await visible("Revision history");
   const state = await page.evaluate(() => {
     const entries = Array.from(document.querySelectorAll(".revision-timeline .timeline-entry"));
@@ -123,7 +123,7 @@ test.skipIf(!chrome)("a record's revision chain renders with its authors and rea
 });
 
 test.skipIf(!chrome)("authorizing a proposed action records a ruling and publishes nothing", async () => {
-  await open("hypotheses/hyp_unverified-closures");
+  await open("r/hyp_unverified-closures");
   await visible("Dispositions");
   // The epistemic frame is on the block itself, not on a separate page.
   const framing = await page.evaluate(() => document.body.innerText);
@@ -151,7 +151,7 @@ test.skipIf(!chrome)("authorizing a proposed action records a ruling and publish
 
   // The ruling survives a reload, because it is a durable record rather than
   // page state, and the declined action beside it is still readable.
-  await open("hypotheses/hyp_unverified-closures");
+  await open("r/hyp_unverified-closures");
   await visible("Dispositions");
   const reread = await page.evaluate(() => document.body.innerText);
   expect(reread).toContain("accepted");
@@ -160,7 +160,7 @@ test.skipIf(!chrome)("authorizing a proposed action records a ruling and publish
 });
 
 test.skipIf(!chrome)("a draft-issue's draft is text, closed until a reader opens it", async () => {
-  await open("hypotheses/hyp_lens-overlap");
+  await open("r/hyp_lens-overlap");
   await visible("draft-issue");
   const closed = await page.evaluate(() => {
     const details = document.querySelector(".draft-disclosure") as HTMLDetailsElement | null;
@@ -177,7 +177,7 @@ test.skipIf(!chrome)("a draft-issue's draft is text, closed until a reader opens
     (needle: string) => ({
       pwned: String(Reflect.get(globalThis, "__babel_pwned")),
       injectedImage: document.querySelector(".draft-disclosure img") !== null,
-      scriptURL: Array.from(document.querySelectorAll(".dispositions-card a"))
+      scriptURL: Array.from(document.querySelectorAll("article:has(.disposition-list) a"))
         .some((anchor) => (anchor as HTMLAnchorElement).href.startsWith("javascript:")),
       literal: (document.querySelector(".draft-disclosure pre") as HTMLElement | null)?.innerText.includes(needle),
       anchored: document.body.innerText.includes("git@github.com:atyrode/synthetic-preview"),
@@ -195,12 +195,12 @@ test.skipIf(!chrome)("a draft-issue's draft is text, closed until a reader opens
 });
 
 test.skipIf(!chrome)("process further records an instruction-free invitation and shows it queued", async () => {
-  await open("hypotheses/hyp_unverified-closures");
+  await open("r/hyp_unverified-closures");
   await visible("Process further");
   const before = await page.evaluate(() => ({
     queued: document.querySelector("[data-invite-queued]") !== null,
     // The one thing this card must not have: a place to write a brief.
-    fields: document.querySelectorAll(".invite-card textarea, .invite-card input").length,
+    fields: document.querySelectorAll("article:has([data-invite]) textarea, article:has([data-invite]) input").length,
     framing: document.body.innerText.includes("nowhere here to write an instruction"),
   }));
   expect(before.queued).toBe(false);
@@ -231,7 +231,7 @@ test.skipIf(!chrome)("process further records an instruction-free invitation and
 test.skipIf(!chrome)("reviving a resting candidate requires a stated reason", async () => {
   // A promoted candidate: #87 makes even that a resting place rather than an
   // ending, which is the case most likely to read as closed.
-  await open("hypotheses/hyp_promoted-pattern");
+  await open("r/hyp_promoted-pattern");
   await visible("Revive");
   const framing = await page.evaluate(() => ({
     text: document.body.innerText,
@@ -244,7 +244,7 @@ test.skipIf(!chrome)("reviving a resting candidate requires a stated reason", as
   await page.click("[data-revive='hyp_promoted-pattern']");
   await visible("states why the candidate deserves to move again");
   const refused = await page.evaluate(() => ({
-    alert: document.querySelector(".revive-card .inline-error")?.textContent ?? "",
+    alert: document.querySelector("article:has([data-revive]) .inline-error")?.textContent ?? "",
     status: document.querySelector(".heading-badges .badge")?.textContent ?? "",
   }));
   expect(refused.alert).toContain("states why");
@@ -264,12 +264,12 @@ test.skipIf(!chrome)("a record revised after the page was rendered refuses the c
   // hyp_many-observations is the raced fixture: the mock hands back the wording
   // that was current when the page read it and then a synthetic run revises it,
   // which is exactly the state the confirmation contract exists for.
-  await open("hypotheses/hyp_many-observations");
+  await open("r/hyp_many-observations");
   await visible("Process further");
   await page.click("[data-invite='hyp_many-observations']");
   await visible("revised after the page was rendered");
   const state = await page.evaluate(() => {
-    const alert = document.querySelector(".invite-card .inline-error") as HTMLElement | null;
+    const alert = document.querySelector("article:has([data-invite]) .inline-error") as HTMLElement | null;
     return {
       text: alert?.innerText ?? "",
       role: alert?.getAttribute("role"),
@@ -286,20 +286,20 @@ test.skipIf(!chrome)("a record revised after the page was rendered refuses the c
   expect(state.queued).toBe(false);
 });
 
-test.skipIf(!chrome)("the dashboard counts proposed actions and says why each run happened", async () => {
-  await open("");
-  await page.waitForSelector(".panel--review", { timeout: 15_000 });
-  const state = await page.evaluate(() => {
-    const review = document.querySelector(".panel--review") as HTMLElement | null;
-    const receipts = Array.from(document.querySelectorAll(".receipt-authority")) as HTMLElement[];
-    return {
-      review: review?.innerText ?? "",
-      authorities: receipts.map((mark) => mark.innerText),
-    };
-  });
-  expect(state.review.toLowerCase()).toContain("proposed actions");
+test.skipIf(!chrome)("a run receipt says why the run happened", async () => {
+  // The dashboard that used to carry this beside a count of proposed actions
+  // is gone (#235): it was six panels summarizing five other pages. The
+  // authority mark itself is what mattered and it rides the receipts on Watch,
+  // which is where "what did it cost, and why did it run" is answered now.
+  await open("watch");
+  await page.waitForSelector(".receipt-authority", { timeout: 15_000 });
+  const authorities = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".receipt-authority")).map(
+      (mark) => (mark as HTMLElement).innerText,
+    ),
+  );
   // Both renderings: an authority the receipt recorded, and the honest absence
   // on one written before receipts carried the field.
-  expect(state.authorities.join(" ")).toContain("policy");
-  expect(state.authorities.join(" ")).toContain("recorded before authority");
+  expect(authorities.join(" ")).toContain("policy");
+  expect(authorities.join(" ")).toContain("recorded before authority");
 });

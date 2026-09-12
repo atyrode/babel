@@ -85,7 +85,7 @@ function RealityEntitiesPage() {
       </div>
 
       {naming && (
-        <article className="card">
+        <article className="surface">
           <div className="section-heading">
             <div>
               <p className="eyebrow">A subject Babel does not know yet</p>
@@ -103,7 +103,7 @@ function RealityEntitiesPage() {
       )}
 
       {kinds.length > 0 && (
-        <div className="toolbar card">
+        <div className="toolbar surface">
           <div className="filter-chips" aria-label="Filter by kind">
             <button
               type="button"
@@ -127,17 +127,17 @@ function RealityEntitiesPage() {
       )}
 
       {loading && !data && (
-        <div className="state-card"><span className="spinner" /> Reading the ledger…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading the ledger…</div>
       )}
       {error && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>The subjects could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={load}>Try again</button>
         </div>
       )}
       {!loading && !error && items.length === 0 && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>{kind ? `No ${kind} subjects` : "Babel knows of nothing yet"}</strong>
           <span>
@@ -155,7 +155,7 @@ function RealityEntitiesPage() {
       )}
 
       {items.length > 0 && (
-        <div className="table-card">
+        <div className="surface flush">
           <div className="table-scroll">
             <table className="frontier-table">
               <thead>

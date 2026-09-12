@@ -159,6 +159,11 @@ func (a *app) prepare(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The preparation this command is about to write is a closure of one and
+	// is owed to the fleet like any other record. See explore's: registered
+	// before the store's own release so the drain opens the journal on a file
+	// this command has finished with (SPEC.md §9.1).
+	defer a.drainOnExit(ctx)
 	runs, err := runstore.Open(d.durableDir(), runstore.WithSync(hook))
 	if err != nil {
 		return err

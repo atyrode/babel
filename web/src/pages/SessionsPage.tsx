@@ -254,7 +254,7 @@ function SessionsPage() {
       {running && scan && <ScanProgress scan={scan} rowCount={rowCount} clock={clock} />}
 
       {scanError && (
-        <div className="state-card error-state" role="alert">
+        <div className="surface state-note error-state" role="alert">
           <strong>The session scan failed.</strong>
           <span>{scanError}</span>
           <div className="scan-error-actions">
@@ -264,7 +264,7 @@ function SessionsPage() {
         </div>
       )}
 
-      <div className="toolbar card">
+      <div className="toolbar surface">
         <label className="search-field">
           <span className="sr-only">Filter sessions</span>
           <input
@@ -288,16 +288,16 @@ function SessionsPage() {
         </button>
       </div>
 
-      {loading && !data && <div className="state-card"><span className="spinner" /> Reading the cached catalog…</div>}
+      {loading && !data && <div className="surface state-note"><span className="spinner" /> Reading the cached catalog…</div>}
       {error && !data && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>Sessions could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={() => loadSessions("blocking")}>Try again</button>
         </div>
       )}
       {showEmptyState && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>No sessions cached</strong>
           <span>Babel has not described any harness sessions yet. Start a scan to read the session files it can reach.</span>
@@ -305,13 +305,13 @@ function SessionsPage() {
         </div>
       )}
       {rowCount > 0 && sessions.length === 0 && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <strong>No matching sessions</strong>
           <span>Clear the search or choose another harness.</span>
         </div>
       )}
       {sessions.length > 0 && (
-        <div className="table-card">
+        <div className="surface flush">
           <div className="table-scroll">
             <table className="sessions-table">
               <thead>
@@ -381,7 +381,7 @@ function ScanProgress({ scan, rowCount, clock }: ScanProgressProps) {
   const elapsed = Number.isNaN(startedAt) ? "—" : formatDuration(clock - startedAt);
 
   return (
-    <article className="card scan-card">
+    <article className="surface scan-progress">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Catalog scan running</p>

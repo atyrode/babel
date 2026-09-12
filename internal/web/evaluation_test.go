@@ -105,7 +105,8 @@ func (f *fakeEvaluation) Operator(_ context.Context, in evaluation.OperatorInput
 	return evaluation.Record{
 		ID: "evr_operator-1", Kind: in.Kind, Subject: in.Subject,
 		ActorKind: "operator", ActorID: in.Operator, Reason: in.Reason,
-		Decision: in.Decision, RelatedID: in.RelatedID, CreatedAt: time.Now().UTC(),
+		Decision: in.Decision, Stance: in.Stance, RelatedID: in.RelatedID,
+		CreatedAt: time.Now().UTC(),
 	}, nil
 }
 

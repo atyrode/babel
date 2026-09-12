@@ -473,7 +473,7 @@ export function AuthorityMark({ authority }: { authority: RunAuthority | undefin
 // the retry.
 export function PartialListNotice() {
   return (
-    <div className="state-card scope-notice" role="status">
+    <div className="surface state-note scope-notice" role="status">
       <strong>This list may be incomplete</strong>
       <span>
         Part of the catalog did not answer, so records it holds are missing here. Everything

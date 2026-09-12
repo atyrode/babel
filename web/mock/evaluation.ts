@@ -224,12 +224,12 @@ function assessmentRecord(input: {
 
 // A proposal with a bare support vote and nothing else. It is the case §4.12
 // cares most about: the page must render a vote with no prose and invent none.
-const bareVoteSubject: EvaluationSubject = { kind: "proposal", id: "prp_bare-vote" };
+const bareVoteSubject: EvaluationSubject = { kind: "proposal", id: "pro_bare-vote" };
 const bareVote: Fixture = {
   item: {
     artifact: artifact({
       kind: "proposal",
-      id: "prp_bare-vote",
+      id: "pro_bare-vote",
       title: "Retry the transcript describe pass with a bounded backoff",
       createdDaysAgo: 6,
       reviewStatus: "new",
@@ -426,7 +426,7 @@ const groupA: Fixture = {
   item: {
     artifact: artifact({
       kind: "proposal",
-      id: "prp_group-cache",
+      id: "pro_group-cache",
       title: "Cache describe results per source digest",
       createdDaysAgo: 12,
       reviewStatus: "new",
@@ -453,7 +453,7 @@ const groupA: Fixture = {
   },
   history: [
     {
-      ...assessmentRecord({ id: "evr_cmp-1", subject: { kind: "proposal", id: "prp_group-cache" }, daysAgo: 3 }),
+      ...assessmentRecord({ id: "evr_cmp-1", subject: { kind: "proposal", id: "pro_group-cache" }, daysAgo: 3 }),
       assessment: {
         vote: "",
         contributions: [
@@ -462,10 +462,10 @@ const groupA: Fixture = {
             text: "Against the other remedy for this problem, caching is cheaper to abandon.",
             evidence: null,
             alternatives: [
-              { kind: "proposal", id: "prp_group-cache" },
-              { kind: "proposal", id: "prp_group-skip" },
+              { kind: "proposal", id: "pro_group-cache" },
+              { kind: "proposal", id: "pro_group-skip" },
             ],
-            preferred: { kind: "proposal", id: "prp_group-cache" },
+            preferred: { kind: "proposal", id: "pro_group-cache" },
             would_change: "a corpus that changes faster than the adapter",
           },
         ],
@@ -485,7 +485,7 @@ const groupB: Fixture = {
   item: {
     artifact: artifact({
       kind: "proposal",
-      id: "prp_group-skip",
+      id: "pro_group-skip",
       title: "Skip describing sessions whose digest is unchanged",
       createdDaysAgo: 10,
       reviewStatus: "deferred",
@@ -515,12 +515,12 @@ const groupB: Fixture = {
 
 // An accepted proposal, verified against a criterion version, and then
 // contradicted by later evidence. Both assessments survive.
-const verifiedSubject: EvaluationSubject = { kind: "proposal", id: "prp_verified-then-contradicted" };
+const verifiedSubject: EvaluationSubject = { kind: "proposal", id: "pro_verified-then-contradicted" };
 const verified: Fixture = {
   item: {
     artifact: artifact({
       kind: "proposal",
-      id: "prp_verified-then-contradicted",
+      id: "pro_verified-then-contradicted",
       title: "Bound the transcript reader's record budget",
       createdDaysAgo: 64,
       reviewStatus: "accepted",
@@ -685,10 +685,10 @@ const superseded: Fixture = {
   item: {
     artifact: artifact({
       kind: "proposal",
-      id: "prp_superseded-r1",
+      id: "pro_superseded-r1",
       title: "Redact secret-shaped values before indexing",
-      rootID: "prp_superseded-r1",
-      headID: "prp_superseded-r2",
+      rootID: "pro_superseded-r1",
+      headID: "pro_superseded-r2",
       createdDaysAgo: 22,
       reviewStatus: "new",
     }),
@@ -712,7 +712,7 @@ const superseded: Fixture = {
     reconsider: false,
   },
   history: [
-    assessmentRecord({ id: "evr_sup-1", subject: { kind: "proposal", id: "prp_superseded-r1" }, daysAgo: 18, vote: "support" }),
+    assessmentRecord({ id: "evr_sup-1", subject: { kind: "proposal", id: "pro_superseded-r1" }, daysAgo: 18, vote: "support" }),
   ],
 };
 
@@ -1047,6 +1047,46 @@ function historyOf(id: string): EvaluationRecord[] {
   const own = operatorRecords.filter((record) => record.subject.id === id);
   return [...(byID[id]?.history ?? []), ...own].sort((a, b) =>
     a.created_at.localeCompare(b.created_at));
+}
+
+// ModelReception is what §4.12's projection says about one record, in the
+// shape the record peel serves it: the run-authored votes with their
+// rationales, the tally over them, and whether they disagree.
+//
+// The operator never appears here. His stance is a feedback record on the
+// authority side of the boundary and is carried by the peel separately, so
+// nothing in this function can add a person's opinion to a tally of runs'.
+export interface ModelReception {
+  model: Array<{ actor: string; role: string; stance: string; rationale?: string; at: string }>;
+  counts?: { support: number; oppose: number; unsure: number };
+  contested?: boolean;
+}
+
+export function receptionOf(id: string): ModelReception | null {
+  const fixture = byID[id];
+  if (!fixture) return null;
+  const votes = historyOf(id).filter((record) => record.kind === "assessment" && record.assessment?.vote);
+  // Every assessment fixture here is a reception vote: the role a run was
+  // assigned is carried by the assignment, not by the record it wrote, so the
+  // mock states the one role its fixtures actually hold rather than
+  // distributing the coverage table's roles over records that never had them.
+  const model = votes.map((record) => ({
+    actor: record.actor_id,
+    role: "reception",
+    stance: record.assessment?.vote ?? "",
+    ...(record.reason ? { rationale: record.reason } : {}),
+    at: record.created_at,
+  }));
+  const tally = fixture.item.reception;
+  if (model.length === 0 && (!tally || tally.reviews === 0)) return null;
+  return {
+    model,
+    ...(tally ? { counts: { support: tally.support, oppose: tally.oppose, unsure: tally.unsure } } : {}),
+    // Contested is derived rather than stored: support and opposition both
+    // recorded is what the word means, and internal/evaluation computes it
+    // the same way from the same two numbers.
+    ...(tally && tally.support > 0 && tally.oppose > 0 ? { contested: true } : {}),
+  };
 }
 
 export async function evaluationResponse(request: Request, url: URL): Promise<Response | null> {

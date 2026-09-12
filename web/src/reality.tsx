@@ -94,7 +94,7 @@ export function EntityName({ entity, current }: { entity: EntityRef; current?: s
   const label = entity.display_name || entity.id;
   if (entity.id === current) return <span className="untrusted-inline">{label}</span>;
   return (
-    <Link className="untrusted-inline" to={`/reality/entities/${encodeURIComponent(entity.id)}`}>
+    <Link className="untrusted-inline" to={`/ask/entities/${encodeURIComponent(entity.id)}`}>
       {label}
     </Link>
   );
@@ -127,7 +127,7 @@ export function FactEntry({ fact }: { fact: FactView }) {
     <div className={`fact-entry status-${fact.status}`}>
       <div className="fact-heading">
         <Badge label={fact.status} tone={factTone(fact.status)} />
-        <Link className="fact-predicate mono" to={`/reality/facts/${encodeURIComponent(fact.id)}`}>
+        <Link className="fact-predicate mono" to={`/ask/facts/${encodeURIComponent(fact.id)}`}>
           {fact.predicate}
         </Link>
         <FactValue fact={fact} />
@@ -141,7 +141,7 @@ export function FactEntry({ fact }: { fact: FactView }) {
         {fact.supersedes && (
           <>
             {" · supersedes "}
-            <Link className="mono" to={`/reality/facts/${encodeURIComponent(fact.supersedes)}`}>
+            <Link className="mono" to={`/ask/facts/${encodeURIComponent(fact.supersedes)}`}>
               {fact.supersedes}
             </Link>
           </>
@@ -255,7 +255,7 @@ export function PlanCard({
   }
 
   return (
-    <div className={proposed ? "plan-card proposed" : "plan-card"}>
+    <div className={proposed ? "surface plan-inset proposed" : "surface plan-inset"}>
       <div className="question-heading">
         <Badge
           label={proposed ? "proposed — nothing applied yet" : plan.state}

@@ -12,9 +12,11 @@
 //
 // The package name deliberately shadows the standard library's `sync`. It is
 // named for the operator-facing verb - `babel sync` - and a file that needs
-// both imports the standard library's as `stdsync`. Nothing here needs it: the
-// durable database has one writer per §9's local state-writer lock invariant,
-// and the publisher runs on the caller's goroutine.
+// both imports the standard library's as `stdsync`. Only auto.go does: the
+// durable database has one writer per §9's local state-writer lock invariant
+// and a publisher runs on its caller's goroutine, so the single thing here
+// that needs a mutex is the drainer's promise that a scheduled attempt never
+// overlaps the one before it.
 //
 // # What this package guarantees
 //

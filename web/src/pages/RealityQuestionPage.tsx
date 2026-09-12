@@ -52,8 +52,8 @@ function RealityQuestionPage() {
   if (error && !detail) {
     return (
       <section className="page">
-        <Link className="back-link" to="/reality/questions">← Asked</Link>
-        <div className="state-card error-state">
+        <Link className="back-link" to="/ask/questions">← Asked</Link>
+        <div className="surface state-note error-state">
           <strong>This question could not be loaded.</strong>
           <span>{error}</span>
         </div>
@@ -64,7 +64,7 @@ function RealityQuestionPage() {
   if (!detail) {
     return (
       <section className="page">
-        <div className="state-card"><span className="spinner" /> Loading question…</div>
+        <div className="surface state-note"><span className="spinner" /> Loading question…</div>
       </section>
     );
   }
@@ -79,7 +79,7 @@ function RealityQuestionPage() {
 
   return (
     <section className="page detail-page question-detail-page">
-      <Link className="back-link" to="/reality/questions">← Asked</Link>
+      <Link className="back-link" to="/ask/questions">← Asked</Link>
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       <div className="page-heading detail-heading">
@@ -101,7 +101,7 @@ function RealityQuestionPage() {
         </div>
       </div>
 
-      <article className="card">
+      <article className="surface">
         <p className="eyebrow">Why it was asked</p>
         <p className="untrusted-inline">{question.why_asked}</p>
         {detail.targets.length > 0 && (
@@ -138,7 +138,7 @@ function RealityQuestionPage() {
       </article>
 
       {(detail.existing_facts.length > 0 || detail.conflict_facts.length > 0) && (
-        <article className="card">
+        <article className="surface">
           <div className="section-heading">
             <div>
               <p className="eyebrow">What prompted it</p>
@@ -169,7 +169,7 @@ function RealityQuestionPage() {
         </article>
       )}
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Provenance</p>
@@ -208,7 +208,7 @@ function RealityQuestionPage() {
         )}
       </article>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Interpretation</p>
@@ -226,7 +226,7 @@ function RealityQuestionPage() {
         )}
       </article>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Append-only</p>

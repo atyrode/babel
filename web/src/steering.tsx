@@ -34,8 +34,8 @@ import { Badge, Quoted } from "./analysis";
 // says: a URL built from record content would make the adjacency list an
 // injection surface.
 const ADJACENT_ROUTES: Record<string, (id: string) => string> = {
-  hypothesis: (id) => `/hypotheses/${encodeURIComponent(id)}`,
-  finding: (id) => `/findings/${encodeURIComponent(id)}`,
+  hypothesis: (id) => `/r/${encodeURIComponent(id)}`,
+  finding: (id) => `/r/${encodeURIComponent(id)}`,
   complaint: (id) => `/complaints/${encodeURIComponent(id)}`,
 };
 
@@ -85,7 +85,7 @@ export function SteeringSection() {
 
   return (
     <section className="steering-section">
-      <article className="card capture-card">
+      <article className="surface">
         <p className="eyebrow">Operator steering</p>
         <h2>Tell Babel</h2>
         <p className="muted">
@@ -191,7 +191,7 @@ function ComplaintListing({
   const items = listing?.items ?? [];
 
   return (
-    <article className="card steering-list-card">
+    <article className="surface steering-list">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Steering pressure</p>
@@ -210,7 +210,7 @@ function ComplaintListing({
         <p className="muted"><span className="spinner" /> Reading what has been told…</p>
       )}
       {listing && items.length === 0 && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>Nothing has been told yet</strong>
           <span>The box above is where steering pressure enters: tell Babel what is going badly and it is recorded here.</span>

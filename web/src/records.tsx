@@ -161,7 +161,7 @@ function RevisionHistoryCard({
   error: string | null;
 }) {
   return (
-    <article className="card revisions-card">
+    <article className="surface">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Append-only</p>
@@ -225,7 +225,7 @@ function DispositionsCard({
   onChanged: () => Promise<void>;
 }) {
   return (
-    <article className="card dispositions-card">
+    <article className="surface">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Proposed next actions</p>
@@ -439,7 +439,7 @@ function ProcessFurtherCard({
   }
 
   return (
-    <article className="card invite-card">
+    <article className="surface">
       <div className="section-heading">
         <div>
           <p className="eyebrow">One click, no brief</p>
@@ -535,7 +535,7 @@ function ReviveCard({
   }
 
   return (
-    <article className="card revive-card">
+    <article className="surface">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Nothing closes</p>

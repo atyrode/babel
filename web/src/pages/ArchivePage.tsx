@@ -51,18 +51,14 @@ function ArchivePage() {
   }
 
   return (
-    <section className="page archive-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Restic repository</p>
-          <h1>Archive</h1>
-          <p className="subtitle">Inspect repository coverage and verify archived data.</p>
-        </div>
-      </div>
+    // A section of Settings rather than a page of its own. A repository of
+    // snapshots is operational: it is how the corpus survives, not something
+    // an operator opens Babel to read.
+    <div className="page-section archive-section">
 
-      {loading && !configuration && <div className="state-card"><span className="spinner" /> Loading archive state…</div>}
+      {loading && !configuration && <div className="surface state-note"><span className="spinner" /> Loading archive state…</div>}
       {error && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>Archive state could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={loadArchive}>Try again</button>
@@ -70,7 +66,7 @@ function ArchivePage() {
       )}
 
       {configuration && !configuration.configured && (
-        <div className="state-card empty-state configure-empty">
+        <div className="surface state-note empty-state configure-empty">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>Archive not configured</strong>
           <span>Run <code>babel storage configure</code> to connect a repository.</span>
@@ -79,7 +75,7 @@ function ArchivePage() {
 
       {configuration?.configured && (
         <>
-          <article className="card repository-card">
+          <article className="surface repository-head">
             <div>
               <p className="eyebrow">Connected repository</p>
               <h2>{configuration.repository}</h2>
@@ -92,15 +88,15 @@ function ArchivePage() {
             </div>
           </article>
 
-          {loading && !status && <div className="state-card"><span className="spinner" /> Reading snapshot status…</div>}
+          {loading && !status && <div className="surface state-note"><span className="spinner" /> Reading snapshot status…</div>}
           {status && status.hosts.length === 0 && (
-            <div className="state-card empty-state">
+            <div className="surface state-note empty-state">
               <strong>No snapshots</strong>
               <span>The configured repository does not hold any snapshots yet.</span>
             </div>
           )}
           {status && status.hosts.length > 0 && (
-            <article className="card snapshot-card">
+            <article className="surface">
               <div className="section-heading">
                 <div><p className="eyebrow">Repository coverage</p><h2>Snapshots by host</h2></div>
                 <span className="count-label">{status.snapshots} total</span>
@@ -127,7 +123,7 @@ function ArchivePage() {
             </article>
           )}
 
-          <article className="card verify-card">
+          <article className="surface verify-grid">
             <div className="verify-copy">
               <p className="eyebrow">Integrity</p>
               <h2>Verify archive</h2>
@@ -156,7 +152,7 @@ function ArchivePage() {
           </article>
         </>
       )}
-    </section>
+    </div>
   );
 }
 

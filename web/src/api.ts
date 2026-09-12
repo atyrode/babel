@@ -1342,11 +1342,11 @@ async function send<T>(
   }
 }
 
-function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return send(path, init, async (response) => (await response.json()) as T);
 }
 
-function postJSON<T>(path: string, body: unknown): Promise<T> {
+export function postJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

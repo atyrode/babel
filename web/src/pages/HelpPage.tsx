@@ -30,24 +30,24 @@ const REVIEW_STATUSES: Array<[string, string]> = [
 ];
 
 const COMMANDS: Array<[string, string, string, string]> = [
-  ["babel web", "Serves this interface on loopback behind a one-time launch link.", "/", "Dashboard"],
-  ["babel storage configure", "Stores the repository and catalog configuration.", "/archive", "Archive"],
-  ["babel archive push", "Backs this host's sessions into the restic repository.", "/archive", "Archive"],
-  ["babel archive status", "Reports snapshots per host and the catalog's lag.", "/archive", "Archive"],
-  ["babel archive verify", "Checks repository integrity, standard or deep.", "/archive", "Archive"],
+  ["babel web", "Serves this interface on loopback behind a one-time launch link.", "/", "Decide"],
+  ["babel storage configure", "Stores the repository and catalog configuration.", "/settings?section=archive", "Settings → Archive"],
+  ["babel archive push", "Backs this host's sessions into the restic repository.", "/settings?section=archive", "Settings → Archive"],
+  ["babel archive status", "Reports snapshots per host and the catalog's lag.", "/settings?section=archive", "Settings → Archive"],
+  ["babel archive verify", "Checks repository integrity, standard or deep.", "/settings?section=archive", "Settings → Archive"],
   ["babel sessions list", "Lists the session transcripts the harnesses have written.", "/sessions", "Sessions"],
   ["babel sessions inspect", "Shows one session whole, with its transcript.", "/sessions", "Sessions"],
   ["babel sessions fetch", "Restores one archived session's files locally.", "/sessions", "Sessions"],
-  ["babel prepare", "Fixes an exploration's corpus scope and builds its index.", "/explore", "Explore"],
-  ["babel explore", "Runs one exploration through the Code worker.", "/explore", "Explore"],
-  ["babel hypotheses", "Lists the candidate frontier.", "/hypotheses", "Hypotheses"],
-  ["babel findings", "Lists consolidated findings.", "/findings", "Hypotheses → Findings"],
-  ["babel review queue", "Lists records awaiting a human decision.", "/review", "Review"],
-  ["babel review decide", "Appends one attributed decision.", "/review", "Review"],
-  ["babel reality inbox", "Lists the prioritized question inbox.", "/reality", "Reality"],
-  ["babel reality answer", "Records an attributed answer, verbatim.", "/reality", "Reality"],
-  ["babel conductor status", "Reports this host's duty state and what the fleet announced.", "/fleet", "Fleet"],
-  ["babel export", "Renders one record as JSON or Markdown.", "/review", "Review"],
+  ["babel prepare", "Fixes an exploration's corpus scope and builds its index.", "/watch", "Watch"],
+  ["babel explore", "Runs one exploration through the Code worker.", "/watch", "Watch"],
+  ["babel hypotheses", "Lists the candidate frontier.", "/read?kind=hypothesis", "Read"],
+  ["babel findings", "Lists consolidated findings.", "/read?kind=finding", "Read"],
+  ["babel review queue", "Lists records awaiting a human decision.", "/", "Decide"],
+  ["babel review decide", "Appends one attributed decision.", "/", "Decide"],
+  ["babel reality inbox", "Lists the prioritized question inbox.", "/ask", "Ask"],
+  ["babel reality answer", "Records an attributed answer, verbatim.", "/ask", "Ask"],
+  ["babel conductor status", "Reports this host's duty state and what the fleet announced.", "/watch?view=fleet", "Watch"],
+  ["babel export", "Renders one record as JSON or Markdown.", "/", "Decide"],
 ];
 
 // The "Am I talking to an AI?" table. One row per surface an operator actually
@@ -265,19 +265,12 @@ function ExploreRunDiagram() {
 
 function HelpPage() {
   return (
-    <section className="page help-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Orientation</p>
-          <h1>What Babel is — and what it is not</h1>
-          <p className="subtitle">
-            Babel is an exploratory instrument for archived agent conversations. It records where an
-            idea came from and how it was investigated; it does not promise the idea is correct.
-          </p>
-        </div>
-      </div>
+    // A section of Settings rather than a page of its own. It is reference
+    // text: long by intention, read once, and reached deliberately — which is
+    // the one kind of page the three-screen rule does not govern.
+    <div className="page-section help-section">
 
-      <article className="card help-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">The frame</p>
@@ -319,7 +312,7 @@ function HelpPage() {
         </ul>
       </article>
 
-      <article className="card help-card" id="runtime-model">
+      <article className="surface" id="runtime-model">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Runtime model</p>
@@ -331,7 +324,7 @@ function HelpPage() {
           here to talk to. It runs as <strong>two loops that never overlap</strong>. The first
           archives this host every hour and involves no model at all. The second is an exploration
           run — the only place a model ever executes — and it exists exactly as long as the run
-          you started. <a href="#/help" onClick={scrollTo("lifecycle")}>The lifecycle</a> below
+          you started. <a href="#/settings?section=help" onClick={scrollTo("lifecycle")}>The lifecycle</a> below
           follows the records these loops write.
         </p>
         <div className="runtime-loops">
@@ -411,7 +404,7 @@ function HelpPage() {
         </p>
       </article>
 
-      <article className="card help-card" id="lifecycle">
+      <article className="surface" id="lifecycle">
         <div className="section-heading">
           <div>
             <p className="eyebrow">How work flows</p>
@@ -423,7 +416,7 @@ function HelpPage() {
             <strong>Archive</strong> — <code>babel archive push</code> backs this host's session
             files into the encrypted restic repository. The repository is authoritative for what
             exists; recovery needs only restic and the password.
-            <Link className="panel-link" to="/archive">Archive →</Link>
+            <Link className="panel-link" to="/settings?section=archive">Archive →</Link>
           </li>
           <li>
             <strong>Catalog</strong> — Babel discovers, normalizes and hashes sessions without
@@ -435,15 +428,15 @@ function HelpPage() {
             <strong>Prepare</strong> — <code>babel prepare</code> fixes one exploration's corpus
             scope and builds the retrieval index over it. The preparation is an immutable record, so
             two runs over the same scope reference one description of it.
-            <Link className="panel-link" to="/explore">Explore →</Link>
+            <Link className="panel-link" to="/watch">Watch →</Link>
           </li>
           <li>
             <strong>Explore</strong> — <code>babel explore</code> runs one exploration inside a
             contained Code worker, under a capability grant and a recipe. Exploration cannot be
             started from this interface: a run outlives the browser session, and the disclosure
             consent belongs to a terminal.
-            <Link className="panel-link" to="/explore">Explore →</Link>
-            <a className="panel-link" href="#/help" onClick={scrollTo("runtime-model")}>
+            <Link className="panel-link" to="/watch">Watch →</Link>
+            <a className="panel-link" href="#/settings?section=help" onClick={scrollTo("runtime-model")}>
               When does Babel run? ↑
             </a>
           </li>
@@ -451,26 +444,25 @@ function HelpPage() {
             <strong>Hypotheses</strong> — every emergent candidate is preserved in a resumable
             frontier, in the model's own wording, with the observations and evidence locators that
             develop it.
-            <Link className="panel-link" to="/hypotheses">Hypotheses →</Link>
+            <Link className="panel-link" to="/read?kind=hypothesis">Read →</Link>
           </li>
           <li>
             <strong>Findings and proposals</strong> — developed candidates are consolidated into
             findings, and a finding or a strong claim can carry proposals: what to do about it,
             with prerequisites, verification criteria, risks and open questions. This is Babel's
             output, and it is the first two entries in the row above.
-            <Link className="panel-link" to="/findings">Findings →</Link>
-            <Link className="panel-link" to="/proposals">Proposals →</Link>
+            <Link className="panel-link" to="/read">Read →</Link>
           </li>
           <li>
             <strong>Review</strong> — a human decides. Each decision is an appended, attributed
             event; the record's whole history stays readable. Reality questions collect missing
             context, and an interpreted plan applies only on explicit acceptance.
-            <Link className="panel-link" to="/review">Review →</Link>
+            <Link className="panel-link" to="/">Decide →</Link>
           </li>
         </ol>
       </article>
 
-      <article className="card help-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Vocabulary</p>
@@ -512,7 +504,7 @@ function HelpPage() {
             <dt>Presence · heartbeat</dt>
             <dd>
               While a conductor cycle or an exploration runs, it announces itself into the shared
-              catalog and writes a heartbeat. <Link to="/fleet">Fleet</Link> lists those
+              catalog and writes a heartbeat. <Link to="/watch?view=fleet">Watch</Link> lists those
               announcements from every machine, this one included. A heartbeat is evidence and never
               an observation: a run that has gone quiet may be working, blocked, or gone, and no
               host can tell those apart — so the page states the age of the last word rather than
@@ -574,7 +566,7 @@ function HelpPage() {
         </div>
       </article>
 
-      <article className="card help-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Terminal and browser</p>
@@ -608,7 +600,7 @@ function HelpPage() {
         </div>
       </article>
 
-      <article className="card help-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">From nothing</p>
@@ -633,12 +625,12 @@ function HelpPage() {
           </li>
           <li>
             <strong>Explore, then read.</strong> <code>babel explore --preparation ID</code> in a
-            terminal. Its records appear in <Link to="/hypotheses">Hypotheses</Link> and{" "}
-            <Link to="/explore">Explore</Link> as soon as it commits them.
+            terminal. Its records appear in <Link to="/read">Read</Link> and{" "}
+            <Link to="/watch">Watch</Link> as soon as it commits them.
           </li>
           <li>
-            <strong>Decide.</strong> Work <Link to="/review">Review</Link> and{" "}
-            <Link to="/reality">Reality</Link>. Every decision is attributed and appended, so the
+            <strong>Decide.</strong> Work <Link to="/">Decide</Link> and{" "}
+            <Link to="/ask">Ask</Link>. Every decision is attributed and appended, so the
             trail of what you concluded and when stays readable.
           </li>
         </ol>
@@ -648,7 +640,7 @@ function HelpPage() {
           <code>babel web</code> for a new one.
         </p>
       </article>
-    </section>
+    </div>
   );
 }
 

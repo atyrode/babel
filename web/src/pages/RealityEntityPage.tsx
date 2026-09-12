@@ -37,8 +37,8 @@ function RealityEntityPage() {
   if (error && !detail) {
     return (
       <section className="page">
-        <Link className="back-link" to="/reality/entities">← Subjects</Link>
-        <div className="state-card error-state">
+        <Link className="back-link" to="/ask/entities">← Subjects</Link>
+        <div className="surface state-note error-state">
           <strong>Entity could not be loaded.</strong>
           <span>{error}</span>
         </div>
@@ -49,7 +49,7 @@ function RealityEntityPage() {
   if (!detail) {
     return (
       <section className="page">
-        <div className="state-card"><span className="spinner" /> Loading entity…</div>
+        <div className="surface state-note"><span className="spinner" /> Loading entity…</div>
       </section>
     );
   }
@@ -59,7 +59,7 @@ function RealityEntityPage() {
 
   return (
     <section className="page detail-page entity-page">
-      <Link className="back-link" to="/reality/entities">← Subjects</Link>
+      <Link className="back-link" to="/ask/entities">← Subjects</Link>
       <div className="page-heading detail-heading">
         <div>
           <div className="heading-badges">
@@ -76,18 +76,18 @@ function RealityEntityPage() {
             has to be able to report that ambiguity rather than be handed a
             guess. */}
         <div className="heading-meta">
-          <Link className="secondary-button" to={`/reality/focus?subject=${encodeURIComponent(entity.id)}`}>
+          <Link className="secondary-button" to={`/settings?section=ceilings&subject=${encodeURIComponent(entity.id)}`}>
             Analysis policy
           </Link>
         </div>
       </div>
 
       {merged && (
-        <div className="state-card">
+        <div className="surface state-note">
           <strong>This entity was folded into another.</strong>
           <span>
             Its canonical identity is now{" "}
-            <Link className="mono" to={`/reality/entities/${encodeURIComponent(entity.canonical_id)}`}>
+            <Link className="mono" to={`/ask/entities/${encodeURIComponent(entity.canonical_id)}`}>
               {entity.canonical_id}
             </Link>
             . Merges are append-only history, so this record and its facts remain readable.
@@ -96,13 +96,13 @@ function RealityEntityPage() {
       )}
 
       {entity.notes && (
-        <article className="card">
+        <article className="surface">
           <p className="eyebrow">Notes</p>
           <p className="untrusted-inline">{entity.notes}</p>
         </article>
       )}
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Identity</p>
@@ -136,7 +136,7 @@ function RealityEntityPage() {
         )}
       </article>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Structure</p>
@@ -162,7 +162,7 @@ function RealityEntityPage() {
         )}
       </article>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Temporal record</p>
@@ -191,7 +191,7 @@ function RealityEntityPage() {
           and §4.8 keeps a mistaken resolution reversible — which is only worth
           something if the operator can see that a merge happened, who decided
           it, and what reason they gave. */}
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Append-only</p>

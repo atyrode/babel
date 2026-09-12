@@ -155,7 +155,7 @@ function visible(text: string): Promise<unknown> {
 // the citation headings are uppercased by CSS and Chrome's innerText reports
 // them that way, so a text wait would hang on a page that rendered correctly.
 function complaintRendered(): Promise<unknown> {
-  return page.waitForSelector(".complaint-page .statement-card .quoted-text", { timeout: 15_000 });
+  return page.waitForSelector(".complaint-page .claim-quote .quoted-text", { timeout: 15_000 });
 }
 
 // shoot photographs one element rather than the viewport. A panel that sits
@@ -217,8 +217,8 @@ afterAll(async () => {
 });
 
 test.skipIf(!chrome)("telling Babel something captures it, answers, and lists it", async () => {
-  await open("review");
-  await page.waitForSelector(".steering-section .capture-card .capture-input", { timeout: 15_000 });
+  await open("");
+  await page.waitForSelector(".steering-section .capture-input", { timeout: 15_000 });
 
   // The button is dead until there are words. A capture box that submitted an
   // empty complaint would store a record saying nothing, which the store
@@ -282,12 +282,12 @@ test.skipIf(!chrome)("telling Babel something captures it, answers, and lists it
   // bottom of a page of older complaints would read as having been filed away.
   await page.waitForFunction(
     (id: string) =>
-      (document.querySelector(".steering-list-card tbody tr .mono")?.textContent ?? "") === id,
+      (document.querySelector(".steering-list tbody tr .mono")?.textContent ?? "") === id,
     { timeout: 15_000 },
     captured.id,
   );
   const listed = await page.evaluate(() => {
-    const row = document.querySelector(".steering-list-card tbody tr");
+    const row = document.querySelector(".steering-list tbody tr");
     return {
       summary: row?.querySelector(".untrusted-inline")?.textContent ?? "",
       role: row?.getAttribute("role") ?? "",
@@ -344,7 +344,7 @@ test.skipIf(!chrome)("neither steering surface offers a way to close a complaint
       forbidden,
     );
 
-  await open("review");
+  await open("");
   await page.waitForSelector(".steering-section .steering-table", { timeout: 15_000 });
   const listing = await audit(".steering-section", TICKET_CONTROL);
   expect(listing.present).toBe(true);
@@ -374,7 +374,8 @@ test.skipIf(!chrome)("neither steering surface offers a way to close a complaint
     directions: Array.from(document.querySelectorAll(".complaint-page .citation-direction h3")).map(
       (heading) => heading.textContent ?? "",
     ),
-    revisions: document.querySelector(".complaint-page .revisions-card h2")?.textContent ?? "",
+    revisions:
+      document.querySelector(".complaint-page article:has(.revision-timeline) h2")?.textContent ?? "",
     noStatus: document.querySelector(".complaint-no-status")?.textContent ?? "",
   }));
   expect(kept.directions).toEqual(["Cites", "Cited by"]);
@@ -394,7 +395,7 @@ test.skipIf(!chrome)("a complaint's body is verbatim and inert", async () => {
   await complaintRendered();
 
   const body = await page.evaluate(() => {
-    const quoted = document.querySelector(".complaint-page .statement-card .quoted-text");
+    const quoted = document.querySelector(".complaint-page .claim-quote .quoted-text");
     const element = quoted as HTMLElement | null;
     return {
       tag: quoted?.tagName ?? "",
@@ -487,7 +488,7 @@ test.skipIf(!chrome)("amending appends, and every wording stays readable", async
       entries: entries.length,
       entryText: entries.map((entry) => (entry as HTMLElement).innerText),
       headLink: entries[entries.length - 1]?.querySelector("a")?.getAttribute("href") ?? "",
-      body: section?.querySelector(".statement-card .quoted-text")?.textContent ?? "",
+      body: section?.querySelector(".claim-quote .quoted-text")?.textContent ?? "",
     };
   });
 
@@ -507,10 +508,10 @@ test.skipIf(!chrome)("amending appends, and every wording stays readable", async
 
 test.skipIf(!chrome)("a complaint's citations render in both directions", async () => {
   await open("complaints/cmp_rules");
-  await page.waitForSelector(".complaint-page .references-card .citation-entry", { timeout: 15_000 });
+  await page.waitForSelector(".complaint-page article:has(.citation-direction) .citation-entry", { timeout: 15_000 });
 
   const citations = await page.evaluate(() => {
-    const panel = document.querySelector(".complaint-page .references-card");
+    const panel = document.querySelector(".complaint-page article:has(.citation-direction)");
     const directions = Array.from(panel?.querySelectorAll(".citation-direction") ?? []);
     const target = (edge: string) => {
       const entry = panel?.querySelector(`[data-citation='${edge}']`);
@@ -543,12 +544,12 @@ test.skipIf(!chrome)("a complaint's citations render in both directions", async 
   expect(citations.rows[0]).toBeGreaterThan(0);
   expect(citations.rows[1]).toBeGreaterThan(0);
 
-  expect(citations.aim.href).toBe("#/hypotheses/hyp_promoted-pattern");
+  expect(citations.aim.href).toBe("#/r/hyp_promoted-pattern");
   // A record this host holds is a link into this app's own route for it, so
   // the reader can walk from the complaint to the work that claims to answer
   // it in one click.
   expect(citations.addressed.inert).toBe(false);
-  expect(citations.addressed.href).toBe("#/hypotheses/hyp_unverified-closures");
+  expect(citations.addressed.href).toBe("#/r/hyp_unverified-closures");
   expect(citations.addressed.text).toContain("hyp_unverified-closures");
 
   // And a record this host never held stays on the page as identified text
@@ -563,10 +564,10 @@ test.skipIf(!chrome)("a complaint's citations render in both directions", async 
 
   await page.click("[data-citation='rle_hyp-addresses-rules'] .citation-target");
   await page.waitForFunction(
-    () => window.location.hash.startsWith("#/hypotheses/"),
+    () => window.location.hash.startsWith("#/r/"),
     { timeout: 15_000 },
   );
-  expect(page.url()).toContain("/hypotheses/hyp_unverified-closures");
+  expect(page.url()).toContain("/r/hyp_unverified-closures");
 });
 
 test.skipIf(!chrome)("day one shows the box and an empty state, not an error", async () => {
@@ -574,7 +575,7 @@ test.skipIf(!chrome)("day one shows the box and an empty state, not an error", a
   const bare = await browser!.newPage();
   try {
     await bare.setViewport({ width: 1440, height: 900 });
-    await bare.goto(`${dayOne.base}/#/review`, { waitUntil: "networkidle2" });
+    await bare.goto(`${dayOne.base}/#/`, { waitUntil: "networkidle2" });
     await bare.reload({ waitUntil: "networkidle2" });
     await bare.waitForSelector(".steering-section .capture-input", { timeout: 15_000 });
 

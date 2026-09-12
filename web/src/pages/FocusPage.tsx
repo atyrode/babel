@@ -119,33 +119,24 @@ function FocusPage() {
   const lifted = state?.rules.filter((rule) => !rule.withholds) ?? [];
 
   return (
-    <section className="page focus-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Reality Ledger</p>
-          <h1>Focus</h1>
-          <p className="subtitle">
-            What Babel is allowed to spend on each subject. A policy you state here is your
-            own fact in the ledger, in force until you supersede it — nothing is deleted, and
-            a subject's sessions are never removed from the corpus.
-          </p>
-        </div>
-        {state && (
-          <div className="heading-meta">
-            <span className="count-label">
-              {withheld.length} {withheld.length === 1 ? "restriction" : "restrictions"}
-            </span>
-          </div>
-        )}
-      </div>
+    // A section of Settings rather than a page of its own: a ceiling on what
+    // analysis may spend on a subject is something the operator states once
+    // and revises rarely, which is what Settings is for. It is still an
+    // attributed fact in the ledger and still reversible — see below.
+    <div className="page-section focus-section">
+      {state && (
+        <p className="count-label section-meta">
+          {withheld.length} {withheld.length === 1 ? "restriction" : "restrictions"}
+        </p>
+      )}
 
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       {loading && !state && (
-        <div className="state-card"><span className="spinner" /> Reading the focus policy…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading the focus policy…</div>
       )}
       {error && !state && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>The focus policy could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={() => load("blocking")}>Try again</button>
@@ -153,7 +144,7 @@ function FocusPage() {
       )}
 
       {state && !state.installed && (
-        <div className="state-card focus-install">
+        <div className="surface state-note focus-install">
           <strong>No focus policy is installed, so nothing is withheld.</strong>
           <span>{state.note}</span>
           <span className="muted">
@@ -200,7 +191,7 @@ function FocusPage() {
       )}
 
       {state?.installed && (
-        <article className="card focus-rules">
+        <article className="surface focus-rules">
           <div className="section-heading">
             <div>
               <p className="eyebrow">In force</p>
@@ -229,7 +220,7 @@ function FocusPage() {
       )}
 
       {lifted.length > 0 && state && (
-        <article className="card focus-rules">
+        <article className="surface focus-rules">
           <div className="section-heading">
             <div>
               <p className="eyebrow">Stated, withholding nothing</p>
@@ -256,7 +247,7 @@ function FocusPage() {
       )}
 
       {state?.policy && (
-        <article className="card focus-policy">
+        <article className="surface focus-policy">
           <div className="section-heading">
             <div>
               <p className="eyebrow">The mapping</p>
@@ -311,7 +302,7 @@ function FocusPage() {
           </details>
         </article>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -322,7 +313,7 @@ function FocusPage() {
 function SubjectName({ subject }: { subject: FocusSubject }) {
   return (
     <span className="focus-subject">
-      <Link className="untrusted-inline" to={`/reality/entities/${encodeURIComponent(subject.entity_id)}`}>
+      <Link className="untrusted-inline" to={`/ask/entities/${encodeURIComponent(subject.entity_id)}`}>
         {subject.display_name}
       </Link>
       {subject.aliases.length > 0 && (
@@ -428,7 +419,7 @@ function SubjectPicker({
   }
 
   return (
-    <article className="card focus-picker">
+    <article className="surface focus-picker">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Change what is spent</p>
@@ -457,7 +448,7 @@ function SubjectPicker({
       {lookupError && <p className="inline-error" role="alert">{lookupError}</p>}
 
       {found && !found.resolved && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>Nothing matched that name.</strong>
           <span>{found.reason}</span>

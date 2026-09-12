@@ -562,6 +562,7 @@ func (s *Store) Operator(ctx context.Context, in OperatorInput) (Record, error) 
 		Policy:    in.Policy,
 		RelatedID: in.RelatedID,
 		Decision:  in.Decision,
+		Stance:    in.Stance,
 	}
 	reopen := frontier.DispositionInput{}
 	switch in.Kind {

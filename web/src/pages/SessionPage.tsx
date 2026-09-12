@@ -181,7 +181,7 @@ function SessionPage() {
     return (
       <section className="page">
         <Link className="back-link" to="/sessions">← Sessions</Link>
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>Session could not be loaded.</strong>
           <span>{sessionError}</span>
         </div>
@@ -190,7 +190,7 @@ function SessionPage() {
   }
 
   if (!session) {
-    return <section className="page"><div className="state-card"><span className="spinner" /> Loading session…</div></section>;
+    return <section className="page"><div className="surface state-note"><span className="spinner" /> Loading session…</div></section>;
   }
 
   const described = formatTime(session.described_at);
@@ -219,7 +219,7 @@ function SessionPage() {
       </div>
 
       <div className="detail-grid">
-        <article className="card metadata-card">
+        <article className="surface">
           <div className="section-heading">
             <div><p className="eyebrow">Description</p><h2>Metadata</h2></div>
           </div>
@@ -271,7 +271,7 @@ function SessionPage() {
           </details>
         </article>
 
-        <aside className="card fetch-card">
+        <aside className="surface fetch-form">
           <p className="eyebrow">Recovery</p>
           <h2>Fetch from archive</h2>
           <p className="muted">Materialize this session from an archived snapshot.</p>
@@ -307,7 +307,7 @@ function SessionPage() {
       />
 
       {unresolvedRefs.length > 0 && (
-        <article className="card warning-card">
+        <article className="surface warning-note">
           <div className="section-heading"><div><p className="eyebrow">Attention</p><h2>Unresolved blob references</h2></div></div>
           <p>These referenced blobs could not be resolved and may make recovery incomplete.</p>
           <ul className="mono-list">{unresolvedRefs.map((ref) => <li key={ref}>{ref}</li>)}</ul>
@@ -321,7 +321,7 @@ function SessionPage() {
           were recorded against. */}
       <RecordLinks record={{ type: "session", id: session.selector }} heading="Analysis citing this session" />
 
-      <article className="card transcript-card">
+      <article className="surface">
         <div className="section-heading">
           <div><p className="eyebrow">Conversation</p><h2>Transcript</h2></div>
           {!transcriptLoading && (
@@ -403,7 +403,7 @@ interface FileTableProps {
 
 function FileTable({ title, subtitle, empty, headers, rows }: FileTableProps) {
   return (
-    <article className="card file-card">
+    <article className="surface file-block">
       <div className="section-heading"><div><h2>{title}</h2><p className="muted">{subtitle}</p></div><span className="count-label">{rows.length}</span></div>
       {rows.length ? (
         <div className="table-scroll">

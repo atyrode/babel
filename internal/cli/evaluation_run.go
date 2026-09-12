@@ -630,6 +630,10 @@ func (a *app) evaluate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// See explore's: registered before the handles it must follow, so the
+	// review's own closure and anything a sibling lane stranded publish as
+	// this command exits rather than waiting for `babel sync` (SPEC.md §9.1).
+	defer a.drainOnExit(ctx)
 	defer state.Close()
 	services, err := a.openEvaluation(ctx, state)
 	if err != nil {

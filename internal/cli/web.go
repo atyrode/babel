@@ -117,6 +117,18 @@ func (a *app) webCmd(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The surface an operator keeps open is this machine's drainer. A
+	// workstation running bare explore and evaluate lanes has no conductor
+	// cycle to publish at, so without this its records wait for somebody to
+	// type `babel sync`; with it, a browser left open is enough to keep this
+	// disk from being the only place its analysis exists (SPEC.md §9.1).
+	//
+	// It is started after the server is built, so its diagnostics reach the
+	// same serialized stream every other producer writes to, and under the
+	// signal context, so Ctrl-C ends the loop with the listener.
+	stopDrain := a.startDrain(ctx, servedDrainInterval)
+	defer stopDrain()
+
 	fmt.Fprintf(a.stdout, "babel web listening at %s\n", srv.URL())
 	// The sentence states the two properties the link actually has, and takes
 	// the lifetime from the server rather than repeating it, so the printed
