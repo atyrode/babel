@@ -9,6 +9,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-09-12
+
 ### Added
 
 - **Babel reviews its own backlog, and the browser reads what it found.** The
