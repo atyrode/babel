@@ -213,21 +213,36 @@ func (c *evaluationCatalogCoordinator) Validate(ctx context.Context, id, runID s
 	return evaluationCoordinationError(sharedcatalog.ValidateEvaluationClaim(ctx, db, c.cfg.DeploymentID, id, runID, fence))
 }
 
-// Renew is the one authority operation the shared catalog cannot serve.
+// Renew extends this run's lease on an assignment fleet-wide.
 //
-// migrations/0013's evaluation_claims_finish_only trigger names expires_at
-// among the columns a claim attempt may not change: fleet-wide, a lease is
-// fixed at the grant and the only transition an attempt may make is claimed ->
-// finished. Extending one there is a catalog schema change rather than a call
-// this adapter can make, so it says so instead of reporting an extension the
-// fleet never granted - a worker told its lease was extended when it was not
-// would keep reading against an authority the fleet has already let go.
+// migrations/0014 is what makes it possible: 0013 had fixed a lease at its
+// grant, so every review that ran longer than the grant lost a claim it had
+// never stopped holding and had its result refused for a conflict that had not
+// happened. The catalog now admits one more transition - a live claim moving
+// its own expiry forward - and this is the call that asks for it.
+//
+// The window asked for is a full policy lease from now, not what is left of
+// the old one, because a renewal is the holder restating that it is still
+// working. The catalog measures liveness with its own clock and refuses an
+// expiry that does not move forward, so a host whose clock lags the catalog's
+// by more than a renewal interval is told its renewal failed rather than left
+// believing in one it never got.
 func (c *evaluationCatalogCoordinator) Renew(ctx context.Context, id, runID string, fence int64,
 	policy evaluation.Policy) (time.Time, error) {
-	return time.Time{}, fmt.Errorf("%w: the shared catalog records a claim attempt as immutable except "+
-		"for its finish, so the lease on assignment %s cannot be extended fleet-wide; a review that "+
-		"needs longer than %ds needs a policy with a longer lease",
-		evaluation.ErrUnavailable, id, policy.LeaseSeconds)
+	if policy.LeaseSeconds <= 0 {
+		return time.Time{}, fmt.Errorf("%w: policy %s grants no lease duration, so a claim could never expire",
+			evaluation.ErrInvalid, policy.Version)
+	}
+	db, err := c.connection(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	until := time.Now().UTC().Add(time.Duration(policy.LeaseSeconds) * time.Second)
+	extended, err := sharedcatalog.RenewEvaluationClaim(ctx, db, c.cfg.DeploymentID, id, runID, fence, until)
+	if err != nil {
+		return time.Time{}, evaluationCoordinationError(err)
+	}
+	return extended, nil
 }
 
 func (c *evaluationCatalogCoordinator) Finish(ctx context.Context, id, runID string, fence int64, cost float64) error {

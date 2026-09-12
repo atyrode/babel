@@ -161,6 +161,7 @@ func TestMigrationLedgerIsExactlyThese(t *testing.T) {
 		"0011_complaint_records",
 		"0012_evaluation_records",
 		"0013_evaluation_claims",
+		"0014_evaluation_lease_renewal",
 	}
 
 	entries, err := migrations()
@@ -217,6 +218,9 @@ func TestAppliedMigrationBodiesAreFrozen(t *testing.T) {
 		// Added with the migrations themselves (issue #219), on 0011's terms.
 		"0012_evaluation_records": "d4293111558d87f46343a12db8c8f86a041aed7e2bb4d24ccd2027f3accde15f",
 		"0013_evaluation_claims":  "e99248abd6eb847b004354a9f6622a5a9f7d200b153ff085717982c78f3f47fa",
+		// Added with the migration itself (issue #219), on 0011's terms: the
+		// lease renewal 0013 did not admit.
+		"0014_evaluation_lease_renewal": "a9218060c8da50c485dfc3d69fbb85cde3d9e4d414a5cea904b538d2aaf06c99",
 	}
 
 	const remedy = "Two changes are legitimate here, and they are not the same " +

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -231,8 +232,10 @@ func TestEvaluationTakeoverFencesTheStaleWorkerAndKeepsItsSpend(t *testing.T) {
 		t.Fatalf("the live owner cannot validate its own claim: %v", err)
 	}
 
-	// Real elapsed time: expiry is the server's, and the trigger refuses any
-	// statement that would move expires_at, which is the point of it.
+	// Real elapsed time: expiry is the server's, and a lapsed lease cannot be
+	// wound back into life. migrations/0014 lets a holder move its expiry
+	// forward while the lease is live, and takeover is what an attempt that
+	// stopped answering gets instead.
 	time.Sleep(1200 * time.Millisecond)
 
 	if err := ValidateEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", stale.Fence); !errors.Is(err, ErrEvaluationConflict) {
@@ -452,8 +455,14 @@ func TestEvaluationClaimRefusesUnusableInput(t *testing.T) {
 }
 
 // The charge on a day is not rewritable. Everything above depends on it: a
-// writer that could move a claim to another day, extend its own lease, or lower
-// its reservation after the fact could spend the allowance twice.
+// writer that could move a claim to another day, re-attribute it, or lower its
+// reservation after the fact could spend the allowance twice.
+//
+// migrations/0014 admitted exactly one more statement here - a live holder
+// moving its own expiry forward - and this is the rest of 0013's guarantee,
+// which that relaxation had to leave standing. A lease is the only column that
+// moved, it moves in one direction, and it cannot move while something else
+// does.
 func TestEvaluationClaimRowsAreImmutableExceptForTheFinish(t *testing.T) {
 	db := newInternalDB(t)
 	seedEvaluation(t, db)
@@ -463,8 +472,15 @@ func TestEvaluationClaimRowsAreImmutableExceptForTheFinish(t *testing.T) {
 		name string
 		stmt string
 	}{
-		{"extending its own lease",
-			`UPDATE evaluation_claims SET expires_at = expires_at + interval '1 hour'`},
+		{"winding its own lease backwards",
+			`UPDATE evaluation_claims SET expires_at = expires_at - interval '1 hour'`},
+		{"re-timing the grant a day's accounting is derived from",
+			`UPDATE evaluation_claims SET claimed_at = claimed_at - interval '1 hour'`},
+		{"re-attributing the work to another instance",
+			`UPDATE evaluation_claims SET owner_id = 'inst-z'`},
+		{"extending the lease while finishing, which is two changes",
+			`UPDATE evaluation_claims SET state = 'finished', observed_cost = 0.1,
+			     finished_at = now(), expires_at = expires_at + interval '1 hour'`},
 		{"lowering the reservation after it was charged",
 			`UPDATE evaluation_claims SET reserved_cost = 0`},
 		{"moving the charge to another day",
@@ -479,5 +495,179 @@ func TestEvaluationClaimRowsAreImmutableExceptForTheFinish(t *testing.T) {
 				t.Fatal("the database accepted it; the accounting is a convention rather than a guarantee")
 			}
 		})
+	}
+}
+
+// storedExpiry reads the lease the catalog actually holds for one attempt. A
+// renewal that reported a window it did not store would tell a worker it may
+// keep acting past an expiry the fleet still enforces, so what the call
+// returns is checked against this rather than against itself.
+func storedExpiry(t *testing.T, db *sql.DB, id string, fence int64) time.Time {
+	t.Helper()
+	var at time.Time
+	if err := db.QueryRow(`SELECT expires_at FROM evaluation_claims
+		 WHERE deployment_id = 'd1' AND claim_id = $1 AND fence = $2`, id, fence).Scan(&at); err != nil {
+		t.Fatalf("read the stored lease on %s: %v", id, err)
+	}
+	return at
+}
+
+// Renewal is what carries a review that takes longer than the window it was
+// granted. Without it the deployment this was found on recorded no vote at
+// all: four assessments of 386s, 461s, 556s and 630s under a 240s lease, each
+// refused at the end for a claim it had never stopped holding.
+func TestEvaluationRenewalCarriesALiveClaimPastItsGrant(t *testing.T) {
+	db := newInternalDB(t)
+	seedEvaluation(t, db)
+	ctx := context.Background()
+
+	granted := mustClaim(t, db, sampleClaim("assign-1", "run-a", "inst-a", 1), sampleBudget(10, 10, 600))
+	until := granted.ExpiresAt.Add(10 * time.Minute).Truncate(time.Microsecond)
+
+	extended, err := RenewEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", granted.Fence, until)
+	if err != nil {
+		t.Fatalf("renewing a live claim: %v", err)
+	}
+	if !extended.Equal(until) {
+		t.Errorf("the renewal reports %s, want %s", extended, until)
+	}
+	if stored := storedExpiry(t, db, "assign-1", granted.Fence); !stored.Equal(until) {
+		t.Errorf("the catalog holds %s, want %s", stored, until)
+	}
+
+	// Same authority, same fence, and still the only live attempt: a renewal
+	// is the holder keeping what it has, not a takeover of its own claim.
+	if err := ValidateEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", granted.Fence); err != nil {
+		t.Fatalf("the renewed owner may no longer act: %v", err)
+	}
+
+	// And renewable again, because a keeper ticks for as long as the review
+	// runs rather than once.
+	again := until.Add(10 * time.Minute)
+	if extended, err = RenewEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", granted.Fence, again); err != nil {
+		t.Fatalf("second renewal: %v", err)
+	}
+	if !extended.Equal(again) {
+		t.Errorf("the second renewal reports %s, want %s", extended, again)
+	}
+
+	// Nothing was charged for either. The attempt carries its reservation
+	// until it reports, so nine of the day's ten units are still free.
+	mustClaim(t, db, sampleClaim("assign-2", "run-b", "inst-b", 9), sampleBudget(10, 10, 600))
+}
+
+// A renewal that does not move the expiry forward is a caller bug rather than
+// a no-op. Answering it with success would leave a worker acting on an
+// authority it is about to lose, which is the failure renewal exists to
+// prevent; and a statement that moved a lease backwards would release an
+// assignment its holder is still working on.
+func TestEvaluationRenewalRefusesALeaseThatDoesNotMoveForward(t *testing.T) {
+	db := newInternalDB(t)
+	seedEvaluation(t, db)
+	ctx := context.Background()
+
+	granted := mustClaim(t, db, sampleClaim("assign-1", "run-a", "inst-a", 1), sampleBudget(10, 10, 600))
+	for _, tc := range []struct {
+		name  string
+		until time.Time
+	}{
+		{"the expiry it already holds", granted.ExpiresAt},
+		{"an earlier expiry", granted.ExpiresAt.Add(-time.Minute)},
+		{"no expiry at all", time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := RenewEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", granted.Fence, tc.until); !errors.Is(err, ErrEvaluationInvalid) {
+				t.Fatalf("got %v, want ErrEvaluationInvalid", err)
+			}
+		})
+	}
+	if stored := storedExpiry(t, db, "assign-1", granted.Fence); !stored.Equal(granted.ExpiresAt) {
+		t.Errorf("the lease moved to %s under three refused renewals, want %s",
+			stored, granted.ExpiresAt)
+	}
+}
+
+// An expired assignment is the next claimer's to take under a new fence, so a
+// renewal is refused rather than resurrecting it: two live opinions on one
+// assignment is what the fence exists to prevent. The refusal is
+// ValidateEvaluationClaim's, and it names the expiry so a worker can tell how
+// long ago it lost the claim.
+func TestEvaluationRenewalRefusesALapsedLease(t *testing.T) {
+	db := newInternalDB(t)
+	seedEvaluation(t, db)
+	ctx := context.Background()
+
+	granted := mustClaim(t, db, sampleClaim("assign-1", "run-a", "inst-a", 1), sampleBudget(10, 10, 1))
+	time.Sleep(1200 * time.Millisecond)
+
+	_, err := RenewEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", granted.Fence,
+		time.Now().UTC().Add(10*time.Minute))
+	if !errors.Is(err, ErrEvaluationConflict) {
+		t.Fatalf("renewing a lapsed lease got %v, want ErrEvaluationConflict", err)
+	}
+	if !strings.Contains(err.Error(), "expired at") {
+		t.Errorf("the refusal is %q; it must say when the lease expired", err)
+	}
+
+	// Takeover is what a lapsed attempt gets, and the superseded holder is
+	// refused a renewal afterwards too.
+	taken := mustClaim(t, db, sampleClaim("assign-1", "run-b", "inst-b", 1), sampleBudget(10, 10, 600))
+	if taken.Fence != granted.Fence+1 {
+		t.Fatalf("takeover fence %d, want %d", taken.Fence, granted.Fence+1)
+	}
+	if _, err := RenewEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", granted.Fence,
+		time.Now().UTC().Add(10*time.Minute)); !errors.Is(err, ErrEvaluationConflict) {
+		t.Errorf("a superseded worker renewed its lease: %v", err)
+	}
+}
+
+// A lease belongs to one run at one fence, and a finished attempt has none
+// left to extend. These are the four answers a keeper has to be able to act
+// on, and they are deliberately not one error.
+func TestEvaluationRenewalRefusesAnotherAuthority(t *testing.T) {
+	db := newInternalDB(t)
+	seedEvaluation(t, db)
+	ctx := context.Background()
+
+	granted := mustClaim(t, db, sampleClaim("assign-1", "run-a", "inst-a", 1), sampleBudget(10, 10, 600))
+	until := granted.ExpiresAt.Add(10 * time.Minute)
+
+	if _, err := RenewEvaluationClaim(ctx, db, "d1", "assign-1", "run-z", granted.Fence, until); !errors.Is(err, ErrEvaluationConflict) {
+		t.Errorf("a renewal from a run that owns nothing got %v, want ErrEvaluationConflict", err)
+	}
+	if _, err := RenewEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", granted.Fence+1, until); !errors.Is(err, ErrEvaluationConflict) {
+		t.Errorf("a renewal at a fence the catalog never granted got %v, want ErrEvaluationConflict", err)
+	}
+	if _, err := RenewEvaluationClaim(ctx, db, "d1", "assign-absent", "run-a", 1, until); !errors.Is(err, ErrEvaluationNotFound) {
+		t.Errorf("renewing an assignment nobody claimed got %v, want ErrEvaluationNotFound", err)
+	}
+	if stored := storedExpiry(t, db, "assign-1", granted.Fence); !stored.Equal(granted.ExpiresAt) {
+		t.Errorf("a refused renewal moved the lease to %s, want %s", stored, granted.ExpiresAt)
+	}
+
+	if err := FinishEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", granted.Fence, 0.25); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if _, err := RenewEvaluationClaim(ctx, db, "d1", "assign-1", "run-a", granted.Fence, until); !errors.Is(err, ErrEvaluationConflict) {
+		t.Errorf("renewing a finished attempt got %v, want ErrEvaluationConflict", err)
+	}
+}
+
+// The narrowing is the database's, not this package's. A statement nothing
+// here wrote must not be able to raise a lapsed lease, because the guarantee
+// that stops two workers acting on one assignment cannot depend on the Go
+// above it being correct.
+func TestEvaluationLeaseRenewalTriggerHoldsTheLivenessRule(t *testing.T) {
+	db := newInternalDB(t)
+	seedEvaluation(t, db)
+	mustClaim(t, db, sampleClaim("assign-1", "run-a", "inst-a", 1), sampleBudget(10, 10, 1))
+
+	if _, err := db.Exec(`UPDATE evaluation_claims SET expires_at = expires_at + interval '1 second'`); err != nil {
+		t.Fatalf("the trigger refused a forward renewal on a live claim: %v", err)
+	}
+	time.Sleep(2200 * time.Millisecond)
+	if _, err := db.Exec(`UPDATE evaluation_claims SET expires_at = expires_at + interval '1 hour'`); err == nil {
+		t.Fatal("the database raised a lapsed lease; an expired assignment is the next claimer's, " +
+			"and liveness is a guarantee rather than a convention")
 	}
 }

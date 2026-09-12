@@ -101,13 +101,12 @@ const (
 	//
 	// The floor stands beside renewal rather than instead of it. What carries
 	// a long review past its lease is Service.RenewClaim, ticked at a third
-	// of the lease while the review runs; what the floor refuses is the
-	// policy that needs those renewals to have worked at all. That case is
-	// real rather than theoretical: a shared deployment cannot renew - the
-	// catalog records a claim attempt as immutable except for its finish - so
-	// there the granted lease is the whole window the work gets, and a lease
-	// that could not cover one batch would hand out claims the fleet is
-	// certain to expire.
+	// of the lease while the review runs, in both modes since migration
+	// 0014; what the floor refuses is the policy that needs those renewals
+	// to have worked at all. A renewal is one more write that can be lost to
+	// a busy database or a worker that stalls, and a lease shorter than the
+	// preparation it has to cover would hand out claims that depend on the
+	// first tick landing before the grant lapses.
 	leaseSecondsPerSubject = 20
 	leaseFloorSeconds      = 300
 )
