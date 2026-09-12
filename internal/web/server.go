@@ -723,6 +723,9 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		if s.routeRecord(w, r) {
 			return
 		}
+		if s.routeSearch(w, r) {
+			return
+		}
 		s.writeError(w, http.StatusNotFound, "not found")
 	}
 }
