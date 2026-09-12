@@ -753,7 +753,7 @@ function DecidePage() {
           <strong>Nothing awaits a decision</strong>
           <span>
             Records arrive here when exploration develops them far enough to be worth a ruling.{" "}
-            <Link to="/read">Read what Babel has found</Link> in the meantime.
+            <Link to="/">Read the feed</Link> in the meantime.
           </span>
         </div>
       )}

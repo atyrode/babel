@@ -20,12 +20,11 @@ import {
 import AskPage from "./pages/AskPage";
 import ComplaintPage from "./pages/ComplaintPage";
 import DecidePage from "./pages/DecidePage";
-import ReadPage from "./pages/ReadPage";
+import FeedPage, { TopicsIndex } from "./pages/FeedPage";
 import RealityEntitiesPage from "./pages/RealityEntitiesPage";
 import RealityEntityPage from "./pages/RealityEntityPage";
 import RealityFactPage from "./pages/RealityFactPage";
 import RealityFactsPage from "./pages/RealityFactsPage";
-import RealityPage from "./pages/RealityPage";
 import RealityQuestionPage from "./pages/RealityQuestionPage";
 import RealityQuestionsPage from "./pages/RealityQuestionsPage";
 import RecordPage from "./pages/RecordPage";
@@ -49,6 +48,19 @@ const LOCK_PROMPT =
 function RecordRedirect() {
   const { id } = useParams();
   return <Navigate to={`/r/${encodeURIComponent(id ?? "")}`} replace />;
+}
+
+// The reading path is one feed now (§8.7), so /read is neither a destination
+// nor a filtered listing of its own: the kind it filtered by is a chip on the
+// front page, and it is the one thing a /read bookmark carried that the feed
+// still answers. The rest of what that URL could say — a standing, a coverage
+// facet, a review role — belonged to a page this section replaces, and a
+// redirect that invented a feed parameter for it would be a filter nobody can
+// see.
+function ReadRedirect() {
+  const { search } = useLocation();
+  const kind = new URLSearchParams(search).get("kind") ?? "";
+  return <Navigate to={kind ? `/?kind=${encodeURIComponent(kind)}` : "/"} replace />;
 }
 
 // The Reality Ledger kept its shape and lost its name: the operator asks Babel
@@ -203,10 +215,9 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        {/* The wordmark is the way back to Decide, which is where a launched
-            session lands and the only page that claims the operator's
-            attention. It carries no nav entry of its own. */}
-        <Link className="brand-block" to="/" title="What needs me?">
+        {/* The wordmark is the way home, and home is the feed. It carries no
+            nav entry of its own because Home is the first one. */}
+        <Link className="brand-block" to="/" title="The feed">
           <span className="brand-mark" aria-hidden="true">B</span>
           <div>
             <div className="brand">Babel</div>
@@ -216,50 +227,48 @@ function App() {
           </div>
         </Link>
         <div className="topbar-actions">
-          {/* Four questions, in the order an operator asks them, and nothing
-              in the row is the name of a record kind or of a place Babel
-              keeps bytes. The row used to hold eleven entries — Findings,
-              Proposals, Hypotheses, Reality, Focus, Evaluation, Review,
-              Sessions, Explore, ?, Lock & stop — which required knowing the
-              data model before you could pick one (#234).
+          {/* Four destinations, and the fifth — search — is the palette
+              rather than a word in the row (§8.7). Nothing here is the name
+              of a record kind or of a place Babel keeps bytes: the kinds are
+              chips on the feed, which is where a distinction the reader
+              applies belongs.
 
-              Sessions is deliberately absent. Nobody opens Babel to browse
-              transcripts; a transcript is where a citation lands, so it stays
-              routed and is reached from the evidence that cites it.
+              Read and Ask were destinations until the front page became the
+              feed. Reading by filter is the feed's own sort bar and chips,
+              the questions Babel asks are posts in it, and the ledger's
+              subjects and beliefs are reached from the records that cite
+              them — so two rows of navigation became none, and no capability
+              moved out of reach.
+
+              Sessions is deliberately absent for the same reason it always
+              was. Nobody opens Babel to browse transcripts; a transcript is
+              where a citation lands.
 
               Settings is last and is a container rather than a question: the
               archive, what evaluation may spend, what Babel may spend on a
-              subject, and the orientation text. None of them is something the
-              operator comes here to read. */}
+              subject, and the orientation text. */}
           <nav aria-label="Primary navigation">
             <NavLink
               end
               to="/"
               className={({ isActive }) => isActive ? "active" : undefined}
-              title="What needs me?"
+              title="Everything Babel has produced, newest and hottest first"
             >
-              Decide
+              Home
             </NavLink>
             <NavLink
-              to="/read"
+              to="/queue"
               className={({ isActive }) => isActive ? "active" : undefined}
-              title="What has Babel found?"
+              title="What awaits a ruling from you"
             >
-              Read
+              Mod queue
             </NavLink>
             <NavLink
               to="/watch"
               className={({ isActive }) => isActive ? "active" : undefined}
-              title="What is it doing, and what did it cost?"
+              title="What it is doing, and what it cost"
             >
               Watch
-            </NavLink>
-            <NavLink
-              to="/ask"
-              className={({ isActive }) => isActive ? "active" : undefined}
-              title="What does it know, and what does it need from me?"
-            >
-              Ask
             </NavLink>
             <NavLink
               to="/settings"
@@ -317,8 +326,15 @@ function App() {
             fault instead of stranding the reader on it. */}
         <RenderBoundary key={location.pathname}>
         <Routes>
-          <Route path="/" element={<DecidePage />} />
-          <Route path="/read" element={<ReadPage />} />
+          {/* Home is the feed, and a topic is the same feed filtered to one
+              community. /t is the directory behind the rail's twelve. */}
+          <Route path="/" element={<FeedPage />} />
+          <Route path="/t" element={<TopicsIndex />} />
+          <Route path="/t/:topic" element={<FeedPage />} />
+          {/* The mod queue: §8.5's queue, unchanged, at the path that says
+              what it is. It was the front page until the front page became
+              the feed. */}
+          <Route path="/queue" element={<DecidePage />} />
           <Route path="/watch" element={<WatchPage />} />
           {/* One run, whole: what it searched, what it fetched, what it
               declined and what it cost. It hangs under Watch because a run is
@@ -330,7 +346,11 @@ function App() {
               record, which is where a reader most needs to know what else
               the ledger holds (§8.4). */}
           <Route path="/ask" element={<AskPage />}>
-            <Route index element={<RealityPage />} />
+            {/* The questions Babel is asking are posts, so the inbox that
+                used to sit here is the feed filtered to them. The ledger's
+                own destinations below stay: they are reached from the
+                records and the questions that cite them. */}
+            <Route index element={<Navigate to="/?kind=question" replace />} />
             <Route path="questions" element={<RealityQuestionsPage />} />
             <Route path="questions/:id" element={<RealityQuestionPage />} />
             <Route path="entities" element={<RealityEntitiesPage />} />
@@ -353,16 +373,20 @@ function App() {
               outlive a navigation redesign, and a 404 would make the redesign
               look like data loss. Every one of them replaces its history
               entry, so Back leaves the old surface rather than bouncing. */}
-          <Route path="/review" element={<Navigate to="/" replace />} />
+          <Route path="/review" element={<Navigate to="/queue" replace />} />
           <Route path="/review/:type/:id" element={<RecordRedirect />} />
-          <Route path="/findings" element={<Navigate to="/read?kind=finding" replace />} />
+          {/* /read is the feed, and the kind it was filtering by is the chip
+              it becomes. The splat catches the sections that page grew. */}
+          <Route path="/read" element={<ReadRedirect />} />
+          <Route path="/read/*" element={<ReadRedirect />} />
+          <Route path="/findings" element={<Navigate to="/?kind=finding" replace />} />
           <Route path="/findings/:id" element={<RecordRedirect />} />
-          <Route path="/proposals" element={<Navigate to="/read?kind=proposal" replace />} />
+          <Route path="/proposals" element={<Navigate to="/?kind=proposal" replace />} />
           <Route path="/proposals/:id" element={<RecordRedirect />} />
-          <Route path="/hypotheses" element={<Navigate to="/read?kind=hypothesis" replace />} />
+          <Route path="/hypotheses" element={<Navigate to="/?kind=hypothesis" replace />} />
           <Route path="/hypotheses/:id" element={<RecordRedirect />} />
-          <Route path="/evaluation" element={<Navigate to="/read" replace />} />
-          <Route path="/evaluation/coverage" element={<Navigate to="/read?coverage=unreviewed" replace />} />
+          <Route path="/evaluation" element={<Navigate to="/" replace />} />
+          <Route path="/evaluation/coverage" element={<Navigate to="/queue" replace />} />
           <Route path="/evaluation/policy" element={<SettingsRedirect section="policy" />} />
           {/* Ranked below the two named paths above, so "coverage" is never
               read as a record kind. */}

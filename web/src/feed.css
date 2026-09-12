@@ -1,0 +1,355 @@
+/* The feed (§8.7).
+   ---------------------------------------------------------------------------
+   The front page is a list of posts, and a post is one line of claim with its
+   arrows, its flair, its topics, its age and its comment count. Everything
+   here is scoped under `.feed-page` because it is a page's rhythm and not a
+   new vocabulary: the containers are styles.css's `.surface`, `.peel`,
+   `.chip` and `.rule-bar`, the colours and spaces are its tokens, and nothing
+   in this file declares a literal colour.
+
+   The arrows are deliberately absent from this file. `div.vote` and its three
+   parts are the record's own control, styled once in record.css and mounted
+   here, so a feed row gives them a column and says nothing about how they
+   look — two stylesheets describing one control is how the same button comes
+   to have two appearances. */
+
+/* The feed and the topics beside it. One column until the rail has room; the
+   rail is mounted by the page only above the same width, so the two cannot
+   disagree about whether it is there. */
+.feed-page .feed-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+
+@media (min-width: 1024px) {
+  .feed-page .feed-layout {
+    grid-template-columns: minmax(0, 1fr) 15rem;
+  }
+}
+
+.feed-page .feed-column {
+  min-width: 0;
+}
+
+/* The name of the place and how many posts are in it. The display face is
+   one step down from a record's title: this is a handle on a list, not the
+   claim of a record, and the difference is worth a line of the page. */
+.feed-page .page-heading {
+  margin-bottom: var(--space-3);
+}
+
+.feed-page .page-heading h1 {
+  margin: 0;
+  font-size: 1.55rem;
+  line-height: 1.2;
+}
+
+/* The count beside the name of the place. It is a figure, so it is mono. */
+.feed-page .feed-count {
+  margin: 0;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+/* One row of controls: what order, over what period, of what kinds. They are
+   one gesture — what to read, and in what order — and two stacked rows of
+   them is the header growing into the list it is a handle for. The kinds sit
+   at the far end because they are the filter and the orderings are the
+   subject; below the column's width they wrap, in that order. */
+.feed-page .feed-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.feed-page .feed-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+/* What the ordering is computed from, and when it was computed. §8.5 requires
+   both of any list that claims to be ranked. */
+.feed-page .feed-basis {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.feed-page .feed-basis .feed-keys {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.feed-page .feed-notice {
+  margin: 0 0 var(--space-3);
+  color: var(--warn-ink);
+  font-size: 0.78rem;
+}
+
+.feed-page .feed-list {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  list-style: none;
+}
+
+/* One row, two columns: the vote and everything the reader decides with. The
+   arrows are max-content because record.css fixes their width; the claim
+   takes the rest and is allowed to be narrow, because a row that reflows
+   under the pointer is a row that gets misclicked. */
+.feed-page .feed-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  align-items: start;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--rule);
+  transition: background var(--motion-fast) ease;
+}
+
+.feed-page .feed-row:hover,
+.feed-page .feed-row[data-focused] {
+  background: var(--bg-raised);
+}
+
+/* The ring is the same state whether the keyboard or the pointer put it
+   there, and it is inset so a row at the edge of the list does not paint
+   outside it. */
+.feed-page .feed-row:focus,
+.feed-page .feed-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.feed-page .feed-body {
+  min-width: 0;
+}
+
+/* The claim wraps to two lines and then stops — the same rule the queue's
+   rows keep, for the same measured reason: one truncated line cuts a sentence
+   mid-clause on rows that had room for all of it, and a third line turns a
+   list into paragraphs. */
+.feed-page .feed-claim {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+  line-height: 1.35;
+  text-decoration: none;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.feed-page .feed-claim:hover,
+.feed-page .feed-row[data-focused] .feed-claim {
+  color: var(--accent);
+}
+
+/* The facts under the claim: what kind of thing it is, where it came from,
+   how old it is, and how much has been said about it. */
+.feed-page .feed-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-1);
+  color: var(--ink-muted);
+  font-size: 0.74rem;
+}
+
+.feed-page .feed-facts a {
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+
+.feed-page .feed-facts a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* A topic is a community and reads like one: the prefix is part of the name,
+   so it is set with it. */
+.feed-page .feed-topic,
+.feed-page .feed-author,
+.feed-page .feed-age,
+.feed-page .feed-comments {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+/* A standing worth saying. "new" is the absence of a ruling and is left
+   unsaid: a badge on every row is a badge that says nothing. */
+.feed-page .feed-standing {
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+.feed-page .feed-standing[data-standing="accepted"] {
+  color: var(--good);
+}
+
+.feed-page .feed-standing[data-standing="rejected"] {
+  color: var(--bad);
+}
+
+.feed-page .feed-standing[data-standing="reopened"],
+.feed-page .feed-standing[data-standing="refine-requested"] {
+  color: var(--warn);
+}
+
+/* More of the same list, appended. It is a button and not a pager because the
+   feed has one order and reading further down it is not turning a page. */
+.feed-page .feed-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.feed-page .feed-end {
+  margin-top: var(--space-4);
+  color: var(--ink-faint);
+  font-size: 0.76rem;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------------------
+   THE TOPICS RAIL. A sixth destination that is not a page (§8.7): on a wide
+   viewport it stands beside the feed, and below 1024px the page mounts the
+   same list as a peel above it, because a sidebar on a phone is a sidebar
+   nobody opens.
+   --------------------------------------------------------------------------- */
+.feed-page .feed-rail {
+  position: sticky;
+  top: 5.5rem;
+  padding-left: var(--space-4);
+  border-left: 1px solid var(--rule);
+}
+
+.feed-page .feed-rail h2,
+.feed-page .topics-peel .peel-body h2 {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.feed-page .topic-list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.feed-page .topic-list a {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-decoration: none;
+}
+
+.feed-page .topic-list a:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+.feed-page .topic-list a[aria-current="page"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.feed-page .topic-count {
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.feed-page .topic-all {
+  display: inline-block;
+  margin-top: var(--space-2);
+  font-size: 0.76rem;
+}
+
+.feed-page .topic-note {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+}
+
+/* The same list, folded, on a viewport with no room beside the feed. */
+.feed-page .topics-peel {
+  margin-bottom: var(--space-4);
+}
+
+/* ---------------------------------------------------------------------------
+   EVERY TOPIC. The rail shows twelve; this is the rest of them, which is the
+   one page a topic list needs and is still not a destination in the nav.
+   --------------------------------------------------------------------------- */
+.topics-page .topic-index {
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  list-style: none;
+}
+
+.topics-page .topic-index li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.topics-page .topic-index a {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.topics-page .topic-index .topic-facts {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+
+/* Narrow: the arrows stay beside the claim — they are the row's act and
+   putting them above it would cost a line on every row — and the facts wrap
+   under it, which they already do. */
+@media (max-width: 40rem) {
+  .feed-page .feed-row {
+    gap: var(--space-1) var(--space-3);
+    padding: var(--space-3) 0;
+  }
+
+  .feed-page .feed-controls {
+    gap: var(--space-2);
+  }
+
+  .feed-page .feed-claim {
+    font-size: 0.92rem;
+  }
+}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { getTopics, UNFILED, type TopicsResponse } from "./feedapi";
 import { openPalette } from "./palette";
 
 // The chrome's own instruments, kept out of App.tsx so that file stays a
@@ -223,6 +224,111 @@ function useNarrowHeader(): boolean {
   return narrow;
 }
 
+// The width at which the topics stand beside the feed rather than folded
+// above it. It is the same number as feed.css's rail query and as the
+// stylesheet's own one-row header breakpoint: the page decides whether the
+// rail is mounted at all, because a list rendered twice and hidden once is
+// two lists to every reader who is not looking at pixels.
+const WIDE_RAIL = "(min-width: 1024px)";
+
+export function useWideViewport(): boolean {
+  const [wide, setWide] = useState(() => window.matchMedia(WIDE_RAIL).matches);
+  useEffect(() => {
+    const query = window.matchMedia(WIDE_RAIL);
+    setWide(query.matches);
+    function onChange(event: MediaQueryListEvent) {
+      setWide(event.matches);
+    }
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return wide;
+}
+
+// How many topics the rail names before it stops. Twelve is what stands
+// beside a feed without becoming the page's second list; the rest are one
+// link away, and the link says so rather than the list trailing off.
+const RAIL_TOPICS = 12;
+
+// The topics, with their counts. §8.7's sixth destination that is not a page:
+// the same list is the rail on a wide viewport and the fold above the feed on
+// a narrow one, so it lives here with the shell's other instruments rather
+// than inside the page that happens to mount it.
+//
+// A topic is a name and a count. Nothing here assumes it is a directory — it
+// is the workspace a cited session came from today and could be a mailbox or
+// a tracker tomorrow — so the list neither prints a path nor offers to open
+// one.
+export function TopicList({ current }: { current: string }) {
+  const [answer, setAnswer] = useState<TopicsResponse | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    getTopics()
+      .then((next) => {
+        if (live) setAnswer(next);
+      })
+      .catch(() => {
+        if (live) setFailed(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // A rail that could not be read says so in one line and takes no more room
+  // than that: the feed beside it is fine, and a failed decoration must not
+  // read as a failed page.
+  if (failed) return <p className="topic-note">The topics could not be read.</p>;
+  if (!answer) return <p className="topic-note">Reading the topics…</p>;
+
+  const topics = answer.topics ?? [];
+  return (
+    <>
+      <ul className="topic-list">
+        <li>
+          <Link to="/" aria-current={current === "" ? "page" : undefined}>
+            All posts
+          </Link>
+        </li>
+        {topics.slice(0, RAIL_TOPICS).map((topic) => (
+          <li key={topic.name}>
+            <Link
+              to={`/t/${encodeURIComponent(topic.name)}`}
+              aria-current={current === topic.name ? "page" : undefined}
+              title={`${topic.posts.toLocaleString()} posts filed under evidence from ${topic.name}`}
+            >
+              <span>t/{topic.name}</span>
+              <span className="topic-count">{topic.posts.toLocaleString()}</span>
+            </Link>
+          </li>
+        ))}
+        {/* The posts whose origin this deployment could not resolve. They are
+            in the feed rather than hidden (§8.7) and this is the filter that
+            selects exactly them; a deployment that has none says nothing. */}
+        {answer.unfiled > 0 && (
+          <li>
+            <Link
+              to={`/?topic=${UNFILED}`}
+              aria-current={current === UNFILED ? "page" : undefined}
+              title="Posts whose evidence cites no session this deployment can resolve"
+            >
+              <span>no topic</span>
+              <span className="topic-count">{answer.unfiled.toLocaleString()}</span>
+            </Link>
+          </li>
+        )}
+      </ul>
+      {topics.length > RAIL_TOPICS && (
+        <Link className="topic-all" to="/t">
+          all {topics.length.toLocaleString()} topics →
+        </Link>
+      )}
+    </>
+  );
+}
+
 // ShellControls is the three instruments between the live mark and the stop:
 // search, density, keys. Nothing about them changes with the viewport except
 // how many buttons they occupy — on a phone the header had five controls and
@@ -383,7 +489,15 @@ const KEY_HINTS: { group: string; keys: { press: string[]; does: string }[] }[] 
     ],
   },
   {
-    group: "Decide and Read",
+    group: "The feed",
+    keys: [
+      { press: ["j", "k"], does: "Move down and up the posts" },
+      { press: ["Enter"], does: "Open the focused post" },
+      { press: ["a", "d"], does: "Agree or disagree; pressing the lit arrow again withdraws it" },
+    ],
+  },
+  {
+    group: "The mod queue",
     keys: [
       { press: ["j", "k"], does: "Move down and up the list" },
       { press: ["Enter"], does: "Open the focused record" },

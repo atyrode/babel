@@ -16,6 +16,7 @@ import { evaluationResponse } from "./evaluation";
 import { OVERVIEW_ROWS, overviewPhaseB, phasebResponse } from "./phaseb";
 import { recordResponse } from "./record";
 import { watchResponse } from "./watch";
+import { feedResponse } from "./feed";
 
 const distRoot = resolve(import.meta.dir, "..", "dist");
 const port = Number(Bun.env.PORT ?? 4174);
@@ -739,6 +740,7 @@ const server = Bun.serve({
   port,
   async fetch(request) {
     const url = new URL(request.url);
+    const feed = await feedResponse(request, url); if (feed) return feed;
     // A simulated unwired service is refused before any handler runs, because
     // a launch that could not open the store has no fixture state to serve
     // from either — answering from one and refusing from the other would

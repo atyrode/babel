@@ -30,7 +30,7 @@ const REVIEW_STATUSES: Array<[string, string]> = [
 ];
 
 const COMMANDS: Array<[string, string, string, string]> = [
-  ["babel web", "Serves this interface on loopback behind a one-time launch link.", "/", "Decide"],
+  ["babel web", "Serves this interface on loopback behind a one-time launch link.", "/", "Home"],
   ["babel storage configure", "Stores the repository and catalog configuration.", "/settings?section=archive", "Settings › Archive"],
   ["babel archive push", "Backs this host's sessions into the restic repository.", "/settings?section=archive", "Settings › Archive"],
   ["babel archive status", "Reports snapshots per host and the catalog's lag.", "/settings?section=archive", "Settings › Archive"],
@@ -40,14 +40,14 @@ const COMMANDS: Array<[string, string, string, string]> = [
   ["babel sessions fetch", "Restores one archived session's files locally.", "/sessions", "Sessions"],
   ["babel prepare", "Fixes an exploration's corpus scope and builds its index.", "/watch", "Watch"],
   ["babel explore", "Runs one exploration through the Code worker.", "/watch", "Watch"],
-  ["babel hypotheses", "Lists the candidate frontier.", "/read?kind=hypothesis", "Read"],
-  ["babel findings", "Lists consolidated findings.", "/read?kind=finding", "Read"],
-  ["babel review queue", "Lists records awaiting a human decision.", "/", "Decide"],
-  ["babel review decide", "Appends one attributed decision.", "/", "Decide"],
-  ["babel reality inbox", "Lists the prioritized question inbox.", "/ask", "Ask"],
-  ["babel reality answer", "Records an attributed answer, verbatim.", "/ask", "Ask"],
+  ["babel hypotheses", "Lists the candidate frontier.", "/?kind=hypothesis", "Home"],
+  ["babel findings", "Lists consolidated findings.", "/?kind=finding", "Home"],
+  ["babel review queue", "Lists records awaiting a human decision.", "/queue", "Mod queue"],
+  ["babel review decide", "Appends one attributed decision.", "/queue", "Mod queue"],
+  ["babel reality inbox", "Lists the prioritized question inbox.", "/?kind=question", "Home"],
+  ["babel reality answer", "Records an attributed answer, verbatim.", "/ask/questions", "Asked"],
   ["babel conductor status", "Reports this host's duty state and what other machines announced.", "/watch", "Watch"],
-  ["babel export", "Renders one record as JSON or Markdown.", "/", "Decide"],
+  ["babel export", "Renders one record as JSON or Markdown.", "/", "Home"],
 ];
 
 // The "Am I talking to an AI?" table. One row per surface an operator actually
@@ -450,24 +450,24 @@ function HelpPage() {
           <li>
             <strong>Candidates</strong> — every emergent hypothesis is preserved in a resumable
             frontier, in the model's own wording, with the observations and evidence locators that
-            develop it. Nothing in the interface is called a frontier: it is read as what Babel has
-            found.
-            <Link className="panel-link" to="/read?kind=hypothesis">Read →</Link>
+            develop it. Nothing in the interface is called a frontier: it is a kind of post in the
+            feed.
+            <Link className="panel-link" to="/?kind=hypothesis">Home →</Link>
           </li>
           <li>
             <strong>Findings and proposals</strong> — developed candidates are consolidated into
             findings, and a finding or a strong claim can carry proposals: what to do about it,
             with prerequisites, verification criteria, risks and open questions. This is Babel's
-            output, and Read is where all of it is read.
-            <Link className="panel-link" to="/read">Read →</Link>
+            output, and the feed is where all of it is read.
+            <Link className="panel-link" to="/">Home →</Link>
           </li>
           <li>
             <strong>Decide</strong> — a human rules. Each decision is an appended, attributed
             event; the record's whole history stays readable. What only you can answer is asked
             under Ask, where an answer is kept verbatim and an interpreted plan applies only on
             your explicit acceptance.
-            <Link className="panel-link" to="/">Decide →</Link>
-            <Link className="panel-link" to="/ask">Ask →</Link>
+            <Link className="panel-link" to="/queue">Mod queue →</Link>
+            <Link className="panel-link" to="/ask/questions">Asked →</Link>
           </li>
         </ol>
       </article>
@@ -542,7 +542,7 @@ function HelpPage() {
             <dt>Question · answer · plan</dt>
             <dd>
               When ownership, lifecycle or focus context is missing or stale, Babel asks, and{" "}
-              <Link to="/ask">Ask</Link> is where those questions are read and answered. Answers
+              <Link to="/?kind=question">the feed</Link> is where those questions are read, and each is answered on its own page. Answers
               are retained verbatim and attributed; a versioned interpreter turns one into a plan,
               and only an operator's explicit acceptance lets that plan touch the ledger. The
               store underneath is the reality ledger, which is the word the CLI still uses
@@ -641,12 +641,13 @@ function HelpPage() {
           <li>
             <strong>Explore, then read.</strong> <code>babel explore --preparation ID</code> in a
             terminal, or <strong>Ask for a run</strong> on <Link to="/watch">Watch</Link>, which
-            starts the same thing. Its records appear in <Link to="/read">Read</Link> and on{" "}
+            starts the same thing. Its records appear in <Link to="/">the feed</Link> and on{" "}
             <Link to="/watch">Watch</Link> as soon as it commits them.
           </li>
           <li>
-            <strong>Decide.</strong> Work <Link to="/">Decide</Link> and{" "}
-            <Link to="/ask">Ask</Link>. Every decision is attributed and appended, so the
+            <strong>Decide.</strong> Work the <Link to="/queue">mod queue</Link> and the{" "}
+            <Link to="/?kind=question">questions</Link> in the feed. Every decision is
+            attributed and appended, so the
             trail of what you concluded and when stays readable.
           </li>
         </ol>
