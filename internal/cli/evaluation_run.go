@@ -257,6 +257,9 @@ type evaluationRunner struct {
 	// the ledger. A filing assignment drawn without it is refused before a
 	// worker starts rather than producing an answer nothing can record.
 	topics explore.TopicService
+	// backlog is §4.13's backlog surface, nil on a machine that could not
+	// open the ledger, and refused on the same terms as topics.
+	backlog explore.BacklogService
 	// budget bounds one review's retrieval and egress, on the same terms an
 	// exploration's does.
 	budget explore.Budget
@@ -510,6 +513,7 @@ func (r *conductorRunner) review(ctx context.Context, runID string,
 		scanRoots: r.scanRoots,
 		presence:  r.presence,
 		topics:    r.topics,
+		backlog:   r.backlog,
 	}
 	result, _, err := runner.Run(ctx, runID, *a.Evaluation, a.Authority)
 	return result, err
@@ -533,25 +537,23 @@ func (r *evaluationRunner) giveBack(ctx context.Context, draw conductor.ReviewDr
 // capability this build cannot serve would name a facility with no version to
 // record, which is the same rule an exploration's grant follows.
 //
-// The recipe is chosen by the assignment's role, because §4.13's filing pass
-// and §4.12's review are two methods rather than one: a filing decides what a
-// record is about and may create nothing, and a reviewer handed the filing
-// recipe's body would be reading instructions for an authority it does not
-// have. Both recipes are loaded either way, so the receipt records the
+// The recipe is chosen by the assignment's role, because §4.12's review,
+// §4.13's filing pass and §4.13's backlog pass are three methods rather than
+// one: a filing decides what a record is about and may create nothing, a
+// backlog act decides what becomes of a deferred candidate, and a reviewer
+// handed either body would be reading instructions for an authority it does
+// not have. Every recipe is loaded either way, so the receipt records the
 // cookbook this build carries rather than the subset one assignment used.
 func (r *evaluationRunner) reviewer(role string) (*explore.Reviewer, func(), error) {
 	d, err := babelDirs()
 	if err != nil {
 		return nil, nil, err
 	}
-	recipes, err := recipeSet([]string{EvaluationRecipe, FilingRecipe})
+	recipes, err := recipeSet([]string{EvaluationRecipe, FilingRecipe, BacklogRecipe})
 	if err != nil {
 		return nil, nil, err
 	}
-	recipe := EvaluationRecipe
-	if role == evaluation.RoleFiling {
-		recipe = FilingRecipe
-	}
+	recipe := workRecipe(role)
 	idx, err := index.Open(d.indexDir())
 	if err != nil {
 		return nil, nil, err
@@ -576,6 +578,7 @@ func (r *evaluationRunner) reviewer(role string) (*explore.Reviewer, func(), err
 		Recipes: recipes,
 		Recipe:  recipe,
 		Topics:  r.topics,
+		Backlog: r.backlog,
 		Grant: worker.Grant{
 			Capabilities: []worker.Capability{worker.CapabilityCorpusSearch},
 			Disclosure:   worker.DisclosureLocal,
@@ -597,6 +600,20 @@ func (r *evaluationRunner) reviewer(role string) (*explore.Reviewer, func(), err
 		return nil, nil, err
 	}
 	return reviewer, release, nil
+}
+
+// workRecipe is the cookbook asset one work role runs under. It is one
+// mapping rather than a switch at each call site, because a receipt that
+// named a different recipe from the one the prompt carried would make a
+// re-run comparable against a method it did not apply.
+func workRecipe(role string) string {
+	switch role {
+	case evaluation.RoleFiling:
+		return FilingRecipe
+	case evaluation.RoleBacklog:
+		return BacklogRecipe
+	}
+	return EvaluationRecipe
 }
 
 // reportReview narrates one finished review on the operator's stream.
@@ -844,6 +861,7 @@ func (a *app) evaluate(ctx context.Context, args []string) error {
 		scanRoots: sf.rootList(),
 		presence:  nil,
 		topics:    topicService(topicFilingStores(state, services.reality, sf.rootList())),
+		backlog:   backlogWork(backlogWorkStores(state, services.reality)),
 		budget:    explore.Budget{Retrievals: *retrievals, Fetches: *fetches},
 	}
 	announcer, closePresence := a.openPresence(ctx)
@@ -852,10 +870,7 @@ func (a *app) evaluate(ctx context.Context, args []string) error {
 
 	result, out, runErr := runner.Run(ctx, draw.RunID, draw, assignment.Authority)
 	res.ReceiptID, res.Cost, res.Currency = result.ReceiptID, result.Cost, result.Currency
-	res.Recipe = EvaluationRecipe
-	if draw.Role == evaluation.RoleFiling {
-		res.Recipe = FilingRecipe
-	}
+	res.Recipe = workRecipe(draw.Role)
 	if version, ok := recipeVersion(res.Recipe); ok {
 		res.RecipeVersion = version
 	}
@@ -918,6 +933,7 @@ func (a *app) correctReview(ctx context.Context, services *evaluationServices, s
 		adapters:  adapters(),
 		scanRoots: cfg.scanRoots,
 		topics:    topicService(topicFilingStores(state, services.reality, cfg.scanRoots)),
+		backlog:   backlogWork(backlogWorkStores(state, services.reality)),
 		budget:    cfg.budget,
 	}
 	// The correction's claim is reserved above and is held from here, so its

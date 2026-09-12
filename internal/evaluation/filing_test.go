@@ -71,6 +71,7 @@ func filingPolicy() Policy {
 	policy.DiscoveryShare = 0.01
 	policy.ExplorationShare = 0.01
 	policy.FilingShare = 0.98
+	policy.BacklogShare = 0
 	return policy
 }
 

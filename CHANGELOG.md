@@ -236,6 +236,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   malformed result rather than turned into a new topic, which is §4.8's rule
   that only the operator creates identity, held at the one seam a typo could
   otherwise cross (SPEC §4.13).
+- **Babel consolidates its own backlog.** The hypotheses a run deferred and
+  nobody came back to are worked through the chain rather than left to
+  accumulate: a second recipe beside *Babel files its output*, *Babel
+  consolidates its backlog*, runs under the evaluation policy as its own draw
+  kind with its own reserved tenth, reads one deferred candidate with its
+  observations, the candidates beside it and the ledger's entities, and
+  proposes — as an ordinary proposal through the ordinary chain, ruled on the
+  way every other proposal is — to consolidate several candidates into a
+  finding, to supersede one with a newer candidate that says it better, to
+  retire one with a reason a reader could check, or to promote an observation
+  to a fact about a named entity. Keeping a candidate exactly as it is, with
+  the reason, is the fifth answer and a completed pass. Hypotheses gain
+  `superseded` and `retired`, reachable only through an accepted proposal and
+  revivable like every other resting status; a candidate in either is no
+  longer awaiting the operator and is no longer drawn for review. Nothing is
+  deleted: every settled candidate keeps its record, its observations and its
+  history, and gains one appended status event saying which record now speaks
+  for it (SPEC §4.13).
 
 ### Changed
 

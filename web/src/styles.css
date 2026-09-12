@@ -37,10 +37,14 @@
    nobody can retune, and the surface it belongs to drifts away from the rest
    of the interface one hex at a time.
 
-   The base is warm — espresso black under paper-warm ink — because a record
-   is long prose and a blue-grey page tires the eye that reads it. The single
-   cool thing on the screen is the accent, which is why anything you can act
-   on is findable without hunting: a link, an active filter, a focus ring.
+   The base is neutral graphite — untinted greys from near-black to near-white
+   — because a page that carries a hue carries an opinion, and every surface
+   here already has five of them to spend on meaning. The warm espresso base
+   this replaced tinted the whole interface brown, which the operator read as
+   exactly that: a colour the interface was wearing for its own sake. The only
+   hues on a quiet screen now are the signals below, and the accent is the one
+   that says "you can act on this" — which is why a link, an active filter and
+   a focus ring are findable without hunting.
 
    Five signals, one meaning each, and they are never decorative:
 
@@ -111,27 +115,41 @@
 :root {
   color-scheme: dark;
 
-  /* Base. */
-  --bg: #15120e;
-  --bg-raised: #1e1a15;
-  --bg-sunken: #0d0b08;
-  --ink: #ece5d9;
-  --ink-muted: #a99e8e;
-  --ink-faint: #7d7365;
-  --rule: #322b23;
+  /* Base. Six untinted greys: the page, the thing lifted off it, the well
+     sunk into it, two rules and four inks. Every one of them is neutral by
+     construction — equal parts in a cool-grey ramp — so nothing on the screen
+     carries a hue it was not given on purpose.
+
+     `--ink-strong` is the one step above the body ink, and it is for a
+     headline the reader is scanning: the feed's fifteen titles at 16px, where
+     `--ink` measured one notch too quiet against the graphite to read as the
+     brightest thing in the row. Nothing else uses it — an interface with two
+     body inks has no body ink. */
+  --bg: #0d0f12;
+  --bg-raised: #14171c;
+  --bg-sunken: #0a0b0e;
+  --rule: #23272e;
+  --rule-strong: #2e343c;
+  --ink-strong: #f2f4f7;
+  --ink: #e8eaed;
+  --ink-muted: #9aa3ad;
+  --ink-faint: #6b7480;
 
   /* Signals. */
-  --accent: #5aa2ff;
-  --accent-ink: #06101d;
-  --good: #5cc79a;
-  --bad: #f2707a;
-  --warn: #e8b44f;
-  --live: #5ddb6f;
+  --accent: #4c8dff;
+  /* The accent worn as text on a dark accent tint: a pressed segment, an
+     active filter. The fill's own label is `--bg`, because ink lighter than
+     the page it sits on is how a filled control loses its word. */
+  --accent-ink: #a9c8ff;
+  --good: #3ecf8e;
+  --bad: #ff6b6b;
+  --warn: #f0b429;
+  --live: #5ee08a;
 
   /* The kind family: tags, harness marks, the human turn in a transcript. It
      is a hue and not a signal — it says "this is a name", never "this is
      good" — so it is deliberately the quietest colour here. */
-  --info: #57c6bd;
+  --info: #59b3ab;
 
   /* Type. Three faces and one measure: a serif for what a human reads, a
      system sans for the chrome around it, and a mono for every figure, id,
@@ -146,24 +164,27 @@
   --font-mono: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", ui-monospace, monospace;
   --measure: 68ch;
 
-  /* Space. Four to forty, and the compact density below retunes exactly these
-     six numbers rather than every padding in the file. */
+  /* Space. One four-pixel scale, and every padding, gap and page rhythm in
+     this file and in the component stylesheets is a step on it. A margin that
+     is not one of these six numbers is a number nobody can retune. */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 24px;
-  --space-6: 40px;
+  --space-6: 32px;
 
   --radius: 10px;
   --motion-fast: 120ms;
   --motion-peel: 220ms;
-  --shadow-raised: 0 14px 34px rgba(0, 0, 0, 0.36);
+  --shadow-raised: 0 12px 28px rgba(0, 0, 0, 0.5);
 
   /* Derived. Nothing below is a new colour: every value is a mix of the ones
      above with the page under it, so retuning the palette retunes the tints,
      the borders and the washes with it. */
-  --rule-strong: color-mix(in srgb, var(--ink) 16%, var(--rule));
+  /* The hairline between two rows of one list, which is a lighter statement
+     than the edge of a container. */
+  --rule-soft: color-mix(in srgb, var(--rule) 62%, var(--bg));
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
   --accent-wash: color-mix(in srgb, var(--accent) 7%, transparent);
   --accent-line: color-mix(in srgb, var(--accent) 45%, transparent);
@@ -185,20 +206,6 @@
   text-rendering: optimizeLegibility;
   color: var(--ink);
   background: var(--bg);
-}
-
-/* Compact density (the toggle in the header, persisted per browser). It
-   retunes the six space tokens and nothing else: every padding, gap and page
-   rhythm in this file and in the component stylesheets is expressed in them,
-   so one attribute tightens the whole interface without a second set of
-   rules to keep in step. */
-html[data-density="compact"] {
-  --space-1: 3px;
-  --space-2: 6px;
-  --space-3: 8px;
-  --space-4: 11px;
-  --space-5: 16px;
-  --space-6: 24px;
 }
 
 * {
@@ -249,19 +256,38 @@ summary,
   outline-offset: 2px;
 }
 
+/* ---------------------------------------------------------------------------
+   TWO BUTTONS. THAT IS THE WHOLE VOCABULARY.
+
+   The element itself is the quiet one: a word, `--ink-muted`, no box until the
+   pointer or the keyboard is on it. `.primary-button` is the accent fill, and
+   a surface has at most one — the thing the form is for.
+
+   There used to be five. `.secondary-button` was a bordered button that
+   differed from the default by a gap and a hover colour; `.danger-button` was
+   an amber-tinted one; `.icon-button` was a bare glyph; `.link-button` was a
+   word in a sentence. Four of those were the same claim — "this is a control"
+   — dressed four ways, and on a page carrying three of them the reader has to
+   work out which ranking they encode. They encoded none.
+
+   `.link-button` is the one that survives, because it is not a button style:
+   it is a control that is a word inside a sentence, and it renders as the
+   link it reads as. The row acts on the feed are the same register.
+   --------------------------------------------------------------------------- */
 button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  min-height: 2.4rem;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--rule-strong);
+  gap: var(--space-2);
+  min-height: 2rem;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  color: var(--ink);
-  background: var(--bg-raised);
+  color: var(--ink-muted);
+  background: transparent;
   cursor: pointer;
-  font-size: 0.86rem;
+  font-size: 0.84rem;
+  font-weight: 500;
   transition:
     border-color var(--motion-fast) ease,
     background var(--motion-fast) ease,
@@ -269,18 +295,76 @@ button {
     transform var(--motion-fast) ease;
 }
 
-button:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--ink) 20%, var(--rule));
-  background: color-mix(in srgb, var(--ink) 7%, var(--bg-raised));
+/* The border arrives with the pointer, and a wash arrives with it: a 1px
+   `--rule` edge alone is legible on the page but not at a glance, and hover
+   has to be unmistakable on a control that has no box at rest. */
+button:hover:not(:disabled),
+button:focus-visible {
+  border-color: var(--rule);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
+/* The press. A control has to answer the finger in the frame it is pressed,
+   and a one-pixel drop is not an answer on a word with no box: it is 80ms of
+   scale, which is short enough that a reader never waits for it and long
+   enough that a press that recorded nothing still felt like a press. */
 button:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: scale(0.98);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  button {
+    transition:
+      border-color var(--motion-fast) ease,
+      background var(--motion-fast) ease,
+      color var(--motion-fast) ease,
+      transform 80ms ease-out;
+  }
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.58;
+  opacity: 0.55;
+}
+
+/* The one loud control: the accent as a fill, with the page's own colour for
+   its word. `--accent-ink` is the accent worn as *ink*, which is the opposite
+   job — used here it put a light blue label on a mid blue field. */
+.primary-button {
+  border-color: var(--accent);
+  color: var(--bg);
+  background: var(--accent);
+  font-weight: 600;
+}
+
+.primary-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ink) 22%, var(--accent));
+  color: var(--bg);
+  background: color-mix(in srgb, var(--ink) 14%, var(--accent));
+}
+
+/* A control that is a word inside a sentence: an empty state offering to undo
+   the filters that produced it, a paragraph offering the rest of a list. It is
+   a link because that is what it reads as, and the one thing it must not do is
+   grow a 32px box in the middle of a line of prose. */
+.link-button {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--accent);
+  background: none;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-button:hover:not(:disabled),
+.link-button:focus-visible {
+  border-color: transparent;
+  color: var(--accent);
+  background: none;
 }
 
 input {
@@ -305,10 +389,25 @@ a {
   color: var(--accent);
 }
 
-/* The wordmark is a link to the overview, so it must not look like body
-   prose that happens to be blue. */
-.topbar a.brand-block {
-  color: inherit;
+/* The underline arrives rather than appearing. 120ms of thickness under a
+   link the pointer is on is the smallest honest statement an interface can
+   make about "this is a door"; it is decoration for nothing else, which is
+   why it is on the underline and not on the colour. */
+@media (prefers-reduced-motion: no-preference) {
+  a {
+    text-decoration-thickness: from-font;
+    transition: text-decoration-thickness 120ms ease-out, text-decoration-color 120ms ease-out;
+  }
+
+  a:hover {
+    text-decoration-thickness: 2px;
+  }
+}
+
+/* The wordmark is a link to the feed, so it must not look like body prose
+   that happens to be blue. */
+.topbar a.brand {
+  color: var(--ink);
   text-decoration: none;
 }
 
@@ -325,7 +424,6 @@ kbd,
 .event-index,
 .peel-count,
 .mono-caption,
-.version,
 .scan-counter,
 time {
   font-family: var(--font-mono);
@@ -337,74 +435,70 @@ time {
   min-height: 100vh;
 }
 
+/* ---------------------------------------------------------------------------
+   THE HEADER. One row, 56px, three groups: where you are, what is running,
+   what you can press.
+
+   It used to be 70px of two rows' worth of controls squeezed into one — a
+   wordmark with a gradient tile and a build string under it, three
+   destinations, a live pill, Tell Babel, Search, a density switch, a "?" and
+   a bordered stop, at eight different sizes and four different border
+   treatments. The operator read it as exactly that: "I'm not sold on the top
+   bar layout, how you have spaced the text/items/fields".
+
+   What is left says the same things with one weight each. The wordmark is a
+   word. The destinations are text links and the one you are on carries a
+   2px accent underline, which is the whole of the active state. Everything on
+   the right is quiet — a search field, one button, one menu — because none of
+   it is a destination and a header of loud controls has no hierarchy at all.
+   The build string is the footer's, where a version belongs: it is read once
+   and never at a glance.
+   --------------------------------------------------------------------------- */
 .topbar {
   position: sticky;
   z-index: 20;
   top: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  min-height: 4.4rem;
-  padding: var(--space-2) max(var(--space-4), calc((100vw - 1240px) / 2));
+  gap: var(--space-4);
+  height: 56px;
+  padding: 0 max(var(--space-4), calc((100vw - 1240px) / 2));
   border-bottom: 1px solid var(--rule);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(18px);
 }
 
-.brand-block {
+/* Where you are: the wordmark and the three destinations, read as one
+   phrase. */
+.topbar-where {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-}
-
-.brand-mark {
-  display: grid;
-  width: 2.45rem;
-  height: 2.45rem;
-  place-items: center;
-  border: 1px solid var(--accent-line);
-  border-radius: var(--radius);
-  color: var(--accent-ink);
-  background: linear-gradient(155deg, var(--accent), color-mix(in srgb, var(--accent) 55%, var(--bg)));
-  font-family: var(--font-editorial);
-  font-size: 1.15rem;
-  font-weight: 700;
+  gap: var(--space-5);
+  min-width: 0;
 }
 
 .brand {
-  font-size: 1rem;
-  font-weight: 760;
-  letter-spacing: 0.025em;
+  flex: none;
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
-.version {
-  margin-top: 0.12rem;
-  color: var(--ink-faint);
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 0.7rem;
-}
-
+/* What you can press, pushed to the far edge. The live mark is not in here:
+   it rides beside the navigation, because it is a report and not a
+   control. */
 .topbar-actions {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: 0.5rem 1.1rem;
-}
-
-/* Separated from the navigation and sized down: it sits in the topbar because
-   it ends the whole session, but it must not read as a third destination. */
-.lock-button {
-  min-height: 2rem;
-  padding: var(--space-1) var(--space-2);
-  font-size: 0.78rem;
-  font-weight: 650;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
 /* ---------------------------------------------------------------------------
-   The shell's own instruments: the live mark, the density switch, the key
-   hints. All three are quiet by construction — they are how the interface
-   reports on itself, and none of them is a destination.
+   The shell's own instruments: the live mark, search, the capture box, the
+   menu. All of them are quiet by construction — they are how the interface
+   reports on itself and what it can be told, and none of them is a
+   destination.
    --------------------------------------------------------------------------- */
 
 /* Something is running, somewhere in the deployment. It is a link to Watch
@@ -413,103 +507,89 @@ time {
    says nothing. */
 .live-indicator {
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: var(--space-2);
-  min-height: 2rem;
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--live) 30%, transparent);
+  min-height: 1.65rem;
+  padding: 0 var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--live) 26%, transparent);
   border-radius: var(--radius-pill);
   color: var(--ink);
-  background: color-mix(in srgb, var(--live) 9%, transparent);
+  background: color-mix(in srgb, var(--live) 8%, transparent);
   font-family: var(--font-mono);
-  font-size: 0.74rem;
+  font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
   text-decoration: none;
   white-space: nowrap;
 }
 
 .live-indicator:hover {
-  border-color: color-mix(in srgb, var(--live) 55%, transparent);
+  border-color: color-mix(in srgb, var(--live) 52%, transparent);
+}
+
+/* One pulse per poll that changed something. The dot inside it breathes
+   continuously — that is "a run is live" — and this is the different claim:
+   "the answer just moved". It runs once and stops, because a mark that keeps
+   pulsing is reporting the clock rather than the deployment. */
+@media (prefers-reduced-motion: no-preference) {
+  .live-indicator[data-changed] {
+    animation: live-changed 900ms ease-out 1;
+  }
+}
+
+@keyframes live-changed {
+  from {
+    border-color: var(--live);
+    background: color-mix(in srgb, var(--live) 26%, transparent);
+  }
 }
 
 .live-indicator .live-spend {
   color: var(--ink-muted);
 }
 
-.shell-toggle {
-  min-width: 2rem;
-  min-height: 2rem;
-  padding: var(--space-1);
-  color: var(--ink-faint);
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-}
-
-.shell-toggle:hover:not(:disabled) {
-  color: var(--ink);
-}
-
-.shell-toggle[aria-pressed="true"] {
-  border-color: var(--accent-line);
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
-/* The search control is the palette's only visible surface, so it is the one
-   shell instrument that carries a word: an operator who never presses ⌘K has
-   to be able to find search by reading the header. */
+/* Search is the palette's only visible surface, so it is drawn as the field it
+   opens: a well with the word in it and the key at its end. An operator who
+   never presses ⌘K has to be able to find search by reading the header, and
+   one who does has to be told the key by the control he is not pressing. */
 .shell-search {
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  color: var(--ink-muted);
+  gap: var(--space-3);
+  justify-content: space-between;
+  min-width: 13rem;
+  min-height: 2rem;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border-color: var(--rule);
+  color: var(--ink-faint);
+  background: var(--bg-sunken);
   font-family: var(--font-ui);
-  font-size: 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 400;
+}
+
+.shell-search:hover:not(:disabled) {
+  border-color: var(--rule-strong);
+  color: var(--ink-muted);
+  background: var(--bg-sunken);
 }
 
 .shell-search .kbd {
   pointer-events: none;
 }
 
-/* The instrument cluster: what is running, what can be pressed, and the stop.
-   It is one flex row so the narrow header can move all of it under the
-   navigation at once, instead of letting five controls wrap one at a time into
-   a third and fourth row.
-
-   It is also the positioning context for the … menu, deliberately: the menu is
-   anchored to the right edge of this row rather than to the button that opens
-   it, which is the header's own padding edge. Hung off the button, a menu wide
-   enough to read left the screen on a 360px phone — the button is not the last
-   control in the row, the stop is. */
-.shell-instruments {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem 0.9rem;
-}
-
-/* The density switch says which density it is in. The glyph alone was a
-   control with no name — an operator cannot press what they cannot read — so
-   the word travels with it and the tooltip says what pressing it does. */
-.shell-density {
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-}
-
-.shell-density-word {
-  font-family: var(--font-ui);
-  font-size: 0.8rem;
-}
-
-/* The folded header's one extra control, and the menu it opens. The menu is a
-   `.surface` because that is the container vocabulary; everything here is
-   position and rhythm. */
+/* The instrument cluster is also the positioning context for the … menu,
+   deliberately: the menu is anchored to the right edge of this row rather
+   than to the button that opens it, which is the header's own padding edge.
+   Hung off the button, a menu wide enough to read left the screen on a 360px
+   phone. */
 .shell-menu-host {
+  position: relative;
   display: inline-flex;
 }
 
 .shell-menu-button {
-  padding: var(--space-1) var(--space-3);
-  font-size: 1rem;
+  min-width: 2rem;
+  padding: 0 var(--space-2);
+  font-size: 1.05rem;
   line-height: 1;
 }
 
@@ -534,22 +614,37 @@ time {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
+  min-height: 2rem;
   padding: var(--space-2) var(--space-3);
   border: 0;
-  border-radius: 0.5rem;
+  border-radius: var(--radius-sm);
   color: var(--ink-muted);
   background: none;
   font-family: var(--font-ui);
   font-size: 0.85rem;
-  font-weight: 600;
+  font-weight: 500;
   text-align: left;
   white-space: nowrap;
 }
 
-.shell-menu button:hover,
+.shell-menu button:hover:not(:disabled),
 .shell-menu button:focus-visible {
   color: var(--ink);
   background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+/* The one item that ends the session. It is in the menu rather than loose in
+   the header because it is not something the operator reaches for while
+   reading, and it is the only red word on the surface because it is the only
+   irreversible one. */
+.shell-menu button.shell-menu-stop {
+  color: var(--bad-ink);
+}
+
+.shell-menu button.shell-menu-stop:hover:not(:disabled),
+.shell-menu button.shell-menu-stop:focus-visible {
+  color: var(--bad);
+  background: var(--bad-soft);
 }
 
 .shell-menu-meta {
@@ -668,65 +763,105 @@ time {
   margin: 0 var(--space-1);
 }
 
+/* The three destinations. Text links, not pills: a navigation of filled
+   rounded rectangles is four buttons competing with the page's own controls,
+   and the accent tint the active one used to wear made it the loudest thing
+   on a screen whose subject is below it. The active one carries a 2px accent
+   rule under the word — the smallest mark that reads as "you are here" — and
+   the row is full height so the rule sits on the header's own edge. */
 .topbar nav {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.35rem;
+  align-items: stretch;
+  gap: var(--space-4);
+  height: 100%;
 }
 
 .topbar nav a {
-  padding: 0.65rem 0.9rem;
-  border-radius: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  border-bottom: 2px solid transparent;
   color: var(--ink-muted);
+  font-size: 0.86rem;
+  font-weight: 500;
   text-decoration: none;
-  font-size: 0.88rem;
-  font-weight: 650;
+  white-space: nowrap;
 }
 
 .topbar nav a:hover {
   color: var(--ink);
-  background: color-mix(in srgb, var(--ink) 6%, transparent);
 }
 
 .topbar nav a.active {
-  color: var(--accent);
-  background: var(--accent-soft);
+  border-bottom-color: var(--accent);
+  color: var(--ink);
 }
 
 .error-banner {
   position: sticky;
   z-index: 15;
-  top: 4.6rem;
+  top: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
   max-width: 1240px;
   margin: 0 auto;
-  padding: 0.7rem 1rem;
+  padding: var(--space-3) var(--space-4);
   border-right: 1px solid var(--bad-line);
   border-bottom: 1px solid var(--bad-line);
   border-left: 1px solid var(--bad-line);
-  border-radius: 0 0 0.65rem 0.65rem;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   color: var(--bad-ink);
   background: color-mix(in srgb, var(--bad) 22%, var(--bg-raised));
   box-shadow: var(--shadow-raised);
-  font-size: 0.88rem;
+  font-size: 0.86rem;
 }
 
-.icon-button {
-  min-width: 2rem;
-  min-height: 2rem;
-  padding: 0;
-  border: 0;
+/* The dismiss is a quiet button that happens to stand in a red field, so it
+   borrows the field's ink rather than the page's. */
+.error-banner button {
+  flex: none;
   color: var(--bad-ink);
-  background: transparent;
-  font-size: 1.4rem;
+}
+
+.error-banner button:hover:not(:disabled),
+.error-banner button:focus-visible {
+  border-color: var(--bad-line);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
 }
 
 main {
   width: 100%;
+}
+
+/* ---------------------------------------------------------------------------
+   ONE PAGE BECOMES ANOTHER.
+
+   The body is the only thing that changes on a route change — the header and
+   the rail are identical either side of it — so the body is the only thing
+   that animates: a hundred and sixty milliseconds of fade and a six-pixel
+   rise, on the section the new route renders. The chrome holds still because
+   nothing about it moved.
+
+   It is the arriving page and not a cross-fade, for the reason App.tsx states
+   where the transition used to be: a document is inert for the length of a
+   view transition, and a reader who presses something in those 160ms loses the
+   press. A filter change does not re-render the section, so re-ordering the
+   feed does not fade the page under the rows — the rows' own slide is
+   FeedPage's.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+  main > .page {
+    animation: page-arrive 160ms ease-out both;
+  }
+}
+
+@keyframes page-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
 .page {
@@ -880,14 +1015,20 @@ h3 {
   white-space: nowrap;
 }
 
-/* The three containers. Everything with a box is here and nowhere else. */
+/* The three containers. Everything with a box is here and nowhere else.
+
+   Sixteen pixels, not twenty-four: a surface is a frame around content, and
+   at 24px on all four sides the frame was reading as part of the content —
+   three of them stacked on Settings spent 144px of a 900px screen on their
+   own margins. The shadow is gone with it. A raised tint and a hairline are
+   already two statements that this box is lifted off the page; a third was
+   what made every panel in the interface look like a modal. */
 .surface,
 .panel {
-  padding: var(--space-5);
+  padding: var(--space-4);
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   background: var(--bg-raised);
-  box-shadow: var(--shadow-raised);
 }
 
 /* Stacked containers separate themselves. This replaces the `margin-top: 1rem`
@@ -950,7 +1091,7 @@ blockquote.quote {
 /* A table inside a padded surface reaches the surface's edges rather than
    floating in a gutter. Five `*-card` rules each said this; now one does. */
 .surface > .table-scroll {
-  margin: 0 calc(-1 * var(--space-5)) calc(-1 * var(--space-5));
+  margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
 }
 
 /* …and a flush surface has no gutter to reach through. The rule above is
@@ -984,25 +1125,37 @@ blockquote.quote {
   gap: 0.4rem;
 }
 
-/* PRIMITIVE .chip — a filter toggle. A button, always; the chosen state is
-   marked both by `.active` and by `aria-pressed`, because the two halves of
-   the interface that build chip rows arrived from different directions and
-   either mark is honest. */
+/* PRIMITIVE .chip — a filter toggle, and the only pill on the surface. A
+   button, always; the chosen state is marked both by `.active` and by
+   `aria-pressed`, because the two halves of the interface that build chip rows
+   arrived from different directions and either mark is honest.
+
+   The pressed chip is an accent word inside an accent edge and no fill. The
+   fill it used to carry made a row of six filters read as six pressed
+   buttons at a glance, which is the opposite of what a filter row is for. */
 .chip {
-  min-height: 2rem;
+  min-height: 1.85rem;
   padding: var(--space-1) var(--space-3);
+  border-color: var(--rule);
   border-radius: var(--radius-pill);
   color: var(--ink-muted);
   background: transparent;
   font-size: 0.78rem;
-  font-weight: 600;
+  font-weight: 500;
+}
+
+.chip:hover:not(:disabled),
+.chip:focus-visible {
+  border-color: var(--rule-strong);
+  color: var(--ink);
+  background: transparent;
 }
 
 .chip.active,
 .chip[aria-pressed="true"] {
   border-color: var(--accent-line);
   color: var(--accent);
-  background: var(--accent-soft);
+  background: transparent;
 }
 
 .chip .chip-count {
@@ -1157,28 +1310,30 @@ blockquote.quote {
 
 /* A segmented group of buttons that are one decision: the five rulings, a
    stance, a range. They share borders so the group reads as one control, and
-   the chosen segment is filled rather than outlined — a ruling is a commitment
-   and should look like one. */
+   the chosen segment is the accent worn as ink on an accent tint. It used to
+   be a solid accent fill, which made the selected segment the brightest thing
+   on any page that carried a rule bar — and on the front page there were two
+   of them above the list they were sorting. */
 .rule-bar {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: stretch;
   gap: 0;
   padding: 0;
-  border: 1px solid var(--rule-strong);
+  border: 1px solid var(--rule);
   border-radius: var(--radius-sm);
   background: var(--bg-sunken);
 }
 
 .rule-bar > button {
-  min-height: 2.1rem;
+  min-height: 2rem;
   border: 0;
   border-radius: 0;
-  border-right: 1px solid var(--rule-strong);
+  border-right: 1px solid var(--rule);
   background: transparent;
   color: var(--ink-muted);
   font-size: 0.8rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .rule-bar > button:last-child {
@@ -1186,6 +1341,7 @@ blockquote.quote {
 }
 
 .rule-bar > button:hover:not(:disabled) {
+  border-color: var(--rule);
   color: var(--ink);
   background: color-mix(in srgb, var(--ink) 5%, transparent);
 }
@@ -1193,19 +1349,19 @@ blockquote.quote {
 .rule-bar > button.active,
 .rule-bar > button[aria-pressed="true"] {
   color: var(--accent-ink);
-  background: var(--accent);
+  background: var(--accent-soft);
 }
 
-/* The chosen segment keeps its fill under the cursor. The hover rule above
+/* The chosen segment keeps its tint under the cursor. The hover rule above
    carries a `:not()` and therefore out-weighs a bare `.active`, so hovering
    the current ruling repainted it as an unchosen one and the selection
    disappeared under the pointer — on every rule bar in the interface. The
    selected hover is stated deliberately instead, and it lifts rather than
-   erases: same fill, slightly brighter. */
+   erases: same tint, slightly brighter. */
 .rule-bar > button.active:hover:not(:disabled),
 .rule-bar > button[aria-pressed="true"]:hover:not(:disabled) {
   color: var(--accent-ink);
-  background: color-mix(in srgb, var(--ink) 12%, var(--accent));
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .rule-bar > button .kbd {
@@ -1669,18 +1825,6 @@ tbody tr:last-child td {
   font-weight: 650;
 }
 
-.primary-button {
-  border-color: var(--accent);
-  color: var(--accent-ink);
-  background: var(--accent);
-  font-weight: 650;
-}
-
-.primary-button:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--ink) 25%, var(--accent));
-  background: color-mix(in srgb, var(--ink) 14%, var(--accent));
-}
-
 .inline-error {
   margin: 1rem 0 0;
   padding: 0.7rem 0.8rem;
@@ -1965,12 +2109,6 @@ tbody tr:last-child td {
   display: flex;
   align-items: start;
   gap: 0.55rem;
-}
-
-.danger-button {
-  border-color: var(--warn-line);
-  color: var(--warn-ink);
-  background: var(--warn-soft);
 }
 
 .verify-running,
@@ -2987,7 +3125,7 @@ a.link-target:hover {
 }
 
 .entity-page .surface .table-scroll {
-  margin: 0 calc(-1 * var(--space-5)) calc(-1 * var(--space-5));
+  margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
 }
 
 .alias-value {
@@ -3705,98 +3843,70 @@ a.link-target:hover {
 }
 
 /* ---------------------------------------------------------------------------
-   THE HEADER BELOW ONE ROW. Two rows, never three.
+   THE HEADER ON A NARROWER SCREEN. Still one row.
 
-   Everything fits one row at 1024px and up. Below that it does not, and the
-   question is only what wraps: on the walked phone it was brand, then the five
-   destinations, then a third row of pill + Search + ▦ + ? + Lock — 130px of
-   chrome above a page whose own title then started below the fold (shot 48).
+   It used to be two rows below 1024px and three on the walked phone: brand,
+   then five destinations, then pill + Search + ▦ + ? + Lock — 130px of chrome
+   above a page whose own title then started below the fold (shot 48). The row
+   is one row now because there is less in it: a word, three text links, a
+   field, a button and a menu, and below 640px the field and the button are
+   items in the menu (NARROW_HEADER in shell.tsx — 640px is the same number in
+   both files, and changing one means changing both).
 
-   So the wrap is decided here instead of being left to whichever control runs
-   out of room first. The instrument cluster takes a row of its own and the
-   destinations stay beside the brand, which is the pairing a reader uses: what
-   Babel is and where to go, then what is running and what can be pressed.
-
-   `display: contents` is what makes that possible — the actions wrapper stops
-   being a box, so the navigation and the instrument cluster become items of
-   the topbar's own flex row and wrap independently of each other.
+   What gives way, in order: the search field's own width, then the spend on
+   the live pill, then the gap between the destinations. Nothing wraps, and
+   nothing is hidden that the menu does not hold.
    --------------------------------------------------------------------------- */
 @media (max-width: 1023px) {
-  .topbar-actions {
-    display: contents;
+  .topbar-where {
+    min-width: 0;
+    gap: var(--space-4);
   }
 
-  .shell-instruments {
-    flex: 1 0 100%;
-    justify-content: flex-end;
-  }
-
-  /* The banner sticks under the header, so its offset is the header's height:
-     two rows here rather than one. Left at the one-row figure it parked
-     halfway up the chrome it is supposed to hang from. */
-  .error-banner {
-    top: 6.2rem;
+  .shell-search {
+    min-width: 9rem;
   }
 }
 
-/* Below 640px the row under the brand is the one that cannot hold five
-   controls, so search, density and the key hints fold into the … menu that
-   ShellControls renders at this same width — 640px is NARROW_HEADER in
-   shell.tsx, and changing one means changing both. What is running and how to
-   stop it are never folded: they are the two things the operator may need in a
-   hurry. */
 @media (max-width: 640px) {
-  /* One row, beside the brand: the destinations are how the operator leaves
-     the page they are on, and wrapping them is what grew the third row. The
-     five words fit a 390px phone at this size with room to spare — measured,
-     not guessed — and on anything narrower the row scrolls sideways rather
-     than growing, because a destination that has to be swiped to is still a
-     destination and a third row is not. */
+  /* The destinations keep their words and give up their gap. Below the width
+     at which they fit, the row scrolls sideways rather than growing: a
+     destination that has to be swiped to is still a destination, and a second
+     row of chrome is not. */
+  .topbar {
+    gap: var(--space-3);
+    padding-right: var(--space-3);
+    padding-left: var(--space-3);
+  }
+
+  .topbar-where {
+    gap: var(--space-3);
+  }
+
   .topbar nav {
     min-width: 0;
     flex: 0 1 auto;
-    flex-wrap: nowrap;
-    justify-content: flex-end;
-    gap: 0.15rem;
+    gap: var(--space-3);
     overflow-x: auto;
     scrollbar-width: none;
   }
 
   .topbar nav a {
-    padding: 0.45rem 0.3rem;
-    font-size: 0.78rem;
+    font-size: 0.8rem;
+  }
+
+  /* The dollars are the one thing on the pill that pays nothing back on a
+     phone: what the operator wants from it there is that something is
+     running, and Watch is one tap away with the figure on it. */
+  .live-indicator .live-spend {
+    display: none;
   }
 }
 
 @media (max-width: 560px) {
-  .topbar {
-    min-height: 4.2rem;
-    padding-right: var(--space-3);
-    padding-left: var(--space-3);
-  }
-
-  .brand-mark {
-    width: 2.15rem;
-    height: 2.15rem;
-  }
-
-  /* The build string is the one instrument that pays nothing back on a phone:
-     it is in the footer, and the wordmark beside it is what the reader is
-     looking for. Everything else in the header keeps its width — the fold
-     above gave the instruments a row of their own, so the pill can carry its
-     dollars and the destinations keep their words. */
-  .version {
-    display: none;
-  }
-
-  .lock-button {
-    padding: var(--space-1) var(--space-2);
-  }
-
-  /* Same two rows, a little shorter: the brand mark and the build string are
-     smaller on a phone. */
+  /* The banner keeps the header's own offset and loses its side borders: a
+     rounded card inside a 390px viewport is two gutters of nothing. */
   .error-banner {
-    top: 5.6rem;
     border-right: 0;
     border-left: 0;
     border-radius: 0;
@@ -3824,9 +3934,13 @@ a.link-target:hover {
     border-bottom: 0;
   }
 
+  /* Two badges are a row, not a stack. They were a column below 560px, which
+     on a post's header spent two lines on "Question" and "open" — and the one
+     case it was protecting against, a badge whose word is a sentence, wraps on
+     its own. */
   .heading-badges {
     align-items: flex-start;
-    flex-direction: column;
+    flex-wrap: wrap;
   }
 
   .event-heading {
@@ -3906,24 +4020,6 @@ a.link-target:hover {
    might misread; "nothing is spent on this subject at all" is not, so the
    sentence gets body-text size and the token gets a badge beside it.
    --------------------------------------------------------------------------- */
-
-.secondary-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.45rem 0.75rem;
-  border: 1px solid var(--rule-strong);
-  border-radius: 0.5rem;
-  color: var(--ink);
-  background: var(--bg-sunken);
-  font-size: 0.78rem;
-  font-weight: 650;
-  text-decoration: none;
-}
-
-.secondary-button:hover {
-  border-color: var(--accent);
-}
 
 .focus-install {
   gap: 0.7rem;
@@ -4974,19 +5070,6 @@ a.link-target:hover {
 
 .role-totals {
   font-size: 0.8rem;
-}
-
-/* A control that reads as a sentence rather than as a button, for the one
-   place an empty state offers to undo the filters that produced it. */
-.link-button {
-  min-height: 0;
-  padding: 0;
-  border: 0;
-  color: var(--accent);
-  background: none;
-  font: inherit;
-  text-decoration: underline;
-  cursor: pointer;
 }
 
 /* Watch and Settings put their sections in the row the ledger already uses,

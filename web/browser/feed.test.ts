@@ -114,7 +114,7 @@ const PAGE_SIZE = 15;
 //
 // An observation is not among them: by operator decision (2026-09-12) it is
 // evidence at depth 3 of the hypothesis that cites it rather than a row, so
-// the chip is gone and `?kind=observation` is refused like any other unknown
+// the filter is gone and `?kind=observation` is refused like any other unknown
 // kind.
 const KINDS: Array<[string, string]> = [
   ["proposal", "Proposal"],
@@ -122,6 +122,16 @@ const KINDS: Array<[string, string]> = [
   ["hypothesis", "Hypothesis"],
   ["question", "Question"],
 ];
+
+// The same four kinds as the control sentence says them. They are written out
+// rather than imported for the same reason the labels are: what is checked is
+// what a reader sees.
+const KIND_WORDS: Record<string, string> = {
+  proposal: "proposals",
+  finding: "findings",
+  hypothesis: "hypotheses",
+  question: "questions",
+};
 
 // The window `rising` counts activity over (§8.7, internal/web/feed.go).
 const RISING_WINDOW_MS = 12 * 60 * 60 * 1000;
@@ -136,8 +146,12 @@ interface Row {
   // because the row is what the reader acts on.
   awaiting: boolean;
   why: string;
-  // What the row offers to do about it, in the order it offers them.
+  // What the row offers to do about it, in the order it offers them: the
+  // rulings for a record, and the three answers for a question — a question is
+  // answered rather than ruled on, and §8.4 puts the decision where the record
+  // is read.
   acts: string[];
+  answers: string[];
 }
 
 interface ServedPost {
@@ -160,11 +174,11 @@ async function open(route: string): Promise<void> {
 // screen, in the order it is on screen: one entry per row, with the facts a
 // reader can see on it.
 async function listed(): Promise<Row[]> {
-  await page.waitForSelector("ol.feed-list > li.feed-row", { timeout: 15_000 });
+  await page.waitForSelector("ol.feed-list > li.feed-row:not(.feed-skeleton)", { timeout: 15_000 });
   return page.evaluate(() =>
     Array.from(document.querySelectorAll("ol.feed-list > li.feed-row")).map((row) => ({
       id: row.getAttribute("data-post") ?? "",
-      kind: row.querySelector(".badge")?.textContent ?? "",
+      kind: row.querySelector(".feed-kind")?.textContent ?? "",
       created: row.querySelector("time.feed-age")?.getAttribute("datetime") ?? "",
       score: row.querySelector(".feed-score")?.textContent ?? "",
       awaiting: row.hasAttribute("data-awaiting"),
@@ -172,7 +186,38 @@ async function listed(): Promise<Row[]> {
       acts: Array.from(row.querySelectorAll("[data-ruling]")).map(
         (button) => button.getAttribute("data-ruling") ?? "",
       ),
+      answers: Array.from(row.querySelectorAll("[data-answer]")).map(
+        (button) => button.getAttribute("data-answer") ?? "",
+      ),
     })));
+}
+
+// The controls are one sentence with three words the reader can change, each
+// of which opens a menu. Everything below drives them the way he does: press
+// the word, choose from what opens.
+type Pick = "needs" | "sort" | "kinds";
+
+async function openPick(name: Pick): Promise<void> {
+  await page.click(`[data-pick='${name}']`);
+  await page.waitForSelector(`[data-pick='${name}'][aria-expanded='true']`, { timeout: 15_000 });
+}
+
+// What the sentence says. It is read as text rather than as attributes
+// because it is prose the operator reads: "Showing what needs me · sorted by
+// next · all kinds".
+function sentence(): Promise<string> {
+  return page.$eval(".feed-sentence", (line) =>
+    (line as HTMLElement).innerText.replace(/\s+/gu, " ").trim());
+}
+
+// Turning one kind on or off. The menu is a set, so it stays open between
+// presses and is closed here explicitly.
+async function toggleKind(kind: string, want: boolean): Promise<void> {
+  await openPick("kinds");
+  await page.click(`[data-kind='${kind}']`);
+  await page.waitForSelector(`[data-kind='${kind}'][aria-checked='${want}']`, { timeout: 15_000 });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.querySelector(".feed-menu") === null, { timeout: 15_000 });
 }
 
 // served reads the same feed the page read, from the page itself, for the facts
@@ -194,9 +239,9 @@ function served(query: string): Promise<ServedPost[]> {
   }, query);
 }
 
-// counted is the total the heading states, which is the size of the eligible
-// set rather than of the page: the control under the list exists because the
-// two differ.
+// counted is the total the sentence ends with, which is the size of the
+// eligible set rather than of the page: the control under the list exists
+// because the two differ.
 function counted(): Promise<number> {
   return page.evaluate(() =>
     Number((document.querySelector(".feed-count")?.textContent ?? "").replace(/[^0-9]/gu, "")));
@@ -210,11 +255,15 @@ function counted(): Promise<number> {
 // — and because the agreement is itself the client's whole job: a page that
 // re-ranked what it was sent would never satisfy it.
 async function order(sort: string, period?: string): Promise<Row[]> {
+  await openPick("sort");
   await page.click(`[data-sort='${sort}']`);
   if (period) {
+    // A windowed order keeps the menu open on the column that names the
+    // period, which is where the second press lands.
     await page.waitForSelector("[role='group'][aria-label='Period']", { timeout: 15_000 });
     await page.click(`[data-window='${period}']`);
   }
+  await page.waitForFunction(() => document.querySelector(".feed-menu") === null, { timeout: 15_000 });
   const query = `sort=${sort}${period ? `&t=${period}` : ""}`;
   const answered = (await served(query)).slice(0, PAGE_SIZE).map((post) => post.id).join(",");
   await page.waitForFunction(
@@ -256,56 +305,74 @@ test.skipIf(!chrome)("the front page is one list, and a kind is a filter on it",
   await open("?needs=all");
   const everything = await counted();
   expect(everything).toBeGreaterThan(0);
-  // Nothing is selected and the chip that says so is pressed: "Everything" is a
-  // state of the filter rather than a sixth kind.
-  expect(await page.$eval("[data-chip='all']", (chip) => chip.getAttribute("aria-pressed")))
+  // The sentence says what is in the list, and with nothing narrowed it says
+  // every kind: "all kinds" is a state of the filter rather than a fifth kind.
+  expect(await sentence()).toContain("all kinds");
+  await openPick("kinds");
+  expect(await page.$eval("[data-kind='all']", (item) => item.getAttribute("aria-checked")))
     .toBe("true");
+  await page.keyboard.press("Escape");
 
   // Each kind narrows the one list to itself, says so in the URL, and holds
   // some of the corpus. The totals then have to add up to the unfiltered one,
-  // which is what makes Everything every kind and nothing else — and unlike a
+  // which is what makes "all kinds" every kind and nothing else — and unlike a
   // count of the rows on screen it does not depend on what the ranking put on
   // the first page.
   let accounted = 0;
   for (const [kind, label] of KINDS) {
-    await page.click(`[data-chip='kind-${kind}']`);
+    await toggleKind(kind, true);
     await page.waitForFunction(
       (want: string) => window.location.hash.includes(`kind=${want}`),
       { timeout: 15_000 },
       kind,
     );
-    // The chip's own pressed state, and not only the URL: the control says
-    // what is in force, and waiting on it is also what keeps the next press
-    // from being computed against the filter this one replaced.
-    await page.waitForSelector(`[data-chip='kind-${kind}'][aria-pressed='true']`, { timeout: 15_000 });
     await page.waitForFunction(
       (want: string) => {
         const rows = Array.from(document.querySelectorAll("ol.feed-list > li.feed-row"));
         return rows.length > 0
-          && rows.every((row) => row.querySelector(".badge")?.textContent === want);
+          && rows.every((row) => row.querySelector(".feed-kind")?.textContent === want);
       },
       { timeout: 15_000 },
       label,
     );
+    // The sentence names the one kind in force, in the plural it would be read
+    // in: the control states what is happening as well as doing it.
+    expect(await sentence()).toContain(KIND_WORDS[kind]);
     const narrowed = await counted();
     expect(`${kind}:${narrowed > 0 && narrowed < everything}`).toBe(`${kind}:true`);
     accounted += narrowed;
-    // Off again, so the next kind is read on its own: the chips are a set, and
+    // Off again, so the next kind is read on its own: the kinds are a set, and
     // pressing a second one widens rather than replaces.
-    await page.click(`[data-chip='kind-${kind}']`);
-    await page.waitForSelector(`[data-chip='kind-${kind}'][aria-pressed='false']`, { timeout: 15_000 });
+    await toggleKind(kind, false);
     await page.waitForFunction(() => !window.location.hash.includes("kind="), { timeout: 15_000 });
   }
   expect(accounted).toBe(everything);
 
+  // The set widens rather than replaces, and the sentence says both kinds
+  // rather than the last one pressed.
+  await openPick("kinds");
+  await page.click("[data-kind='proposal']");
+  await page.waitForSelector("[data-kind='proposal'][aria-checked='true']", { timeout: 15_000 });
+  await page.click("[data-kind='finding']");
+  await page.waitForSelector("[data-kind='finding'][aria-checked='true']", { timeout: 15_000 });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(
+    // The comma the client joins the set with is percent-encoded in a query
+    // string, so the URL is read decoded rather than matched against its
+    // wire form.
+    () => decodeURIComponent(window.location.hash).includes("kind=proposal,finding"),
+    { timeout: 15_000 },
+  );
+  expect(await sentence()).toContain("proposals and findings");
+
   // The filter is a place, so Back goes back to it. A reader who narrows to
   // findings, clears the filter and presses Back is asking for his findings
   // again, not for whatever he was reading before the feed.
-  await page.click("[data-chip='kind-finding']");
-  await page.waitForSelector("[data-chip='kind-finding'][aria-pressed='true']", { timeout: 15_000 });
+  await open("?needs=all");
+  await toggleKind("finding", true);
   await page.waitForFunction(() => window.location.hash.includes("kind=finding"), { timeout: 15_000 });
-  await page.click("[data-chip='all']");
-  await page.waitForSelector("[data-chip='kind-finding'][aria-pressed='false']", { timeout: 15_000 });
+  await openPick("kinds");
+  await page.click("[data-kind='all']");
   await page.waitForFunction(() => !window.location.hash.includes("kind="), { timeout: 15_000 });
   await page.goBack();
   await page.waitForFunction(() => window.location.hash.includes("kind=finding"), { timeout: 15_000 });
@@ -377,29 +444,57 @@ test.skipIf(!chrome)("the computed sorts order the same list differently", async
   for (const row of rising) expect(`${row.id}:${active.has(row.id)}`).toBe(`${row.id}:true`);
   for (const id of silent) expect(`${id}:${rising.some((row) => row.id === id)}`).toBe(`${id}:false`);
 
-  // The period is a control for the two sorts that read it and is absent for
-  // the four that do not: a period selector beside "new" is a control that
-  // does nothing and does not say so.
+  // The period is a column of the order's own menu for the two orders that
+  // read it and is absent for the four that do not: a period selector beside
+  // "newest" is a control that does nothing and does not say so. It is also
+  // why choosing one of those two leaves the menu open — the second column is
+  // where the next press goes.
   const windowed: Array<[string, boolean]> = [
     ["next", false], ["hot", false], ["new", false], ["rising", false],
     ["top", true], ["controversial", true],
   ];
   for (const [sort, offered] of windowed) {
+    await openPick("sort");
     await page.click(`[data-sort='${sort}']`);
-    await page.waitForSelector(`[data-sort='${sort}'][aria-pressed='true']`, { timeout: 15_000 });
+    await page.waitForFunction(
+      (want: string) => window.location.hash.includes(`sort=${want}`),
+      { timeout: 15_000 },
+      sort,
+    );
+    // The column is waited for rather than sampled: the URL is written by the
+    // press and the column is rendered from the URL, so the two are one
+    // commit apart and a read between them is a race rather than a result.
+    // An order that reads no period closes the menu instead, which is the
+    // same wait read the other way round.
+    await page.waitForFunction(
+      (want: boolean) => {
+        const menu = document.querySelector(".feed-menu");
+        if (!want) return menu === null;
+        return menu?.querySelector("[role='group'][aria-label='Period']") != null;
+      },
+      { timeout: 15_000 },
+      offered,
+    );
     const period = await page.$("[role='group'][aria-label='Period']");
     expect(`${sort}:${period !== null}`).toBe(`${sort}:${offered}`);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(
+      () => document.querySelector(".feed-menu") === null,
+      { timeout: 15_000 },
+    );
   }
 });
 
 test.skipIf(!chrome)("the front page arrives showing what needs the operator", async () => {
   await open("");
 
-  // Two controls are in force without the reader having pressed anything: the
-  // filter that says "what needs me" and the ordering that says which of it
-  // is next. That is the mod queue, and it is this list.
-  await page.waitForSelector("[data-chip='needs-me'][aria-pressed='true']", { timeout: 15_000 });
-  await page.waitForSelector("[data-sort='next'][aria-pressed='true']", { timeout: 15_000 });
+  // Two controls are in force without the reader having pressed anything, and
+  // the sentence above the list says both: the filter that says "what needs
+  // me" and the ordering that says which of it is next. That is the mod queue,
+  // and it is this list.
+  await page.waitForSelector(".feed-sentence", { timeout: 15_000 });
+  expect(await sentence()).toContain("Showing what needs me");
+  expect(await sentence()).toContain("sorted by next");
   const waiting = await listed();
   expect(waiting.length).toBeGreaterThan(1);
   const mine = await counted();
@@ -414,25 +509,34 @@ test.skipIf(!chrome)("the front page arrives showing what needs the operator", a
     // punctuation rather than one of them.
     const words = row.why.split(/\s+/u).filter((word) => word !== "·");
     expect(`${row.id}:${words.length <= 5}`).toBe(`${row.id}:true`);
-    // A question is answered where answers are written — it is not a record
-    // in the corpus, carries no disposition and has no thread of its own — so
-    // its row offers no acts and its claim opens the page that takes the
-    // answer. Every record that is waiting offers the four rulings and the
-    // question.
-    const expected = row.kind === "Question"
+    // A question carries no review disposition — it is answered, not ruled on
+    // — so its row offers §4.8's three outcomes rather than the four rulings.
+    // Every record that is waiting offers the rulings and the question.
+    const rulings = row.kind === "Question"
       ? []
       : ["accept", "reject", "defer", "refine", "ask"];
-    expect(`${row.id}:${row.acts.join(",")}`).toBe(`${row.id}:${expected.join(",")}`);
+    const answers = row.kind === "Question" ? ["answered", "unknown", "declined"] : [];
+    expect(`${row.id}:${row.acts.join(",")}`).toBe(`${row.id}:${rulings.join(",")}`);
+    expect(`${row.id}:${row.answers.join(",")}`).toBe(`${row.id}:${answers.join(",")}`);
   }
 
   // One gesture widens it to everything, and the ordering follows: a reader
   // who is no longer triaging is reading a feed, and the front page of a feed
   // is hot. Both land in the URL, because both are places he shares and walks
   // back out of.
-  await page.click("[data-chip='needs-me']");
-  await page.waitForSelector("[data-chip='needs-me'][aria-pressed='false']", { timeout: 15_000 });
-  await page.waitForSelector("[data-sort='hot'][aria-pressed='true']", { timeout: 15_000 });
-  expect(await page.evaluate(() => window.location.hash)).toContain("needs=all");
+  await openPick("needs");
+  await page.click("[data-needs='all']");
+  await page.waitForFunction(
+    () => window.location.hash.includes("needs=all"),
+    { timeout: 15_000 },
+  );
+  await page.waitForFunction(
+    () => {
+      const line = (document.querySelector(".feed-sentence") as HTMLElement | null)?.innerText ?? "";
+      return line.includes("Showing everything") && line.includes("sorted by hot");
+    },
+    { timeout: 15_000 },
+  );
   await page.waitForFunction(
     (narrower: number) =>
       Number((document.querySelector(".feed-count")?.textContent ?? "").replace(/[^0-9]/gu, "")) >
@@ -452,9 +556,22 @@ test.skipIf(!chrome)("the front page arrives showing what needs the operator", a
     expect(`${row.id}:${row.acts.length}`).toBe(`${row.id}:0`);
   }
 
-  // Back restores the filter it replaced, exactly as a kind chip does.
+  // Back restores the filter it replaced, exactly as a kind does.
   await page.goBack();
-  await page.waitForSelector("[data-chip='needs-me'][aria-pressed='true']", { timeout: 15_000 });
+  await page.waitForFunction(
+    () =>
+      ((document.querySelector(".feed-sentence") as HTMLElement | null)?.innerText ?? "")
+        .includes("Showing what needs me"),
+    { timeout: 15_000 },
+  );
+
+  // `m` is the same gesture from the keyboard, which is where the operator's
+  // hands are while he reads the list.
+  await page.keyboard.press("m");
+  await page.waitForFunction(
+    () => window.location.hash.includes("needs=all"),
+    { timeout: 15_000 },
+  );
 });
 
 test.skipIf(!chrome)("next puts the more urgent record above the calmer one", async () => {
@@ -483,6 +600,27 @@ test.skipIf(!chrome)("a ruling from a row is confirmed, recorded once, and shown
   const row = `li.feed-row[data-post='pro_criteria-template']`;
   await page.waitForSelector(row, { timeout: 15_000 });
 
+  // The acts are in the row's markup and out of sight until the reader is on
+  // it. That is the whole of what hover-revealed means, and it is asserted
+  // rather than assumed: a `display: none` that never lifted would be five
+  // controls an operator cannot reach.
+  const reach = (selector: string) => {
+    const control = document.querySelector(`${selector} [data-ruling='accept']`);
+    return control === null ? "absent" : (control as HTMLElement).offsetParent === null
+      ? "hidden"
+      : "shown";
+  };
+  expect(await page.evaluate(reach, row)).toBe("hidden");
+  await page.hover(`${row} .feed-claim`);
+  await page.waitForFunction(
+    (selector: string) => {
+      const control = document.querySelector(`${selector} [data-ruling='accept']`);
+      return control !== null && (control as HTMLElement).offsetParent !== null;
+    },
+    { timeout: 15_000 },
+    row,
+  );
+
   // Every /api/review/decide this page makes, so "confirmed before it is
   // recorded" is measured rather than inferred from what is on screen.
   const decides: string[] = [];
@@ -496,20 +634,28 @@ test.skipIf(!chrome)("a ruling from a row is confirmed, recorded once, and shown
     await page.click(`${row} [data-ruling='accept']`);
     await page.waitForSelector(`${row} .record-confirm`, { timeout: 15_000 });
     expect(decides).toEqual([]);
-    const sentence = await page.$eval(`${row} .record-confirm p`, (line) => line.textContent ?? "");
-    expect(sentence).toContain("appended permanently");
+    const asked = await page.$eval(`${row} .record-confirm p`, (line) => line.textContent ?? "");
+    expect(asked).toContain("appended permanently");
 
     await page.click(`${row} .record-confirm button[type='submit']`);
-    // The row says what was done, in place of what could be done: a permanent
-    // act that left the list looking the same is an act performed twice.
+    // The row leaves the list it was waiting in: under "what needs me" the
+    // list is what is left to do, and a row sitting in it with "accepted" on
+    // it is a line the reader skips past for the rest of the session. What
+    // stands in its place is the receipt, bottom-left, with the one act that
+    // undoes a permanent ruling — reopening it.
     await page.waitForFunction(
-      (selector: string) =>
-        (document.querySelector(`${selector} .feed-acted`)?.textContent ?? "").includes("accepted"),
+      (selector: string) => document.querySelector(selector) === null,
       { timeout: 15_000 },
       row,
     );
+    const receipt = await page.$eval(".feed-toast", (note) => (note as HTMLElement).innerText);
+    expect(receipt).toContain("accepted");
+    expect(receipt).toContain("reopen");
+    // And the count at the end of the sentence is one shorter, because the
+    // list it counts is.
+    expect(await page.$eval(".feed-ruled", (note) => (note as HTMLElement).innerText))
+      .toContain("ruled today 1");
     expect(decides).toEqual(["POST"]);
-    expect(await page.$(`${row} [data-ruling='accept']`)).toBeNull();
   } finally {
     page.off("request", watch);
   }
@@ -589,6 +735,9 @@ test.skipIf(!chrome)("a question asked from a row reads as one in the thread", a
   );
 
   const asked = `Synthetic operator question ${Date.now()}`;
+  // The acts arrive with the pointer, so the pointer goes to the row first.
+  await page.hover(`${row} .feed-claim`);
+  await page.waitForSelector(`${row} [data-ruling='ask']`, { visible: true, timeout: 15_000 });
   await page.click(`${row} [data-ruling='ask']`);
   await page.waitForSelector(`${row} .record-ask input`, { timeout: 15_000 });
   await page.type(`${row} .record-ask input`, asked);
@@ -740,7 +889,9 @@ test.skipIf(!chrome)("the rail groups topics by interest, folds what is parked, 
   });
   expect(rail.labels).toContain("Working on it");
   expect(rail.labels).toContain("Keep an eye");
-  expect(rail.labels).toContain("Babel proposes");
+  // "Babel proposes" carries the count of decisions under it, because a reader
+  // deciding whether to look wants the number.
+  expect(rail.labels.some((label: string) => /^Babel proposes\s*\d+$/u.test(label))).toBe(true);
   // Parked and excluded are folded, closed, and say how many they hold.
   expect(rail.folds.length).toBe(2);
   for (const fold of rail.folds) {
@@ -772,7 +923,7 @@ test.skipIf(!chrome)("the rail groups topics by interest, folds what is parked, 
   const unfiled = await page.evaluate(async () => {
     const rail_ = document.querySelector(".feed-rail") as HTMLElement;
     const row = Array.from(rail_.querySelectorAll(".topic-list > li > a")).find((link) =>
-      (link.textContent ?? "").startsWith("no topic")) as HTMLAnchorElement | undefined;
+      (link.textContent ?? "").startsWith("unfiled")) as HTMLAnchorElement | undefined;
     const answer = await fetch("/api/feed?topic=unfiled&limit=1").then((r) => r.json());
     return {
       href: row?.getAttribute("href") ?? "",

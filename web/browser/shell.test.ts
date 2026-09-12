@@ -129,7 +129,8 @@ async function landed(prefix: string): Promise<string> {
 function rendered(): Promise<unknown> {
   return page.waitForFunction(
     () => document.querySelector("main .page") !== null
-      && document.querySelector(".state-note .spinner") === null,
+      && document.querySelector(".state-note .spinner") === null
+      && document.querySelector(".feed-skeleton") === null,
     { timeout: 15_000 },
   );
 }
@@ -239,11 +240,12 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
     ["archive", "#/settings?section=archive"],
     ["help", "#/settings?section=help"],
     // The ledger's inbox is the feed filtered to the questions Babel asks, so
-    // /reality lands there rather than on a page of its own; the ledger's
-    // subjects and beliefs keep their pages under /ask.
+    // /reality lands there rather than on a page of its own. A subject moves
+    // one step further: a topic *is* a ledger entity (§4.13), so an entity
+    // something is filed under is read under the name it is filed as.
     ["reality", "#/?kind=question"],
     ["reality/questions", "#/ask/questions"],
-    ["reality/entities/ent_atlas", "#/ask/entities/ent_atlas"],
+    ["reality/entities/ent_atlas", "#/t/atlas"],
     ["reality/facts", "#/ask/facts"],
     ["reality/focus", "#/settings?section=ceilings"],
     // The catch-all, which is load-bearing rather than cosmetic: the launch

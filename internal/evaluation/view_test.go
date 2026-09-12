@@ -409,6 +409,7 @@ func TestReservedCoverageDrawsOldestAndReplaysFromSeed(t *testing.T) {
 	in.Policy.ExplorationShare = 0.05
 	in.Policy.DiscoveryShare = 0.05
 	in.Policy.FilingShare = 0
+	in.Policy.BacklogShare = 0
 
 	var drew Assignment
 	for seed := uint64(1); seed < 64; seed++ {
@@ -453,6 +454,7 @@ func TestAssignmentIdentityIsIndependentOfRun(t *testing.T) {
 	policy.ExplorationShare = 0.05
 	policy.DiscoveryShare = 0.05
 	policy.FilingShare = 0
+	policy.BacklogShare = 0
 	items := []projected{{
 		Artifact: hypothesisArtifact("h9", now.Add(-48*time.Hour)),
 		Roles:    []RoleCoverage{{Role: RoleReception, State: CoverageUnreviewed}},

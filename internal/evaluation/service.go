@@ -1604,6 +1604,25 @@ func (s *Service) unfiledBacklog(ctx context.Context, policy Policy) ([]Subject,
 	return source.Unfiled(ctx, unfiledDraw)
 }
 
+// deferredBacklog reads the candidates a run set down, or nothing when this
+// deployment has allocated the backlog share nothing or its read surface
+// cannot answer.
+//
+// The share is consulted before the store is, and a failed read is an error
+// rather than an empty backlog, both for unfiledBacklog's reasons: "nothing is
+// deferred" and "I could not ask" must not arrive at the draw as the same
+// answer, because the first would report a backlog as worked through.
+func (s *Service) deferredBacklog(ctx context.Context, policy Policy) ([]Subject, error) {
+	if policy.BacklogShare <= 0 {
+		return nil, nil
+	}
+	source, ok := s.src.(DeferredSource)
+	if !ok {
+		return nil, nil
+	}
+	return source.Deferred(ctx, unfiledDraw)
+}
+
 // Draw reserves the next review and claims it.
 //
 // The whole selection happens here and the claim happens through the store, so
@@ -1635,6 +1654,10 @@ func (s *Service) Draw(ctx context.Context, runID string, seed uint64) (Assignme
 	if err != nil {
 		return Assignment{}, err
 	}
+	deferred, err := s.deferredBacklog(ctx, policy)
+	if err != nil {
+		return Assignment{}, err
+	}
 
 	now := time.Now().UTC()
 	result, drawErr := selectDraw(drawInput{
@@ -1647,6 +1670,7 @@ func (s *Service) Draw(ctx context.Context, runID string, seed uint64) (Assignme
 		SpentCycle:   cycle,
 		ActiveClaims: active,
 		Unfiled:      unfiled,
+		Deferred:     deferred,
 		Now:          now,
 	}, runID, seed)
 

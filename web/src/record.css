@@ -67,6 +67,78 @@
   background: var(--rule);
 }
 
+/* The listing's appearance of the same control: five words the reader can
+ * press, no boxes. It is the register a row is written in — a claim, a fact
+ * line, and what you can do about it — and a segmented bar of five bordered
+ * buttons on a row of a fifteen-row list is the row shouting.
+ *
+ * The words are `--ink-muted` and underline on hover, which is exactly what
+ * they are: controls that read as links. The one that is open takes the
+ * accent, because the panel under it belongs to it. */
+.record-acts-text {
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+}
+
+.record-acts-text > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.record-acts-text button {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink-muted);
+  background: none;
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.record-acts-text button:hover:not(:disabled),
+.record-acts-text button:focus-visible {
+  border: 0;
+  color: var(--ink);
+  background: none;
+  text-decoration: underline;
+}
+
+.record-acts-text button.active {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* The confirmation opens rather than appears. One grid row from nothing to
+ * its own height: the panel is a permanent, append-only act being asked for,
+ * and a box that materialises under the pointer is a box the reader has to
+ * re-read to be sure of what moved. */
+.record-confirm-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  /* The clip is what makes the fold a fold rather than a fade. The panel is
+     bordered and tinted and needs no drop shadow, which is just as well: a
+     shadow is the one thing a clipped container cannot carry. */
+  overflow: hidden;
+  animation: record-confirm-unfold 180ms ease-out;
+}
+
+@keyframes record-confirm-unfold {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-confirm-fold {
+    animation: none;
+  }
+}
+
 /* The inline confirmation. A ruling is permanent and append-only, so it is
  * confirmed — but a confirmation is one sentence and two buttons, not the
  * 677-pixel ballot of five radios and two textareas this replaces. It opens
@@ -75,7 +147,6 @@
   border: 1px solid var(--accent-line, var(--rule));
   border-radius: var(--radius);
   background: var(--bg-raised);
-  box-shadow: var(--shadow-raised);
   padding: var(--space-4);
   margin: var(--space-3) 0;
   max-width: var(--measure);
@@ -764,26 +835,35 @@
   margin-top: var(--space-3);
 }
 .peel-body .record-field > h3.eyebrow {
-  margin: 0 0 0.2rem;
+  margin: 0 0 var(--space-1);
 }
 .peel-body .record-field > p,
 .peel-body .record-field-list {
   margin: 0;
-  padding: 0.1rem 0 0.1rem var(--space-3);
+  padding: 0 0 0 var(--space-3);
   border-left: 2px solid var(--rule-strong);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* The interface's own sentence inside a field — "suspected of drift", "§4.8
+ * records the disagreement" — is not the record's words and must not wear the
+ * rule that marks them. */
+.peel-body .record-field > p.muted {
+  padding-left: 0;
+  border-left: 0;
+  white-space: normal;
+}
 .peel-body .record-field-list {
   list-style: none;
 }
 .peel-body .record-field-list > li + li {
-  margin-top: 0.2rem;
+  margin-top: var(--space-1);
 }
 .peel-body .record-field-facts {
   margin: 0;
-  padding: 0.1rem 0 0.1rem var(--space-3);
+  padding: 0 0 0 var(--space-3);
   border-left: 2px solid var(--rule-strong);
   display: flex;
   flex-wrap: wrap;
@@ -796,5 +876,62 @@
   font-size: 0.7rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-right: 0.4rem;
+  margin-right: var(--space-2);
+}
+
+/* ---------------------------------------------------------------------------
+ * A QUESTION IS A POST. /ask/questions/:id reads through the depths above, so
+ * it needs no layout of its own — only the two differences a question really
+ * has from a record: no reviewer score, and a class instead of a standing.
+ * --------------------------------------------------------------------------- */
+
+/* No vote gutter, because Babel's reviewers do not assess a question: the
+ * column would be an empty 44 pixels claiming a figure is missing. */
+.record-post.question-post {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* That it is his to move, in the one word the feed row uses for the same
+ * fact. It leads the meta line because it is the reason the page is open. */
+.question-post .question-waiting {
+  color: var(--accent);
+}
+
+/* What the question is about, at depth 1: a subject reached as the place it
+ * is read — a topic under its name, an entity under its own page. */
+.peel-body .question-about {
+  margin: var(--space-3) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+
+.peel-body .question-about a {
+  margin-left: var(--space-1);
+}
+
+/* What class of question it is, as words. Two coloured badges used to carry
+ * this — the class and the ledger's noun for the kind — which made
+ * "blocking · acquire-context" the loudest thing on a page whose subject is a
+ * sentence somebody has to answer. */
+.peel-body .question-class {
+  margin: var(--space-1) 0 var(--space-4);
+  color: var(--ink-faint);
+  font-family: var(--font-ui);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* The records it was asked on the strength of. They are identifiers and they
+ * are links, which is exactly how the machinery depth sets an id — except
+ * that here the reader is meant to follow them. */
+.peel-body .question-strength a {
+  font-size: 0.8rem;
+}
+
+/* The interpretations, under the answers in the same thread: one heading
+ * rhythm, because they are the second half of one conversation. */
+.record-thread .question-plans-heading {
+  margin-top: var(--space-5);
 }

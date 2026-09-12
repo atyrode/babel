@@ -295,6 +295,15 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 		}
 		opts.TopicPlans = topics
 		opts.Stance = topics
+		// §4.13's backlog acts rule through the same route and wire on
+		// the same terms: the ledger holds the plan, and the frontier —
+		// when this build opened one — is what an acceptance settles the
+		// candidates in.
+		backlog := web.LedgerBacklog{Ledger: services.reality}
+		if services.analysis != nil {
+			backlog.Frontier = reality.FrontierSink{Store: services.analysis.frontier}
+		}
+		opts.BacklogPlans = backlog
 	}
 
 	// The Watch surface's control room (Contract W). The launcher starts this

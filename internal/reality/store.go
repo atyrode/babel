@@ -694,6 +694,54 @@ CREATE TRIGGER reality_topic_ruling_immutable BEFORE UPDATE ON reality_topic_rul
 BEGIN SELECT RAISE(ABORT, 'a topic ruling is immutable'); END;
 CREATE TRIGGER reality_topic_ruling_kept BEFORE DELETE ON reality_topic_ruling
 BEGIN SELECT RAISE(ABORT, 'topic rulings are never deleted'); END;
+`, `
+-- §4.13's last paragraph: the backlog a deferred candidate leaves is worked
+-- through the chain, and what accepting one of those proposals would do is a
+-- plan recorded beside it. It is the topic plan's shape — one per proposal,
+-- immutable, keyed by an opaque subject matter so two runs proposing the same
+-- act on the same candidates give the operator one decision — because the
+-- operator's act on both is the same act.
+--
+-- proposal_id carries no foreign key for reality_topic_plan's reason: the
+-- proposal is internal/frontier's row under its own component.
+--
+-- evidence_weight is how many observations stood behind the act when it was
+-- proposed, which is what "materially new" is measured against after a
+-- decline.
+CREATE TABLE reality_backlog_plan(
+	proposal_id     TEXT PRIMARY KEY,
+	subject_key     TEXT NOT NULL,
+	operation       TEXT NOT NULL,
+	evidence_weight INTEGER NOT NULL,
+	created_at      TEXT NOT NULL,
+	payload_json    TEXT NOT NULL
+);
+CREATE INDEX reality_backlog_plan_subject ON reality_backlog_plan(subject_key);
+
+-- The operator's ruling on a backlog plan, and the fact an applied promotion
+-- asserted. Unique per proposal, which is what makes a double-click
+-- impossible. The candidates it settled are the frontier's own status history
+-- and are not copied here: a second record of where a candidate stands is a
+-- record that can disagree with §4.2's.
+CREATE TABLE reality_backlog_ruling(
+	id           TEXT PRIMARY KEY,
+	proposal_id  TEXT NOT NULL UNIQUE REFERENCES reality_backlog_plan(proposal_id),
+	verdict      TEXT NOT NULL,
+	fact_id      TEXT REFERENCES reality_fact(id),
+	actor        TEXT NOT NULL,
+	recorded_at  TEXT NOT NULL,
+	payload_json TEXT NOT NULL
+);
+
+CREATE TRIGGER reality_backlog_plan_immutable BEFORE UPDATE ON reality_backlog_plan
+BEGIN SELECT RAISE(ABORT, 'a backlog plan is immutable'); END;
+CREATE TRIGGER reality_backlog_plan_kept BEFORE DELETE ON reality_backlog_plan
+BEGIN SELECT RAISE(ABORT, 'backlog plans are never deleted'); END;
+
+CREATE TRIGGER reality_backlog_ruling_immutable BEFORE UPDATE ON reality_backlog_ruling
+BEGIN SELECT RAISE(ABORT, 'a backlog ruling is immutable'); END;
+CREATE TRIGGER reality_backlog_ruling_kept BEFORE DELETE ON reality_backlog_ruling
+BEGIN SELECT RAISE(ABORT, 'backlog rulings are never deleted'); END;
 `}
 
 // HypothesisSink retains a candidate hypothesis a plan produced.

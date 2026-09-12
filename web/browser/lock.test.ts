@@ -14,12 +14,24 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import puppeteer, { type Browser, type Dialog, type Page } from "puppeteer-core";
+import puppeteer, { type Browser, type Dialog, type ElementHandle, type Page } from "puppeteer-core";
 import { resolveChrome } from "./chrome";
 
 const SESSION_TITLE = "Synthetic lock session";
 const STEM = "2026-01-02T03-04-05-678Z_00000000-0000-4000-8000-000000000002";
-const LOCK_BUTTON = "text/Lock & stop";
+const LOCK_MENU = ".shell-menu-button";
+const LOCK_BUTTON = ".shell-menu-stop";
+
+// The stop is behind the header's … menu now: it ends the whole session, which
+// is not something the operator reaches for while reading, so it is the
+// quietest control on the surface rather than a bordered button in the row.
+// Reaching it is one press more, and it is still two presses from happening —
+// the native confirmation below is the second.
+async function reachLock(page_: Page): Promise<ElementHandle<Element> | null> {
+  await page_.waitForSelector(LOCK_MENU, { timeout: 30_000 });
+  await page_.click(LOCK_MENU);
+  return page_.waitForSelector(LOCK_BUTTON, { timeout: 30_000 });
+}
 
 // A developer without Chrome skips this suite. The notice resolveChrome prints
 // in that case is what keeps the skip from reading as a pass: this file is the
@@ -199,7 +211,7 @@ afterAll(async () => {
 
 test.skipIf(!chrome)("the stop control is guarded by a confirmation the operator can decline", async () => {
   await page.goto(launchURL, { waitUntil: "networkidle2" });
-  const control = await page.waitForSelector(LOCK_BUTTON, { timeout: 30_000 });
+  const control = await reachLock(page);
   expect(control).not.toBeNull();
   // The shell rendered, so the bootstrap exchange has run; its session is what
   // `call` uses to observe the server from outside the browser.
@@ -225,7 +237,7 @@ test.skipIf(!chrome)("the stop control is guarded by a confirmation the operator
 });
 
 test.skipIf(!chrome)("confirming it revokes the session, stops the server, and says so", async () => {
-  const control = await page.waitForSelector(LOCK_BUTTON, { timeout: 30_000 });
+  const control = await reachLock(page);
 
   await answerConfirm(true, async () => {
     await control?.click();

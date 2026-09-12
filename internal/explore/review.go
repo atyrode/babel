@@ -137,6 +137,12 @@ const (
 	// already happened, so the assignment is reconciled as failed and the
 	// record stays unfiled rather than being reported as filed.
 	FailureFiling = "review-filing"
+	// FailureBacklog reports that a backlog pass reached an answer and the
+	// stores would not take it: a candidate the frontier has moved past, a
+	// plan the ledger refused, an unreachable store. The worker boundary
+	// already happened, so the assignment is reconciled as failed and the
+	// candidate stays deferred rather than being reported as settled.
+	FailureBacklog = "review-backlog"
 )
 
 // ErrReviewBlinded reports material that would have broken a blinded
@@ -210,6 +216,16 @@ type ReviewResult struct {
 	Topic    *TopicProposal `json:"topic,omitempty"`
 	NoTopic  *NoTopic       `json:"no_topic,omitempty"`
 	NoChange *NoChange      `json:"no_change,omitempty"`
+	// Consolidate, Supersede, Retire, Promote and Keep are the backlog
+	// role's five answers, and exactly one of them is set (§4.13's last
+	// paragraph). They are five fields for the filing role's reason: the
+	// alternatives are named on the wire, which is what a model fills
+	// correctly.
+	Consolidate *BacklogConsolidation `json:"consolidate,omitempty"`
+	Supersede   *Supersession         `json:"supersede,omitempty"`
+	Retire      *Retirement           `json:"retire,omitempty"`
+	Promote     *Promotion            `json:"promote,omitempty"`
+	Keep        *Kept                 `json:"keep,omitempty"`
 }
 
 // reviewAuthority is what one role's result may contain. It is the review
@@ -239,6 +255,11 @@ type reviewAuthority struct {
 	// filing says where a record belongs, so a contribution to the review
 	// of it would be a judgement the pass was not drawn to make.
 	filing bool
+	// backlog admits the five answers of §4.13's backlog pass and nothing
+	// else. It subtracts on filing's terms and for the same reason: a pass
+	// that says what should become of a deferred candidate is not reviewing
+	// it, and a contribution would be a judgement it was not drawn to make.
+	backlog bool
 }
 
 // reviewAuthorities is the role table. A role absent from it is unsupported by
@@ -252,6 +273,7 @@ var reviewAuthorities = map[string]reviewAuthority{
 	evaluation.RoleOutcome:    {outcome: true, criteria: true},
 	evaluation.RoleRelevance:  {},
 	evaluation.RoleFiling:     {filing: true},
+	evaluation.RoleBacklog:    {backlog: true},
 }
 
 // ReviewOutputContract is the result contract one role's review job is held
@@ -314,11 +336,20 @@ func reviewSchema(auth reviewAuthority) (json.RawMessage, error) {
 		doc.remove("topic")
 		doc.remove("no_topic")
 		doc.remove("no_change")
-	} else {
-		// The filing role's whole result is which of the four answers it
+	}
+	if !auth.backlog {
+		doc.remove("consolidate")
+		doc.remove("supersede")
+		doc.remove("retire")
+		doc.remove("promote")
+		doc.remove("keep")
+	}
+	if auth.filing || auth.backlog {
+		// The whole result of either work role is which of its answers it
 		// reached. A contribution field would invite the pass to review
-		// the record it was drawn to name, and the role table refuses one
-		// anyway — so it is pruned rather than offered and then rejected.
+		// the record it was drawn to name or to settle, and the role
+		// table refuses one anyway — so it is pruned rather than offered
+		// and then rejected.
 		doc.remove("contributions")
 	}
 	defs := &object{}
@@ -453,8 +484,10 @@ func parseReviewResult(rec *worker.ResultRecord, role string, self reviewSelf) (
 	res.Skip = strings.TrimSpace(res.Skip)
 	res.Environment = strings.TrimSpace(res.Environment)
 	filed := res.Filing != nil || res.Topic != nil || res.NoTopic != nil || res.NoChange != nil
+	settled := res.Consolidate != nil || res.Supersede != nil || res.Retire != nil ||
+		res.Promote != nil || res.Keep != nil
 	if res.Skip != "" && (res.Vote != "" || res.Outcome != "" || len(res.Contributions) > 0 ||
-		len(res.Results) > 0 || res.Uncertainty != "" || filed) {
+		len(res.Results) > 0 || res.Uncertainty != "" || filed || settled) {
 		return nil, fmt.Errorf("explore: a skip cannot also state an assessment")
 	}
 
@@ -477,15 +510,26 @@ func parseReviewResult(rec *worker.ResultRecord, role string, self reviewSelf) (
 	if filed && !auth.filing {
 		return nil, fmt.Errorf("%w: the %s role may not decide what a record is about", ErrReviewRole, role)
 	}
-	if auth.filing {
+	if settled && !auth.backlog {
+		return nil, fmt.Errorf("%w: the %s role may not decide what becomes of a deferred candidate",
+			ErrReviewRole, role)
+	}
+	if auth.filing || auth.backlog {
 		if len(res.Contributions) > 0 {
-			return nil, fmt.Errorf("%w: a filing pass says where a record belongs and contributes "+
-				"nothing to the review of it", ErrReviewRole)
+			return nil, fmt.Errorf("%w: a %s pass records what it did and contributes nothing to "+
+				"the review of the record", ErrReviewRole, role)
 		}
-		if res.Skip == "" {
+		if res.Skip != "" {
+			return &res, nil
+		}
+		if auth.filing {
 			if err := validateFilingResult(&res); err != nil {
 				return nil, err
 			}
+			return &res, nil
+		}
+		if err := validateBacklogResult(&res); err != nil {
+			return nil, err
 		}
 		return &res, nil
 	}
@@ -593,6 +637,13 @@ type ReviewConfig struct {
 	// did not wire it is refused before any worker starts, rather than
 	// producing an answer nothing can record.
 	Topics TopicService
+
+	// Backlog is the backlog pass's read and write surface: the deferred
+	// candidate with its observations, and the chain a backlog act is
+	// published as (§4.13). Nil is the feature absent on Topics' terms — a
+	// backlog assignment drawn on a deployment that did not wire it is
+	// refused before any worker starts.
+	Backlog BacklogService
 
 	// Recipes are the cookbook assets this build reviews under, and Recipe
 	// is the one whose body the prompt carries. Both are required: a review
@@ -827,6 +878,10 @@ func (r *Reviewer) Review(ctx context.Context, opt ReviewOptions) (*ReviewRun, e
 		return nil, fmt.Errorf("explore: a %s assignment was drawn on a deployment with no topic "+
 			"service wired; the answer would have nowhere to go", a.Role)
 	}
+	if auth.backlog && r.cfg.Backlog == nil {
+		return nil, fmt.Errorf("explore: a %s assignment was drawn on a deployment with no backlog "+
+			"service wired; the answer would have nowhere to go", a.Role)
+	}
 	if err := opt.Preparation.Verify(); err != nil {
 		return nil, err
 	}
@@ -957,6 +1012,25 @@ func (r *Reviewer) Review(ctx context.Context, opt ReviewOptions) (*ReviewRun, e
 		// claim about what the record is about.
 		st.evidence = target.Evidence
 	}
+	if auth.backlog {
+		// Read before the worker starts and after the assignment is
+		// claimed, on the ledger read's terms: a backlog pass that could
+		// not be shown the candidate's own observations would be asked
+		// what to do with a sentence and no evidence, which is the one
+		// judgement §4.13 does not let it make.
+		material, err := r.cfg.Backlog.Material(st.ctx, a.Subject)
+		if err != nil {
+			st.fail(FailureBacklog, r.now(),
+				fmt.Errorf("explore: read the backlog material for %s: %w", a.ID, err))
+			r.finishFailed(st, st.err)
+			return st.out, st.err
+		}
+		st.backlog = &material
+		// What the act rests on is what the candidate's observations
+		// already cited, which is served material rather than a citation
+		// a model invented (§4.3).
+		st.evidence = material.evidence()
+	}
 
 	receipt, runErr := r.launch(st, broker, contract, target, alternatives, input.Previous, blinded, self)
 	steps, served := broker.trace()
@@ -1052,6 +1126,32 @@ func (r *Reviewer) Review(ctx context.Context, opt ReviewOptions) (*ReviewRun, e
 			st.filing = filing
 		}
 	}
+	if auth.backlog && res.Skip == "" {
+		act, err := r.settle(st, res)
+		switch {
+		case errors.Is(err, ErrBacklogKnown):
+			// The answer was already in the ledger: an open plan
+			// proposes it, or the operator declined it and nothing
+			// new has been said. Nothing was written, so the
+			// assignment ends as the skip it actually was.
+			res.Skip = err.Error()
+		case err != nil:
+			code := FailureBacklog
+			if errors.Is(err, ErrBacklogResult) {
+				// The pass named a candidate, an observation or
+				// an entity the material it was served does not
+				// hold. That is a malformed result rather than a
+				// store refusing a write.
+				code = FailureResultSchema
+			}
+			st.fail(code, r.now(), err)
+			r.finishFailed(st, st.err)
+			st.out.Receipt = r.receipt(st, receipt, steps)
+			return st.out, st.err
+		default:
+			st.act = act
+		}
+	}
 
 	r.record(st, res, input)
 	st.out.Receipt = r.receipt(st, receipt, steps)
@@ -1103,17 +1203,22 @@ type reviewState struct {
 	started time.Time
 	steps   []run.RetrievalStep
 	// ledger is what the filing pass was shown about the entities the
-	// record could be about, read once before the worker starts.
-	ledger *TopicLedger
+	// record could be about, and backlog what the backlog pass was shown
+	// about the candidate it was drawn for. Each is read once before the
+	// worker starts and is nil for every other role.
+	ledger  *TopicLedger
+	backlog *BacklogMaterial
 	// evidence is what the record under review cites, carried because a
 	// topic proposal is published as an ordinary chain and §4.3 forbids an
 	// evidence-free observation: the locators this pass rests on are the
 	// ones the record it read already rested on, which are served material
 	// rather than a citation a model invented.
 	evidence []frontier.Evidence
-	// filing is the answer a filing pass reached and the stores took, nil
-	// for every other role and for a filing that skipped.
+	// filing is the answer a filing pass reached and the stores took, and
+	// act the answer a backlog pass reached. Both are nil for every other
+	// role and for a pass that skipped.
 	filing *evaluation.Filing
+	act    *evaluation.Backlog
 	model  string
 	// correcting is the earlier record this pass supersedes, empty for a
 	// first statement.
@@ -1194,6 +1299,7 @@ func (r *Reviewer) record(st *reviewState, res *ReviewResult, input evaluation.R
 			Uncertainty:    res.Uncertainty,
 			ContextVersion: a.ContextVersion,
 			Filing:         st.filing,
+			Backlog:        st.act,
 		}
 		if len(res.Results) > 0 || res.Outcome != "" {
 			// The criteria version is what links a criterion result to the
@@ -1313,7 +1419,7 @@ func (r *Reviewer) launch(st *reviewState, broker *retrieval, contract worker.Ou
 	params := reviewParams(a, blinded)
 	sources := preparationSources(st.opt.Preparation)
 	prompt, err := composeReviewPrompt(contract, r.recipe, target, alternatives, previous, sources,
-		params, tools, blinded, st.ledger)
+		params, tools, blinded, st.ledger, st.backlog)
 	if err != nil {
 		return nil, err
 	}

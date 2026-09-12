@@ -486,7 +486,7 @@ func TestTheFilingPromptSeparatesEntitiesObservationsAndAsks(t *testing.T) {
 	}, reviewTarget{
 		Kind: "finding", ID: "f1", Title: "the deployment tool drops its retries",
 	}, nil, nil, []worker.Source{{Selector: "claude/abc"}},
-		map[string]string{"assignment": "asg_1"}, nil, false, &ledger)
+		map[string]string{"assignment": "asg_1"}, nil, false, &ledger, nil)
 	if err != nil {
 		t.Fatalf("composeReviewPrompt: %v", err)
 	}

@@ -12,50 +12,10 @@
  * sanely if the design system has not landed one.
  */
 
-/* The four sub-tabs answer four questions, and the question is the label.
- * "Questions / Asked / Subjects / Beliefs" named four stores; a reader had to
- * know the data model to pick one. The store's own noun stays as the second
- * line, because it is the word the CLI and the spec use. */
-.ask-nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-bottom: var(--space-5);
-  border-bottom: 1px solid var(--rule);
-}
-
-.ask-nav a {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 2px solid transparent;
-  color: var(--ink-muted);
-  text-decoration: none;
-  transition: color var(--motion-fast) ease, border-color var(--motion-fast) ease;
-}
-
-.ask-nav a:hover {
-  color: var(--ink);
-}
-
-.ask-nav a.active {
-  color: var(--ink);
-  border-bottom-color: var(--accent);
-}
-
-.ask-nav-question {
-  font-family: var(--font-ui);
-  font-size: 0.95rem;
-  font-weight: 600;
-}
-
-.ask-nav-noun {
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
+/* The sub-navigation this file used to open with is gone with the layout that
+ * carried it: the questions Babel asks are posts on the front page, a question
+ * reads through the record page's depths, and a subject reads through the
+ * topic page — so there is no row of tabs above any of it to style. */
 
 /* Identifiers, everywhere they appear: a closed disclosure, mono inside. */
 .ask-ids {

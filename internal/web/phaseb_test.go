@@ -24,6 +24,7 @@ import (
 	"github.com/atyrode/babel/internal/complaint"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/disposition"
+	"github.com/atyrode/babel/internal/evaluation"
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/harness"
@@ -188,6 +189,18 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 	if err != nil {
 		t.Fatalf("cookbook.Embedded: %v", err)
 	}
+	// §8.7's live signal needs one review in flight, and it has to be on a
+	// record this frontier actually holds: the pulse names what is under
+	// claim by the record's own line, so a claim on the projection's
+	// synthetic subject would produce a row with nothing in it and the
+	// escaping sweep would never see the wording it exists to check.
+	reception := evaluationFixture(text)
+	reception.claims = map[evaluation.Subject]evaluation.OpenClaim{
+		{Kind: string(frontier.EntityProposal), ID: h.proposal.ID}: {
+			Count: 1,
+			Since: time.Now().UTC().Add(-4 * time.Minute),
+		},
+	}
 
 	opts := Options{
 		Operator: operatorID,
@@ -240,7 +253,7 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		// objection are wording a model produced, so the escaping sweep
 		// has to see them without a test remembering to ask.
 		// evaluation_test.go describes the fixture.
-		Evaluation: evaluationFixture(text),
+		Evaluation: reception,
 		Runs: runLister{{
 			ReceiptID:     "rcp-1 " + text,
 			RunID:         "run-1 " + text,
@@ -1014,6 +1027,11 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		// a sentence this server composed — the five-word why — and a
 		// sweep that only saw the unfiltered feed would never see one.
 		{name: "feed next", method: http.MethodGet, path: "/api/feed?needs=me&sort=next&limit=100"},
+		// The front page's live signal. It is enrolled beside the feed
+		// rather than folded into it because it carries content the feed
+		// does not: the line of every record a reviewer is holding right
+		// now, which on this fixture includes kinds the feed never lists.
+		{name: "feed pulse", method: http.MethodGet, path: "/api/feed/pulse"},
 		{name: "topics", method: http.MethodGet, path: "/api/topics"},
 		// §4.13's four filing acts. Filing and unfiling are two paths
 		// rather than one toggle because both append: a withdrawal is a row

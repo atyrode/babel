@@ -496,20 +496,36 @@ test.skipIf(!chrome)("the operator rules rather than votes, and his retired stan
   await open("");
   const row = "li.feed-row[data-post='pro_criteria-template']";
   await page.waitForSelector(`${row} [data-ruling='accept']`, { timeout: 15_000 });
+  // The acts arrive with the pointer (§8.7's row is two lines until a reader
+  // is on it), so the pointer goes to the row before the act is pressed.
+  await page.hover(`${row} .feed-claim`);
+  await page.waitForSelector(`${row} [data-ruling='accept']`, { visible: true, timeout: 15_000 });
 
-  // Nothing on the row is a vote: no arrow, no stance, and the score beside
-  // the claim is a figure rather than a control.
+  // Nothing on the row is a vote: no arrow, no stance, and where there is a
+  // score it is a figure rather than a control.
   const votes = await page.evaluate((selector: string) => {
     const item = document.querySelector(selector) as HTMLElement;
+    const scored = document.querySelector("ol.feed-list > li.feed-row .feed-score");
     return {
-      stances: item.querySelectorAll("[data-stance], .vote-up, .vote-down").length,
-      score: item.querySelector(".feed-score")?.tagName ?? "",
-      breakdown: item.querySelector(".feed-score")?.getAttribute("title") ?? "",
+      stances: document.querySelectorAll(
+        "ol.feed-list [data-stance], ol.feed-list .vote-up, ol.feed-list .vote-down",
+      ).length,
+      score: scored?.tagName ?? "",
+      breakdown: scored?.getAttribute("title") ?? "",
+      // A record no reviewer has assessed carries a hollow ring and no
+      // figure: a nought over the ring read as a tally of nothing objected
+      // to, which is what §8.5 forbids. The column stays where the eye
+      // learned it — the ring holds the place — and the figure appears with
+      // the first assessment.
+      figure: item.querySelector(".feed-score") !== null,
+      ring: item.querySelector('.feed-dot[data-tone="none"]')?.getAttribute("title") ?? "",
     };
   }, row);
   expect(votes.stances).toBe(0);
   expect(votes.score).toBe("SPAN");
   expect(votes.breakdown).toMatch(/Babel's reviewers/u);
+  expect(votes.figure).toBe(false);
+  expect(votes.ring).toBe("not yet reviewed");
 
   // The ruling is confirmed before it is recorded — it is an appended,
   // attributed event that cannot be edited — and the row then says what was
@@ -526,12 +542,15 @@ test.skipIf(!chrome)("the operator rules rather than votes, and his retired stan
     await page.waitForSelector(`${row} .record-confirm`, { timeout: 15_000 });
     expect(decides).toEqual([]);
     await page.click(`${row} .record-confirm button[type='submit']`);
+    // The row leaves the list it was waiting in, and the receipt that stands
+    // in its place carries the one act that undoes a permanent ruling.
     await page.waitForFunction(
-      (selector: string) =>
-        (document.querySelector(`${selector} .feed-acted`)?.textContent ?? "").includes("accepted"),
+      (selector: string) => document.querySelector(selector) === null,
       { timeout: 15_000 },
       row,
     );
+    expect(await page.$eval(".feed-toast", (note) => (note as HTMLElement).innerText))
+      .toContain("accepted");
     expect(decides).toHaveLength(1);
   } finally {
     page.off("request", watch);
@@ -608,7 +627,8 @@ test.skipIf(!chrome)("hostile fixtures render inert everywhere they appear", asy
     await open(route);
     await page.waitForFunction(
       () => document.querySelector("main .page") !== null
-        && document.querySelector(".state-note .spinner") === null,
+        && document.querySelector(".state-note .spinner") === null
+        && document.querySelector(".feed-skeleton") === null,
       { timeout: 15_000 },
     );
     const state = await page.evaluate(() => ({
@@ -692,23 +712,24 @@ test.skipIf(!chrome)("keyboard navigation reaches every control", async () => {
   let onRow = false;
   for (let step = 0; step < 120 && !onRow; step += 1) {
     await page.keyboard.press("Tab");
-    const [tag, chip, sort, row] = await page.evaluate(() => {
+    const [tag, pick, row] = await page.evaluate(() => {
       const active = document.activeElement;
       return [
         active?.tagName ?? "",
-        active?.getAttribute("data-chip") ?? "",
-        active?.getAttribute("data-sort") ?? "",
+        active?.getAttribute("data-pick") ?? "",
         active?.classList.contains("feed-claim") ?? false,
-      ] as [string, string, string, boolean];
+      ] as [string, string, boolean];
     });
-    walk.push(chip ? `chip:${chip}` : sort ? `sort:${sort}` : tag);
+    walk.push(pick ? `pick:${pick}` : tag);
     onRow = row;
   }
   expect(onRow, `tabbing never reached a row: ${walk.join(" ")}`).toBe(true);
-  // The ordering and the kinds are reachable on the way, so the one list can
-  // be sorted and filtered without a pointer as well as read.
-  expect(walk.some((entry) => entry.startsWith("chip:kind-"))).toBe(true);
-  expect(walk.some((entry) => entry.startsWith("sort:"))).toBe(true);
+  // The sentence above the list is reachable on the way, so the one list can
+  // be sorted and filtered without a pointer as well as read. Its three words
+  // are the controls now, and each of them is a button the keyboard lands on.
+  expect(walk).toContain("pick:needs");
+  expect(walk).toContain("pick:sort");
+  expect(walk).toContain("pick:kinds");
   // Enter opens exactly what the focused row points at rather than "a record":
   // the feed carries the questions Babel asks beside the records it produced,
   // and those are answered on their own page.
@@ -809,7 +830,8 @@ test.skipIf(!chrome)("narrow and wide viewports lay out without overflow", async
       // its blocking spinner leaving the DOM, not by a guessed delay.
       await page.waitForFunction(
         () => document.querySelector("main .page") !== null
-          && document.querySelector(".state-note .spinner") === null,
+          && document.querySelector(".state-note .spinner") === null
+          && document.querySelector(".feed-skeleton") === null,
         { timeout: 15_000 },
       );
       const width = await page.evaluate(() => ({
@@ -854,14 +876,19 @@ test.skipIf(!chrome)("plan acceptance is explicit and flips proposed to applied"
     Array.from(document.querySelectorAll(".badge")).filter((badge) => badge.textContent === "applied").length);
   expect(applied).toBe(2);
 
-  // The accepted assertion is now a fact on the entity, visibly active —
-  // and the plan-proposed fixture fact remains visibly "proposed".
-  await open("ask/entities/ent_atlas");
+  // The accepted assertion is now a fact in the ledger, readable as its own
+  // belief with the reasoning the acceptance recorded. A subject's own page is
+  // the topic page now (§4.13 — a topic *is* an entity), so what the ledger
+  // believes is read where beliefs are: under Ask, as revisions.
+  await open("ask/facts/fct_policy-2");
   await visible("Applied by accepting the synthetic interpreter plan");
 });
 
 test.skipIf(!chrome)("an answer records verbatim and moves the question state", async () => {
   await open("ask/questions/qst_long-entity");
+  // The act comes before the words: the three outcomes are the question's rule
+  // bar, and the box unfolds under the one he pressed.
+  await page.click('[data-outcome="answered"]');
   await page.waitForSelector(".answer-form textarea", { timeout: 15_000 });
   await page.type(".answer-form textarea", "Yes, they are the same synthetic service.");
   await page.click(".answer-form button[type=submit]");

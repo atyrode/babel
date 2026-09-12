@@ -714,6 +714,15 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFeed(w, r)
+	// The front page's live signal, a route of its own because it answers
+	// at a different freshness from the feed above: a handful of counts
+	// and the reviews in flight, read per request, against a ranked corpus
+	// rebuilt at most once a minute.
+	case "/api/feed/pulse":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFeedPulse(w, r)
 	case "/api/topics":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return

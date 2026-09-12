@@ -122,8 +122,7 @@ interface Row {
 }
 
 // commandRows are the things to do that are not a record: the five
-// destinations the shell's nav names, the run this machine can start, and the
-// density the shell renders at.
+// destinations the shell's nav names, and the run this machine can start.
 function commandRows(query: string): Row[] {
   const rows: Row[] = DESTINATIONS.map((destination) => ({
     key: `go:${destination.path}`,
@@ -141,18 +140,6 @@ function commandRows(query: string): Row[] {
     // that does: a palette that posted a launch itself would be a second place
     // the ceilings have to be checked.
     href: "#/watch#start",
-  });
-  rows.push({
-    key: "do:density",
-    group: GROUP_DO,
-    title: "Toggle density",
-    // The shell owns the setting and puts it on the document element, so this
-    // reads the current value rather than keeping a second copy of it.
-    meta: `now ${document.documentElement.dataset.density === "compact" ? "compact" : "comfortable"}`,
-    // The shell listens for this. A palette that wrote the attribute itself
-    // would be a second author of one piece of state, and the two would
-    // disagree the first time either changed.
-    act: () => document.dispatchEvent(new CustomEvent("babel:density")),
   });
   if (query === "") return rows;
   // A command matches on what it says, both halves of it: "cost" reaches Watch

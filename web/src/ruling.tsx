@@ -150,7 +150,12 @@ export function reviewSubject(kind: RecordKind): ReviewSubjectType | null {
 // RuleActs is the bar of acts and whatever one of them opened.
 //
 // Nothing in it renders a heading or a container, so it drops into a feed row
-// as readily as into a depth of the record.
+// as readily as into a depth of the record. It has two appearances and they
+// are named here rather than restyled by whichever stylesheet mounts it: the
+// segmented bar on the record, where the reader has read the thing and the
+// acts are the page's business, and a row of text actions on a listing, where
+// they appear under the pointer on one row of fifteen and a bar of five
+// bordered buttons would be the row shouting.
 export function RuleActs({
   id,
   kind,
@@ -158,6 +163,7 @@ export function RuleActs({
   onActed,
   barRef,
   label,
+  plain,
 }: {
   id: string;
   kind: RecordKind;
@@ -174,6 +180,8 @@ export function RuleActs({
   // The four words under the bar that say what the group is. A row has no
   // space for them and passes none.
   label?: string;
+  // Render the acts as a row of text actions rather than as a segmented bar.
+  plain?: boolean;
 }) {
   const subject = reviewSubject(kind);
   const [open, setOpen] = useState<RuleAct | null>(null);
@@ -188,8 +196,12 @@ export function RuleActs({
 
   return (
     <>
-      <div className="record-acts" ref={barRef}>
-        <div className="rule-bar" role="group" aria-label={`Act on this ${kind}`}>
+      <div className={plain ? "record-acts record-acts-text" : "record-acts"} ref={barRef}>
+        <div
+          className={plain ? undefined : "rule-bar"}
+          role="group"
+          aria-label={`Act on this ${kind}`}
+        >
           {offered.map((act) => (
             <button
               type="button"
@@ -206,27 +218,35 @@ export function RuleActs({
         </div>
         {label && <span className="record-acts-label">{label}</span>}
       </div>
+      {/* The confirmation unfolds where the button was, so the claim being
+          ruled on is still on screen. The fold is a wrapper rather than a
+          property of the panel because a grid row is what can be animated from
+          nothing to its own height. */}
       {open === "ask" && (
-        <AskBox
-          id={id}
-          onCancel={() => setOpen(null)}
-          onAsked={(message) => {
-            setOpen(null);
-            onActed("ask", message);
-          }}
-        />
+        <div className="record-confirm-fold">
+          <AskBox
+            id={id}
+            onCancel={() => setOpen(null)}
+            onAsked={(message) => {
+              setOpen(null);
+              onActed("ask", message);
+            }}
+          />
+        </div>
       )}
       {open && open !== "ask" && subject && (
-        <ActConfirm
-          act={open}
-          subject={subject}
-          id={id}
-          onCancel={() => setOpen(null)}
-          onDecided={(message) => {
-            setOpen(null);
-            onActed(open, message);
-          }}
-        />
+        <div className="record-confirm-fold">
+          <ActConfirm
+            act={open}
+            subject={subject}
+            id={id}
+            onCancel={() => setOpen(null)}
+            onDecided={(message) => {
+              setOpen(null);
+              onActed(open, message);
+            }}
+          />
+        </div>
       )}
     </>
   );

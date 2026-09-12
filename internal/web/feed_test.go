@@ -14,6 +14,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/atyrode/babel/internal/frontier"
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/review"
+	"github.com/atyrode/babel/internal/run"
 )
 
 // feedText is woven through the fixtures the feed tests read, so an assertion
@@ -965,6 +967,304 @@ func TestTheCommentThreadNestsARefinementUnderWhatItRevises(t *testing.T) {
 			t.Error("a vote with no prose rendered as a comment")
 		}
 	}
+}
+
+// TestTheFeedMarksWhatBabelArguedOverAndWhatItIsReadingNow is the two facts
+// §8.7's front page carries that the four vote columns cannot.
+//
+// They are asserted together because they fail the same way: both are a bit
+// attached to one subject, and the plausible bug is that the bit lands on
+// every row, or on the wrong one, because the lookup keyed on something the
+// rows share. So the fixture puts each mark on a different record and the
+// assertion is that every other row carries neither.
+//
+// Contested is the one that earns its place beside the score. A four-four
+// split and a four-nil agreement both score the same number, and the
+// difference between "Babel argued about this" and "Babel agreed about this"
+// is exactly what a reader is choosing between.
+func TestTheFeedMarksWhatBabelArguedOverAndWhatItIsReadingNow(t *testing.T) {
+	started := time.Now().UTC()
+	h := newPhaseB(t, feedText, nil)
+	fake := h.server.opts.Evaluation.(*fakeEvaluation)
+	claimedAt := started.Add(-90 * time.Second)
+	fake.tallies = map[evaluation.Subject]evaluation.Tally{
+		{Kind: string(frontier.EntityProposal), ID: h.proposal.ID}: {
+			Support: 2, Oppose: 2, Contested: true,
+		},
+		{Kind: string(frontier.EntityFinding), ID: h.finding.ID}: {Support: 4},
+	}
+	fake.claims = map[evaluation.Subject]evaluation.OpenClaim{
+		{Kind: string(frontier.EntityFinding), ID: h.finding.ID}: {Count: 1, Since: claimedAt},
+	}
+
+	var feed feedList
+	decodeResponse(t, h.ok(t, "/api/feed?sort=new&limit=100"), &feed)
+	var argued, reading *feedPost
+	for i, post := range feed.Posts {
+		switch post.ID {
+		case h.proposal.ID:
+			argued = &feed.Posts[i]
+		case h.finding.ID:
+			reading = &feed.Posts[i]
+		default:
+			if post.Contested || post.Reviewing {
+				t.Errorf("row %s carries a mark nothing was recorded against it: %+v", post.ID, post)
+			}
+		}
+	}
+	if argued == nil || reading == nil {
+		t.Fatalf("the two marked records are not in the feed: %v", postIDs(feed.Posts))
+	}
+	if !argued.Contested || argued.Reviewing {
+		t.Errorf("the split proposal = %+v, want contested and not under review", *argued)
+	}
+	if reading.Contested || !reading.Reviewing {
+		t.Errorf("the claimed finding = %+v, want under review and not contested", *reading)
+	}
+	// The scores are why the marks exist: an even split reads as zero and a
+	// one-sided reception reads as four, and neither number says whether
+	// anybody disagreed or whether anybody is still reading.
+	if argued.Score != 0 || reading.Score != 4 {
+		t.Errorf("scores = %d and %d, want the split at zero and the agreement at four",
+			argued.Score, reading.Score)
+	}
+
+	// The claim ends — finished or lapsed, which internal/evaluation makes
+	// one absence — and the next build stops saying the record is being
+	// read. The disagreement is durable and stays.
+	fake.claims = nil
+	h.server.invalidateFeed()
+	var after feedList
+	decodeResponse(t, h.ok(t, "/api/feed?sort=new&limit=100"), &after)
+	for _, post := range after.Posts {
+		if post.Reviewing {
+			t.Errorf("row %s is still under review after the claim ended: %+v", post.ID, post)
+		}
+		if post.ID == h.proposal.ID && !post.Contested {
+			t.Errorf("the split proposal stopped being contested when a claim elsewhere ended: %+v", post)
+		}
+	}
+	// The build asked what was open at its own instant. A lapse judged
+	// against a clock this process never read would leave every abandoned
+	// review glowing for the life of the deployment.
+	if fake.lastClaimAt.Before(started) || fake.lastClaimAt.After(time.Now().UTC()) {
+		t.Errorf("the build asked for the claims open at %s, which is not an instant it lived through",
+			fake.lastClaimAt)
+	}
+}
+
+// TestThePulseCountsTodayAndNamesWhatIsUnderReviewNow is the front page's live
+// signal held to the two things it claims: the numbers are today's, and the
+// list is now's.
+//
+// "Today" is the assertion that needs a fixture rather than a reading, because
+// a count with no window is satisfied by every number the store holds. So the
+// deployment is given another day's work in every source the pulse reads — a
+// hundred and thirty-nine records, forty votes, twenty-five rulings — and the
+// answer has to contain none of it.
+func TestThePulseCountsTodayAndNamesWhatIsUnderReviewNow(t *testing.T) {
+	now := time.Now().UTC()
+	dayStart := now.Truncate(24 * time.Hour)
+	otherDay := dayStart.AddDate(0, 0, -1)
+	claimedAt := now.Add(-3 * time.Minute)
+	h := newPhaseB(t, feedText, func(o *Options) {
+		o.Frontier = anotherDaysWork{FrontierReader: o.Frontier, day: otherDay}
+		// Newest first, which is the order the store answers in and the
+		// order the scan stops on. Two runs today share one conversation
+		// and one of them read a second; yesterday's run read a third.
+		o.Receipts = &fakeReceipts{receipts: []run.Receipt{
+			readingReceipt("run_today_late", now, "session-a"),
+			readingReceipt("run_today_early", dayStart.Add(time.Second), "session-a", "session-b"),
+			readingReceipt("run_yesterday", otherDay.Add(time.Hour), "session-c"),
+		}}
+		fake := o.Evaluation.(*fakeEvaluation)
+		fake.assessmentDays = []evaluation.AssessmentDay{
+			{Day: otherDay.Format(time.DateOnly), Count: 40},
+			{Day: dayStart.Format(time.DateOnly), Count: 3},
+		}
+	})
+	fake := h.server.opts.Evaluation.(*fakeEvaluation)
+	fake.claims = map[evaluation.Subject]evaluation.OpenClaim{
+		{Kind: string(frontier.EntityFinding), ID: h.finding.ID}: {Count: 1, Since: claimedAt},
+	}
+	// A second topic plan, on another host's proposal from March. It is a
+	// plan nobody has ruled on, exactly like the fixture's own, and the only
+	// thing that keeps it out of today's count is the date of the proposal
+	// it explains.
+	plans := h.server.opts.TopicPlans.(*topicPlans)
+	plans.plans = append(plans.plans, TopicPlanView{
+		ProposalID: "frec-remote-proposal",
+		Operation:  "create",
+		Name:       "the march project " + feedText,
+		Kind:       "repository",
+		RunID:      "frun-remote",
+		Why:        "it was proposed in March " + feedText,
+	})
+	// One ruling today, so "today's rulings" is a number the fixture
+	// actually produced rather than a zero that would pass the
+	// only-today assertion by holding nothing at all.
+	if _, err := h.review.Decide(h.ctx, review.Decision{
+		Subject:     frontier.Ref{Type: frontier.EntityProposal, ID: h.proposal.ID},
+		Disposition: frontier.DispositionDefer,
+		By:          h.authority,
+		Note:        "not until the benchmark lands " + feedText,
+	}); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	var feed feedList
+	decodeResponse(t, h.ok(t, "/api/feed?sort=new&limit=100"), &feed)
+	if !contains(postIDs(feed.Posts), "frec-remote-proposal") {
+		t.Fatalf("the March proposal is not in the feed, so the older plan is excluded for the "+
+			"wrong reason: %v", postIDs(feed.Posts))
+	}
+
+	var pulse feedPulse
+	decodeResponse(t, h.ok(t, "/api/feed/pulse"), &pulse)
+	if want := timeText(dayStart); pulse.Since != want {
+		t.Errorf("since = %q, want the start of the day the counts are over (%s)", pulse.Since, want)
+	}
+	if pulse.Today.Votes != 3 {
+		t.Errorf("votes = %d, want today's three rather than yesterday's forty", pulse.Today.Votes)
+	}
+	if pulse.Today.Proposals != 1 {
+		t.Errorf("proposals = %d, want the one this deployment wrote today", pulse.Today.Proposals)
+	}
+	if pulse.Today.Records < 4 || pulse.Today.Records >= otherDayRecords {
+		t.Errorf("records = %d, want the handful written today and none of yesterday's %d",
+			pulse.Today.Records, otherDayRecords)
+	}
+	if pulse.Today.Ruled < 1 || pulse.Today.Ruled >= otherDayRulings {
+		t.Errorf("ruled = %d, want today's rulings and none of yesterday's %d",
+			pulse.Today.Ruled, otherDayRulings)
+	}
+	// Two conversations, not three reads of them: one run read both and the
+	// other re-read one, and yesterday's third is outside the window.
+	if pulse.Today.SessionsRead != 2 {
+		t.Errorf("sessions read = %d, want the two distinct conversations today's runs opened",
+			pulse.Today.SessionsRead)
+	}
+	if pulse.Today.TopicProposals != 1 {
+		t.Errorf("topic proposals = %d, want the one published today and not the March one",
+			pulse.Today.TopicProposals)
+	}
+
+	// What is under review right now, by the record's own line.
+	if len(pulse.Reviewing) != 1 {
+		t.Fatalf("reviewing = %+v, want the one record under claim", pulse.Reviewing)
+	}
+	row := pulse.Reviewing[0]
+	if row.ID != h.finding.ID || row.Kind != string(frontier.EntityFinding) {
+		t.Errorf("reviewing row = %+v, want the claimed finding", row)
+	}
+	if row.Title != boundedLine(h.finding.Payload.Title) {
+		t.Errorf("title = %q, want the record's own line", row.Title)
+	}
+	if row.Since != timeText(claimedAt) {
+		t.Errorf("since = %q, want when the claim was granted (%s)", row.Since, timeText(claimedAt))
+	}
+
+	// And the counts move with the day's work: one more proposal written
+	// and one more record ruled on, each moving exactly its own number.
+	if _, err := h.front.CreateProposal(h.ctx, frontier.ProposalInput{
+		RunID:      "run-1",
+		FindingIDs: []string{h.finding.ID},
+		Payload: frontier.ProposalPayload{
+			Title:          "measure the deploy step " + feedText,
+			Problem:        "the step is not measured " + feedText,
+			Outcome:        "measure it " + feedText,
+			Uncertainty:    "one corpus " + feedText,
+			Impact:         frontier.ImpactModerate,
+			Classification: frontier.ClassificationPrivate,
+		},
+	}); err != nil {
+		t.Fatalf("CreateProposal: %v", err)
+	}
+	if _, err := h.review.Decide(h.ctx, review.Decision{
+		Subject:     frontier.Ref{Type: frontier.EntityFinding, ID: h.finding.ID},
+		Disposition: frontier.DispositionAccept,
+		By:          h.authority,
+		Note:        "the pattern holds " + feedText,
+	}); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	h.server.invalidateFeed()
+	var moved feedPulse
+	decodeResponse(t, h.ok(t, "/api/feed/pulse"), &moved)
+	if moved.Today.Records != pulse.Today.Records+1 || moved.Today.Proposals != pulse.Today.Proposals+1 {
+		t.Errorf("after one proposal: records %d -> %d, proposals %d -> %d; want one more of each",
+			pulse.Today.Records, moved.Today.Records, pulse.Today.Proposals, moved.Today.Proposals)
+	}
+	if moved.Today.Ruled != pulse.Today.Ruled+1 {
+		t.Errorf("ruled = %d after one more ruling, want %d", moved.Today.Ruled, pulse.Today.Ruled+1)
+	}
+}
+
+// The work another day holds, which is what "today" has to exclude. The
+// numbers are large enough that a pulse containing any of them is obvious in
+// the failure message rather than arithmetically close to the right answer.
+const (
+	otherDayRecords = 99
+	otherDayRulings = 25
+)
+
+// anotherDaysWork is the frontier with a previous day's output added to the
+// two reads the pulse counts from.
+//
+// It wraps the real store rather than replacing it, because the assertion is
+// about the boundary between two days rather than about the counts in
+// isolation: today's rows have to be the fixture's own, written by the real
+// frontier, or "only today" is satisfied by a fixture that holds nothing else.
+type anotherDaysWork struct {
+	FrontierReader
+	day time.Time
+}
+
+func (a anotherDaysWork) RecordDays(ctx context.Context, since time.Time) ([]frontier.RecordDay, error) {
+	rows, err := a.FrontierReader.RecordDays(ctx, since)
+	if err != nil {
+		return nil, err
+	}
+	day := a.day.Format(time.DateOnly)
+	return append(rows,
+		frontier.RecordDay{Day: day, Kind: string(frontier.EntityHypothesis), Count: otherDayRecords - 40},
+		frontier.RecordDay{Day: day, Kind: string(frontier.EntityProposal), Count: 40},
+	), nil
+}
+
+func (a anotherDaysWork) ReviewStandings(ctx context.Context) (
+	map[frontier.Ref]frontier.ReviewStanding, error) {
+	standings, err := a.FrontierReader.ReviewStandings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range otherDayRulings {
+		standings[frontier.Ref{Type: frontier.EntityHypothesis, ID: fmt.Sprintf("hyp_older_%d", i)}] =
+			frontier.ReviewStanding{
+				Status:     frontier.ReviewAccepted,
+				Last:       frontier.DispositionAccept,
+				RecordedAt: a.day,
+			}
+	}
+	return standings, nil
+}
+
+// readingReceipt is one run that read the named sessions, which is what the
+// pulse counts a session read from.
+func readingReceipt(runID string, at time.Time, sessions ...string) run.Receipt {
+	receipt := run.Receipt{
+		Header: run.Header{
+			ID: run.ReceiptID("rcpt-" + runID), RunID: runID, Revision: 1, RecordedAt: at,
+			Authority: run.Authority{Kind: run.AuthorityOperator, Ref: "command:explore"},
+		},
+		Body: run.Body{Timing: run.Timing{StartedAt: at, FinishedAt: at}},
+	}
+	for _, session := range sessions {
+		receipt.Preparation.Selection = append(receipt.Preparation.Selection, run.Selected{
+			Host: hostUnderTest, Harness: "omp", SourceID: session,
+		})
+	}
+	return receipt
 }
 
 // withCitedWorkspace gives the harness a session catalog that holds the

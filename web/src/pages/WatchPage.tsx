@@ -168,6 +168,10 @@ interface LaunchField {
   type: "text" | "number" | "bool";
   placeholder?: string;
   hint: string;
+  // What the number counts, printed after the field. A dial labelled
+  // "Develop" over an empty box asks the operator to remember what unit it
+  // takes; the word is the answer, and it is the CLI's own noun.
+  unit?: string;
   // An identifier needs room a number does not.
   wide?: boolean;
   // The server refuses the launch without it, so the form refuses first.
@@ -200,30 +204,30 @@ const LAUNCH_FORMS: Array<{
     fields: [
       { key: "preparation", label: "Preparation", type: "text", placeholder: "prep_…", wide: true, required: true, hint: "The corpus scope to explore. Fixed by `babel prepare`; a recent one is on any run's receipt." },
       { key: "recipe", label: "Recipe", type: "text", placeholder: "recipe id", wide: true, hint: "One cookbook recipe to run. Blank runs the enabled default set." },
-      { key: "develop", label: "Develop", type: "number", placeholder: "0", hint: "Cap the candidates developed in this pass." },
-      { key: "retrievals", label: "Retrievals", type: "number", placeholder: "0", hint: "Cap the corpus searches served." },
-      { key: "fetches", label: "Fetches", type: "number", placeholder: "0", hint: "Cap the public documents fetched." },
+      { key: "develop", label: "Develop", type: "number", placeholder: "0", unit: "candidates", hint: "Cap the candidates developed in this pass." },
+      { key: "retrievals", label: "Retrievals", type: "number", placeholder: "0", unit: "searches", hint: "Cap the corpus searches served." },
+      { key: "fetches", label: "Fetches", type: "number", placeholder: "0", unit: "documents", hint: "Cap the public documents fetched." },
       { key: "challenge", label: "Challenge", type: "bool", hint: "Run the independent challenger pass." },
       { key: "synthesize", label: "Synthesize", type: "bool", hint: "Run the synthesis pass, which is what promotes findings. Needs the challenger." },
     ],
   },
   {
     kind: "evaluate",
-    blurb: "One review, drawn from the coverage inventory under the evaluation policy. Two reviews are two launches.",
+    blurb: "One review from the coverage inventory, under the evaluation policy.",
     fields: [
-      { key: "retrievals", label: "Retrievals", type: "number", placeholder: "0", hint: "Cap the corpus searches this review serves." },
-      { key: "fetches", label: "Fetches", type: "number", placeholder: "0", hint: "Cap the public documents this review fetches." },
+      { key: "retrievals", label: "Retrievals", type: "number", placeholder: "0", unit: "searches", hint: "Cap the corpus searches this review serves." },
+      { key: "fetches", label: "Fetches", type: "number", placeholder: "0", unit: "documents", hint: "Cap the public documents this review fetches." },
       { key: "correct", label: "Re-review", type: "text", placeholder: "record id", wide: true, hint: "Re-review one record and supersede the statement made about it. Blank draws from the inventory." },
     ],
   },
   {
     kind: "conductor",
-    blurb: "The loop: cycles until the clock runs out, with a share spent on review and consolidation.",
+    blurb: "The loop: cycles until the clock runs out, review and consolidation included.",
     fields: [
       { key: "until", label: "Until", type: "text", placeholder: "60m", hint: "A duration, a time today, or an RFC3339 timestamp." },
-      { key: "concurrent", label: "Concurrent", type: "number", placeholder: "1", hint: "Run this many cycles at a time." },
-      { key: "evaluate", label: "Evaluate 1 in", type: "number", placeholder: "0", hint: "Guarantee one evaluation cycle in every N." },
-      { key: "consolidate", label: "Consolidate 1 in", type: "number", placeholder: "0", hint: "Guarantee one consolidation cycle in every N. Needs the challenger and the synthesizer." },
+      { key: "concurrent", label: "Concurrent", type: "number", placeholder: "1", unit: "cycles", hint: "Run this many cycles at a time." },
+      { key: "evaluate", label: "Evaluate 1 in", type: "number", placeholder: "0", unit: "cycles", hint: "Guarantee one evaluation cycle in every N." },
+      { key: "consolidate", label: "Consolidate 1 in", type: "number", placeholder: "0", unit: "cycles", hint: "Guarantee one consolidation cycle in every N. Needs the challenger and the synthesizer." },
       { key: "challenge", label: "Challenge", type: "bool", hint: "Run the challenger over each cycle's exploration." },
       { key: "synthesize", label: "Synthesize", type: "bool", hint: "Run the synthesizer, which is what promotes findings. Needs the challenger." },
       { key: "once", label: "Once", type: "bool", hint: "Run exactly one cycle and stop." },
@@ -267,7 +271,7 @@ function StopButton({
   return (
     <button
       type="button"
-      className="danger-button live-stop"
+      className="live-stop"
       disabled={stopping}
       onClick={() => onStop(run)}
       title="Ask this run to stop at its next safe point"
@@ -916,23 +920,32 @@ function WatchPage() {
           <div className="launch-fields">
             {form.fields.map((field) => {
               const id = `launch-${form.kind}-${String(field.key)}`;
-              const value = entries[`${form.kind}.${String(field.key)}`] ?? "";
+              const key = `${form.kind}.${String(field.key)}`;
+              const value = entries[key] ?? "";
+              // A pass either runs or does not, which is a word you press and
+              // not a box you tick: the native checkbox was the one control on
+              // this page drawn by the operating system, so it carried its own
+              // metal-grey square into a graphite interface and sat a full
+              // pixel off the baseline of the dials beside it. It is the
+              // shell's one chip now, pressed or not.
               if (field.type === "bool") {
                 return (
-                  <label className="launch-field launch-toggle" key={id} htmlFor={id} title={field.hint}>
-                    <input
-                      id={id}
-                      type="checkbox"
-                      checked={value === "on"}
-                      onChange={(event) =>
-                        setEntries((current) => ({
-                          ...current,
-                          [`${form.kind}.${String(field.key)}`]: event.target.checked ? "on" : "",
-                        }))
-                      }
-                    />
-                    <span>{field.label}</span>
-                  </label>
+                  <button
+                    type="button"
+                    className="chip launch-chip"
+                    key={id}
+                    data-launch={String(field.key)}
+                    aria-pressed={value === "on"}
+                    title={field.hint}
+                    onClick={() =>
+                      setEntries((current) => ({
+                        ...current,
+                        [key]: current[key] === "on" ? "" : "on",
+                      }))
+                    }
+                  >
+                    {field.label}
+                  </button>
                 );
               }
               return (
@@ -943,22 +956,24 @@ function WatchPage() {
                   title={field.hint}
                 >
                   <span className="launch-label">{field.label}</span>
-                  <input
-                    id={id}
-                    type={field.type === "number" ? "number" : "text"}
-                    inputMode={field.type === "number" ? "numeric" : undefined}
-                    min={field.type === "number" ? 0 : undefined}
-                    value={value}
-                    placeholder={field.placeholder}
-                    required={field.required}
-                    autoComplete="off"
-                    onChange={(event) =>
-                      setEntries((current) => ({
-                        ...current,
-                        [`${form.kind}.${String(field.key)}`]: event.target.value,
-                      }))
-                    }
-                  />
+                  <span className="launch-input">
+                    <input
+                      id={id}
+                      type={field.type === "number" ? "number" : "text"}
+                      inputMode={field.type === "number" ? "numeric" : undefined}
+                      min={field.type === "number" ? 0 : undefined}
+                      value={value}
+                      placeholder={field.placeholder}
+                      required={field.required}
+                      autoComplete="off"
+                      onChange={(event) =>
+                        setEntries((current) => ({ ...current, [key]: event.target.value }))
+                      }
+                    />
+                    {/* What the number counts, in the field rather than in a
+                        sentence under the form. */}
+                    {field.unit && <span className="launch-unit">{field.unit}</span>}
+                  </span>
                 </label>
               );
             })}
@@ -969,10 +984,6 @@ function WatchPage() {
           </button>
         </form>
 
-        <p className="launch-footnote">
-          A run started here is the run the terminal starts: the same ceilings, the same profile, the same
-          grants, receipted the same way, attributed to you.
-        </p>
 
         {/* The one machine state worth saying before the operator asks for a
             run: a machine with no durable analysis storage records nothing a

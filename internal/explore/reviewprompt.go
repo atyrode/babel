@@ -32,7 +32,7 @@ import (
 func composeReviewPrompt(contract worker.OutputContract, recipe *cookbook.Recipe,
 	target reviewTarget, alternatives []reviewTarget, previous []evaluation.Record,
 	sources []worker.Source, params map[string]string, tools []worker.HostTool, blinded bool,
-	ledger *TopicLedger) (string, error) {
+	ledger *TopicLedger, backlog *BacklogMaterial) (string, error) {
 	var b strings.Builder
 	b.WriteString("# Babel evaluation\n\n")
 
@@ -155,6 +155,14 @@ func composeReviewPrompt(contract worker.OutputContract, recipe *cookbook.Recipe
 		b.WriteString("\n```\n\n")
 		b.WriteString(renderUnbound(ledger.Unbound))
 		b.WriteString(renderAsks(ledger.Asks))
+	}
+
+	if backlog != nil {
+		block, err := renderBacklog(backlog)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(block)
 	}
 
 	return b.String(), nil
@@ -284,6 +292,109 @@ func renderAsks(asks []TopicAsk) string {
 	return b.String()
 }
 
+// renderBacklog renders the deferred candidate a backlog pass was drawn for,
+// with the evidence and the neighbours an act would name.
+//
+// Four headings rather than one JSON block, and the separation is the
+// authority boundary again. The candidate and its observations are what this
+// pass may settle; the siblings are candidates it may name but not act on
+// beyond the act it proposes; and the entities are the ledger's, which this
+// pass may promote a fact onto and may never create. Reading them as one list
+// is how a pass comes to propose an act on something it was shown for context.
+func renderBacklog(material *BacklogMaterial) (string, error) {
+	var b strings.Builder
+	b.WriteString("## The deferred candidate\n\n")
+	b.WriteString("The hypothesis this pass was drawn for: a claim a run set down and nobody came back ")
+	b.WriteString("to. It is not under review — nothing you say here is a vote — and the question is what ")
+	b.WriteString("should become of it.\n\n")
+	encoded, err := json.MarshalIndent(material.Candidate, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("explore: render the deferred candidate: %w", err)
+	}
+	b.WriteString("```json\n")
+	b.Write(encoded)
+	b.WriteString("\n```\n\n")
+
+	b.WriteString("## Its observations\n\n")
+	if len(material.Observations) == 0 {
+		b.WriteString("Nothing was ever observed against this candidate. A claim with no evidence behind ")
+		b.WriteString("it is the honest case for a retirement — or for keeping it, if the question it asks ")
+		b.WriteString("is still worth asking.\n\n")
+	} else {
+		b.WriteString("Every claim developed against this candidate, oldest first, with the locators it ")
+		b.WriteString("cites. This is the evidence: an observation has no standing of its own and takes ")
+		b.WriteString("this candidate's fate, so what you propose decides what becomes of all of it.\n\n")
+		encoded, err := json.MarshalIndent(material.Observations, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("explore: render the candidate's observations: %w", err)
+		}
+		b.WriteString("```json\n")
+		b.Write(encoded)
+		b.WriteString("\n```\n\n")
+	}
+
+	if len(material.Siblings) > 0 {
+		b.WriteString("## Candidates beside it\n\n")
+		b.WriteString("Other candidates filed under the same topics that share this one's key terms. They ")
+		b.WriteString("are the only candidates a consolidation may fold or a supersession may name: an ")
+		b.WriteString("identifier that is not listed here is refused as a malformed result.\n\n")
+		for _, sibling := range material.Siblings {
+			fmt.Fprintf(&b, "- %s (%s", sibling.ID, sibling.Status)
+			if !sibling.DeferredAt.IsZero() {
+				fmt.Fprintf(&b, ", deferred %s", sibling.DeferredAt.UTC().Format("2006-01-02"))
+			}
+			if sibling.Observations > 0 {
+				fmt.Fprintf(&b, ", %d %s", sibling.Observations,
+					plural(sibling.Observations, "observation", "observations"))
+			}
+			fmt.Fprintf(&b, "): %s\n", strings.TrimSpace(sibling.Statement))
+			if len(sibling.Topics) > 0 {
+				fmt.Fprintf(&b, "  filed under: %s\n", strings.Join(sibling.Topics, ", "))
+			}
+			if sibling.Note != "" {
+				fmt.Fprintf(&b, "  set down because: %s\n", strings.TrimSpace(sibling.Note))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	if len(material.Entities) > 0 {
+		b.WriteString("## Entities a fact could be about\n\n")
+		b.WriteString("The Reality Ledger's entities, by the names and aliases they answer to. A promotion ")
+		b.WriteString("records a fact about one of these and never about a name you invent: only the ")
+		b.WriteString("operator creates an entity, so an unresolvable name is refused rather than created.\n\n")
+		for _, entity := range material.Entities {
+			fmt.Fprintf(&b, "- %s (%s)", entity.Name, entity.Kind)
+			if len(entity.Aliases) > 0 {
+				fmt.Fprintf(&b, ", also: %s", strings.Join(entity.Aliases, ", "))
+			}
+			if entity.Binding != "" {
+				fmt.Fprintf(&b, "; bound to %s", entity.Binding)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	if len(material.Predicates) > 0 {
+		b.WriteString("## What a fact may say\n\n")
+		b.WriteString("The predicates the ledger admits, with the values each takes. The vocabulary is ")
+		b.WriteString("closed: a fact outside it cannot be recorded, and a claim that does not fit one of ")
+		b.WriteString("these is not a promotion.\n\n")
+		for _, predicate := range material.Predicates {
+			fmt.Fprintf(&b, "- `%s` (%s)", predicate.Name, predicate.Kind)
+			if len(predicate.Values) > 0 {
+				fmt.Fprintf(&b, ": one of %s", strings.Join(predicate.Values, ", "))
+			}
+			if predicate.Why != "" {
+				fmt.Fprintf(&b, " — %s", predicate.Why)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	return b.String(), nil
+}
+
 // plural picks the noun form for a rendered count, so a prompt does not tell a
 // model about "1 sessions" and invite it to read the number as approximate.
 func plural(n int, one, many string) string {
@@ -308,6 +419,13 @@ func reviewInstructions(role string, auth reviewAuthority) string {
 		// contributes nothing: the blocks below are about judging a
 		// record, and this role is about naming what it is about.
 		b.WriteString(instructionsReviewFiling)
+		return b.String()
+	}
+	if auth.backlog {
+		// A backlog pass reads none of them either, and for the same
+		// reason: what should become of a deferred candidate is not a
+		// judgement about whether it is any good.
+		b.WriteString(instructionsReviewBacklog)
 		return b.String()
 	}
 	b.WriteString(instructionsReviewCommon)
@@ -363,6 +481,13 @@ func reviewRoleQuestion(role string) string {
 			"a thing in the world with a name and a binding — a repository, a project, a machine, a " +
 			"service, a concept — and never a folder, a directory or the workspace the work happened " +
 			"in. You are not judging this record, and no part of your answer is a vote.\n"
+	case evaluation.RoleBacklog:
+		return "The question is what should become of this deferred candidate: whether it and others " +
+			"say one thing a finding should say, whether a newer candidate already says it better, " +
+			"whether it should be retired with a reason, whether one of its observations is a durable " +
+			"fact about something the ledger names, or whether it is worth keeping exactly as it is. " +
+			"You are not judging the candidate and no part of your answer is a vote, and nothing you " +
+			"say changes anything: every act is a proposal the operator rules on.\n"
 	default:
 		return ""
 	}
@@ -482,4 +607,61 @@ A name you use in ` + "`filing`" + ` that no listed entity answers to becomes a
 create proposal rather than a filing, so guessing at a name costs the operator
 a proposal to decline. Set ` + "`skip`" + ` only when the record itself is
 unreadable from here.
+`
+
+const instructionsReviewBacklog = `
+Answer with exactly one of five fields. Every one of the first four is a
+proposal the operator rules on, published through Babel's ordinary chain and
+applied by his acceptance and by nothing else. Nothing you say here settles
+anything by itself, and nothing is ever deleted: a candidate that is
+consolidated, superseded or retired keeps its record, its observations and its
+history, and gains one appended status event saying a later record speaks for
+it.
+
+` + "`consolidate`" + ` says that this candidate and others beside it are
+evidence for one thing, and that a finding should say it. Name every candidate
+in ` + "`hypotheses`" + ` — the drawn candidate is folded whether or not you
+list it — and write the ` + "`finding`" + ` with its ` + "`title`" + `,
+the ` + "`pattern`" + ` the observations share, ` + "`why_it_matters`" + ` and
+the ` + "`scope`" + ` it holds in. Prefer consolidating into what an existing
+finding already says: if one of the candidates beside this one is already
+consolidated by a finding that covers this evidence too, the honest act is to
+say so in the pattern and fold this candidate into that claim rather than to
+mint a second finding a reader would have to reconcile.
+
+` + "`supersede`" + ` says a newer candidate states the same thing better. Set
+` + "`by`" + ` to that candidate and say in ` + "`reason`" + ` what it says
+better. Only a candidate listed beside this one qualifies, and only one that
+genuinely says the *same* thing: a candidate that says something adjacent is
+not a supersession, it is a second claim, and superseding with it would lose
+the question this one was asking.
+
+` + "`retire`" + ` says the candidate is not worth returning to, with a
+` + "`reason`" + ` a reader could check. "The service it describes was
+decommissioned and no observation was ever recorded against it" is checkable.
+"Low value", "stale", "not interesting" and "superseded by later work" with no
+candidate named are gradings, and a grading is not a reason. Nothing is stale
+by a clock: age alone is never a retirement.
+
+` + "`promote`" + ` says one of this candidate's observations is a durable fact
+about something the ledger already names. Set ` + "`observation`" + ` to that
+claim, ` + "`entity`" + ` to the entity by any name or alias it is listed
+under, ` + "`predicate`" + ` and ` + "`value`" + ` to the fact in the ledger's
+own closed vocabulary, and ` + "`reason`" + ` to why it is durable. Durable is
+the whole test: a fact is what stays true until something changes it — where a
+repository lives, what a service runs on, whether a project is dormant — and
+not what was observed once in one session. An entity no listed name answers to
+is refused rather than created, because only the operator creates one.
+
+` + "`keep`" + ` says the candidate is worth keeping exactly as it is, with the
+reason. It is a complete answer and frequently the right one: a backlog full of
+open questions that nobody has had time for is a healthy backlog, and an act
+invented to avoid answering ` + "`keep`" + ` costs the operator a ruling on
+something that should not have moved.
+
+Every identifier you use must be one you were shown. A candidate, an
+observation or an entity the material does not hold is refused as a malformed
+result and creates nothing. Set ` + "`skip`" + ` only when the material itself
+is unreadable from here — being unable to choose an act is ` + "`keep`" + `
+with the reason, not a skip.
 `

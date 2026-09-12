@@ -17,11 +17,9 @@ import {
   type APIFailure,
   type VersionInfo,
 } from "./api";
-import AskPage from "./pages/AskPage";
 import ComplaintPage from "./pages/ComplaintPage";
 import FeedPage, { TopicsIndex } from "./pages/FeedPage";
 import RealityEntitiesPage from "./pages/RealityEntitiesPage";
-import RealityEntityPage from "./pages/RealityEntityPage";
 import RealityFactPage from "./pages/RealityFactPage";
 import RealityFactsPage from "./pages/RealityFactsPage";
 import RealityQuestionPage from "./pages/RealityQuestionPage";
@@ -41,7 +39,6 @@ import {
   ShellControls,
   ShellFooter,
   TellBabel,
-  useDensity,
 } from "./shell";
 
 const LOCK_PROMPT =
@@ -90,6 +87,24 @@ function SettingsRedirect({ section }: { section: string }) {
   return <Navigate to={`/settings?${query.toString()}`} replace />;
 }
 
+// One page becomes another, and the reader can see which.
+//
+// The route changes and the whole of `main` is replaced in one frame, which is
+// the one moment an interface can look like a slide projector: the header and
+// the rail are identical either side of it, and the body is completely
+// different. So the body arrives — a hundred and sixty milliseconds of fade
+// and a six-pixel rise, in styles.css, on the section each route renders.
+//
+// It is CSS on the arriving page rather than `document.startViewTransition`,
+// and that is a measured retreat rather than a preference. The transition ran
+// — it cross-faded exactly as asked — but a document is inert for its whole
+// duration: every press that landed inside those 160ms was swallowed, which on
+// this surface is a reader pressing "File under…" the instant a record opens
+// and getting a fold that never reads the topics. A page committed inside the
+// transition callback also lost its `<details onToggle>` wiring. A cross-fade
+// is not worth a dropped act, so the outgoing page leaves at once and the
+// arriving one is what moves.
+
 function App() {
   const location = useLocation();
   const [version, setVersion] = useState<VersionInfo | null>(null);
@@ -102,7 +117,6 @@ function App() {
   // while he is reading something else, and navigating away from that to
   // write it down is how a complaint goes unwritten.
   const [tellOpen, setTellOpen] = useState(false);
-  const { density, setDensity } = useDensity();
 
   // Arriving 900px into a record because the previous page was scrolled there
   // is the kind of fault that makes an interface feel haunted. Every route
@@ -169,15 +183,12 @@ function App() {
     };
   }, []);
 
+  // The footer wears the whole build string, and nothing else does: a
+  // describe-style version is forty characters of commit and timestamp, and in
+  // the wordmark it pushed the navigation onto a second row on a 1440px screen
+  // — the chrome growing to fit an identifier nobody reads at a glance.
   const versionLabel = version
     ? `${version.version}${version.dirty ? " · dirty" : ""}`
-    : "version unavailable";
-  // The header wears the release and the footer wears the whole build string.
-  // A describe-style version is forty characters of commit and timestamp, and
-  // in the wordmark it pushed the navigation onto a second row on a 1440px
-  // screen — the chrome growing to fit an identifier nobody reads at a glance.
-  const shortVersion = version
-    ? `${version.version.split("-")[0]}${version.dirty ? " · dirty" : ""}`
     : "version unavailable";
 
   // The confirmation is a native dialog, matching how the archive section
@@ -227,18 +238,13 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        {/* The wordmark is the way home, and home is the feed. It carries no
-            nav entry of its own because Home is the first one. */}
-        <Link className="brand-block" to="/" title="The feed">
-          <span className="brand-mark" aria-hidden="true">B</span>
-          <div>
-            <div className="brand">Babel</div>
-            <div className="version" title={version ? `${versionLabel} · ${version.commit} · ${version.go} · ${version.platform}` : undefined}>
-              {shortVersion}
-            </div>
-          </div>
-        </Link>
-        <div className="topbar-actions">
+        <div className="topbar-where">
+          {/* The wordmark is the way home, and home is the feed. It carries no
+              nav entry of its own because Home is the first one, and no build
+              string: the footer is where a version is read. */}
+          <Link className="brand" to="/" title="The feed">
+            Babel
+          </Link>
           {/* Three destinations, and the fourth — search — is the palette
               rather than a word in the row (§8.7). Nothing here is the name
               of a record kind or of a place Babel keeps bytes: the kinds are
@@ -289,46 +295,30 @@ function App() {
               Settings
             </NavLink>
           </nav>
-          {/* The instruments and the stop, in one cluster. They are grouped
-              rather than loose in the row because the narrow header stacks
-              them under the navigation as a unit: brand and destinations on
-              one row, what is running and what can be pressed on the next.
-
-              The live mark renders only while something is running, so the
-              cluster is one control shorter on a quiet deployment; Tell Babel,
-              search, density and the key hints fold into a single … menu below
-              640px, which ShellControls decides. */}
-          <div className="shell-instruments">
-            <LiveIndicator />
-            <ShellControls
-              density={density}
-              setDensity={setDensity}
-              onKeyHints={() => setHintsOpen(true)}
-              onTell={() => setTellOpen(true)}
-            />
-            {/* The stop control lives in the shell rather than on a page
-                because it ends the whole session, not one page's work, and it
-                is never folded into a menu: it is the one thing the operator
-                may need in a hurry. */}
-            <button
-              type="button"
-              className="danger-button lock-button"
-              onClick={lockAndStop}
-              disabled={stopping}
-              title="Revoke this session and stop this server"
-            >
-              {stopping && <span className="spinner small" />}
-              {stopping ? "Stopping…" : "Lock & stop"}
-            </button>
-          </div>
+          {/* What is running, beside the destination it links to. It renders
+              nothing at all on a quiet deployment, so the header is one mark
+              shorter when there is nothing to report. */}
+          <LiveIndicator />
+        </div>
+        {/* Search, the capture box, and one menu holding the keys and the
+            stop. Below 640px the first two join the menu, which ShellControls
+            decides: the stylesheet decides where the row sits, this decides
+            what is in it, and the two share NARROW_HEADER. */}
+        <div className="topbar-actions">
+          <ShellControls
+            onKeyHints={() => setHintsOpen(true)}
+            onTell={() => setTellOpen(true)}
+            onLock={lockAndStop}
+            stopping={stopping}
+          />
         </div>
       </header>
 
       {failure && !stale && (
         <div className="error-banner" role="alert">
           <span>{failure.message}</span>
-          <button type="button" className="icon-button" onClick={dismissAPIError} aria-label="Dismiss error">
-            ×
+          <button type="button" onClick={dismissAPIError} aria-label="Dismiss error">
+            Dismiss
           </button>
         </div>
       )}
@@ -355,24 +345,24 @@ function App() {
               declined and what it cost. It hangs under Watch because a run is
               only ever reached from the control room that lists it. */}
           <Route path="/watch/runs/:id" element={<RunPage />} />
-          {/* Ask is one nav entry and seven destinations, nested under a
-              layout so the ledger's own row is present on every one of them
-              — including a belief or a question reached by clicking a
-              record, which is where a reader most needs to know what else
-              the ledger holds (§8.4). */}
-          <Route path="/ask" element={<AskPage />}>
-            {/* The questions Babel is asking are posts, so the inbox that
-                used to sit here is the feed filtered to them. The ledger's
-                own destinations below stay: they are reached from the
-                records and the questions that cite them. */}
-            <Route index element={<Navigate to="/?kind=question" replace />} />
-            <Route path="questions" element={<RealityQuestionsPage />} />
-            <Route path="questions/:id" element={<RealityQuestionPage />} />
-            <Route path="entities" element={<RealityEntitiesPage />} />
-            <Route path="entities/:id" element={<RealityEntityPage />} />
-            <Route path="facts" element={<RealityFactsPage />} />
-            <Route path="facts/:id" element={<RealityFactPage />} />
-          </Route>
+          {/* The ledger, reached from the records and questions that cite it.
+
+              Two of its destinations are no longer pages of their own, because
+              neither was a different kind of thing. A question is a post and
+              reads through the record page's depths (§8.7); a subject is an
+              entity and a topic *is* an entity (§4.13), so it reads through the
+              topic page — redirecting to /t/<name> when something is filed
+              under it, and rendering under its own identifier when nothing is.
+              The layout that used to wrap all of this carried three tabs above
+              every one of them; the questions are in the feed and the subjects
+              are reached from what cites them, so the row is gone with it. */}
+          <Route path="/ask" element={<Navigate to="/?kind=question" replace />} />
+          <Route path="/ask/questions" element={<RealityQuestionsPage />} />
+          <Route path="/ask/questions/:id" element={<RealityQuestionPage />} />
+          <Route path="/ask/entities" element={<RealityEntitiesPage />} />
+          <Route path="/ask/entities/:id" element={<TopicPage />} />
+          <Route path="/ask/facts" element={<RealityFactsPage />} />
+          <Route path="/ask/facts/:id" element={<RealityFactPage />} />
           <Route path="/r/:id" element={<RecordPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/sessions" element={<SessionsPage />} />

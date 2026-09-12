@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { errorMessage, formatTime } from "./format";
 import { Badge, Quoted, type Tone } from "./analysis";
+import "./ask.css";
 
 // Shared vocabulary for the Reality Ledger's pages (SPEC.md §4.8, §8.4).
 //
@@ -189,48 +190,75 @@ export function AnswerEntry({ answer }: { answer: AnswerView }) {
   );
 }
 
-// OUTCOMES are the three things an answer can be (§4.8), each with the one
-// sentence that says what recording it does next.
+// ANSWER_OUTCOMES are the three things an answer can be (§4.8), each with the
+// one sentence that says what recording it does next.
 //
 // They were a `<select>` whose first option read "answered — send to the
 // interpreter", which hid two of the three behind a click and made the
 // consequence of each — interpretation, closure, suppression — a phrase the
-// reader had to open a menu to find. They are three segments of one bar now,
-// because they are one decision with three answers, and the sentence for the
-// segment under the cursor or the keyboard is printed under it.
-const OUTCOMES: { value: string; label: string; note: string; verb: string; busy: string }[] = [
+// reader had to open a menu to find. They are three acts now, and the sentence
+// for the one he pressed is printed in the panel it unfolds.
+//
+// The table is exported because the feed row offers the same three (§8.4 asks
+// for the decision where the record is read, and a question is read on the
+// front page first). The row says `short` because a listing has no room for a
+// verb phrase; everything that states a consequence — the note, the verb on
+// the button, the past tense on the receipt — is written once here, because two
+// wordings of one permanent act is one wording that is wrong.
+export const ANSWER_OUTCOMES: {
+  value: string;
+  label: string;
+  short: string;
+  note: string;
+  verb: string;
+  busy: string;
+  done: string;
+}[] = [
   {
     value: "answered",
     label: "Answer it",
+    short: "Answer",
     note:
       "Kept verbatim and attributed to you, then read by the Answer Interpreter. What it proposes " +
       "changes nothing until you accept the plan here.",
     verb: "Record answer",
     busy: "Recording…",
+    done: "answered",
   },
   {
     value: "unknown",
     label: "I don't know",
+    short: "I don't know",
     note:
       "Closes the question with nothing to interpret, and stops Babel asking it again until " +
       "materially new evidence turns up.",
     verb: "Record that you don't know",
     busy: "Recording…",
+    done: "recorded that you don't know",
   },
   {
     value: "declined",
     label: "Stop asking",
+    short: "Stop asking",
     note:
       "Refuses the question. It stays on the record, visibly declined, and is suppressed until " +
       "materially new evidence justifies asking again.",
     verb: "Decline the question",
     busy: "Declining…",
+    done: "declined",
   },
 ];
 
-// AnswerForm is §4.8's answer, offered where the question is read. It takes an
-// identifier rather than a record so that the inbox card and the question's own
-// page offer the same control over the same act.
+// AnswerForm is §4.8's answer, offered where the question is read — and it is
+// the question's rule bar, because a question is a post and its acts stand
+// where a record's rulings do (§8.7).
+//
+// The three outcomes are the bar; the words go in the panel that unfolds under
+// the one he pressed, through the same fold a ruling's confirmation uses. It
+// used to be a bar with a textarea and a submit button permanently open under
+// it, which put a 200-pixel form on every open question whether or not the
+// reader had decided to answer one — and made "I don't know" look like a thing
+// you type an answer into.
 export function AnswerForm({
   questionId,
   onChanged,
@@ -239,17 +267,14 @@ export function AnswerForm({
   onChanged: (message: string) => void;
 }) {
   const [text, setText] = useState("");
-  const [outcome, setOutcome] = useState("answered");
-  // What the reader is pointing at, which is not what they have chosen. The
-  // note under the bar follows the pointer or the focus ring and falls back
-  // to the chosen segment, so reading what an outcome would do never costs
-  // the choice already made.
-  const [previewed, setPreviewed] = useState<string | null>(null);
+  // Which outcome's panel is open, and nothing is open until he presses one:
+  // an answer is an attributed, append-only act, so the act begins with a
+  // deliberate press rather than with a box that was already there.
+  const [outcome, setOutcome] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const chosen = OUTCOMES.find((entry) => entry.value === outcome) ?? OUTCOMES[0];
-  const shown = OUTCOMES.find((entry) => entry.value === previewed) ?? chosen;
+  const chosen = ANSWER_OUTCOMES.find((entry) => entry.value === outcome);
   const substantive = outcome === "answered";
 
   async function submit(event: FormEvent) {
@@ -261,6 +286,7 @@ export function AnswerForm({
       const result = await answerQuestion(questionId, text, outcome);
       onChanged(`Answer recorded. The question is now ${result.state}.`);
       setText("");
+      setOutcome("");
     } catch (reason) {
       setSubmitError(errorMessage(reason));
     } finally {
@@ -269,54 +295,61 @@ export function AnswerForm({
   }
 
   return (
-    <form className="answer-form" onSubmit={submit}>
-      <div className="answer-outcome">
-        <span className="answer-outcome-label" id={`outcome-${questionId}`}>
-          What your answer is
-        </span>
-        <div className="rule-bar" role="group" aria-labelledby={`outcome-${questionId}`}>
-          {OUTCOMES.map((entry) => (
+    <>
+      <div className="record-acts">
+        <div className="rule-bar" role="group" aria-label="Answer this question">
+          {ANSWER_OUTCOMES.map((entry) => (
             <button
               type="button"
               key={entry.value}
-              aria-pressed={entry.value === outcome}
-              onClick={() => setOutcome(entry.value)}
-              onMouseEnter={() => setPreviewed(entry.value)}
-              onMouseLeave={() => setPreviewed(null)}
-              onFocus={() => setPreviewed(entry.value)}
-              onBlur={() => setPreviewed(null)}
+              data-outcome={entry.value}
+              className={entry.value === outcome ? "active" : undefined}
+              aria-expanded={entry.value === outcome}
+              title={entry.note}
+              onClick={() => setOutcome(entry.value === outcome ? "" : entry.value)}
             >
               {entry.label}
             </button>
           ))}
         </div>
-        <p className="answer-outcome-note">{shown.note}</p>
+        <span className="record-acts-label">kept verbatim · attributed to you</span>
       </div>
-      <label>
-        {substantive ? "Your answer" : "Why, if you want to say (optional)"}
-        <textarea
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          rows={3}
-          placeholder={
-            substantive
-              ? "Answered text is retained verbatim and attributed to you."
-              : "Kept verbatim beside the outcome, for whoever reads this question next."
-          }
-        />
-      </label>
-      <div className="answer-actions">
-        <button
-          type="submit"
-          className="primary-button"
-          disabled={submitting || (substantive && !text.trim())}
-        >
-          {submitting && <span className="spinner small" />}
-          {submitting ? chosen.busy : chosen.verb}
-        </button>
-      </div>
-      {submitError && <p className="inline-error" role="alert">{submitError}</p>}
-    </form>
+      {chosen && (
+        <div className="record-confirm-fold">
+          <form className="answer-form record-confirm" onSubmit={submit}>
+            <p>{chosen.note}</p>
+            <label>
+              {substantive ? "Your answer" : "Why, if you want to say (optional)"}
+              <textarea
+                value={text}
+                onChange={(event) => setText(event.target.value)}
+                rows={3}
+                autoFocus
+                placeholder={
+                  substantive
+                    ? "Answered text is retained verbatim and attributed to you."
+                    : "Kept verbatim beside the outcome, for whoever reads this question next."
+                }
+              />
+            </label>
+            <div className="record-confirm-acts">
+              <button
+                type="submit"
+                className="primary-button"
+                disabled={submitting || (substantive && !text.trim())}
+              >
+                {submitting && <span className="spinner small" />}
+                {submitting ? chosen.busy : chosen.verb}
+              </button>
+              <button type="button" onClick={() => setOutcome("")} disabled={submitting}>
+                Cancel
+              </button>
+            </div>
+            {submitError && <p className="inline-error" role="alert">{submitError}</p>}
+          </form>
+        </div>
+      )}
+    </>
   );
 }
 

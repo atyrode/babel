@@ -38,10 +38,16 @@ type fakeEvaluation struct {
 	policy   evaluation.Policy
 	// assessmentDays is the reviews-per-day series the Watch surface reads.
 	assessmentDays []evaluation.AssessmentDay
-	// tallies and thread are §8.7's feed half: the deployment's reception
-	// grouped by subject, and one subject's conversation.
+	// tallies, thread and claims are §8.7's feed half: the deployment's
+	// reception grouped by subject, one subject's conversation, and the
+	// subjects a reviewer is holding right now.
 	tallies map[evaluation.Subject]evaluation.Tally
 	thread  map[evaluation.Subject][]evaluation.ThreadRecord
+	claims  map[evaluation.Subject]evaluation.OpenClaim
+	// lastClaimAt is the instant the feed asked what was open, so a test
+	// can prove the expiry is judged against the caller's clock rather
+	// than against one the store read for itself.
+	lastClaimAt time.Time
 
 	// err, when set, is returned by every method, so the sentinel
 	// classification can be exercised through a real request.
@@ -108,6 +114,15 @@ func (f *fakeEvaluation) Thread(_ context.Context, s evaluation.Subject) ([]eval
 		return nil, f.err
 	}
 	return f.thread[s], nil
+}
+
+func (f *fakeEvaluation) OpenClaims(_ context.Context, now time.Time) (
+	map[evaluation.Subject]evaluation.OpenClaim, error) {
+	f.lastClaimAt = now
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.claims, nil
 }
 
 func (f *fakeEvaluation) Policy(context.Context) (evaluation.Policy, error) {

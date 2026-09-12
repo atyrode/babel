@@ -846,6 +846,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 		evaluationShareCfg conductor.Evaluation
 		evaluationSvc      *evaluation.Service
 		evaluationTopics   explore.TopicService
+		evaluationBacklog  explore.BacklogService
 	)
 	if evaluateOneIn > 0 && settings.BabelTriagesTheQueue {
 		services, err := a.openEvaluation(ctx, state)
@@ -858,6 +859,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			conductorFocus(ledger), settings.evaluateCadence(), a.diagf)
 		evaluationSvc = services.service
 		evaluationTopics = topicService(topicFilingStores(state, services.reality, sf.rootList()))
+		evaluationBacklog = backlogWork(backlogWorkStores(state, services.reality))
 	}
 
 	loop, err := conductor.New(conductor.Config{
@@ -888,6 +890,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			presence:   announcer,
 			evaluation: evaluationSvc,
 			topics:     evaluationTopics,
+			backlog:    evaluationBacklog,
 		},
 		Ledger:   conductor.NewReceiptLedger(state.runs),
 		Journal:  journal,
@@ -1193,6 +1196,9 @@ type conductorRunner struct {
 	// service and nil for the same reason it is: an invocation that
 	// allocated no evaluation share files nothing.
 	topics explore.TopicService
+	// backlog is §4.13's backlog surface, opened and nil on the same terms:
+	// an invocation that allocated no evaluation share works no backlog.
+	backlog explore.BacklogService
 }
 
 // Run prepares the assignment's corpus slice and explores it.

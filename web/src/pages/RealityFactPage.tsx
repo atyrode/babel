@@ -100,10 +100,7 @@ function RealityFactPage() {
           </h1>
         </div>
         <div className="heading-meta">
-          <Link
-            className="secondary-button"
-            to={`/ask/entities/${encodeURIComponent(fact.subject_id)}`}
-          >
+          <Link to={`/ask/entities/${encodeURIComponent(fact.subject_id)}`}>
             Everything about this subject
           </Link>
         </div>
