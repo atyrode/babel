@@ -22,6 +22,32 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `bun run verify` gate it against a real engine spawned from the pinned
   manifold checkout, in CI through manifold's reusable `plugins.yml`. Decision
   91, `docs/manifold-plan.md` P0, #241.
+- **The plugin does what the Go product did, minus the machine.** The crossing:
+  `tools/import.ts` carries every record, edge, status event, disposition,
+  filing, assessment, claim, policy, entity, alias, fact, question, plan, run
+  and session out of `durable.db` and the catalog into the plugin's store with
+  ids kept and one `imports` row per table, idempotently (90,718 rows from the
+  operator's own store, twice, identical). The read model: the feed index, the
+  six sorts with their tie-breaks, needs=me, the five-depth peel, the thread,
+  topics from live filings, pulse, runs and the policy - nine reading doors.
+  The acts: rule, comment, answer, interest, file, unfile, tell and setPolicy,
+  every one an append; a ruling on a topic or backlog proposal applies its plan
+  or declines it with the note as the reason. The coordinator: lanes, the
+  weighted draw, claims with fences and takeover, the day's spend against the
+  ceilings, the measured lease floor. The machine half: `scan`, `prepare`,
+  `explore` and `evaluate` as one bundled `machine.js` run by a pinned `bun`
+  with a pinned `code` engine, the omp RPC client with a fake engine that
+  breaks the wire twenty-six ways; `archive` waits on a restic artifact format
+  (atyrode/manifold#515). The loop: the hub draws under the policy, requests
+  jobs on the machine that holds the cited sessions, ingests finished outputs
+  into the store and settles the claim at the receipt's cost, woken by
+  `onJobSettled` (atyrode/manifold#510) and by the `pulse`, `runs` and
+  `launch` doors; Watch's presets become `launch`, with a dry preview of the
+  profile, model, cost and ceilings before the button. Proof: 436 tests on a
+  real plugin database and the packed bundles installed by the kit's `verify`
+  on a real engine. Known gaps, each an issue: the beat cannot self-register
+  from a hardened half (atyrode/manifold#513, #514), recipe bodies do not
+  cross a job input yet (#252). #242-#246.
 - **One record, peeled.** A finding, proposal, hypothesis or observation is
   one page at `/r/<id>`, opened at its claim and expanding in place through
   five depths: the claim, the case, the evidence, the reception, the
