@@ -182,6 +182,105 @@ func TestTheLedgerIsReadableWithoutKnowingAnIdentifier(t *testing.T) {
 	})
 }
 
+// TestTheLedgerNamesWhatItPointsAt is the reading rule §8.6 asks for, stated
+// against the routes: a surface that prints "About: ent_4468a31b" has handed
+// the operator a lookup task instead of a sentence.
+//
+// The names travel beside the identifiers rather than replacing them, because
+// both are load-bearing: a link resolves an identifier, a merge is argued
+// about with one, and only the name is readable. So every question surface —
+// the ranked inbox, the listing of every question ever asked, and one
+// question's own page — has to carry both, and the three have to agree.
+//
+// The subject's candidates are the other half. A context snapshot is the only
+// thing in Babel that records which subject a frontier record is about, and
+// until it was readable backwards a subject's page could not say what
+// analysis had ever been scoped to it.
+func TestTheLedgerNamesWhatItPointsAt(t *testing.T) {
+	h := newPhaseB(t, "plain", nil)
+
+	t.Run("a question says what it is about", func(t *testing.T) {
+		var inbox inboxResult
+		decodeResponse(t, h.get("/api/reality/inbox"), &inbox)
+		var asked *QuestionSummary
+		for i, item := range inbox.Items {
+			if item.ID == h.question.ID {
+				asked = &inbox.Items[i]
+			}
+		}
+		if asked == nil {
+			t.Fatalf("the open question is not in the inbox: %+v", inbox.Items)
+		}
+		if len(asked.AboutNames) != len(asked.TargetEntityIDs) {
+			t.Fatalf("about_name = %v for targets %v, want one name per target",
+				asked.AboutNames, asked.TargetEntityIDs)
+		}
+		if asked.AboutNames[0] != h.entity.Payload.DisplayName {
+			t.Errorf("about_name = %q, want the subject's name %q",
+				asked.AboutNames[0], h.entity.Payload.DisplayName)
+		}
+
+		var listed questionsResult
+		decodeResponse(t, h.get("/api/reality/questions"), &listed)
+		var row *questionRow
+		for i, item := range listed.Items {
+			if item.ID == h.question.ID {
+				row = &listed.Items[i]
+			}
+		}
+		if row == nil {
+			t.Fatalf("the question is not in the listing: %+v", listed.Items)
+		}
+		if len(row.AboutNames) != 1 || row.AboutNames[0] != h.entity.Payload.DisplayName {
+			t.Errorf("the listing row's about_name = %v, want %q",
+				row.AboutNames, h.entity.Payload.DisplayName)
+		}
+
+		var detail questionDetail
+		decodeResponse(t, h.get("/api/reality/question?id="+h.question.ID), &detail)
+		if len(detail.Question.AboutNames) != 1 ||
+			detail.Question.AboutNames[0] != h.entity.Payload.DisplayName {
+			t.Errorf("the question page's about_name = %v, want %q",
+				detail.Question.AboutNames, h.entity.Payload.DisplayName)
+		}
+	})
+
+	t.Run("a subject says what was scoped to it", func(t *testing.T) {
+		rules, err := h.reality.Focus().Install(h.ctx)
+		if err != nil {
+			t.Fatalf("Install: %v", err)
+		}
+		if _, err := h.reality.CaptureSnapshot(h.ctx, reality.SnapshotInput{
+			HypothesisID:   h.hypothesis.ID,
+			EntityIDs:      []string{h.entity.ID},
+			RuleSetVersion: rules.Version,
+			Note:           "scoped while exploring",
+		}); err != nil {
+			t.Fatalf("CaptureSnapshot: %v", err)
+		}
+
+		var detail entityDetail
+		decodeResponse(t, h.get("/api/reality/entity?id="+h.entity.ID), &detail)
+		if len(detail.Candidates) != 1 {
+			t.Fatalf("candidates = %+v, want the hypothesis the snapshot scoped", detail.Candidates)
+		}
+		got := detail.Candidates[0]
+		if got.ID != h.hypothesis.ID || got.Statement == "" || got.Status == "" {
+			t.Errorf("candidate = %+v, want the candidate named by what it says", got)
+		}
+
+		// A subject nothing was ever scoped to says so with an empty
+		// list rather than by omitting the section: "nothing has been
+		// explored here" is a true answer and a page has to be able to
+		// render it.
+		var untouched entityDetail
+		decodeResponse(t, h.get("/api/reality/entity?id="+h.restricted.ID), &untouched)
+		if len(untouched.Candidates) != 0 {
+			t.Errorf("candidates for an unexplored subject = %+v", untouched.Candidates)
+		}
+	})
+}
+
 // TestAnEmptyLedgerReadsAsEmpty pins what a fresh machine sees. Every listing
 // answers with an empty collection rather than a null, because a page that
 // receives null for a list either crashes or renders nothing while claiming to

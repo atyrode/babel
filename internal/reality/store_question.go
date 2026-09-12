@@ -1734,3 +1734,34 @@ func (s *Store) Snapshots(ctx context.Context, hypothesisID string) ([]Snapshot,
 	}
 	return out, nil
 }
+
+// HypothesesForEntity lists the candidates whose context snapshot resolved to
+// one subject, newest first.
+//
+// It is Snapshots read backwards, and it is the only stored link there is
+// between the frontier and the ledger: a run resolves a hypothesis to the
+// entities it is about and records that resolution, and nothing else in
+// Babel writes down which subject a record concerns. Reading it the other
+// way is what lets a subject's page say which candidates were ever scoped to
+// it instead of leaving the operator to guess from the wording.
+//
+// The subject is resolved through the merge history first and matched on the
+// snapshot's canonical column, so a subject that absorbed another answers for
+// the candidates recorded under the absorbed name as well as its own. Only
+// the identifiers come back: hydrating a candidate is internal/frontier's
+// job, and this package holds no frontier records.
+func (s *Store) HypothesesForEntity(ctx context.Context, entityID string) ([]string, error) {
+	if entityID == "" {
+		return nil, fmt.Errorf("%w: hypothesis query names no entity", ErrInvalidValue)
+	}
+	canonical, err := resolve(ctx, s.db, entityID)
+	if err != nil {
+		return nil, err
+	}
+	return queryStrings(ctx, s.db, `SELECT s.hypothesis_id
+		FROM reality_snapshot s
+		JOIN reality_snapshot_entity e ON e.snapshot_id = s.id
+		WHERE e.canonical_id = ?
+		GROUP BY s.hypothesis_id
+		ORDER BY MAX(s.created_at) DESC, s.hypothesis_id`, canonical)
+}

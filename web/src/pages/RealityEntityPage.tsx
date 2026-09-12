@@ -1,17 +1,45 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getRealityEntity, type EntityDetail } from "../api";
+import {
+  getRealityEntity,
+  type EntityDetail,
+  type FactView,
+  type ResolutionView,
+} from "../api";
 import { errorMessage, formatTime } from "../format";
-import { Badge, TimelineEntry } from "../analysis";
-import { EntityName, FactEntry } from "../reality";
+import { Badge } from "../analysis";
+import { EntityName, FactValue, factTone } from "../reality";
+import { Identifiers } from "./RealityData";
 
-// One subject's current reality: what it is called, what it is attached to,
-// what Babel believes about it, and how its identity has been resolved.
+// One subject read as a history rather than as four tables.
 //
-// The page shows every fact status, superseded revisions and proposals
-// included, because reviewing what was proposed is a real need and a chain that
-// showed only its head would hide how reality was corrected. Each revision
-// links to its own page, which is where the chain is readable end to end.
+// What the ledger holds about a subject is append-only and dated: a fact is
+// asserted, another supersedes it, a dispute opens, two identities are judged
+// one thing. Those used to be three sections in three shapes — a fact list,
+// a resolution timeline, an alias table — which made the one question a
+// reader actually has ("what has happened to this thing, and when?")
+// answerable only by reading all three and merging them in your head. They
+// are one timeline here, newest first, because they happened in one order and
+// the order is the point.
+//
+// Every fact status is included, superseded revisions and proposals alike:
+// reviewing what was proposed is a real need, and a chain that showed only
+// its head would hide how reality was corrected. Each revision links to its
+// own page, which is where the chain is readable end to end.
+
+// Event is one dated thing that happened to a subject, whatever kind of
+// record it came from. The three sources are folded into one shape here
+// rather than rendered separately because the timeline is a single sequence;
+// `sort` is the whole reason the type exists.
+type Event = {
+  id: string;
+  at: string;
+  tone: "active" | "disputed" | "proposed" | "neutral";
+  badge: string;
+  fact?: FactView;
+  resolution?: ResolutionView;
+};
+
 function RealityEntityPage() {
   const { id: routeID } = useParams();
   const id = routeID ?? "";
@@ -34,12 +62,39 @@ function RealityEntityPage() {
     };
   }, [id]);
 
+  // The timeline is derived rather than served: the ledger's three record
+  // kinds each have their own route and their own order, and interleaving
+  // them is a reading decision rather than a storage one. Recorded time is
+  // the axis, because it is the one instant every kind of record has.
+  const events = useMemo<Event[]>(() => {
+    if (!detail) return [];
+    const facts: Event[] = detail.facts.map((fact) => ({
+      id: fact.id,
+      at: fact.recorded_at,
+      tone:
+        fact.status === "active" ? "active"
+        : fact.status === "disputed" ? "disputed"
+        : fact.status === "proposed" ? "proposed"
+        : "neutral",
+      badge: fact.status,
+      fact,
+    }));
+    const resolutions: Event[] = detail.resolutions.map((resolution) => ({
+      id: resolution.id,
+      at: resolution.recorded_at,
+      tone: resolution.kind === "undo" ? "proposed" : "neutral",
+      badge: resolution.kind,
+      resolution,
+    }));
+    return [...facts, ...resolutions].sort((a, b) => b.at.localeCompare(a.at));
+  }, [detail]);
+
   if (error && !detail) {
     return (
       <section className="page">
-        <Link className="back-link" to="/ask/entities">← Subjects</Link>
+        <Link className="back-link" to="/ask/entities">← Who and what</Link>
         <div className="surface state-note error-state">
-          <strong>Entity could not be loaded.</strong>
+          <strong>Subject could not be loaded.</strong>
           <span>{error}</span>
         </div>
       </section>
@@ -49,25 +104,64 @@ function RealityEntityPage() {
   if (!detail) {
     return (
       <section className="page">
-        <div className="surface state-note"><span className="spinner" /> Loading entity…</div>
+        <div className="surface state-note"><span className="spinner" /> Loading subject…</div>
       </section>
     );
   }
 
   const { entity, aliases, relationships, facts, resolutions } = detail;
+  const candidates = detail.candidates ?? [];
   const merged = entity.canonical_id !== entity.id;
+  const active = facts.filter((fact) => fact.status === "active").length;
 
   return (
     <section className="page detail-page entity-page">
-      <Link className="back-link" to="/ask/entities">← Subjects</Link>
-      <div className="page-heading detail-heading">
+      <Link className="back-link" to="/ask/entities">← Who and what</Link>
+      <div className="page-heading detail-heading subject-head">
         <div>
           <div className="heading-badges">
             <Badge label={entity.kind} tone="cyan" />
             {merged && <Badge label="merged away" tone="amber" />}
           </div>
+          {/* The name, and no identifier under it. The identifier is at the
+              foot of the page with the rest of the machinery. */}
           <h1 className="untrusted-inline entity-name">{entity.display_name}</h1>
-          <p className="subtitle mono">{entity.id}</p>
+          <p className="subtitle">
+            {active === 0
+              ? "Babel believes nothing about this subject yet."
+              : `${active} standing ${active === 1 ? "belief" : "beliefs"}, ${facts.length} ${
+                  facts.length === 1 ? "revision" : "revisions"
+                } in all.`}
+          </p>
+
+          {/* What it is called and what it is attached to, as chips: two
+              short vocabularies a reader scans rather than two tables a
+              reader parses. */}
+          {(aliases.length > 0 || relationships.length > 0) && (
+            <ul className="ask-chips">
+              {aliases.map((alias) => (
+                <li
+                  className={alias.state === "asserted" ? "ask-chip" : "ask-chip retired"}
+                  key={alias.id}
+                >
+                  <span className="ask-chip-kind">{alias.kind}</span>
+                  <span className="untrusted-inline">{alias.value}</span>
+                </li>
+              ))}
+              {relationships.map((relationship) => {
+                const other = relationship.from.id === entity.id ? relationship.to : relationship.from;
+                const outward = relationship.from.id === entity.id;
+                return (
+                  <li className="ask-chip" key={relationship.id}>
+                    <span className="ask-chip-kind">
+                      {outward ? relationship.kind : `${relationship.kind} of`}
+                    </span>
+                    <EntityName entity={other} current={entity.id} />
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
         {/* The way to "stop spending on this" from the record it is about.
             The subject travels as the entity id rather than as its display
@@ -84,11 +178,11 @@ function RealityEntityPage() {
 
       {merged && (
         <div className="surface state-note">
-          <strong>This entity was folded into another.</strong>
+          <strong>This subject was folded into another.</strong>
           <span>
-            Its canonical identity is now{" "}
-            <Link className="mono" to={`/ask/entities/${encodeURIComponent(entity.canonical_id)}`}>
-              {entity.canonical_id}
+            It now speaks as{" "}
+            <Link to={`/ask/entities/${encodeURIComponent(entity.canonical_id)}`}>
+              its canonical identity
             </Link>
             . Merges are append-only history, so this record and its facts remain readable.
           </span>
@@ -105,137 +199,146 @@ function RealityEntityPage() {
       <article className="surface">
         <div className="section-heading">
           <div>
-            <p className="eyebrow">Identity</p>
-            <h2>Aliases</h2>
+            <p className="eyebrow">Append-only, newest first</p>
+            <h2>What has happened to it</h2>
           </div>
-          <span className="count-label">{aliases.length}</span>
-        </div>
-        {aliases.length === 0 ? (
-          <p className="muted">No aliases recorded.</p>
-        ) : (
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr><th>Kind</th><th>Value</th><th>State</th><th>Recorded</th></tr>
-              </thead>
-              <tbody>
-                {aliases.map((alias) => {
-                  const created = formatTime(alias.created_at);
-                  return (
-                    <tr key={alias.id}>
-                      <td>{alias.kind}</td>
-                      <td className="mono untrusted-inline alias-value">{alias.value}</td>
-                      <td><Badge label={alias.state} tone={alias.state === "asserted" ? "green" : "neutral"} /></td>
-                      <td>{created ? <span title={created.absolute}>{created.relative}</span> : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </article>
-
-      <article className="surface">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Structure</p>
-            <h2>Relationships</h2>
-          </div>
-          <span className="count-label">{relationships.length}</span>
-        </div>
-        {relationships.length === 0 ? (
-          <p className="muted">No relationships recorded.</p>
-        ) : (
-          <ul className="link-list">
-            {relationships.map((relationship) => (
-              <li key={relationship.id}>
-                <Badge label={relationship.kind} tone="neutral" />
-                <span className="link-target">
-                  <EntityName entity={relationship.from} current={entity.id} />
-                  {" → "}
-                  <EntityName entity={relationship.to} current={entity.id} />
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </article>
-
-      <article className="surface">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Temporal record</p>
-            <h2>Facts</h2>
-          </div>
-          <span className="count-label">{facts.length}</span>
+          <span className="count-label">{events.length}</span>
         </div>
         <p className="muted">
-          Immutable revisions with explicit authority and freshness. A proposed fact asserts
-          nothing yet; a superseded or disputed fact stays readable rather than disappearing.
-          Each one opens its own page, where what it replaced and what replaced it are shown.
+          Every revision Babel recorded about this subject and every judgement about its
+          identity, in the order they were written. A correction is a new entry rather than an
+          edit, so what was replaced is still here and says so.
         </p>
-        {facts.length === 0 ? (
+        {events.length === 0 ? (
           <p className="muted">
-            Babel believes nothing about this subject yet. Facts arrive when a question about it
-            is answered and the interpretation accepted.
+            Nothing has been recorded yet. An entry appears when a question about this subject
+            is answered and the interpretation accepted, or when its identity is judged.
           </p>
         ) : (
-          <div className="fact-list">
-            {facts.map((fact) => <FactEntry key={fact.id} fact={fact} />)}
-          </div>
-        )}
-      </article>
-
-      {/* §8.2 names alias merge/split history as part of what Reality shows,
-          and §4.8 keeps a mistaken resolution reversible — which is only worth
-          something if the operator can see that a merge happened, who decided
-          it, and what reason they gave. */}
-      <article className="surface">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Append-only</p>
-            <h2>Identity history</h2>
-          </div>
-          <span className="count-label">{resolutions.length}</span>
-        </div>
-        {resolutions.length === 0 ? (
-          <p className="muted">
-            This identity has never been merged or split. It has meant one thing since it was
-            recognized.
-          </p>
-        ) : (
-          <ol className="timeline">
-            {resolutions.map((resolution) => (
-              <TimelineEntry
-                key={resolution.id}
-                badge={resolution.kind}
-                tone={resolution.kind === "undo" ? "amber" : "violet"}
-                at={resolution.recorded_at}
-              >
-                <span className="secondary">decided by {resolution.actor}</span>
-                {resolution.reason && <span className="untrusted-inline">{resolution.reason}</span>}
-                <span className="secondary">
-                  {resolution.sources.map((source, index) => (
-                    <span key={source.id}>
-                      {index > 0 && ", "}
-                      <EntityName entity={source} current={entity.id} />
-                    </span>
-                  ))}
-                  {resolution.results.length > 0 && " → "}
-                  {resolution.results.map((result, index) => (
-                    <span key={result.id}>
-                      {index > 0 && ", "}
-                      <EntityName entity={result} current={entity.id} />
-                    </span>
-                  ))}
-                </span>
-              </TimelineEntry>
+          <ol className="subject-timeline">
+            {events.map((event) => (
+              <SubjectEvent key={event.id} event={event} current={entity.id} />
             ))}
           </ol>
         )}
       </article>
+
+      {/* The one stored link between this subject and the analysis that
+          concerns it: a run resolves a candidate to the entities it is about
+          and records that resolution. Findings and proposals reach a subject
+          only through the candidates they develop, which is what each
+          record's own page continues from. */}
+      <article className="surface">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Scoped to it</p>
+            <h2>What Babel explored here</h2>
+          </div>
+          <span className="count-label">{candidates.length}</span>
+        </div>
+        {candidates.length === 0 ? (
+          <p className="muted">
+            No exploration has been scoped to this subject. A candidate is tied to a subject
+            when a run resolves what it is about, so this fills in as analysis runs — and the
+            whole frontier is under <Link to="/read">Read</Link>.
+          </p>
+        ) : (
+          <ul className="subject-candidates">
+            {candidates.map((candidate) => {
+              const created = formatTime(candidate.created_at);
+              return (
+                <li className="subject-candidate" key={candidate.id}>
+                  <Link className="untrusted-inline" to={`/r/${encodeURIComponent(candidate.id)}`}>
+                    {candidate.statement}
+                  </Link>
+                  <p className="subject-candidate-meta">
+                    <Badge label={candidate.status} tone="neutral" />
+                    {created && <span title={created.absolute}>{created.relative}</span>}
+                  </p>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </article>
+
+      <Identifiers
+        rows={[
+          ["Subject", entity.id],
+          ...(merged ? ([["Canonical", entity.canonical_id]] as [string, string][]) : []),
+          ...resolutions.map((resolution): [string, string] => [
+            `${resolution.kind} by ${resolution.actor}`,
+            resolution.id,
+          ]),
+        ]}
+      />
     </section>
+  );
+}
+
+// SubjectEvent is one dot on the timeline: what happened, when, and the
+// reasoning the record carries. A fact reads as its claim; a resolution reads
+// as the judgement and the reason given for it.
+function SubjectEvent({ event, current }: { event: Event; current: string }) {
+  const at = formatTime(event.at);
+  const { fact, resolution } = event;
+  return (
+    <li className={`subject-event ${event.tone}`}>
+      <div className="subject-event-head">
+        <Badge label={event.badge} tone={fact ? factTone(fact.status) : "violet"} />
+        {/* The date in the ledger's own form rather than the locale's: a
+            column of YYYY-MM-DD is scannable and sorts by eye, which is the
+            whole reason it is mono and tabular. The locale rendering is the
+            tooltip, and the relative one is beside it. */}
+        {at && (
+          <time className="subject-event-when" dateTime={event.at} title={at.absolute}>
+            {event.at.slice(0, 10)}
+          </time>
+        )}
+        {at && <span className="subject-event-when">{at.relative}</span>}
+      </div>
+
+      {fact && (
+        <>
+          <p className="subject-event-claim">
+            <Link to={`/ask/facts/${encodeURIComponent(fact.id)}`}>
+              <span className="mono">{fact.predicate}</span> <FactValue fact={fact} />
+            </Link>
+          </p>
+          <p className="subject-event-note">
+            <span className="secondary">
+              {fact.authority.kind}
+              {fact.confidence && ` · confidence ${fact.confidence}`}
+            </span>
+            {fact.note && <> — <span className="untrusted-inline">{fact.note}</span></>}
+          </p>
+        </>
+      )}
+
+      {resolution && (
+        <>
+          <p className="subject-event-claim">
+            {resolution.sources.map((source, index) => (
+              <span key={source.id}>
+                {index > 0 && ", "}
+                <EntityName entity={source} current={current} />
+              </span>
+            ))}
+            {resolution.results.length > 0 && " → "}
+            {resolution.results.map((result, index) => (
+              <span key={result.id}>
+                {index > 0 && ", "}
+                <EntityName entity={result} current={current} />
+              </span>
+            ))}
+          </p>
+          <p className="subject-event-note">
+            <span className="secondary">decided by {resolution.actor}</span>
+            {resolution.reason && <> — <span className="untrusted-inline">{resolution.reason}</span></>}
+          </p>
+        </>
+      )}
+    </li>
   );
 }
 

@@ -570,6 +570,14 @@ CREATE TRIGGER reality_snapshot_fact_immutable BEFORE UPDATE ON reality_snapshot
 BEGIN SELECT RAISE(ABORT, 'a context snapshot is immutable'); END;
 CREATE TRIGGER reality_snapshot_fact_kept BEFORE DELETE ON reality_snapshot_fact
 BEGIN SELECT RAISE(ABORT, 'context snapshots are never deleted'); END;
+`, `
+-- The snapshot's own index answers "what was decided about this candidate".
+-- The reading surface asks the opposite question — which candidates were
+-- ever scoped to this subject — and the answer was a scan of every snapshot
+-- ever taken. Canonical rather than supplied identity, because a subject
+-- that absorbed another by merge has to answer for what was recorded under
+-- the old name too.
+CREATE INDEX reality_snapshot_entity_canonical ON reality_snapshot_entity(canonical_id);
 `}
 
 // HypothesisSink retains a candidate hypothesis a plan produced.

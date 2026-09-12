@@ -39,7 +39,7 @@ function RealityEntitiesPage() {
   // which is exactly what a creation hands back.
   function named(result: SubjectCreateResult) {
     setNaming(false);
-    navigate(`/reality/focus?subject=${encodeURIComponent(result.subject.entity_id)}`);
+    navigate(`/settings?section=ceilings&subject=${encodeURIComponent(result.subject.entity_id)}`);
   }
 
   const load = useCallback(() => {
@@ -62,7 +62,7 @@ function RealityEntitiesPage() {
       <div className="page-heading">
         <div>
           <p className="eyebrow">Reality Ledger</p>
-          <h1>Subjects</h1>
+          <h1>Who and what</h1>
           <p className="subtitle">
             The things Babel knows about, and how much it holds on each. A subject keeps its
             identity through renames and merges, so nothing here is ever lost — only folded.
@@ -172,7 +172,7 @@ function RealityEntitiesPage() {
                 {items.map((item) => {
                   const latest = formatTime(item.latest_fact);
                   const merged = item.canonical_id !== item.id;
-                  const open = () => navigate(`/reality/entities/${encodeURIComponent(item.id)}`);
+                  const open = () => navigate(`/ask/entities/${encodeURIComponent(item.id)}`);
                   return (
                     <tr
                       key={item.id}
@@ -183,9 +183,13 @@ function RealityEntitiesPage() {
                         if (event.key === "Enter" || event.key === " ") open();
                       }}
                     >
+                      {/* The name, and nothing under it. The identifier
+                          used to be a second line on every row: a column of
+                          hex a reader had to look past to find the thing
+                          they came for. It lives on the subject's own page,
+                          under the machinery disclosure. */}
                       <td className="statement-cell">
                         <strong className="untrusted-inline">{item.display_name}</strong>
-                        <span className="secondary mono">{item.id}</span>
                       </td>
                       <td>
                         <Badge label={item.kind} tone="cyan" />

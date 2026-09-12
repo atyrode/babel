@@ -101,13 +101,18 @@ export function EntityName({ entity, current }: { entity: EntityRef; current?: s
 }
 
 // FactValue renders what a fact asserts. An entity-valued fact points at the
-// entity rather than printing its identifier, because "contains the repository
-// Babel" is the claim and "contains ent_7f3a" is a lookup task.
+// entity rather than printing its identifier, because "contains the
+// repository Babel" is the claim and "contains ent_7f3a" is a lookup task.
+// The name travels with the value from the server; an object the ledger can
+// no longer name still renders, as its identifier, because a claim must stay
+// readable when something it points at has gone.
 export function FactValue({ fact }: { fact: FactView }) {
   if (fact.value.object_id) {
     return (
       <span className="fact-value">
-        <EntityName entity={{ id: fact.value.object_id }} />
+        <EntityName
+          entity={{ id: fact.value.object_id, display_name: fact.value.object_name }}
+        />
       </span>
     );
   }

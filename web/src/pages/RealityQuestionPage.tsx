@@ -5,13 +5,13 @@ import { errorMessage, formatTime } from "../format";
 import { Badge, Quoted, TimelineEntry } from "../analysis";
 import {
   AnswerForm,
-  EntityName,
   FactEntry,
   PlanCard,
   answerableStates,
   classTone,
   questionStateTone,
 } from "../reality";
+import { Identifiers, Subjects } from "./RealityData";
 
 // One Reality Question read whole, with the two decisions it admits offered
 // beside it (SPEC.md §4.8, §8.4).
@@ -93,7 +93,10 @@ function RealityQuestionPage() {
             )}
           </div>
           <Quoted label="Question — generated from analysis, untrusted" text={question.prompt} />
-          <p className="subtitle mono">{question.id}</p>
+          {/* The identifier used to be the subtitle under the prompt. It is
+              under a disclosure at the foot of the page now, with the rest
+              of the machinery: it is what a link resolves and what a
+              command takes, and it has never been what the question says. */}
         </div>
         <div className="heading-meta">
           {question.pending && <span className="count-label">waiting on you</span>}
@@ -104,17 +107,10 @@ function RealityQuestionPage() {
       <article className="surface">
         <p className="eyebrow">Why it was asked</p>
         <p className="untrusted-inline">{question.why_asked}</p>
-        {detail.targets.length > 0 && (
-          <p className="question-targets">
-            About:{" "}
-            {detail.targets.map((target, index) => (
-              <span key={target.id}>
-                {index > 0 && ", "}
-                <EntityName entity={target} />
-              </span>
-            ))}
-          </p>
-        )}
+        <Subjects
+          ids={question.target_entity_ids}
+          names={question.about_name}
+        />
         {detail.predicates.length > 0 && (
           <p className="secondary">
             Predicates: {detail.predicates.map((predicate) => (
@@ -252,6 +248,16 @@ function RealityQuestionPage() {
           ))}
         </ol>
       </article>
+
+      <Identifiers
+        rows={[
+          ["Question", question.id],
+          ...detail.targets.map((target): [string, string] => [
+            target.display_name || "Subject",
+            target.id,
+          ]),
+        ]}
+      />
     </section>
   );
 }

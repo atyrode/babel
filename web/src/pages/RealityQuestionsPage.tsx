@@ -44,10 +44,10 @@ function RealityQuestionsPage() {
       <div className="page-heading">
         <div>
           <p className="eyebrow">Reality Ledger</p>
-          <h1>Asked</h1>
+          <h1>What you said</h1>
           <p className="subtitle">
             Every question Babel has asked about your world, newest first — answered, refused
-            and deferred alike. What is still waiting on you is on Questions.
+            and deferred alike. What is still waiting on you is under What it needs.
           </p>
         </div>
         <div className="heading-meta">
@@ -115,6 +115,7 @@ function RealityQuestionsPage() {
               <thead>
                 <tr>
                   <th>Question</th>
+                  <th>About</th>
                   <th>State</th>
                   <th>Class</th>
                   <th className="numeric">Answers</th>
@@ -125,7 +126,7 @@ function RealityQuestionsPage() {
               <tbody>
                 {items.map((item) => {
                   const created = formatTime(item.created_at);
-                  const open = () => navigate(`/reality/questions/${encodeURIComponent(item.id)}`);
+                  const open = () => navigate(`/ask/questions/${encodeURIComponent(item.id)}`);
                   return (
                     <tr
                       key={item.id}
@@ -136,9 +137,25 @@ function RealityQuestionsPage() {
                         if (event.key === "Enter" || event.key === " ") open();
                       }}
                     >
+                      {/* The prompt, and nothing under it. The identifier
+                          used to sit here as a second line on every row: a
+                          column of hex the eye had to skip past to read the
+                          question. It is on the question's own page, under
+                          the machinery disclosure. */}
                       <td className="statement-cell">
                         <strong className="untrusted-inline">{item.prompt}</strong>
-                        <span className="secondary mono">{item.id}</span>
+                      </td>
+                      <td className="statement-cell">
+                        {item.target_entity_ids.length === 0 ? (
+                          <span className="muted">—</span>
+                        ) : (
+                          item.target_entity_ids.map((entityID, index) => (
+                            <span key={entityID} className="untrusted-inline">
+                              {index > 0 && ", "}
+                              {item.about_name?.[index] || entityID}
+                            </span>
+                          ))
+                        )}
                       </td>
                       <td>
                         <Badge label={item.state} tone={questionStateTone(item.state)} />

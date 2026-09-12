@@ -391,6 +391,7 @@ type RealityService interface {
 	Fact(context.Context, string) (reality.Fact, error)
 	FactStatusHistory(context.Context, string) ([]reality.FactStatusEvent, error)
 	DisputesFor(context.Context, string) ([]reality.Dispute, error)
+	HypothesesForEntity(context.Context, string) ([]string, error)
 	RecordAnswer(context.Context, reality.AnswerInput) (reality.Answer, error)
 	AcceptPlan(context.Context, reality.AcceptanceInput) (reality.Acceptance, reality.Application, error)
 }

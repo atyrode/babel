@@ -29,11 +29,14 @@ import RealityPage from "./pages/RealityPage";
 import RealityQuestionPage from "./pages/RealityQuestionPage";
 import RealityQuestionsPage from "./pages/RealityQuestionsPage";
 import RecordPage from "./pages/RecordPage";
+import RunPage from "./pages/RunPage";
 import SessionPage from "./pages/SessionPage";
 import SessionsPage from "./pages/SessionsPage";
 import SettingsPage from "./pages/SettingsPage";
 import WatchPage from "./pages/WatchPage";
+import Palette, { openPalette } from "./palette";
 import RenderBoundary from "./boundary";
+import { KeyHints, LiveIndicator, ShellFooter, useDensity } from "./shell";
 
 const LOCK_PROMPT =
   "Lock and stop the server?\n\nThe session is revoked immediately and this " +
@@ -74,6 +77,36 @@ function App() {
   const [failure, setFailure] = useState<APIFailure | null>(null);
   const [stopping, setStopping] = useState(false);
   const [stopped, setStopped] = useState(false);
+  const [hintsOpen, setHintsOpen] = useState(false);
+  const { density, setDensity } = useDensity();
+
+  // Arriving 900px into a record because the previous page was scrolled there
+  // is the kind of fault that makes an interface feel haunted. Every route
+  // change starts at the top; a fragment is left alone, because a link that
+  // names a place in the page asked to land there.
+  useEffect(() => {
+    if (!location.hash) window.scrollTo(0, 0);
+  }, [location.pathname, location.hash]);
+
+  // "?" is the only key the shell claims for itself — the palette owns ⌘K, and
+  // the listings and the record page own the letters. Every one of them must
+  // ignore a reader who is typing, so the test is the same in all of them: the
+  // event came from a field, or it did not.
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.key === "?") {
+        event.preventDefault();
+        setHintsOpen(true);
+      } else if (event.key === "Escape") {
+        setHintsOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => subscribeAPIErrors(setFailure), []);
   // The banner reports the failure of a request, and a request belongs to the
@@ -114,6 +147,13 @@ function App() {
 
   const versionLabel = version
     ? `${version.version}${version.dirty ? " · dirty" : ""}`
+    : "version unavailable";
+  // The header wears the release and the footer wears the whole build string.
+  // A describe-style version is forty characters of commit and timestamp, and
+  // in the wordmark it pushed the navigation onto a second row on a 1440px
+  // screen — the chrome growing to fit an identifier nobody reads at a glance.
+  const shortVersion = version
+    ? `${version.version.split("-")[0]}${version.dirty ? " · dirty" : ""}`
     : "version unavailable";
 
   // The confirmation is a native dialog, matching how the archive section
@@ -170,8 +210,8 @@ function App() {
           <span className="brand-mark" aria-hidden="true">B</span>
           <div>
             <div className="brand">Babel</div>
-            <div className="version" title={version ? `${version.commit} · ${version.go} · ${version.platform}` : undefined}>
-              {versionLabel}
+            <div className="version" title={version ? `${versionLabel} · ${version.commit} · ${version.go} · ${version.platform}` : undefined}>
+              {shortVersion}
             </div>
           </div>
         </Link>
@@ -229,6 +269,44 @@ function App() {
               Settings
             </NavLink>
           </nav>
+          {/* Three instruments and a stop. The live mark renders only while
+              something is running, so the row is one control shorter on a
+              quiet deployment; the others are always here because they are
+              how the reader changes the interface rather than the data. */}
+          <LiveIndicator />
+          {/* The search control says "Search" rather than wearing a magnifier
+              glyph: U+2315 is missing from most Linux font stacks and renders
+              as a tofu box, and a control the operator cannot name is a
+              control they do not press. The key is on the button beside the
+              word, which is also how they learn it. */}
+          <button
+            type="button"
+            className="shell-toggle shell-search"
+            onClick={openPalette}
+            title="Search records, sessions, entities and questions"
+          >
+            Search
+            <kbd className="kbd">⌘K</kbd>
+          </button>
+          <button
+            type="button"
+            className="shell-toggle"
+            onClick={() => setDensity(density === "compact" ? "comfortable" : "compact")}
+            aria-pressed={density === "compact"}
+            title={density === "compact" ? "Compact spacing — click for comfortable" : "Comfortable spacing — click for compact"}
+            aria-label="Toggle density"
+          >
+            {density === "compact" ? "▤" : "▦"}
+          </button>
+          <button
+            type="button"
+            className="shell-toggle"
+            onClick={() => setHintsOpen(true)}
+            title="Keyboard shortcuts (?)"
+            aria-label="Keyboard shortcuts"
+          >
+            ?
+          </button>
           {/* The stop control lives in the shell rather than on a page because
               it ends the whole session, not one page's work. */}
           <button
@@ -261,6 +339,10 @@ function App() {
           <Route path="/" element={<DecidePage />} />
           <Route path="/read" element={<ReadPage />} />
           <Route path="/watch" element={<WatchPage />} />
+          {/* One run, whole: what it searched, what it fetched, what it
+              declined and what it cost. It hangs under Watch because a run is
+              only ever reached from the control room that lists it. */}
+          <Route path="/watch/runs/:id" element={<RunPage />} />
           {/* Ask is one nav entry and seven destinations, nested under a
               layout so the ledger's own row is present on every one of them
               — including a belief or a question reached by clicking a
@@ -305,7 +387,11 @@ function App() {
               read as a record kind. */}
           <Route path="/evaluation/:kind/:id" element={<RecordRedirect />} />
           <Route path="/explore" element={<Navigate to="/watch" replace />} />
-          <Route path="/fleet" element={<Navigate to="/watch?view=fleet" replace />} />
+          {/* The fleet was a page about machines, and the machine is no longer
+              a dimension of the reading path: Watch is deployment-wide and
+              reads no view parameter, so the old bookmark lands on Watch
+              rather than on Watch carrying a query nothing answers. */}
+          <Route path="/fleet" element={<Navigate to="/watch" replace />} />
           <Route path="/archive" element={<SettingsRedirect section="archive" />} />
           <Route path="/help" element={<SettingsRedirect section="help" />} />
           <Route path="/reality/focus" element={<SettingsRedirect section="ceilings" />} />
@@ -320,6 +406,13 @@ function App() {
         </Routes>
         </RenderBoundary>
       </main>
+
+      <ShellFooter version={versionLabel} />
+
+      {/* Mounted once, for every route. The palette is the only way to reach a
+          record whose name you remember and whose page you do not. */}
+      <Palette />
+      {hintsOpen && <KeyHints onClose={() => setHintsOpen(false)} />}
     </div>
   );
 }

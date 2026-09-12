@@ -10,6 +10,7 @@ import {
   classTone,
   questionStateTone,
 } from "../reality";
+import { Identifiers, ScoreBreakdown, Subjects } from "./RealityData";
 
 // The §4.8 question inbox: what the ledger is asking that only the operator can
 // answer, ranked by §4.8's five factors.
@@ -47,7 +48,7 @@ function RealityPage() {
       <div className="page-heading">
         <div>
           <p className="eyebrow">Reality Ledger</p>
-          <h1>Questions</h1>
+          <h1>What it needs</h1>
           <p className="subtitle">
             What Babel needs you to tell it, most useful first. Answers are kept verbatim;
             interpreted plans change nothing until explicitly accepted.
@@ -114,7 +115,6 @@ function QuestionCard({
 }) {
   const created = formatTime(question.created_at);
   const answerable = answerableStates.includes(question.state);
-  const terms = Object.entries(question.terms).filter(([, value]) => value !== 0);
 
   return (
     <article className="surface">
@@ -125,44 +125,30 @@ function QuestionCard({
         {question.sensitivity !== "routine" && (
           <Badge label={question.sensitivity} tone="red" />
         )}
-        <details className="rank-disclosure">
-          <summary>rank score {question.score}</summary>
-          <div className="rank-terms">
-            <p className="muted">
-              Attention ranking only — the factors are shown so the ordering can be argued with.
-            </p>
-            {terms.map(([factor, value]) => (
-              <span className="tag" key={factor}>{factor} {value > 0 ? `+${value}` : value}</span>
-            ))}
-          </div>
-        </details>
         {created && (
           <time dateTime={question.created_at} title={created.absolute}>{created.relative}</time>
         )}
         {/* The way to this question's own page, where its whole history, the
             facts that prompted it and every answer it has ever had are read.
-            The card is the inbox's working view; the page is the record. */}
-        <Link className="mono event-index" to={`/ask/questions/${encodeURIComponent(question.id)}`}>
-          {question.id}
+            The card is the inbox's working view; the page is the record. It
+            is reached by a sentence rather than by the identifier it used to
+            print, which was the only readable thing on the row and said
+            nothing. */}
+        <Link className="question-open" to={`/ask/questions/${encodeURIComponent(question.id)}`}>
+          Read it whole
         </Link>
       </div>
 
       <Quoted label="Question — generated from analysis, untrusted" text={question.prompt} />
       <p className="why-asked muted">Why asked: <span className="untrusted-inline">{question.why_asked}</span></p>
 
-      {question.target_entity_ids.length > 0 && (
-        <p className="question-targets">
-          About:{" "}
-          {question.target_entity_ids.map((entityID, index) => (
-            <span key={entityID}>
-              {index > 0 && ", "}
-              <Link className="mono" to={`/ask/entities/${encodeURIComponent(entityID)}`}>
-                {entityID}
-              </Link>
-            </span>
-          ))}
-        </p>
-      )}
+      <Subjects ids={question.target_entity_ids} names={question.about_name} />
+
+      {/* The arithmetic behind this card's position in the queue. It is a
+          disclosure rather than a number in the heading because the score
+          only matters when the order is being argued with, and that is the
+          moment the factors have to be there. */}
+      <ScoreBreakdown question={question} />
 
       {question.answers.length > 0 && (
         <div className="answer-list">
@@ -192,6 +178,8 @@ function QuestionCard({
       ))}
 
       {answerable && <AnswerForm questionId={question.id} onChanged={onChanged} />}
+
+      <Identifiers rows={[["Question", question.id]]} />
     </article>
   );
 }
