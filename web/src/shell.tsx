@@ -264,19 +264,31 @@ export function TopicList({ current }: { current: string }) {
   const [answer, setAnswer] = useState<TopicsResponse | null>(null);
   const [failed, setFailed] = useState(false);
 
+  // Re-read when the reader moves and once a minute while he stays: the feed
+  // index behind these counts rebuilds every sixty seconds and the session
+  // catalog can still be scanning when the page first opens, so a rail read
+  // once at mount would show a day-one deployment under a full feed.
   useEffect(() => {
     let live = true;
-    getTopics()
-      .then((next) => {
-        if (live) setAnswer(next);
-      })
-      .catch(() => {
-        if (live) setFailed(true);
-      });
+    const read = () => {
+      getTopics()
+        .then((next) => {
+          if (live) {
+            setAnswer(next);
+            setFailed(false);
+          }
+        })
+        .catch(() => {
+          if (live && answer === null) setFailed(true);
+        });
+    };
+    read();
+    const timer = window.setInterval(read, 60_000);
     return () => {
       live = false;
+      window.clearInterval(timer);
     };
-  }, []);
+  }, [current]);
 
   // A rail that could not be read says so in one line and takes no more room
   // than that: the feed beside it is fine, and a failed decoration must not

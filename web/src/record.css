@@ -634,3 +634,49 @@
     padding-left: var(--space-3);
   }
 }
+
+/* The case's fields: one column, a question over an answer, no box. The
+ * answer keeps the record's own voice through the left rule. Scoped to the
+ * peel body because that is where the generic paragraph and heading rhythm
+ * is declared, and these have to win it. */
+.peel-body .record-field {
+  margin: 0;
+}
+.peel-body .record-field + .record-field {
+  margin-top: var(--space-3);
+}
+.peel-body .record-field > h3.eyebrow {
+  margin: 0 0 0.2rem;
+}
+.peel-body .record-field > p,
+.peel-body .record-field-list {
+  margin: 0;
+  padding: 0.1rem 0 0.1rem var(--space-3);
+  border-left: 2px solid var(--rule-strong);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.peel-body .record-field-list {
+  list-style: none;
+}
+.peel-body .record-field-list > li + li {
+  margin-top: 0.2rem;
+}
+.peel-body .record-field-facts {
+  margin: 0;
+  padding: 0.1rem 0 0.1rem var(--space-3);
+  border-left: 2px solid var(--rule-strong);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+}
+.peel-body .record-field-facts > span > b {
+  font-weight: 400;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-right: 0.4rem;
+}

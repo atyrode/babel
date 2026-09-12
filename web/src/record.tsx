@@ -213,17 +213,18 @@ function Peel({
   );
 }
 
-// Prose renders one of the record's paragraphs under the question it answers.
-// The text is the model's, so it goes through the sanitizer's inverse and
-// renders inside `quote`: a reader can always tell the record's wording from
-// Babel's chrome. A field the record does not hold renders nothing.
+// Prose and Points are the case's fields: a question as an eyebrow and the
+// record's own words under it, through the sanitizer's inverse, in one column.
+// They were ten boxed panels each padded like a surface, and a proposal's
+// case ran 1,600 px for eleven short answers; the argument is one thing and
+// reads as one. A field the record does not hold renders nothing.
 function Prose({ label, text }: { label: string; text: string | undefined }) {
   if (!text || !text.trim()) return null;
   return (
-    <section className="panel">
-      <h3>{label}</h3>
-      <p className="quote untrusted-inline">{unescapeWhitespace(text)}</p>
-    </section>
+    <div className="record-field">
+      <h3 className="eyebrow">{label}</h3>
+      <p className="untrusted-inline">{unescapeWhitespace(text)}</p>
+    </div>
   );
 }
 
@@ -232,16 +233,36 @@ function Prose({ label, text }: { label: string; text: string | undefined }) {
 function Points({ label, items }: { label: string; items: string[] | undefined }) {
   if (!items || items.length === 0) return null;
   return (
-    <section className="panel">
-      <h3>{label}</h3>
-      <ul className="peel-list">
+    <div className="record-field">
+      <h3 className="eyebrow">{label}</h3>
+      <ul className="record-field-list">
         {items.map((item, index) => (
-          <li className="quote untrusted-inline" key={`${index}-${item}`}>
+          <li className="untrusted-inline" key={`${index}-${item}`}>
             {unescapeWhitespace(item)}
           </li>
         ))}
       </ul>
-    </section>
+    </div>
+  );
+}
+
+// Facts is the case's one-word answers on one line: a grading is a word, and
+// three words in three boxes was most of what made a short case tall. An
+// answer the record does not hold is left out; none at all renders nothing.
+function Facts({ items }: { items: Array<[string, string | undefined]> }) {
+  const held = items.filter((item): item is [string, string] => Boolean(item[1] && item[1].trim()));
+  if (held.length === 0) return null;
+  return (
+    <div className="record-field">
+      <p className="record-field-facts">
+        {held.map(([label, value]) => (
+          <span className="untrusted-inline" key={label}>
+            <b>{label}</b>
+            {unescapeWhitespace(value)}
+          </span>
+        ))}
+      </p>
+    </div>
   );
 }
 
@@ -366,24 +387,27 @@ function CasePeel({
     <Peel title="The case" open={open} onToggle={onToggle}>
       <Prose label="The problem" text={detail.problem} />
       <Prose label="What it proposes" text={detail.outcome} />
-      {/* One field, two shapes: a proposal and an observation record a
-          three-valued grading here and a finding records its significance in
-          prose, so the label has to read correctly over "moderate" and over a
-          sentence. "How much it matters" does; "Why it matters" does not. */}
-      <Prose label="How much it matters" text={detail.impact} />
-      <Prose label="Where it applies" text={detail.scope} />
-      <Prose label="What kind of thing this is" text={detail.classification} />
+      {/* The three gradings are words, not arguments: one line, each named.
+          "How much it matters" reads correctly over "moderate" and over a
+          finding's sentence, which "Why it matters" would not. */}
+      <Facts
+        items={[
+          ["How much it matters", detail.impact],
+          ["Where it applies", detail.scope],
+          ["What kind of thing this is", detail.classification],
+        ]}
+      />
       <Prose label="What is uncertain about it" text={detail.uncertainty} />
       <Points label="How you would know it worked" items={detail.verification} />
       <Points label="What could go wrong" items={detail.risks} />
       <Points label="What is still unanswered" items={detail.open_questions} />
       <Points label="What it needs first" items={detail.prerequisites} />
       {detail.targets && detail.targets.length > 0 && (
-        <section className="panel">
-          <h3>What it would change</h3>
-          <ul className="peel-list">
+        <div className="record-field">
+          <h3 className="eyebrow">What it would change</h3>
+          <ul className="record-field-list">
             {detail.targets.map((target, index) => (
-              <li className="quote untrusted-inline" key={`${index}-${target.system}`}>
+              <li className="untrusted-inline" key={`${index}-${target.system}`}>
                 <strong>{unescapeWhitespace(target.system)}</strong>
                 {target.rationale && <> — {unescapeWhitespace(target.rationale)}</>}
                 {target.confidence && (
@@ -392,7 +416,7 @@ function CasePeel({
               </li>
             ))}
           </ul>
-        </section>
+        </div>
       )}
       <OriginStrip origin={origin} />
     </Peel>
