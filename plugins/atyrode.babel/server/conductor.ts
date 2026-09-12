@@ -921,14 +921,37 @@ export function conductor(deps: ConductorDeps): Conductor {
     };
   }
 
-  /** The one schedule the loop keeps: the policy's cadence, on a machine that can run the beat. */
-  async function reconcileSchedule(policy: Policy, at: number): Promise<ScheduleState> {
-    const registered = (await jobs.schedules()).filter(
-      (row) => row.scheduleId === CONDUCTOR_SCHEDULE_ID,
-    );
+  /**
+   * The one schedule the loop keeps: the policy's cadence, on a machine that can run the beat.
+   *
+   * A HOST THAT WILL NOT REGISTER IT IS NOT A REASON TO STOP. The three schedule verbs are the
+   * only ones a cycle can be refused for structurally rather than for this policy's sake — a
+   * hardened server half reaches none of them (`ISOLATE_CTX_METHODS` serves no `jobs.schedule`),
+   * and an authority that has lapsed refuses the other two — so the refusal is recorded as a
+   * note and the cycle carries on. The beat is one WAKE; ingesting what has already finished
+   * and drawing what the policy allows are the work, and they do not need it.
+   */
+  async function reconcileSchedule(
+    policy: Policy,
+    at: number,
+    notes: string[],
+  ): Promise<ScheduleState> {
+    let listed: readonly ScheduleRow[];
+    try {
+      listed = await jobs.schedules();
+    } catch (error) {
+      notes.push(`the beat's schedule cannot be read: ${message(error)}`);
+      return "absent";
+    }
+    const registered = listed.filter((row) => row.scheduleId === CONDUCTOR_SCHEDULE_ID);
     if (!policy.enabled) {
-      for (const row of registered) {
-        await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+      try {
+        for (const row of registered) {
+          await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+        }
+      } catch (error) {
+        notes.push(`the beat cannot be unregistered: ${message(error)}`);
+        return "kept";
       }
       return registered.length === 0 ? "absent" : "unregistered";
     }
@@ -942,40 +965,52 @@ export function conductor(deps: ConductorDeps): Conductor {
     if (current !== undefined) return "kept";
     const host = await machineFor(new Map(), BEAT_OPERATION, "");
     if (host === null) return registered.length === 0 ? "absent" : "kept";
-    for (const row of registered) {
-      await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+    try {
+      for (const row of registered) {
+        await jobs.disableSchedule({ scheduleId: row.scheduleId, revision: row.revision });
+      }
+    } catch (error) {
+      notes.push(`the beat cannot be re-registered: ${message(error)}`);
+      return "kept";
     }
     const installation = host.readiness.installation;
-    await jobs.schedule({
-      jobId: `${CONDUCTOR_SCHEDULE_ID}.${policy.version}`,
-      machineId: host.machineId,
-      operationId: BEAT_OPERATION,
-      // The beat's input is fixed at registration, so it carries no run id: the machine half
-      // mints one per occurrence and the receipt is what names it.
-      input: {
-        [INPUT_FIELD]: JSON.stringify({
-          runId: "",
-          machineId: host.machineId,
-          roots: [],
-          harnesses: [],
-        }),
-      },
-      outputs: [{ name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [BEAT_OPERATION] }],
-      limits: plan.limits,
-      ...(installation === null
-        ? {}
-        : {
-            installationRevision: installation.revision,
-            artifactSha256: installation.artifactSha256,
+    try {
+      await jobs.schedule({
+        jobId: `${CONDUCTOR_SCHEDULE_ID}.${policy.version}`,
+        machineId: host.machineId,
+        operationId: BEAT_OPERATION,
+        // The beat's input is fixed at registration, so it carries no run id: the machine half
+        // mints one per occurrence and the receipt is what names it.
+        input: {
+          [INPUT_FIELD]: JSON.stringify({
+            runId: "",
+            machineId: host.machineId,
+            roots: [],
+            harnesses: [],
           }),
-      scheduleId: CONDUCTOR_SCHEDULE_ID,
-      revision: policy.version,
-      firstNominalAt: at + intervalMs,
-      intervalMs,
-      deadlineMs: intervalMs,
-      expiresAt: at + SCHEDULE_LIFETIME_MS,
-      offlinePolicy: "coalesce-one",
-    });
+        },
+        outputs: [
+          { name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [BEAT_OPERATION] },
+        ],
+        limits: plan.limits,
+        ...(installation === null
+          ? {}
+          : {
+              installationRevision: installation.revision,
+              artifactSha256: installation.artifactSha256,
+            }),
+        scheduleId: CONDUCTOR_SCHEDULE_ID,
+        revision: policy.version,
+        firstNominalAt: at + intervalMs,
+        intervalMs,
+        deadlineMs: intervalMs,
+        expiresAt: at + SCHEDULE_LIFETIME_MS,
+        offlinePolicy: "coalesce-one",
+      });
+    } catch (error) {
+      notes.push(`the beat cannot be registered: ${message(error)}`);
+      return "absent";
+    }
     return "registered";
   }
 
@@ -1309,8 +1344,8 @@ export function conductor(deps: ConductorDeps): Conductor {
       cycle += 1;
       const cycleRunId = `cyc_${String(at)}_${String(cycle)}`;
       const policy = (await coordinator.policy()).policy;
-      const schedule = await reconcileSchedule(policy, at);
       const notes: string[] = [];
+      const schedule = await reconcileSchedule(policy, at, notes);
       const requested: RequestedJob[] = [];
       const ingested: IngestedRun[] = [];
       const settled: SettledClaim[] = [];
