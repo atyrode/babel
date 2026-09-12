@@ -137,6 +137,9 @@ export interface WatchRunRow {
 
 export interface WatchRunsResponse {
   runs: WatchRunRow[];
+  // The receipts this machine holds in all, so a page can say how many are
+  // older than the ones it shows.
+  total?: number | null;
 }
 
 export interface RunTiming {

@@ -59,10 +59,10 @@ import "../watch.css";
 
 const LIVE_POLL_MS = 5_000;
 const SERIES_DAYS = 30;
-// Twenty recent runs, not fifty: with the live strip, the launch form and four
-// series above it, fifty rows put Watch at four screens, past §8.6's ceiling.
-// The run page and the API keep the rest; the table says how many it holds.
-const RUNS_LIMIT = 20;
+// Ten recent runs first, and ten more per click: with the live strip and four
+// series above it, a longer first page put a busy Watch past §8.6's ceiling.
+// The control below the table says how many older receipts the machine holds.
+const RUNS_LIMIT = 10;
 
 // How many runs in flight get a card of their own before the strip becomes a
 // table.
@@ -488,6 +488,7 @@ function WatchPage() {
   const [seriesError, setSeriesError] = useState<string | null>(null);
 
   const [runs, setRuns] = useState<WatchRunRow[] | null>(null);
+  const [runsTotal, setRunsTotal] = useState<number | null>(null);
   const [runsError, setRunsError] = useState<string | null>(null);
 
   const [launchKind, setLaunchKind] = useState<LaunchKind>("conductor");
@@ -581,10 +582,11 @@ function WatchPage() {
     };
   }, []);
 
-  const loadRuns = useCallback(async () => {
+  const loadRuns = useCallback(async (limit: number = RUNS_LIMIT) => {
     try {
-      const value = await getWatchRuns(RUNS_LIMIT);
+      const value = await getWatchRuns(limit);
       setRuns(value.runs ?? []);
+      setRunsTotal(typeof value.total === "number" ? value.total : null);
       setRunsError(null);
     } catch (reason) {
       setRunsError(errorMessage(reason));
@@ -864,13 +866,16 @@ function WatchPage() {
         </p>
       )}
 
-      <article className="surface launch-surface">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">Start</p>
-            <h2>Ask for a run</h2>
-          </div>
-        </div>
+      {/* Open when the machine is idle, because then the page's job is to
+          invite; folded when runs are in flight, because then its job is to
+          show them, and a form above the strip pushed a busy Watch past
+          §8.6's ceiling. The palette's "Start a run" lands on #start. */}
+      <details className="peel surface launch-surface" id="start" open={flying.length === 0}>
+        <summary>
+          Ask for a run
+          {flying.length > 0 && <span className="muted">the machine is busy; starting more is still yours to decide</span>}
+        </summary>
+        <div className="peel-body">
 
         <div className="rule-bar" role="group" aria-label="What to start">
           {LAUNCH_FORMS.map((entry) => (
@@ -984,7 +989,8 @@ function WatchPage() {
             {launched}
           </p>
         )}
-      </article>
+        </div>
+      </details>
 
       <article className="surface series-surface">
         <div className="section-heading">
@@ -1184,6 +1190,14 @@ function WatchPage() {
               </tbody>
             </table>
           </div>
+        )}
+        {runs && runsTotal !== null && runsTotal > runs.length && (
+          <p className="muted runs-more">
+            {runsTotal - runs.length} older receipts.{" "}
+            <button type="button" className="link-button" onClick={() => void loadRuns(runs.length + RUNS_LIMIT)}>
+              Show {Math.min(RUNS_LIMIT, runsTotal - runs.length)} more
+            </button>
+          </p>
         )}
       </article>
 
