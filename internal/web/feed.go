@@ -87,6 +87,31 @@ type feedPost struct {
 	Oppose   int `json:"oppose"`
 	Unsure   int `json:"unsure"`
 	Comments int `json:"comments"`
+	// Contested reports recorded disagreement among Babel's reviewers on
+	// this record's latest revision: both sides present inside one role,
+	// which is the one thing the four columns above cannot say by
+	// themselves. Two supports and two opposes is a split reception if the
+	// four reviewers were answering one question and four reviewers
+	// answering different questions if they were not, and the score reads
+	// identically either way.
+	//
+	// It is the record page's own rule (receptionView.Contested) read out
+	// of the deployment-wide tally rather than re-derived here, so a row
+	// and the page it opens cannot disagree about whether Babel argued.
+	Contested bool `json:"contested,omitempty"`
+	// Reviewing reports that an evaluation claim on this record is open
+	// right now: claimed, unfinished, and not yet lapsed. It is work in
+	// flight rather than work recorded, which is why no count above can
+	// stand in for it — a record being read by three reviewers and a
+	// record nobody has opened have the same reception until the first
+	// vote lands.
+	//
+	// It is refreshed with the index rather than per request, so it is at
+	// most feedFreshness stale. That is the right bound for what it says:
+	// a lease outlives a minute by design, so a review in flight is still
+	// in flight when the next build reads it, and a review that finished
+	// thirty seconds ago is a row that stops glowing a little late.
+	Reviewing bool `json:"reviewing,omitempty"`
 	// Awaiting says whether this post is waiting on the operator: a record
 	// whose review standing invites a ruling, or a question whose state
 	// awaits him. It is a fact about the post rather than a filter state,
@@ -558,6 +583,313 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		result.Posts = append(result.Posts, eligible[i].post)
 	}
 	s.writeJSON(w, http.StatusOK, result)
+}
+
+// feedPulse is GET /api/feed/pulse: what Babel did today, and what it is
+// doing at this instant.
+//
+// It is a second route rather than a block on the feed because it is a
+// different question with a different freshness. The feed is a ranked corpus
+// rebuilt at most once a minute; this is a handful of counts and a short list
+// of work in flight, and a reader watching Babel think wants the second to
+// move while the first stands still. Folding them together would either make
+// the counts a minute stale or make the corpus rebuild every poll.
+//
+// Every number here is read from a store this process already holds open, and
+// each one names its own source in pulseCounts below. None of them is derived
+// from another: a count assembled by summing two others is a number that goes
+// wrong silently when either changes.
+type feedPulse struct {
+	Today pulseCounts `json:"today"`
+	// Since is the instant the counts start at: midnight UTC before now.
+	// It travels because a count with no window is a number a reader has
+	// to guess the meaning of, and because the operator's day and this
+	// machine's day are the same day only by convention — saying which one
+	// was used is what makes "today" checkable.
+	Since string `json:"since"`
+	// Reviewing is the records under an open evaluation claim at the
+	// instant this was read, oldest first. It is the one part of this
+	// answer that is not a count: a reader watching a review in flight
+	// wants to know which record, and a number would tell him only that
+	// something is happening somewhere.
+	Reviewing []pulseReview `json:"reviewing"`
+}
+
+// pulseCounts is the day's work, one number per act, each from the cheapest
+// store read that answers it honestly.
+type pulseCounts struct {
+	// SessionsRead is the distinct sessions named by the preparations of
+	// the run receipts recorded today — host, harness and source id, so
+	// one conversation read by three runs counts once.
+	//
+	// It is the receipts rather than the citations of today's records, and
+	// that is the honest half as well as the cheap one: a record cites the
+	// sessions its evidence came from, which is the material that survived
+	// into a claim rather than the material Babel read. The receipts are
+	// newest first and this stops at the first one older than the window,
+	// so the cost is today's runs and not the deployment's history.
+	SessionsRead int `json:"sessions_read"`
+	// Records is every frontier record written today, all four kinds,
+	// counted by the store's own per-day aggregate. Revisions count on the
+	// day they were written, which is RecordDays' own rule: an amendment
+	// is analysis somebody performed today rather than a correction to
+	// yesterday's number.
+	Records int `json:"records"`
+	// Votes is the assessments recorded today: Babel's reviewers saying
+	// what they think, counted by the evaluation store's per-day
+	// aggregate. The operator's feedback is not in it, because he does not
+	// vote (§8.7).
+	Votes int `json:"votes"`
+	// Proposals is the proposal kind of Records above, from the same read.
+	// It is beside the total rather than inside it because a proposal is a
+	// remedy addressed to the operator and the rest of the day's output is
+	// not.
+	Proposals int `json:"proposals"`
+	// TopicProposals is the open topic plans whose proposal record was
+	// written today: §4.13 vocabulary Babel has published and nobody has
+	// ruled on. The creation date is the proposal record's, read from the
+	// feed index that already holds it, because a plan has no date of its
+	// own — it is the proposal it explains that was written.
+	TopicProposals int `json:"topic_proposals"`
+	// Ruled is the records whose newest ruling was recorded today.
+	//
+	// It is per record rather than per disposition, which is what the
+	// deployment-wide standings read can answer in one pass: a record the
+	// operator ruled on twice today counts once. Every ruling is his
+	// (§4.7), so the attribution is exact even though the arithmetic is a
+	// floor.
+	Ruled int `json:"ruled"`
+}
+
+// pulseReview is one record a reviewer is holding right now.
+type pulseReview struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	// Title is the record's own line, from the feed index where it is a
+	// post and from the record itself where it is not: an observation is
+	// evidence rather than a post (§4.13) and is still a thing Babel can
+	// be reading, so dropping it would show an idle deployment during the
+	// pass that reads the most.
+	Title string `json:"title"`
+	// Since is when the claim on this record was granted. A takeover does
+	// not rewrite it, so a reviewer that died and was replaced reads as one
+	// long review rather than as a fresh one.
+	Since string `json:"since"`
+}
+
+// handleFeedPulse serves the front page's live signal.
+func (s *Server) handleFeedPulse(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Frontier != nil, "the hypothesis frontier") {
+		return
+	}
+	index, err := s.feedIndex(r)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	ctx := r.Context()
+	now := time.Now().UTC()
+	// One instant decides the window and the claim expiry both, for
+	// handleFeed's reason: two readings of the clock could put a receipt
+	// inside today for one count and outside it for another.
+	since := now.Truncate(24 * time.Hour)
+	result := feedPulse{
+		Since:     timeText(since),
+		Reviewing: []pulseReview{},
+	}
+	result.Today.Records, result.Today.Proposals = s.pulseRecords(ctx, r, since)
+	result.Today.Votes = s.pulseVotes(ctx, r, since)
+	result.Today.TopicProposals = s.pulseTopicProposals(ctx, r, index, since)
+	result.Today.Ruled = s.pulseRuled(ctx, r, since)
+	result.Today.SessionsRead = s.pulseSessionsRead(ctx, r, since)
+	result.Reviewing = s.pulseReviewing(ctx, r, index, now)
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+// pulseRecords counts today's frontier records and the proposals among them,
+// from the store's own per-day aggregate.
+//
+// A store that could not be counted reports zero rather than failing the
+// route, which is this surface's rule everywhere a panel is one of several: a
+// pulse missing one number is still the pulse, and refusing the whole answer
+// because one aggregate was unreadable would take the live signal away over
+// one of its six figures.
+func (s *Server) pulseRecords(ctx context.Context, r *http.Request, since time.Time) (records, proposals int) {
+	rows, err := s.opts.Frontier.RecordDays(ctx, since)
+	if err != nil {
+		s.logf("GET %s: the frontier could not be counted by day", r.URL.Path)
+		return 0, 0
+	}
+	day := since.Format(time.DateOnly)
+	for _, row := range rows {
+		if row.Day != day {
+			continue
+		}
+		records += row.Count
+		if row.Kind == string(frontier.EntityProposal) {
+			proposals += row.Count
+		}
+	}
+	return records, proposals
+}
+
+// pulseVotes counts today's assessments: Babel's reviewers voting.
+func (s *Server) pulseVotes(ctx context.Context, r *http.Request, since time.Time) int {
+	if s.opts.Evaluation == nil {
+		return 0
+	}
+	days, err := s.opts.Evaluation.AssessmentDays(ctx, since)
+	if err != nil {
+		s.logf("GET %s: the evaluation store could not be counted by day", r.URL.Path)
+		return 0
+	}
+	day := since.Format(time.DateOnly)
+	for _, row := range days {
+		if row.Day == day {
+			return row.Count
+		}
+	}
+	return 0
+}
+
+// pulseTopicProposals counts the open topic plans Babel published today.
+//
+// The date is the proposal record's own, taken from the index rather than
+// re-read: a plan is durable ledger state with no date of its own, and the
+// thing that happened today is the proposal that carries it. A plan whose
+// proposal this machine does not hold is not counted, on topicProposals' own
+// terms — it is another host's output, and this count is about what happened
+// here.
+func (s *Server) pulseTopicProposals(ctx context.Context, r *http.Request, index *feedIndex,
+	since time.Time) int {
+	if s.opts.TopicPlans == nil {
+		return 0
+	}
+	plans, err := s.opts.TopicPlans.OpenTopicPlans(ctx)
+	if err != nil {
+		s.logf("GET %s: the ledger's topic plans are unread; the pulse counts none", r.URL.Path)
+		return 0
+	}
+	created := make(map[string]time.Time, len(index.posts))
+	for _, entry := range index.posts {
+		created[entry.post.ID] = entry.createdAt
+	}
+	count := 0
+	for _, plan := range plans {
+		if at, held := created[plan.ProposalID]; held && !at.Before(since) {
+			count++
+		}
+	}
+	return count
+}
+
+// pulseRuled counts the records whose newest ruling was recorded today.
+func (s *Server) pulseRuled(ctx context.Context, r *http.Request, since time.Time) int {
+	standings, err := s.opts.Frontier.ReviewStandings(ctx)
+	if err != nil {
+		s.logf("GET %s: review standings unread; the pulse counts no rulings", r.URL.Path)
+		return 0
+	}
+	count := 0
+	for _, standing := range standings {
+		if !standing.RecordedAt.Before(since) {
+			count++
+		}
+	}
+	return count
+}
+
+// pulseReceiptPage is how many receipts one page of the scan below reads.
+//
+// It is the run store's own default rather than its ceiling because the scan
+// stops at the first receipt older than the window: a deployment that
+// recorded three runs today pays for one page, and one that recorded four
+// hundred pays for eight. A page of five hundred would make the common case
+// the expensive one.
+const pulseReceiptPage = 50
+
+// pulseSessionsRead counts the distinct sessions today's runs read.
+func (s *Server) pulseSessionsRead(ctx context.Context, r *http.Request, since time.Time) int {
+	if s.opts.Receipts == nil {
+		return 0
+	}
+	type sessionKey struct{ host, harness, sourceID string }
+	seen := map[sessionKey]struct{}{}
+	for offset := 0; offset < listScanCap; offset += pulseReceiptPage {
+		page, total, err := s.opts.Receipts.Receipts(ctx, pulseReceiptPage, offset)
+		if err != nil {
+			s.logf("GET %s: run receipts unread; the pulse counts no sessions", r.URL.Path)
+			return len(seen)
+		}
+		for _, receipt := range page {
+			// Newest first, so the first receipt from before the window
+			// ends the scan rather than filtering one row out of it.
+			if receipt.Header.RecordedAt.Before(since) {
+				return len(seen)
+			}
+			for _, selected := range receipt.Preparation.Selection {
+				seen[sessionKey{selected.Host, selected.Harness, selected.SourceID}] = struct{}{}
+			}
+		}
+		if len(page) < pulseReceiptPage || offset+len(page) >= total {
+			break
+		}
+	}
+	return len(seen)
+}
+
+// pulseReviewing lists the records under an open claim at now, oldest first.
+//
+// Oldest first because that is the order the list is read in: the record that
+// has been held longest is the one a reader wonders about, and a list ordered
+// by identifier would reshuffle every poll. Ties resolve by identifier so two
+// claims granted in the same instant have one order.
+func (s *Server) pulseReviewing(ctx context.Context, r *http.Request, index *feedIndex,
+	now time.Time) []pulseReview {
+	out := []pulseReview{}
+	if s.opts.Evaluation == nil {
+		return out
+	}
+	claims, err := s.opts.Evaluation.OpenClaims(ctx, now)
+	if err != nil {
+		s.logf("GET %s: open evaluation claims unread; the pulse shows no review in flight", r.URL.Path)
+		return out
+	}
+	titles := make(map[string]string, len(index.posts))
+	for _, entry := range index.posts {
+		titles[entry.post.ID] = entry.post.Title
+	}
+	for subject, claim := range claims {
+		title, held := titles[subject.ID]
+		if !held {
+			// A subject the front page does not carry is still under
+			// review: an observation is evidence rather than a post,
+			// and a superseded wording is a record the reader reaches
+			// from its replacement. One read each, bounded by the
+			// open claims, is what it costs to name them.
+			line, err := s.excerpt(ctx, frontier.Ref{
+				Type: frontier.EntityType(subject.Kind),
+				ID:   subject.ID,
+			})
+			if err != nil {
+				s.logf("GET %s: %s is under review and could not be read", r.URL.Path, subject)
+			}
+			title = boundedLine(line)
+		}
+		out = append(out, pulseReview{
+			ID:    subject.ID,
+			Kind:  subject.Kind,
+			Title: title,
+			Since: timeText(claim.Since),
+		})
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		if out[a].Since != out[b].Since {
+			return out[a].Since < out[b].Since
+		}
+		return out[a].ID < out[b].ID
+	})
+	return out
 }
 
 // handleTopics serves what the deployment's records are about: the topics the
@@ -1034,11 +1366,11 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 		standings = nil
 		index.standingsUnread = true
 	}
-	tallies := s.feedTallies(ctx, r)
+	reception := s.feedReception(ctx, r, now)
 
 	for _, record := range corpus.hypotheses {
 		index.add(s.feedRecord(frontier.EntityHypothesis, record.ID, record.RunID, record.CreatedAt,
-			record.Payload.Statement, topics[record.ID], standings, tallies, now))
+			record.Payload.Statement, topics[record.ID], standings, reception, now))
 	}
 	// No observation pass, and it is deliberate: §4.13's last reading makes
 	// observations evidence rather than posts. They are still read above —
@@ -1046,11 +1378,11 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 	// searchable; they are simply not rows on the front page.
 	for _, record := range corpus.findings {
 		index.add(s.feedRecord(frontier.EntityFinding, record.ID, record.RunID, record.CreatedAt,
-			record.Payload.Title, topics[record.ID], standings, tallies, now))
+			record.Payload.Title, topics[record.ID], standings, reception, now))
 	}
 	for _, record := range corpus.proposals {
 		index.add(s.feedRecord(frontier.EntityProposal, record.ID, record.RunID, record.CreatedAt,
-			record.Payload.Title, topics[record.ID], standings, tallies, now))
+			record.Payload.Title, topics[record.ID], standings, reception, now))
 	}
 	for _, entry := range s.feedQuestions(ctx, r, now) {
 		index.add(entry)
@@ -1074,7 +1406,7 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 			index.notice = catalogUnreachable
 		}
 		for _, record := range merged {
-			if entry, ok := feedFleetRecord(record, tallies); ok {
+			if entry, ok := feedFleetRecord(record, reception); ok {
 				index.add(entry)
 			}
 		}
@@ -1283,7 +1615,7 @@ func (i *feedIndex) countTopics() {
 // feedRecord projects one local record into a post.
 func (s *Server) feedRecord(kind frontier.EntityType, id, runID string, createdAt time.Time,
 	claim string, topics topicMembership, standings map[frontier.Ref]frontier.ReviewStanding,
-	tallies map[evaluation.Subject]evaluation.Tally, now time.Time) feedEntry {
+	reception feedReception, now time.Time) feedEntry {
 	standing := feedStanding(kind, frontier.Ref{Type: kind, ID: id}, standings)
 	entry := feedEntry{
 		post: feedPost{
@@ -1303,7 +1635,7 @@ func (s *Server) feedRecord(kind frontier.EntityType, id, runID string, createdA
 		entry.post.Author = &feedAuthor{RunID: runID, Href: runHref(runID)}
 	}
 	awaitRecord(&entry, standing, createdAt, now)
-	applyTally(&entry, tallies[evaluation.Subject{Kind: string(kind), ID: id}], createdAt)
+	reception.apply(&entry, evaluation.Subject{Kind: string(kind), ID: id}, createdAt)
 	return entry
 }
 
@@ -1412,6 +1744,7 @@ func feedStanding(kind frontier.EntityType, ref frontier.Ref,
 func applyTally(entry *feedEntry, tally evaluation.Tally, createdAt time.Time) {
 	entry.post.Support, entry.post.Oppose, entry.post.Unsure = tally.Support, tally.Oppose, tally.Unsure
 	entry.post.Score = entry.post.Support - entry.post.Oppose
+	entry.post.Contested = tally.Contested
 	entry.post.Comments = tally.Comments
 	entry.activity = tally.Activity
 	entry.lastActivity = tally.LastActivity
@@ -1421,23 +1754,53 @@ func applyTally(entry *feedEntry, tally evaluation.Tally, createdAt time.Time) {
 	entry.post.LastActivityAt = timeText(entry.lastActivity)
 }
 
-// feedTallies reads the deployment's reception in one grouped pass, reporting
-// nothing rather than failing when the evaluation store could not answer.
+// feedReception is what the evaluation store says about the whole deployment,
+// read once per build: how every subject was received, and which subjects a
+// reviewer is holding right now.
+//
+// The two travel together because they are one answer about one row — what
+// Babel has said about this record, and whether it is saying something about
+// it at this moment — and because a build that read one of them and not the
+// other would render a post that is being reviewed as a post nobody has
+// opened.
+type feedReception struct {
+	tallies map[evaluation.Subject]evaluation.Tally
+	claims  map[evaluation.Subject]evaluation.OpenClaim
+}
+
+// apply folds one subject's reception and its review in flight into a post.
+func (f feedReception) apply(entry *feedEntry, subject evaluation.Subject, createdAt time.Time) {
+	applyTally(entry, f.tallies[subject], createdAt)
+	entry.post.Reviewing = f.claims[subject].Count > 0
+}
+
+// feedReception reads both in two grouped passes, reporting nothing rather
+// than failing when the evaluation store could not answer.
 //
 // A feed whose scores could not be read is still the feed: every claim, every
 // topic and every comment count beside it is unaffected, and a front page
 // that refused because one store was down would take the corpus away over its
-// scoreboard.
-func (s *Server) feedTallies(ctx context.Context, r *http.Request) map[evaluation.Subject]evaluation.Tally {
+// scoreboard. The claims degrade separately and on the same terms — a row
+// that does not say it is under review is the ordinary row, and there is no
+// state a reader has to un-believe.
+func (s *Server) feedReception(ctx context.Context, r *http.Request, now time.Time) feedReception {
 	if s.opts.Evaluation == nil {
-		return nil
+		return feedReception{}
 	}
+	var out feedReception
 	tallies, err := s.opts.Evaluation.Tallies(ctx)
 	if err != nil {
 		s.logf("GET %s: evaluation tallies unread; the feed renders unscored", r.URL.Path)
-		return nil
+	} else {
+		out.tallies = tallies
 	}
-	return tallies
+	claims, err := s.opts.Evaluation.OpenClaims(ctx, now)
+	if err != nil {
+		s.logf("GET %s: open evaluation claims unread; the feed shows no review in flight", r.URL.Path)
+	} else {
+		out.claims = claims
+	}
+	return out
 }
 
 // feedQuestions projects the ledger's questions, which §8.7 puts in the feed
@@ -1532,9 +1895,10 @@ func awaitQuestion(entry *feedEntry, question reality.Question, now time.Time) {
 // conversations. The reception is the exception and is read exactly as it is
 // locally, because the evaluation projection merges what the fleet published:
 // a vote on another instance's proposal is a vote this instance has genuinely
-// seen.
-func feedFleetRecord(record fleet.Record,
-	tallies map[evaluation.Subject]evaluation.Tally) (feedEntry, bool) {
+// seen. A claim is not merged and does not need to be — a lease is one
+// machine's coordination state, so a remote record is under review here only
+// when this machine's own reviewers hold it.
+func feedFleetRecord(record fleet.Record, reception feedReception) (feedEntry, bool) {
 	kind, ok := feedKindOfCatalog(record.Record.Kind)
 	if !ok {
 		return feedEntry{}, false
@@ -1561,7 +1925,7 @@ func feedFleetRecord(record fleet.Record,
 	if record.Record.RunID != "" {
 		entry.post.Author = &feedAuthor{RunID: record.Record.RunID, Href: runHref(record.Record.RunID)}
 	}
-	applyTally(&entry, tallies[evaluation.Subject{Kind: string(kind), ID: record.Record.RecordID}], createdAt)
+	reception.apply(&entry, evaluation.Subject{Kind: string(kind), ID: record.Record.RecordID}, createdAt)
 	return entry, true
 }
 

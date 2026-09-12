@@ -352,6 +352,17 @@ type EvaluationService interface {
 	// decide what was said.
 	Tallies(context.Context) (map[evaluation.Subject]evaluation.Tally, error)
 	Thread(context.Context, evaluation.Subject) ([]evaluation.ThreadRecord, error)
+	// OpenClaims is the same widening applied to the coordination state:
+	// which subjects a reviewer is holding at the instant it is asked, in
+	// one grouped read rather than one lease lookup per row.
+	//
+	// It is here rather than derived from the four reads above because
+	// none of them can answer it. A projection is a snapshot of what has
+	// been said, and a claim is the statement that something is being said
+	// right now — so a front page assembled from records alone can show
+	// the deployment's finished work and nothing of the work in flight,
+	// which is the half an operator watching Babel think is watching for.
+	OpenClaims(context.Context, time.Time) (map[evaluation.Subject]evaluation.OpenClaim, error)
 }
 
 // FrontierReader is the read-only subset of *frontier.Store the API renders

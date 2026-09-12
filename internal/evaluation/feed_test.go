@@ -5,6 +5,7 @@ package evaluation
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // TestOperatorFeedbackCarryingOnlyAReasonIsAComment is §8.7's comment box at
@@ -146,6 +147,136 @@ func TestFeedbackAndVotesFoldIntoOneTallyPerSubject(t *testing.T) {
 	if after.Support != 1 || after.Oppose != 2 {
 		t.Errorf("votes after a correction = %d/%d, want the superseded support dropped",
 			after.Support, after.Oppose)
+	}
+}
+
+// TestContestedIsDisagreementInsideOneRoleAndNowhereElse is the mark §8.7 puts
+// on a row the reviewers argued over.
+//
+// The distinction is the whole of it. Two reviewers answering the same
+// question differently is disagreement; two reviewers answering different
+// questions differently is two answers. A tally that called the second
+// contested would mark almost every reviewed record, because a record
+// routinely collects one reception vote and one evidence check, and the mark
+// would stop meaning anything the first time an operator looked at it.
+//
+// The within-role half runs through the store, because that is the case the
+// deployment actually produces. The across-role half is folded directly:
+// §4.12 admits a vote only in the reception role, so a cross-role split cannot
+// be written through Submit at all — which is exactly why the rule has to be
+// pinned where the grouping happens rather than where the votes are cast.
+func TestContestedIsDisagreementInsideOneRoleAndNowhereElse(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	first := h.claim(t, "asg_reception_a", RoleReception, testRun)
+	submit(t, h, first, &Assessment{Vote: VoteSupport})
+	agreed, err := h.store.Tallies(ctx)
+	if err != nil {
+		t.Fatalf("Tallies: %v", err)
+	}
+	if agreed[proposalSubject()].Contested {
+		t.Errorf("one support is contested: %+v", agreed[proposalSubject()])
+	}
+
+	second := h.claim(t, "asg_reception_b", RoleReception, otherRun)
+	submit(t, h, second, &Assessment{Vote: VoteOppose})
+	split, err := h.store.Tallies(ctx)
+	if err != nil {
+		t.Fatalf("Tallies: %v", err)
+	}
+	tally := split[proposalSubject()]
+	if !tally.Contested {
+		t.Errorf("tally = %+v, want the reception role's own split marked", tally)
+	}
+	if tally.Support != 1 || tally.Oppose != 1 {
+		t.Errorf("votes = %d/%d, want the two that disagreed", tally.Support, tally.Oppose)
+	}
+
+	// The same two votes in two roles: both are counted, and neither is
+	// disagreement, because they answer different questions.
+	across := foldTallies([]tallyRow{
+		reviewerVote("evr_a", testRun, RoleEvidence, VoteSupport),
+		reviewerVote("evr_b", otherRun, RoleRelevance, VoteOppose),
+	}, nil)
+	if got := across[proposalSubject()]; got.Contested {
+		t.Errorf("support on %s beside opposition on %s is contested: %+v",
+			RoleEvidence, RoleRelevance, got)
+	} else if got.Support != 1 || got.Oppose != 1 {
+		t.Errorf("votes = %d/%d, want both sides counted even though they agree about nothing",
+			got.Support, got.Oppose)
+	}
+	// A vote whose grant this instance never saw belongs to no role. It is
+	// still a reviewer's position and still in the columns; it is not
+	// disagreement inside a role, because there is no role it is inside.
+	roleless := foldTallies([]tallyRow{
+		reviewerVote("evr_c", testRun, "", VoteSupport),
+		reviewerVote("evr_d", otherRun, "", VoteOppose),
+	}, nil)
+	if got := roleless[proposalSubject()]; got.Contested || got.Support != 1 || got.Oppose != 1 {
+		t.Errorf("roleless tally = %+v, want both votes counted and no role to disagree inside", got)
+	}
+}
+
+// reviewerVote is one run's vote as the grouping scans it.
+func reviewerVote(id, actor, role, vote string) tallyRow {
+	return tallyRow{
+		id: id, kind: KindAssessment, subject: proposalSubject(),
+		actorKind: ActorRun, actorID: actor, role: role,
+		at:     time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC),
+		record: Record{Assessment: &Assessment{Vote: vote}},
+	}
+}
+
+// TestOpenClaimsAreTheReviewsStillInFlight is what a front page reads to say
+// Babel is looking at something.
+//
+// Three states and only the first is open. A live lease is a review in
+// progress. A finished one is work that has been said, and the record's own
+// reception carries it from then on. A lapsed one is nobody's: the next
+// claimer may take it at any instant, so a surface that kept showing it would
+// be reporting a reviewer that stopped existing.
+//
+// The lapsed case is asked at a later instant rather than written differently,
+// which is the property that matters: expiry is a question about now, so the
+// caller's clock decides it and the stored row does not change.
+func TestOpenClaimsAreTheReviewsStillInFlight(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	granted := h.claim(t, "asg_open", RoleReception, testRun)
+
+	held, err := h.store.OpenClaims(ctx, h.clock.at)
+	if err != nil {
+		t.Fatalf("OpenClaims: %v", err)
+	}
+	open := held[proposalSubject()]
+	if open.Count != 1 {
+		t.Fatalf("open claims = %+v, want the one that was just granted", held)
+	}
+	if !open.Since.Equal(granted.CreatedAt) {
+		t.Errorf("since = %s, want the instant the claim was granted (%s)", open.Since, granted.CreatedAt)
+	}
+
+	// The lease outlives its grant by the policy's own seconds, and nothing
+	// about the row changes when it lapses — only the question's instant.
+	lapsed := h.clock.at.Add(time.Duration(testPolicy().LeaseSeconds)*time.Second + time.Second)
+	after, err := h.store.OpenClaims(ctx, lapsed)
+	if err != nil {
+		t.Fatalf("OpenClaims after the lease: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("open claims after the lease lapsed = %+v, want none", after)
+	}
+
+	// And a finished claim is closed at the instant it was still live for,
+	// which is the half a clock cannot produce.
+	submit(t, h, granted, &Assessment{Vote: VoteSupport})
+	finished, err := h.store.OpenClaims(ctx, h.clock.at)
+	if err != nil {
+		t.Fatalf("OpenClaims after the submission: %v", err)
+	}
+	if len(finished) != 0 {
+		t.Errorf("open claims after the review landed = %+v, want none", finished)
 	}
 }
 

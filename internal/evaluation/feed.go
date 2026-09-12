@@ -10,7 +10,7 @@ package evaluation
 // reads a bounded projection rather than fetching the whole corpus, and it
 // ranks the complete eligible set before paging it.
 //
-// Two reads are here and both are deliberate in shape.
+// Three reads are here and each is deliberate in shape.
 //
 // Tallies is one grouped pass over the judgement-bearing records. It reads
 // assessments and feedback and nothing else — an assignment, an attempt, a
@@ -25,6 +25,13 @@ package evaluation
 // not cover, is still a record with a conversation under it, and a comment
 // thread that disappeared until the next sweep would be the cache deciding
 // what was said.
+//
+// OpenClaims is the claim table read the same way: every subject a reviewer
+// is holding right now, in one grouped pass rather than one lease lookup per
+// row. It is a read of the coordination state rather than of the records —
+// nothing here has been said about the subject yet — which is exactly what
+// makes it the only way a front page can show work in flight instead of work
+// already finished.
 
 import (
 	"context"
@@ -46,6 +53,21 @@ type Tally struct {
 	Support int
 	Oppose  int
 	Unsure  int
+	// Contested is the by-role split reduced to the one bit a listing can
+	// render: some role holds both a support and an opposition after the
+	// dedup below. It is per role rather than across the whole reception
+	// because a role is what a reviewer was authorized to answer — support
+	// on whether the record matters beside opposition on whether its
+	// evidence holds is two reviewers agreeing about different things, and
+	// counting that as disagreement would make almost every reviewed
+	// record contested.
+	//
+	// The split itself is not carried. A map per subject would be an
+	// allocation per row of the front page for a fact no surface renders
+	// per role at listing density; the record page reads the roles it
+	// shows from the subject's own history, where the opposing rationales
+	// it puts beside them live.
+	Contested bool
 	// Comments counts the prose under the subject: a reviewer's
 	// contribution text, an operator's reason or question, a reconsider
 	// item's reason and the reason on a reconsideration. A bare vote is not
@@ -182,6 +204,18 @@ func foldTallies(rows []tallyRow, superseded map[string]struct{}) map[Subject]Ta
 		}
 		out[row.subject] = tally
 	}
+	// The columns and the by-role split are folded out of the same
+	// surviving votes, so a row's score and its contested mark cannot
+	// disagree about which votes counted. A vote whose grant carried no
+	// role is in the columns and outside the split: it is a reviewer's
+	// position, and crediting it to a role nobody authorized it for is how
+	// a bare vote comes to read as a satisfied evidence check.
+	type roleKey struct {
+		subject Subject
+		role    string
+	}
+	type sides struct{ support, oppose bool }
+	split := map[roleKey]sides{}
 	for key, vote := range votes {
 		tally := out[key.subject]
 		switch vote {
@@ -193,6 +227,26 @@ func foldTallies(rows []tallyRow, superseded map[string]struct{}) map[Subject]Ta
 			tally.Unsure++
 		}
 		out[key.subject] = tally
+		if key.role == "" {
+			continue
+		}
+		within := roleKey{key.subject, key.role}
+		held := split[within]
+		switch vote {
+		case VoteSupport:
+			held.support = true
+		case VoteOppose:
+			held.oppose = true
+		}
+		split[within] = held
+	}
+	for within, held := range split {
+		if !held.support || !held.oppose {
+			continue
+		}
+		tally := out[within.subject]
+		tally.Contested = true
+		out[within.subject] = tally
 	}
 	return out
 }
@@ -249,6 +303,70 @@ func (s *Store) Thread(ctx context.Context, subject Subject) ([]ThreadRecord, er
 	return records, nil
 }
 
+// OpenClaim is one subject's review in flight: how many claims on it are open
+// right now, and when the oldest of them was granted.
+//
+// The count and the instant are one value because they answer one question
+// asked twice. A listing renders the bit — this record is being looked at —
+// and a live panel renders the wait beside it, and two reads of the same rows
+// could disagree about which claims were open at which moment.
+//
+// Since is the claim's own creation, which a takeover does not rewrite: the
+// fence advances, the lease is re-cut and the row keeps the instant the work
+// on this subject started, so a reviewer that died and was replaced reads as
+// one long review rather than as a fresh one.
+type OpenClaim struct {
+	Count int
+	Since time.Time
+}
+
+// OpenClaims groups the claims that are open at now by subject, in one read.
+//
+// Open is three conditions and all three are the coordinator's own: the claim
+// has not been finished, its lease has not lapsed, and it names a subject. An
+// expired lease is not open — the next claimer may take it at any instant,
+// which is precisely what the fence exists for — and a finished one is work
+// that has already been said rather than work in flight. Neither is deleted:
+// the schema refuses that, so both are still here and both are excluded by
+// what they say about themselves rather than by their absence.
+//
+// The expiry is compared as text against the stored column, which is exact
+// rather than approximate: formatTime writes UTC with a fixed nine-digit
+// fraction, so the column's text order is its chronological order.
+func (s *Store) OpenClaims(ctx context.Context, now time.Time) (map[Subject]OpenClaim, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT subject_kind, subject_id, created_at
+		FROM evaluation_claim
+		WHERE finished_at = '' AND expires_at > ? AND subject_id <> ''`, formatTime(now))
+	if err != nil {
+		return nil, fmt.Errorf("read open evaluation claims: %w", err)
+	}
+	defer rows.Close()
+	out := map[Subject]OpenClaim{}
+	for rows.Next() {
+		var (
+			subject Subject
+			created string
+		)
+		if err := rows.Scan(&subject.Kind, &subject.ID, &created); err != nil {
+			return nil, fmt.Errorf("scan open evaluation claim: %w", err)
+		}
+		at, err := parseTime(created)
+		if err != nil {
+			return nil, fmt.Errorf("evaluation claim on %s: %w", subject, err)
+		}
+		held := out[subject]
+		held.Count++
+		if held.Since.IsZero() || at.Before(held.Since) {
+			held.Since = at
+		}
+		out[subject] = held
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read open evaluation claims: %w", err)
+	}
+	return out, nil
+}
+
 // Tallies groups the deployment's reception by subject, for a surface that
 // ranks every record at once.
 func (s *Service) Tallies(ctx context.Context) (map[Subject]Tally, error) {
@@ -259,4 +377,10 @@ func (s *Service) Tallies(ctx context.Context) (map[Subject]Tally, error) {
 // the conversation under it.
 func (s *Service) Thread(ctx context.Context, subject Subject) ([]ThreadRecord, error) {
 	return s.store.Thread(ctx, subject)
+}
+
+// OpenClaims reports what Babel is reviewing right now, for a surface showing
+// work in flight beside work already recorded.
+func (s *Service) OpenClaims(ctx context.Context, now time.Time) (map[Subject]OpenClaim, error) {
+	return s.store.OpenClaims(ctx, now)
 }
