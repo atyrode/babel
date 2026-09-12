@@ -58,7 +58,7 @@ import (
 	"github.com/atyrode/babel/internal/transcript"
 )
 
-// recordPathPrefix is where the peel and the operator's reception live.
+// recordPathPrefix is where the peel and the conversation under it live.
 //
 // It is the second path-parameter route on this surface after
 // proposalPathPrefix, and unlike that one it is resolved from routeAPI's
@@ -71,21 +71,12 @@ import (
 // file can say which.
 const recordPathPrefix = "/api/record/"
 
-// receptionPathSuffix is the operator's voice on the record he is reading.
-const receptionPathSuffix = "/reception"
-
-// routeRecord dispatches the three id-bearing record routes, reporting whether
+// routeRecord dispatches the two id-bearing record routes, reporting whether
 // the path was one of them.
 func (s *Server) routeRecord(w http.ResponseWriter, r *http.Request) bool {
 	rest, found := strings.CutPrefix(r.URL.Path, recordPathPrefix)
 	if !found || rest == "" {
 		return false
-	}
-	if id, isReception := strings.CutSuffix(rest, receptionPathSuffix); isReception {
-		if s.requireMethod(w, r, http.MethodPost) {
-			s.handleRecordReception(w, r, id)
-		}
-		return true
 	}
 	// The conversation under the record (§8.7). It answers two methods,
 	// which is deliberate and is the same judgement /api/evaluation/policy
@@ -1958,104 +1949,25 @@ func receiptCost(assignment evaluation.Assignment, attempt evaluation.Attempt) s
 	}
 }
 
-// receptionRequest is POST /api/record/{id}/reception's body: the operator's
-// position, and optionally why.
-//
-// The stance is a closed vocabulary and the reason is free text, which is the
-// same split §4.12 draws everywhere else: a position a reader would have to
-// infer from prose is a position each reader infers differently, and a reason
-// Babel classified would no longer be the operator's own words.
-type receptionRequest struct {
-	Stance string `json:"stance"`
-	Reason string `json:"reason"`
-}
-
-// receptionResult confirms what was recorded and when.
-//
-// It echoes the stored record's stance rather than the request's, so an act
-// the service refused or rewrote cannot be reported back as the one that was
-// sent.
-type receptionResult struct {
-	Stance string `json:"stance"`
-	At     string `json:"at"`
-}
-
-// handleRecordReception records the operator's own reception of a record
-// (#235 §3).
-//
-// It is an operator-authored feedback record and nothing else. §4.12's
-// authority boundary does not move to make room for it: OperatorKinds still
-// excludes an assessment, so this write cannot mint what reads as a model's
-// observation, and it sets no disposition — agreeing is not accepting, and the
-// accept/reject/defer vocabulary stays behind internal/review's confirmation.
-//
-// Recording a second stance is a second record. §4.12 is append-only, so a
-// changed mind leaves both readable in order, which is why the peel's
-// reception carries a history beside the current position.
-func (s *Server) handleRecordReception(w http.ResponseWriter, r *http.Request, id string) {
-	if !s.requireService(w, s.opts.Evaluation != nil, evaluationServiceName) {
-		return
-	}
-	kind, known := kindOfRecordID(id)
-	if !known {
-		s.writeError(w, http.StatusBadRequest,
-			"that identifier names no record kind this surface can open")
-		return
-	}
-	by, ok := s.requireOperator(w)
-	if !ok {
-		return
-	}
-	var request receptionRequest
-	if !s.decodeBody(w, r, &request) {
-		return
-	}
-	// The stance is passed through unchecked, on handleEvaluationOperator's
-	// terms: internal/evaluation owns the vocabulary and refuses a value
-	// outside it, and a second gate here is a second place for the two to
-	// come to disagree about what an operator may say.
-	record, refresh, err := s.opts.Evaluation.OperatorDeferred(r.Context(), evaluation.OperatorInput{
-		Subject:  evaluation.Subject{Kind: string(kind), ID: id},
-		Kind:     evaluation.KindFeedback,
-		Operator: by.ID(),
-		Reason:   request.Reason,
-		Stance:   request.Stance,
-	})
-	if err != nil {
-		s.serviceError(w, r, err)
-		return
-	}
-	// The refresh is started before the response and waited on only briefly.
-	// A reader who agrees and then reloads must see his own stance, and a
-	// reader whose machine is busy must not wait on bookkeeping to find out
-	// that it was recorded; those are both true of a refresh that gets a
-	// short head start and then stops being his problem.
-	s.refreshReception(record.Subject, refresh)
-	s.writeJSON(w, http.StatusOK, receptionResult{
-		Stance: record.Stance,
-		At:     timeText(record.CreatedAt),
-	})
-}
-
-// refreshReception brings the evaluation projection up to date with a stance
-// that has already been recorded, and gives the response a deadline rather
-// than the work.
+// refreshEvaluation brings the evaluation projection up to date with an
+// operator write that has already been recorded, and gives the response a
+// deadline rather than the work.
 //
 // The two halves of the write are separated because only one of them is the
-// act. The durable record is the operator's position the instant its
+// act. The durable record is what the operator said the instant its
 // transaction commits; the projection is a rebuildable cache, and refreshing
 // it reads this instance's evaluation records, assignments, attempts, the
 // subject's artifact and the effective policy in order to replace one row —
-// six of the six and a half seconds an upvote took on the live catalog, spent
-// after the thing the operator asked for was already true.
+// six of the six and a half seconds an operator write took on the live
+// catalog, spent after the thing he asked for was already true.
 //
 // So the refresh runs on its own goroutine, under a context of its own, and
 // the handler waits for it for as long as an instant lasts. That ordering is
-// what keeps both properties: a reload right after clicking shows the stance,
-// because on an idle machine the refresh finishes in tens of milliseconds and
-// the response waits for it; and a machine with three lanes writing does not
-// make the operator watch a projection catch up, because the wait expires and
-// the work continues without him.
+// what keeps both properties: a reload right after commenting shows the
+// comment, because on an idle machine the refresh finishes in tens of
+// milliseconds and the response waits for it; and a machine with three lanes
+// writing does not make the operator watch a projection catch up, because the
+// wait expires and the work continues without him.
 //
 // The work is never cancelled by the wait expiring. A refresh abandoned
 // halfway is the one outcome worse than a refresh that is late, so the
@@ -2066,9 +1978,9 @@ func (s *Server) handleRecordReception(w http.ResponseWriter, r *http.Request, i
 //
 // A failure is logged and nothing else. The projection is rebuilt from the
 // durable records on the launch's own schedule, so what a failed refresh costs
-// is a listing that lags until then — never the stance, which is already
+// is a listing that lags until then — never what he said, which is already
 // durable, and never the request, which is answered either way.
-func (s *Server) refreshReception(subject evaluation.Subject, refresh func(context.Context) error) {
+func (s *Server) refreshEvaluation(subject evaluation.Subject, refresh func(context.Context) error) {
 	if refresh == nil {
 		return
 	}
@@ -2076,27 +1988,27 @@ func (s *Server) refreshReception(subject evaluation.Subject, refresh func(conte
 	go func() {
 		defer close(done)
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()),
-			receptionRefreshTimeout)
+			evaluationRefreshTimeout)
 		defer cancel()
 		if err := refresh(ctx); err != nil {
-			s.logf("reception of %s %s recorded; evaluation projection not refreshed",
+			s.logf("an operator write about %s %s is recorded; evaluation projection not refreshed",
 				subject.Kind, subject.ID)
 		}
 	}()
 	select {
 	case <-done:
-	case <-time.After(receptionRefreshBudget):
+	case <-time.After(evaluationRefreshBudget):
 	}
 }
 
-// receptionRefreshBudget is how long a click waits for the projection to catch
-// up with it. It is the width of an instant rather than a service level: past
-// it the operator is watching a progress indicator for work he did not ask
-// for, and the work is no more correct for being waited on.
-const receptionRefreshBudget = 150 * time.Millisecond
+// evaluationRefreshBudget is how long a click waits for the projection to
+// catch up with it. It is the width of an instant rather than a service level:
+// past it the operator is watching a progress indicator for work he did not
+// ask for, and the work is no more correct for being waited on.
+const evaluationRefreshBudget = 150 * time.Millisecond
 
-// receptionRefreshTimeout bounds the refresh itself. It is long because by
+// evaluationRefreshTimeout bounds the refresh itself. It is long because by
 // then the refresh is not in anybody's way, and finite so that a store which
 // has stopped answering does not accumulate goroutines for the life of the
 // launch.
-const receptionRefreshTimeout = time.Minute
+const evaluationRefreshTimeout = time.Minute

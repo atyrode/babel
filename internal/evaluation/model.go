@@ -1202,6 +1202,22 @@ type Record struct {
 	// stay readable in order - which is what makes "he used to agree"
 	// answerable at all.
 	Stance string `json:"stance,omitempty"`
+	// Question marks the feedback record as something the operator asked
+	// rather than something he said, which §8.7's `ask` act records: "a
+	// question to Babel about this record, recorded as a comment Babel's
+	// next review of the record must answer". It is a marker beside the
+	// reason rather than a kind of its own, because the record is the same
+	// act - operator-authored prose about a subject, verbatim, deciding
+	// nothing - and a second kind would make a later review read two
+	// stores to find what it owes an answer to.
+	//
+	// It is additive and optional, and absence means exactly what it has
+	// always meant on every record already written: nobody asked anything.
+	// So RecordSchema does not move for it - a reader of an older build
+	// loses the label rather than misreading a claim, where a bump would
+	// make every ordinary record this build writes unreadable to that
+	// build in exchange for one.
+	Question bool `json:"question,omitempty"`
 	// Assignment, Attempt and Checkpoint carry the three judgement-free
 	// record families. They are published for a reason that is easy to miss:
 	// without them a second instance can count completed assessments and
@@ -1384,6 +1400,9 @@ func (r Record) validatePayload() error {
 	if r.Stance != "" && r.Kind != KindFeedback {
 		return fmt.Errorf("%w: only feedback carries a reception stance, not a %s", ErrInvalid, r.Kind)
 	}
+	if r.Question && r.Kind != KindFeedback {
+		return fmt.Errorf("%w: only feedback carries a question, not a %s", ErrInvalid, r.Kind)
+	}
 	switch r.Kind {
 	case KindAssessment:
 		if r.Assessment == nil {
@@ -1447,6 +1466,12 @@ func (r Record) validatePayload() error {
 		if r.Stance != "" && !slices.Contains(Stances(), r.Stance) {
 			return fmt.Errorf("%w: a reception states agree, disagree or unsure, not %q",
 				ErrInvalid, r.Stance)
+		}
+		// A question is the reason, so it cannot be a marker on its own:
+		// a record that said only "he asked something" would leave a
+		// later review with an obligation and no question to answer.
+		if r.Question && strings.TrimSpace(r.Reason) == "" {
+			return fmt.Errorf("%w: a question is the words it asks, and this one has none", ErrInvalid)
 		}
 	case KindReconsider:
 		if strings.TrimSpace(r.Reason) == "" {
@@ -1591,6 +1616,11 @@ type OperatorInput struct {
 	// now, the benchmark lands first" takes no side on whether the record is
 	// right.
 	Stance string `json:"stance,omitempty"`
+	// Question marks the feedback as §8.7's `ask`: prose the operator
+	// addressed to Babel about this subject, which the record's next review
+	// must answer. It is lawful only on feedback and only beside a reason,
+	// for the reason the record's own marker is: the question is the words.
+	Question bool `json:"question,omitempty"`
 }
 
 func (in OperatorInput) validate() error {
@@ -1621,6 +1651,14 @@ func (in OperatorInput) validate() error {
 		if !slices.Contains(Stances(), in.Stance) {
 			return fmt.Errorf("%w: a reception states agree, disagree or unsure, not %q",
 				ErrInvalid, in.Stance)
+		}
+	}
+	if in.Question {
+		if in.Kind != KindFeedback {
+			return fmt.Errorf("%w: only feedback carries a question, not a %s", ErrInvalid, in.Kind)
+		}
+		if strings.TrimSpace(in.Reason) == "" {
+			return fmt.Errorf("%w: a question is the words it asks, and this one has none", ErrInvalid)
 		}
 	}
 	return nil

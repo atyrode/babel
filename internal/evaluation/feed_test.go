@@ -55,10 +55,10 @@ func TestOperatorFeedbackCarryingOnlyAReasonIsAComment(t *testing.T) {
 // Three rules are asserted together because they are one rule applied to the
 // three things a subject accumulates. One vote per run per role, which is
 // §4.12's own limit: the same reviewer answering the same question twice is a
-// changed mind rather than two votes. The operator's newest stance, which is
-// the newest *stance* and not the newest record. And prose counted as a
-// comment where a bare vote is not, because the score already carries the vote
-// and an empty row in a conversation says nothing.
+// changed mind rather than two votes. The operator's stance counted nowhere,
+// which is §8.7's "the score is Babel's reception and only Babel's". And prose
+// counted as a comment where a bare vote is not, because the score already
+// carries the vote and an empty row in a conversation says nothing.
 func TestFeedbackAndVotesFoldIntoOneTallyPerSubject(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -84,8 +84,14 @@ func TestFeedbackAndVotesFoldIntoOneTallyPerSubject(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("record a stance: %v", err)
 	}
-	// A later reason with no position withdraws nothing, which is the one
-	// way a newest-record rule and a newest-stance rule differ.
+	// A bare stance — his position with nothing said beside it — folds into
+	// nothing at all: not a column, not a comment, not activity.
+	if _, err := h.store.Operator(ctx, OperatorInput{
+		Subject: proposalSubject(), Kind: KindFeedback, Operator: "alex",
+		Stance: StanceDisagree,
+	}); err != nil {
+		t.Fatalf("record a bare stance: %v", err)
+	}
 	if _, err := h.store.Operator(ctx, OperatorInput{
 		Subject: proposalSubject(), Kind: KindFeedback, Operator: "alex",
 		Reason: "still waiting on the benchmark",
@@ -102,8 +108,12 @@ func TestFeedbackAndVotesFoldIntoOneTallyPerSubject(t *testing.T) {
 		t.Errorf("votes = %d/%d/%d, want two supports and one opposition",
 			tally.Support, tally.Oppose, tally.Unsure)
 	}
-	if tally.Stance != StanceAgree {
-		t.Errorf("stance = %q, want the newest position rather than the newest record", tally.Stance)
+	// He agreed and then disagreed, and neither reached the score: a person
+	// is not one of Babel's reviewers, and a column that moved when he
+	// clicked would make his click indistinguishable from an observation.
+	if tally.Support+tally.Oppose+tally.Unsure != 3 {
+		t.Errorf("votes total %d, want the three the runs cast",
+			tally.Support+tally.Oppose+tally.Unsure)
 	}
 	// Two pieces of reviewer prose plus two operator reasons; the two bare
 	// votes contribute nothing.
@@ -136,6 +146,82 @@ func TestFeedbackAndVotesFoldIntoOneTallyPerSubject(t *testing.T) {
 	if after.Support != 1 || after.Oppose != 2 {
 		t.Errorf("votes after a correction = %d/%d, want the superseded support dropped",
 			after.Support, after.Oppose)
+	}
+}
+
+// TestAQuestionIsFeedbackThatSaysItIsOne is §8.7's `ask` act at the gate it
+// passes through.
+//
+// The operator's question and his comment are the same record family — prose
+// he wrote about a subject, kept verbatim, deciding nothing — and what
+// separates them is the marker, because a later review of the record has to
+// be able to find what it owes an answer to without reading every reason the
+// operator ever left. So the thread has to carry the distinction, and a
+// comment must not acquire it.
+func TestAQuestionIsFeedbackThatSaysItIsOne(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	asked, err := h.store.Operator(ctx, OperatorInput{
+		Subject: proposalSubject(), Kind: KindFeedback, Operator: "alex",
+		Reason: "what would this cost on the full corpus?", Question: true,
+	})
+	if err != nil {
+		t.Fatalf("record a question: %v", err)
+	}
+	if !asked.Question || asked.Reason != "what would this cost on the full corpus?" {
+		t.Fatalf("question = %+v, want the marker and his words", asked)
+	}
+	if asked.Stance != "" {
+		t.Errorf("stance = %q, want none: asking is not voting", asked.Stance)
+	}
+	said, err := h.store.Operator(ctx, OperatorInput{
+		Subject: proposalSubject(), Kind: KindFeedback, Operator: "alex",
+		Reason: "the verification criterion is the part I care about",
+	})
+	if err != nil {
+		t.Fatalf("record a comment: %v", err)
+	}
+	if said.Question {
+		t.Error("a plain comment carries the question marker")
+	}
+
+	// The thread is where a review reads them, so the marker has to survive
+	// the round trip through the payload rather than living in memory.
+	thread, err := h.store.Thread(ctx, proposalSubject())
+	if err != nil {
+		t.Fatalf("Thread: %v", err)
+	}
+	questions, comments := 0, 0
+	for _, entry := range thread {
+		if entry.Record.Kind != KindFeedback {
+			continue
+		}
+		if entry.Record.Question {
+			questions++
+			continue
+		}
+		comments++
+	}
+	if questions != 1 || comments != 1 {
+		t.Fatalf("thread holds %d questions and %d comments, want one of each", questions, comments)
+	}
+
+	// A marker with no words is refused: an obligation to answer something
+	// nobody asked is worse than no obligation at all.
+	if _, err := h.store.Operator(ctx, OperatorInput{
+		Subject: proposalSubject(), Kind: KindFeedback, Operator: "alex",
+		Stance: StanceAgree, Question: true,
+	}); err == nil {
+		t.Error("a question with no words was accepted")
+	}
+	// And the marker belongs to feedback alone: criteria are not a question.
+	if _, err := h.store.Operator(ctx, OperatorInput{
+		Subject: proposalSubject(), Kind: KindCriteria, Operator: "alex",
+		Reason: "what would this cost?", Question: true,
+		Criteria: []Criterion{{ID: "crit_1", Description: "p99 drops below 100ms"}},
+	}); err == nil {
+		t.Error("a criteria record was accepted as a question")
 	}
 }
 

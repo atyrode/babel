@@ -15,7 +15,9 @@ package evaluation
 // Tallies is one grouped pass over the judgement-bearing records. It reads
 // assessments and feedback and nothing else — an assignment, an attempt, a
 // checkpoint and a policy carry no reception at all — so the cost is the votes
-// and the comments rather than the store.
+// and the comments rather than the store. The votes it returns are the
+// reviewers' and only theirs: the operator's feedback is read for its prose,
+// never for a position, because §8.7 makes the score Babel's reception alone.
 //
 // Thread is one subject's records in commit order, read from the durable rows
 // rather than from the projection. The projection is a snapshot of the
@@ -33,27 +35,21 @@ import (
 
 // Tally is one subject's reception as a feed counts it.
 //
-// The three vote columns are Babel's reviewers only, and Stance is the
-// operator's own latest position beside them rather than folded into them.
-// §4.12's boundary is why: a person never mints what reads as a model's
-// observation, so the two stay separable at the point they are read, and a
-// surface that wants §8.7's single number adds them itself and says which part
-// was whose.
+// The three vote columns are Babel's reviewers only, and there is no column
+// for the operator. §8.7 is why: "the score is Babel's reception and only
+// Babel's", because the operator's act on a record is a ruling and a vote
+// beside it would be a weaker copy of it. His stances are still durable and
+// still readable — the record page renders the ones he recorded, in order —
+// but nothing here counts them, so no surface can add a person's click to a
+// model's observation by summing two fields.
 type Tally struct {
 	Support int
 	Oppose  int
 	Unsure  int
-	// Stance is the operator's newest reception - agree, disagree or unsure
-	// - and is empty when he has recorded none. It is the newest *stance*
-	// and not the newest feedback record, because §4.12 lets a scoped
-	// reason carry no position at all and a later reason without one
-	// withdraws nothing.
-	Stance   string
-	StanceAt time.Time
 	// Comments counts the prose under the subject: a reviewer's
-	// contribution text, an operator's reason, a reconsider item's reason
-	// and the reason on a reconsideration decision. A bare vote is not a
-	// comment and is not counted as one.
+	// contribution text, an operator's reason or question, a reconsider
+	// item's reason and the reason on a reconsideration. A bare vote is not
+	// a comment and is not counted as one.
 	Comments int
 	// LastActivity is the newest of everything above, and is zero when
 	// nothing has happened to the subject. The subject's own creation is
@@ -163,14 +159,16 @@ func foldTallies(rows []tallyRow, superseded map[string]struct{}) map[Subject]Ta
 				tally.Activity = append(tally.Activity, row.at)
 			}
 		case row.kind == KindFeedback && row.actorKind == ActorOperator:
-			if row.record.Stance != "" {
-				tally.Stance, tally.StanceAt = row.record.Stance, row.at
-				tally.Activity = append(tally.Activity, row.at)
+			// His prose is a comment; his stance is not a vote and is
+			// not read here at all. A bare stance therefore folds into
+			// nothing — not a column, not a comment and not activity —
+			// because it is neither reception nor something said, and
+			// counting its timestamp would let a click move a rank.
+			if strings.TrimSpace(row.record.Reason) == "" {
+				continue
 			}
-			if strings.TrimSpace(row.record.Reason) != "" {
-				tally.Comments++
-				tally.Activity = append(tally.Activity, row.at)
-			}
+			tally.Comments++
+			tally.Activity = append(tally.Activity, row.at)
 		case row.kind == KindReconsider || row.kind == KindReconsiderDecision:
 			if strings.TrimSpace(row.record.Reason) != "" {
 				tally.Comments++

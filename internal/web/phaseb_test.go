@@ -950,11 +950,18 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		// count — no model wrote any of it.
 		{name: "feed", method: http.MethodGet, path: "/api/feed?sort=new&limit=100"},
 		{name: "feed top", method: http.MethodGet, path: "/api/feed?sort=top&t=all"},
+		// The queue, which is the same feed narrowed to what awaits the
+		// operator and sorted by what he should look at next. It is
+		// enrolled separately because it is the one read whose rows carry
+		// a sentence this server composed — the five-word why — and a
+		// sweep that only saw the unfiltered feed would never see one.
+		{name: "feed next", method: http.MethodGet, path: "/api/feed?needs=me&sort=next&limit=100"},
 		{name: "topics", method: http.MethodGet, path: "/api/topics", fixed: true},
 		// The conversation under a record, read and written at one path.
 		// The read carries the reviewers' prose and the operator's own
-		// words; the write is the box §8.7 puts under the post, and it
-		// answers 201 because a comment did not exist before it.
+		// words; the writes are the box §8.7 puts under the post, which
+		// records either what he said or what he is asking, and both
+		// answer 201 because neither existed before it.
 		{
 			name: "record comments", method: http.MethodGet, dual: true,
 			path: "/api/record/" + h.proposal.ID + "/comments",
@@ -963,6 +970,11 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 			name: "record comment", method: http.MethodPost, mutating: true, dual: true, created: true,
 			path: "/api/record/" + h.proposal.ID + "/comments",
 			body: `{"text":"the verification criterion is the part that matters"}`,
+		},
+		{
+			name: "record question", method: http.MethodPost, mutating: true, dual: true, created: true,
+			path: "/api/record/" + h.proposal.ID + "/comments",
+			body: `{"text":"what would this cost on the whole corpus?","kind":"question"}`,
 		},
 	}
 }

@@ -485,14 +485,14 @@ func assessed(role, vote, rationale string) roleVote {
 	}}
 }
 
-// TestAStanceDoesNotWaitOnTheProjection is the operator's sixth complaint: the
-// upvote took six and a half seconds.
+// TestAnOperatorWriteDoesNotWaitOnTheProjection is the operator's sixth
+// complaint: the click took six and a half seconds.
 //
-// The stance is durable when its transaction commits; what followed it inline
-// was a refresh of a rebuildable projection. This holds the route to answering
-// on the write: the refresh here never finishes, and the response arrives
-// anyway, with the stance the store recorded.
-func TestAStanceDoesNotWaitOnTheProjection(t *testing.T) {
+// What he says is durable when its transaction commits; what followed it
+// inline was a refresh of a rebuildable projection. This holds the route to
+// answering on the write: the refresh here never finishes, and the response
+// arrives anyway, carrying what the store recorded.
+func TestAnOperatorWriteDoesNotWaitOnTheProjection(t *testing.T) {
 	wedged := make(chan struct{})
 	t.Cleanup(func() { close(wedged) })
 	h := newPhaseB(t, peelText, func(o *Options) {
@@ -500,14 +500,20 @@ func TestAStanceDoesNotWaitOnTheProjection(t *testing.T) {
 	})
 
 	start := time.Now()
-	var recorded receptionResult
-	decodeResponse(t, h.okPost(t, "/api/record/"+h.proposal.ID+"/reception", `{"stance":"agree"}`), &recorded)
+	response := h.post("/api/record/"+h.proposal.ID+"/comments",
+		`{"text":"the verification criterion is the part I care about"}`)
+	if response.StatusCode != http.StatusCreated {
+		defer response.Body.Close()
+		t.Fatalf("status = %d, want 201", response.StatusCode)
+	}
+	var recorded commentResult
+	decodeResponse(t, response, &recorded)
 	elapsed := time.Since(start)
-	if recorded.Stance != "agree" {
-		t.Errorf("stance = %q, want the one the store recorded", recorded.Stance)
+	if recorded.Comment.Text != "the verification criterion is the part I care about" {
+		t.Errorf("comment = %q, want the words the store recorded", recorded.Comment.Text)
 	}
 	if elapsed > time.Second {
-		t.Errorf("the stance took %s, want well under a second even when the projection will not answer", elapsed)
+		t.Errorf("the comment took %s, want well under a second even when the projection will not answer", elapsed)
 	}
 }
 
@@ -610,36 +616,39 @@ func writeCitedSession(t *testing.T, said string) (string, event.Locator) {
 	}
 }
 
-// TestAnOperatorStanceRoundTripsAndKeepsTheOneItReplaced is #235 §3's missing
-// control, end to end.
+// TestThePeelRendersTheOperatorsEarlierStancesAndOffersNoNewOne is §8.7's
+// "Babel votes; the operator rules", checked on both sides of the line.
 //
-// The operator says what he thinks from the page he is reading it on, changes
-// his mind, and both statements survive: §4.12 is append-only, so a second
-// stance is a second record and never an edit to the first. A surface that
-// overwrote the earlier one would make "he used to agree" unanswerable, which
-// is the one thing an append-only log exists to prevent.
-func TestAnOperatorStanceRoundTripsAndKeepsTheOneItReplaced(t *testing.T) {
+// The stances the operator recorded before this section are facts, so the
+// record page still renders the current one and the ones it replaced, in
+// order: §4.12 is append-only, and a surface that stopped showing them would
+// make "he used to agree" unanswerable, which is the one thing an append-only
+// log exists to prevent. What is gone is the way to record another — the
+// operator does not vote, because his act on a record is a ruling — so the
+// route that took one answers like any path this surface does not have.
+func TestThePeelRendersTheOperatorsEarlierStancesAndOffersNoNewOne(t *testing.T) {
 	var service *evaluation.Service
 	h := newPhaseB(t, peelText, func(o *Options) {
 		service = realEvaluation(t, o.Frontier.(*frontier.Store))
 		o.Evaluation = service
 	})
+	subject := evaluation.Subject{Kind: "proposal", ID: h.proposal.ID}
+	for _, stance := range []struct{ position, reason string }{
+		{evaluation.StanceAgree, "this is the right remedy"},
+		{evaluation.StanceDisagree, "the benchmark changed my mind"},
+	} {
+		if _, err := service.Operator(h.ctx, evaluation.OperatorInput{
+			Subject:  subject,
+			Kind:     evaluation.KindFeedback,
+			Operator: operatorID,
+			Stance:   stance.position,
+			Reason:   stance.reason,
+		}); err != nil {
+			t.Fatalf("record a stance: %v", err)
+		}
+	}
 	if err := service.Refresh(context.Background()); err != nil {
 		t.Fatalf("refresh the evaluation projection: %v", err)
-	}
-	path := "/api/record/" + h.proposal.ID + "/reception"
-
-	var agreed receptionResult
-	decodeResponse(t, h.okPost(t, path, `{"stance":"agree","reason":"this is the right remedy"}`), &agreed)
-	if agreed.Stance != evaluation.StanceAgree || agreed.At == "" {
-		t.Fatalf("first reception = %+v", agreed)
-	}
-
-	var disagreed receptionResult
-	decodeResponse(t, h.okPost(t, path, `{"stance":"disagree","reason":"the benchmark changed my mind"}`),
-		&disagreed)
-	if disagreed.Stance != evaluation.StanceDisagree {
-		t.Fatalf("second reception = %+v", disagreed)
 	}
 
 	var peel recordPeel
@@ -665,59 +674,27 @@ func TestAnOperatorStanceRoundTripsAndKeepsTheOneItReplaced(t *testing.T) {
 	if len(peel.Reception.Model) != 0 {
 		t.Errorf("model reception = %+v, want none", peel.Reception.Model)
 	}
-}
 
-// TestTheReceptionRouteRecordsNoPositionItWasNotGiven covers the two ways a
-// reception can be malformed, both of which a real store refuses.
-//
-// The empty body is the one worth stating: a click that recorded `agree`
-// because no stance arrived would attribute a position to the operator that he
-// never took, and it would do it silently and permanently.
-func TestTheReceptionRouteRecordsNoPositionItWasNotGiven(t *testing.T) {
-	var service *evaluation.Service
-	h := newPhaseB(t, peelText, func(o *Options) {
-		service = realEvaluation(t, o.Frontier.(*frontier.Store))
-		o.Evaluation = service
-	})
-	if err := service.Refresh(context.Background()); err != nil {
-		t.Fatalf("refresh the evaluation projection: %v", err)
-	}
-	path := "/api/record/" + h.proposal.ID + "/reception"
-
-	for _, tc := range []struct{ name, body string }{
-		{"a word outside the vocabulary", `{"stance":"maybe"}`},
-		{"nothing at all", `{}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			response := h.post(path, tc.body)
-			defer response.Body.Close()
-			if response.StatusCode != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400", response.StatusCode)
-			}
-		})
-	}
-
-	// Nothing was recorded by either attempt, which is what makes the refusal
-	// a refusal rather than a message beside a stored record.
-	var peel recordPeel
-	decodeResponse(t, h.ok(t, "/api/record/"+h.proposal.ID), &peel)
-	if peel.Reception != nil && peel.Reception.Operator != nil {
-		t.Errorf("a refused reception was recorded anyway: %+v", peel.Reception.Operator)
+	// And there is nowhere to record a new one. The path is not a route that
+	// refuses a method or a body; it is not a route.
+	gone := h.post("/api/record/"+h.proposal.ID+"/reception", `{"stance":"agree"}`)
+	defer gone.Body.Close()
+	if gone.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404: the operator's vote is not a surface any more",
+			gone.StatusCode)
 	}
 }
 
-// TestTheReceptionRouteCannotMintAModelsObservation is §4.12's authority
-// boundary, asserted at the surface that just grew an operator write.
+// TestTheOperatorSurfaceCannotMintAModelsObservation is §4.12's authority
+// boundary at the one route that could widen it.
 //
-// The new route reaches evaluation.Service.Operator, which is the same path
-// /api/evaluation/operator uses, so the boundary has to be checked where it
-// could have widened: an operator surface that accepted `assessment` would let
-// a person mint what reads as a model's observation.
-func TestTheReceptionRouteCannotMintAModelsObservation(t *testing.T) {
-	var service *evaluation.Service
+// /api/evaluation/operator reaches evaluation.Service.Operator, which is the
+// same write the comment box performs, so the boundary has to be checked
+// where a kind can be named: an operator surface that accepted `assessment`
+// would let a person mint what reads as a model's observation.
+func TestTheOperatorSurfaceCannotMintAModelsObservation(t *testing.T) {
 	h := newPhaseB(t, peelText, func(o *Options) {
-		service = realEvaluation(t, o.Frontier.(*frontier.Store))
-		o.Evaluation = service
+		o.Evaluation = realEvaluation(t, o.Frontier.(*frontier.Store))
 	})
 
 	response := h.post("/api/evaluation/operator",
@@ -726,12 +703,14 @@ func TestTheReceptionRouteCannotMintAModelsObservation(t *testing.T) {
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: a person authored a run's assessment", response.StatusCode)
 	}
-	// The reception route carries no kind at all, which is the stronger half
-	// of the same guarantee: there is no field a request could put one in.
-	refused := h.post("/api/record/"+h.proposal.ID+"/reception", `{"kind":"assessment","stance":"agree"}`)
+	// The comment box carries no kind a record family could be named in,
+	// which is the stronger half of the same guarantee: its vocabulary is
+	// what the operator can say, not what a record can be.
+	refused := h.post("/api/record/"+h.proposal.ID+"/comments",
+		`{"text":"the criterion is the part I care about","kind":"assessment"}`)
 	defer refused.Body.Close()
 	if refused.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: the reception body accepts no kind", refused.StatusCode)
+		t.Fatalf("status = %d, want 400: the box records a comment or a question", refused.StatusCode)
 	}
 }
 

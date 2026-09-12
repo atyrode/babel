@@ -704,11 +704,11 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleEvaluationOperator(w, r)
 	// Issue #237's front page (§8.7). Two reads and no third: the feed is a
 	// projection over records this table already serves, so there is
-	// nothing here that writes and nothing that could. The votes it shows
-	// are recorded through /api/record/{id}/reception, which is the
-	// operator's own attributed stance and predates this section; the
-	// comments under a post are recorded through /api/record/{id}/comments,
-	// which routeRecord resolves with it.
+	// nothing here that writes and nothing that could. The score it shows
+	// is Babel's reviewers' own and is written by the runs that cast it;
+	// the operator's acts on a row are the rulings above and the box under
+	// the post, which is /api/record/{id}/comments and is resolved by
+	// routeRecord.
 	case "/api/feed":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return
@@ -730,9 +730,9 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		s.handleLock(w)
 	default:
-		// Issue #235's record peel and the operator's reception. They carry
-		// their selector in the path and are resolved here rather than
-		// before the switch, because six whole paths above already name
+		// Issue #235's record peel and the conversation under it. They
+		// carry their selector in the path and are resolved here rather
+		// than before the switch, because six whole paths above already name
 		// actions on a record: a prefix cut ahead of them would have to
 		// restate this table in order not to swallow /api/record/revisions.
 		// Reaching the default means every named path has been tried, so

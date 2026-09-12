@@ -76,17 +76,29 @@ type feedPost struct {
 	CreatedAt string      `json:"created_at"`
 	Author    *feedAuthor `json:"author"`
 	Topics    []string    `json:"topics"`
-	// Score is Support minus Oppose and every one of these counts the
-	// operator's own stance beside Babel's reviewers, because §8.7 makes him
-	// one voter among them for the purpose of the number. The separation
-	// §4.12 requires is kept by You, which names his stance: a breakdown
-	// subtracts it to render Babel's own reception on its own.
-	Score          int    `json:"score"`
-	Support        int    `json:"support"`
-	Oppose         int    `json:"oppose"`
-	Unsure         int    `json:"unsure"`
-	You            string `json:"you"`
-	Comments       int    `json:"comments"`
+	// Score is Support minus Oppose, and all four columns are Babel's
+	// reviewers and only Babel's (§8.7: "the score is Babel's reception and
+	// only Babel's"). The operator has no column here because he does not
+	// vote: his act on a record is a ruling, and a vote beside it would be
+	// a weaker copy of it. The stances he recorded before this section are
+	// still readable on the record page, and are counted nowhere.
+	Score    int `json:"score"`
+	Support  int `json:"support"`
+	Oppose   int `json:"oppose"`
+	Unsure   int `json:"unsure"`
+	Comments int `json:"comments"`
+	// Awaiting says whether this post is waiting on the operator: a record
+	// whose review standing invites a ruling, or a question whose state
+	// awaits him. It is a fact about the post rather than a filter state,
+	// so an unfiltered feed can mark the rows that need him instead of
+	// making him ask for a second list to find out.
+	Awaiting bool `json:"awaiting"`
+	// Why is why it is next, in five words at most, and is empty for a post
+	// that awaits nothing. It is built from the post's own facts — what has
+	// been ruled on it, how long it has waited, what a question is holding
+	// up — because a sentence assembled from anything else would be this
+	// surface explaining a queue position it did not derive.
+	Why            string `json:"why"`
 	LastActivityAt string `json:"last_activity_at"`
 	Href           string `json:"href"`
 }
@@ -105,14 +117,19 @@ type feedAuthor struct {
 // rather than from the answer would render a bar that disagrees with the rows
 // under it.
 type feedList struct {
-	Posts   []feedPost `json:"posts"`
-	Total   int        `json:"total"`
-	Sort    string     `json:"sort"`
-	T       string     `json:"t"`
-	Topic   string     `json:"topic"`
-	Kinds   []string   `json:"kinds"`
-	BuiltAt string     `json:"built_at"`
-	Notice  string     `json:"notice"`
+	Posts []feedPost `json:"posts"`
+	Total int        `json:"total"`
+	Sort  string     `json:"sort"`
+	T     string     `json:"t"`
+	Topic string     `json:"topic"`
+	Kinds []string   `json:"kinds"`
+	// Needs echoes the one thing a post can need — the operator — so a
+	// client renders the filter it is actually looking at. It is empty for
+	// the whole feed, which is the honest answer rather than a default a
+	// reader would have to know to disbelieve.
+	Needs   string `json:"needs"`
+	BuiltAt string `json:"built_at"`
+	Notice  string `json:"notice"`
 }
 
 // topicCount is one community in the sidebar: what it is called, how much is
@@ -145,6 +162,12 @@ type topicList struct {
 // a misspelled sort answered with the default would silently show a reader a
 // different order from the one he asked for.
 const (
+	// sortNext is §8.5's reading order: what needs the operator, most
+	// urgent first, and at equal urgency a proposal before a finding before
+	// a candidate before a question, oldest first inside that. It is not a
+	// score and it is not Reddit's: the other five rank a corpus by how it
+	// was received, and this one ranks it by what it is waiting for.
+	sortNext          = "next"
 	sortHot           = "hot"
 	sortNew           = "new"
 	sortTop           = "top"
@@ -153,8 +176,13 @@ const (
 )
 
 func feedSorts() []string {
-	return []string{sortHot, sortNew, sortTop, sortControversial, sortRising}
+	return []string{sortNext, sortHot, sortNew, sortTop, sortControversial, sortRising}
 }
+
+// feedNeedsOperator is the only value ?needs= takes. There is one person this
+// deployment can be waiting on, so the parameter names him rather than
+// carrying a vocabulary with one word in it.
+const feedNeedsOperator = "me"
 
 // The windows top and controversial range over. `all` is the whole corpus and
 // is the only one that is not a duration.
@@ -199,6 +227,56 @@ func feedKinds() []string {
 	}
 }
 
+// The urgency ranks sortNext groups by, before the kind decides and before
+// the age does. They are the order DecidePage's queue applied on the client
+// until this section folded that page into the feed, ported unchanged except
+// for the lane the feed does not have: a reconsider item is not a post, and
+// the nearest thing to it in one list is a record whose ruling the operator
+// himself lifted.
+//
+// Zero is "awaiting nothing" so that the field's zero value is the safe one:
+// the comparator reads urgency only for a post that awaits the operator, and
+// a default of "blocked" would put every fleet record at the top of the list
+// if that ever stopped being true.
+const (
+	urgencyNone = iota
+	// urgencyBlocked is a question Babel has stopped on. It has refused to
+	// guess, so nothing else here is more expensive to leave alone.
+	urgencyBlocked
+	// urgencyReopened is a ruling the operator lifted: he has read the
+	// record before, which makes it the cheapest ruling on the list.
+	urgencyReopened
+	// urgencyUnruled is a record nobody has ruled on yet — the review
+	// queue, which is most of what needs him.
+	urgencyUnruled
+	// urgencyAsked is a question that blocks nothing. §4.8 keeps it in the
+	// inbox and this is the one group here that is genuinely optional.
+	urgencyAsked
+)
+
+// feedKindWeight is §8.7's "a proposal before a finding before a candidate at
+// equal urgency", with a question after all three.
+//
+// The reason is what each kind is for rather than how much it matters: a
+// proposal is a remedy addressed to the operator, a finding is a pattern
+// Babel has consolidated and is asking him to accept, and a candidate is
+// something it is still developing on its own. An observation weighs with the
+// candidates because it is the evidence one rests on; it carries no standing
+// and so never awaits anybody, and the weight is here for the sort's
+// totality rather than for a row anybody will see.
+func feedKindWeight(kind string) int {
+	switch kind {
+	case string(frontier.EntityProposal):
+		return 0
+	case string(frontier.EntityFinding):
+		return 1
+	case string(frontier.EntityHypothesis), string(frontier.EntityObservation):
+		return 2
+	default:
+		return 3
+	}
+}
+
 // topicUnfiled is the reserved topic naming the posts whose origin this
 // deployment could not resolve.
 //
@@ -207,6 +285,28 @@ func feedKinds() []string {
 // cannot collide with a real topic: a workspace basename is a path element,
 // and the one reserved word is checked before the names are.
 const topicUnfiled = "unfiled"
+
+// standingsUnread is what a feed narrowed to what awaits the operator says
+// when this machine could not derive where its records stand. It names the
+// consequence rather than the failure, on catalogUnreachable's terms: what a
+// reader has to know is that records are missing from this list, not which
+// query did not answer.
+const standingsUnread = "where this machine's records stand could not be derived, so no record " +
+	"is listed as awaiting you and Babel's questions are all that is left"
+
+// joinNotices reports two notices as one sentence. A response carries one
+// notice field because a reader reads one line, and a second fact about the
+// same answer belongs beside the first rather than in place of it.
+func joinNotices(first, second string) string {
+	switch {
+	case first == "":
+		return second
+	case second == "":
+		return first
+	default:
+		return first + "; " + second
+	}
+}
 
 // The feed's paging. Twenty-five rows is §8.6's density contract expressed in
 // rows rather than pixels — about three screens at editorial measure — and a
@@ -266,6 +366,13 @@ type feedIndex struct {
 	// owed the same fact on the front page he is owed in a listing: these
 	// rows are what this machine could reach.
 	notice string
+	// standingsUnread records that this build could not derive where its
+	// records stand. It travels because it changes what one answer means:
+	// an unfiltered feed is unaffected, and a feed narrowed to what awaits
+	// the operator would silently hold nothing but questions, which reads
+	// as a deployment with no backlog rather than as a derivation that
+	// failed.
+	standingsUnread bool
 }
 
 // feedEntry is one post as the index holds it: the wire fields plus the two
@@ -280,6 +387,10 @@ type feedEntry struct {
 	// rising rank counts inside a window that moves after this was built.
 	activity []time.Time
 	topics   []string
+	// urgency is which of sortNext's groups this post belongs to. It is
+	// read only when the post awaits the operator, because it answers "how
+	// urgent is this wait" and a post nobody is waiting on has no answer.
+	urgency int
 }
 
 // handleFeed serves the front page.
@@ -308,6 +419,12 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	needs := query.Get("needs")
+	if needs != "" && needs != feedNeedsOperator {
+		s.writeError(w, http.StatusBadRequest, "a post can need the operator and nothing else; "+
+			"there is no such thing as needing "+strconv.Quote(needs))
+		return
+	}
 	limit, offset, ok := s.feedPage(w, r)
 	if !ok {
 		return
@@ -324,7 +441,7 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	// for the filter and outside it for the sort, which is a row that is
 	// eligible and unrankable.
 	now := time.Now().UTC()
-	eligible := filterFeed(index.posts, topic, kinds, sortBy, window, now)
+	eligible := filterFeed(index.posts, topic, kinds, sortBy, window, needs != "", now)
 	sortFeed(eligible, sortBy, now)
 	result := feedList{
 		Posts:   []feedPost{},
@@ -333,8 +450,17 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 		T:       window,
 		Topic:   topic,
 		Kinds:   kinds,
+		Needs:   needs,
 		BuiltAt: timeText(index.builtAt),
 		Notice:  index.notice,
+	}
+	// The one notice this filter adds rather than inherits. A record's
+	// standing is what "awaits the operator" is derived from, so a feed
+	// narrowed to what needs him after that derivation failed is holding
+	// back rows it cannot classify, and saying nothing would present the
+	// remainder as the whole backlog.
+	if needs != "" && index.standingsUnread {
+		result.Notice = joinNotices(result.Notice, standingsUnread)
 	}
 	if result.Kinds == nil {
 		result.Kinds = []string{}
@@ -410,8 +536,14 @@ func (s *Server) feedPage(w http.ResponseWriter, r *http.Request) (limit, offset
 // those are the two sorts that are *about* a period: "hot" over a day and
 // "hot" over all time would be the same list with the older half deleted, and
 // a rising post is by definition recent.
+//
+// needs is the queue, and it is a filter rather than a list because the queue
+// was the same list twice (operator direction 2026-09-12). A post awaiting
+// the operator is a fact the feed already carries, so asking for only those
+// narrows one order instead of opening a second one that could disagree with
+// it about what is waiting.
 func filterFeed(posts []feedEntry, topic string, kinds []string, sortBy, window string,
-	now time.Time) []feedEntry {
+	needs bool, now time.Time) []feedEntry {
 	var since time.Time
 	if sortBy == sortTop || sortBy == sortControversial {
 		if width, _ := feedWindow(window); width > 0 {
@@ -421,6 +553,9 @@ func filterFeed(posts []feedEntry, topic string, kinds []string, sortBy, window 
 	out := make([]feedEntry, 0, len(posts))
 	for _, entry := range posts {
 		if len(kinds) > 0 && !contains(kinds, entry.post.Kind) {
+			continue
+		}
+		if needs && !entry.post.Awaiting {
 			continue
 		}
 		if topic != "" && !entryInTopic(entry, topic) {
@@ -446,7 +581,8 @@ func entryInTopic(entry feedEntry, topic string) bool {
 
 // sortFeed orders the eligible set. Ties resolve newer first everywhere, and
 // then by identifier, so one corpus has one order rather than a different one
-// per rebuild.
+// per rebuild — except under next, which is the one order that is about a
+// wait rather than a reception and therefore drains from the bottom.
 func sortFeed(posts []feedEntry, sortBy string, now time.Time) {
 	rank := make([]float64, len(posts))
 	for i, entry := range posts {
@@ -467,6 +603,9 @@ func sortFeed(posts []feedEntry, sortBy string, now time.Time) {
 	}
 	sort.SliceStable(order, func(a, b int) bool {
 		x, y := order[a], order[b]
+		if sortBy == sortNext {
+			return nextBefore(posts[x], posts[y])
+		}
 		if sortBy != sortNew && rank[x] != rank[y] {
 			return rank[x] > rank[y]
 		}
@@ -480,6 +619,43 @@ func sortFeed(posts []feedEntry, sortBy string, now time.Time) {
 		sorted[i] = posts[from]
 	}
 	copy(posts, sorted)
+}
+
+// nextBefore is §8.5's reading order, which §8.7 puts on the sort bar as
+// next: urgency first, then the kind, then the oldest wait.
+//
+// Three keys and their order are the whole rule. Urgency, because a question
+// Babel has stopped on costs more to leave than a candidate it is still
+// developing. The kind at equal urgency, because a proposal is a remedy
+// addressed to the operator and a candidate is not addressed to him at all.
+// The oldest first inside a kind, on the ordinary grounds that a queue nobody
+// drains from the bottom has a permanent bottom — which is the one place this
+// order inverts every other sort in this file.
+//
+// A post that awaits nothing sorts after every post that does, newest first,
+// so that next is a complete order over the corpus rather than a filter
+// wearing a sort's name: a reader who turns the queue filter off keeps the
+// same list with the rest of the deployment underneath it.
+func nextBefore(left, right feedEntry) bool {
+	if left.post.Awaiting != right.post.Awaiting {
+		return left.post.Awaiting
+	}
+	if !left.post.Awaiting {
+		if !left.createdAt.Equal(right.createdAt) {
+			return left.createdAt.After(right.createdAt)
+		}
+		return left.post.ID < right.post.ID
+	}
+	if left.urgency != right.urgency {
+		return left.urgency < right.urgency
+	}
+	if lw, rw := feedKindWeight(left.post.Kind), feedKindWeight(right.post.Kind); lw != rw {
+		return lw < rw
+	}
+	if !left.createdAt.Equal(right.createdAt) {
+		return left.createdAt.Before(right.createdAt)
+	}
+	return left.post.ID < right.post.ID
 }
 
 // hotRank is the signed log of the score plus age at a fixed decay.
@@ -573,6 +749,11 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 	started := time.Now()
 	ctx := r.Context()
 	index := &feedIndex{builtAt: started.UTC()}
+	// The build's own instant is what every age in the index is measured
+	// from — "waiting 3d", "asked 2h" — rather than the instant a request
+	// arrives. The two differ by at most feedFreshness, and reading the
+	// clock per row would let two rows of one page disagree about now.
+	now := index.builtAt
 
 	sessions := s.sessionsBySourceID(ctx)
 	corpus, err := s.readCorpus(ctx)
@@ -588,26 +769,27 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 		// rather than telling a reader that nobody has decided.
 		s.logf("GET %s: review standings unread; the feed renders without them", r.URL.Path)
 		standings = nil
+		index.standingsUnread = true
 	}
 	tallies := s.feedTallies(ctx, r)
 
 	for _, record := range corpus.hypotheses {
 		index.add(s.feedRecord(frontier.EntityHypothesis, record.ID, record.RunID, record.CreatedAt,
-			record.Payload.Statement, topics[record.ID], standings, tallies))
+			record.Payload.Statement, topics[record.ID], standings, tallies, now))
 	}
 	for _, record := range corpus.observations {
 		index.add(s.feedRecord(frontier.EntityObservation, record.ID, record.RunID, record.CreatedAt,
-			record.Payload.Claim, topics[record.ID], standings, tallies))
+			record.Payload.Claim, topics[record.ID], standings, tallies, now))
 	}
 	for _, record := range corpus.findings {
 		index.add(s.feedRecord(frontier.EntityFinding, record.ID, record.RunID, record.CreatedAt,
-			record.Payload.Title, topics[record.ID], standings, tallies))
+			record.Payload.Title, topics[record.ID], standings, tallies, now))
 	}
 	for _, record := range corpus.proposals {
 		index.add(s.feedRecord(frontier.EntityProposal, record.ID, record.RunID, record.CreatedAt,
-			record.Payload.Title, topics[record.ID], standings, tallies))
+			record.Payload.Title, topics[record.ID], standings, tallies, now))
 	}
-	for _, entry := range s.feedQuestions(ctx, r) {
+	for _, entry := range s.feedQuestions(ctx, r, now) {
 		index.add(entry)
 	}
 	// The other machines' committed records, on the merged listings' terms:
@@ -694,13 +876,14 @@ func (i *feedIndex) countTopics(sessions map[string][]SessionRow) {
 // feedRecord projects one local record into a post.
 func (s *Server) feedRecord(kind frontier.EntityType, id, runID string, createdAt time.Time,
 	claim string, topics []string, standings map[frontier.Ref]frontier.ReviewStanding,
-	tallies map[evaluation.Subject]evaluation.Tally) feedEntry {
+	tallies map[evaluation.Subject]evaluation.Tally, now time.Time) feedEntry {
+	standing := feedStanding(kind, frontier.Ref{Type: kind, ID: id}, standings)
 	entry := feedEntry{
 		post: feedPost{
 			ID:        id,
 			Kind:      string(kind),
 			Title:     boundedLine(claim),
-			Standing:  feedStanding(kind, frontier.Ref{Type: kind, ID: id}, standings),
+			Standing:  standing,
 			CreatedAt: timeText(createdAt),
 			Topics:    idList(topics),
 			Href:      recordHref(id),
@@ -711,8 +894,80 @@ func (s *Server) feedRecord(kind frontier.EntityType, id, runID string, createdA
 	if runID != "" {
 		entry.post.Author = &feedAuthor{RunID: runID, Href: runHref(runID)}
 	}
+	awaitRecord(&entry, standing, createdAt, now)
 	applyTally(&entry, tallies[evaluation.Subject{Kind: string(kind), ID: id}], createdAt)
 	return entry
+}
+
+// awaitRecord decides whether a record is waiting on the operator, and says
+// why in five words.
+//
+// Two standings await a ruling and they are the record page's own two: `new`,
+// which is a record nobody has decided, and `reopened`, which is one whose
+// ruling an operator deliberately lifted. Those are exactly the two the peel
+// offers "Rule on this" against, so the feed and the record cannot disagree
+// about what needs him. Every other standing is a ruling that was made —
+// accepted, rejected, deferred, duplicate, refine-requested — and a deferral
+// is a decision rather than a postponement of one. A record with no standing
+// at all is not reviewable (§6.7) and awaits nobody.
+//
+// The sentence is built from the record's own two facts, which is all a row
+// carries: which of the two standings it is at, and how long it has been
+// there. The ruling and refinement counts DecidePage put in this sentence
+// came from the review queue's per-record derivation, and the front page does
+// not perform one per row — so the count is absent rather than guessed, and
+// what replaces it is the distinction that actually changes the act: a record
+// nobody has ruled on, against one whose ruling came back.
+func awaitRecord(entry *feedEntry, standing string, createdAt, now time.Time) {
+	switch standing {
+	case string(frontier.ReviewNew):
+		entry.urgency = urgencyUnruled
+		entry.post.Why = feedWhy("never ruled on", "waiting "+ageWord(now.Sub(createdAt)))
+	case standingReopened:
+		entry.urgency = urgencyReopened
+		entry.post.Why = feedWhy("reopened", "waiting "+ageWord(now.Sub(createdAt)))
+	default:
+		return
+	}
+	entry.post.Awaiting = true
+}
+
+// feedWhy joins the two halves of a why with §8.6's own separator, dropping
+// an absent half rather than rendering a gap beside it.
+func feedWhy(head, tail string) string {
+	if head == "" {
+		return tail
+	}
+	if tail == "" {
+		return head
+	}
+	return head + " · " + tail
+}
+
+// ageWord is how long ago something happened, in one word.
+//
+// One word rather than "3 days" is what keeps §8.7's five-word budget
+// spendable on the reason: "never ruled on · waiting 3d" is five words and
+// says both halves, where the same sentence with the unit spelled out is six
+// and says no more. A future instant reads as `now` for presence.go's reason:
+// "waiting -4m" is not a fact about anything.
+func ageWord(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return strconv.Itoa(int(d.Minutes())) + "m"
+	case d < 24*time.Hour:
+		return strconv.Itoa(int(d.Hours())) + "h"
+	case d < 7*24*time.Hour:
+		return strconv.Itoa(int(d.Hours()/24)) + "d"
+	case d < 30*24*time.Hour:
+		return strconv.Itoa(int(d.Hours()/(24*7))) + "w"
+	case d < 365*24*time.Hour:
+		return strconv.Itoa(int(d.Hours()/(24*30))) + "mo"
+	default:
+		return strconv.Itoa(int(d.Hours()/(24*365))) + "y"
+	}
 }
 
 // feedStanding reads where a record stands, in the vocabulary the record page
@@ -741,23 +996,13 @@ func feedStanding(kind frontier.EntityType, ref frontier.Ref,
 
 // applyTally folds one subject's reception into a post.
 //
-// The operator's stance is added to the columns rather than kept beside them,
-// which is §8.7's own arithmetic: "the score is support minus oppose across
-// all of them, because a vote is a vote and the operator is one voter among
-// Babel's reviewers". What keeps §4.12's boundary is You: it names his own
-// position, so a breakdown can render Babel's reception without him and never
-// presents his click as a model's observation.
+// The columns are Babel's reviewers and the score is theirs alone, which is
+// §8.7's arithmetic after the operator stopped voting: "the score is Babel's
+// reception and only Babel's". Nothing here reads an operator stance, so
+// there is no arithmetic in which his click could become a model's
+// observation — the two are not added because one of them is not a term.
 func applyTally(entry *feedEntry, tally evaluation.Tally, createdAt time.Time) {
 	entry.post.Support, entry.post.Oppose, entry.post.Unsure = tally.Support, tally.Oppose, tally.Unsure
-	entry.post.You = tally.Stance
-	switch tally.Stance {
-	case evaluation.StanceAgree:
-		entry.post.Support++
-	case evaluation.StanceDisagree:
-		entry.post.Oppose++
-	case evaluation.StanceUnsure:
-		entry.post.Unsure++
-	}
 	entry.post.Score = entry.post.Support - entry.post.Oppose
 	entry.post.Comments = tally.Comments
 	entry.activity = tally.Activity
@@ -793,7 +1038,7 @@ func (s *Server) feedTallies(ctx context.Context, r *http.Request) map[evaluatio
 // A question carries no run author: the ledger records what was asked and why,
 // and the run that provoked it is not part of the question. Its standing is
 // its own state, which is the vocabulary its page shows.
-func (s *Server) feedQuestions(ctx context.Context, r *http.Request) []feedEntry {
+func (s *Server) feedQuestions(ctx context.Context, r *http.Request, now time.Time) []feedEntry {
 	if s.opts.Reality == nil {
 		return nil
 	}
@@ -820,9 +1065,53 @@ func (s *Server) feedQuestions(ctx context.Context, r *http.Request) []feedEntry
 			lastActivity: question.CreatedAt,
 		}
 		entry.post.LastActivityAt = timeText(question.CreatedAt)
+		awaitQuestion(&entry, question, now)
 		out = append(out, entry)
 	}
 	return out
+}
+
+// awaitQuestion decides whether a question is waiting on the operator, and
+// says why in five words.
+//
+// Three of §4.8's states await him and the rest do not. `open` is the
+// ordinary one: Babel asked and nobody has answered. `answered-uninterpreted`
+// is his answer sitting with no plan drawn from it, which is a question that
+// has stopped moving rather than one that is done. `plan-ready` is an
+// interpretation waiting for the single acceptance §4.8 requires of him.
+// `interpreting` is Babel's own work in flight, `snoozed` is a wait he chose,
+// and answered, declined, obsolete and superseded are finished.
+//
+// Urgency is the question's class and not its state, which is §4.8's own rule
+// and DecidePage's: a blocking question has stopped a run, and every other
+// class is in the inbox on the same terms — "a class-dominated ranking would
+// bury a security-relevant curiosity question under every blocking one" is
+// about the score, and this is about what Babel cannot proceed without.
+func awaitQuestion(entry *feedEntry, question reality.Question, now time.Time) {
+	var head string
+	switch question.State {
+	case reality.QuestionOpen:
+		switch question.Class {
+		case reality.ClassBlocking:
+			head = "blocks a run"
+		case reality.ClassMaintenance:
+			head = "upkeep"
+		default:
+			head = "curiosity"
+		}
+	case reality.QuestionAnsweredUninterpreted:
+		head = "no plan yet"
+	case reality.QuestionPlanReady:
+		head = "plan ready"
+	default:
+		return
+	}
+	entry.post.Awaiting = true
+	entry.post.Why = feedWhy(head, "asked "+ageWord(now.Sub(question.CreatedAt)))
+	entry.urgency = urgencyAsked
+	if question.Class == reality.ClassBlocking {
+		entry.urgency = urgencyBlocked
+	}
 }
 
 // feedFleetRecord projects another machine's committed record.
@@ -1147,25 +1436,46 @@ type actView struct {
 	Reason string `json:"reason"`
 }
 
-// The comment kinds §8.7 names.
+// The comment kinds §8.7 names, as the thread renders them.
+//
+// commentQuestion is the one the operator can ask for. It is §8.7's `ask`:
+// "a question to Babel about this record, recorded as a comment Babel's next
+// review of the record must answer". It reads differently from his other
+// prose because it is a different act — a comment says something and a
+// question asks for something — and a thread that rendered them alike would
+// leave the reader unable to see what is still owed an answer.
 const (
 	commentContribution    = "contribution"
 	commentRefinement      = "refinement"
 	commentReason          = "reason"
+	commentQuestion        = "question"
 	commentAnswer          = "answer"
 	commentReconsideration = "reconsideration"
 )
 
+// commentAsk is the vocabulary POST /api/record/{id}/comments accepts, which
+// is narrower than what the thread renders: the five other kinds are acts
+// runs and the ledger perform, and a request that could name one would be
+// the operator authoring a reviewer's contribution.
+const (
+	askComment  = "comment"
+	askQuestion = "question"
+)
+
+func commentAsks() []string { return []string{askComment, askQuestion} }
+
 // commentRequest is POST /api/record/{id}/comments: the operator's own words,
-// and nothing else.
+// and whether they are a statement or a question.
 //
-// There is no stance field and that is the act rather than an omission: §8.7
-// gives the operator a box that "records a feedback record carrying a reason
-// and no polarity change". His arrows are the reception route; a comment that
-// could also move his vote would make one gesture do two things, and a reader
-// could no longer tell which of them he meant.
+// There is no stance field and that is the act rather than an omission: the
+// operator does not vote (§8.7), so the acts a record offers him are the
+// rulings and this box. Kind carries the one distinction the box itself needs
+// — saying something, or asking Babel something a later review must answer —
+// and absent means a comment, because that is what a box with no marker on it
+// has always recorded.
 type commentRequest struct {
 	Text string `json:"text"`
+	Kind string `json:"kind"`
 }
 
 // commentResult confirms what was recorded.
@@ -1194,14 +1504,19 @@ func (s *Server) handleRecordComments(w http.ResponseWriter, r *http.Request, id
 	s.writeJSON(w, http.StatusOK, thread)
 }
 
-// handlePostComment records the operator's own words under a record.
+// handlePostComment records the operator's own words under a record: what he
+// said about it, or what he is asking Babel about it.
 //
-// It is an operator-authored feedback record with a reason and no stance,
+// Both are one operator-authored feedback record with a reason and no stance,
 // which §4.12 already admits and §8.7 asks for by name. Nothing about the
-// authority boundary moves to make room for it: OperatorKinds still excludes
-// an assessment, so this write cannot mint what reads as a model's
+// authority boundary moves to make room for either: OperatorKinds still
+// excludes an assessment, so this write cannot mint what reads as a model's
 // observation, and it sets no disposition — saying something is not deciding
-// anything.
+// anything, and neither is asking.
+//
+// A question is the same record carrying a marker rather than a record of its
+// own, because the marker is what a later review of this record reads to find
+// what it owes an answer to. Two families would mean two reads.
 func (s *Server) handlePostComment(w http.ResponseWriter, r *http.Request, id string) {
 	if !s.requireService(w, s.opts.Evaluation != nil, evaluationServiceName) {
 		return
@@ -1220,7 +1535,20 @@ func (s *Server) handlePostComment(w http.ResponseWriter, r *http.Request, id st
 	if !s.decodeBody(w, r, &request) {
 		return
 	}
+	ask := request.Kind
+	if ask == "" {
+		ask = askComment
+	}
+	if !contains(commentAsks(), ask) {
+		s.writeError(w, http.StatusBadRequest, "a box under a record records a comment or a question, "+
+			"and there is no such thing as a "+strconv.Quote(ask))
+		return
+	}
 	if strings.TrimSpace(request.Text) == "" {
+		if ask == askQuestion {
+			s.writeError(w, http.StatusBadRequest, "a question asks something; this one is empty")
+			return
+		}
 		s.writeError(w, http.StatusBadRequest, "a comment says something; this one is empty")
 		return
 	}
@@ -1229,21 +1557,31 @@ func (s *Server) handlePostComment(w http.ResponseWriter, r *http.Request, id st
 		Kind:     evaluation.KindFeedback,
 		Operator: by.ID(),
 		Reason:   request.Text,
+		Question: ask == askQuestion,
 	})
 	if err != nil {
 		s.serviceError(w, r, err)
 		return
 	}
-	s.refreshReception(record.Subject, refresh)
+	s.refreshEvaluation(record.Subject, refresh)
 	s.writeJSON(w, http.StatusCreated, commentResult{Comment: commentView{
 		ID:        record.ID,
-		Kind:      commentReason,
+		Kind:      operatorCommentKind(record),
 		Author:    commentAuthor{Kind: evaluation.ActorOperator, ID: record.ActorID},
 		Text:      record.Reason,
 		At:        timeText(record.CreatedAt),
 		RelatedID: record.RelatedID,
 		Replies:   []commentView{},
 	}})
+}
+
+// operatorCommentKind reads what the stored record says it is, so the 201 and
+// the thread cannot describe one write in two vocabularies.
+func operatorCommentKind(record evaluation.Record) string {
+	if record.Question {
+		return commentQuestion
+	}
+	return commentReason
 }
 
 // evaluationComments reads what Babel's reviewers and the operator said about
@@ -1299,7 +1637,7 @@ func (s *Server) evaluationComments(r *http.Request, subject evaluation.Subject)
 			}
 			out = append(out, commentView{
 				ID:        record.ID,
-				Kind:      commentReason,
+				Kind:      operatorCommentKind(record),
 				Author:    commentAuthor{Kind: evaluation.ActorOperator, ID: record.ActorID},
 				Text:      record.Reason,
 				At:        timeText(record.CreatedAt),

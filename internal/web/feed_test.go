@@ -13,6 +13,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/atyrode/babel/internal/evaluation"
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/review"
 )
 
@@ -81,19 +83,19 @@ func TestTopRankHonoursTheWindowItWasAskedFor(t *testing.T) {
 	inside := entryAt("pro_inside", now.Add(-23*time.Hour), 1)
 	outside := entryAt("pro_outside", now.Add(-24*time.Hour-time.Second), 99)
 
-	within := filterFeed([]feedEntry{inside, outside}, "", nil, sortTop, "day", now)
+	within := filterFeed([]feedEntry{inside, outside}, "", nil, sortTop, "day", false, now)
 	if len(within) != 1 || within[0].post.ID != "pro_inside" {
 		t.Fatalf("top over a day = %v, want only the post inside it", ids(within))
 	}
 	// The same pair over all time keeps both, which is what makes the
 	// exclusion above the window's work rather than a broken fixture.
-	if all := filterFeed([]feedEntry{inside, outside}, "", nil, sortTop, windowAll, now); len(all) != 2 {
+	if all := filterFeed([]feedEntry{inside, outside}, "", nil, sortTop, windowAll, false, now); len(all) != 2 {
 		t.Fatalf("top over all time = %v, want both posts", ids(all))
 	}
 	// The window is top's and controversial's alone. A hot feed narrowed to
 	// a day would be the same list with its older half deleted, and a
 	// reader who never chose a period would be given one.
-	if hot := filterFeed([]feedEntry{inside, outside}, "", nil, sortHot, "day", now); len(hot) != 2 {
+	if hot := filterFeed([]feedEntry{inside, outside}, "", nil, sortHot, "day", false, now); len(hot) != 2 {
 		t.Fatalf("hot over a day = %v, want the window ignored", ids(hot))
 	}
 }
@@ -152,7 +154,7 @@ func TestRisingRankExcludesSilenceAndPrefersTheYoungerPost(t *testing.T) {
 	silent := entryAt("pro_silent", now.Add(-time.Hour), 0)
 	loud := entryAt("pro_loud", now.Add(-time.Hour), 0)
 	loud.activity = recent
-	rising := filterFeed([]feedEntry{silent, loud}, "", nil, sortRising, windowAll, now)
+	rising := filterFeed([]feedEntry{silent, loud}, "", nil, sortRising, windowAll, false, now)
 	if len(rising) != 1 || rising[0].post.ID != "pro_loud" {
 		t.Fatalf("rising = %v, want only the post with activity in the window", ids(rising))
 	}
@@ -375,43 +377,327 @@ func TestTheFeedFilesRecordsUnderTheTopicsTheirEvidenceCameFrom(t *testing.T) {
 	}
 }
 
-// TestTheScoreCountsTheOperatorAmongBabelsReviewers is §8.7's arithmetic and
-// §4.12's boundary in one assertion.
+// TestTheFeedScoreIsBabelsReviewersAndNobodyElses is §8.7's "Babel votes; the
+// operator rules", checked where the number is assembled.
 //
-// The number has to be one number — "the score is support minus oppose across
-// all of them, because a vote is a vote and the operator is one voter among
-// Babel's reviewers" — and the breakdown has to keep him separable, which is
-// what `you` is for. A feed that summed them without saying which was whose
-// would make a person's click indistinguishable from a model's observation.
-func TestTheFeedScoreCountsTheOperatorAmongBabelsReviewers(t *testing.T) {
-	subject := evaluation.Subject{Kind: "proposal", ID: "pro_scored"}
-	fake := &fakeEvaluation{tallies: map[evaluation.Subject]evaluation.Tally{
-		subject: {Support: 3, Oppose: 1, Unsure: 1, Stance: evaluation.StanceDisagree},
-	}}
-	h := newPhaseB(t, feedText, func(o *Options) { o.Evaluation = fake })
-
-	// The projection is asserted directly, because the fixture frontier
-	// holds no record with that identifier and the arithmetic is what is
-	// under test.
-	var entry feedEntry
-	applyTally(&entry, fake.tallies[subject], time.Now().UTC())
-	if entry.post.Support != 3 || entry.post.Oppose != 2 || entry.post.Unsure != 1 {
-		t.Fatalf("breakdown = %+v, want the operator's disagreement counted", entry.post)
-	}
-	if entry.post.Score != entry.post.Support-entry.post.Oppose {
-		t.Errorf("score %d is not support minus oppose", entry.post.Score)
-	}
-	if entry.post.You != evaluation.StanceDisagree {
-		t.Errorf("you = %q, want the operator's own stance kept separable", entry.post.You)
+// The operator's stance is recorded, durable and readable on the record page,
+// and it reaches no column here: he does not vote, because his act on a
+// record is a ruling and a vote beside it would be a weaker copy of it. So
+// the assertion is a subtraction that does not happen — the score after he
+// has said what he thinks is the score before it.
+func TestTheFeedScoreIsBabelsReviewersAndNobodyElses(t *testing.T) {
+	var service *evaluation.Service
+	h := newPhaseB(t, feedText, func(o *Options) {
+		service = realEvaluation(t, o.Frontier.(*frontier.Store))
+		o.Evaluation = service
+	})
+	subject := evaluation.Subject{Kind: "proposal", ID: h.proposal.ID}
+	if _, err := service.Operator(h.ctx, evaluation.OperatorInput{
+		Subject:  subject,
+		Kind:     evaluation.KindFeedback,
+		Operator: operatorID,
+		Stance:   evaluation.StanceDisagree,
+		Reason:   "the benchmark lands first " + feedText,
+	}); err != nil {
+		t.Fatalf("record a stance: %v", err)
 	}
 
-	// And a real row carries the same identity, so a client can check it.
 	var feed feedList
 	decodeResponse(t, h.ok(t, "/api/feed?sort=new&limit=100"), &feed)
-	for _, post := range feed.Posts {
+	var scored *feedPost
+	for i, post := range feed.Posts {
 		if post.Score != post.Support-post.Oppose {
 			t.Fatalf("row %s: score %d is not support minus oppose", post.ID, post.Score)
 		}
+		if post.ID == h.proposal.ID {
+			scored = &feed.Posts[i]
+		}
+	}
+	if scored == nil {
+		t.Fatalf("the proposal he disagreed with is not in the feed: %d rows", len(feed.Posts))
+	}
+	// No run has assessed it, so Babel's reception is empty — and his
+	// disagreement did not make it minus one.
+	if scored.Support != 0 || scored.Oppose != 0 || scored.Unsure != 0 || scored.Score != 0 {
+		t.Errorf("row = %+v, want an unscored record: the only voice on it is his", *scored)
+	}
+	// What he said is under the post, which is where §8.7 puts it.
+	if scored.Comments != 1 {
+		t.Errorf("comments = %d, want the reason he left", scored.Comments)
+	}
+
+	// The arithmetic over a reception that does exist, asserted directly:
+	// the columns are the tally's and nothing is added to them.
+	var entry feedEntry
+	applyTally(&entry, evaluation.Tally{Support: 3, Oppose: 1, Unsure: 1}, time.Now().UTC())
+	if entry.post.Support != 3 || entry.post.Oppose != 1 || entry.post.Unsure != 1 {
+		t.Fatalf("breakdown = %+v, want the reviewers' own votes", entry.post)
+	}
+	if entry.post.Score != 2 {
+		t.Errorf("score = %d, want support minus oppose", entry.post.Score)
+	}
+}
+
+// TestTheQueueIsTheFeedNarrowedToWhatAwaitsHim is the direction this section
+// carries out: home and the queue were the same list twice, so the queue
+// became a filter over the feed.
+//
+// What the filter has to get right is what "awaits him" means, and the two
+// halves of that are asserted against records whose standing this test moved:
+// a record somebody ruled on is out, and a question nobody has answered is
+// in. The rest is the property that makes the filter honest — every row it
+// keeps says why it is there, and every row it drops says nothing at all
+// rather than a reason nobody asked for.
+func TestTheQueueIsTheFeedNarrowedToWhatAwaitsHim(t *testing.T) {
+	h := newPhaseB(t, feedText, nil)
+	// The ruling lands before the first read, because the index is built
+	// once a minute and a test that ruled afterwards would be asserting
+	// against a projection of the state before it.
+	if _, err := h.review.Decide(h.ctx, review.Decision{
+		Subject:     frontier.Ref{Type: frontier.EntityProposal, ID: h.proposal.ID},
+		Disposition: frontier.DispositionDefer,
+		By:          h.authority,
+		Note:        "not now; the corpus is three sessions wide " + feedText,
+	}); err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+
+	var queue feedList
+	decodeResponse(t, h.ok(t, "/api/feed?needs=me&sort=next&limit=100"), &queue)
+	if queue.Needs != "me" || queue.Sort != sortNext {
+		t.Fatalf("the answer describes a different request: %+v", queue)
+	}
+	if len(queue.Posts) == 0 {
+		t.Fatal("nothing awaits the operator in a deployment with four enrolled records")
+	}
+	for _, post := range queue.Posts {
+		if post.ID == h.proposal.ID {
+			t.Errorf("a deferred record is still awaiting a ruling: %+v", post)
+		}
+		if !post.Awaiting {
+			t.Errorf("row %s is in the queue and awaits nothing", post.ID)
+		}
+		if post.Why == "" {
+			t.Errorf("row %s awaits him and does not say why", post.ID)
+		}
+		if words := len(strings.Fields(strings.ReplaceAll(post.Why, " · ", " "))); words > 5 {
+			t.Errorf("why = %q on %s, which is %d words; §8.7 allows five", post.Why, post.ID, words)
+		}
+	}
+	// The blocking question the ledger asked is the case the filter exists
+	// for: nothing else in the deployment can answer it.
+	var asked bool
+	for _, post := range queue.Posts {
+		if post.ID != h.question.ID {
+			continue
+		}
+		asked = true
+		if post.Why != "blocks a run · asked now" {
+			t.Errorf("why = %q on a blocking question asked a moment ago", post.Why)
+		}
+	}
+	if !asked {
+		t.Errorf("the open blocking question is not awaiting him: %v", postIDs(queue.Posts))
+	}
+
+	// And the ruled record is still in the feed — the ruling took it out of
+	// the queue, not out of the deployment — carrying no reason to act.
+	var whole feedList
+	decodeResponse(t, h.ok(t, "/api/feed?sort=hot&limit=100"), &whole)
+	var ruled *feedPost
+	for i, post := range whole.Posts {
+		if post.ID == h.proposal.ID {
+			ruled = &whole.Posts[i]
+		}
+	}
+	if ruled == nil {
+		t.Fatalf("the deferred proposal left the feed: %v", postIDs(whole.Posts))
+	}
+	if ruled.Awaiting || ruled.Why != "" {
+		t.Errorf("a ruled record = %+v, want awaiting false and no why", *ruled)
+	}
+	if ruled.Standing != string(frontier.ReviewDeferred) {
+		t.Errorf("standing = %q, want the ruling that was made", ruled.Standing)
+	}
+	if whole.Needs != "" {
+		t.Errorf("needs = %q on the whole feed, want none", whole.Needs)
+	}
+	// A record nobody has ruled on says so, in the two facts a row carries.
+	for _, post := range whole.Posts {
+		if post.ID != h.finding.ID {
+			continue
+		}
+		if !post.Awaiting || post.Why != "never ruled on · waiting now" {
+			t.Errorf("the unruled finding = %+v", post)
+		}
+	}
+
+	// A vocabulary refusal, because ?needs=everyone answered with the whole
+	// feed would show a reader a list he did not ask for.
+	refused := h.get("/api/feed?needs=everyone")
+	text := body(t, refused)
+	if refused.StatusCode != http.StatusBadRequest || !strings.Contains(text, "everyone") {
+		t.Fatalf("status = %d body %q, want 400 naming the value", refused.StatusCode, text)
+	}
+}
+
+// TestAQueueThatCannotSeeStandingsSaysSo is the honest-absence rule at the one
+// place its absence is invisible.
+//
+// "Awaits a ruling" is derived from where a record stands, so a machine that
+// cannot derive that holds back every record from this list — and a short
+// list of questions with no explanation reads as a deployment with nothing
+// pending, which is the opposite of true. The feed itself is unaffected and
+// says nothing extra, because none of its rows depended on the derivation.
+func TestAQueueThatCannotSeeStandingsSaysSo(t *testing.T) {
+	h := newPhaseB(t, feedText, func(o *Options) {
+		o.Frontier = standingsUnreadable{FrontierReader: o.Frontier}
+	})
+
+	var queue feedList
+	decodeResponse(t, h.ok(t, "/api/feed?needs=me&limit=100"), &queue)
+	if !strings.Contains(queue.Notice, "awaiting you") {
+		t.Errorf("notice = %q, want the queue to say what it could not classify", queue.Notice)
+	}
+	for _, post := range queue.Posts {
+		if post.Kind != feedKindQuestion {
+			t.Errorf("row %s survived with no standing to derive: %+v", post.ID, post)
+		}
+	}
+
+	// The whole feed is the whole feed, and carries no notice it did not
+	// earn: every claim, topic and count in it is unaffected.
+	var whole feedList
+	decodeResponse(t, h.ok(t, "/api/feed?sort=new&limit=100"), &whole)
+	if whole.Notice != "" {
+		t.Errorf("notice = %q on the unfiltered feed, want none", whole.Notice)
+	}
+	if len(whole.Posts) <= len(queue.Posts) {
+		t.Errorf("the feed holds %d rows and the queue %d; the records did not survive",
+			len(whole.Posts), len(queue.Posts))
+	}
+	for _, post := range whole.Posts {
+		if post.Kind == string(frontier.EntityProposal) && post.Standing != "" {
+			t.Errorf("a standing was invented for %s: %q", post.ID, post.Standing)
+		}
+	}
+}
+
+// standingsUnreadable is a frontier whose disposition log cannot be derived,
+// which is the only way to observe what the queue does without one.
+type standingsUnreadable struct{ FrontierReader }
+
+func (standingsUnreadable) ReviewStandings(context.Context) (map[frontier.Ref]frontier.ReviewStanding, error) {
+	return nil, errors.New("the disposition log could not be read")
+}
+
+// TestNextOrdersByUrgencyThenKindThenTheLongestWait is §8.5's reading order,
+// ported off the client that used to compute it.
+//
+// Four keys and one property each. Urgency first, so a finding whose ruling
+// came back outranks a proposal nobody has looked at yet — the reverse of
+// what the kind alone would say, which is what makes the first key a key.
+// The kind at equal urgency, so a remedy addressed to the operator comes
+// before a pattern Babel is still consolidating. The oldest first inside
+// that, because a queue nobody drains from the bottom has a permanent bottom.
+// And everything that awaits nothing after everything that does, newest
+// first, so that turning the filter off keeps the same list and adds to it.
+func TestNextOrdersByUrgencyThenKindThenTheLongestWait(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	blocked := awaitingAt("qst_blocking", feedKindQuestion, now.Add(-time.Minute), urgencyBlocked)
+	reopened := awaitingAt("fnd_reopened", "finding", now.Add(-time.Hour), urgencyReopened)
+	proposal := awaitingAt("prp_new", "proposal", now.Add(-2*time.Hour), urgencyUnruled)
+	finding := awaitingAt("fnd_new", "finding", now.Add(-3*time.Hour), urgencyUnruled)
+	older := awaitingAt("prp_older", "proposal", now.Add(-4*time.Hour), urgencyUnruled)
+	quiet := entryAt("prp_ruled", now, 0)
+
+	posts := []feedEntry{quiet, finding, proposal, reopened, older, blocked}
+	sortFeed(posts, sortNext, now)
+	want := []string{"qst_blocking", "fnd_reopened", "prp_older", "prp_new", "fnd_new", "prp_ruled"}
+	if got := ids(posts); !equalIDs(got, want) {
+		t.Fatalf("next ordered %v, want %v", got, want)
+	}
+}
+
+// TestWhyIsBuiltFromThePostsOwnFactsAndIsEmptyOtherwise is the sentence's
+// contract: it explains a wait, and a post nobody is waiting on has nothing
+// to explain.
+//
+// A why on a settled record would be this surface narrating a queue position
+// that does not exist, which is exactly the invented urgency §4.12 refuses to
+// manufacture.
+func TestWhyIsBuiltFromThePostsOwnFactsAndIsEmptyOtherwise(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name     string
+		standing string
+		age      time.Duration
+		awaiting bool
+		why      string
+		urgency  int
+	}{
+		{"never ruled on", string(frontier.ReviewNew), 3 * 24 * time.Hour, true,
+			"never ruled on · waiting 3d", urgencyUnruled},
+		{"reopened", standingReopened, 90 * time.Minute, true, "reopened · waiting 1h", urgencyReopened},
+		{"accepted", string(frontier.ReviewAccepted), time.Hour, false, "", urgencyNone},
+		{"deferred", string(frontier.ReviewDeferred), time.Hour, false, "", urgencyNone},
+		{"refine requested", string(frontier.ReviewRefineRequested), time.Hour, false, "", urgencyNone},
+		{"unreviewable", "", time.Hour, false, "", urgencyNone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var entry feedEntry
+			awaitRecord(&entry, tc.standing, now.Add(-tc.age), now)
+			if entry.post.Awaiting != tc.awaiting {
+				t.Errorf("awaiting = %v, want %v", entry.post.Awaiting, tc.awaiting)
+			}
+			if entry.post.Why != tc.why {
+				t.Errorf("why = %q, want %q", entry.post.Why, tc.why)
+			}
+			if entry.urgency != tc.urgency {
+				t.Errorf("urgency = %d, want %d", entry.urgency, tc.urgency)
+			}
+		})
+	}
+
+	// The three question states that await him, and the one that does not.
+	for _, tc := range []struct {
+		name     string
+		state    reality.QuestionState
+		class    reality.QuestionClass
+		awaiting bool
+		why      string
+		urgency  int
+	}{
+		{"open and blocking", reality.QuestionOpen, reality.ClassBlocking, true,
+			"blocks a run · asked 2h", urgencyBlocked},
+		{"open upkeep", reality.QuestionOpen, reality.ClassMaintenance, true,
+			"upkeep · asked 2h", urgencyAsked},
+		{"open curiosity", reality.QuestionOpen, reality.ClassCuriosity, true,
+			"curiosity · asked 2h", urgencyAsked},
+		{"answered but not interpreted", reality.QuestionAnsweredUninterpreted, reality.ClassMaintenance,
+			true, "no plan yet · asked 2h", urgencyAsked},
+		{"a plan waiting for him", reality.QuestionPlanReady, reality.ClassMaintenance, true,
+			"plan ready · asked 2h", urgencyAsked},
+		{"being interpreted", reality.QuestionInterpreting, reality.ClassBlocking, false, "", urgencyNone},
+		{"snoozed", reality.QuestionSnoozed, reality.ClassBlocking, false, "", urgencyNone},
+		{"answered", reality.QuestionAnswered, reality.ClassBlocking, false, "", urgencyNone},
+		{"declined", reality.QuestionDeclined, reality.ClassBlocking, false, "", urgencyNone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var entry feedEntry
+			awaitQuestion(&entry, reality.Question{
+				State: tc.state, Class: tc.class, CreatedAt: now.Add(-2 * time.Hour),
+			}, now)
+			if entry.post.Awaiting != tc.awaiting {
+				t.Errorf("awaiting = %v, want %v", entry.post.Awaiting, tc.awaiting)
+			}
+			if entry.post.Why != tc.why {
+				t.Errorf("why = %q, want %q", entry.post.Why, tc.why)
+			}
+			if entry.urgency != tc.urgency {
+				t.Errorf("urgency = %d, want %d", entry.urgency, tc.urgency)
+			}
+		})
 	}
 }
 
@@ -478,6 +764,74 @@ func TestTheCommentThreadKeepsRulingsOutOfTheConversation(t *testing.T) {
 	decodeResponse(t, h.ok(t, "/api/record/"+h.proposal.ID), &peel)
 	if peel.Reception != nil && peel.Reception.Operator != nil {
 		t.Errorf("commenting recorded a stance: %+v", peel.Reception.Operator)
+	}
+}
+
+// TestAskingBabelSomethingIsAQuestionInTheThread is §8.7's fifth act: "ask,
+// which is a question to Babel about this record, recorded as a comment
+// Babel's next review of the record must answer".
+//
+// The distinction is the whole test. A question and a comment are the same
+// family — his prose, verbatim, deciding nothing — so what has to be true is
+// that the thread can still tell them apart: a review that could not find
+// what it owes an answer to would leave the operator asking into a log.
+func TestAskingBabelSomethingIsAQuestionInTheThread(t *testing.T) {
+	h := newPhaseB(t, feedText, func(o *Options) {
+		o.Evaluation = realEvaluation(t, o.Frontier.(*frontier.Store))
+	})
+	path := "/api/record/" + h.proposal.ID + "/comments"
+
+	var asked commentResult
+	question := h.post(path, `{"text":"what would this cost on the whole corpus?","kind":"question"}`)
+	if question.StatusCode != http.StatusCreated {
+		defer question.Body.Close()
+		t.Fatalf("POST %s: status = %d", path, question.StatusCode)
+	}
+	decodeResponse(t, question, &asked)
+	if asked.Comment.Kind != commentQuestion {
+		t.Fatalf("the answer calls it a %q, want a question", asked.Comment.Kind)
+	}
+
+	var said commentResult
+	comment := h.post(path, `{"text":"the verification criterion is the part I care about"}`)
+	if comment.StatusCode != http.StatusCreated {
+		defer comment.Body.Close()
+		t.Fatalf("POST %s: status = %d", path, comment.StatusCode)
+	}
+	decodeResponse(t, comment, &said)
+	if said.Comment.Kind != commentReason {
+		t.Errorf("a comment with no kind reads as %q, want the plain reason", said.Comment.Kind)
+	}
+
+	var thread commentThread
+	decodeResponse(t, h.ok(t, path), &thread)
+	if thread.Total != 2 {
+		t.Fatalf("thread = %+v, want the two things he wrote", thread.Comments)
+	}
+	kinds := map[string]string{}
+	for _, comment := range thread.Comments {
+		kinds[comment.Kind] = comment.Text
+	}
+	if kinds[commentQuestion] != "what would this cost on the whole corpus?" {
+		t.Errorf("the question reads %q in the thread", kinds[commentQuestion])
+	}
+	if kinds[commentReason] != "the verification criterion is the part I care about" {
+		t.Errorf("the comment reads %q in the thread", kinds[commentReason])
+	}
+
+	// A kind nothing records is refused by name rather than stored as a
+	// comment, because a question filed as an opinion is never answered.
+	refused := h.post(path, `{"text":"is this still true?","kind":"complaint"}`)
+	text := body(t, refused)
+	if refused.StatusCode != http.StatusBadRequest || !strings.Contains(text, "complaint") {
+		t.Fatalf("status = %d body %q, want 400 naming the value", refused.StatusCode, text)
+	}
+	// And an empty question is refused as a question, not as a comment: the
+	// refusal names the act he was performing.
+	empty := h.post(path, `{"text":"  ","kind":"question"}`)
+	emptyText := body(t, empty)
+	if empty.StatusCode != http.StatusBadRequest || !strings.Contains(emptyText, "question") {
+		t.Fatalf("status = %d body %q, want 400 about an empty question", empty.StatusCode, emptyText)
 	}
 }
 
@@ -634,10 +988,43 @@ func entryAt(id string, at time.Time, score int) feedEntry {
 	}
 }
 
+// awaitingAt is one synthetic post that awaits the operator, for the next
+// order. The why is not set, because what the order reads is the urgency and
+// the kind: a sentence here would be a fixture asserting itself.
+func awaitingAt(id, kind string, at time.Time, urgency int) feedEntry {
+	return feedEntry{
+		post: feedPost{
+			ID: id, Kind: kind, Title: id, CreatedAt: timeText(at), Awaiting: true,
+		},
+		createdAt: at,
+		urgency:   urgency,
+	}
+}
+
 func ids(entries []feedEntry) []string {
 	out := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		out = append(out, entry.post.ID)
 	}
 	return out
+}
+
+func postIDs(posts []feedPost) []string {
+	out := make([]string, 0, len(posts))
+	for _, post := range posts {
+		out = append(out, post.ID)
+	}
+	return out
+}
+
+func equalIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
