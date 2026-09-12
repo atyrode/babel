@@ -8,7 +8,7 @@ name: manifold-plugins
 # plugins/package.json and uploads dist/ as the `manifold-plugins` artifact.
 #
 # The `uses:` ref below and plugins/MANIFOLD_REV are the same revision and are bumped together:
-# a ref ahead of the file would run a newer workflow against an older kit. ea675d21 is the
+# a ref ahead of the file would run a newer workflow against an older kit. a407d06f is the
 # revision carrying the plugin database (manifold ADR 0034), which the store cannot start
 # without.
 #
@@ -32,6 +32,6 @@ permissions:
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@ea675d21aaf7f7ed407bc68640a6e561fd091a18
+    uses: atyrode/manifold/.github/workflows/plugins.yml@a407d06f3abce940cfda5bb00fcb8e389b23d09c
     with:
       plugins-dir: plugins
