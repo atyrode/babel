@@ -207,26 +207,40 @@ test.skipIf(!chrome)("a ruling is confirmed before it is recorded, and it is app
   await visible("The claim");
 
   const bar = await page.evaluate(() => ({
-    dispositions: Array.from(document.querySelectorAll("[data-ruling]")).map((button) =>
+    acts: Array.from(document.querySelectorAll("[data-ruling]")).map((button) =>
       button.getAttribute("data-ruling"),
     ),
     group: document
-      .querySelector(".rule-bar[aria-label^='Rule on']")
+      .querySelector(".rule-bar[aria-label^='Act on']")
       ?.getAttribute("aria-label") ?? "",
     // The ballot is gone: the reader has already decided, and the bar takes
     // the decision rather than presenting the options as a form to fill in.
     radios: document.querySelectorAll("input[type='radio']").length,
+    // And the operator's stance is gone with it: §8.7 makes the score Babel's
+    // reviewers' and his acts the rulings, so there is no control here that
+    // records an opinion beside the authority.
+    stances: document.querySelectorAll("[data-stance]").length,
     // Every field on the page that is not the thread's comment box. §8.7's box
     // is the operator's own words about the record and belongs to nothing
     // being confirmed; the ruling's note is what must not exist yet.
     fields: Array.from(document.querySelectorAll("textarea"))
       .filter((field) => !field.closest(".record-comment-form")).length,
   }));
-  expect(bar.dispositions).toContain("accept");
-  expect(bar.dispositions).toContain("defer");
-  expect(bar.dispositions).toContain("reopen");
+  // The five dispositions the record page keeps, plus the two acts that are
+  // not dispositions: a refinement, which is the existing invitation, and the
+  // question Babel's next review must answer.
+  expect(bar.acts).toEqual([
+    "accept",
+    "reject",
+    "defer",
+    "duplicate",
+    "reopen",
+    "refine",
+    "ask",
+  ]);
   expect(bar.group).toContain("hypothesis");
   expect(bar.radios).toBe(0);
+  expect(bar.stances).toBe(0);
   // Nothing to type into until a disposition is chosen: the note belongs to
   // the ruling being confirmed, not to the page.
   expect(bar.fields).toBe(0);
@@ -384,26 +398,28 @@ test.skipIf(!chrome)("reopening refuses without a stated reason and appends to t
 //     since was refused with an explanation instead of a recorded decision.
 //
 // web/src/records.tsx still implements all four, and nothing imports it. The
-// two writes this surface does make — a stance and a ruling — send no head, so
-// the raced fixture in web/mock/phaseb.ts is unreachable from the browser.
+// one write this surface makes — a ruling — sends no head, so the raced
+// fixture in web/mock/phaseb.ts is unreachable from the browser. The
+// refinement does send one, and it is the post's own id.
 
 test.skipIf(!chrome)("a record that carries no review decision offers no ruling", async () => {
   // §6.7 makes an observation evidence rather than a review subject, and
-  // internal/review refuses a disposition about one. The control is absent
-  // rather than present and refused — but the reader's own position is not a
-  // ruling, so his vote stays.
+  // internal/review refuses a disposition about one. The rulings are absent
+  // rather than present and refused — and the one act that is not a ruling
+  // stays, because a question about an observation is still a question.
   await open("r/obs_claim-no-verify");
   await visible("The claim");
   const bar = await page.evaluate(() => ({
-    rulings: document.querySelectorAll("[data-ruling]").length,
-    stances: Array.from(document.querySelectorAll("[data-stance]")).map((button) =>
-      button.getAttribute("data-stance"),
+    acts: Array.from(document.querySelectorAll("[data-ruling]")).map((button) =>
+      button.getAttribute("data-ruling"),
     ),
+    // No stance anywhere: the operator does not vote (§8.7), so the arrows
+    // and the three-way reception that used to sit here are gone rather than
+    // moved.
+    stances: document.querySelectorAll("[data-stance]").length,
   }));
-  expect(bar.rulings).toBe(0);
-  // Two arrows and no third button: §8.7 makes unsure what pressing a lit
-  // arrow again records, so the withdrawal is a gesture rather than a control.
-  expect(bar.stances).toEqual(["agree", "disagree"]);
+  expect(bar.acts).toEqual(["ask"]);
+  expect(bar.stances).toBe(0);
 
   // And a record that does carry one has it, so the absence above is about
   // this record rather than about the page having lost the control.

@@ -40,10 +40,10 @@ const COMMANDS: Array<[string, string, string, string]> = [
   ["babel sessions fetch", "Restores one archived session's files locally.", "/sessions", "Sessions"],
   ["babel prepare", "Fixes an exploration's corpus scope and builds its index.", "/watch", "Watch"],
   ["babel explore", "Runs one exploration through the Code worker.", "/watch", "Watch"],
-  ["babel hypotheses", "Lists the candidate frontier.", "/?kind=hypothesis", "Home"],
-  ["babel findings", "Lists consolidated findings.", "/?kind=finding", "Home"],
-  ["babel review queue", "Lists records awaiting a human decision.", "/queue", "Mod queue"],
-  ["babel review decide", "Appends one attributed decision.", "/queue", "Mod queue"],
+  ["babel hypotheses", "Lists the candidate frontier.", "/?kind=hypothesis&needs=all", "Home"],
+  ["babel findings", "Lists consolidated findings.", "/?kind=finding&needs=all", "Home"],
+  ["babel review queue", "Lists records awaiting a human decision.", "/", "Home"],
+  ["babel review decide", "Appends one attributed decision.", "/", "Home"],
   ["babel reality inbox", "Lists the prioritized question inbox.", "/?kind=question", "Home"],
   ["babel reality answer", "Records an attributed answer, verbatim.", "/ask/questions", "Asked"],
   ["babel conductor status", "Reports this host's duty state and what other machines announced.", "/watch", "Watch"],
@@ -466,7 +466,7 @@ function HelpPage() {
             event; the record's whole history stays readable. What only you can answer is asked
             under Ask, where an answer is kept verbatim and an interpreted plan applies only on
             your explicit acceptance.
-            <Link className="panel-link" to="/queue">Mod queue →</Link>
+            <Link className="panel-link" to="/">Home →</Link>
             <Link className="panel-link" to="/ask/questions">Asked →</Link>
           </li>
         </ol>
@@ -645,10 +645,10 @@ function HelpPage() {
             <Link to="/watch">Watch</Link> as soon as it commits them.
           </li>
           <li>
-            <strong>Decide.</strong> Work the <Link to="/queue">mod queue</Link> and the{" "}
-            <Link to="/?kind=question">questions</Link> in the feed. Every decision is
-            attributed and appended, so the
-            trail of what you concluded and when stays readable.
+            <strong>Decide.</strong> <Link to="/">The feed</Link> arrives showing what needs you,
+            in the order it needs answering; accept, reject, defer, refine or ask from the row.
+            Every ruling is attributed and appended, so the trail of what you concluded and when
+            stays readable.
           </li>
         </ol>
         <p className="panel-caption">

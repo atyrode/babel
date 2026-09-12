@@ -8,18 +8,12 @@ import {
   type RefObject,
 } from "react";
 import { Link } from "react-router-dom";
-import {
-  addReviewContext,
-  decideReview,
-  type Disposition,
-  type ReviewSubjectType,
-} from "./api";
 import { Badge, unescapeWhitespace, type Tone } from "./analysis";
 import { errorMessage, formatDuration, formatTime } from "./format";
+import { POST_ACTS, RULE_KEYS, RuleActs, reviewSubject } from "./ruling";
 import {
   getComments,
   postComment,
-  putReception,
   type Act,
   type Comment,
   type CommentThread,
@@ -27,7 +21,6 @@ import {
   type ModelReception,
   type ModelRole,
   type OperatorReception,
-  type OperatorStance,
   type RecordCase,
   type RecordCost,
   type RecordEvidence,
@@ -42,7 +35,6 @@ import {
   type Speaker,
   type StandingTone,
 } from "./recordapi";
-import { VoteArrows, type VoteStance } from "./vote";
 import "./record.css";
 
 // One record, peeled.
@@ -96,9 +88,9 @@ import "./record.css";
 // plus the surviving utilities — muted, secondary, mono, sr-only, spinner,
 // primary-button, inline-error, untrusted-inline, badge tone-* through
 // analysis.tsx's Badge. Everything prefixed `record-` is in record.css, which
-// also holds the `vote` group — the arrows are src/vote.tsx's and the feed
-// mounts the same component, so their rules live beside the record's rather
-// than in a third stylesheet.
+// also holds the `record-acts` and `record-confirm` groups — the acts are
+// src/ruling.tsx's and the feed mounts the same component, so their rules live
+// beside the record's rather than in a third stylesheet.
 
 // standingTone maps the record's own four-tone judgement onto the interface's
 // colour scale. The judgement is the server's: whether "superseded" reads as
@@ -138,15 +130,6 @@ const STANDING_SENTENCES: Record<string, string> = {
     "Rejected with a refinement requested — a run has been authorized to try the record again.",
   superseded: "Superseded by a later revision of the same record.",
 };
-
-// The operator's three receptions, as the rule bar's first group. The stance is
-// attributed, reversible and without authority, which is why it needs no
-// confirmation and sits apart from the five that do.
-const STANCES: Array<{ value: OperatorStance; label: string; key: string }> = [
-  { value: "agree", label: "Agree", key: "a" },
-  { value: "disagree", label: "Disagree", key: "d" },
-  { value: "unsure", label: "Unsure", key: "u" },
-];
 
 // The §4.12 assessment roles, as what the reviewer was asked. A role is the
 // question a run answered, and naming it is what keeps four assessments from
@@ -188,61 +171,6 @@ const MODEL_STANCE_WORDS: Record<string, string> = {
   oppose: "opposes it",
   unsure: "is unsure",
 };
-
-// The five §4.7 dispositions and the one sentence each needs at the moment of
-// confirming it. The vocabulary is unchanged — it is the review service's —
-// and so is the requirement to confirm; what changed is the size of the act.
-// Five radios carrying two sentences each, two textareas and a full-width
-// button occupied 677 pixels and 95 words before a reader had decided
-// anything; this is five buttons and, on the one he presses, a sentence.
-//
-// `reject-and-refine` is deliberately absent: it authorizes a refinement
-// request and belongs to the CLI until this surface grows the full guidance
-// flow. `reopen` is the one that opens rather than closes, and its sentence
-// says so plainly.
-const DISPOSITIONS: Array<{ value: Disposition; label: string; confirm: string }> = [
-  {
-    value: "accept",
-    label: "Accept",
-    confirm: "Endorse this record for projection and follow-on work. The event is appended permanently.",
-  },
-  {
-    value: "reject",
-    label: "Reject",
-    confirm: "Record disagreement. The record is kept, visibly rejected, and the event is appended permanently.",
-  },
-  {
-    value: "defer",
-    label: "Defer",
-    confirm: "Not now. The record stays in the queue's history and the event is appended permanently.",
-  },
-  {
-    value: "duplicate",
-    label: "Duplicate",
-    confirm: "Point this record at an original, which you name below. The event is appended permanently.",
-  },
-  {
-    value: "reopen",
-    label: "Reopen",
-    confirm:
-      "Undecide it. The earlier decision stays in the history, the record's status returns to new, and your reason is required.",
-  },
-];
-
-// reviewSubject answers whether a record kind can carry a review decision.
-// internal/review answers "this record kind carries no review decision" for an
-// observation, so no disposition is ever asked about one and the ruling
-// control is absent rather than present and refused.
-function reviewSubject(kind: RecordKind): ReviewSubjectType | null {
-  switch (kind) {
-    case "proposal":
-    case "finding":
-    case "hypothesis":
-      return kind;
-    default:
-      return null;
-  }
-}
 
 // Peel is one depth: a native <details>, because everything the disclosure
 // needs — a focusable control, the expanded state announced to a screen
@@ -352,278 +280,13 @@ function money(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-// RuleBar is the whole act of deciding, in one bar.
-//
-// Two groups, never one: the operator's reception on the left and the §4.7
-// authority on the right, separated by a rule because agreeing is not
-// accepting. A stance posts immediately and optimistically — it is attributed,
-// reversible and decides nothing, so there is nothing to confirm — and a
-// ruling opens a one-sentence confirmation where the button was, because a
-// disposition is an appended, attributed event that cannot be edited or
-// undone.
-//
-// It is exported because the same act belongs on a queue row: Contract K gives
-// Decide and Read `a`/`d`/`u` and `r` on the focused row, and a second
-// implementation of this bar would be a second confirmation flow over one
-// authority. Nothing in it renders a heading or a container, so it drops into
-// a row as well as into a page.
-export function RuleBar({
-  id,
-  kind,
-  stance: recorded,
-  onActed,
-  onStance,
-  barRef,
-  withStance = true,
-}: {
-  id: string;
-  kind: RecordKind;
-  stance?: OperatorStance;
-  onActed: (message: string) => void;
-  // onStance hands back what the store recorded — its stance and its own
-  // timestamp, never the request's — so a page can show the act while the
-  // projection it reads receptions out of is still catching up with it. A
-  // queue row has nowhere to show it and passes nothing.
-  onStance?: (recorded: OperatorReception) => void;
-  // barRef lets the page that owns the keyboard reach the real controls
-  // rather than reimplementing what they do. The record page's `a`/`d`/`u`
-  // press this bar's own buttons, so a stance recorded by key and a stance
-  // recorded by click are the same code path — including the optimistic
-  // selection and the refusal handling.
-  barRef?: RefObject<HTMLDivElement | null>;
-  // withStance drops the left-hand group for a surface that takes the
-  // operator's stance somewhere else. §8.7 makes the arrows the stance and
-  // puts them at the top of the post, so the record page offers them once and
-  // this bar carries the ruling alone; a queue row has no arrows and keeps
-  // both groups.
-  withStance?: boolean;
-}) {
-  const subject = reviewSubject(kind);
-  const [stance, setStance] = useState<OperatorStance | undefined>(recorded);
-  const [pending, setPending] = useState<OperatorStance | null>(null);
-  const [stanceError, setStanceError] = useState<string | null>(null);
-  const [ruling, setRuling] = useState<Disposition | null>(null);
-
-  useEffect(() => setStance(recorded), [recorded]);
-
-  async function choose(next: OperatorStance) {
-    const previous = stance;
-    setStance(next);
-    setPending(next);
-    setStanceError(null);
-    try {
-      const stored = await putReception(id, next);
-      onStance?.({ stance: stored.stance, at: stored.at });
-      onActed(`Your stance is recorded: ${next}. It decides nothing.`);
-    } catch (error) {
-      setStance(previous);
-      setStanceError(errorMessage(error));
-    } finally {
-      setPending(null);
-    }
-  }
-
-  // An observation invites no ruling, so a bar with the stance taken out of it
-  // has nothing left to offer and renders nothing at all rather than an empty
-  // row of gaps.
-  if (!withStance && !subject) return null;
-
-  return (
-    <>
-      <div className="record-acts" ref={barRef}>
-        {withStance && (
-          <>
-            <div className="rule-bar" role="group" aria-label="Your stance on this record">
-              {STANCES.map((option) => (
-                <button
-                  type="button"
-                  key={option.value}
-                  data-stance={option.value}
-                  className={stance === option.value ? "active" : undefined}
-                  aria-pressed={stance === option.value}
-                  disabled={pending !== null}
-                  onClick={() => choose(option.value)}
-                >
-                  {pending === option.value && <span className="spinner small" />}
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            {/* The whole explanation of the left-hand group. A reception is
-                attributed, reversible and without authority; three words say
-                that and a paragraph would make it sound like more than it
-                is. */}
-            <span className="record-acts-label">your take · decides nothing</span>
-          </>
-        )}
-        {subject && (
-          <>
-            {withStance && <span className="record-acts-split" aria-hidden="true" />}
-            <div className="rule-bar" role="group" aria-label={`Rule on this ${subject}`}>
-              {DISPOSITIONS.map((option) => (
-                <button
-                  type="button"
-                  key={option.value}
-                  data-ruling={option.value}
-                  className={ruling === option.value ? "active" : undefined}
-                  aria-expanded={ruling === option.value}
-                  onClick={() => setRuling(ruling === option.value ? null : option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            <span className="record-acts-label">the ruling · permanent</span>
-          </>
-        )}
-      </div>
-      {stanceError && (
-        <p className="inline-error" role="alert">
-          {stanceError}
-        </p>
-      )}
-      {ruling && subject && (
-        <RuleConfirm
-          disposition={ruling}
-          subject={subject}
-          id={id}
-          onCancel={() => setRuling(null)}
-          onDecided={(message) => {
-            setRuling(null);
-            onActed(message);
-          }}
-        />
-      )}
-    </>
-  );
-}
-
-// RuleConfirm is the confirmation, and it is the whole of it: one sentence
-// saying what the ruling does, the note the reviewer may leave, and two
-// buttons.
-//
-// The requirement it keeps is unchanged. A disposition is still confirmed
-// before it is recorded, still appended rather than edited, still attributed
-// to the launch session's operator; a reopen still requires a reason, because
-// the service refuses one without and asking here says why instead of letting
-// the server say no. What is gone is the ballot: the reader has already
-// decided, and the form's job is to take the decision rather than to present
-// the options again.
-//
-// The guidance field stays, folded. It is the one input that is not about this
-// decision — attributed context is what a later refinement run will see — so
-// it is available and out of the way, rather than removed or in the path.
-function RuleConfirm({
-  disposition,
-  subject,
-  id,
-  onCancel,
-  onDecided,
-}: {
-  disposition: Disposition;
-  subject: ReviewSubjectType;
-  id: string;
-  onCancel: () => void;
-  onDecided: (message: string) => void;
-}) {
-  const option = DISPOSITIONS.find((entry) => entry.value === disposition);
-  const [note, setNote] = useState("");
-  const [contextText, setContextText] = useState("");
-  const [duplicateOf, setDuplicateOf] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  const confirmRef = useRef<HTMLButtonElement | null>(null);
-
-  // The confirmation takes the focus it asks for. A panel that appeared under
-  // the pointer while the keyboard stayed where it was would be a dialogue a
-  // keyboard reader could not answer.
-  useEffect(() => confirmRef.current?.focus(), []);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setSubmitting(true);
-    setFailure(null);
-    try {
-      let contextId: string | undefined;
-      if (contextText.trim()) {
-        contextId = (await addReviewContext(contextText.trim())).id;
-      }
-      const result = await decideReview({
-        subject: { type: subject, id },
-        disposition,
-        contextId,
-        duplicateOfId: disposition === "duplicate" ? duplicateOf.trim() || undefined : undefined,
-        note: note.trim() || undefined,
-      });
-      onDecided(`Recorded ${disposition}. The record's status is now ${result.status}.`);
-    } catch (reason) {
-      setFailure(errorMessage(reason));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <form className="record-confirm" onSubmit={submit}>
-      <p>{option?.confirm}</p>
-      {disposition === "duplicate" && (
-        <label>
-          The original record's id
-          <input
-            value={duplicateOf}
-            onChange={(event) => setDuplicateOf(event.target.value)}
-            placeholder="The record this duplicates"
-            required
-          />
-        </label>
-      )}
-      <label>
-        {disposition === "reopen"
-          ? "Why the earlier decision stopped holding (required)"
-          : "Note (optional, recorded with the event)"}
-        <textarea
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-          rows={2}
-          required={disposition === "reopen"}
-        />
-      </label>
-      <details>
-        <summary className="record-acts-label">Attach guidance for later runs</summary>
-        <label>
-          Attributed context
-          <textarea
-            value={contextText}
-            onChange={(event) => setContextText(event.target.value)}
-            rows={2}
-            placeholder="Guidance later refinement runs will see. Guidance is never evidence."
-          />
-        </label>
-      </details>
-      <div className="record-confirm-acts">
-        <button type="submit" className="primary-button" ref={confirmRef} disabled={submitting}>
-          {submitting && <span className="spinner small" />}
-          {submitting ? "Recording…" : `Confirm ${disposition}`}
-        </button>
-        <button type="button" onClick={onCancel} disabled={submitting}>
-          Cancel
-        </button>
-      </div>
-      {failure && (
-        <p className="inline-error" role="alert">
-          {failure}
-        </p>
-      )}
-    </form>
-  );
-}
-
-// ClaimPeel is depth 1: the claim, what its standing does to it, and the one
-// act it invites. The ruling lives here rather than at the foot of the page,
-// because the act follows the reading and a reader who has to scroll past four
-// depths to rule is being asked to rule on his memory of the claim. The
-// operator's other voice — his vote — is the arrows in the post header, where
-// §8.7 puts it and where a reader arriving from the feed already found it.
+// ClaimPeel is depth 1: the claim, what its standing does to it, and the acts
+// it invites. They live here rather than at the foot of the page, because the
+// act follows the reading and a reader who has to scroll past four depths to
+// rule is being asked to rule on his memory of the claim. They are the same
+// acts a feed row offers, from the same module, with the two that need another
+// record or an earlier decision in front of the reader added: duplicate and
+// reopen (§8.7 — "duplicate and reopen stay where they are").
 function ClaimPeel({
   record,
   open,
@@ -655,15 +318,16 @@ function ClaimPeel({
         </p>
       )}
 
-      {/* The ruling alone. The operator's stance is the arrows in the post
-          header — §8.7 makes them the vote — and a second set of stance
-          buttons one depth down would be two controls recording one thing. */}
-      <RuleBar
+      {/* The rulings, the refinement and the question — and no stance. §8.7:
+          Babel votes and the operator rules, so there is nothing here that
+          records an opinion beside the authority. */}
+      <RuleActs
         id={record.id}
         kind={record.kind}
-        onActed={onActed}
+        acts={POST_ACTS}
+        onActed={(_act, message) => onActed(message)}
         barRef={barRef}
-        withStance={false}
+        label="the ruling · permanent"
       />
 
       {/* A question is answered where answers are written, which is the one
@@ -962,12 +626,13 @@ function standingBadge(label: string): Tone {
 // ReceptionPeel is depth 4: who received the claim and what they said, in the
 // observatory register.
 //
-// The operator's own stance is first and separate, and the reviewers are a
-// table of figures rather than a list of sentences. That is the whole shape of
-// §4.12's boundary made visible: a person agrees with something he chose to
-// read, and a run votes on content it was served under a claim — and now the
-// table says which question each run was answering, because four supports
-// across four roles are four answers to four different questions.
+// Babel's reviewers are a table of figures rather than a list of sentences,
+// and what the operator recorded before he stopped voting is beside it,
+// read-only. That is §4.12's boundary made visible: a run votes on content it
+// was served under a claim, and the table says which question each run was
+// answering, because four supports across four roles are four answers to four
+// different questions. Nothing here sums the two voices, and nothing here
+// records a new one: the operator's acts are the rulings at depth 1.
 function ReceptionPeel({
   reception,
   open,
@@ -989,17 +654,10 @@ function ReceptionPeel({
   // earlier stances are not counted — they are the same voice, superseded.
   const entries = (operator ? 1 : 0) + reviewers.length + decisions.length;
   const operatorAt = formatTime(operator?.at);
-  // The summary carries the reader's own position, so a stance is visible
-  // before this depth is opened. That absence was the whole complaint: he
-  // agreed, the button stayed pressed, and nothing else on the record
-  // acknowledged that he had said anything. The contested mark keeps its
-  // place beside it — they are two different facts about the same depth.
-  const note = [
-    operator ? `you: ${operator.stance}` : undefined,
-    reception.contested ? "a role is contested" : undefined,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  // The summary carries what the depth holds beside it. The contested mark is
+  // the one fact a reader needs before opening it: a role with support on one
+  // side and opposition on the other is the thing a flat tally cannot say.
+  const note = reception.contested ? "a role is contested" : "";
 
   return (
     <Peel
@@ -1011,14 +669,16 @@ function ReceptionPeel({
     >
       {(operator || earlier.length > 0) && (
         <section className="panel">
-          {operator ? (
+          {/* What he recorded when the surface took stances, kept rather than
+              deleted. §4.12 appends, so the positions he held stay readable —
+              and they are history rather than a control: he rules on a record
+              now, and a ruling is at depth 1 with the rest of his authority
+              (§8.7, operator direction 2026-09-12). */}
+          <h3>What you recorded earlier</h3>
+          {operator && (
             <>
-              {/* The lead line of the depth, and the first thing in it: what
-                  he said and when he said it. It is above Babel's reviewers
-                  and above the rulings because it is the one line on this
-                  page the reader wrote himself. */}
               <p className="record-you">
-                You: <strong>{operator.stance}</strong>
+                <strong>{operator.stance}</strong>
                 {operatorAt && (
                   <span className="record-you-when">
                     {" · "}
@@ -1031,20 +691,11 @@ function ReceptionPeel({
               {operator.reason && (
                 <p className="quote untrusted-inline">{unescapeWhitespace(operator.reason)}</p>
               )}
-              <p className="muted record-you-note">
-                A reception is attributed, reversible and decides nothing
-                {decisions.length > 0 ? "; the rulings that do are below." : "."}
-              </p>
             </>
-          ) : (
-            <p>You hold no stance on this now.</p>
           )}
-          {/* What he used to say, kept rather than replaced. A reception is
-              appended like everything else here, so changing his mind leaves
-              the earlier position readable instead of rewriting it. */}
           {earlier.length > 0 && (
             <>
-              <p className="muted">Earlier you said:</p>
+              <p className="muted">Before that:</p>
               <ul className="peel-list">
                 {earlier.map((entry) => {
                   const at = formatTime(entry.at);
@@ -1063,6 +714,10 @@ function ReceptionPeel({
               </ul>
             </>
           )}
+          <p className="muted record-you-note">
+            A stance decided nothing and is no longer recorded: your acts on a record are the
+            rulings.
+          </p>
         </section>
       )}
 
@@ -1408,65 +1063,16 @@ const DEPTHS = 5;
 // are folded because digging is a choice.
 const INITIAL_DEPTHS = [true, true, false, false, false];
 
-// withRecordedStance is the reception as the reader must see it the instant
-// after he acts.
-//
-// His stance is durable the moment the write returns; the reception the page
-// reads back is a projection over this instance's evaluation records, and on
-// a machine with lanes writing it is seconds behind that write. Between the
-// two the page said nothing at all — no operator in the response is no depth
-// four for a record Babel has no reviewers for — so the only trace of the act
-// was the button staying pressed.
-//
-// So the confirmed write stands in until the read catches up. It is the
-// store's own echo and not the request's: the route answers with the stance
-// it recorded and the time it recorded it, so what stands in here is a fact
-// about the store rather than an optimism about it. A later read carrying a
-// stance at least as new replaces it, and the stance it displaces becomes the
-// first of the earlier ones — which is what §4.12's append says happened.
-function withRecordedStance(
-  reception: RecordReception | undefined,
-  recorded: OperatorReception | undefined,
-): RecordReception | undefined {
-  if (!recorded) return reception;
-  const served = reception?.operator;
-  if (served && !recordedBefore(served.at, recorded.at)) return reception;
-  const history = served ? [served, ...(reception?.history ?? [])] : reception?.history;
-  return { ...reception, operator: recorded, ...(history?.length ? { history } : {}) };
-}
-
-// recordedBefore orders two recorded times, treating a time this build cannot
-// read as the older of the two: the confirmation in hand is a fact, and an
-// unparseable timestamp beside it is not a reason to keep showing an answer
-// the operator has already replaced.
-function recordedBefore(earlier: string, later: string): boolean {
-  const left = Date.parse(earlier);
-  const right = Date.parse(later);
-  if (Number.isNaN(left)) return true;
-  if (Number.isNaN(right)) return false;
-  return left < right;
-}
-
 // RecordPeels is the record itself, five depths deep, with the connections
 // strip between the evidence and the reception.
 export function RecordPeels({
   record,
-  recorded,
-  voteRef,
   onActed,
 }: {
   record: RecordPeel;
-  // What the store confirmed on this page's own vote, held by the page until
-  // a read carries it. The arrows live in the post header, so the confirmation
-  // arrives from above rather than from a control inside these depths.
-  recorded?: OperatorReception;
-  // The header's arrows, so `a`/`d`/`u` press the real control rather than
-  // reimplementing what it does: a vote recorded by key and a vote recorded by
-  // click are then the same code path, optimistic update and refusal included.
-  voteRef: RefObject<HTMLDivElement | null>;
   onActed: (message: string) => void;
 }) {
-  const reception = withRecordedStance(record.reception, recorded);
+  const reception = record.reception;
   const evidence = record.evidence ?? [];
   const [open, setOpen] = useState<boolean[]>(INITIAL_DEPTHS);
   const bar = useRef<HTMLDivElement | null>(null);
@@ -1498,12 +1104,11 @@ export function RecordPeels({
     [onActed, setDepth],
   );
 
-  // Contract K, for this page. The handler presses the real controls rather
-  // than duplicating what they do: a vote recorded by key goes through the
-  // same optimistic post and the same refusal handling as a vote recorded by
-  // click, and `r` moves the focus to the ruling the reader is about to make
-  // instead of recording one for him — a permanent, attributed event is never
-  // one keystroke away.
+  // Contract K, for this page. The keys press the real controls rather than
+  // duplicating what they do: a ruling recorded by key opens the same
+  // one-sentence confirmation as one recorded by click, so a permanent,
+  // attributed event is never one keystroke away — and `r` moves the focus to
+  // the bar rather than choosing an act for him.
   useEffect(() => {
     function press(node: HTMLElement | null | undefined) {
       if (!node) return;
@@ -1526,17 +1131,14 @@ export function RecordPeels({
         event.preventDefault();
         return;
       }
-      if (event.key === "a" || event.key === "d") {
-        const stance = event.key === "a" ? "agree" : "disagree";
-        press(voteRef.current?.querySelector<HTMLElement>(`[data-stance="${stance}"]`));
-        event.preventDefault();
-        return;
-      }
-      if (event.key === "u") {
-        // Unsure is what a lit arrow records when it is pressed again, so the
-        // key presses the vote he has cast rather than a third control that
-        // no longer exists. With no vote cast there is nothing to withdraw.
-        press(voteRef.current?.querySelector<HTMLElement>('[aria-pressed="true"]'));
+      const act = RULE_KEYS[event.key];
+      if (act) {
+        setDepth(0, true);
+        // The claim may have been folded, so the control is reached on the
+        // next frame rather than in this one, when it may not be mounted yet.
+        requestAnimationFrame(() =>
+          press(bar.current?.querySelector<HTMLElement>(`[data-ruling="${act}"]`)),
+        );
         event.preventDefault();
         return;
       }
@@ -1551,7 +1153,7 @@ export function RecordPeels({
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setDepth, toggle, voteRef]);
+  }, [setDepth, toggle]);
 
   return (
     <div className="surface">
@@ -1599,14 +1201,18 @@ export function RecordPeels({
           <kbd className="kbd">1</kbd>–<kbd className="kbd">5</kbd> depth
         </span>
         <span>
-          <kbd className="kbd">a</kbd>
-          <kbd className="kbd">d</kbd> vote
+          <kbd className="kbd">y</kbd>
+          <kbd className="kbd">n</kbd>
+          <kbd className="kbd">d</kbd> accept, reject, defer
         </span>
         <span>
-          <kbd className="kbd">u</kbd> withdraw
+          <kbd className="kbd">f</kbd> refine
         </span>
         <span>
-          <kbd className="kbd">r</kbd> rule
+          <kbd className="kbd">q</kbd> ask
+        </span>
+        <span>
+          <kbd className="kbd">r</kbd> the acts
         </span>
       </p>
     </div>
@@ -1626,14 +1232,17 @@ export function RecordPeels({
 // length is what breaks the type.
 const LONG_CLAIM = 120;
 
-// RecordHeading is the post: the score with the operator's arrows, what kind
-// of thing this is, where it stands, the sentence it is, and the one line of
-// facts §8.7 gives a post — its topics, its author and its age.
+// RecordHeading is the post: Babel's score, what kind of thing this is, where
+// it stands, the sentence it is, and the one line of facts §8.7 gives a post —
+// its topics, its author and its age.
 //
-// It is the feed row opened. The arrows are the same component the feed
-// mounts, the topics are the same chips, and the claim is the same line: a
+// It is the feed row opened. The score is the same read-only figure the row
+// carries, the topics are the same chips, and the claim is the same line: a
 // reader who clicked a row finds the row he clicked at the top of the page,
-// which is the whole of "the shape of a post".
+// which is the whole of "the shape of a post". The arrows that used to be in
+// this column are gone with the operator's stance; where they were is the
+// number, because the number is what a reader coming from the feed looks for
+// there.
 //
 // The two badges are the only ones here — standing and kind — and nothing else
 // wears one. The heading is the record's own words, so it carries the quoted
@@ -1644,48 +1253,25 @@ const LONG_CLAIM = 120;
 // their claim is the heading instead. The kind is not a fallback heading: the
 // badge beside it already says "Observation", and an h1 repeating that would
 // name the class of thing twice and the thing itself never.
-export function RecordHeading({
-  record,
-  recorded,
-  voteRef,
-  onVoted,
-}: {
-  record: RecordPeel;
-  // The stance this page has recorded and the read has not caught up with,
-  // exactly as depth 4 uses it: the arrows seed from the reception, and the
-  // reception the page shows includes his own act the moment it is confirmed.
-  recorded?: OperatorReception;
-  voteRef?: RefObject<HTMLDivElement | null>;
-  onVoted?: (recorded: OperatorReception) => void;
-}) {
+export function RecordHeading({ record }: { record: RecordPeel }) {
   const standing = record.standing;
   const headline = record.title ?? record.claim;
   const long = headline !== undefined && headline.length > LONG_CLAIM;
-  const tally = receptionTally(withRecordedStance(record.reception, recorded));
+  const tally = babelTally(record.reception);
   const topics = topicsOf(record.origin);
   const runID = record.machinery?.run_id;
   const age = formatTime(record.machinery?.created_at);
   return (
     <header className="surface record-post">
-      {/* The arrows take the left column of the post, where a reader coming
-          from the feed already found them — and under them the four words
-          §8.6 requires of the operator's own voice. They are here rather than
-          inside the arrows because the arrows are also a feed row's, and a
-          sentence repeated down twenty-five rows is noise; on the page where
-          he acts on one record, it is the thing he has to be told. */}
-      <div className="record-post-vote" ref={voteRef}>
-        <VoteArrows
-          id={record.id}
-          score={tally.score}
-          support={tally.support}
-          oppose={tally.oppose}
-          unsure={tally.unsure}
-          you={tally.you}
-          onVoted={(next) =>
-            onVoted?.({ stance: next.you as OperatorStance, at: new Date().toISOString() })
-          }
-        />
-        <span className="record-acts-label record-post-note">your vote · decides nothing</span>
+      {/* Babel's score, in the column the arrows had, with the breakdown by
+          role one gesture away — because four supports across four roles are
+          four answers to four different questions, and a merged number with
+          no way to ask what it is made of is exactly what §4.12 refuses. */}
+      <div className="record-post-vote">
+        <span className="record-score" title={tally.breakdown} aria-label={tally.breakdown}>
+          {tally.voted ? tally.score : "—"}
+        </span>
+        <span className="record-acts-label record-post-note">Babel's reviewers</span>
       </div>
       <div className="record-post-body">
         <div className="heading-badges">
@@ -1729,28 +1315,29 @@ export function RecordHeading({
   );
 }
 
-// receptionTally is §8.7's one number, out of depth four.
+// babelTally is §8.7's one number, out of depth four, and the sentence that
+// says what it is made of.
 //
-// "The score is support minus oppose across all of them, because a vote is a
-// vote and the operator is one voter among Babel's reviewers." Babel's side is
-// the reception tally the evaluation store keeps for this revision, and the
-// per-role rows stand in when the store sent none: `counts` is omitted rather
-// than zeroed when it is empty, and a record whose votes only reached the page
-// as role rows would otherwise score nought with five supports on screen.
+// "The score is Babel's reception and only Babel's": §4.12's assessments —
+// one vote per run per role on one exact revision — summed as support minus
+// oppose. The operator is not in it, because he does not vote; his acts are
+// the rulings, and a vote beside them would be a weaker copy of one.
 //
-// The operator is added as the one vote he is. Nothing here sums his stance
-// into Babel's own figures — the depth-4 table still reads model-only, which
-// is §4.12's boundary — and the arrows subtract him back out for the
-// breakdown, so the number is one number and its parts stay attributed.
-function receptionTally(reception: RecordReception | undefined): {
+// The per-role rows stand in when the store sent no totals: `counts` is
+// omitted rather than zeroed when it is empty, and a record whose votes only
+// reached the page as role rows would otherwise score nought with five
+// supports on screen. The breakdown is by role for the same reason the table
+// below is: four supports across four roles are four answers to four
+// different questions, and summing them is how a record with one satisfied
+// evidence check came to read as broadly supported. A record no reviewer has
+// assessed says so rather than reading as unopposed (§8.5).
+function babelTally(reception: RecordReception | undefined): {
   score: number;
-  support: number;
-  oppose: number;
-  unsure: number;
-  you: VoteStance;
+  voted: boolean;
+  breakdown: string;
 } {
   const roles = reception?.by_role ?? [];
-  const babel =
+  const counts =
     reception?.counts ??
     roles.reduce(
       (total, role) => ({
@@ -1760,25 +1347,37 @@ function receptionTally(reception: RecordReception | undefined): {
       }),
       { support: 0, oppose: 0, unsure: 0 },
     );
-  const you: VoteStance = reception?.operator?.stance ?? "";
-  const support = babel.support + (you === "agree" ? 1 : 0);
-  const oppose = babel.oppose + (you === "disagree" ? 1 : 0);
-  const unsure = babel.unsure + (you === "unsure" ? 1 : 0);
-  return { score: support - oppose, support, oppose, unsure, you };
+  const voted = counts.support + counts.oppose + counts.unsure > 0;
+  const byRole = roles
+    .map(
+      (role) =>
+        `${ROLE_WORDS[role.role as ModelRole] ?? role.role}: ${role.support} support, ${role.oppose} oppose, ${role.unsure} unsure`,
+    )
+    .join(" · ");
+  return {
+    score: counts.support - counts.oppose,
+    voted,
+    breakdown: voted
+      ? byRole ||
+        `Babel's reviewers: ${counts.support} support, ${counts.oppose} oppose, ${counts.unsure} unsure`
+      : "Babel's reviewers have not assessed this yet.",
+  };
 }
 
-// topicsOf files a record under the topics its evidence came from.
+// topicsOf names the topic a record's own origin points at.
 //
-// §8.7: "today a topic is a repository: the workspace of the sessions a record
-// cites, named by its last path element, so the same project seen from two
-// machines is one topic". The peel carries one origin — the first cited
-// session this deployment holds — so a record page files under one topic and
-// the feed, which resolves the whole lineage, may file the same record under
-// more. The list shape is what keeps those two from being different ideas.
+// §4.13: a topic is what a record is about, and today's topics are mostly
+// repositories, bound by the repository's own identity. The peel carries one
+// origin — the first cited session this deployment holds — and this is the
+// last element of that session's workspace, which is a heuristic and says so
+// wherever the filing is shown: the binding the feed reads is the
+// repository's, observed during the scan, and the same record may be filed
+// under more there. The list shape is what keeps the two from being different
+// ideas.
 //
-// Nothing here assumes the name is a directory. It is the last element of
-// whatever the workspace string is, and a workspace this deployment did not
-// record leaves the record untopiced rather than hidden.
+// Nothing here assumes the name is a directory in the reading path: it is a
+// name, and a workspace this deployment did not record leaves the record
+// unfiled rather than hidden.
 function topicsOf(origin: RecordOrigin | undefined): string[] {
   const workspace = origin?.workspace?.replace(/[/\\]+$/u, "") ?? "";
   if (!workspace) return [];
@@ -1802,14 +1401,21 @@ function topicsOf(origin: RecordOrigin | undefined): string[] {
 // their own class: a decision that looked like an opinion would be the one
 // confusion this thread cannot afford.
 //
-// The box records a reason and no polarity. The operator's vote is the arrows
-// at the top of the post and nothing else moves the score, so writing here
-// says something without voting — which is exactly what §8.6's third act is.
+// The box records a reason and no polarity, and its toggle records a question
+// instead: nothing the operator writes moves the score, because the score is
+// Babel's reviewers' and he has no vote. A question is the one line in the
+// thread that is addressed to Babel rather than about the record, so it says
+// so — and §8.7 makes answering it the next review's work.
 
 // COMMENT_PAGE is how much conversation one page shows. §8.6's density rule
-// bounds the page at roughly three screens, and a record Babel reviewed four
-// times with a refinement round runs past that on comments alone.
-const COMMENT_PAGE = 20;
+// bounds the page at roughly three screens, and the thread is the part of it
+// that grows without limit: measured at 1440×900 against the mock's own
+// eight-comment fixture, pro_criteria-template runs 3,603px with five shown
+// and 4,600px with all of them, so five is what the fold costs and the rest
+// is one press away. The page is still over the 2,880px ceiling with its
+// first two depths open, and that overage is the record's own body rather
+// than the thread's — it is reported rather than papered over.
+const COMMENT_PAGE = 5;
 
 // The word a comment needs beside its author, and only when it disambiguates.
 // A reviewer's prose and the operator's own reason are what a comment is, so
@@ -1821,6 +1427,7 @@ const COMMENT_WORDS: Record<Comment["kind"], string> = {
   refinement: "refinement",
   answer: "answer",
   reconsideration: "reconsidered",
+  question: "asked",
 };
 
 // The five rulings in the past tense, because the thread shows what was done
@@ -1857,6 +1464,11 @@ export function RecordThread({
   const [thread, setThread] = useState<CommentThread | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [text, setText] = useState("");
+  // Whether what he is writing is a question for Babel rather than a comment
+  // about the record. It is one toggle over one box because it is one act
+  // with two meanings — his own words, kept verbatim — and two boxes would be
+  // two places to write the same sentence into.
+  const [asking, setAsking] = useState(false);
   const [posting, setPosting] = useState(false);
   const [shown, setShown] = useState(COMMENT_PAGE);
 
@@ -1884,7 +1496,7 @@ export function RecordThread({
     setPosting(true);
     setFailure(null);
     try {
-      const result = await postComment(id, written);
+      const result = await postComment(id, written, asking ? "question" : "comment");
       // His own words go in at the top, where the thread's order puts them,
       // rather than the page reading itself again: the response is the record
       // the store wrote, so showing it is showing a fact about the store.
@@ -1894,7 +1506,11 @@ export function RecordThread({
         total: (current?.total ?? 0) + 1,
       }));
       setText("");
-      onPosted?.("Your comment is recorded. It changes no vote.");
+      onPosted?.(
+        asking
+          ? "Your question is recorded. Babel's next review of this record must answer it."
+          : "Your comment is recorded. It moves no score.",
+      );
     } catch (reason) {
       setFailure(errorMessage(reason));
     } finally {
@@ -1914,20 +1530,41 @@ export function RecordThread({
 
       <form className="record-comment-form" onSubmit={submit}>
         <textarea
-          aria-label="Your comment"
+          aria-label={asking ? "Your question" : "Your comment"}
           value={text}
           rows={3}
           onChange={(event) => setText(event.target.value)}
-          placeholder="Your own words, kept verbatim."
+          placeholder={
+            asking
+              ? "What do you want to know about this record? Kept verbatim."
+              : "Your own words, kept verbatim."
+          }
         />
         <div className="record-comment-acts">
           <button type="submit" className="primary-button" disabled={posting || !text.trim()}>
             {posting && <span className="spinner small" />}
-            {posting ? "Recording…" : "Comment"}
+            {posting ? "Recording…" : asking ? "Ask" : "Comment"}
           </button>
-          {/* What writing here does and does not do, in the register the rule
+          {/* One toggle, because the two acts are the same gesture with
+              different meanings: a comment is about the record and a question
+              is addressed to Babel, which its next review must answer. */}
+          <button
+            type="button"
+            className={asking ? "chip active" : "chip"}
+            data-chip="question"
+            aria-pressed={asking}
+            onClick={() => setAsking(!asking)}
+            title="Record this as a question Babel's next review of the record must answer"
+          >
+            Question
+          </button>
+          {/* What writing here does and does not do, in the register the acts
               bar uses for the same distinction one depth up. */}
-          <span className="record-acts-label">kept verbatim · changes no vote</span>
+          <span className="record-acts-label">
+            {asking
+              ? "kept verbatim · answered by the next review"
+              : "kept verbatim · moves no score"}
+          </span>
         </div>
       </form>
 
@@ -2008,8 +1645,11 @@ function CommentLine({ comment }: { comment: Comment }) {
         ) : (
           <span className="record-comment-who">{who}</span>
         )}
+        {/* A question reads as the act it is — "you asked" — so the word
+            follows the author without a separator between them; the other
+            kinds are a capacity beside a name and keep the dot. */}
+        {comment.kind === "question" ? <> {word}</> : word && <> · {word}</>}
         {role && <> · asked {role}</>}
-        {word && <> · {word}</>}
         {at && (
           <>
             {" · "}

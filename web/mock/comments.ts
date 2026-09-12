@@ -43,7 +43,7 @@ interface MockAuthor {
 
 interface MockComment {
   id: string;
-  kind: "contribution" | "refinement" | "reason" | "answer" | "reconsideration";
+  kind: "contribution" | "refinement" | "reason" | "answer" | "reconsideration" | "question";
   author: MockAuthor;
   role: string;
   text: string;
@@ -228,20 +228,30 @@ export async function commentsResponse(request: Request, url: URL): Promise<Resp
   if (!id || id.includes("/")) return null;
 
   if (request.method === "POST") {
-    const body = (await request.json().catch(() => ({}))) as { text?: unknown };
+    const body = (await request.json().catch(() => ({}))) as { text?: unknown; kind?: unknown };
     const text = typeof body.text === "string" ? body.text : "";
     if (!text.trim()) {
       // The real route refuses an empty comment rather than storing a reason
       // the operator did not give.
       return json({ error: "a comment needs text" }, 400);
     }
+    // The request vocabulary is two words and an absence: a comment about the
+    // record, or a question addressed to Babel. Anything else is refused by
+    // name rather than quietly stored as the default, because a caller who
+    // sent a word must not be left believing it was understood.
+    const asked = body.kind === undefined || body.kind === "" ? "comment" : body.kind;
+    if (asked !== "comment" && asked !== "question") {
+      return json({ error: `a comment kind of ${String(asked)} is not one this route records` }, 400);
+    }
     written += 1;
     const comment: MockComment = {
       id: `cmt_own-${written}`,
-      // His own words on a record are a reason, and posting one is a feedback
-      // record with no polarity: §8.7 keeps the vote in the arrows, so nothing
-      // about this write touches the score.
-      kind: "reason",
+      // His own words on a record are a reason and his question is a
+      // question: both are feedback records with no polarity, because the
+      // score is Babel's reviewers' and he has no vote. The question carries
+      // its own kind so a later review of the record can find what it must
+      // answer.
+      kind: asked === "question" ? "question" : "reason",
       author: operator,
       role: "",
       // The real server escapes the operator's bytes before storing them and

@@ -1,5 +1,5 @@
 // Browser acceptance for issue #115's steering surfaces — the capture box and
-// complaint listing, folded into "Tell Babel" at the foot of Decide, and a
+// complaint listing, reached from the shell's own "Tell Babel" button, and a
 // complaint's own record page — driven against the synthetic mock, so no Go
 // server, archive, model, store, or network is needed.
 //
@@ -43,11 +43,13 @@
 // another machine's runs have cited it, and it is the case that carries the
 // whole "was this addressed?" answer (#113).
 //
-// That the box is folded and the listing is conditional: the operator who came
-// to decide is the operator with something to say, but he came to decide, so
-// the box is one deliberate click away — and on day one, with nothing told,
-// there is a usable box and no listing at all rather than an empty panel or an
-// error.
+// That the box is reachable from wherever the operator is, and that the
+// listing is conditional. It used to be folded at the foot of the mod queue,
+// which put the one control for "this is going badly" on the one surface it
+// was most often about; §8.7 moves it to the header, so it opens over
+// whatever page he is reading, closes on Escape, and holds the keyboard while
+// it is open. On day one, with nothing told, there is a usable box and no
+// listing at all rather than an empty panel or an error.
 //
 // The corpus is synthetic and disposable. Nothing here reads a real session.
 
@@ -70,7 +72,7 @@ const chrome = resolveChrome({
     "that a complaint's body renders verbatim and inert, newlines kept and pasted markup executed nowhere",
     "that a revision chain shows every wording oldest first, marks the current one, and keeps an earlier wording readable at its own id",
     "that both citation directions render on a complaint, the followable endpoint as a link into this app and the unopenable one as identified text with its reason",
-    "that the capture box is folded on Decide, and that a launch with nothing told renders no listing rather than an error",
+    "that the capture box opens from the shell's header on any page, traps the keyboard and closes on Escape, and that a launch with nothing told renders no listing rather than an error",
   ],
 });
 
@@ -153,21 +155,17 @@ function visible(text: string): Promise<unknown> {
   );
 }
 
-// tell opens the capture box, which rides Decide behind a fold: the operator
-// who came to decide is the operator with something to say, but he came to
-// decide, so the box is one deliberate click away rather than in the path. A
-// test that reached into the closed <details> would be testing markup nobody
-// can reach.
+// tell opens the capture box from the shell's header, which is where §8.7 puts
+// it: the complaint forms while the operator is reading something else, so the
+// control is in the chrome rather than on the page he would have to navigate
+// away from. Below 640px it is an item in the folded … menu, and this drives
+// the wide header.
 async function tell(): Promise<void> {
-  await page.waitForSelector(".decide-tell summary", { timeout: 15_000 });
-  await page.evaluate(() => {
-    const peel = document.querySelector<HTMLDetailsElement>(".decide-tell");
-    if (peel && !peel.open) peel.querySelector<HTMLElement>("summary")?.click();
+  await page.waitForSelector(".shell-tell", { timeout: 15_000 });
+  await page.click(".shell-tell");
+  await page.waitForSelector(".shell-dialog[aria-label='Tell Babel what is going badly']", {
+    timeout: 15_000,
   });
-  await page.waitForFunction(
-    () => document.querySelector<HTMLDetailsElement>(".decide-tell")?.open === true,
-    { timeout: 15_000 },
-  );
   await page.waitForSelector(".steering-section .capture-input", { timeout: 15_000 });
 }
 
@@ -239,10 +237,10 @@ afterAll(async () => {
 
 test.skipIf(!chrome)("telling Babel something captures it, answers, and lists it", async () => {
   await open("");
-  // Folded on arrival: Decide is where the operator answers "what needs me",
-  // and a text box asking what is going badly is not that question.
-  await page.waitForSelector(".decide-tell", { timeout: 15_000 });
-  expect(await page.$eval(".decide-tell", (peel) => (peel as HTMLDetailsElement).open)).toBe(false);
+  // Not on the page at all until he asks for it: Home is the feed, and a text
+  // box asking what is going badly is not what he came to read.
+  await page.waitForSelector(".shell-tell", { timeout: 15_000 });
+  expect(await page.$(".steering-section")).toBeNull();
   await tell();
 
   // The button is dead until there are words. A capture box that submitted an
@@ -596,6 +594,33 @@ test.skipIf(!chrome)("a complaint's citations render in both directions", async 
   expect(page.url()).toContain("/r/hyp_unverified-closures");
 });
 
+test.skipIf(!chrome)("the box opens over any page, holds the keyboard, and Escape closes it", async () => {
+  // Reached from the record page, which is the point of moving it: the
+  // complaint forms while the operator is reading the thing he is complaining
+  // about, and he does not have to leave it to say so.
+  await open("r/pro_criteria-template");
+  await tell();
+  expect(await page.evaluate(() => window.location.hash)).toContain("/r/pro_criteria-template");
+
+  // The keyboard is inside the dialogue and cannot tab out behind it: the one
+  // modal on this surface has a textarea in it, and a reader who tabbed into
+  // the page under it would be typing into a form he cannot see.
+  const inside = () =>
+    page.evaluate(() => document.querySelector(".shell-dialog-panel")?.contains(document.activeElement) ?? false);
+  expect(await inside()).toBe(true);
+  for (let press = 0; press < 12; press += 1) {
+    await page.keyboard.press("Tab");
+    expect(await inside()).toBe(true);
+  }
+
+  // Escape closes it and leaves the page it opened over untouched.
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => document.querySelector(".shell-dialog") === null, {
+    timeout: 15_000,
+  });
+  expect(await page.evaluate(() => window.location.hash)).toContain("/r/pro_criteria-template");
+});
+
 test.skipIf(!chrome)("day one shows the box and no listing at all, not an error", async () => {
   const dayOne = await startMock({ MOCK_PHASEB: "empty" });
   const bare = await browser!.newPage();
@@ -603,11 +628,8 @@ test.skipIf(!chrome)("day one shows the box and no listing at all, not an error"
     await bare.setViewport({ width: 1440, height: 900 });
     await bare.goto(`${dayOne.base}/#/`, { waitUntil: "networkidle2" });
     await bare.reload({ waitUntil: "networkidle2" });
-    await bare.waitForSelector(".decide-tell summary", { timeout: 15_000 });
-    await bare.evaluate(() => {
-      const peel = document.querySelector<HTMLDetailsElement>(".decide-tell");
-      if (peel && !peel.open) peel.querySelector<HTMLElement>("summary")?.click();
-    });
+    await bare.waitForSelector(".shell-tell", { timeout: 15_000 });
+    await bare.click(".shell-tell");
     await bare.waitForSelector(".steering-section .capture-input", { timeout: 15_000 });
 
     const state = await bare.evaluate(() => {

@@ -95,8 +95,7 @@ const KIND_LABEL: Record<string, string> = {
 // is absent because it is this list: a row that opened the palette from
 // inside the palette is not a destination.
 const DESTINATIONS: { path: string; label: string; note: string }[] = [
-  { path: "/", label: "Home", note: "the feed — everything Babel has produced" },
-  { path: "/queue", label: "Mod queue", note: "what awaits a ruling from you" },
+  { path: "/", label: "Home", note: "the feed — what needs you, then everything else" },
   { path: "/watch", label: "Watch", note: "what it is doing, and what it cost" },
   { path: "/settings", label: "Settings", note: "the archive, the ceilings, and what Babel is" },
 ];

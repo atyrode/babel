@@ -7,11 +7,12 @@
 // routes in ./phaseb.ts stay: they answer a different question (one record in
 // the shape its own store holds it), and the listing pages still use them.
 //
-// POST /api/record/{id}/reception is the operator's own stance. It is kept in
-// memory here so the control is exercisable end to end in one browser: click
-// agree, read it back at depth 4, change it, and find the earlier stance still
-// readable. §4.12 is append-only, so a changed mind appends rather than edits,
-// and the fixture state models exactly that.
+// The operator's stance is not written here any more, because there is no
+// route for it: §8.7 makes the score Babel's reviewers' and the operator's
+// acts the rulings, so POST /api/record/{id}/reception is gone. What he
+// recorded before it went is still in the peel — the fixture below seeds one
+// current stance and one earlier one — and the surface renders them read-only,
+// which is what §4.12's append means when a write is retired.
 //
 // This file exists rather than living in ./phaseb.ts because the peel needs
 // both the frontier fixtures and the evaluation projection, and ./evaluation.ts
@@ -212,19 +213,34 @@ function originOf(refs: Array<EvidenceRef | undefined>): Record<string, unknown>
   return undefined;
 }
 
-// The operator's stance, in memory. `current` is what he says now and
-// `earlier` is what he used to say, newest first: a reception is appended like
-// every other operator record, so changing his mind leaves the earlier
-// position readable instead of replacing it.
+// What the operator recorded while the surface took stances. `current` is the
+// last thing he said and `earlier` is what he said before it, newest first: a
+// reception was appended like every other operator record, so a changed mind
+// left the earlier position readable rather than replacing it — and the
+// surface still reads both, because retiring a write does not delete what it
+// wrote.
+//
+// It is seeded rather than written. The route that recorded a stance is gone,
+// so the only way the read-only rendering is reachable in a browser is for
+// the fixture to hold what the store holds on the operator's own machine: one
+// record he agreed with after being unsure about it.
 interface Stance {
   stance: string;
   reason?: string;
   at: string;
 }
-const current: Record<string, Stance | undefined> = {};
-const earlier: Record<string, Stance[]> = {};
-
-const STANCES: Record<string, true> = { agree: true, disagree: true, unsure: true };
+const current: Record<string, Stance | undefined> = {
+  "pro_criteria-template": {
+    stance: "agree",
+    reason: "The pattern turned up twice more, which is what I said I was waiting for.",
+    at: "2026-09-08T10:30:00Z",
+  },
+};
+const earlier: Record<string, Stance[]> = {
+  "pro_criteria-template": [
+    { stance: "unsure", reason: "Two synthetic sessions is not a corpus.", at: "2026-08-30T09:20:00Z" },
+  ],
+};
 
 function receptionBlock(id: string): Record<string, unknown> | undefined {
   const model = receptionOf(id);
@@ -457,10 +473,12 @@ export async function recordResponse(request: Request, url: URL): Promise<Respon
   const path = url.pathname;
   if (!path.startsWith("/api/record/")) return null;
   const rest = path.slice("/api/record/".length);
-  // The sub-resource routes — revisions, dispositions, links, invite, revive —
-  // are answered by ./phaseb.ts, which runs first. What reaches here is an id.
-  const reception = rest.endsWith("/reception");
-  const id = decodeURIComponent(reception ? rest.slice(0, -"/reception".length) : rest);
+  // The sub-resource routes — revisions, dispositions, links, invite, revive,
+  // comments — are answered by ./phaseb.ts and ./comments.ts, which run
+  // first. What reaches here is an id, and a path with a separator left in it
+  // is some retired sub-resource — /reception is one — which falls through to
+  // the unknown-route answer rather than being served here.
+  const id = decodeURIComponent(rest);
   if (!id || id.includes("/")) return null;
 
   // A well-formed id whose family this surface cannot open, and an id whose
@@ -473,26 +491,6 @@ export async function recordResponse(request: Request, url: URL): Promise<Respon
   const record = peel(id);
   if (!record) return json({ error: "no record with that identifier" }, 404);
 
-  if (reception) {
-    if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
-    const body = (await request.json().catch(() => ({}))) as { stance?: unknown; reason?: unknown };
-    const stance = typeof body.stance === "string" ? body.stance : "";
-    if (!STANCES[stance]) {
-      // internal/web never echoes a service error's own words, because a
-      // wrapped store error can quote corpus prose; the refusal is this one
-      // fixed sentence.
-      return json(
-        { error: "a value in the request is outside what the evaluation service accepts" },
-        400,
-      );
-    }
-    const at = new Date().toISOString();
-    const previous = current[id];
-    if (previous) earlier[id] = [previous, ...(earlier[id] ?? [])];
-    const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason : undefined;
-    current[id] = { stance, ...(reason ? { reason } : {}), at };
-    return json({ stance, at });
-  }
 
   if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
   return json(record);

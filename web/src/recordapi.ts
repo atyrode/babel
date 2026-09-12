@@ -309,11 +309,6 @@ export interface RecordPeel {
   machinery?: RecordMachinery;
 }
 
-export interface ReceptionResult {
-  stance: OperatorStance;
-  at: string;
-}
-
 // getRecord reads one record whole. The id names its kind — the server refuses
 // an id whose prefix it cannot open — so the client needs no kind parameter
 // and a link to a record is just its id.
@@ -321,27 +316,11 @@ export function getRecord(id: string): Promise<RecordPeel> {
   return request<RecordPeel>(`/api/record/${encodeURIComponent(id)}`);
 }
 
-// putReception records the operator's own stance on a record he has read.
-//
-// It is an attributed operator reception and it decides nothing: the authority
-// to rule stays with the disposition events, and §4.12's boundary is not
-// widened by it. Posting the same record again replaces the operator's stance
-// with the later one, which is what makes the control on the page reversible.
-//
-// The reason is sent only when the operator wrote one. An empty string would
-// be stored as a reason he gave, and "he said nothing" is a different fact
-// from "he said ''".
-export function putReception(
-  id: string,
-  stance: OperatorStance,
-  reason?: string,
-): Promise<ReceptionResult> {
-  const trimmed = reason?.trim();
-  return postJSON<ReceptionResult>(
-    `/api/record/${encodeURIComponent(id)}/reception`,
-    trimmed ? { stance, reason: trimmed } : { stance },
-  );
-}
+// The operator records no stance. §8.7: "Babel votes; the operator rules" —
+// his acts on a record are the rulings and the question he asks about it, so
+// the write that recorded a stance is gone from this client and from the
+// server. What he recorded before it went stays readable in the reception
+// block below, because §4.12 appends and nothing here deletes.
 
 // The conversation under the post, and the moderator's log beside it.
 //
@@ -358,7 +337,17 @@ export function putReception(
 // travel as `acts` — attributed and dated — and the renderer places them in
 // the thread as the acts they are. Merging them into `comments` would let a
 // decision read as an opinion.
-export type CommentKind = "contribution" | "refinement" | "reason" | "answer" | "reconsideration";
+// A question the operator asked is a comment with its own kind. It is a
+// feedback record carrying the reason and a marker a later review of the
+// record can find, which is what makes "Babel's next review must answer it"
+// a property of the store rather than a promise in the interface.
+export type CommentKind =
+  | "contribution"
+  | "refinement"
+  | "reason"
+  | "answer"
+  | "reconsideration"
+  | "question";
 
 // Who wrote a line. `kind` is the §4.12 attribution boundary on the wire: a
 // run authored what it wrote and the operator authored what he wrote, and the
@@ -418,12 +407,24 @@ export function getComments(id: string): Promise<CommentThread> {
 //
 // It is a feedback record carrying a reason and no polarity: §8.7 gives the
 // operator "a box the operator writes into that records a feedback record
-// carrying a reason and no polarity change", so writing a comment never moves
-// the score. His vote is the arrows and nothing else.
+// carrying a reason and no polarity", so writing here moves no score. Nothing
+// he writes does: the score is Babel's reviewers' and he has no vote.
+//
+// `kind` is what the request vocabulary calls it — a comment or a question —
+// and it is absent for a comment rather than sent as the default, because the
+// route reads an absent kind as a comment and a client that spelled the
+// default out would be the only place that knew it.
 //
 // The text is sent exactly as typed. The server escapes it and the surface
 // renders it inside a quoted frame, which is what keeps an operator's own
 // sentence from becoming markup.
-export function postComment(id: string, text: string): Promise<CommentResult> {
-  return postJSON<CommentResult>(`/api/record/${encodeURIComponent(id)}/comments`, { text });
+export function postComment(
+  id: string,
+  text: string,
+  kind: "comment" | "question" = "comment",
+): Promise<CommentResult> {
+  return postJSON<CommentResult>(
+    `/api/record/${encodeURIComponent(id)}/comments`,
+    kind === "question" ? { text, kind } : { text },
+  );
 }

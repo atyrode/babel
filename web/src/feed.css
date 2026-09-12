@@ -1,17 +1,18 @@
 /* The feed (§8.7).
    ---------------------------------------------------------------------------
-   The front page is a list of posts, and a post is one line of claim with its
-   arrows, its flair, its topics, its age and its comment count. Everything
-   here is scoped under `.feed-page` because it is a page's rhythm and not a
-   new vocabulary: the containers are styles.css's `.surface`, `.peel`,
-   `.chip` and `.rule-bar`, the colours and spaces are its tokens, and nothing
-   in this file declares a literal colour.
+   The front page is a list of posts, and a post is one line of claim with
+   Babel's score, its flair, its topics, its age, its comment count, why it is
+   next when it is, and the acts it invites when it is waiting. Everything here
+   is scoped under `.feed-page` because it is a page's rhythm and not a new
+   vocabulary: the containers are styles.css's `.surface`, `.peel`, `.chip`
+   and `.rule-bar`, the colours and spaces are its tokens, and nothing in this
+   file declares a literal colour.
 
-   The arrows are deliberately absent from this file. `div.vote` and its three
-   parts are the record's own control, styled once in record.css and mounted
-   here, so a feed row gives them a column and says nothing about how they
-   look — two stylesheets describing one control is how the same button comes
-   to have two appearances. */
+   The acts are deliberately absent from this file. `.record-acts` and
+   `.record-confirm` are the ruling's own rules, styled once in record.css and
+   mounted here as they are on the record, so a row gives them a line and says
+   nothing about how they look — two stylesheets describing one control is how
+   the same button comes to have two appearances. */
 
 /* The feed and the topics beside it. One column until the rail has room; the
    rail is mounted by the page only above the same width, so the two cannot
@@ -101,13 +102,14 @@
   list-style: none;
 }
 
-/* One row, two columns: the vote and everything the reader decides with. The
-   arrows are max-content because record.css fixes their width; the claim
-   takes the rest and is allowed to be narrow, because a row that reflows
-   under the pointer is a row that gets misclicked. */
+/* One row, two columns: the score and everything the reader decides with. The
+   score is max-content and tabular, so the claims line up down the list
+   whatever the figures are; the body takes the rest and is allowed to be
+   narrow, because a row that reflows under the pointer is a row that gets
+   misclicked. */
 .feed-page .feed-row {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: 2.75rem minmax(0, 1fr);
   gap: var(--space-1) var(--space-4);
   align-items: start;
   padding: var(--space-2);
@@ -187,26 +189,74 @@
   font-size: 0.72rem;
 }
 
-/* A standing worth saying. "new" is the absence of a ruling and is left
-   unsaid: a badge on every row is a badge that says nothing. */
-.feed-page .feed-standing {
-  color: var(--ink-faint);
-  font-size: 0.72rem;
-  letter-spacing: 0.02em;
-  text-transform: lowercase;
+/* Babel's score: a figure, not a control. It is mono and tabular because it
+   is a number the reader compares down a column, and it is `cursor: help`
+   rather than a button because the one gesture it answers is "what is this
+   made of" (§8.7's breakdown, in the title). An em dash stands where no
+   reviewer has assessed the record, and it is dimmed so it reads as an
+   absence rather than as a value. */
+.feed-page .feed-score {
+  padding-top: 0.1rem;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  cursor: help;
 }
 
-.feed-page .feed-standing[data-standing="accepted"] {
+/* Why this post is next, in the five words the server sent. Muted, because it
+   is the reason the row is where it is and not part of the claim. */
+.feed-page .feed-why {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--ink-muted);
+  font-family: var(--font-ui);
+  font-size: 0.74rem;
+}
+
+.feed-page .feed-row[data-awaiting] .feed-score {
+  color: var(--accent);
+}
+
+/* The acts, on the rows that are waiting. One line, and the confirmation
+   opens under it where the button was, so the claim being ruled on is still
+   on screen. */
+.feed-page .feed-acts {
+  margin-top: var(--space-2);
+}
+
+/* What was recorded, in place of what could be. It is the receipt for the
+   moment between the act and the next read, so it is small, quiet and past
+   tense. */
+.feed-page .feed-acted {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--ink-muted);
+  font-family: var(--font-ui);
+  font-size: 0.76rem;
+}
+
+.feed-page .feed-acted[data-act="accept"] {
   color: var(--good);
 }
 
-.feed-page .feed-standing[data-standing="rejected"] {
+.feed-page .feed-acted[data-act="reject"] {
   color: var(--bad);
 }
 
-.feed-page .feed-standing[data-standing="reopened"],
-.feed-page .feed-standing[data-standing="refine-requested"] {
-  color: var(--warn);
+/* What the page just did, above the list: a confirmation below twenty-five
+   rows is a confirmation the operator never sees. It keeps its height only
+   when it has something to say. */
+.feed-page .feed-said {
+  margin: 0;
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+.feed-page .feed-said:empty {
+  display: none;
 }
 
 /* More of the same list, appended. It is a button and not a pager because the

@@ -108,7 +108,9 @@ const NARROW = { width: 390, height: 844 };
 // does not apply.
 const ROUTES = [
   "",
-  "queue",
+  // The mod queue is the feed's own filter now (§8.7), so the route that used
+  // to be a second listing is the front page under `needs=me`.
+  "?needs=me",
   "watch",
   "ask/questions",
   "ask/questions/qst_focus-policy",
@@ -223,17 +225,21 @@ test.skipIf(!chrome)("every area of the reading surface renders against the mock
     { timeout: 15_000 },
   );
 
-  // The mod queue: what awaits a ruling, mixed kinds, with the figures above
-  // it. Three at minimum — what is waiting, what is asked, what changed. The
-  // figures about this operator's own visit are conditional, so the count is
-  // a floor rather than an equality.
-  await open("queue");
+  // The mod queue, which is the same list narrowed to what awaits a ruling and
+  // ordered by what is next. Every row on it says why it is there and offers
+  // the acts §8.7 gives a row — which is the whole of what the second surface
+  // used to be.
+  await open("?needs=me");
   await page.waitForFunction(
-    () => document.querySelectorAll("ol.decide-queue > li.decide-row").length >= 4,
+    () => document.querySelectorAll("ol.feed-list > li.feed-row[data-awaiting]").length >= 4,
     { timeout: 15_000 },
   );
-  const figures = await page.evaluate(() => document.querySelectorAll(".decide-stat").length);
-  expect(figures).toBeGreaterThanOrEqual(3);
+  const waiting = await page.evaluate(() => ({
+    reasons: document.querySelectorAll("ol.feed-list .feed-why").length,
+    rulings: document.querySelectorAll("ol.feed-list [data-ruling='accept']").length,
+  }));
+  expect(waiting.reasons).toBeGreaterThanOrEqual(4);
+  expect(waiting.rulings).toBeGreaterThan(0);
 
   // Watch: what Babel is doing and what it cost. The receipt strip carries no
   // publication state and names no machine: a receipt is read for what the run
@@ -261,14 +267,17 @@ test.skipIf(!chrome)("an empty deployment reads as a state, not a bug", async ()
   // rather than the same shrug four times. What must never appear on a
   // deployment with nothing in it is a filter's excuse: "nothing matches" is
   // a statement about controls the operator has not touched.
+  // Arriving is arriving under the operator's own filter, so day one says
+  // what is true of it — nothing is waiting — and the sentence about the
+  // whole corpus is one gesture away, where it is also true.
   await open("", emptyMock?.base);
-  await visible("Babel has not posted anything yet");
+  await visible("Nothing is waiting on you");
   expect(await page.evaluate(() => document.body.innerText)).not.toContain(
     "a statement about the filters",
   );
 
-  await open("queue", emptyMock?.base);
-  await visible("Nothing awaits a decision");
+  await open("?needs=all", emptyMock?.base);
+  await visible("Babel has not posted anything yet");
 
   await open("ask/questions", emptyMock?.base);
   await visible("Babel has asked nothing yet");

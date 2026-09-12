@@ -1,5 +1,4 @@
 import { request } from "./api";
-import type { OperatorStance } from "./recordapi";
 
 // The feed's two reads: the front page and the topics beside it.
 //
@@ -15,7 +14,11 @@ import type { OperatorStance } from "./recordapi";
 // typed nullable, because a projection that could not be read is a null the
 // renderer must treat as "unknown" and never as "none" (§8.5).
 
-export type FeedSort = "hot" | "new" | "top" | "controversial" | "rising";
+// `next` is §8.5's order over what awaits the operator: urgency first, then a
+// proposal before a finding before a candidate, then the longest wait. It is
+// the server's, like the other five — internal/web/feed.go states and tests
+// it — and it leads the bar because it is the order the operator arrives in.
+export type FeedSort = "next" | "hot" | "new" | "top" | "controversial" | "rising";
 
 // The windows `top` and `controversial` are computed over. Every other sort
 // ignores the parameter, and the server echoes back what it applied, so the
@@ -28,7 +31,14 @@ export type FeedWindow = "hour" | "day" | "week" | "month" | "year" | "all";
 // own and not ./recordapi's RecordKind.
 export type FeedKind = "hypothesis" | "observation" | "finding" | "proposal" | "question";
 
-export const FEED_SORTS: FeedSort[] = ["hot", "new", "top", "controversial", "rising"];
+export const FEED_SORTS: FeedSort[] = [
+  "next",
+  "hot",
+  "new",
+  "top",
+  "controversial",
+  "rising",
+];
 export const FEED_WINDOWS: FeedWindow[] = ["hour", "day", "week", "month", "year", "all"];
 export const FEED_KINDS: FeedKind[] = [
   "proposal",
@@ -64,18 +74,26 @@ export interface FeedPost {
   created_at: string;
   author: FeedAuthor | null;
   topics: string[];
-  // One number and its parts. The score is support − oppose across Babel's
-  // reviewers and the operator together (§8.7); the parts are what the
-  // breakdown shows, so the number on the row and the gesture that explains
-  // it are never computed from two different reads.
+  // One number and its parts, over Babel's reviewers and nobody else (§8.7):
+  // the score is their support minus their opposition, and the operator's
+  // acts are the rulings rather than a vote beside it. A record no reviewer
+  // has assessed has no score, which the row says with an em dash: the parts
+  // being nought is how a reader tells "unreviewed" from "unopposed".
   score: number;
   support: number;
   oppose: number;
   unsure: number;
-  you: OperatorStance | "";
   comments: number;
   last_activity_at: string;
   href: string;
+  // Whether this post is waiting on the operator: a record whose review
+  // standing awaits a ruling, or a question whose state awaits an answer.
+  awaiting: boolean;
+  // Why it is next, in five words at most, from the fields the post's own
+  // store returned — a stuck reason, an age, a tier. Empty whenever
+  // `awaiting` is false, because a reason to act now on something nobody is
+  // waiting for is a sentence the server would have to invent.
+  why: string;
 }
 
 export interface FeedResponse {
@@ -85,6 +103,11 @@ export interface FeedResponse {
   t: FeedWindow;
   topic: string;
   kinds: string[] | null;
+  // What the server applied of the operator's filter: "me" when the feed was
+  // narrowed to what awaits him, empty when it was not. It is echoed for the
+  // same reason the sort and the window are — the control shows what is in
+  // force rather than what was asked for.
+  needs: string;
   built_at: string;
   // Present and non-empty only when the deployment is serving the feed on
   // terms the reader has to know about — a projection that could not be
@@ -96,6 +119,22 @@ export interface TopicRow {
   name: string;
   posts: number;
   latest_at: string;
+  // What the topic's name is bound to, and how. §4.13: a topic is a name
+  // bound to something real, with a reason, and "nothing in the surface may
+  // assume a topic is a directory" — so the binding travels as an identity
+  // with its own kind, is never rendered as a path in the reading path, and
+  // is `null` for a name this deployment cannot bind.
+  binding: TopicBinding | null;
+  // Whether the filing was seeded from repository identity rather than
+  // decided (§4.13). Every seeded filing says so, because the recipe that
+  // will revisit it reads exactly this.
+  heuristic: boolean;
+}
+
+export interface TopicBinding {
+  kind: string;
+  identity: string;
+  paths: string[] | null;
 }
 
 export interface TopicsResponse {
@@ -111,6 +150,9 @@ export interface FeedQuery {
   t?: FeedWindow | "";
   topic?: string;
   kind?: string[];
+  // "me" narrows the feed to the posts awaiting the operator. Absent is
+  // everything, which is the whole corpus and not a wider filter.
+  needs?: string;
   limit?: number;
   offset?: number;
 }
@@ -124,6 +166,7 @@ export function getFeed(query: FeedQuery = {}): Promise<FeedResponse> {
   if (query.sort) params.set("sort", query.sort);
   if (query.t) params.set("t", query.t);
   if (query.topic) params.set("topic", query.topic);
+  if (query.needs) params.set("needs", query.needs);
   if (query.kind && query.kind.length > 0) params.set("kind", query.kind.join(","));
   if (query.limit) params.set("limit", String(query.limit));
   if (query.offset) params.set("offset", String(query.offset));

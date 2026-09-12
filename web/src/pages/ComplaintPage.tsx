@@ -41,7 +41,7 @@ function ComplaintPage() {
   if (error && !detail) {
     return (
       <section className="page">
-        <Link className="back-link" to="/queue">← Mod queue</Link>
+        <Link className="back-link" to="/">← The feed</Link>
         <div className="surface state-note error-state">
           <strong>Complaint could not be loaded.</strong>
           <span>{error}</span>
@@ -63,7 +63,7 @@ function ComplaintPage() {
 
   return (
     <section className="page complaint-page">
-      <Link className="back-link" to="/queue">← Mod queue</Link>
+      <Link className="back-link" to="/">← The feed</Link>
       <div className="page-heading">
         <div>
           <p className="eyebrow">Operator steering</p>

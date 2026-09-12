@@ -425,86 +425,25 @@
   gap: var(--space-1);
 }
 
-/* The arrows and the score, from src/vote.tsx.
+/* Babel's score, in the column the arrows had.
  *
- * They are the record's own act and the feed row's, so their rules live here
- * and the component imports this file: one control, one stylesheet, whichever
- * page mounts it. The root selector is `div.vote` rather than `.vote` because
- * the evaluation listing already spends `.vote` on the tally spans inside
- * `.evaluation-reception`, and a bare class here would turn each of those
- * figures into a flex column. */
-div.vote {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: column;
-  gap: var(--space-1);
-  align-items: center;
-}
-
-/* An arrow is a glyph and a target, not a button-shaped thing: the chrome of
- * the shell's button would be four of them stacked beside every claim. */
-.vote-up,
-.vote-down {
-  display: grid;
-  place-items: center;
-  width: 1.75rem;
-  min-height: 1.4rem;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--ink-faint);
-  background: none;
-  font-size: 0.72rem;
-  line-height: 1;
-}
-
-.vote-up:hover:not(:disabled) {
-  border-color: var(--good-line);
-  color: var(--good);
-  background: var(--good-soft);
-}
-
-.vote-down:hover:not(:disabled) {
-  border-color: var(--bad-line);
-  color: var(--bad);
-  background: var(--bad-soft);
-}
-
-/* Lit is the vote he has cast. Pressing it again records `unsure`, so the
- * only state the arrow needs is his own side. */
-.vote-up[aria-pressed="true"] {
-  border-color: var(--good-line);
-  color: var(--good);
-  background: var(--good-soft);
-}
-
-.vote-down[aria-pressed="true"] {
-  border-color: var(--bad-line);
-  color: var(--bad);
-  background: var(--bad-soft);
-}
-
-/* The number is a figure: mono, tabular, and asking to be interrogated. */
-.vote-score {
+ * It is a figure and not a control: the operator does not vote (§8.7), so
+ * there is nothing here to press. `cursor: help` is the one gesture it
+ * answers — what the number is made of, by role, in the title — and the em
+ * dash that stands where no reviewer has assessed the record is dimmed so it
+ * reads as an absence rather than as a value. */
+.record-score {
   color: var(--ink);
   font-family: var(--font-mono);
-  font-size: 0.88rem;
+  font-size: 1.35rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  line-height: 1;
   cursor: help;
 }
 
-/* A refused vote says so where it was cast, narrow enough to live in a feed
- * row's left column. */
-.vote .vote-error {
-  max-width: 14rem;
-  margin: var(--space-1) 0 0;
-  padding: var(--space-1) var(--space-2);
-  font-size: 0.72rem;
-}
-
 /* The post. §8.7 makes a record a post, and a post is a score beside a claim:
- * the arrows take a column of their own on the left, the identity and the
+ * the score takes a column of its own on the left, the identity and the
  * sentence take the rest, and the one line of facts closes it. */
 .record-post {
   display: grid;
@@ -521,9 +460,9 @@ div.vote {
   padding-top: var(--space-1);
 }
 
-/* The four words §8.6 asks of the operator's stance, under the arrows that
- * are it. Bounded to the width of the column so the post's own sentence keeps
- * the measure, and centred because the arrows are. */
+/* Whose number this is, under the number. Bounded to the width of the column
+ * so the post's own sentence keeps the measure, and centred because the
+ * figure is. */
 .record-post-vote .record-post-note {
   max-width: 4.4rem;
   text-align: center;
@@ -610,6 +549,14 @@ div.vote {
   gap: var(--space-3);
   align-items: center;
   margin-top: var(--space-2);
+}
+
+/* The one-line question, in the confirmation's own frame: an input rather
+ * than a textarea because a question to Babel is a sentence, and a box three
+ * rows deep invites a brief. */
+.record-ask input {
+  width: 100%;
+  max-width: var(--measure);
 }
 
 .record-thread-list,

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { getTopics, UNFILED, type TopicsResponse } from "./feedapi";
 import { openPalette } from "./palette";
+import { SteeringSection } from "./steering";
 
 // The chrome's own instruments, kept out of App.tsx so that file stays a
 // router: what is running, how dense the interface is, and what the reader can
@@ -329,21 +330,29 @@ export function TopicList({ current }: { current: string }) {
   );
 }
 
-// ShellControls is the three instruments between the live mark and the stop:
-// search, density, keys. Nothing about them changes with the viewport except
-// how many buttons they occupy — on a phone the header had five controls and
-// the navigation on three rows, which pushed the page's own title off the
-// screen, so below NARROW_HEADER the three fold into one … menu and the two
-// controls that must never be a click away — what is running, and how to stop
-// it — stay where they are.
+// ShellControls is the instruments between the live mark and the stop: the
+// box the operator tells Babel what is going badly into, search, density and
+// keys. Nothing about them changes with the viewport except how many buttons
+// they occupy — on a phone the header had five controls and the navigation on
+// three rows, which pushed the page's own title off the screen, so below
+// NARROW_HEADER they fold into one … menu and the two controls that must
+// never be a click away — what is running, and how to stop it — stay where
+// they are.
+//
+// Tell Babel is here rather than on a page because of where it used to be:
+// folded at the foot of the queue, which meant the operator could only
+// complain from the one surface he complained about. #115's box is reachable
+// from everywhere now, and it is the same box and the same write.
 export function ShellControls({
   density,
   setDensity,
   onKeyHints,
+  onTell,
 }: {
   density: Density;
   setDensity: (density: Density) => void;
   onKeyHints: () => void;
+  onTell: () => void;
 }) {
   const narrow = useNarrowHeader();
   const [open, setOpen] = useState(false);
@@ -375,6 +384,17 @@ export function ShellControls({
   if (!narrow) {
     return (
       <>
+        {/* First of the instruments, because it is the one the operator
+            reaches for while reading something else: what is going badly is
+            said where it is noticed. */}
+        <button
+          type="button"
+          className="shell-toggle shell-tell"
+          onClick={onTell}
+          title="Say what is going badly. It opens nothing and assigns nothing."
+        >
+          Tell Babel
+        </button>
         {/* The search control says "Search" rather than wearing a magnifier
             glyph: U+2315 is missing from most Linux font stacks and renders
             as a tofu box, and a control the operator cannot name is a control
@@ -421,13 +441,25 @@ export function ShellControls({
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
         aria-haspopup="menu"
-        title="Search, density and keyboard shortcuts"
+        title="Tell Babel, search, density and keyboard shortcuts"
         aria-label="More controls"
       >
         <span aria-hidden="true">…</span>
       </button>
       {open && (
         <div className="surface shell-menu" role="menu" aria-label="More controls">
+          <button
+            type="button"
+            role="menuitem"
+            className="shell-menu-tell"
+            onClick={() => {
+              setOpen(false);
+              onTell();
+            }}
+          >
+            <span>Tell Babel</span>
+            <span className="shell-menu-meta">what is going badly</span>
+          </button>
           <button
             type="button"
             role="menuitem"
@@ -493,23 +525,18 @@ const KEY_HINTS: { group: string; keys: { press: string[]; does: string }[] }[] 
     keys: [
       { press: ["j", "k"], does: "Move down and up the posts" },
       { press: ["Enter"], does: "Open the focused post" },
-      { press: ["a", "d"], does: "Agree or disagree; pressing the lit arrow again withdraws it" },
+      { press: ["y", "n", "d"], does: "Accept, reject or defer the focused post — each confirmed first" },
+      { press: ["f"], does: "Send the focused post back to Babel for refinement" },
+      { press: ["q"], does: "Ask Babel a question about the focused post" },
     ],
   },
   {
-    group: "The mod queue",
+    group: "A post",
     keys: [
-      { press: ["j", "k"], does: "Move down and up the list" },
-      { press: ["Enter"], does: "Open the focused record" },
-      { press: ["a", "d", "u"], does: "Agree, disagree or unsure on the focused record" },
-      { press: ["r"], does: "Open the rule bar for the focused record" },
-    ],
-  },
-  {
-    group: "A record",
-    keys: [
-      { press: ["a", "d", "u"], does: "Agree, disagree or unsure" },
-      { press: ["r"], does: "Open the rule bar" },
+      { press: ["y", "n", "d"], does: "Accept, reject or defer — each confirmed first" },
+      { press: ["f"], does: "Send it back for refinement" },
+      { press: ["q"], does: "Ask Babel about it" },
+      { press: ["r"], does: "Move to the acts, and choose there" },
       { press: ["1", "…", "5"], does: "Open or close a depth" },
     ],
   },
@@ -520,13 +547,13 @@ const KEY_HINTS: { group: string; keys: { press: string[]; does: string }[] }[] 
 export function KeyHints({ onClose }: { onClose: () => void }) {
   return (
     <div
-      className="keyhints"
+      className="shell-dialog"
       role="dialog"
       aria-modal="true"
       aria-label="Keyboard shortcuts"
       onClick={onClose}
     >
-      <div className="surface keyhints-panel" onClick={(event) => event.stopPropagation()}>
+      <div className="surface shell-dialog-panel" onClick={(event) => event.stopPropagation()}>
         <h2>Keys</h2>
         <p className="muted">
           Every list and every record can be worked without the mouse. Keys are ignored while
@@ -554,6 +581,97 @@ export function KeyHints({ onClose }: { onClose: () => void }) {
         <button type="button" className="keyhints-close" onClick={onClose}>
           Close
         </button>
+      </div>
+    </div>
+  );
+}
+
+// What the dialog's focus may move between while it is open. It is the
+// browser's own idea of a focusable control, minus the ones a modal must not
+// hand the keyboard to.
+const FOCUSABLE =
+  "a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex='-1'])";
+
+// TellBabel is #115's capture box, over whatever page the operator is on.
+//
+// It used to be a peel at the foot of the mod queue, which put the one control
+// for "this is going badly" on the one surface it was most often about. §8.7
+// leaves the box exactly as it was — the same component, the same write, the
+// same refusal to acquire a status — and moves where it is reached from: the
+// header, which is every page.
+//
+// The keyboard cannot leave it while it is open, and Escape closes it. A modal
+// a tab press walks out of behind is a modal a keyboard reader loses, and the
+// box has a textarea in it: the one dialogue on this surface somebody types
+// into.
+export function TellBabel({ onClose }: { onClose: () => void }) {
+  const panel = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    panel.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const targets = [...(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
+      if (targets.length === 0) return;
+      const first = targets[0];
+      const last = targets[targets.length - 1];
+      const active = document.activeElement;
+      // Only the two ends are steered. Everything between them is the
+      // browser's own order, which is the order a reader expects.
+      if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && (active === first || !panel.current?.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      }
+    }
+
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      // The control that opened the dialogue gets the keyboard back, so
+      // closing it leaves the reader where he was.
+      opener?.focus();
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="shell-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Tell Babel what is going badly"
+      onClick={onClose}
+    >
+      <div
+        className="surface shell-dialog-panel shell-tell-panel"
+        ref={panel}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Steering pressure</p>
+            <h2>Tell Babel</h2>
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Close"
+            title="Close (Esc)"
+          >
+            ×
+          </button>
+        </div>
+        <SteeringSection />
       </div>
     </div>
   );

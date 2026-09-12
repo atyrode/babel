@@ -19,7 +19,6 @@ import {
 } from "./api";
 import AskPage from "./pages/AskPage";
 import ComplaintPage from "./pages/ComplaintPage";
-import DecidePage from "./pages/DecidePage";
 import FeedPage, { TopicsIndex } from "./pages/FeedPage";
 import RealityEntitiesPage from "./pages/RealityEntitiesPage";
 import RealityEntityPage from "./pages/RealityEntityPage";
@@ -35,7 +34,14 @@ import SettingsPage from "./pages/SettingsPage";
 import WatchPage from "./pages/WatchPage";
 import Palette from "./palette";
 import RenderBoundary from "./boundary";
-import { KeyHints, LiveIndicator, ShellControls, ShellFooter, useDensity } from "./shell";
+import {
+  KeyHints,
+  LiveIndicator,
+  ShellControls,
+  ShellFooter,
+  TellBabel,
+  useDensity,
+} from "./shell";
 
 const LOCK_PROMPT =
   "Lock and stop the server?\n\nThe session is revoked immediately and this " +
@@ -90,6 +96,11 @@ function App() {
   const [stopping, setStopping] = useState(false);
   const [stopped, setStopped] = useState(false);
   const [hintsOpen, setHintsOpen] = useState(false);
+  // #115's capture box, over whatever page he is on. It is the shell's state
+  // rather than a route because it is not a destination: the complaint forms
+  // while he is reading something else, and navigating away from that to
+  // write it down is how a complaint goes unwritten.
+  const [tellOpen, setTellOpen] = useState(false);
   const { density, setDensity } = useDensity();
 
   // Arriving 900px into a record because the previous page was scrolled there
@@ -227,11 +238,17 @@ function App() {
           </div>
         </Link>
         <div className="topbar-actions">
-          {/* Four destinations, and the fifth — search — is the palette
+          {/* Three destinations, and the fourth — search — is the palette
               rather than a word in the row (§8.7). Nothing here is the name
               of a record kind or of a place Babel keeps bytes: the kinds are
               chips on the feed, which is where a distinction the reader
               applies belongs.
+
+              The mod queue was a destination until this wave, and it was the
+              feed twice: the same records, ordered by what needs the operator,
+              with their own controls. It is the feed's own "needs me" filter
+              and its `next` ordering now — one list, which is what §8.7 asks
+              for, and the rulings are on the rows.
 
               Read and Ask were destinations until the front page became the
               feed. Reading by filter is the feed's own sort bar and chips,
@@ -252,16 +269,9 @@ function App() {
               end
               to="/"
               className={({ isActive }) => isActive ? "active" : undefined}
-              title="Everything Babel has produced, newest and hottest first"
+              title="Everything Babel has produced — what needs you first"
             >
               Home
-            </NavLink>
-            <NavLink
-              to="/queue"
-              className={({ isActive }) => isActive ? "active" : undefined}
-              title="What awaits a ruling from you"
-            >
-              Mod queue
             </NavLink>
             <NavLink
               to="/watch"
@@ -284,15 +294,16 @@ function App() {
               one row, what is running and what can be pressed on the next.
 
               The live mark renders only while something is running, so the
-              cluster is one control shorter on a quiet deployment; search,
-              density and the key hints fold into a single … menu below 640px,
-              which ShellControls decides. */}
+              cluster is one control shorter on a quiet deployment; Tell Babel,
+              search, density and the key hints fold into a single … menu below
+              640px, which ShellControls decides. */}
           <div className="shell-instruments">
             <LiveIndicator />
             <ShellControls
               density={density}
               setDensity={setDensity}
               onKeyHints={() => setHintsOpen(true)}
+              onTell={() => setTellOpen(true)}
             />
             {/* The stop control lives in the shell rather than on a page
                 because it ends the whole session, not one page's work, and it
@@ -331,10 +342,11 @@ function App() {
           <Route path="/" element={<FeedPage />} />
           <Route path="/t" element={<TopicsIndex />} />
           <Route path="/t/:topic" element={<FeedPage />} />
-          {/* The mod queue: §8.5's queue, unchanged, at the path that says
-              what it is. It was the front page until the front page became
-              the feed. */}
-          <Route path="/queue" element={<DecidePage />} />
+          {/* The mod queue is the feed, arriving as it always did: what needs
+              the operator, in §8.5's order. It kept nothing of its own — the
+              figures it counted are the feed's own total under the filter, and
+              the controls it carried are on the rows. */}
+          <Route path="/queue" element={<Navigate to="/" replace />} />
           <Route path="/watch" element={<WatchPage />} />
           {/* One run, whole: what it searched, what it fetched, what it
               declined and what it cost. It hangs under Watch because a run is
@@ -373,20 +385,28 @@ function App() {
               outlive a navigation redesign, and a 404 would make the redesign
               look like data loss. Every one of them replaces its history
               entry, so Back leaves the old surface rather than bouncing. */}
-          <Route path="/review" element={<Navigate to="/queue" replace />} />
+          {/* The review queue is the feed as it arrives: needs-me, in next
+              order, which is exactly what this path meant. */}
+          <Route path="/review" element={<Navigate to="/" replace />} />
           <Route path="/review/:type/:id" element={<RecordRedirect />} />
           {/* /read is the feed, and the kind it was filtering by is the chip
               it becomes. The splat catches the sections that page grew. */}
           <Route path="/read" element={<ReadRedirect />} />
           <Route path="/read/*" element={<ReadRedirect />} />
-          <Route path="/findings" element={<Navigate to="/?kind=finding" replace />} />
+          {/* A per-kind bookmark meant every record of that kind, so each
+              lands on the feed with the filter off: arriving under "needs me"
+              would answer a narrower question than the link asked. */}
+          <Route path="/findings" element={<Navigate to="/?kind=finding&needs=all" replace />} />
           <Route path="/findings/:id" element={<RecordRedirect />} />
-          <Route path="/proposals" element={<Navigate to="/?kind=proposal" replace />} />
+          <Route path="/proposals" element={<Navigate to="/?kind=proposal&needs=all" replace />} />
           <Route path="/proposals/:id" element={<RecordRedirect />} />
-          <Route path="/hypotheses" element={<Navigate to="/?kind=hypothesis" replace />} />
+          <Route
+            path="/hypotheses"
+            element={<Navigate to="/?kind=hypothesis&needs=all" replace />}
+          />
           <Route path="/hypotheses/:id" element={<RecordRedirect />} />
-          <Route path="/evaluation" element={<Navigate to="/" replace />} />
-          <Route path="/evaluation/coverage" element={<Navigate to="/queue" replace />} />
+          <Route path="/evaluation" element={<Navigate to="/?needs=all" replace />} />
+          <Route path="/evaluation/coverage" element={<Navigate to="/" replace />} />
           <Route path="/evaluation/policy" element={<SettingsRedirect section="policy" />} />
           {/* Ranked below the two named paths above, so "coverage" is never
               read as a record kind. */}
@@ -418,6 +438,10 @@ function App() {
           record whose name you remember and whose page you do not. */}
       <Palette />
       {hintsOpen && <KeyHints onClose={() => setHintsOpen(false)} />}
+      {/* #115's box, from every page. It is mounted here beside the palette
+          and the key hints because all three are the shell's, not any page's:
+          the reader asks for them where he is. */}
+      {tellOpen && <TellBabel onClose={() => setTellOpen(false)} />}
     </div>
   );
 }

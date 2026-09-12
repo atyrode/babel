@@ -1,62 +1,60 @@
-// Browser acceptance for the ranked reading surface (issue #219; SPEC.md
-// §4.12, §5.8, §8.5), driven against the synthetic mock so no Go server,
-// archive, or network is needed.
+// Browser acceptance for what is left of issue #219's ranked reading surface:
+// the review policy, which is a section of Settings.
 //
-// This file used to cover four destinations — the backlog, the coverage
-// inventory, one record's evaluation and the review queue's reopen. #235
-// collapsed the first two into Read and the last two into the record page.
-// What is here is what Read owns.
+// This file used to cover a destination that no longer exists. It drove
+// /read — the ranked listing with its ordering menu, its coverage filter, its
+// pinned snapshot and its per-row reception spark — and §8.7 made that listing
+// the front page: the orderings are the feed's own sort bar, the facets are
+// its chips, and the row's reception is Babel's score. /read is a redirect
+// now, so every test that opened it was driving a page this build does not
+// serve.
 //
-// What only a browser can prove:
+// The seven tests that did are deleted rather than re-pinned, one line each:
 //
-// That every ordering names what it is computed from, on the page, and that
-// choosing one actually changes the answer. A ranking an operator cannot argue
-// with is a ranking he has to take on faith, which is the opposite of what
-// §8.5 asks for.
+//   - "every ordering names its basis and reorders the listing" — the
+//     orderings are the feed's sort bar, and browser/feed.test.ts asserts both
+//     halves of it: that each sort names what it is computed from, and that
+//     the order the server sent is the order rendered.
+//   - "sorts, filters and pages live in the URL and survive reload and Back" —
+//     the feed's own controls write the URL and feed.test.ts walks Back
+//     through them.
+//   - "paging stays inside one ranked snapshot and reports its window" — the
+//     feed appends rather than paging and pins no snapshot; there is no
+//     snapshot parameter left to assert.
+//   - "a never-reviewed record is found and is not rendered as unopposed" —
+//     the coverage filter was that page's; the same rule is now a property of
+//     the score, and feed.test.ts asserts the em dash on a row no reviewer has
+//     assessed.
+//   - "a row's reception is drawn where there is one and nowhere else" — same
+//     rule, same place: the spark and the facts strip it was read from belong
+//     to the deleted listing.
+//   - "a stale projection still answers and says it is not current" — the
+//     notice it read belonged to /read's projection; the feed carries its own
+//     `notice` field, and phaseb.test.ts owns the degraded-read walk.
+//   - "no control on this surface casts a vote" — the surface is gone, and the
+//     stronger version of the rule is now structural: the operator has no vote
+//     anywhere (§8.7), which records.test.ts asserts on the record page and
+//     feed.test.ts on a row.
 //
-// That the sort, the filters and the page live in the URL, survive a reload,
-// and walk back with the browser's own Back button — and that paging stays
-// inside one ranked set while publication continues, which is the whole reason
-// the snapshot is pinned.
+// What survives is the one test that was never about the listing: that what
+// authorized evaluation work may spend is configuration rather than a
+// destination, that its old path still opens it, that the page states the
+// server's own sentences rather than paraphrasing them, and that saving a
+// ceiling offers nothing that starts work.
 //
-// That a record nobody has reviewed is findable through the coverage filter
-// and renders as an absence of review rather than as three zeroes, which read
-// as unanimous absence of opposition.
-//
-// That the same rule holds row by row: reception is drawn where somebody said
-// something and nowhere else, so an unreviewed record is a row with an empty
-// slot rather than a flat chart of zeroes.
-//
-// That a stale projection still answers and says so, rather than refusing or
-// presenting itself as current.
-//
-// And that no control on this surface casts a vote: the browser holds no run
-// identity and no claim, and §4.12's separation is kept by there being nothing
-// here to press.
-//
-// And that the review policy — what authorized evaluation work may cost — is a
-// section of Settings reached by its old path, states the server's own
-// consequence sentence before the save, and offers nothing that starts work.
-//
-// The record page's own gate covers what one record shows. The corpus is
-// synthetic and disposable; nothing here reads a real session.
+// The corpus is synthetic and disposable. Nothing here reads a real session.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
 import { resolveChrome } from "./chrome";
 
 const chrome = resolveChrome({
-  gate: "Ranked reading gate",
-  covers: "issue #219's ranked output listing — ordering, filters, paging, coverage and reception — on Read, and the review policy under Settings, in a browser",
+  gate: "Review policy gate",
+  covers: "the review policy — what authorized evaluation work may spend — as a section of Settings, in a browser",
   unverified: [
-    "that each ordering names its basis on the page and actually reorders the listing",
-    "that filters, sorts and pages live in the URL and survive reload and Back",
-    "that paging stays inside one ranked snapshot",
-    "that a never-reviewed record is findable and never renders as unopposed",
-    "that a row's reception is drawn where there is one and nowhere else",
-    "that a stale projection still answers and says it is not current",
-    "that no control on this surface casts a vote",
-    "that the review policy is a section of Settings and that saving it starts nothing",
+    "that the review policy is a section of Settings reached by its old path",
+    "that the page states the server's own running and consequence sentences rather than a paraphrase",
+    "that nothing on it offers to start work",
   ],
 });
 
@@ -92,47 +90,6 @@ let mock: MockServer | null = null;
 let browser: Browser | null = null;
 let page: Page;
 
-async function open(route: string): Promise<void> {
-  await page.goto(`${mock?.base}/#/${route}`, { waitUntil: "networkidle2" });
-  await page.reload({ waitUntil: "networkidle2" });
-}
-
-// visible waits for text to be on the page AND for the reader to have settled.
-// Both halves are needed: a heading survives from the page being navigated
-// away from, so a bare text match would read the previous view.
-function visible(text: string): Promise<unknown> {
-  return page.waitForFunction(
-    (needle: string) => {
-      const body = document.body.innerText;
-      return body.includes(needle) && !body.includes("Reading the output…");
-    },
-    { timeout: 15_000 },
-    text,
-  );
-}
-
-function ids(): Promise<string[]> {
-  return page.evaluate(() =>
-    Array.from(document.querySelectorAll("[data-item]"))
-      .map((row) => row.getAttribute("data-item") ?? ""));
-}
-
-// order chooses one of the served orderings through the control an operator
-// uses — the ordering menu, which names what each order is computed from —
-// then waits for the listing to be the answer to that choice rather than the
-// one still on screen.
-async function order(sort: string): Promise<void> {
-  const before = await ids();
-  await page.click(".read-order > summary");
-  await page.click(`[data-order='${sort}']`);
-  await page.waitForFunction(
-    (first: string) =>
-      (document.querySelector("[data-item]")?.getAttribute("data-item") ?? "") !== first,
-    { timeout: 15_000 },
-    before[0] ?? "",
-  );
-}
-
 beforeAll(async () => {
   if (!chrome) return;
   const build = Bun.spawnSync(["bun", "run", "build"]);
@@ -152,228 +109,12 @@ afterAll(async () => {
   mock?.process.kill();
 });
 
-test.skipIf(!chrome)("every ordering names its basis and reorders the listing", async () => {
-  await open("read");
-  await visible("What has Babel found?");
-  // §8.5: the ordering says what it is computed from, on the page, not in a
-  // document nobody reading it has and not in a tooltip nobody hovers.
-  expect(await page.evaluate(() => document.body.innerText))
-    .toContain("recorded priority, current work and pain");
-  const recommended = await ids();
-
-  await order("recent");
-  await visible("Newest revisions first");
-  const recent = await ids();
-  expect(recent).not.toEqual(recommended);
-
-  // Recently strengthened is not "new": it ranks by substantive contribution,
-  // and the page has to say so, because another bare vote must not move an
-  // item up it.
-  await order("strengthened");
-  await visible("Another bare vote does not move an item up this order");
-  const strengthened = await ids();
-  expect(strengthened).not.toEqual(recent);
-  expect(strengthened[0]).toBe("pro_group-cache");
-
-  await order("contested");
-  await visible("Unresolved disagreement first");
-  expect((await ids())[0]).toBe("fnd_no-evaluator");
-
-  await order("unreviewed");
-  await visible("how little has been looked at, not how little it was liked");
-  expect(await ids()).toContain("hyp_never-reviewed");
-});
-
-test.skipIf(!chrome)("sorts, filters and pages live in the URL and survive reload and Back", async () => {
-  await open("read");
-  await visible("What has Babel found?");
-  await order("contested");
-  expect(page.url()).toContain("sort=contested");
-  // The first answer pins the ranked set so paging stays inside one ordering.
-  await page.waitForFunction(() => window.location.hash.includes("snapshot="));
-
-  await page.click("[data-chip='lane-accepted']");
-  await page.waitForFunction(() => window.location.hash.includes("lane=accepted"));
-
-  // A reload re-reads the same view rather than dropping to the default.
-  await page.reload({ waitUntil: "networkidle2" });
-  await visible("What has Babel found?");
-  expect(page.url()).toContain("sort=contested");
-  expect(page.url()).toContain("lane=accepted");
-
-  // Back undoes the operator's own last choice, not the whole surface.
-  await page.goBack({ waitUntil: "networkidle2" });
-  await page.waitForFunction(() => !window.location.hash.includes("lane=accepted"));
-  expect(page.url()).toContain("sort=contested");
-});
-
-test.skipIf(!chrome)("paging stays inside one ranked snapshot and reports its window", async () => {
-  await open("read");
-  await visible("What has Babel found?");
-  await page.waitForFunction(() => window.location.hash.includes("snapshot="));
-  const firstPage = await ids();
-  const snapshot = await page.evaluate(() =>
-    new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("snapshot"));
-  expect(snapshot).toBe("snap-2026-09-11T09-00-00Z");
-  expect(firstPage.length).toBe(25);
-
-  await page.click(".pager button:last-child");
-  await page.waitForFunction(() => window.location.hash.includes("offset=25"));
-  // The hash moves before the fetch resolves, so wait for the rendered set to
-  // be the second window rather than reading the first one again.
-  await page.waitForFunction(
-    (first: string) =>
-      (document.querySelector("[data-item]")?.getAttribute("data-item") ?? "") !== first,
-    {},
-    firstPage[0],
-  );
-  const secondPage = await ids();
-  // No row appears on both pages: the ordering was cut once, not re-ranked per
-  // page.
-  expect(secondPage.some((id) => firstPage.includes(id))).toBe(false);
-  expect(page.url()).toContain(`snapshot=${snapshot}`);
-
-  await page.click(".pager button:first-child");
-  await page.waitForFunction(() => !window.location.hash.includes("offset="));
-  await page.waitForFunction(
-    (first: string) =>
-      (document.querySelector("[data-item]")?.getAttribute("data-item") ?? "") === first,
-    {},
-    firstPage[0],
-  );
-  expect(await ids()).toEqual(firstPage);
-});
-
-test.skipIf(!chrome)("a never-reviewed record is found and is not rendered as unopposed", async () => {
-  // The coverage inventory was a destination of its own; it is a filter on the
-  // one list now, and the question it answers — what has nobody read — is the
-  // same question.
-  await open("read?coverage=unreviewed");
-  await visible("What has Babel found?");
-  const listing = await ids();
-  expect(listing).toContain("hyp_never-reviewed");
-
-  // The row carries no reception at all: no counts, no chart, and no
-  // sentence about the absence. Three zeroes would read as a record nobody
-  // objected to, and "no reviews yet" on every row of a mostly unreviewed
-  // corpus is a fact about the review budget rather than about this record.
-  // Where the absence is the question being asked — this filter, the peel
-  // below, the record's own page — it is still stated.
-  const row = await page.evaluate(() =>
-    (document.querySelector("[data-item='hyp_never-reviewed']") as HTMLElement | null)?.innerText ?? "");
-  expect(row).not.toContain("no reviews yet");
-  expect(row).not.toContain("+0");
-  expect(row).not.toContain("review");
-
-  // And the inventory behind the peel still reports what is owed, role by
-  // role, because coverage is role-specific: a reception vote discharges no
-  // evidence check.
-  await page.click("details.peel > summary");
-  await visible("Never reviewed");
-  const roles = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".role-totals tbody tr")).map(
-      (row_) => (row_ as HTMLElement).innerText));
-  expect(roles.some((entry) => entry.startsWith("Evidence check"))).toBe(true);
-  expect(roles.some((entry) => entry.startsWith("Outcome verification"))).toBe(true);
-});
-
-test.skipIf(!chrome)("a row's reception is drawn where there is one and nowhere else", async () => {
-  await open("read");
-  await visible("What has Babel found?");
-
-  const listing = await page.evaluate(async () => {
-    // The same read the page made, so the rendering is compared against what
-    // the projection said about each row rather than against a copy of the
-    // fixtures.
-    const answer = (await fetch("/api/evaluation/list?limit=25").then((response) =>
-      response.json(),
-    )) as {
-      items?: Array<{
-        artifact: { subject: { id: string } };
-        reception: { reviews: number; support: number; oppose: number; unsure: number };
-      }>;
-    };
-    const served: Record<string, { reviews: number; support: number; oppose: number; unsure: number }> = {};
-    for (const item of answer.items ?? []) served[item.artifact.subject.id] = item.reception;
-    return {
-      served,
-      rows: Array.from(document.querySelectorAll("[data-item]")).map((row) => ({
-        id: row.getAttribute("data-item") ?? "",
-        spark: row.querySelector(".read-spark") !== null,
-        // The three facts beside the claim. The claim itself is the record's
-        // own words and may say anything, so the reception assertions are
-        // scoped to the strip the page composes.
-        facts: (row.querySelector(".read-facts") as HTMLElement | null)?.innerText ?? "",
-      })),
-    };
-  });
-
-  const voted = listing.rows.filter((row) => {
-    const reception = listing.served[row.id];
-    return reception && Math.max(reception.support, reception.oppose, reception.unsure) > 0;
-  });
-  const unreviewed = listing.rows.filter((row) => (listing.served[row.id]?.reviews ?? 0) === 0);
-  // Both cases are on this page, or the equivalence below would be vacuous.
-  expect(voted.length).toBeGreaterThan(0);
-  expect(unreviewed.length).toBeGreaterThan(0);
-
-  // Where somebody said something, the shape of what they said is drawn.
-  for (const row of voted) expect(row.spark).toBe(true);
-  // Where nobody has, the slot is empty rather than three zeroes: an
-  // unreviewed record drawn as a flat chart reads as one nobody objected to,
-  // and twenty-five rows saying "no reviews yet" is a fact about the review
-  // budget rather than about any row on the page.
-  for (const row of unreviewed) {
-    expect(row.spark).toBe(false);
-    expect(row.facts.toLowerCase()).not.toMatch(/support|oppose|unsure|review/u);
-  }
-});
-
-test.skipIf(!chrome)("a stale projection still answers and says it is not current", async () => {
-  const degraded = await startMock({ MOCK_EVALUATION: "degraded" });
-  const bare = await browser!.newPage();
-  try {
-    await bare.setViewport({ width: 1440, height: 900 });
-    await bare.goto(`${degraded.base}/#/read`, { waitUntil: "networkidle2" });
-    await bare.reload({ waitUntil: "networkidle2" });
-    await bare.waitForSelector(".read-row", { timeout: 15_000 });
-    const state = await bare.evaluate(() => ({
-      text: document.body.innerText,
-      rows: document.querySelectorAll(".read-row").length,
-      banner: document.querySelectorAll(".error-banner").length,
-    }));
-    // It answered: the rows are there. It is labelled: the reader is told the
-    // ordering is not current. And it is not an error, because a projection
-    // that has not been rebuilt is a fact about the deployment.
-    expect(state.rows).toBeGreaterThan(0);
-    expect(state.text).toContain("not current");
-    expect(state.banner).toBe(0);
-  } finally {
-    await bare.close();
-    degraded.process.kill();
-  }
-});
-
-test.skipIf(!chrome)("no control on this surface casts a vote", async () => {
-  for (const route of ["read", "read?coverage=unreviewed", "read?kind=proposal"]) {
-    await open(route);
-    await page.waitForSelector(".page");
-    const controls = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("button, input[type='submit'], select"))
-        .map((control) => ((control as HTMLElement).innerText || (control as HTMLInputElement).value || "").toLowerCase()));
-    for (const label of controls) {
-      expect(label).not.toContain("upvote");
-      expect(label).not.toContain("downvote");
-      expect(label).not.toMatch(/\bvote\b/u);
-    }
-  }
-});
-
 test.skipIf(!chrome)("the review policy is a section of Settings, and saving it starts nothing", async () => {
   // What evaluation may spend is configuration rather than a destination, so
   // it is a drawer in Settings — and the path it used to have still opens it,
   // because an operator's bookmark outlives a navigation redesign.
-  await open("evaluation/policy");
+  await page.goto(`${mock?.base}/#/evaluation/policy`, { waitUntil: "networkidle2" });
+  await page.reload({ waitUntil: "networkidle2" });
   await page.waitForFunction(() => window.location.hash.startsWith("#/settings"), {
     timeout: 15_000,
   });

@@ -197,11 +197,14 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
   // is what this build answers with. A redirect that lands on the catch-all
   // would show "#/" here and fail, which is the failure that matters: it reads
   // to the operator as the record having been deleted.
-  // Two more old paths — /review and /evaluation/coverage — land on the queue
-  // of things awaiting a ruling, and are deliberately not enumerated while
-  // that destination is itself being replaced: a row here would be a second
-  // copy of a decision that has not settled, and App.tsx holds the first.
+  // /queue, /review and /evaluation/coverage are here now: the mod queue was
+  // a destination until §8.7 made it the feed's own filter, and each of those
+  // three meant "what needs me", which is what the front page arrives
+  // showing.
   const moved: Array<[string, string]> = [
+    ["queue", "#/"],
+    ["review", "#/"],
+    ["evaluation/coverage", "#/"],
     ["review/proposal/pro_bare-vote", "#/r/pro_bare-vote"],
     // /read was a destination and is now the feed. The kind it filtered by is
     // the one thing that bookmark carried which the feed still answers, so it
@@ -210,13 +213,16 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
     ["read", "#/"],
     ["read?kind=finding", "#/?kind=finding"],
     ["read/backlog", "#/"],
-    ["findings", "#/?kind=finding"],
+    // A per-kind bookmark meant every record of that kind, so it lands with
+    // the operator's own filter off: arriving under "needs me" would answer a
+    // narrower question than the link asked.
+    ["findings", "#/?kind=finding&needs=all"],
     ["findings/fnd_conflicting-evidence", "#/r/fnd_conflicting-evidence"],
-    ["proposals", "#/?kind=proposal"],
+    ["proposals", "#/?kind=proposal&needs=all"],
     ["proposals/pro_bare-vote", "#/r/pro_bare-vote"],
-    ["hypotheses", "#/?kind=hypothesis"],
+    ["hypotheses", "#/?kind=hypothesis&needs=all"],
     ["hypotheses/hyp_unverified-closures", "#/r/hyp_unverified-closures"],
-    ["evaluation", "#/"],
+    ["evaluation", "#/?needs=all"],
     ["evaluation/policy", "#/settings?section=policy"],
     ["evaluation/proposal/pro_bare-vote", "#/r/pro_bare-vote"],
     ["explore", "#/watch"],

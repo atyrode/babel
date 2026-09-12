@@ -45,10 +45,52 @@ const ID_PREFIX: Record<FeedKind, string> = {
 };
 
 // The four topics this synthetic deployment has evidence from, plus the posts
-// with none. They are workspace basenames because that is what a topic is
-// today (§8.7), and they match the workspaces ./serve.ts's sessions carry so
-// the preview tells one story.
+// with none. They are repository names — what a topic is bound by (§4.13) —
+// and they match the workspaces ./serve.ts's sessions carry so the preview
+// tells one story.
 const TOPICS = ["atlas", "kepler", "babel", "scratch"] as const;
+
+// What each name is bound to. Three have remotes and are named by the
+// repository the remote names; `scratch` has none and is bound by the common
+// directory every worktree of it shares, which is what the surface must
+// render as an identity and never as the topic itself. A binding is `null`
+// only where one name is answered by two repositories, which this fixture
+// does not hold — the shape is exercised by the topic with no remote instead.
+const BINDINGS: Record<string, { kind: string; identity: string; paths: string[] }> = {
+  atlas: {
+    kind: "repository",
+    identity: "example.invalid/synthetic/atlas",
+    paths: ["/home/demo/projects/atlas", "/home/demo/worktrees/atlas-imports"],
+  },
+  kepler: {
+    kind: "repository",
+    identity: "example.invalid/synthetic/kepler",
+    paths: ["/home/demo/projects/kepler"],
+  },
+  babel: {
+    kind: "repository",
+    identity: "example.invalid/synthetic/babel",
+    paths: ["/home/demo/projects/babel"],
+  },
+  scratch: {
+    kind: "repository",
+    identity: "/home/demo/scratch/.git",
+    paths: ["/home/demo/scratch"],
+  },
+};
+
+// The weight a kind carries inside one urgency band of `next`: a proposal is
+// a remedy addressed to the operator, a finding is a conclusion Babel wants
+// confirmed, a candidate is something it is still developing, and a question
+// that blocks nothing is last. It is applied inside a band and never across
+// one.
+const KIND_WEIGHT: Record<FeedKind, number> = {
+  proposal: 0,
+  finding: 1,
+  hypothesis: 2,
+  observation: 2,
+  question: 3,
+};
 
 // One line of claim per post, twelve per kind. They are written out rather
 // than generated because a feed is read as prose: sixty rows of "Synthetic
@@ -147,7 +189,7 @@ const REAL_IDS: Record<FeedKind, string[]> = {
 // so it is always "new"; the rest carry the vocabulary /api/record/{id} uses.
 const STANDINGS: Record<FeedKind, string[]> = {
   proposal: ["new", "accepted", "rejected", "deferred", "reopened", "refine-requested"],
-  finding: ["new", "accepted", "superseded"],
+  finding: ["new", "accepted", "superseded", "reopened"],
   hypothesis: ["new", "rejected"],
   observation: ["new"],
   question: ["new"],
@@ -184,6 +226,12 @@ interface Fixture extends FeedPost {
   // events it holds, and a client that could read it would be reading Babel's
   // bookkeeping rather than the feed.
   recent: number;
+  // How stuck Babel is without an answer, as `next` groups it: 0 a question
+  // blocking a run, 1 a decision something has changed about, 2 a record
+  // enrolled for a ruling, 3 a question that blocks nothing. It is the
+  // server's own grouping and is not on the wire — the row carries the
+  // ordering's result, which is `why`, and never its arithmetic.
+  urgency: number;
 }
 
 function build(): Fixture[] {
@@ -232,7 +280,16 @@ function build(): Fixture[] {
       const recent = ageHours < 48 ? Math.floor(random() * 9) : random() > 0.93 ? 1 : 0;
 
       const standings = STANDINGS[kind];
-      const standing = standings[Math.floor(random() * standings.length)];
+      // The two rows the `next` ordering is read against are pinned rather
+      // than drawn: a reopened finding is more urgent than an untouched
+      // proposal and must sort above it, and a fixture that left both to the
+      // dice would demonstrate the ordering only on the days it happened to.
+      const standing =
+        kind === "finding" && index === 0
+          ? "reopened"
+          : kind === "proposal" && index === 0
+            ? "new"
+            : standings[Math.floor(random() * standings.length)];
       const hasAuthor = kind === "question" ? random() > 0.5 : random() > 0.12;
       const runID = RUNS[Math.floor(random() * RUNS.length)];
       const id = index < real.length ? real[index] : `${ID_PREFIX[kind]}_feed-${index}`;
@@ -243,6 +300,30 @@ function build(): Fixture[] {
       // The last thing that happened to the post: its newest comment or vote,
       // and its own creation when nothing has.
       const activityHours = recent > 0 ? Math.min(ageHours, random() * 12) : ageHours;
+
+      // What is waiting on the operator, and why.
+      //
+      // A record awaits a ruling while it is undecided — new, or reopened,
+      // which is undecided again — and an observation never does: §6.7 makes
+      // it evidence rather than a review subject, so no disposition is asked
+      // about one. A question awaits an answer while nobody has given one,
+      // and this fixture's blocking ones are the questions Babel has stopped
+      // rather than guessed on.
+      const blocking = kind === "question" && random() > 0.45;
+      const unanswered = kind === "question" && (blocking || random() > 0.5);
+      const undecided = standing === "new" || standing === "reopened";
+      const awaiting =
+        kind === "question" ? unanswered : kind === "observation" ? false : undecided;
+      const urgency = blocking ? 0 : standing === "reopened" ? 1 : kind === "question" ? 3 : 2;
+      // Why it is next, in the server's own words (internal/web/feed.go): a
+      // stuck reason or a standing, then one token of age. Five words at
+      // most, because that is what §8.7 gives a row.
+      const waited = elapsed(ageHours);
+      const why = !awaiting
+        ? ""
+        : kind === "question"
+          ? `${blocking ? "blocks a run" : "curiosity"} · asked ${waited}`
+          : `${standing === "reopened" ? "reopened" : "never ruled on"} · waiting ${waited}`;
       posts.push({
         id,
         kind,
@@ -255,11 +336,13 @@ function build(): Fixture[] {
         support,
         oppose,
         unsure,
-        you: "",
         comments,
         last_activity_at: new Date(bootedAt - activityHours * HOUR).toISOString(),
         href,
+        awaiting,
+        why,
         recent,
+        urgency,
       });
     });
   }
@@ -272,21 +355,33 @@ function build(): Fixture[] {
 // sentence would then be unreachable in a browser.
 const fixture = Bun.env.MOCK_PHASEB === "empty" ? [] : build();
 
-// The operator's own stance, in memory, keyed by post id. It is the same
-// append-nothing receipt ./record.ts keeps for the record page: the preview
-// has to be able to vote, read the number move, and vote again.
-const stances: Record<string, "agree" | "disagree" | "unsure" | undefined> = {};
+// The age of something in one token, which is what fits in a five-word
+// reason and what internal/web/feed.go's `why` carries: now, 7m, 4h, 3d, 2w,
+// 5mo, 1y. `formatTime`'s "6 days ago" spends a third of the sentence on the
+// tense.
+function elapsed(ageHours: number): string {
+  const spans: Array<[string, number]> = [
+    ["y", 24 * 365],
+    ["mo", 24 * 30],
+    ["w", 24 * 7],
+    ["d", 24],
+    ["h", 1],
+    ["m", 1 / 60],
+  ];
+  for (const [unit, span] of spans) {
+    if (ageHours < span) continue;
+    return `${Math.floor(ageHours / span)}${unit}`;
+  }
+  return "now";
+}
 
-// The post as the wire carries it: the fixture's reviewer votes with the
-// operator's own stance folded in, because §8.7's score is one number over
-// both and `you` is what keeps them attributable.
+// The post as the wire carries it: the fixture without the two fields the
+// server keeps to itself. The operator's stance is not among them, because
+// there is none — §8.7's score is Babel's reviewers' and the write that
+// recorded a stance is gone from the route table.
 function onWire(post: Fixture): FeedPost {
-  const you = stances[post.id] ?? "";
-  const support = post.support + (you === "agree" ? 1 : 0);
-  const oppose = post.oppose + (you === "disagree" ? 1 : 0);
-  const unsure = post.unsure + (you === "unsure" ? 1 : 0);
-  const { recent: _recent, ...wire } = post;
-  return { ...wire, support, oppose, unsure, score: support - oppose, you };
+  const { recent: _recent, urgency: _urgency, ...wire } = post;
+  return wire;
 }
 
 const WINDOW_HOURS: Record<FeedWindow, number> = {
@@ -303,8 +398,11 @@ const WINDOW_HOURS: Record<FeedWindow, number> = {
 // the whole feed the day that post was deleted.
 const HOT_EPOCH = Date.parse("2026-01-01T00:00:00Z");
 
-// The five orderings, exactly as the contract states them. Each returns the
-// number the sort is descending on; `new` is the creation time itself.
+// The five computed orderings, exactly as the contract states them. Each
+// returns the number the sort is descending on; `new` is the creation time
+// itself. `next` is not here: it is a grouping rather than a score, and a
+// decimal would invite the reader to argue with a precision that does not
+// exist.
 function rank(post: FeedPost, sort: FeedSort, recent: number, now: number): number {
   const created = Date.parse(post.created_at);
   switch (sort) {
@@ -338,7 +436,7 @@ function json(body: unknown, status = 200): Response {
 function feed(url: URL): Response {
   const now = Date.now();
   const askedSort = url.searchParams.get("sort") ?? "";
-  const sort = (["hot", "new", "top", "controversial", "rising"] as FeedSort[]).includes(
+  const sort = (["next", "hot", "new", "top", "controversial", "rising"] as FeedSort[]).includes(
     askedSort as FeedSort,
   )
     ? (askedSort as FeedSort)
@@ -352,6 +450,9 @@ function feed(url: URL): Response {
     .filter((name): name is FeedKind => (FEED_KINDS as string[]).includes(name));
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 25) || 25));
   const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0) || 0);
+  // "me" is the only value: the filter is on or it is off, and off is the
+  // whole corpus rather than a wider selection.
+  const needs = url.searchParams.get("needs") === "me" ? "me" : "";
 
   // The window applies to top and controversial and to nothing else, which
   // is the contract's rule and the reason the control is absent elsewhere.
@@ -359,6 +460,7 @@ function feed(url: URL): Response {
   const horizon = scoped ? now - WINDOW_HOURS[t] * HOUR : Number.NEGATIVE_INFINITY;
   const selected = fixture.filter((post) => {
     if (kinds.length > 0 && !kinds.includes(post.kind)) return false;
+    if (needs === "me" && !post.awaiting) return false;
     if (topic === "unfiled" && post.topics.length > 0) return false;
     if (topic && topic !== "unfiled" && !post.topics.includes(topic)) return false;
     if (Date.parse(post.created_at) < horizon) return false;
@@ -371,6 +473,23 @@ function feed(url: URL): Response {
   const ranked = selected
     .map((post) => ({ post, wire: onWire(post) }))
     .sort((left, right) => {
+      // `next` is §8.5's order and is grouped rather than scored: what is
+      // waiting comes first, most stuck first, and at equal urgency a
+      // proposal outranks a finding outranks a candidate outranks a question,
+      // oldest first. What is not waiting follows, newest first, because
+      // nothing about it is a queue.
+      if (sort === "next") {
+        if (left.post.awaiting !== right.post.awaiting) return left.post.awaiting ? -1 : 1;
+        if (left.post.awaiting) {
+          if (left.post.urgency !== right.post.urgency) {
+            return left.post.urgency - right.post.urgency;
+          }
+          const weight = KIND_WEIGHT[left.post.kind] - KIND_WEIGHT[right.post.kind];
+          if (weight !== 0) return weight;
+          return Date.parse(left.post.created_at) - Date.parse(right.post.created_at);
+        }
+        return Date.parse(right.post.created_at) - Date.parse(left.post.created_at);
+      }
       const difference =
         rank(right.wire, sort, right.post.recent, now) -
         rank(left.wire, sort, left.post.recent, now);
@@ -388,11 +507,20 @@ function feed(url: URL): Response {
     t,
     topic,
     kinds,
+    needs,
     built_at: new Date(now).toISOString(),
     notice: "",
   });
 }
 
+// The topics, with what each name is bound to.
+//
+// §4.13: a topic is a name bound to something real, with a reason. The
+// binding travels as the repository's own identity — a normalized remote, or
+// the common directory every worktree of it shares — and the workspaces are
+// locators beside it rather than the topic itself. Every seeded filing is
+// heuristic, because until the recipe that files Babel's own output has run,
+// repository identity is the one binding observable without a model.
 function topics(): Response {
   const counts = new Map<string, { posts: number; latest: number }>();
   let unfiled = 0;
@@ -414,6 +542,8 @@ function topics(): Response {
       name,
       posts: row.posts,
       latest_at: new Date(row.latest).toISOString(),
+      binding: BINDINGS[name] ?? null,
+      heuristic: true,
     }))
     .sort((left, right) => right.posts - left.posts || left.name.localeCompare(right.name));
   return json({ topics: rows, unfiled });
@@ -423,26 +553,8 @@ export async function feedResponse(request: Request, url: URL): Promise<Response
   const path = url.pathname;
   if (path === "/api/feed" && request.method === "GET") return feed(url);
   if (path === "/api/topics" && request.method === "GET") return topics();
-
-  // The stance, for the posts this fixture invented. Anything else — a record
-  // ./phaseb.ts holds — is left to ./record.ts, which keeps the operator's
-  // stance for the record page and must stay the one place that does.
-  if (path.startsWith("/api/record/") && path.endsWith("/reception")) {
-    const id = decodeURIComponent(
-      path.slice("/api/record/".length, path.length - "/reception".length),
-    );
-    if (!fixture.some((post) => post.id === id && post.id.includes("_feed-"))) return null;
-    if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
-    const body = (await request.json().catch(() => ({}))) as { stance?: unknown };
-    const stance = typeof body.stance === "string" ? body.stance : "";
-    if (stance !== "agree" && stance !== "disagree" && stance !== "unsure") {
-      return json(
-        { error: "a value in the request is outside what the evaluation service accepts" },
-        400,
-      );
-    }
-    stances[id] = stance;
-    return json({ stance, at: new Date().toISOString() });
-  }
+  // The stance this file used to record is gone with the route: the operator
+  // does not vote, so /api/record/{id}/reception is not a path this build
+  // serves and an attempt on it falls through to the unknown-route answer.
   return null;
 }

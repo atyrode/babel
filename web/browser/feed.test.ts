@@ -1,35 +1,38 @@
-// Browser acceptance for the front page (SPEC.md §8.7), driven against the
+// Browser acceptance for the front page (SPEC.md §8.6-8.7), driven against the
 // synthetic mock so no Go server, archive, or network is needed (§10's fixture
 // rule).
 //
-// Every record Babel has produced is a post, there is one list, and the kinds
-// are a filter on it rather than five places to go. What only a browser can
-// prove about that is here: that the chips narrow the one list and land in the
-// URL a reader can share and walk back out of; that the five sorts visibly
-// disagree, and that the period control belongs to the two of them that are
-// about a period; that j and k move and ↵ opens what is focused; that a topic
-// is the same feed narrowed to one community; and that a comment written under
-// a post appears in its thread.
+// There is one list. Every record Babel has produced is a post, the kinds are
+// a filter on it, and what used to be a second surface — the mod queue — is
+// the `needs me` filter and the `next` ordering over the same rows. What only
+// a browser can prove about that is here: that the front page arrives showing
+// what needs the operator and that one gesture widens it to everything; that
+// the chips narrow the one list and land in the URL a reader can share and
+// walk back out of; that the six sorts visibly disagree, that `next` puts the
+// more urgent record above the calmer one, and that the period control belongs
+// to the two sorts that are about a period; that j and k move and ↵ opens what
+// is focused; that a ruling from a row is confirmed before it is recorded and
+// that the row then says what was done; that a question asked from a row lands
+// in the record's thread as one; that a topic is the same feed narrowed to one
+// community; and that a comment written under a post appears in its thread.
 //
-// Nothing in the client computes an order — the five sorts are
-// internal/web/feed.go's and are tested there — so each sort is checked twice
-// over: that the page renders the order the server sent, and that the order has
-// the property the named sort promises, read from the same wire the page read.
-// A second implementation of "hot" in a test would be a second thing to
-// disagree with the first.
+// Nothing in the client computes an order — the sorts are
+// internal/web/feed.go's and are tested there — so each computed sort is
+// checked twice over: that the page renders the order the server sent, and
+// that the order has the property the named sort promises, read from the same
+// wire the page read. A second implementation of "hot" in a test would be a
+// second thing to disagree with the first. `next` is read as the property it
+// promises — urgency before kind before age — rather than as a formula,
+// because it is a grouping and has none.
 //
-// Two things this file deliberately does not assert, each for a stated reason:
-//
-//   - The comment count on a feed row after a comment is posted. The feed is a
-//     projection with a stated freshness, rebuilt at most once a minute
-//     (internal/web/feed.go's feedFreshness), so a row's count is not expected
-//     to move on the next read and the only way to watch it move is to wait out
-//     a real minute. The thread's own count is live and is asserted where it is.
-//
-//   - What a row's own controls record. The operator's arrows are being
-//     replaced by the rulings §8.5 keeps in a queue today, with the score
-//     becoming Babel's reviewers' alone, so anything asserted about them now
-//     would be asserted about a control on its way out.
+// One thing this file deliberately does not assert, for a stated reason: the
+// comment count on a feed row after a comment is posted. The feed is a
+// projection with a stated freshness, rebuilt at most once a minute
+// (internal/web/feed.go's feedFreshness), so a row's count is not expected to
+// move on the next read and the only way to watch it move is to wait out a
+// real minute. What the row does show immediately is the question it just
+// recorded, which is asserted; the thread's own count is live and is asserted
+// where it is.
 //
 // The hostile-fixture case for this surface — a post title and a reviewer's
 // comment carrying markup a model wrote — is in phaseb.test.ts, which owns
@@ -38,18 +41,22 @@
 // thing to forget to update.
 //
 // The corpus is synthetic and disposable. Nothing here reads a real session.
-
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
 import { resolveChrome } from "./chrome";
 
 const chrome = resolveChrome({
   gate: "Feed web gate",
-  covers: "§8.7's front page -- the feed, its sorts, its chips and a topic -- in a browser",
+  covers:
+    "§8.7's front page -- one list, its needs-me filter, its sorts, its chips, its rulings and a topic -- in a browser",
   unverified: [
+    "that the front page arrives narrowed to what needs the operator, in next order, and that one gesture widens it to everything hot",
     "that the front page is one list of every kind, that a kind chip narrows it and lands in the URL, and that Back restores the filter it replaced",
-    "that the five sorts produce visibly different orders and that the period control appears for exactly the two sorts that read it",
+    "that the computed sorts produce visibly different orders, that next puts the more urgent record above the calmer one, and that the period control appears for exactly the two sorts that read it",
     "that j and k move and ↵ opens what the focused row points at",
+    "that a ruling from a row is confirmed before it is recorded, is recorded once, and leaves the row saying what was done",
+    "that y and n open the confirmation for the focused row rather than ruling on it",
+    "that a question asked from a row is recorded as one and reads as \"you asked\" in the record's own thread",
     "that a topic page is the feed narrowed to one community with the rail marking it, and that an unknown topic says so instead of reading as day one",
     "that a comment written under a post appears at the head of its thread, and that an empty one cannot be posted",
   ],
@@ -93,7 +100,7 @@ const WIDE = { width: 1440, height: 900 };
 
 // How many rows one read of the feed brings: §8.6's density contract expressed
 // in rows, and the page's own PAGE_SIZE.
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 15;
 
 // The kinds, with the words the chips carry. They are written out rather than
 // imported because what is checked is what a reader sees: a label imported from
@@ -114,6 +121,13 @@ interface Row {
   kind: string;
   created: string;
   score: string;
+  // Whether the row says it is waiting on the operator, and the five words it
+  // gives for why. Both are read off the row rather than off the wire,
+  // because the row is what the reader acts on.
+  awaiting: boolean;
+  why: string;
+  // What the row offers to do about it, in the order it offers them.
+  acts: string[];
 }
 
 interface ServedPost {
@@ -142,7 +156,12 @@ async function listed(): Promise<Row[]> {
       id: row.getAttribute("data-post") ?? "",
       kind: row.querySelector(".badge")?.textContent ?? "",
       created: row.querySelector("time.feed-age")?.getAttribute("datetime") ?? "",
-      score: row.querySelector(".vote-score")?.textContent ?? "",
+      score: row.querySelector(".feed-score")?.textContent ?? "",
+      awaiting: row.hasAttribute("data-awaiting"),
+      why: row.querySelector(".feed-why")?.textContent ?? "",
+      acts: Array.from(row.querySelectorAll("[data-ruling]")).map(
+        (button) => button.getAttribute("data-ruling") ?? "",
+      ),
     })));
 }
 
@@ -221,12 +240,15 @@ afterAll(async () => {
 });
 
 test.skipIf(!chrome)("the front page is one list, and a kind is a filter on it", async () => {
-  await open("");
+  // Read with the operator's own filter off, because what this test is about
+  // is the one list: the totals have to add up to every kind, and "what needs
+  // me" is a filter over that list rather than the list itself.
+  await open("?needs=all");
   const everything = await counted();
   expect(everything).toBeGreaterThan(0);
   // Nothing is selected and the chip that says so is pressed: "Everything" is a
   // state of the filter rather than a sixth kind.
-  expect(await page.$eval(".feed-kinds button", (chip) => chip.getAttribute("aria-pressed")))
+  expect(await page.$eval("[data-chip='all']", (chip) => chip.getAttribute("aria-pressed")))
     .toBe("true");
 
   // Each kind narrows the one list to itself, says so in the URL, and holds
@@ -272,7 +294,7 @@ test.skipIf(!chrome)("the front page is one list, and a kind is a filter on it",
   await page.click("[data-chip='kind-finding']");
   await page.waitForSelector("[data-chip='kind-finding'][aria-pressed='true']", { timeout: 15_000 });
   await page.waitForFunction(() => window.location.hash.includes("kind=finding"), { timeout: 15_000 });
-  await page.click(".feed-kinds button");
+  await page.click("[data-chip='all']");
   await page.waitForSelector("[data-chip='kind-finding'][aria-pressed='false']", { timeout: 15_000 });
   await page.waitForFunction(() => !window.location.hash.includes("kind="), { timeout: 15_000 });
   await page.goBack();
@@ -282,8 +304,8 @@ test.skipIf(!chrome)("the front page is one list, and a kind is a filter on it",
   for (const row of restored) expect(row.kind).toBe("Finding");
 });
 
-test.skipIf(!chrome)("the five sorts order the same list differently", async () => {
-  await open("");
+test.skipIf(!chrome)("the computed sorts order the same list differently", async () => {
+  await open("?needs=all");
   const hot = await listed();
   expect(hot.length).toBeGreaterThan(1);
 
@@ -346,10 +368,11 @@ test.skipIf(!chrome)("the five sorts order the same list differently", async () 
   for (const id of silent) expect(`${id}:${rising.some((row) => row.id === id)}`).toBe(`${id}:false`);
 
   // The period is a control for the two sorts that read it and is absent for
-  // the three that do not: a period selector beside "new" is a control that
+  // the four that do not: a period selector beside "new" is a control that
   // does nothing and does not say so.
   const windowed: Array<[string, boolean]> = [
-    ["hot", false], ["new", false], ["rising", false], ["top", true], ["controversial", true],
+    ["next", false], ["hot", false], ["new", false], ["rising", false],
+    ["top", true], ["controversial", true],
   ];
   for (const [sort, offered] of windowed) {
     await page.click(`[data-sort='${sort}']`);
@@ -359,15 +382,241 @@ test.skipIf(!chrome)("the five sorts order the same list differently", async () 
   }
 });
 
-// The operator's own arrows on a feed row are not measured here, and that is a
-// deliberate gap rather than an oversight: the surface they belong to is being
-// reworked — the rulings move onto the rows and the score becomes Babel's own,
-// read-only — so a test written against the arrows now would be written against
-// a control that is on its way out. What a row's controls record, and where it
-// is read back, is asserted once that surface settles.
+test.skipIf(!chrome)("the front page arrives showing what needs the operator", async () => {
+  await open("");
+
+  // Two controls are in force without the reader having pressed anything: the
+  // filter that says "what needs me" and the ordering that says which of it
+  // is next. That is the mod queue, and it is this list.
+  await page.waitForSelector("[data-chip='needs-me'][aria-pressed='true']", { timeout: 15_000 });
+  await page.waitForSelector("[data-sort='next'][aria-pressed='true']", { timeout: 15_000 });
+  const waiting = await listed();
+  expect(waiting.length).toBeGreaterThan(1);
+  const mine = await counted();
+
+  // Every row on it is waiting on him, says why in a few words, and offers the
+  // acts §8.7 gives a row. A question is answered where answers are written
+  // and carries no disposition, so it offers the one act that is not a ruling.
+  for (const row of waiting) {
+    expect(`${row.id}:${row.awaiting}`).toBe(`${row.id}:true`);
+    expect(`${row.id}:${row.why.length > 0}`).toBe(`${row.id}:true`);
+    // Five words at most (§8.7). The dot between the reason and the age is
+    // punctuation rather than one of them.
+    const words = row.why.split(/\s+/u).filter((word) => word !== "·");
+    expect(`${row.id}:${words.length <= 5}`).toBe(`${row.id}:true`);
+    // A question is answered where answers are written — it is not a record
+    // in the corpus, carries no disposition and has no thread of its own — so
+    // its row offers no acts and its claim opens the page that takes the
+    // answer. Every record that is waiting offers the four rulings and the
+    // question.
+    const expected = row.kind === "Question"
+      ? []
+      : ["accept", "reject", "defer", "refine", "ask"];
+    expect(`${row.id}:${row.acts.join(",")}`).toBe(`${row.id}:${expected.join(",")}`);
+  }
+
+  // One gesture widens it to everything, and the ordering follows: a reader
+  // who is no longer triaging is reading a feed, and the front page of a feed
+  // is hot. Both land in the URL, because both are places he shares and walks
+  // back out of.
+  await page.click("[data-chip='needs-me']");
+  await page.waitForSelector("[data-chip='needs-me'][aria-pressed='false']", { timeout: 15_000 });
+  await page.waitForSelector("[data-sort='hot'][aria-pressed='true']", { timeout: 15_000 });
+  expect(await page.evaluate(() => window.location.hash)).toContain("needs=all");
+  await page.waitForFunction(
+    (narrower: number) =>
+      Number((document.querySelector(".feed-count")?.textContent ?? "").replace(/[^0-9]/gu, "")) >
+      narrower,
+    { timeout: 15_000 },
+    mine,
+  );
+
+  // And the wider list holds rows nobody is waiting on, which is what makes
+  // the filter a filter: a row that is not waiting offers no acts and gives no
+  // reason for being where it is.
+  const all = await listed();
+  const calm = all.filter((row) => !row.awaiting);
+  expect(calm.length).toBeGreaterThan(0);
+  for (const row of calm) {
+    expect(`${row.id}:${row.why}`).toBe(`${row.id}:`);
+    expect(`${row.id}:${row.acts.length}`).toBe(`${row.id}:0`);
+  }
+
+  // Back restores the filter it replaced, exactly as a kind chip does.
+  await page.goBack();
+  await page.waitForSelector("[data-chip='needs-me'][aria-pressed='true']", { timeout: 15_000 });
+});
+
+test.skipIf(!chrome)("next puts the more urgent record above the calmer one", async () => {
+  await open("");
+  const rows = await listed();
+
+  // The fixture pins the pair this is read against: a finding something has
+  // changed about, and a proposal nobody has ruled on yet. Urgency decides
+  // before kind does — §8.5's order — so the finding is above the proposal
+  // even though a proposal outranks a finding at equal urgency.
+  const urgent = rows.findIndex((row) => row.id === "fnd_conflicting-evidence");
+  const calm = rows.findIndex((row) => row.id === "pro_criteria-template");
+  expect(`urgent:${urgent >= 0}`).toBe("urgent:true");
+  expect(`calm:${calm >= 0}`).toBe("calm:true");
+  expect(urgent).toBeLessThan(calm);
+
+  // And the page renders the order the server sent rather than one of its
+  // own: the client computes no ordering, here least of all, because this one
+  // used to live in it.
+  const answered = (await served("sort=next&needs=me")).slice(0, PAGE_SIZE).map((post) => post.id);
+  expect(rows.map((row) => row.id)).toEqual(answered);
+});
+
+test.skipIf(!chrome)("a ruling from a row is confirmed, recorded once, and shown", async () => {
+  await open("");
+  const row = `li.feed-row[data-post='pro_criteria-template']`;
+  await page.waitForSelector(row, { timeout: 15_000 });
+
+  // Every /api/review/decide this page makes, so "confirmed before it is
+  // recorded" is measured rather than inferred from what is on screen.
+  const decides: string[] = [];
+  const watch = (request: { url: () => string; method: () => string }) => {
+    if (request.url().includes("/api/review/decide")) decides.push(request.method());
+  };
+  page.on("request", watch);
+  try {
+    // Pressing the act asks. It does not rule: a disposition is an appended,
+    // attributed event, so the row opens one sentence saying what it does.
+    await page.click(`${row} [data-ruling='accept']`);
+    await page.waitForSelector(`${row} .record-confirm`, { timeout: 15_000 });
+    expect(decides).toEqual([]);
+    const sentence = await page.$eval(`${row} .record-confirm p`, (line) => line.textContent ?? "");
+    expect(sentence).toContain("appended permanently");
+
+    await page.click(`${row} .record-confirm button[type='submit']`);
+    // The row says what was done, in place of what could be done: a permanent
+    // act that left the list looking the same is an act performed twice.
+    await page.waitForFunction(
+      (selector: string) =>
+        (document.querySelector(`${selector} .feed-acted`)?.textContent ?? "").includes("accepted"),
+      { timeout: 15_000 },
+      row,
+    );
+    expect(decides).toEqual(["POST"]);
+    expect(await page.$(`${row} [data-ruling='accept']`)).toBeNull();
+  } finally {
+    page.off("request", watch);
+  }
+
+  // And it is a record rather than a rendering: the record's own page reads
+  // the standing back out of the store.
+  await open("r/pro_criteria-template");
+  await page.waitForSelector(".record-post .heading-badges", { timeout: 15_000 });
+  const badges = await page.$eval(
+    ".record-post .heading-badges",
+    (strip) => (strip as HTMLElement).innerText,
+  );
+  expect(badges.toLowerCase()).toContain("accepted");
+});
+
+test.skipIf(!chrome)("y and n open the confirmation for the focused row", async () => {
+  await open("");
+  const rows = await listed();
+  expect(rows.length).toBeGreaterThan(0);
+  const index = rows.findIndex((row) => row.acts.includes("accept"));
+  expect(index).toBeGreaterThanOrEqual(0);
+  const ruled = rows[index].id;
+  const selector = `li.feed-row[data-post='${ruled}']`;
+
+  const decides: string[] = [];
+  const watch = (request: { url: () => string; method: () => string }) => {
+    if (request.url().includes("/api/review/decide")) decides.push(request.method());
+  };
+  page.on("request", watch);
+  try {
+    // j moves to the row the keys act on, and the key presses that row's own
+    // control: a ruling recorded by key goes through the same confirmation as
+    // one recorded by click, because a permanent act is never one keystroke
+    // away.
+    for (let press = 0; press <= index; press += 1) await page.keyboard.press("j");
+    await page.waitForFunction(
+      (want: string) => document.activeElement?.getAttribute("data-post") === want,
+      { timeout: 15_000 },
+      ruled,
+    );
+
+    await page.keyboard.press("y");
+    await page.waitForSelector(`${selector} .record-confirm`, { timeout: 15_000 });
+    expect(await page.$eval(`${selector} .record-confirm button[type='submit']`,
+      (button) => (button as HTMLElement).innerText)).toContain("accept");
+    await page.click(`${selector} .record-confirm button[type='button']`);
+    await page.waitForFunction(
+      (want: string) => document.querySelector(`${want} .record-confirm`) === null,
+      { timeout: 15_000 },
+      selector,
+    );
+
+    // The same for rejection, which is the other half of the pair a triaging
+    // operator presses without looking.
+    await page.keyboard.press("n");
+    await page.waitForSelector(`${selector} .record-confirm`, { timeout: 15_000 });
+    expect(await page.$eval(`${selector} .record-confirm button[type='submit']`,
+      (button) => (button as HTMLElement).innerText)).toContain("reject");
+    expect(decides).toEqual([]);
+  } finally {
+    page.off("request", watch);
+  }
+});
+
+test.skipIf(!chrome)("a question asked from a row reads as one in the thread", async () => {
+  await open("");
+  // The proposal the fixture pins as awaiting, so the row that is asked about
+  // is on the first page whatever the dice did — and it is a record this
+  // deployment holds, so the thread it lands in is readable.
+  const row = "li.feed-row[data-post='pro_criteria-template']";
+  await page.waitForSelector(row, { timeout: 15_000 });
+  const before = await page.$eval(
+    row,
+    (entry) => Number(
+      (entry.querySelector(".feed-comments")?.textContent ?? "0").replace(/[^0-9]/gu, ""),
+    ),
+  );
+
+  const asked = `Synthetic operator question ${Date.now()}`;
+  await page.click(`${row} [data-ruling='ask']`);
+  await page.waitForSelector(`${row} .record-ask input`, { timeout: 15_000 });
+  await page.type(`${row} .record-ask input`, asked);
+  await page.click(`${row} .record-ask button[type='submit']`);
+
+  // The row says it asked, and the count beside the claim ticks up: a question
+  // is a comment, and this is the one number on the row that moves the moment
+  // it is recorded rather than when the projection is next rebuilt.
+  await page.waitForFunction(
+    (selector: string) =>
+      (document.querySelector(`${selector} .feed-acted`)?.textContent ?? "").includes("asked"),
+    { timeout: 15_000 },
+    row,
+  );
+  const after = await page.$eval(
+    row,
+    (entry) => Number(
+      (entry.querySelector(".feed-comments")?.textContent ?? "0").replace(/[^0-9]/gu, ""),
+    ),
+  );
+  expect(after).toBe(before + 1);
+
+  // And it is in the record's own thread as the act it is — "you asked" —
+  // rather than as an opinion about the record.
+  await open("r/pro_criteria-template");
+  await page.waitForSelector(".record-thread-list .record-comment", { timeout: 15_000 });
+  const thread = await page.$eval(
+    ".record-thread-list",
+    (list) => (list as HTMLElement).innerText,
+  );
+  expect(thread).toContain("you asked");
+  expect(thread).toContain(asked);
+});
 
 test.skipIf(!chrome)("j and k move and ↵ opens the focused row", async () => {
-  await open("?kind=observation");
+  // Observations are evidence rather than review subjects, so none of them is
+  // ever waiting on the operator: this list is read with the filter off.
+  await open("?kind=observation&needs=all");
   const rows = await listed();
   expect(rows.length).toBeGreaterThan(2);
   const first = `li.feed-row[data-post='${rows[0].id}']`;
