@@ -55,24 +55,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "33d5a6787e4f2322ede19e8ed70b7081e482d788801514df0fc44cc2693be6e9",
+        "sha256": "9dbde1ad2dc51aca90c187acea962d00e634305bccaabff27a0f0737402be444",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "33d5a6787e4f2322ede19e8ed70b7081e482d788801514df0fc44cc2693be6e9",
+        "entrySha256": "9dbde1ad2dc51aca90c187acea962d00e634305bccaabff27a0f0737402be444",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "33d5a6787e4f2322ede19e8ed70b7081e482d788801514df0fc44cc2693be6e9",
+        "sha256": "9dbde1ad2dc51aca90c187acea962d00e634305bccaabff27a0f0737402be444",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "33d5a6787e4f2322ede19e8ed70b7081e482d788801514df0fc44cc2693be6e9",
+        "entrySha256": "9dbde1ad2dc51aca90c187acea962d00e634305bccaabff27a0f0737402be444",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -162,7 +162,8 @@
           }
         },
         "runtimeTools": [
-          "bun"
+          "bun",
+          "git"
         ],
         "executable": {
           "runtimeTool": "bun"
@@ -231,7 +232,8 @@
           }
         },
         "runtimeTools": [
-          "bun"
+          "bun",
+          "git"
         ],
         "executable": {
           "runtimeTool": "bun"

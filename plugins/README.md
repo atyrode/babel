@@ -110,6 +110,11 @@ that binary is hosted where the operator will trust it) AND a job can be given a
 before, because a pin nobody obtained by download is not a pin, and a password in a manifest is
 not a password.
 
+`git` is the third runtime tool, for `scan` and `prepare`: repository identity is `git rev-parse
+--git-common-dir` in the session's workspace. Bound the same way, it runs - and today still answers
+nothing, because a job sees only its declared locations and the workspaces a session names are host
+paths outside them (#254 records the decision this needs).
+
 Two more things an enrolled machine's operator must arrange, because a manifest cannot: the
 `home` anchor needs `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` to **exist** (a job whose
 read location is missing fails to start; `mkdir -p` is the whole fix), and the `runtime` anchor

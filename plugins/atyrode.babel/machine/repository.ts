@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
+import { RUNTIME_TOOL_BIN } from "../contract.ts";
 
 /*
   WHAT THE WORK WAS ABOUT, ported from internal/adapter/repository.go (§4.13).
@@ -66,11 +67,15 @@ export interface RepositoryObserver {
 export function repositoryObserver(): RepositoryObserver {
   const observed = new Map<string, Promise<Repository>>();
   // Resolved once: a machine without git answers every workspace with the same reason instead
-  // of paying a PATH walk per workspace.
+  // of paying a PATH walk per workspace. Inside a job the sandbox has no PATH at all, and git
+  // is where the operation's runtime tool bound it (`RUNTIME_TOOL_BIN`); outside one - the
+  // tests, a developer's shell - it is wherever the PATH says.
   let git: string | null | undefined;
 
   const probe = async (workspace: string): Promise<Repository> => {
-    git ??= Bun.which("git");
+    git ??= (await Bun.file(`${RUNTIME_TOOL_BIN}/git`).exists())
+      ? `${RUNTIME_TOOL_BIN}/git`
+      : Bun.which("git");
     if (git === null) {
       return { identity: null, remote: "", reason: REPOSITORY_REASONS.gitUnavailable };
     }

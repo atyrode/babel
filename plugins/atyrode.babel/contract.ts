@@ -650,7 +650,9 @@ export type Receipt = z.infer<typeof ReceiptSchema>;
  * machine.js; `code` is the engine explore and evaluate drive. The manifest declares neither
  * as an artifact, so an operation runs exactly where its owner said it may.
  */
-export const RUNTIME_TOOLS = ["bun", "code"] as const;
+export const RUNTIME_TOOLS = ["bun", "code", "git"] as const;
+/** Where the owner binds a runtime tool inside the sandbox: `<RUNTIME_TOOL_BIN>/<alias>`. */
+export const RUNTIME_TOOL_BIN = "/runtime/bin";
 
 /**
  * Every Babel operation writes its files flat into ONE output directory and binds it under one
