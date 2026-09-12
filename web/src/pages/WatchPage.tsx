@@ -63,6 +63,8 @@ const SERIES_DAYS = 30;
 // series above it, a longer first page put a busy Watch past §8.6's ceiling.
 // The control below the table says how many older receipts the machine holds.
 const RUNS_LIMIT = 10;
+// Rows of the in-flight table shown before a "show more"; see LiveRows.
+const LIVE_ROWS = 10;
 
 // How many runs in flight get a card of their own before the strip becomes a
 // table.
@@ -375,6 +377,10 @@ function LiveRows({
   stoppingPid: number | null;
   onStop: (run: LiveRun) => void;
 }) {
+  // Ten rows, then more on request: the same pagination the receipts use,
+  // so a deployment with forty runs in flight is read ten at a time rather
+  // than as a table that grows past the page's ceiling.
+  const [shown, setShown] = useState(LIVE_ROWS);
   return (
     <div className="table-scroll">
       <table className="live-table">
@@ -391,7 +397,7 @@ function LiveRows({
           </tr>
         </thead>
         <tbody>
-          {runs.map((run) => {
+          {runs.slice(0, shown).map((run) => {
             const started = Date.parse(run.started_at);
             const elapsed = Number.isFinite(started) ? elapsedClock((now - started) / 1000) : ABSENT;
             return (
@@ -428,6 +434,14 @@ function LiveRows({
           })}
         </tbody>
       </table>
+      {runs.length > shown && (
+        <p className="muted runs-more">
+          {runs.length - shown} more in flight.{" "}
+          <button type="button" className="link-button" onClick={() => setShown((n) => n + LIVE_ROWS)}>
+            Show {Math.min(LIVE_ROWS, runs.length - shown)} more
+          </button>
+        </p>
+      )}
     </div>
   );
 }
