@@ -962,7 +962,10 @@ func TestBlindedReviewWithholdsRankNotSubstance(t *testing.T) {
 // expired lease that reported zero spend would let a crashed worker's
 // expenditure be drawn again from the same allowance.
 func TestExpiredReservationStillCountsAsSpend(t *testing.T) {
-	now := time.Now().UTC()
+	// A stated instant, not the wall clock: the day bucket is a UTC calendar
+	// day, so "an hour ago" is yesterday for the first hour of every day and
+	// this fixture would have been about the date rather than about spend.
+	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
 	assignments := []Assignment{{
 		ID: "a1", ReservedCost: 0.5, CreatedAt: now.Add(-time.Hour),
 		ExpiresAt: now.Add(-time.Minute),
