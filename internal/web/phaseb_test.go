@@ -723,19 +723,26 @@ type phaseBRoute struct {
 	path     string
 	body     string
 	mutating bool
-	// fixed marks a read whose every value is a constant this build ships.
-	// There is exactly one — §4.8's closed vocabularies — and it is stated
-	// here rather than special-cased by name in the escaping sweep: a
-	// response with no fixture content in it has nothing hostile to find
-	// neutralized, so the sweep's "the escaped form is present instead"
-	// assertion would be checking that a constant contains a script tag.
-	// Every other assertion, including the one that no control or bidi
-	// character reaches the browser, still applies to it.
+	// fixed marks a read that carries no fixture content, so the escaping
+	// sweep's "the escaped form is present instead" assertion would be
+	// checking a string this build or this host chose rather than one a
+	// model wrote. Two reads are marked: §4.8's closed vocabularies, and
+	// §8.7's topic list, whose every name is a workspace basename resolved
+	// out of this host's own session catalog. Every other assertion,
+	// including the one that no control or bidi character reaches the
+	// browser, still applies to them.
 	fixed bool
-	// dual marks the one resource that answers both methods: the evaluation
-	// policy is read and saved at one path, so "a write refuses GET" is not
-	// true of it and the one-method-each matrix skips it. Every other guard
-	// still applies.
+	// created marks a write that answers 201 rather than 200, because what
+	// it returns is a thing that did not exist before. The guard sweep
+	// needs it to tell a refusal from a success; nothing else changes.
+	created bool
+	// dual marks a resource that answers both methods, so "a write refuses
+	// GET" is not true of it and the one-method-each matrix skips it. Two
+	// do: the evaluation policy, which is read and saved at one path, and
+	// §8.7's comment thread, which is read and written at one path for the
+	// same reason — the box is rendered from the read and the write answers
+	// with a comment of exactly the shape the read serves. Every other
+	// guard still applies.
 	dual bool
 }
 
@@ -932,6 +939,31 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 			body: `{"kind":"machine","name":"the unnamed box","notes":"it runs the nightly builds",` +
 				`"aliases":[{"kind":"hostname","value":"box-07"}]}`,
 		},
+		// Issue #237's front page (§8.7). The feed is enrolled for the
+		// session, origin, no-store, read-only and escaping coverage every
+		// other read gets, and it needs it more than most: it is one
+		// response carrying a line of every record in the deployment, so
+		// it is the widest surface for model wording this server serves.
+		//
+		// The topic list is `fixed` because its every value is a workspace
+		// basename this host resolved out of its own session catalog and a
+		// count — no model wrote any of it.
+		{name: "feed", method: http.MethodGet, path: "/api/feed?sort=new&limit=100"},
+		{name: "feed top", method: http.MethodGet, path: "/api/feed?sort=top&t=all"},
+		{name: "topics", method: http.MethodGet, path: "/api/topics", fixed: true},
+		// The conversation under a record, read and written at one path.
+		// The read carries the reviewers' prose and the operator's own
+		// words; the write is the box §8.7 puts under the post, and it
+		// answers 201 because a comment did not exist before it.
+		{
+			name: "record comments", method: http.MethodGet, dual: true,
+			path: "/api/record/" + h.proposal.ID + "/comments",
+		},
+		{
+			name: "record comment", method: http.MethodPost, mutating: true, dual: true, created: true,
+			path: "/api/record/" + h.proposal.ID + "/comments",
+			body: `{"text":"the verification criterion is the part that matters"}`,
+		},
 	}
 }
 
@@ -990,10 +1022,16 @@ func TestPhaseBRoutesShareThePhaseAGuard(t *testing.T) {
 			}
 
 			// The same request with the session succeeds, so the refusals
-			// above are the guard's work and not a broken request.
+			// above are the guard's work and not a broken request. A route
+			// that mints something answers 201, which is a success with a
+			// different name rather than a different outcome.
+			success := http.StatusOK
+			if route.created {
+				success = http.StatusCreated
+			}
 			response := h.request(route)
 			defer response.Body.Close()
-			if response.StatusCode != http.StatusOK {
+			if response.StatusCode != success {
 				t.Errorf("authorized status = %d body %q", response.StatusCode, body(t, response))
 			}
 			if got := response.Header.Get("Cache-Control"); got != "no-store" {

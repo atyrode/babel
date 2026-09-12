@@ -305,9 +305,15 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			name:     "frontier",
 			surface:  reflect.TypeOf((*FrontierReader)(nil)).Elem(),
 			concrete: reflect.TypeOf((*frontier.Store)(nil)),
-			permitted: []string{"Finding", "Head", "Hypotheses", "Hypothesis", "LinksFrom", "LinksTo",
-				"Observation", "ObservationsFor", "OutputsOfRun", "Proposal", "Proposals",
-				"ProposalsAddressing", "RecordDays", "ReviewStatus", "Revisions", "StatusHistory",
+			// Observations, Findings and ReviewStandings are §8.7's feed
+			// reads: the two enumerations the front page needs and the one
+			// bulk derivation of where every record stands. All three are
+			// reads, and widening this list by a read is what the list is
+			// for — it is the writes it exists to keep out.
+			permitted: []string{"Finding", "Findings", "Head", "Hypotheses", "Hypothesis",
+				"LinksFrom", "LinksTo", "Observation", "Observations", "ObservationsFor",
+				"OutputsOfRun", "Proposal", "Proposals", "ProposalsAddressing", "RecordDays",
+				"ReviewStandings", "ReviewStatus", "Revisions", "StatusHistory",
 				"TriageAdvice", "TriageAdvised"},
 			// Every frontier write, including its own Decide and the
 			// revive transition #87 added: one disposition log exists and

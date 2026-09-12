@@ -49,6 +49,12 @@ type Server struct {
 	connMu   sync.Mutex
 	unserved map[net.Conn]struct{}
 	draining bool
+	// feed is §8.7's front page projection and the lock that makes one
+	// rebuild serve every reader waiting on it. It is a value on the
+	// Server rather than a package variable because two servers in one
+	// process must not share a deployment's front page; internal/web/
+	// feed.go states what it holds and how long it serves.
+	feed feedCache
 }
 
 // New mints the launch nonce and binds a loopback listener. Port zero asks the
@@ -696,6 +702,23 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleEvaluationOperator(w, r)
+	// Issue #237's front page (§8.7). Two reads and no third: the feed is a
+	// projection over records this table already serves, so there is
+	// nothing here that writes and nothing that could. The votes it shows
+	// are recorded through /api/record/{id}/reception, which is the
+	// operator's own attributed stance and predates this section; the
+	// comments under a post are recorded through /api/record/{id}/comments,
+	// which routeRecord resolves with it.
+	case "/api/feed":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFeed(w, r)
+	case "/api/topics":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleTopics(w, r)
 	case "/api/search":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return

@@ -296,6 +296,23 @@ type EvaluationService interface {
 	// answers on the write and runs the refresh after the response.
 	OperatorDeferred(context.Context, evaluation.OperatorInput) (
 		evaluation.Record, func(context.Context) error, error)
+	// Tallies and Thread are §8.7's feed half: the deployment's reception
+	// grouped by subject in one read, and one subject's conversation in
+	// commit order.
+	//
+	// They are reads like the four above and they are here rather than
+	// assembled from them because the front page asks a question the
+	// per-subject reads cannot answer affordably: what does every record
+	// stand at, right now. Detail answers it one subject at a time, which
+	// is one query per row over a corpus of thousands.
+	//
+	// Thread reads the durable records rather than the projection on
+	// purpose. The projection is a snapshot of the evaluable inventory,
+	// and a record it has not yet swept still has a conversation under it;
+	// a thread that disappeared until the next sweep would let the cache
+	// decide what was said.
+	Tallies(context.Context) (map[evaluation.Subject]evaluation.Tally, error)
+	Thread(context.Context, evaluation.Subject) ([]evaluation.ThreadRecord, error)
 }
 
 // FrontierReader is the read-only subset of *frontier.Store the API renders
@@ -378,6 +395,27 @@ type FrontierReader interface {
 	// consolidated and the remedy proposed beside it, and they are the same
 	// pass's work rather than four unrelated rows.
 	OutputsOfRun(context.Context, string) ([]frontier.RunOutput, error)
+	// Observations, Findings and ReviewStandings are §8.7's feed half:
+	// every record the deployment has produced, and where each of them
+	// stands, read as a corpus rather than one row at a time.
+	//
+	// The two enumerations exist because the front page is every kind at
+	// once and only two of the four could be listed. Findings were read
+	// through internal/review's queue, which answers about enrolled
+	// records and therefore could not see one nobody had enrolled;
+	// observations could be reached only through the candidate they
+	// develop, so assembling the corpus meant walking the frontier
+	// candidate by candidate.
+	//
+	// ReviewStandings is the same widening applied to the derivation: a
+	// standing per record is one query per row, and the disposition log it
+	// consults holds tens of rows against a corpus of thousands. It
+	// derives nothing new — both it and ReviewStatus map their ruling
+	// through one rule — so the feed's standing and the record page's
+	// cannot disagree.
+	Observations(context.Context, frontier.ListFilter) ([]frontier.Observation, int, error)
+	Findings(context.Context, frontier.ListFilter) ([]frontier.Finding, int, error)
+	ReviewStandings(context.Context) (map[frontier.Ref]frontier.ReviewStanding, error)
 }
 
 // FrontierReviver is the one frontier write this surface may perform, and it

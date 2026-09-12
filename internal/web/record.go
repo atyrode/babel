@@ -74,7 +74,7 @@ const recordPathPrefix = "/api/record/"
 // receptionPathSuffix is the operator's voice on the record he is reading.
 const receptionPathSuffix = "/reception"
 
-// routeRecord dispatches the two id-bearing record routes, reporting whether
+// routeRecord dispatches the three id-bearing record routes, reporting whether
 // the path was one of them.
 func (s *Server) routeRecord(w http.ResponseWriter, r *http.Request) bool {
 	rest, found := strings.CutPrefix(r.URL.Path, recordPathPrefix)
@@ -84,6 +84,24 @@ func (s *Server) routeRecord(w http.ResponseWriter, r *http.Request) bool {
 	if id, isReception := strings.CutSuffix(rest, receptionPathSuffix); isReception {
 		if s.requireMethod(w, r, http.MethodPost) {
 			s.handleRecordReception(w, r, id)
+		}
+		return true
+	}
+	// The conversation under the record (§8.7). It answers two methods,
+	// which is deliberate and is the same judgement /api/evaluation/policy
+	// makes: it is one resource rather than two, the box an operator types
+	// into is rendered from the read, and the write answers with a comment
+	// of exactly the shape the read serves. A second path would let one
+	// thread's read and write disagree about their own shape the first
+	// time either changed.
+	if id, isComments := strings.CutSuffix(rest, commentsPathSuffix); isComments {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleRecordComments(w, r, id)
+		case http.MethodPost:
+			s.handlePostComment(w, r, id)
+		default:
+			s.writeError(w, http.StatusBadRequest, "unsupported method")
 		}
 		return true
 	}

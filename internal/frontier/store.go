@@ -2399,7 +2399,15 @@ func reviewStatus(ctx context.Context, q querier, subject Ref) (ReviewStatus, er
 	if err != nil {
 		return "", fmt.Errorf("read review status: %w", err)
 	}
-	switch Disposition(disposition) {
+	return reviewStatusOf(Disposition(disposition), refinements)
+}
+
+// reviewStatusOf is the mapping itself, over one already-read ruling. It is
+// separate from the query above so that the bulk derivation below reads the
+// same rule rather than a second copy of it: a status table that existed
+// twice is a status that can come to mean two things.
+func reviewStatusOf(last Disposition, refinements int) (ReviewStatus, error) {
+	switch last {
 	case DispositionAccept:
 		return ReviewAccepted, nil
 	case DispositionReject:
@@ -2414,7 +2422,68 @@ func reviewStatus(ctx context.Context, q querier, subject Ref) (ReviewStatus, er
 	case DispositionReopen:
 		return ReviewNew, nil
 	}
-	return "", fmt.Errorf("%w: stored disposition %q", ErrInvalidValue, disposition)
+	return "", fmt.Errorf("%w: stored disposition %q", ErrInvalidValue, last)
+}
+
+// ReviewStanding is one record's derived review status together with the
+// ruling that produced it and when it was recorded.
+//
+// The last disposition travels beside the status because `reopen` derives
+// `new`, and a reader deciding what to look at needs to tell a record nobody
+// has ever ruled on from one whose rejection somebody deliberately lifted.
+// The time is here because it is the newest thing that happened to the
+// record, which is what a listing ordered by activity is ordered by.
+type ReviewStanding struct {
+	Status     ReviewStatus
+	Last       Disposition
+	RecordedAt time.Time
+}
+
+// ReviewStandings derives the review status of every record that has ever
+// been ruled on, in one read.
+//
+// It exists because the per-record derivation above cannot answer a
+// deployment-wide listing affordably: one query per row over thousands of
+// rows, to consult a disposition log holding tens of them. A record absent
+// from the result has never been ruled on and stands at ReviewNew, which is
+// exactly what ReviewStatus answers for it - the two cannot disagree, because
+// both map their ruling through reviewStatusOf.
+func (s *Store) ReviewStandings(ctx context.Context) (map[Ref]ReviewStanding, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT d.subject_type, d.subject_id, d.disposition,
+		d.recorded_at,
+		(SELECT COUNT(*) FROM frontier_refinement_request r WHERE r.disposition_id = d.id)
+		FROM frontier_disposition d
+		WHERE d.seq = (SELECT MAX(x.seq) FROM frontier_disposition x
+			WHERE x.subject_type = d.subject_type AND x.subject_id = d.subject_id)`)
+	if err != nil {
+		return nil, fmt.Errorf("read review standings: %w", err)
+	}
+	defer rows.Close()
+	standings := map[Ref]ReviewStanding{}
+	for rows.Next() {
+		var (
+			subjectType string
+			subjectID   string
+			disposition string
+			recorded    string
+			refinements int
+		)
+		if err := rows.Scan(&subjectType, &subjectID, &disposition, &recorded, &refinements); err != nil {
+			return nil, fmt.Errorf("read review standings: %w", err)
+		}
+		status, err := reviewStatusOf(Disposition(disposition), refinements)
+		if err != nil {
+			return nil, err
+		}
+		at, err := parseTime(recorded)
+		if err != nil {
+			return nil, fmt.Errorf("review standing %s %s: %w", subjectType, subjectID, err)
+		}
+		standings[Ref{Type: EntityType(subjectType), ID: subjectID}] = ReviewStanding{
+			Status: status, Last: Disposition(disposition), RecordedAt: at,
+		}
+	}
+	return standings, rows.Err()
 }
 
 // querier is the subset of *sql.DB and *sql.Tx the read helpers need, so one
@@ -2634,6 +2703,44 @@ func (s *Store) Hypotheses(ctx context.Context, filter ListFilter) ([]Hypothesis
 	var out []Hypothesis
 	for rows.Next() {
 		record, err := scanHypothesis(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, record)
+	}
+	return out, total, rows.Err()
+}
+
+// Observations enumerates §4.3's claims under the same bounding rules as
+// Hypotheses.
+//
+// It exists for the reason Hypotheses does. Until now an observation was
+// reachable by id, or through the candidate it develops, and by no listing at
+// all - so a surface that wanted every record Babel has produced could get
+// three of the four kinds and had to walk the frontier candidate by candidate
+// for the fourth. Statuses does not apply: an observation carries no
+// lifecycle of its own, because §6.7 makes it evidence rather than an
+// artifact anybody rules on.
+func (s *Store) Observations(ctx context.Context, filter ListFilter) ([]Observation, int, error) {
+	where := ""
+	if filter.LeavesOnly {
+		where = ` WHERE NOT EXISTS(SELECT 1 FROM frontier_observation d
+			WHERE d.ancestor_id = frontier_observation.id)`
+	}
+	total, err := s.count(ctx, `SELECT count(*) FROM frontier_observation`+where)
+	if err != nil {
+		return nil, 0, err
+	}
+	limit, offset := filter.bounds()
+	rows, err := s.db.QueryContext(ctx, observationSelect+where+
+		` ORDER BY created_at, id LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list observations: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Observation, 0, limit)
+	for rows.Next() {
+		record, err := scanObservation(rows)
 		if err != nil {
 			return nil, 0, err
 		}

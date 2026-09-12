@@ -68,6 +68,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - **Ask shows reasons, not ids.** A question's rank is explained factor by
   factor, its subject is named, and a subject is one append-only timeline of
   what Babel recorded about it with the candidates that were scoped to it.
+- **The deployment ranks itself.** `GET /api/feed` serves every record Babel
+  has produced — hypothesis, observation, finding, proposal and the questions
+  it asks — as one line of claim with its topics, its score and its comment
+  count, over one sort bar: hot, new, top and controversial over an hour to
+  all time, and rising. The formulas are Reddit's, stated and unit-tested in
+  `internal/web/feed.go`, and they rank the whole eligible set before paging
+  it (§8.5). A record's topics are the workspaces of the sessions its
+  evidence cites, propagated through the development path, so a proposal
+  inherits the community of the observation behind it; `GET /api/topics`
+  counts them and says how many records this deployment could not place.
+  `GET`/`POST /api/record/{id}/comments` is the conversation under a post —
+  reviewer prose, refinements, the operator's own words, a question's answers
+  — threaded by what it relates to, with §4.7's rulings beside it as the
+  attributed acts they are rather than as opinions. Proof: 6,018 posts and
+  twelve topics assembled from the operator's own store in 456 ms, against a
+  surface that previously answered "what does every record stand at" one
+  query per record (SPEC §8.7, #237).
 
 ### Changed
 
@@ -90,6 +107,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Host tabs, host chips and host sorts are gone from Watch and Sessions; a
   host appears only under Settings › Archive, where a snapshot is a backup
   of a machine.
+- **A review that takes longer than its lease keeps its claim.** A lease bounds
+  how long an unanswered worker holds an assignment, not how long the work may
+  take, and the two were conflated: the claim lapsed while the model was still
+  reading, and the result was then refused at the end for a takeover that had
+  never happened. Measured on 2026-09-12: four reviews ran 386s, 461s, 556s and
+  630s under a 240s lease, every one of them was refused its own claim, and the
+  deployment recorded no reviewer vote at all. A worker that is still working
+  now says so, renewing at a third of its lease for as long as the review runs,
+  and the shared catalog admits the renewal it used to refuse — under
+  `migrations/0014` a live claim may move its own expiry forward and nothing
+  else, so an expired assignment is still taken over under a new fence rather
+  than resurrected, and a renewal charges nothing further against the day.
 
 ## [0.2.6] - 2026-09-12
 
