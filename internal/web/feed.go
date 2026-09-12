@@ -1381,12 +1381,14 @@ const questionIDPrefix = "qst_"
 // recordActs reads the moderator's log: §4.7's append-only rulings, as the
 // attributed acts they are.
 func (s *Server) recordActs(ctx context.Context, ref frontier.Ref) []actView {
+	// Empty is a list, not null: a client renders "no rulings" from a
+	// length and should not have to guard against a missing field.
 	if s.opts.Review == nil || !reviewableRecord(ref.Type) {
-		return nil
+		return []actView{}
 	}
 	history, err := s.opts.Review.History(ctx, ref)
 	if err != nil {
-		return nil
+		return []actView{}
 	}
 	acts := make([]actView, 0, len(history.Decisions))
 	for _, entry := range history.Decisions {
