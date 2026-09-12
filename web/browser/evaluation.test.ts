@@ -1,49 +1,62 @@
-// Browser acceptance for issue #219's evaluation surface (SPEC.md §4.12,
-// §5.8, §8.5), driven against the synthetic mock so no Go server, archive, or
-// network is needed.
+// Browser acceptance for the ranked reading surface (issue #219; SPEC.md
+// §4.12, §5.8, §8.5), driven against the synthetic mock so no Go server,
+// archive, or network is needed.
 //
-// What only a browser can prove is here. That the whole lifecycle is reachable
-// by moving through the navigation rather than by typing a URL somebody
-// already knew. That every ordering names what it is computed from, and that
-// choosing one actually changes the answer. That paging stays inside one
-// ranked set, survives a reload, and walks back with the browser's own Back
-// button. That a record nobody reviewed is found and is not rendered as
-// unopposed; that a role with no evaluator reads as a gap rather than a pass;
-// that a bare vote acquires no invented rationale; that a verification and the
-// contradiction after it are both readable. That the operator's own controls
-// record attributed statements, and that the one of them which does change a
-// disposition — an explicit reopen — actually reopens the record while its
-// opposite leaves the earlier decision standing, whatever the reason text
-// says. That /review offers the same reopen and refuses it where nothing was
-// decided. That saving a budget says it started no compute. And that there is
-// no control anywhere on this surface that casts a vote.
+// This file used to cover four destinations — the backlog, the coverage
+// inventory, one record's evaluation and the review queue's reopen. #235
+// collapsed the first two into Read and the last two into the record page.
+// What is here is what Read owns.
 //
-// The corpus is synthetic and disposable. Nothing here reads a real session.
+// What only a browser can prove:
+//
+// That every ordering names what it is computed from, on the page, and that
+// choosing one actually changes the answer. A ranking an operator cannot argue
+// with is a ranking he has to take on faith, which is the opposite of what
+// §8.5 asks for.
+//
+// That the sort, the filters and the page live in the URL, survive a reload,
+// and walk back with the browser's own Back button — and that paging stays
+// inside one ranked set while publication continues, which is the whole reason
+// the snapshot is pinned.
+//
+// That a record nobody has reviewed is findable through the coverage filter
+// and renders as an absence of review rather than as three zeroes, which read
+// as unanimous absence of opposition.
+//
+// That the same rule holds row by row: reception is drawn where somebody said
+// something and nowhere else, so an unreviewed record is a row with an empty
+// slot rather than a flat chart of zeroes.
+//
+// That a stale projection still answers and says so, rather than refusing or
+// presenting itself as current.
+//
+// And that no control on this surface casts a vote: the browser holds no run
+// identity and no claim, and §4.12's separation is kept by there being nothing
+// here to press.
+//
+// And that the review policy — what authorized evaluation work may cost — is a
+// section of Settings reached by its old path, states the server's own
+// consequence sentence before the save, and offers nothing that starts work.
+//
+// The record page's own gate covers what one record shows. The corpus is
+// synthetic and disposable; nothing here reads a real session.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
 import { resolveChrome } from "./chrome";
 
 const chrome = resolveChrome({
-  gate: "Evaluation surface gate",
-  covers: "issue #219's evaluation backlog, coverage inventory, record evaluation and review policy in a browser",
+  gate: "Ranked reading gate",
+  covers: "issue #219's ranked output listing — ordering, filters, paging, coverage and reception — on Read, and the review policy under Settings, in a browser",
   unverified: [
-    "that the evaluation surface is reachable from the navigation and from a record's own page",
-    "that each ordering names its basis and actually reorders the listing",
+    "that each ordering names its basis on the page and actually reorders the listing",
     "that filters, sorts and pages live in the URL and survive reload and Back",
     "that paging stays inside one ranked snapshot",
-    "that a never-reviewed record is found and never renders as unopposed",
-    "that a role with no evaluator renders as a named gap rather than as a pass",
-    "that a bare vote renders bare and acquires no generated rationale",
-    "that a verified outcome and a later contradiction are both readable, with scope and date",
-    "that grouped alternatives stay separately addressable and are not merged",
-    "that a superseded revision says its reception is about the wording on the page",
-    "that operator feedback and criteria record attributed statements and decide nothing",
-    "that a reconsideration is an explicit reopen or retain, that hostile reason text cannot pick the act, and that a reopen actually reopens the record while a retain leaves it decided",
-    "that the review surface reopens a decided record, refuses a reopen where nothing was decided, and keeps the reopened decision in the history",
-    "that an unpriced attempt reads as a conservative reserved charge and unresolved criteria name no stand-in identity",
-    "that saving a review policy states that it started no compute",
+    "that a never-reviewed record is findable and never renders as unopposed",
+    "that a row's reception is drawn where there is one and nowhere else",
+    "that a stale projection still answers and says it is not current",
     "that no control on this surface casts a vote",
+    "that the review policy is a section of Settings and that saving it starts nothing",
   ],
 });
 
@@ -84,59 +97,40 @@ async function open(route: string): Promise<void> {
   await page.reload({ waitUntil: "networkidle2" });
 }
 
-// visible waits for text to be on the page AND for the evaluation reader to
-// have settled. Both halves are needed: a heading can survive from the page
-// being navigated away from, so a bare text match would read the previous
-// record's body while the next one is still loading.
+// visible waits for text to be on the page AND for the reader to have settled.
+// Both halves are needed: a heading survives from the page being navigated
+// away from, so a bare text match would read the previous view.
 function visible(text: string): Promise<unknown> {
   return page.waitForFunction(
     (needle: string) => {
       const body = document.body.innerText;
-      return body.includes(needle) && !body.includes("Reading the evaluation…");
+      return body.includes(needle) && !body.includes("Reading the output…");
     },
     { timeout: 15_000 },
     text,
   );
-}
-// follow clicks a link and waits for the navigation it causes.
-//
-// A click is retried when the element is replaced under it: every page here
-// re-renders when its answer lands, which detaches the node Puppeteer just
-// scrolled to, and a test that treated that as a failure would be reporting
-// the harness rather than the surface. A click that never navigates is still
-// a failure, which is what the loop's exit says.
-async function follow(selector: string): Promise<void> {
-  const before = page.url();
-  for (let attempt = 0; attempt < 8; attempt++) {
-    await page.waitForSelector(selector);
-    try {
-      await page.click(selector);
-    } catch (error) {
-      if (!String(error).includes("detached")) throw error;
-    }
-    try {
-      await page.waitForFunction((url: string) => window.location.href !== url, { timeout: 2_000 }, before);
-      return;
-    } catch {
-      continue;
-    }
-  }
-  throw new Error(`clicking ${selector} never navigated away from ${before}`);
-}
-
-// openRow follows one listing row's link into the record it names.
-function openRow(item: string): Promise<void> {
-  return follow(`[data-item='${item}'] a`);
-}
-
-function bodyText(): Promise<string> {
-  return page.evaluate(() => document.body.innerText);
 }
 
 function ids(): Promise<string[]> {
   return page.evaluate(() =>
     Array.from(document.querySelectorAll("[data-item]"))
       .map((row) => row.getAttribute("data-item") ?? ""));
+}
+
+// order chooses one of the served orderings through the control an operator
+// uses — the ordering menu, which names what each order is computed from —
+// then waits for the listing to be the answer to that choice rather than the
+// one still on screen.
+async function order(sort: string): Promise<void> {
+  const before = await ids();
+  await page.click(".read-order > summary");
+  await page.click(`[data-order='${sort}']`);
+  await page.waitForFunction(
+    (first: string) =>
+      (document.querySelector("[data-item]")?.getAttribute("data-item") ?? "") !== first,
+    { timeout: 15_000 },
+    before[0] ?? "",
+  );
 }
 
 beforeAll(async () => {
@@ -158,54 +152,16 @@ afterAll(async () => {
   mock?.process.kill();
 });
 
-test.skipIf(!chrome)("the whole surface is reachable by navigation, without a guessed URL", async () => {
-  await page.goto(`${mock?.base}/#/`, { waitUntil: "networkidle2" });
-  await page.waitForSelector("nav");
-  // From the primary navigation, not from an address bar.
-  await follow("nav a[href='#/evaluation']");
-  await visible("Backlog");
-
-  await follow("a[href='#/evaluation/coverage']");
-  await visible("Coverage");
-  await visible("Never reviewed");
-
-  await follow("a[href='#/evaluation/policy']");
-  await visible("Review policy");
-
-  // And back down into one record, from the listing rather than by id.
-  await follow("a[href='#/evaluation']");
-  await visible("Backlog");
-  await openRow("prp_bare-vote");
-  await visible("The revision under evaluation");
-  expect(page.url()).toContain("/evaluation/proposal/prp_bare-vote");
-});
-
-test.skipIf(!chrome)("a record's own page links to its evaluation", async () => {
-  // The hypothesis page is served by the Phase B fixtures and the evaluation
-  // projection holds the same record, which is what a real deployment looks
-  // like: the frontier holds the wording, the projection holds what was said
-  // about it. §8.5's reachability is that an operator holding the record can
-  // get to its reception without knowing a URL.
-  await open("hypotheses/hyp_unverified-closures");
-  await visible("Hypothesis");
-  expect(await page.$("a[href='#/evaluation/hypothesis/hyp_unverified-closures']")).not.toBeNull();
-  await follow("a[href='#/evaluation/hypothesis/hyp_unverified-closures']");
-  await visible("The revision under evaluation");
-  await visible("hyp_unverified-closures");
-  // And the decision surface is reachable from there, rather than being
-  // duplicated onto it.
-  expect(await page.$("a[href='#/review/hypothesis/hyp_unverified-closures']")).not.toBeNull();
-});
-
 test.skipIf(!chrome)("every ordering names its basis and reorders the listing", async () => {
-  await open("evaluation");
-  await visible("Recommended");
+  await open("read");
+  await visible("What has Babel found?");
   // §8.5: the ordering says what it is computed from, on the page, not in a
-  // document nobody reading it has.
-  expect(await bodyText()).toContain("recorded priority, current work and pain");
+  // document nobody reading it has and not in a tooltip nobody hovers.
+  expect(await page.evaluate(() => document.body.innerText))
+    .toContain("recorded priority, current work and pain");
   const recommended = await ids();
 
-  await page.click("[data-sort='recent']");
+  await order("recent");
   await visible("Newest revisions first");
   const recent = await ids();
   expect(recent).not.toEqual(recommended);
@@ -213,37 +169,35 @@ test.skipIf(!chrome)("every ordering names its basis and reorders the listing", 
   // Recently strengthened is not "new": it ranks by substantive contribution,
   // and the page has to say so, because another bare vote must not move an
   // item up it.
-  await page.click("[data-sort='strengthened']");
+  await order("strengthened");
   await visible("Another bare vote does not move an item up this order");
   const strengthened = await ids();
   expect(strengthened).not.toEqual(recent);
-  // The comparison contribution is the newest substantive one in the fixture.
-  expect(strengthened[0]).toBe("prp_group-cache");
+  expect(strengthened[0]).toBe("pro_group-cache");
 
-  await page.click("[data-sort='contested']");
+  await order("contested");
   await visible("Unresolved disagreement first");
   expect((await ids())[0]).toBe("fnd_no-evaluator");
 
-  await page.click("[data-sort='unreviewed']");
+  await order("unreviewed");
   await visible("how little has been looked at, not how little it was liked");
-  const underReviewed = await ids();
-  expect(underReviewed).toContain("hyp_never-reviewed");
+  expect(await ids()).toContain("hyp_never-reviewed");
 });
 
 test.skipIf(!chrome)("sorts, filters and pages live in the URL and survive reload and Back", async () => {
-  await open("evaluation");
-  await page.click("[data-sort='contested']");
-  await visible("Unresolved disagreement first");
+  await open("read");
+  await visible("What has Babel found?");
+  await order("contested");
   expect(page.url()).toContain("sort=contested");
   // The first answer pins the ranked set so paging stays inside one ordering.
   await page.waitForFunction(() => window.location.hash.includes("snapshot="));
 
-  await page.select(".evaluation-filters select", "accepted");
+  await page.click("[data-chip='lane-accepted']");
   await page.waitForFunction(() => window.location.hash.includes("lane=accepted"));
 
   // A reload re-reads the same view rather than dropping to the default.
   await page.reload({ waitUntil: "networkidle2" });
-  await visible("Backlog");
+  await visible("What has Babel found?");
   expect(page.url()).toContain("sort=contested");
   expect(page.url()).toContain("lane=accepted");
 
@@ -254,8 +208,8 @@ test.skipIf(!chrome)("sorts, filters and pages live in the URL and survive reloa
 });
 
 test.skipIf(!chrome)("paging stays inside one ranked snapshot and reports its window", async () => {
-  await open("evaluation");
-  await visible("Recommended");
+  await open("read");
+  await visible("What has Babel found?");
   await page.waitForFunction(() => window.location.hash.includes("snapshot="));
   const firstPage = await ids();
   const snapshot = await page.evaluate(() =>
@@ -265,8 +219,8 @@ test.skipIf(!chrome)("paging stays inside one ranked snapshot and reports its wi
 
   await page.click(".pager button:last-child");
   await page.waitForFunction(() => window.location.hash.includes("offset=25"));
-  // The hash moves before the fetch resolves, so wait for the rendered set
-  // to be the second window rather than reading the first one again.
+  // The hash moves before the fetch resolves, so wait for the rendered set to
+  // be the second window rather than reading the first one again.
   await page.waitForFunction(
     (first: string) =>
       (document.querySelector("[data-item]")?.getAttribute("data-item") ?? "") !== first,
@@ -274,12 +228,10 @@ test.skipIf(!chrome)("paging stays inside one ranked snapshot and reports its wi
     firstPage[0],
   );
   const secondPage = await ids();
-  // No row appears on both pages: the ordering was cut once, not re-ranked
-  // per page.
+  // No row appears on both pages: the ordering was cut once, not re-ranked per
+  // page.
   expect(secondPage.some((id) => firstPage.includes(id))).toBe(false);
-  // The same snapshot is still pinned, and the page says which window it is.
   expect(page.url()).toContain(`snapshot=${snapshot}`);
-  expect(await bodyText()).toContain("snapshot snap-2026-09-11T09-00-00Z");
 
   await page.click(".pager button:first-child");
   await page.waitForFunction(() => !window.location.hash.includes("offset="));
@@ -293,362 +245,117 @@ test.skipIf(!chrome)("paging stays inside one ranked snapshot and reports its wi
 });
 
 test.skipIf(!chrome)("a never-reviewed record is found and is not rendered as unopposed", async () => {
-  await open("evaluation/coverage");
-  await visible("Never reviewed");
-  const listing = await bodyText();
-  // Found by the exact inventory, regardless of score or enrolment.
+  // The coverage inventory was a destination of its own; it is a filter on the
+  // one list now, and the question it answers — what has nobody read — is the
+  // same question.
+  await open("read?coverage=unreviewed");
+  await visible("What has Babel found?");
+  const listing = await ids();
   expect(listing).toContain("hyp_never-reviewed");
 
-  // Navigated to, not typed: the inventory's rows are links to the record.
-  await openRow("hyp_never-reviewed");
-  await page.waitForFunction(() => window.location.hash.includes("hyp_never-reviewed"));
-  // The record's own heading, not "Reception": the coverage page this click
-  // left renders that word in its per-role table, so waiting for it can read
-  // the page being navigated away from.
-  await visible("The revision under evaluation");
-  const text = await bodyText();
-  // The absence is stated as an absence. Three zeroes would read as a record
-  // nobody objected to.
-  expect(text).toContain("no reviews yet");
-  expect(text).not.toContain("+0");
-  expect(text).toContain("absence of review, not an absence of opposition");
+  // The row carries no reception at all: no counts, no chart, and no
+  // sentence about the absence. Three zeroes would read as a record nobody
+  // objected to, and "no reviews yet" on every row of a mostly unreviewed
+  // corpus is a fact about the review budget rather than about this record.
+  // Where the absence is the question being asked — this filter, the peel
+  // below, the record's own page — it is still stated.
+  const row = await page.evaluate(() =>
+    (document.querySelector("[data-item='hyp_never-reviewed']") as HTMLElement | null)?.innerText ?? "");
+  expect(row).not.toContain("no reviews yet");
+  expect(row).not.toContain("+0");
+  expect(row).not.toContain("review");
+
+  // And the inventory behind the peel still reports what is owed, role by
+  // role, because coverage is role-specific: a reception vote discharges no
+  // evidence check.
+  await page.click("details.peel > summary");
+  await visible("Never reviewed");
+  const roles = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".role-totals tbody tr")).map(
+      (row_) => (row_ as HTMLElement).innerText));
+  expect(roles.some((entry) => entry.startsWith("Evidence check"))).toBe(true);
+  expect(roles.some((entry) => entry.startsWith("Outcome verification"))).toBe(true);
 });
 
-test.skipIf(!chrome)("a role with no evaluator reads as a gap, never as a pass", async () => {
-  await open("evaluation/finding/fnd_no-evaluator");
-  await visible("Coverage by role");
-  const roles = await page.evaluate(() => {
-    const rows = Array.from(document.querySelectorAll(".evaluation-roles tbody tr"));
-    return rows.map((row) => (row as HTMLElement).innerText);
+test.skipIf(!chrome)("a row's reception is drawn where there is one and nowhere else", async () => {
+  await open("read");
+  await visible("What has Babel found?");
+
+  const listing = await page.evaluate(async () => {
+    // The same read the page made, so the rendering is compared against what
+    // the projection said about each row rather than against a copy of the
+    // fixtures.
+    const answer = (await fetch("/api/evaluation/list?limit=25").then((response) =>
+      response.json(),
+    )) as {
+      items?: Array<{
+        artifact: { subject: { id: string } };
+        reception: { reviews: number; support: number; oppose: number; unsure: number };
+      }>;
+    };
+    const served: Record<string, { reviews: number; support: number; oppose: number; unsure: number }> = {};
+    for (const item of answer.items ?? []) served[item.artifact.subject.id] = item.reception;
+    return {
+      served,
+      rows: Array.from(document.querySelectorAll("[data-item]")).map((row) => ({
+        id: row.getAttribute("data-item") ?? "",
+        spark: row.querySelector(".read-spark") !== null,
+        // The three facts beside the claim. The claim itself is the record's
+        // own words and may say anything, so the reception assertions are
+        // scoped to the strip the page composes.
+        facts: (row.querySelector(".read-facts") as HTMLElement | null)?.innerText ?? "",
+      })),
+    };
   });
-  const evidence = roles.find((row) => row.startsWith("Evidence check"));
-  expect(evidence).toBeDefined();
-  expect(evidence).toContain("No evaluator");
-  expect(evidence).toContain("no evidence evaluator is registered");
-  expect(evidence).not.toContain("Reviewed");
 
-  // A supported role that is not yet required is visible and is not dressed
-  // up as overdue work.
-  const text = await bodyText();
-  expect(text).toContain("supported without being required yet");
+  const voted = listing.rows.filter((row) => {
+    const reception = listing.served[row.id];
+    return reception && Math.max(reception.support, reception.oppose, reception.unsure) > 0;
+  });
+  const unreviewed = listing.rows.filter((row) => (listing.served[row.id]?.reviews ?? 0) === 0);
+  // Both cases are on this page, or the equivalence below would be vacuous.
+  expect(voted.length).toBeGreaterThan(0);
+  expect(unreviewed.length).toBeGreaterThan(0);
+
+  // Where somebody said something, the shape of what they said is drawn.
+  for (const row of voted) expect(row.spark).toBe(true);
+  // Where nobody has, the slot is empty rather than three zeroes: an
+  // unreviewed record drawn as a flat chart reads as one nobody objected to,
+  // and twenty-five rows saying "no reviews yet" is a fact about the review
+  // budget rather than about any row on the page.
+  for (const row of unreviewed) {
+    expect(row.spark).toBe(false);
+    expect(row.facts.toLowerCase()).not.toMatch(/support|oppose|unsure|review/u);
+  }
 });
 
-test.skipIf(!chrome)("a bare vote renders bare, and a superseded revision says so", async () => {
-  await open("evaluation/proposal/prp_bare-vote");
-  await visible("Evaluation history");
-  const text = await bodyText();
-  expect(text).toContain("A bare vote. No argument was offered, and none is invented here.");
-  expect(text).not.toContain("no comment provided");
-
-  await open("evaluation/proposal/prp_superseded-r1");
-  await visible("The revision under evaluation");
-  const superseded = await bodyText();
-  expect(superseded).toContain("A newer revision of this record exists");
-  expect(superseded).toContain("an endorsement does not move to the next revision");
-  const forward = await page.$("a[href='#/evaluation/proposal/prp_superseded-r2']");
-  expect(forward).not.toBeNull();
-});
-
-test.skipIf(!chrome)("a verification and the contradiction after it are both readable", async () => {
-  await open("evaluation/proposal/prp_verified-then-contradicted");
-  await visible("Observed outcomes");
-  const outcomes = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".evaluation-outcome")).map((entry) => (entry as HTMLElement).innerText));
-  expect(outcomes.length).toBe(2);
-  expect(outcomes[0]).toContain("verified");
-  expect(outcomes[1]).toContain("contradicted");
-  // Scope and date rather than a timeless badge, and the criterion version
-  // each was judged against.
-  expect(outcomes[0]).toContain("synthetic corpus, 40 sessions");
-  expect(outcomes[1]).toContain("a second host with a larger corpus");
-  expect(outcomes[0]).toContain("criteria evr_criteria-1");
-  const text = await bodyText();
-  expect(text).toContain("A later contradiction does not delete an earlier verification");
-  // Criteria settled after acceptance stay identifiable as a later decision.
-  expect(text).toContain("settled after acceptance");
-});
-
-test.skipIf(!chrome)("competing remedies read together and stay separately addressable", async () => {
-  await open("evaluation/proposal/prp_group-cache");
-  await visible("Read beside");
-  const text = await bodyText();
-  expect(text).toContain("nothing here is merged");
-  expect(text).toContain("prp_group-skip");
-  // The comparison's preference is labelled as being about the comparison,
-  // not as a vote for either record.
-  expect(text).toContain("preferred here: prp_group-cache");
-
-  expect(await page.$("a[href='#/evaluation/proposal/prp_group-skip']")).not.toBeNull();
-  await follow("a[href='#/evaluation/proposal/prp_group-skip']");
-  await visible("The revision under evaluation");
-  await page.waitForFunction(() =>
-    (document.body.innerText ?? "").includes("prp_group-skip") &&
-    !(document.body.innerText ?? "").includes("Reading the evaluation…"));
-  // The other remedy kept its own decision: deferred, with its own page.
-  expect(await bodyText()).toContain("Deferred");
-});
-
-test.skipIf(!chrome)("operator feedback is attributed, scoped, and decides nothing", async () => {
-  await open("evaluation/proposal/prp_bare-vote");
-  await visible("Tell Babel why");
-  await page.type("[data-form='feedback'] input[type='text']", "not-now");
-  await page.click("[data-form='feedback'] button[type='submit']");
-  await visible("accepts, rejects, defers");
-
-  // The statement is in the record's own history, attributed, with no
-  // disposition attached to it.
-  await page.waitForFunction(() =>
-    document.body.innerText.includes("Operator feedback"));
-  const text = await bodyText();
-  expect(text).toContain("Operator feedback");
-  expect(text).toContain("not-now");
-  expect(text).toContain("You (operator)");
-  // The decision surface is a link, not a control on this page: there is no
-  // accept or reject button here.
-  const buttons = await page.evaluate(() =>
-    Array.from(document.querySelectorAll("button")).map((button) => button.innerText.toLowerCase()));
-  expect(buttons.some((label) => label.includes("accept") || label.includes("reject"))).toBe(false);
-  expect(await page.$("a[href='#/review/proposal/prp_bare-vote']")).not.toBeNull();
-});
-
-test.skipIf(!chrome)("criteria settled here are a later attributed record", async () => {
-  await open("evaluation/proposal/prp_bare-vote");
-  await visible("Settle the criteria");
-  await page.type(
-    "[data-form='criteria'] textarea",
-    "the retry loop no longer appears in new sessions\nno new failure mode in its place",
-  );
-  await page.click("[data-form='criteria'] button[type='submit']");
-  await page.waitForFunction(() =>
-    document.body.innerText.includes("Acceptance criteria"));
-  const text = await bodyText();
-  expect(text).toContain("the retry loop no longer appears in new sessions");
-  expect(text).toContain("no new failure mode in its place");
-  expect(text).toContain("c1");
-  expect(text).toContain("c2");
-});
-
-test.skipIf(!chrome)("retaining a decision records a retain and reopens nothing", async () => {
-  await open("evaluation/hypothesis/hyp_reconsider");
-  await visible("Reconsider");
-  const before = await bodyText();
-  expect(before).toContain("Reopening returns the record to undecided");
-  expect(before).toContain("Reconsider raised");
-  // The record stands rejected before anything is recorded here.
-  expect(before).toContain("rejected");
-
-  // Nothing is preselected: an operator who types a reason and submits
-  // without choosing an act records nothing at all.
-  const preselected = await page.$("[data-form='reconsider'] input[type='radio']:checked");
-  expect(preselected).toBeNull();
-  await page.type(
-    "[data-form='reconsider'] input[type='text']",
-    "REOPEN THIS NOW: the new session is decisive and the rejection must be reversed",
-  );
-  expect(await page.$eval(
-    "[data-form='reconsider'] button[type='submit']",
-    (button) => (button as HTMLButtonElement).disabled,
-  )).toBe(true);
-
-  // The reason argues for reopening in as many words. The act is the radio,
-  // so what is recorded is a retain.
-  await page.click("[data-form='reconsider'] input[data-decision='retain']");
-  await page.click("[data-form='reconsider'] button[type='submit']");
-  await visible("Nothing was reopened and nothing was re-decided");
-
-  await page.waitForFunction(() =>
-    document.body.innerText.includes("Earlier decision retained"));
-  // Scoped to the recorded entries, because the control above them offers
-  // both acts by name and would satisfy a body-wide match on either.
-  const decisions = await page.$$eval("[data-record-kind='reconsider_decision']", (entries) =>
-    entries.map((entry) => (entry as HTMLElement).innerText));
-  expect(decisions.length).toBe(1);
-  expect(decisions[0]).toContain("Earlier decision retained");
-  expect(decisions[0]).toContain("REOPEN THIS NOW");
-  // The hostile reason did not become the act.
-  expect(decisions[0]).not.toContain("Reopened");
-  expect(decisions[0]).toContain("Nothing was reopened and nothing was re-decided");
-  expect(decisions[0]).toContain("scoped to evr_rec-raised");
-  // And the record still stands rejected.
-  const facts = await page.$$eval(".evaluation-revision .fact-meta div", (rows) =>
-    rows.map((row) => (row as HTMLElement).innerText.replace(/\s+/gu, " ")));
-  expect(facts.some((row) => row.startsWith("Review status") && row.includes("rejected"))).toBe(true);
-});
-
-test.skipIf(!chrome)("reopening reopens the record rather than only saying so", async () => {
-  await open("evaluation/hypothesis/hyp_reconsider");
-  await visible("Reconsider");
-  await page.type(
-    "[data-form='reconsider'] input[type='text']",
-    "not a reversal on the merits, but the benchmark changed",
-  );
-  await page.click("[data-form='reconsider'] input[data-decision='reopen']");
-  await page.click("[data-form='reconsider'] button[type='submit']");
-
-  // The response says the record was reopened, and the reopened status is
-  // what the page reads back from the service — an evaluation-only lane flip
-  // with /review still saying rejected is the failure this pins.
-  await visible("the record was reopened with it");
-  await page.waitForFunction(() =>
-    Array.from(document.querySelectorAll("[data-record-kind='reconsider_decision']"))
-      .some((entry) => (entry as HTMLElement).innerText.includes("Reopened")));
-  const decisions = await page.$$eval("[data-record-kind='reconsider_decision']", (entries) =>
-    entries.map((entry) => (entry as HTMLElement).innerText));
-  const reopened = decisions.filter((entry) => entry.includes("Reopened"));
-  expect(reopened.length).toBe(1);
-  expect(reopened[0]).toContain("the operator reopened this");
-  // The retain recorded by the previous test is still there, unchanged: a
-  // later act does not rewrite an earlier one.
-  expect(decisions.some((entry) => entry.includes("Earlier decision retained"))).toBe(true);
-  const facts = await page.$$eval(".evaluation-revision .fact-meta div", (rows) =>
-    rows.map((row) => (row as HTMLElement).innerText.replace(/\s+/gu, " ")));
-  expect(facts.some((row) => row.startsWith("Review status") && row.includes("new"))).toBe(true);
-  expect(facts.some((row) => row.startsWith("Review status") && row.includes("rejected"))).toBe(false);
-  // The reconsider item it answers is still readable beside the decision.
-  expect(await bodyText()).toContain("Reconsider raised");
-});
-
-test.skipIf(!chrome)("an unpriced attempt is a reserved charge, not free work", async () => {
-  await open("evaluation/finding/fnd_no-evaluator");
-  await visible("Evaluation history");
-  const attempts = await page.$$eval("[data-record-kind='attempt']", (entries) =>
-    entries.map((entry) => (entry as HTMLElement).innerText));
-  const unpriced = attempts.filter((entry) => entry.includes("the provider reported no cost"));
-  expect(unpriced.length).toBe(1);
-  // The reservation is what was charged, and the sentence says why it is not
-  // an observation. A zero here would read as work that cost nothing.
-  expect(unpriced[0]).toContain("charged 0.0500 as the reservation");
-  expect(unpriced[0]).toContain("unmeasured work is not free work");
-  // The skip that genuinely ran nothing still reads as a reported zero.
-  const priced = attempts.filter((entry) => entry.includes("as the provider reported it"));
-  expect(priced.length).toBe(1);
-  expect(priced[0]).toContain("cost 0.0000");
-});
-
-test.skipIf(!chrome)("criteria with no operator record say so instead of naming a stand-in", async () => {
-  // A proposal that states criteria about itself, with no operator criteria
-  // record behind them.
-  await open("evaluation/proposal/prp_bare-vote");
-  await visible("What this is measured against");
-  const panel = await page.$eval(".evaluation-accepted-criteria", (card) => ({
-    resolved: card.getAttribute("data-criteria-resolved"),
-    text: (card as HTMLElement).innerText,
-  }));
-  expect(panel.resolved).toBe("no");
-  expect(panel.text).toContain("not linked to an operator criteria record");
-  // Nothing plausible-looking is offered in place of the missing identity:
-  // not the context version, not a digest, not an id of any kind.
-  expect(panel.text).not.toContain("ctx-7");
-  expect(panel.text).not.toMatch(/\bevr_/u);
-
-  // The accepted, verified proposal names the record its criteria came from.
-  await open("evaluation/proposal/prp_verified-then-contradicted");
-  await visible("What this is measured against");
-  const resolved = await page.$eval(".evaluation-accepted-criteria", (card) => ({
-    resolved: card.getAttribute("data-criteria-resolved"),
-    text: (card as HTMLElement).innerText,
-  }));
-  expect(resolved.resolved).toBe("yes");
-  expect(resolved.text).toContain("evr_criteria-1");
-  expect(resolved.text).not.toContain("not linked to an operator criteria record");
-});
-
-test.skipIf(!chrome)("the review surface reopens a decided record and keeps its history", async () => {
-  await open("review/finding/fnd_conflicting-evidence");
-  await visible("Record a decision");
-
-  // Reopening something nobody decided is refused by the service, and the
-  // page shows the refusal rather than a decision.
-  await page.click(".decide-card input[value='reopen']");
-  expect(await bodyText()).toContain("why the earlier decision stopped holding");
-  await page.type(".decide-card textarea", "reopening what was never decided");
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.click(".decide-card button[type='submit']");
-  await visible("nothing has been decided here to reopen");
-
-  // Defer it, then reopen it: the deferral stays in the history and the
-  // status returns to new.
-  await page.click(".decide-card input[value='defer']");
-  // Cleared the way a person clears it, so React sees the change.
-  await page.focus(".decide-card textarea");
-  await page.keyboard.down("Control");
-  await page.keyboard.press("KeyA");
-  await page.keyboard.up("Control");
-  await page.keyboard.press("Backspace");
-  await page.type(".decide-card textarea", "not now; the next corpus run settles it");
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.click(".decide-card button[type='submit']");
-  await visible("status is now deferred");
-
-  await page.click(".decide-card input[value='reopen']");
-  await page.type(".decide-card textarea", "the deferral's reason no longer holds");
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.click(".decide-card button[type='submit']");
-  await visible("status is now new");
-  // The banner is the mutation's own answer; the history under it is a second
-  // read that has not landed yet, so wait for the appended event rather than
-  // for the sentence predicting it. Asserting on the page in between reads a
-  // record that is already decided and a history that does not say so.
-  await page.waitForFunction(() =>
-    Array.from(document.querySelectorAll(".timeline li"))
-      .some((entry) => (entry as HTMLElement).innerText.includes("reopen")));
-  const after = await bodyText();
-  // Both events are in the history, each with its own reason: the reopen
-  // rewrote nothing.
-  expect(after).toContain("not now; the next corpus run settles it");
-  expect(after).toContain("the deferral's reason no longer holds");
-  const decisions = await page.$$eval(".timeline li", (entries) =>
-    entries.map((entry) => (entry as HTMLElement).innerText));
-  expect(decisions.some((entry) => entry.includes("defer"))).toBe(true);
-  expect(decisions.some((entry) => entry.includes("reopen"))).toBe(true);
-});
-
-test.skipIf(!chrome)("the policy states what is running, and saving it starts nothing", async () => {
-  await open("evaluation/policy");
-  await visible("Review policy");
-  // A paused deployment says so, and says it differently from "unavailable".
-  await page.waitForSelector("[data-status='paused']");
-  let text = await bodyText();
-  expect(text).toContain("authorized evaluation work is paused");
-  expect(text).toContain("starts no run, launches no compute");
-  // The disclaimer is present before the save as well as after it.
-  expect(await page.$("[data-status='paused']")).not.toBeNull();
-
-  // Enabling the policy does not make anything run: with nothing claimed the
-  // honest state is "awaiting its next scheduled draw".
-  await page.click(".evaluation-enabled input[type='checkbox']");
-  await page.click(".evaluation-policy-form button[type='submit']");
-  await page.waitForSelector("[data-status='scheduled']");
-  text = await bodyText();
-  expect(text).toContain("enabled with nothing in flight");
-  expect(text).not.toContain("Running");
-  // The change is a record, not a settings blob.
-  expect(text).toContain("attributed record");
-
-  // A budget edit is stored and read back from the service rather than
-  // echoed from the form, which is what makes the version bump beside it
-  // meaningful.
-  const before = await page.$eval("[data-knob='daily_cost']", (input) => (input as HTMLInputElement).value);
-  await page.click("[data-knob='daily_cost']", { count: 3 });
-  await page.keyboard.type("9");
-  await page.click(".evaluation-policy-form button[type='submit']");
-  await page.waitForFunction(() => document.body.innerText.includes("eval-policy-3"));
-  const after = await page.$eval("[data-knob='daily_cost']", (input) => (input as HTMLInputElement).value);
-  expect(after).toBe("9");
-  expect(after).not.toBe(before);
-  // Storing a larger ceiling still started nothing.
-  expect(await page.$("[data-status='scheduled']")).not.toBeNull();
-  expect(await bodyText()).toContain("starts no run, launches no compute");
+test.skipIf(!chrome)("a stale projection still answers and says it is not current", async () => {
+  const degraded = await startMock({ MOCK_EVALUATION: "degraded" });
+  const bare = await browser!.newPage();
+  try {
+    await bare.setViewport({ width: 1440, height: 900 });
+    await bare.goto(`${degraded.base}/#/read`, { waitUntil: "networkidle2" });
+    await bare.reload({ waitUntil: "networkidle2" });
+    await bare.waitForSelector(".read-row", { timeout: 15_000 });
+    const state = await bare.evaluate(() => ({
+      text: document.body.innerText,
+      rows: document.querySelectorAll(".read-row").length,
+      banner: document.querySelectorAll(".error-banner").length,
+    }));
+    // It answered: the rows are there. It is labelled: the reader is told the
+    // ordering is not current. And it is not an error, because a projection
+    // that has not been rebuilt is a fact about the deployment.
+    expect(state.rows).toBeGreaterThan(0);
+    expect(state.text).toContain("not current");
+    expect(state.banner).toBe(0);
+  } finally {
+    await bare.close();
+    degraded.process.kill();
+  }
 });
 
 test.skipIf(!chrome)("no control on this surface casts a vote", async () => {
-  for (const route of [
-    "evaluation",
-    "evaluation/coverage",
-    "evaluation/policy",
-    "evaluation/proposal/prp_bare-vote",
-    "evaluation/finding/fnd_no-evaluator",
-  ]) {
+  for (const route of ["read", "read?coverage=unreviewed", "read?kind=proposal"]) {
     await open(route);
     await page.waitForSelector(".page");
     const controls = await page.evaluate(() =>
@@ -662,64 +369,47 @@ test.skipIf(!chrome)("no control on this surface casts a vote", async () => {
   }
 });
 
-// The two states a reader must be able to tell apart, each on its own launch
-// because each is a different server: a projection that answered late, and a
-// build with no evaluation store at all. §8.5 requires the first to be
-// readable and labelled rather than withheld, and the second to be a stated
-// refusal rather than an empty page that looks like a covered corpus.
-async function withLaunch(env: Record<string, string>, run: (visit: (route: string) => Promise<void>, read: () => Promise<string>) => Promise<void>) {
-  const server = await startMock(env);
-  const tab = await browser!.newPage();
-  await tab.setViewport({ width: 1440, height: 900 });
-  try {
-    await run(
-      async (route: string) => {
-        await tab.goto(`${server.base}/#/${route}`, { waitUntil: "networkidle2" });
-        await tab.reload({ waitUntil: "networkidle2" });
-      },
-      () => tab.evaluate(() => document.body.innerText),
-    );
-  } finally {
-    await tab.close();
-    server.process.kill();
+test.skipIf(!chrome)("the review policy is a section of Settings, and saving it starts nothing", async () => {
+  // What evaluation may spend is configuration rather than a destination, so
+  // it is a drawer in Settings — and the path it used to have still opens it,
+  // because an operator's bookmark outlives a navigation redesign.
+  await open("evaluation/policy");
+  await page.waitForFunction(() => window.location.hash.startsWith("#/settings"), {
+    timeout: 15_000,
+  });
+  expect(page.url()).toContain("section=policy");
+  await page.waitForSelector(".policy-section .evaluation-policy-form", { timeout: 15_000 });
+
+  const section = await page.evaluate(async () => {
+    const served = (await fetch("/api/evaluation/policy").then((response) => response.json())) as {
+      saving?: string;
+      detail?: string;
+    };
+    return {
+      served,
+      open: document.querySelector(".section-nav button[aria-pressed='true']")?.textContent ?? "",
+      saving: document.querySelector(".evaluation-saving")?.textContent ?? "",
+      detail: document.querySelector(".policy-status .untrusted-inline")?.textContent ?? "",
+      controls: Array.from(
+        document.querySelectorAll(".policy-section button, .policy-section input[type='submit']"),
+      ).map((control) => ((control as HTMLElement).innerText || "").toLowerCase()),
+    };
+  });
+
+  expect(section.open).toBe("Review policy");
+  // What is running, and what saving does, are the server's own sentences
+  // rendered verbatim: whether authorized work is drawing is observed from
+  // claimed assignments, and only the surface that observed it can say so.
+  expect(section.saving).toBe(section.served.saving ?? "");
+  expect(section.saving.length).toBeGreaterThan(0);
+  expect(section.detail).toBe(section.served.detail ?? "");
+
+  // And the consequence is stated before the press, not after it: the operator
+  // is about to press a button on a form with a dollar figure in it. Saving a
+  // ceiling is not permission to spend it, so there is no control here that
+  // starts work.
+  expect(section.controls.length).toBeGreaterThan(0);
+  for (const label of section.controls) {
+    expect(label).not.toMatch(/\b(start|launch|draw now|run)\b/u);
   }
-}
-
-test.skipIf(!chrome)("a stale projection is labelled and still readable", async () => {
-  await withLaunch({ MOCK_EVALUATION: "degraded" }, async (visit, read) => {
-    await visit("evaluation");
-    const text = await read();
-    expect(text).toContain("This ordering is not current");
-    // The reason is the server's own sentence, and the rows are still there:
-    // a reader told the ordering is old can use it, a reader shown nothing
-    // cannot.
-    expect(text).toContain("could not be opened from the shared catalog");
-    expect(text).toContain("not labelled as the deployment's current tally");
-    expect(text).toContain("Synthetic");
-
-    // The policy page cannot claim what is running from a degraded
-    // inventory, and says that rather than reporting "paused".
-    await visit("evaluation/policy");
-    const policy = await read();
-    expect(policy).toContain("Unavailable");
-    expect(policy).toContain("cannot be stated from it");
-    expect(policy).not.toContain("authorized evaluation work is paused");
-  });
-});
-
-test.skipIf(!chrome)("a build with no evaluation store refuses and says so", async () => {
-  await withLaunch({ MOCK_UNWIRED: "evaluation" }, async (visit, read) => {
-    await visit("evaluation");
-    const text = await read();
-    expect(text).toContain("could not be loaded");
-    expect(text).toContain("evaluation service is not available in this session");
-    // Not an empty backlog: a refusal and "nothing is owed" are different
-    // claims, and the empty state must not stand in for the refusal.
-    expect(text).not.toContain("Nothing matches this view");
-
-    // Every other page keeps working, which is the degradation the rest of
-    // this surface already promises.
-    await visit("hypotheses");
-    expect(await read()).toContain("Hypotheses");
-  });
 });

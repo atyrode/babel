@@ -151,7 +151,7 @@ function HostGroup({
   // table says so once for the whole page rather than per row.
   const running = rows.filter((row) => row.state === "running").length;
   return (
-    <article className={local ? "card presence-host-card local-host-card" : "card presence-host-card"}>
+    <article className={local ? "surface presence-host local-host" : "surface presence-host"}>
       <div className="section-heading">
         <div>
           <p className="eyebrow">Host</p>
@@ -223,7 +223,7 @@ function HostGroup({
                   {row.receipt_record_id ? (
                     <span className="presence-receipt">
                       <span className="mono untrusted-inline">{row.receipt_record_id}</span>
-                      <Link className="panel-link" to="/explore">Receipts →</Link>
+                      <Link className="panel-link" to="/watch">Receipts →</Link>
                     </span>
                   ) : (
                     <span className="not-observed">not committed yet</span>
@@ -248,7 +248,7 @@ function HostGroup({
 // mean "nothing is running" rather than "this page does not see me".
 function FleetEmpty({ retentionSeconds }: { retentionSeconds: number }) {
   return (
-    <div className="state-card empty-state presence-empty">
+    <div className="surface state-note empty-state presence-empty">
       <span className="empty-icon" aria-hidden="true">◌</span>
       <strong>No machine is announcing a run</strong>
       <span>
@@ -278,7 +278,7 @@ function FleetEmpty({ retentionSeconds }: { retentionSeconds: number }) {
 // operator to distrust a working machine.
 function PresenceNotice({ data }: { data: PresenceResponse }) {
   return (
-    <div className="state-card scope-notice presence-notice" role="status">
+    <div className="surface state-note scope-notice presence-notice" role="status">
       <strong>
         {data.configured
           ? "This host cannot see what the fleet is running"
@@ -348,40 +348,32 @@ function FleetPage() {
   }
 
   return (
-    <section className="page fleet-presence-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Every machine</p>
-          <h1>Fleet</h1>
-          <p className="subtitle">
-            What each host says it is running, read from the shared catalog. Nothing here starts,
-            stops or steers a run on another machine — this is state to read, and a row is a claim
-            a process made at a moment rather than something this host observed.
-          </p>
-        </div>
-        <div className="heading-meta">
-          {data?.available && (
-            <span className="count-label">
-              {data.running} {data.running === 1 ? "run announced" : "runs announced"}
-            </span>
-          )}
-          {read && (
-            <span className="refresh-time" title={read.absolute}>
-              read {read.relative}
-            </span>
-          )}
-          <button type="button" onClick={load} disabled={loading}>
-            {loading && <span className="spinner small" />}
-            {loading ? "Reading…" : "Refresh"}
-          </button>
-        </div>
+    // A section of Watch rather than a page of its own. The question it
+    // answers — what is running, anywhere — is the same question the receipts
+    // beside it answer one scope narrower.
+    <div className="page-section fleet-section">
+      <div className="section-meta">
+        {data?.available && (
+          <span className="count-label">
+            {data.running} {data.running === 1 ? "run announced" : "runs announced"}
+          </span>
+        )}
+        {read && (
+          <span className="refresh-time" title={read.absolute}>
+            read {read.relative}
+          </span>
+        )}
+        <button type="button" onClick={load} disabled={loading}>
+          {loading && <span className="spinner small" />}
+          {loading ? "Reading…" : "Refresh"}
+        </button>
       </div>
 
       {loading && !data && (
-        <div className="state-card"><span className="spinner" /> Reading the fleet…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading the fleet…</div>
       )}
       {error && !data && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>The fleet could not be read.</strong>
           <span>{error}</span>
           <button type="button" onClick={load}>Try again</button>
@@ -395,7 +387,7 @@ function FleetPage() {
           {/* The legend states the thresholds the server classified by, in the
               server's own numbers. A page carrying its own copy of "two
               minutes" would eventually contradict the badge beside it. */}
-          <article className="card presence-legend">
+          <article className="surface presence-legend">
             <div className="section-heading">
               <div>
                 <p className="eyebrow">How to read this</p>
@@ -453,7 +445,7 @@ function FleetPage() {
               ))}
         </>
       )}
-    </section>
+    </div>
   );
 }
 

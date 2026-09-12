@@ -167,7 +167,7 @@ const localSync: Record<string, SyncState> = {
   "hyp_many-observations": "local",
   "hyp_dense-token": "local",
   "fnd_conflicting-evidence": "committed",
-  "prp_criteria-template": "pending-sync",
+  "pro_criteria-template": "pending-sync",
 };
 
 // One record as GET /api/fleet/records lists it. The route stays served and the
@@ -1209,7 +1209,7 @@ const findingConflict: FindingDetail = {
   observations: [hypPromoted.observations[0], hypInvestigating.observations[0]],
   proposals: [
     {
-      id: "prp_criteria-template",
+      id: "pro_criteria-template",
       run_id: "run_challenge-08",
       schema_version: 1,
       created_at: "2026-08-29T07:42:00Z",
@@ -1237,7 +1237,7 @@ const findingConflict: FindingDetail = {
       // on no consolidation, which is the form #114 keeps distinguishable. It
       // carries the prerequisite and verification lists the consolidated one
       // omits, so the detail page's every section has a fixture.
-      id: "prp_stdin-credential",
+      id: "pro_stdin-credential",
       run_id: "run_challenge-08",
       schema_version: 1,
       created_at: "2026-08-29T07:44:00Z",
@@ -1421,7 +1421,7 @@ const references: Record<string, ReferenceGraph> = {
       edges: [
         {
           id: "rle_refines-proposal", kind: "refines",
-          other: { kind: "proposal", id: "prp_criteria-template" },
+          other: { kind: "proposal", id: "pro_criteria-template" },
           actor: { kind: "run", id: "run_challenge-08" },
           note: "Trials the template change this hypothesis's pattern suggests.",
           created_at: "2026-08-30T11:00:00Z",
@@ -1968,7 +1968,7 @@ const reviewRecords: ReviewRecordState[] = empty ? [] : [
     refinements: [],
   },
   {
-    subject: { type: "proposal", id: "prp_criteria-template" },
+    subject: { type: "proposal", id: "pro_criteria-template" },
     excerpt: findingConflict.proposals[0].payload.title,
     enrolled_at: "2026-08-29T07:42:00Z",
     decisions: [],
@@ -2767,6 +2767,18 @@ const complaintsUnwired = (Bun.env.MOCK_UNWIRED ?? "")
   .map((name) => name.trim())
   .includes("complaint");
 const adjacencyUnwired = linksUnwired;
+
+// The frontier fixtures the record peel reads. ./record.ts is the only
+// consumer: GET /api/record/{id} answers with one record whole, so it needs
+// the same state the four per-kind routes above serve, and a third file with
+// its own copy would let two mock routes describe one record differently.
+//
+// It lives in a separate file rather than here because the peel also needs
+// the evaluation projection, and ./evaluation.ts already imports from this
+// file — assembling it here would close that import into a cycle.
+export { chains, derivedStatus, findings, headOf, hypotheses, linksOf, receipts, reviewRecords };
+export { empty as phasebEmpty };
+export type { ReviewRecordState };
 
 export async function phasebResponse(request: Request, url: URL): Promise<Response | null> {
   const { method } = request;

@@ -1,32 +1,32 @@
-// Browser acceptance for issue #118's Fleet view, driven against the synthetic
-// mock so no Go server, PostgreSQL, model, or network is needed.
+// Browser acceptance for what this deployment says it is running, driven
+// against the synthetic mock so no Go server, PostgreSQL, model, or network is
+// needed.
 //
-// What only a browser can prove is here, and all of it is about what a reader
-// is allowed to believe about a row.
+// The Fleet page is gone (#235). The machine stopped being a dimension of the
+// reading path — a run in flight is a run in flight, whichever host's process
+// table holds it — so what "what runs where" answered is now the live strip on
+// Watch, deployment-wide and ungrouped. The one place a machine is still a
+// legitimate subject is a backup *of* a machine, which is Settings › Archive.
 //
-// That a run which has gone quiet says so in words. This is the gate the whole
-// page exists for: presence answers "what is running where", and the honest
-// answer past the staleness threshold is that this host cannot tell. A rendering
-// that resolved that into a colour would be asserting something about a process
-// on another machine that nothing here observed, so the disclaimer has to be
-// text, it has to be on exactly the doubtful rows, and it has to be absent from
-// the rows that have nothing to disclaim.
+// What the fleet view was built for survives intact, and that is what this file
+// measures.
 //
-// That the page classifies nothing itself: the badge beside each age is the
-// server's own word, and the thresholds the legend quotes are the server's own
-// numbers, so a future client-side constant cannot drift away from the badge.
+// That a run this host has stopped hearing from is neither counted as running
+// nor reported as ended. Nothing observed a death: a host that stopped
+// announcing looks exactly like one that finished, so the rows are kept, said
+// to be out of contact, and excluded from the headline that counts what is in
+// flight.
 //
-// That this machine's own runs appear among the others, marked but not
-// privileged — the empty state promises exactly that, and an operator who could
-// not see his own host would read an idle fleet as a broken page.
+// That the page classifies nothing itself. Which runs are in flight, which are
+// out of contact, and which have been heard from recently are the server's own
+// word on each row, so a client-side threshold cannot drift away from it.
 //
-// That hostile content from another machine's model reaches the recipe and
-// authority cells as characters: presence rows are written by hosts this one
-// does not control, which makes them the least trusted strings on the page.
+// That nothing renders a liveness colour over an unobserved process: the live
+// mark is on exactly the rows the server says were heard from.
 //
-// That a deployment with no shared catalog, and a configured one whose catalog
-// could not be read, render as two different stated facts rather than as one
-// generic failure or an error banner over a page that worked.
+// That no host appears in the reading path at all — not on Decide, not on Read,
+// not on a record, not on Watch — while Settings › Archive still names machines,
+// because a repository's coverage is a fact about machines.
 //
 // The corpus is synthetic and disposable. Nothing here reads a real session.
 
@@ -35,19 +35,17 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
-import { HOSTILE_HTML } from "../mock/phaseb";
 import { resolveChrome } from "./chrome";
 
 const chrome = resolveChrome({
-  gate: "Fleet presence gate",
-  covers: "issue #118's Fleet view — what runs where, and what this host cannot tell — in a browser",
+  gate: "Live run presence gate",
+  covers: "Watch's live strip — what is running, and what this host cannot tell — in a browser",
   unverified: [
-    "that a run past the staleness threshold renders the words 'running or dead, this host cannot tell'",
-    "that the disclaimer appears on exactly the doubtful rows and on no fresh or finished row",
-    "that no row renders a liveness colour, and the freshness badge is the server's own classification",
-    "that this machine's own runs appear among the fleet's, marked as this host",
-    "that a remote recipe and authority carrying hostile markup render as inert characters",
-    "that local mode and an unreachable catalog render as two different stated facts, not as an error",
+    "that a run out of contact is neither counted as running nor reported as ended",
+    "that the runs out of contact are exactly the ones the server classified that way",
+    "that the live mark appears on exactly the rows the server says were heard from",
+    "that every row's age is the figure the server sent, and a run that has said nothing says so",
+    "that no host is named anywhere in the reading path, while Settings › Archive still names machines",
   ],
 });
 
@@ -59,8 +57,10 @@ const SHOTS = process.env.BABEL_TEST_SHOTS ?? join(tmpdir(), "babel-fleet-shots"
 
 // The sentence the page is not allowed to lose. It is written out here rather
 // than imported so that a rewording in the component is a failure here and has
-// to be made deliberately in both places.
-const DISCLAIMER = "running or dead, this host cannot tell";
+// to be made deliberately in both places: everything else on these rows is a
+// figure, and this is the one clause that stops a reader from taking silence
+// for death.
+const DISCLAIMER = "not the same as dead";
 
 interface MockServer {
   process: Bun.Subprocess<"ignore", "pipe", "pipe">;
@@ -99,36 +99,53 @@ async function open(route: string): Promise<void> {
   await page.reload({ waitUntil: "networkidle2" });
 }
 
-// The rows are waited on by selector rather than by phrase. The page's own
-// headings are uppercased by CSS and Chrome reports them that way, so a text
-// wait would hang on a table that rendered perfectly.
-function rowsRendered(): Promise<unknown> {
-  return page.waitForSelector(".presence-table .presence-row", { timeout: 15_000 });
+interface ServedRun {
+  run_id: string;
+  freshness?: string;
+  heartbeat_age_s?: number | null;
 }
 
-// readRows lifts the whole table out of the page as data, so the assertions
-// below read columns rather than search the page's text for substrings. A
-// substring search would pass on a page that printed the disclaimer once in a
-// legend and never on a row.
-function readRows(): Promise<
-  Array<{ id: string; freshness: string; state: string; text: string; doubt: string; host: string }>
-> {
-  return page.evaluate(() =>
-    Array.from(document.querySelectorAll(".presence-host-card")).flatMap((card) => {
-      const host = card.querySelector<HTMLElement>("h2")?.innerText ?? "";
-      return Array.from(card.querySelectorAll<HTMLElement>("tbody tr")).map((row) => ({
-        id: row.className,
-        freshness: row.querySelector<HTMLElement>(".presence-freshness .badge")?.innerText ?? "",
-        state:
-          row.querySelectorAll<HTMLElement>("td")[4]?.querySelector<HTMLElement>(".badge")?.innerText ?? "",
-        text: row.innerText,
-        doubt: row.querySelector<HTMLElement>(".presence-doubt")?.innerText ?? "",
-        host,
-      }));
-    }),
-  );
+// live reads the answer the strip was drawn from, out of the page itself. Every
+// assertion below compares the rendering against that answer rather than
+// against a copy of the fixtures: a test carrying its own list of runs would
+// keep passing after the page stopped reading the server's.
+function live(): Promise<ServedRun[]> {
+  return page.evaluate(async () => {
+    const answer = (await fetch("/api/watch/live").then((response) => response.json())) as {
+      runs?: ServedRun[];
+    };
+    return answer.runs ?? [];
+  });
 }
 
+async function strip(): Promise<unknown> {
+  const found = await page.waitForSelector(".live-card, .live-table", { timeout: 15_000 });
+  // Both in-flight tables page ten rows at a time behind a "show more"
+  // control, which is the pagination §8.6 allows; the tests below reason
+  // about every run the server sent, so they ask for all of them first and
+  // wait for each click to have added rows before asking again.
+  for (let round = 0; round < 20; round += 1) {
+    const selector = ".live-surface .runs-more button, .live-lost .runs-more button";
+    const more = await page.$(selector);
+    if (!more) break;
+    const before = await page.$$eval(".live-table tbody tr", (rows) => rows.length);
+    // A DOM click, because the lost group's control sits inside a folded
+    // <details> and is not a pointer target until the reader opens it.
+    await page.$eval(selector, (button) => (button as HTMLButtonElement).click());
+    await page.waitForFunction(
+      (count: number) => document.querySelectorAll(".live-table tbody tr").length > count,
+      { timeout: 5_000 },
+      before,
+    );
+  }
+  return found;
+}
+
+// shoot photographs one element rather than the viewport, so a panel below the
+// fold is in the file at all. The sticky top bar is hidden with `visibility`
+// rather than `display` first: it re-paints over the top of a clipped capture,
+// which reads as a cropped panel in the very file that exists to show the panel
+// is not cropped.
 const STICKY_HEADER_CLEARANCE = 140;
 
 async function shoot(selector: string, name: string): Promise<void> {
@@ -173,138 +190,176 @@ afterAll(async () => {
   mock?.process.kill();
 });
 
-test.skipIf(!chrome)("a quiet run says in words that this host cannot tell", async () => {
-  await open("fleet");
-  await rowsRendered();
-  const rows = await readRows();
+test.skipIf(!chrome)("a run out of contact is not counted as running and not reported as ended", async () => {
+  await open("watch");
+  await strip();
+  const runs = await live();
+  const lost = runs.filter((run) => run.freshness === "lost");
+  const flying = runs.filter((run) => run.freshness !== "lost");
+  // The fixture is a deployment with both, which is what makes the arithmetic
+  // below a measurement rather than a tautology.
+  expect(lost.length).toBeGreaterThan(0);
+  expect(flying.length).toBeGreaterThan(0);
 
-  // The disclaimer is on exactly the doubtful rows, and it is the same sentence
-  // on each. Counting is the assertion: one stray disclaimer on a fresh row
-  // would teach an operator to distrust a heartbeat seconds old, and a missing
-  // one on a lost row is the failure this page exists to prevent.
-  const doubtful = rows.filter((row) => row.freshness === "stale" || row.freshness === "lost");
-  const disclaiming = rows.filter((row) => row.doubt !== "");
-  expect(doubtful.length).toBe(2);
-  expect(disclaiming.map((row) => row.freshness).sort()).toEqual(["lost", "stale"]);
-  for (const row of disclaiming) expect(row.doubt).toBe(DISCLAIMER);
+  const shown = await page.evaluate(() => {
+    const peel = document.querySelector(".live-lost");
+    return {
+      headline: document.querySelector(".page-heading h1")?.textContent ?? "",
+      // The runs out of contact are peeled rather than dropped: a run still
+      // spending money while its announcements go missing is exactly what an
+      // operator has to be able to find.
+      peeled: peel !== null,
+      summary: (peel?.querySelector("summary") as HTMLElement | null)?.innerText ?? "",
+      rows: peel?.querySelectorAll("tbody tr").length ?? -1,
+      body: (peel as HTMLDetailsElement | null)?.innerText ?? "",
+    };
+  });
 
-  // And no fresh or finished row carries it anywhere in its text, not merely
-  // outside the disclaimer element.
-  for (const row of rows.filter((r) => r.freshness === "fresh" || r.freshness === "finished")) {
-    expect(row.text).not.toContain(DISCLAIMER);
-  }
+  // The headline counts what is in flight, and the lost runs are not in it.
+  expect(shown.headline).toContain(String(flying.length));
+  expect(shown.headline).not.toContain(String(runs.length));
+  expect(shown.peeled).toBe(true);
+  expect(shown.rows).toBe(lost.length);
+  expect(shown.summary).toContain(String(lost.length));
+  // And they are not reported as ended. Nothing observed them stop, and the
+  // page says exactly that rather than resolving the doubt into a state.
+  expect(shown.body).toContain(DISCLAIMER);
 
-  await shoot(".fleet-presence-page", "fleet-presence.png");
+  await shoot(".live-lost", "watch-lost-contact.png");
 });
 
-test.skipIf(!chrome)("the classification and its thresholds are the server's, not the page's", async () => {
-  await open("fleet");
-  await rowsRendered();
-
-  const state = await page.evaluate(() => ({
-    legend: document.querySelector<HTMLElement>(".presence-legend")?.innerText ?? "",
-    badges: Array.from(document.querySelectorAll<HTMLElement>(".presence-freshness .badge")).map(
-      (badge) => badge.innerText,
-    ),
-    // A liveness dot is the thing that must never appear. The dashboard's own
-    // vocabulary for "this is happening now" is .pulse-dot, and its presence
-    // on this page would be an observation nobody made.
-    pulses: document.querySelectorAll(".fleet-presence-page .pulse-dot").length,
-  }));
-
-  // Every row's badge is one of internal/presence's four words and nothing else.
-  expect(state.badges.length).toBeGreaterThan(0);
-  for (const badge of state.badges) {
-    expect(["fresh", "stale", "lost", "finished"]).toContain(badge);
-  }
-  expect(state.pulses).toBe(0);
-  // The legend quotes the thresholds the server classified by. The mock sends
-  // 120s and 900s, so a page carrying its own copy of "two minutes" would have
-  // to be edited to keep this passing — which is the point.
-  expect(state.legend).toContain("2m");
-  expect(state.legend).toContain("15m");
-  expect(state.legend).toContain("A heartbeat is evidence, not a pulse");
-});
-
-test.skipIf(!chrome)("this machine's own runs appear among the fleet's, marked as this host", async () => {
-  await open("fleet");
-  await rowsRendered();
-
-  const hosts = await page.evaluate(() =>
-    Array.from(document.querySelectorAll(".presence-host-card")).map((card) => ({
-      heading: card.querySelector<HTMLElement>("h2")?.innerText ?? "",
-      local: card.classList.contains("local-host-card"),
-      rows: card.querySelectorAll("tbody tr").length,
-    })),
+test.skipIf(!chrome)("freshness is the server's word, and no row paints a colour over it", async () => {
+  await open("watch");
+  await strip();
+  const runs = await live();
+  // The out-of-contact rows are behind a fold, so they are opened first: a
+  // closed <details> renders no text, and a test reading through one would be
+  // measuring the rows nobody can see.
+  await page.evaluate(() => {
+    const peel = document.querySelector<HTMLDetailsElement>(".live-lost");
+    if (peel && !peel.open) peel.querySelector<HTMLElement>("summary")?.click();
+  });
+  await page.waitForFunction(
+    () => document.querySelector<HTMLDetailsElement>(".live-lost")?.open === true,
+    { timeout: 15_000 },
   );
 
-  // Two machines, and exactly one of them is this one.
-  expect(hosts.length).toBe(2);
-  expect(hosts.filter((host) => host.local).length).toBe(1);
-  const local = hosts.find((host) => host.local);
-  expect(local?.heading).toContain("demo-laptop");
-  expect(local?.heading.toLowerCase()).toContain("this host");
-  // A conductor cycle and the run inside it announce separately under one run
-  // id, so this machine shows more rows than it has runs.
-  expect(local?.rows).toBeGreaterThan(1);
-});
-
-test.skipIf(!chrome)("a remote recipe and authority render as inert characters", async () => {
-  await open("fleet");
-  await rowsRendered();
-
-  const hostile = await page.evaluate((markup: string) => {
-    const surface = document.querySelector<HTMLElement>(".fleet-presence-page");
+  const rendered = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll(".live-table tbody tr"));
+    const cards = Array.from(document.querySelectorAll(".live-card"));
+    const lost = document.querySelector(".live-lost");
     return {
-      // The exact bytes reached the page as text.
-      text: surface?.innerText.includes(markup) ?? false,
-      // And became no element and no destination.
-      images: surface?.querySelectorAll("img").length ?? 0,
-      scripts: surface?.querySelectorAll("script").length ?? 0,
-      pwned: String(Reflect.get(globalThis, "__babel_pwned")),
+      // A run is identified on a card by the receipt it links to and in a row
+      // by its own id cell, which is the only place either names it.
+      cards: cards.map((card) => ({
+        run: (card.querySelector(".live-card-open") as HTMLAnchorElement | null)?.getAttribute("href") ?? "",
+        word: (card.querySelector(".live-card-word") as HTMLElement | null)?.innerText ?? "",
+        dot: card.querySelector(".live-dot") !== null,
+      })),
+      rows: rows.map((row) => ({
+        run: (row.querySelector(".live-row-run a, .live-row-run .live-row-kind") as HTMLElement | null)?.innerText.trim() ?? "",
+        word: (row.querySelector(".live-row-word") as HTMLElement | null)?.innerText ?? "",
+        dot: row.querySelector(".live-dot") !== null,
+        inLostGroup: lost !== null && lost.contains(row),
+      })),
     };
-  }, HOSTILE_HTML);
+  });
 
-  expect(hostile.text).toBe(true);
-  expect(hostile.images).toBe(0);
-  expect(hostile.scripts).toBe(0);
-  expect(hostile.pwned).toBe("undefined");
+  const byID: Record<string, ServedRun> = {};
+  for (const run of runs) if (run.run_id) byID[run.run_id] = run;
+
+  // Every run the server sent is on the page once, as a card or as a row.
+  const placed = [
+    ...rendered.cards.map((card) => decodeURIComponent(card.run.replace("#/watch/runs/", ""))),
+    ...rendered.rows.map((row) => row.run),
+  ].filter((id) => id in byID);
+  expect(new Set(placed).size).toBe(Object.keys(byID).length);
+
+  // Which rows are in the out-of-contact group is the server's classification
+  // and nothing else: a page that recomputed it from an age would drift away
+  // from the badge the moment either threshold moved.
+  for (const row of rendered.rows) {
+    const served = byID[row.run];
+    if (!served) continue;
+    expect(row.inLostGroup).toBe(served.freshness === "lost");
+    // No liveness mark on a run nothing has been heard from. A dot there
+    // would be an observation nobody made.
+    if (served.freshness === "lost" || served.freshness === "stale") expect(row.dot).toBe(false);
+  }
+
+  // Every row and card says how old its evidence is, from the figure the
+  // server sent — and a run that has announced nothing at all says that
+  // instead, because "no word yet" and "last word 0s ago" are different facts.
+  for (const row of rendered.rows) {
+    const served = byID[row.run];
+    if (!served) continue;
+    expect(row.word.length).toBeGreaterThan(0);
+    if (served.heartbeat_age_s == null) {
+      expect(row.word).not.toMatch(/\d/u);
+    } else {
+      expect(row.word).toMatch(/\d/u);
+    }
+  }
+  for (const card of rendered.cards) {
+    expect(card.word.length).toBeGreaterThan(0);
+  }
 });
 
-test.skipIf(!chrome)("local mode and an unreachable catalog are two different stated facts", async () => {
-  const local = await startMock({ MOCK_FLEET: "unconfigured" });
-  const degraded = await startMock({ MOCK_FLEET: "degraded" });
-  const said: string[] = [];
-  try {
-    const cases: Array<[MockServer, string]> = [
-      [local, "no shared backend configured"],
-      [degraded, "cannot see what the fleet is running"],
-    ];
-    for (const [server, expected] of cases) {
-      await page.goto(`${server.base}/#/fleet`, { waitUntil: "networkidle2" });
-      await page.reload({ waitUntil: "networkidle2" });
-      await page.waitForSelector(".presence-notice", { timeout: 15_000 });
-      const state = await page.evaluate(() => ({
-        notice: document.querySelector<HTMLElement>(".presence-notice")?.innerText ?? "",
-        // Neither case is an error: an error banner over a machine that is
-        // working exactly as configured is the falsehood this asserts against.
-        banner: document.querySelectorAll(".error-banner").length,
-        errorState: document.querySelectorAll(".error-state").length,
-        rows: document.querySelectorAll(".presence-row").length,
-      }));
-      expect(state.notice).toContain(expected);
-      expect(state.banner).toBe(0);
-      expect(state.errorState).toBe(0);
-      expect(state.rows).toBe(0);
-      said.push(state.notice);
-    }
+// Two of this file's tests went with the page they measured, and neither
+// guarantee is quietly lost.
+//
+// The presence rows were the only strings on this surface written by another
+// machine's model — a remote recipe and a remote authority ref — so they
+// carried the §2.7 inertness case for this page. /api/watch/live is this
+// deployment's own answer about its own children and carries no such field,
+// so there is nothing here to render hostile bytes into; the record surfaces
+// still carry hostile fixtures and still assert it.
+//
+// "No shared backend configured" and "cannot see what the fleet is running"
+// were the two states of a catalog read that no page in the reading path
+// makes any more. The distinction still matters where a machine is the
+// subject, which is Settings › Archive.
 
-    // The two sentences differ, which is the whole reason the envelope carries
-    // `configured` beside `available`: one is fixed by configuring shared mode
-    // and the other by looking at a catalog that is already configured.
-    expect(said[0]).not.toBe(said[1]);
-  } finally {
-    local.process.kill();
-    degraded.process.kill();
+test.skipIf(!chrome)("no host is named in the reading path, and Settings › Archive still names machines", async () => {
+  await open("watch");
+  await strip();
+  // The deployment's own host vocabulary, read from the machine that has one.
+  // Asserting against the served names rather than a literal is what keeps
+  // this from passing on a build that renamed its fixtures.
+  const hosts = await page.evaluate(async () => {
+    const answer = (await fetch("/api/fleet/hosts").then((response) => response.json())) as {
+      hosts?: Array<{ host: string }>;
+    };
+    return (answer.hosts ?? []).map((entry) => entry.host).filter(Boolean);
+  });
+  expect(hosts.length).toBeGreaterThan(0);
+
+  // Every surface a reader passes through to answer "what needs me", "what has
+  // Babel found", "what is it doing" and "what is this record".
+  for (const route of ["", "read", "watch", "r/hyp_unverified-closures"]) {
+    await open(route);
+    await page.waitForSelector(".page", { timeout: 15_000 });
+    const state = await page.evaluate(() => ({
+      text: document.body.innerText,
+      // No host tabs, no host chips, no scope switch: the machine is not a
+      // dimension the reader filters by.
+      controls: Array.from(document.querySelectorAll("button, select, [role='tab']")).map(
+        (control) => (control as HTMLElement).innerText,
+      ),
+    }));
+    for (const host of hosts) expect(state.text).not.toContain(host);
+    for (const label of state.controls) {
+      expect(label.toLowerCase()).not.toContain("this machine");
+      expect(label.toLowerCase()).not.toContain("every machine");
+    }
   }
+
+  // And the word is not gone from the app: a backup is a backup of a machine,
+  // so the archive names which machines have pushed into the repository.
+  await open("settings?section=archive");
+  await page.waitForFunction(() => document.body.innerText.includes("Snapshots by host"), {
+    timeout: 15_000,
+  });
+  const archive = await page.evaluate(() => document.body.innerText);
+  expect(hosts.some((host) => archive.includes(host))).toBe(true);
 });

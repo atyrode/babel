@@ -197,6 +197,38 @@ const (
 // ReconsiderDecisions lists the reconsideration decisions in a stable order.
 func ReconsiderDecisions() []string { return []string{ReconsiderReopen, ReconsiderRetain} }
 
+// The reception vocabulary of §4.12's operator half: what a person says about
+// a record when he is reading it, before and separately from any ruling.
+//
+// It is a polarity field for the same reason ReconsiderDecisions is one. A
+// reason is prose and prose cannot be counted, compared or rendered as a
+// position; "this is right, but not now" and "this is wrong, and not now"
+// differ in one word, and a surface that had to read the word would be
+// guessing at the operator's position on every record he ever commented on.
+//
+// It decides nothing. A stance is carried by a feedback record, which §4.12
+// defines as an attributed reason that creates no disposition, so agreeing is
+// not accepting and disagreeing is not rejecting - those stay internal/
+// review's, behind their own confirmation. That separation is why the words
+// differ from an assessment's: a run votes support, oppose or unsure about
+// content it was served under a claim, and a person agrees or disagrees with
+// something he chose to read. Sharing one vocabulary would invite a surface to
+// sum them.
+const (
+	// StanceAgree is the operator saying the record is right.
+	StanceAgree = "agree"
+	// StanceDisagree is the operator saying it is not.
+	StanceDisagree = "disagree"
+	// StanceUnsure is the operator saying he has read it and cannot tell,
+	// which is a recorded position rather than the absence of one: an
+	// unread record and a record a person could not make up his mind about
+	// are different facts about how much attention it has had.
+	StanceUnsure = "unsure"
+)
+
+// Stances lists the operator reception stances in a stable order.
+func Stances() []string { return []string{StanceAgree, StanceDisagree, StanceUnsure} }
+
 // The authors a durable evaluation record can have. There is no third kind:
 // every record is either a model invocation Babel launched and receipted, or a
 // person.
@@ -1156,6 +1188,20 @@ type Record struct {
 	// a decision whose meaning lives in prose is a decision every reader
 	// guesses at, and the two guesses are opposites.
 	Decision string `json:"decision,omitempty"`
+	// Stance is the polarity of an operator's reception: agree, disagree or
+	// unsure. It is required on a feedback record authored by an operator
+	// and refused on every other kind, for Decision's reason - a position
+	// that lives in prose is a position each reader decides for himself.
+	//
+	// It is a second field beside Reason rather than a replacement for it,
+	// because the two are not the same statement: §4.12 keeps the reason
+	// verbatim, and a stance is what a reader can count without reading.
+	//
+	// A changed mind is another record. Nothing here is rewritten, so a
+	// subject's operator stance is the newest of these and the earlier ones
+	// stay readable in order - which is what makes "he used to agree"
+	// answerable at all.
+	Stance string `json:"stance,omitempty"`
 	// Assignment, Attempt and Checkpoint carry the three judgement-free
 	// record families. They are published for a reason that is easy to miss:
 	// without them a second instance can count completed assessments and
@@ -1335,6 +1381,9 @@ func (r Record) validatePayload() error {
 		return fmt.Errorf("%w: only a reconsideration decision carries a decision, not a %s",
 			ErrInvalid, r.Kind)
 	}
+	if r.Stance != "" && r.Kind != KindFeedback {
+		return fmt.Errorf("%w: only feedback carries a reception stance, not a %s", ErrInvalid, r.Kind)
+	}
 	switch r.Kind {
 	case KindAssessment:
 		if r.Assessment == nil {
@@ -1380,8 +1429,24 @@ func (r Record) validatePayload() error {
 			return fmt.Errorf("%w: a policy record carries an unversioned policy", ErrInvalid)
 		}
 	case KindFeedback:
-		if strings.TrimSpace(r.Reason) == "" {
-			return fmt.Errorf("%w: feedback exists to carry an explicit reason", ErrInvalid)
+		// Feedback has to say something. A reason or a stance each does;
+		// neither is required when the other is present, and a record with
+		// both is the ordinary case.
+		//
+		// The rule was a reason alone until the browser could record a
+		// reception, and what it was defending against is unchanged: an
+		// empty feedback record is a click with no content, and a surface
+		// that stored one would be inflating attention. A stance is not
+		// that - it is the operator's position, in a closed vocabulary, and
+		// making him type a sentence to record it is what #234 found the
+		// reading surface had instead of an opinion.
+		if strings.TrimSpace(r.Reason) == "" && r.Stance == "" {
+			return fmt.Errorf("%w: feedback exists to carry an explicit reason or an explicit stance",
+				ErrInvalid)
+		}
+		if r.Stance != "" && !slices.Contains(Stances(), r.Stance) {
+			return fmt.Errorf("%w: a reception states agree, disagree or unsure, not %q",
+				ErrInvalid, r.Stance)
 		}
 	case KindReconsider:
 		if strings.TrimSpace(r.Reason) == "" {
@@ -1520,6 +1585,12 @@ type OperatorInput struct {
 	// reopen or retain the decision" is two buttons, not a sentence a reader
 	// classifies afterwards.
 	Decision string `json:"decision,omitempty"`
+	// Stance is the operator's reception polarity - agree, disagree or
+	// unsure - and is lawful only on feedback. It is optional there, because
+	// a scoped reason with no position is still the act §4.12 named: "not
+	// now, the benchmark lands first" takes no side on whether the record is
+	// right.
+	Stance string `json:"stance,omitempty"`
 }
 
 func (in OperatorInput) validate() error {
@@ -1541,6 +1612,16 @@ func (in OperatorInput) validate() error {
 	} else if in.Decision != "" {
 		return fmt.Errorf("%w: only a reconsideration decision carries a decision, not a %s",
 			ErrInvalid, in.Kind)
+	}
+	if in.Stance != "" {
+		if in.Kind != KindFeedback {
+			return fmt.Errorf("%w: only feedback carries a reception stance, not a %s",
+				ErrInvalid, in.Kind)
+		}
+		if !slices.Contains(Stances(), in.Stance) {
+			return fmt.Errorf("%w: a reception states agree, disagree or unsure, not %q",
+				ErrInvalid, in.Stance)
+		}
 	}
 	return nil
 }

@@ -707,6 +707,25 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		s.handleLock(w)
 	default:
+		// Issue #235's record peel and the operator's reception. They carry
+		// their selector in the path and are resolved here rather than
+		// before the switch, because six whole paths above already name
+		// actions on a record: a prefix cut ahead of them would have to
+		// restate this table in order not to swallow /api/record/revisions.
+		// Reaching the default means every named path has been tried, so
+		// what is left under the prefix is a record identifier or a
+		// mistake, and internal/web/record.go says which. The Watch
+		// surface's routes are resolved the same way and for the same
+		// reason: one of them carries a run id in its path.
+		if s.routeWatch(w, r) {
+			return
+		}
+		if s.routeRecord(w, r) {
+			return
+		}
+		if s.routeSearch(w, r) {
+			return
+		}
 		s.writeError(w, http.StatusNotFound, "not found")
 	}
 }

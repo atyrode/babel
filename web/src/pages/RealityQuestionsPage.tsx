@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { getRealityQuestions, type QuestionsResponse } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge } from "../analysis";
@@ -44,10 +44,10 @@ function RealityQuestionsPage() {
       <div className="page-heading">
         <div>
           <p className="eyebrow">Reality Ledger</p>
-          <h1>Asked</h1>
+          <h1>What you said</h1>
           <p className="subtitle">
             Every question Babel has asked about your world, newest first — answered, refused
-            and deferred alike. What is still waiting on you is on Questions.
+            and deferred alike. What is still waiting on you is under What it needs.
           </p>
         </div>
         <div className="heading-meta">
@@ -62,7 +62,7 @@ function RealityQuestionsPage() {
       </div>
 
       {states.length > 0 && (
-        <div className="toolbar card">
+        <div className="toolbar surface">
           <div className="filter-chips" aria-label="Filter by state">
             <button
               type="button"
@@ -86,17 +86,17 @@ function RealityQuestionsPage() {
       )}
 
       {loading && !data && (
-        <div className="state-card"><span className="spinner" /> Reading the ledger…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading the ledger…</div>
       )}
       {error && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>The questions could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={load}>Try again</button>
         </div>
       )}
       {!loading && !error && items.length === 0 && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>{state ? `No ${state} questions` : "Babel has asked nothing yet"}</strong>
           <span>
@@ -109,12 +109,13 @@ function RealityQuestionsPage() {
       )}
 
       {items.length > 0 && (
-        <div className="table-card">
+        <div className="surface flush">
           <div className="table-scroll">
             <table className="frontier-table">
               <thead>
                 <tr>
                   <th>Question</th>
+                  <th>About</th>
                   <th>State</th>
                   <th>Class</th>
                   <th className="numeric">Answers</th>
@@ -125,7 +126,15 @@ function RealityQuestionsPage() {
               <tbody>
                 {items.map((item) => {
                   const created = formatTime(item.created_at);
-                  const open = () => navigate(`/reality/questions/${encodeURIComponent(item.id)}`);
+                  const to = `/ask/questions/${encodeURIComponent(item.id)}`;
+                  // The prompt is a real link, so a click that landed on it
+                  // has already been handled; following the row as well would
+                  // navigate twice and break middle-click and modified
+                  // clicks, which are the whole reason the link exists.
+                  const open = (event: ReactMouseEvent | ReactKeyboardEvent) => {
+                    if (event.target instanceof Element && event.target.closest("a")) return;
+                    navigate(to);
+                  };
                   return (
                     <tr
                       key={item.id}
@@ -133,12 +142,28 @@ function RealityQuestionsPage() {
                       role="link"
                       onClick={open}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") open();
+                        if (event.key === "Enter" || event.key === " ") open(event);
                       }}
                     >
+                      {/* The prompt, and nothing under it. The identifier
+                          used to sit here as a second line on every row: a
+                          column of hex the eye had to skip past to read the
+                          question. It is on the question's own page, under
+                          the machinery disclosure. */}
                       <td className="statement-cell">
-                        <strong className="untrusted-inline">{item.prompt}</strong>
-                        <span className="secondary mono">{item.id}</span>
+                        <Link className="ask-row-link untrusted-inline" to={to}>{item.prompt}</Link>
+                      </td>
+                      <td className="statement-cell">
+                        {item.target_entity_ids.length === 0 ? (
+                          <span className="muted">—</span>
+                        ) : (
+                          item.target_entity_ids.map((entityID, index) => (
+                            <span key={entityID} className="untrusted-inline">
+                              {index > 0 && ", "}
+                              {item.about_name?.[index] || entityID}
+                            </span>
+                          ))
+                        )}
                       </td>
                       <td>
                         <Badge label={item.state} tone={questionStateTone(item.state)} />

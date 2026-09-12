@@ -530,6 +530,19 @@ func TestOperatorAuthorityAndRequiredContent(t *testing.T) {
 				Reason: "not now", Decision: ReconsiderRetain},
 		},
 		{
+			name: "a reception states one of three words",
+			in: OperatorInput{Kind: KindFeedback, Operator: "alex", Subject: proposalSubject(),
+				Stance: "maybe"},
+		},
+		{
+			name: "only feedback carries a reception stance",
+			in: OperatorInput{Kind: KindCriteria, Operator: "alex", Subject: proposalSubject(),
+				Stance: StanceAgree,
+				Criteria: []Criterion{
+					{ID: "crit_1", Description: "p99 drops below 100ms"},
+				}},
+		},
+		{
 			name: "an unknown kind is refused by name",
 			in:   OperatorInput{Kind: "disposition", Operator: "alex", Subject: proposalSubject()},
 		},
@@ -559,6 +572,33 @@ func TestOperatorAuthorityAndRequiredContent(t *testing.T) {
 	}
 	if feedback.Assessment != nil {
 		t.Fatalf("an operator act carried an assessment")
+	}
+
+	// A stance with no prose is the whole point of the reception control: a
+	// reader who has to write a sentence to say "this is right" is a reader
+	// who says nothing. It publishes with the polarity intact, because an
+	// instance rendering another host's record has to be able to tell an
+	// operator who agreed from one who did not, and prose is not a position.
+	agreed, err := h.store.Operator(ctx, OperatorInput{
+		Kind:     KindFeedback,
+		Operator: "alex",
+		Subject:  proposalSubject(),
+		Stance:   StanceAgree,
+	})
+	if err != nil {
+		t.Fatalf("a bare stance: %v", err)
+	}
+	if agreed.Stance != StanceAgree {
+		t.Fatalf("the stored stance reads %q, want %s", agreed.Stance, StanceAgree)
+	}
+	staged := h.hook.staged[len(h.hook.staged)-1]
+	published, err := DecodePublished(staged.Payload, staged.EntityID, staged.Schema)
+	if err != nil {
+		t.Fatalf("decode the published stance: %v", err)
+	}
+	if published.Stance != StanceAgree {
+		t.Fatalf("the published stance reads %q, so a second instance cannot tell agreement from silence",
+			published.Stance)
 	}
 }
 

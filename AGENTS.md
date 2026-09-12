@@ -106,7 +106,7 @@ from the repository root unless a working directory is shown.
 | --- | --- | --- |
 | Go formatting/static/build | `gofmt -l .`; `go vet ./...`; `go build ./...` | The formatting listing must be empty. |
 | Go suites | `go test -count=1 ./...` | Archive tests skip without restic. PostgreSQL requirements are below. |
-| Go race | `go test -race -count=1 ./internal/...` | Requires a C toolchain and cgo; CI sets `CGO_ENABLED=1` and supplies restic/PostgreSQL. |
+| Go race | `go test -race -count=1 -timeout 45m ./internal/...` | Requires a C toolchain and cgo; CI sets `CGO_ENABLED=1` and supplies restic/PostgreSQL. |
 | Web setup | `cd web && bun install --frozen-lockfile` | Use the committed lockfile. |
 | Web typecheck/build | `cd web && bunx tsc --noEmit && bun run build` | Commit rebuilt `web/dist` with a web change. |
 | Browser acceptance | `cd web && bun run test:browser` | Requires Chrome or Chromium, Go and restic; optional `BABEL_TEST_BINARY` selects a prebuilt Babel binary. |

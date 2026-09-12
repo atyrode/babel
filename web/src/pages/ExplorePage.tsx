@@ -48,29 +48,21 @@ function ExplorePage() {
   const cookbook = analysis?.cookbook ?? [];
 
   return (
-    <section className="page explore-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Analysis control plane</p>
-          <h1>Explore</h1>
-          <p className="subtitle">
-            Recipes, run receipts, and provenance-preserving corpus retrieval.
-          </p>
-        </div>
-        {analysis && (
-          <div className="heading-meta">
-            <span className="count-label">
-              {runs.length} recorded {runs.length === 1 ? "run" : "runs"}
-            </span>
-          </div>
-        )}
-      </div>
+    // A section of Watch rather than a page of its own: "what is it doing"
+    // and "what did it cost" are one question, and the receipts, the recipes
+    // that produced them and the retrieval they ran over are one answer.
+    <div className="page-section explore-section">
+      {analysis && (
+        <p className="count-label section-meta">
+          {runs.length} recorded {runs.length === 1 ? "run" : "runs"}
+        </p>
+      )}
 
       {loading && !analysis && (
-        <div className="state-card"><span className="spinner" /> Reading analysis state…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading analysis state…</div>
       )}
       {error && !analysis && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>Analysis state could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={loadState}>Try again</button>
@@ -78,7 +70,7 @@ function ExplorePage() {
       )}
 
       {analysis && !analysis.configured && (
-        <div className="state-card empty-state configure-empty">
+        <div className="surface state-note empty-state configure-empty">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>Analysis state not configured</strong>
           <span>Run <code>babel storage configure</code> to connect durable analysis storage.</span>
@@ -93,7 +85,7 @@ function ExplorePage() {
               statement about the deployment rather than an empty state that
               reads like a bug. The prose comes from the server verbatim. */}
           {!analysis.worker.available && (
-            <article className="card worker-card">
+            <article className="surface worker-note">
               <div>
                 <p className="eyebrow">Worker</p>
                 <h2>Exploration is not startable here</h2>
@@ -106,7 +98,7 @@ function ExplorePage() {
             </article>
           )}
 
-          <article className="card runs-card">
+          <article className="surface">
             <div className="section-heading">
               <div>
                 <p className="eyebrow">Receipts</p>
@@ -169,7 +161,7 @@ function ExplorePage() {
             )}
           </article>
 
-          <article className="card cookbook-card">
+          <article className="surface">
             <div className="section-heading">
               <div>
                 <p className="eyebrow">Cookbook</p>
@@ -220,7 +212,7 @@ function ExplorePage() {
         </>
       )}
 
-      <article className="card search-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Retrieval</p>
@@ -303,7 +295,7 @@ function ExplorePage() {
           )
         )}
       </article>
-    </section>
+    </div>
   );
 }
 

@@ -3,14 +3,18 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   fetchSession,
   getSession,
+  getSessionRow,
   getTranscript,
   type FetchResult,
   type SessionDetail,
+  type SessionSummary,
   type TranscriptEvent,
 } from "../api";
 import { errorMessage, formatBytes, formatTime } from "../format";
 import { Badge, unescapeWhitespace } from "../analysis";
 import { RecordLinks } from "../references";
+import { formatCount, formatUSD } from "./SessionsPage";
+import "../sessions.css";
 
 // The transcript is read as a moving window, not as a list with a cap.
 //
@@ -31,6 +35,12 @@ const TRANSCRIPT_WINDOW = 250;
 // in its conversation: the lines that led to it are the difference between
 // seeing the claim and seeing why the model made it.
 const CITED_LEAD = 20;
+
+// How long the records around a cited one stay stepped back. Long enough to
+// be seen after the scroll settles, short enough that the conversation the
+// citation belongs to is readable immediately afterwards — the context is the
+// reason the window opens twenty records early.
+const SPOTLIGHT_MS = 2_000;
 
 // titleOriginLabel states a title's provenance in words rather than as a
 // vocabulary token. The three values are not interchangeable claims — one is
@@ -78,15 +88,25 @@ function SessionPage() {
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [fetchResult, setFetchResult] = useState<FetchResult | null>(null);
+  // What the session cost. It is read from the listing row rather than from
+  // the inspect document because that is where the catalog keeps it: the four
+  // usage columns are summed at describe time and served with the listing,
+  // which is answered from memory without touching a transcript.
+  const [usage, setUsage] = useState<SessionSummary | null>(null);
   // Scrolling to the cited record happens once per arrival. A later "load
   // more" must not yank the reader back to where he came in.
   const landed = useRef<string | null>(null);
+  // The two seconds after arrival, during which the records around the cited
+  // one step back. It is state rather than a class written by hand because
+  // the transcript re-renders while the window loads.
+  const [spotlight, setSpotlight] = useState(false);
 
   const openAt = cited === null ? 0 : Math.max(0, cited - CITED_LEAD);
 
   useEffect(() => {
     let live = true;
     setSession(null);
+    setUsage(null);
     setSessionError(null);
     setTranscript([]);
     setWindowStart(openAt);
@@ -115,6 +135,15 @@ function SessionPage() {
         if (live) setTranscriptLoading(false);
       });
 
+    getSessionRow(selector)
+      .then((row) => {
+        if (live) setUsage(row);
+      })
+      // A listing that could not be read costs the page its usage strip and
+      // nothing else, so the failure is not raised to the reader: the strip
+      // is a fact about the session, not the session.
+      .catch(() => undefined);
+
     return () => {
       live = false;
     };
@@ -131,6 +160,13 @@ function SessionPage() {
     if (!node) return;
     landed.current = arrival;
     node.scrollIntoView({ block: "center" });
+    // The dim is skipped outright when the reader asked for less motion. The
+    // hero keeps its rule and its raise either way, so the answer to "which
+    // line" never depends on an animation.
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    setSpotlight(true);
+    const timer = window.setTimeout(() => setSpotlight(false), SPOTLIGHT_MS);
+    return () => window.clearTimeout(timer);
   }, [cited, selector, transcript]);
 
   async function loadMoreTranscript() {
@@ -181,7 +217,7 @@ function SessionPage() {
     return (
       <section className="page">
         <Link className="back-link" to="/sessions">← Sessions</Link>
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>Session could not be loaded.</strong>
           <span>{sessionError}</span>
         </div>
@@ -190,7 +226,7 @@ function SessionPage() {
   }
 
   if (!session) {
-    return <section className="page"><div className="state-card"><span className="spinner" /> Loading session…</div></section>;
+    return <section className="page"><div className="surface state-note"><span className="spinner" /> Loading session…</div></section>;
   }
 
   const described = formatTime(session.described_at);
@@ -202,7 +238,7 @@ function SessionPage() {
   const unresolvedRefs = session.unresolved_blob_refs ?? [];
 
   return (
-    <section className="page detail-page">
+    <section className="page detail-page session-page">
       <Link className="back-link" to="/sessions">← Sessions</Link>
       <div className="page-heading detail-heading">
         <div>
@@ -218,8 +254,20 @@ function SessionPage() {
         </div>
       </div>
 
+      {usage && <UsageStrip usage={usage} />}
+
+      {/* A session's citations are almost entirely backlinks: an observation
+          rests on a session, never the reverse, so this panel is where an
+          operator finds what analysis was built on this conversation. It sits
+          above the description because it is why a reader is here — the
+          session's own file sizes are not.
+
+          It is named by selector, and the server derives the durable key the
+          edges were recorded against. */}
+      <RecordLinks record={{ type: "session", id: session.selector }} heading="Analysis citing this session" />
+
       <div className="detail-grid">
-        <article className="card metadata-card">
+        <article className="surface">
           <div className="section-heading">
             <div><p className="eyebrow">Description</p><h2>Metadata</h2></div>
           </div>
@@ -271,7 +319,7 @@ function SessionPage() {
           </details>
         </article>
 
-        <aside className="card fetch-card">
+        <aside className="surface fetch-form">
           <p className="eyebrow">Recovery</p>
           <h2>Fetch from archive</h2>
           <p className="muted">Materialize this session from an archived snapshot.</p>
@@ -307,21 +355,14 @@ function SessionPage() {
       />
 
       {unresolvedRefs.length > 0 && (
-        <article className="card warning-card">
+        <article className="surface warning-note">
           <div className="section-heading"><div><p className="eyebrow">Attention</p><h2>Unresolved blob references</h2></div></div>
           <p>These referenced blobs could not be resolved and may make recovery incomplete.</p>
           <ul className="mono-list">{unresolvedRefs.map((ref) => <li key={ref}>{ref}</li>)}</ul>
         </article>
       )}
 
-      {/* A session's citations are almost entirely backlinks: an observation
-          rests on a session, never the reverse, so this panel is where an
-          operator finds what analysis was built on this conversation. It is
-          named by selector, and the server derives the durable key the edges
-          were recorded against. */}
-      <RecordLinks record={{ type: "session", id: session.selector }} heading="Analysis citing this session" />
-
-      <article className="card transcript-card">
+      <article className="surface">
         <div className="section-heading">
           <div><p className="eyebrow">Conversation</p><h2>Transcript</h2></div>
           {!transcriptLoading && (
@@ -364,7 +405,7 @@ function SessionPage() {
               : `Load the ${Math.min(TRANSCRIPT_WINDOW, windowStart)} records before this`}
           </button>
         )}
-        <div className="transcript-events">
+        <div className={spotlight ? "transcript-events spotlight" : "transcript-events"}>
           {transcript.map((entry) => (
             <TranscriptEntry key={entry.index} entry={entry} cited={entry.index === cited} />
           ))}
@@ -380,6 +421,58 @@ function SessionPage() {
         )}
       </article>
     </section>
+  );
+}
+
+// UsageStrip is what this session cost, at the top of its page.
+//
+// Four figures the harness recorded and the adapter summed: what was paid,
+// how many tokens it took, how many assistant turns the conversation ran to,
+// and how many tool calls came back as failures. A tool error is tinted only
+// when there is one, because a zero there is a good answer and colour would
+// make it an alarm.
+//
+// Every figure is nullable and a null renders as an absent measurement. Most
+// harnesses record no usage at all, so the strip says "not recorded" rather
+// than reporting a session that cost nothing.
+function UsageStrip({ usage }: { usage: SessionSummary }) {
+  const measured =
+    usage.cost_usd !== null ||
+    usage.total_tokens !== null ||
+    usage.turns !== null ||
+    usage.tool_errors !== null;
+  return (
+    <div className="surface panel session-usage">
+      <div className="stat">
+        <span className="stat-label">Cost</span>
+        <strong className="stat-value">{usage.cost_usd === null ? "—" : formatUSD(usage.cost_usd)}</strong>
+        <span className="stat-note">recorded by the harness</span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Tokens</span>
+        <strong className="stat-value" title={usage.total_tokens?.toLocaleString()}>
+          {usage.total_tokens === null ? "—" : formatCount(usage.total_tokens)}
+        </strong>
+        <span className="stat-note">input, output and cache</span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Turns</span>
+        <strong className="stat-value">{usage.turns === null ? "—" : usage.turns.toLocaleString()}</strong>
+        <span className="stat-note">assistant replies</span>
+      </div>
+      <div className="stat">
+        <span className="stat-label">Tool errors</span>
+        <strong className={usage.tool_errors ? "stat-value errors" : "stat-value"}>
+          {usage.tool_errors === null ? "—" : usage.tool_errors.toLocaleString()}
+        </strong>
+        <span className="stat-note">failed tool results</span>
+      </div>
+      <p className="usage-note">
+        {measured
+          ? "Summed from the session's own transcript when Babel described it. No model was asked."
+          : "This harness recorded no usage for the session. The dashes are absent measurements, not zeroes."}
+      </p>
+    </div>
   );
 }
 
@@ -403,7 +496,7 @@ interface FileTableProps {
 
 function FileTable({ title, subtitle, empty, headers, rows }: FileTableProps) {
   return (
-    <article className="card file-card">
+    <article className="surface file-block">
       <div className="section-heading"><div><h2>{title}</h2><p className="muted">{subtitle}</p></div><span className="count-label">{rows.length}</span></div>
       {rows.length ? (
         <div className="table-scroll">
@@ -543,6 +636,10 @@ function TranscriptEntry({ entry, cited }: { entry: TranscriptEvent; cited: bool
   const kind = decoded?.kind ?? entry.kind;
   const body = unescapeWhitespace(decoded ? decoded.body : entry.text);
   const timestamp = formatTime(entry.time);
+  // The cited record is the page's hero: the human sentence a proposal grew
+  // from is what a citation sends a reader to, and it is the one record on the
+  // page that has to be findable without reading the others.
+  const shell = `transcript-entry ${cited ? "cited-hero " : ""}`;
   const heading = (
     <div className="event-heading">
       {/* A record the harness wrote no role for is the harness's own, and
@@ -560,7 +657,7 @@ function TranscriptEntry({ entry, cited }: { entry: TranscriptEvent; cited: bool
   );
   if (!decoded && unreadable) {
     return (
-      <details className="transcript-entry raw-entry" id={`event-${entry.index}`} open={cited}>
+      <details className={`${shell}raw-entry`} id={`event-${entry.index}`} open={cited}>
         <summary>
           {heading}
           <span className="disclosure-label">Show this record as it was stored</span>
@@ -571,7 +668,7 @@ function TranscriptEntry({ entry, cited }: { entry: TranscriptEvent; cited: bool
   }
   if (decoded?.partial || body.length > INLINE_BODY_LIMIT) {
     return (
-      <details className={`transcript-entry ${role}-entry`} id={`event-${entry.index}`} open={cited}>
+      <details className={`${shell}${role}-entry`} id={`event-${entry.index}`} open={cited}>
         <summary>
           {heading}
           <span className="disclosure-label">
@@ -585,7 +682,7 @@ function TranscriptEntry({ entry, cited }: { entry: TranscriptEvent; cited: bool
     );
   }
   return (
-    <article className={`transcript-entry ${role}-entry`} id={`event-${entry.index}`}>
+    <article className={`${shell}${role}-entry`} id={`event-${entry.index}`}>
       {heading}
       <pre>{body}</pre>
     </article>

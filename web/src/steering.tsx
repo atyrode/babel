@@ -34,8 +34,8 @@ import { Badge, Quoted } from "./analysis";
 // says: a URL built from record content would make the adjacency list an
 // injection surface.
 const ADJACENT_ROUTES: Record<string, (id: string) => string> = {
-  hypothesis: (id) => `/hypotheses/${encodeURIComponent(id)}`,
-  finding: (id) => `/findings/${encodeURIComponent(id)}`,
+  hypothesis: (id) => `/r/${encodeURIComponent(id)}`,
+  finding: (id) => `/r/${encodeURIComponent(id)}`,
   complaint: (id) => `/complaints/${encodeURIComponent(id)}`,
 };
 
@@ -85,9 +85,10 @@ export function SteeringSection() {
 
   return (
     <section className="steering-section">
-      <article className="card capture-card">
-        <p className="eyebrow">Operator steering</p>
-        <h2>Tell Babel</h2>
+      <article className="surface">
+        {/* No heading of its own. The surface that carries this box names it —
+            Decide folds it behind a peel titled "Tell Babel" — and a heading
+            under a summary that says the same words says it twice. */}
         <p className="muted">
           Say what is going badly. This is steering pressure, not a ticket: it opens nothing,
           assigns nothing and schedules nothing, and it has no status to close.
@@ -190,8 +191,14 @@ function ComplaintListing({
 
   const items = listing?.items ?? [];
 
+  // A listing of nothing is not a listing. Complaints appear when there are
+  // any: an empty panel headed "Complaints" over a sentence explaining that
+  // the box above is where they come from is a paragraph telling the operator
+  // what he just read, and on Decide it sat between him and the queue.
+  if (listing && items.length === 0 && !error) return null;
+
   return (
-    <article className="card steering-list-card">
+    <article className="surface steering-list">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Steering pressure</p>
@@ -208,13 +215,6 @@ function ComplaintListing({
       )}
       {!listing && !error && (
         <p className="muted"><span className="spinner" /> Reading what has been told…</p>
-      )}
-      {listing && items.length === 0 && (
-        <div className="state-card empty-state">
-          <span className="empty-icon" aria-hidden="true">◇</span>
-          <strong>Nothing has been told yet</strong>
-          <span>The box above is where steering pressure enters: tell Babel what is going badly and it is recorded here.</span>
-        </div>
       )}
       {items.length > 0 && (
         <div className="table-scroll">

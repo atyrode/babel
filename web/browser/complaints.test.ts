@@ -1,7 +1,7 @@
 // Browser acceptance for issue #115's steering surfaces — the capture box and
-// complaint listing on /review, and a complaint's own record page — driven
-// against the synthetic mock, so no Go server, archive, model, store, or
-// network is needed.
+// complaint listing, folded into "Tell Babel" at the foot of Decide, and a
+// complaint's own record page — driven against the synthetic mock, so no Go
+// server, archive, model, store, or network is needed.
 //
 // What only a browser can prove is here, and nearly all of it is about the two
 // promises #115 makes to an operator annoyed enough to start typing.
@@ -43,8 +43,11 @@
 // another machine's runs have cited it, and it is the case that carries the
 // whole "was this addressed?" answer (#113).
 //
-// That day one — an operator who has told Babel nothing — is an empty state
-// beside a usable box, not an error.
+// That the box is folded and the listing is conditional: the operator who came
+// to decide is the operator with something to say, but he came to decide, so
+// the box is one deliberate click away — and on day one, with nothing told,
+// there is a usable box and no listing at all rather than an empty panel or an
+// error.
 //
 // The corpus is synthetic and disposable. Nothing here reads a real session.
 
@@ -67,7 +70,7 @@ const chrome = resolveChrome({
     "that a complaint's body renders verbatim and inert, newlines kept and pasted markup executed nowhere",
     "that a revision chain shows every wording oldest first, marks the current one, and keeps an earlier wording readable at its own id",
     "that both citation directions render on a complaint, the followable endpoint as a link into this app and the unopenable one as identified text with its reason",
-    "that a launch with nothing told renders the empty state rather than an error",
+    "that the capture box is folded on Decide, and that a launch with nothing told renders no listing rather than an error",
   ],
 });
 
@@ -150,12 +153,30 @@ function visible(text: string): Promise<unknown> {
   );
 }
 
+// tell opens the capture box, which rides Decide behind a fold: the operator
+// who came to decide is the operator with something to say, but he came to
+// decide, so the box is one deliberate click away rather than in the path. A
+// test that reached into the closed <details> would be testing markup nobody
+// can reach.
+async function tell(): Promise<void> {
+  await page.waitForSelector(".decide-tell summary", { timeout: 15_000 });
+  await page.evaluate(() => {
+    const peel = document.querySelector<HTMLDetailsElement>(".decide-tell");
+    if (peel && !peel.open) peel.querySelector<HTMLElement>("summary")?.click();
+  });
+  await page.waitForFunction(
+    () => document.querySelector<HTMLDetailsElement>(".decide-tell")?.open === true,
+    { timeout: 15_000 },
+  );
+  await page.waitForSelector(".steering-section .capture-input", { timeout: 15_000 });
+}
+
 // complaintRendered waits for the record page's own body card rather than for a
 // phrase, for the reason references.test.ts waits on a row: the eyebrows and
 // the citation headings are uppercased by CSS and Chrome's innerText reports
 // them that way, so a text wait would hang on a page that rendered correctly.
 function complaintRendered(): Promise<unknown> {
-  return page.waitForSelector(".complaint-page .statement-card .quoted-text", { timeout: 15_000 });
+  return page.waitForSelector(".complaint-page .claim-quote .quoted-text", { timeout: 15_000 });
 }
 
 // shoot photographs one element rather than the viewport. A panel that sits
@@ -217,8 +238,12 @@ afterAll(async () => {
 });
 
 test.skipIf(!chrome)("telling Babel something captures it, answers, and lists it", async () => {
-  await open("review");
-  await page.waitForSelector(".steering-section .capture-card .capture-input", { timeout: 15_000 });
+  await open("");
+  // Folded on arrival: Decide is where the operator answers "what needs me",
+  // and a text box asking what is going badly is not that question.
+  await page.waitForSelector(".decide-tell", { timeout: 15_000 });
+  expect(await page.$eval(".decide-tell", (peel) => (peel as HTMLDetailsElement).open)).toBe(false);
+  await tell();
 
   // The button is dead until there are words. A capture box that submitted an
   // empty complaint would store a record saying nothing, which the store
@@ -282,12 +307,12 @@ test.skipIf(!chrome)("telling Babel something captures it, answers, and lists it
   // bottom of a page of older complaints would read as having been filed away.
   await page.waitForFunction(
     (id: string) =>
-      (document.querySelector(".steering-list-card tbody tr .mono")?.textContent ?? "") === id,
+      (document.querySelector(".steering-list tbody tr .mono")?.textContent ?? "") === id,
     { timeout: 15_000 },
     captured.id,
   );
   const listed = await page.evaluate(() => {
-    const row = document.querySelector(".steering-list-card tbody tr");
+    const row = document.querySelector(".steering-list tbody tr");
     return {
       summary: row?.querySelector(".untrusted-inline")?.textContent ?? "",
       role: row?.getAttribute("role") ?? "",
@@ -344,7 +369,8 @@ test.skipIf(!chrome)("neither steering surface offers a way to close a complaint
       forbidden,
     );
 
-  await open("review");
+  await open("");
+  await tell();
   await page.waitForSelector(".steering-section .steering-table", { timeout: 15_000 });
   const listing = await audit(".steering-section", TICKET_CONTROL);
   expect(listing.present).toBe(true);
@@ -374,7 +400,8 @@ test.skipIf(!chrome)("neither steering surface offers a way to close a complaint
     directions: Array.from(document.querySelectorAll(".complaint-page .citation-direction h3")).map(
       (heading) => heading.textContent ?? "",
     ),
-    revisions: document.querySelector(".complaint-page .revisions-card h2")?.textContent ?? "",
+    revisions:
+      document.querySelector(".complaint-page article:has(.revision-timeline) h2")?.textContent ?? "",
     noStatus: document.querySelector(".complaint-no-status")?.textContent ?? "",
   }));
   expect(kept.directions).toEqual(["Cites", "Cited by"]);
@@ -394,7 +421,7 @@ test.skipIf(!chrome)("a complaint's body is verbatim and inert", async () => {
   await complaintRendered();
 
   const body = await page.evaluate(() => {
-    const quoted = document.querySelector(".complaint-page .statement-card .quoted-text");
+    const quoted = document.querySelector(".complaint-page .claim-quote .quoted-text");
     const element = quoted as HTMLElement | null;
     return {
       tag: quoted?.tagName ?? "",
@@ -487,7 +514,7 @@ test.skipIf(!chrome)("amending appends, and every wording stays readable", async
       entries: entries.length,
       entryText: entries.map((entry) => (entry as HTMLElement).innerText),
       headLink: entries[entries.length - 1]?.querySelector("a")?.getAttribute("href") ?? "",
-      body: section?.querySelector(".statement-card .quoted-text")?.textContent ?? "",
+      body: section?.querySelector(".claim-quote .quoted-text")?.textContent ?? "",
     };
   });
 
@@ -507,10 +534,10 @@ test.skipIf(!chrome)("amending appends, and every wording stays readable", async
 
 test.skipIf(!chrome)("a complaint's citations render in both directions", async () => {
   await open("complaints/cmp_rules");
-  await page.waitForSelector(".complaint-page .references-card .citation-entry", { timeout: 15_000 });
+  await page.waitForSelector(".complaint-page article:has(.citation-direction) .citation-entry", { timeout: 15_000 });
 
   const citations = await page.evaluate(() => {
-    const panel = document.querySelector(".complaint-page .references-card");
+    const panel = document.querySelector(".complaint-page article:has(.citation-direction)");
     const directions = Array.from(panel?.querySelectorAll(".citation-direction") ?? []);
     const target = (edge: string) => {
       const entry = panel?.querySelector(`[data-citation='${edge}']`);
@@ -543,12 +570,12 @@ test.skipIf(!chrome)("a complaint's citations render in both directions", async 
   expect(citations.rows[0]).toBeGreaterThan(0);
   expect(citations.rows[1]).toBeGreaterThan(0);
 
-  expect(citations.aim.href).toBe("#/hypotheses/hyp_promoted-pattern");
+  expect(citations.aim.href).toBe("#/r/hyp_promoted-pattern");
   // A record this host holds is a link into this app's own route for it, so
   // the reader can walk from the complaint to the work that claims to answer
   // it in one click.
   expect(citations.addressed.inert).toBe(false);
-  expect(citations.addressed.href).toBe("#/hypotheses/hyp_unverified-closures");
+  expect(citations.addressed.href).toBe("#/r/hyp_unverified-closures");
   expect(citations.addressed.text).toContain("hyp_unverified-closures");
 
   // And a record this host never held stays on the page as identified text
@@ -563,19 +590,24 @@ test.skipIf(!chrome)("a complaint's citations render in both directions", async 
 
   await page.click("[data-citation='rle_hyp-addresses-rules'] .citation-target");
   await page.waitForFunction(
-    () => window.location.hash.startsWith("#/hypotheses/"),
+    () => window.location.hash.startsWith("#/r/"),
     { timeout: 15_000 },
   );
-  expect(page.url()).toContain("/hypotheses/hyp_unverified-closures");
+  expect(page.url()).toContain("/r/hyp_unverified-closures");
 });
 
-test.skipIf(!chrome)("day one shows the box and an empty state, not an error", async () => {
+test.skipIf(!chrome)("day one shows the box and no listing at all, not an error", async () => {
   const dayOne = await startMock({ MOCK_PHASEB: "empty" });
   const bare = await browser!.newPage();
   try {
     await bare.setViewport({ width: 1440, height: 900 });
-    await bare.goto(`${dayOne.base}/#/review`, { waitUntil: "networkidle2" });
+    await bare.goto(`${dayOne.base}/#/`, { waitUntil: "networkidle2" });
     await bare.reload({ waitUntil: "networkidle2" });
+    await bare.waitForSelector(".decide-tell summary", { timeout: 15_000 });
+    await bare.evaluate(() => {
+      const peel = document.querySelector<HTMLDetailsElement>(".decide-tell");
+      if (peel && !peel.open) peel.querySelector<HTMLElement>("summary")?.click();
+    });
     await bare.waitForSelector(".steering-section .capture-input", { timeout: 15_000 });
 
     const state = await bare.evaluate(() => {
@@ -584,18 +616,23 @@ test.skipIf(!chrome)("day one shows the box and an empty state, not an error", a
         // The box is there on day one. It is the day the operator has the most
         // to say about the tool he used before this one.
         box: section?.querySelectorAll(".capture-input").length ?? -1,
-        empty: section?.querySelector(".empty-state strong")?.textContent ?? "",
-        rows: section?.querySelectorAll(".steering-table tbody tr").length ?? -1,
+        // And nothing else is. A listing of nothing is not a listing: an empty
+        // panel headed "Complaints" over a sentence explaining that the box
+        // above is where they come from is a paragraph telling the operator
+        // what he has just read.
+        listing: section?.querySelectorAll(".steering-list").length ?? -1,
+        tables: section?.querySelectorAll(".steering-table").length ?? -1,
         // Nothing told is not a failure to load anything, so no banner and no
-        // error state: the route answers an empty list, and the page says so.
+        // error state: the route answers an empty list, and the page says so
+        // by having nothing to show.
         banners: document.querySelectorAll(".error-banner").length,
         errors: section?.querySelectorAll(".inline-error").length ?? -1,
       };
     });
 
     expect(state.box).toBe(1);
-    expect(state.empty).toBe("Nothing has been told yet");
-    expect(state.rows).toBe(0);
+    expect(state.listing).toBe(0);
+    expect(state.tables).toBe(0);
     expect(state.banners).toBe(0);
     expect(state.errors).toBe(0);
   } finally {

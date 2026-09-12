@@ -204,6 +204,12 @@ func (a *app) explore(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Registered before the handles it must follow: defers run in reverse, so
+	// this drain opens the journal on a durable file this command has already
+	// finished with. It is what publishes this run's own closure on a machine
+	// that holds only a staging hook, and it carries whatever a sibling lane
+	// stranded out with it (SPEC.md §9.1).
+	defer a.drainOnExit(ctx)
 	// An exploration is the run that mints most of #113's edges, so this is
 	// where the emission warnings get somewhere to go. They are warnings and
 	// never failures: the record is durable, one edge is missing, and the

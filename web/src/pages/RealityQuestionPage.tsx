@@ -4,14 +4,15 @@ import { getRealityQuestion, type QuestionDetail } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge, Quoted, TimelineEntry } from "../analysis";
 import {
+  AnswerEntry,
   AnswerForm,
-  EntityName,
   FactEntry,
   PlanCard,
   answerableStates,
   classTone,
   questionStateTone,
 } from "../reality";
+import { Identifiers, Subjects } from "./RealityData";
 
 // One Reality Question read whole, with the two decisions it admits offered
 // beside it (SPEC.md §4.8, §8.4).
@@ -52,8 +53,8 @@ function RealityQuestionPage() {
   if (error && !detail) {
     return (
       <section className="page">
-        <Link className="back-link" to="/reality/questions">← Asked</Link>
-        <div className="state-card error-state">
+        <Link className="back-link" to="/ask/questions">← Asked</Link>
+        <div className="surface state-note error-state">
           <strong>This question could not be loaded.</strong>
           <span>{error}</span>
         </div>
@@ -64,7 +65,7 @@ function RealityQuestionPage() {
   if (!detail) {
     return (
       <section className="page">
-        <div className="state-card"><span className="spinner" /> Loading question…</div>
+        <div className="surface state-note"><span className="spinner" /> Loading question…</div>
       </section>
     );
   }
@@ -79,7 +80,7 @@ function RealityQuestionPage() {
 
   return (
     <section className="page detail-page question-detail-page">
-      <Link className="back-link" to="/reality/questions">← Asked</Link>
+      <Link className="back-link" to="/ask/questions">← Asked</Link>
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       <div className="page-heading detail-heading">
@@ -93,7 +94,10 @@ function RealityQuestionPage() {
             )}
           </div>
           <Quoted label="Question — generated from analysis, untrusted" text={question.prompt} />
-          <p className="subtitle mono">{question.id}</p>
+          {/* The identifier used to be the subtitle under the prompt. It is
+              under a disclosure at the foot of the page now, with the rest
+              of the machinery: it is what a link resolves and what a
+              command takes, and it has never been what the question says. */}
         </div>
         <div className="heading-meta">
           {question.pending && <span className="count-label">waiting on you</span>}
@@ -101,20 +105,13 @@ function RealityQuestionPage() {
         </div>
       </div>
 
-      <article className="card">
+      <article className="surface">
         <p className="eyebrow">Why it was asked</p>
         <p className="untrusted-inline">{question.why_asked}</p>
-        {detail.targets.length > 0 && (
-          <p className="question-targets">
-            About:{" "}
-            {detail.targets.map((target, index) => (
-              <span key={target.id}>
-                {index > 0 && ", "}
-                <EntityName entity={target} />
-              </span>
-            ))}
-          </p>
-        )}
+        <Subjects
+          ids={question.target_entity_ids}
+          names={question.about_name}
+        />
         {detail.predicates.length > 0 && (
           <p className="secondary">
             Predicates: {detail.predicates.map((predicate) => (
@@ -138,7 +135,7 @@ function RealityQuestionPage() {
       </article>
 
       {(detail.existing_facts.length > 0 || detail.conflict_facts.length > 0) && (
-        <article className="card">
+        <article className="surface">
           <div className="section-heading">
             <div>
               <p className="eyebrow">What prompted it</p>
@@ -169,7 +166,7 @@ function RealityQuestionPage() {
         </article>
       )}
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Provenance</p>
@@ -184,18 +181,7 @@ function RealityQuestionPage() {
           </p>
         ) : (
           <div className="answer-list">
-            {detail.answers.map((answer) => {
-              const at = formatTime(answer.at);
-              return (
-                <div key={answer.id}>
-                  <Quoted
-                    label={`Operator answer — ${answer.author}, kept verbatim · ${answer.outcome}`}
-                    text={answer.text}
-                  />
-                  {at && <p className="secondary" title={at.absolute}>answered {at.relative}</p>}
-                </div>
-              );
-            })}
+            {detail.answers.map((answer) => <AnswerEntry key={answer.id} answer={answer} />)}
           </div>
         )}
         {answerable && <AnswerForm questionId={question.id} onChanged={onChanged} />}
@@ -208,7 +194,7 @@ function RealityQuestionPage() {
         )}
       </article>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Interpretation</p>
@@ -226,7 +212,7 @@ function RealityQuestionPage() {
         )}
       </article>
 
-      <article className="card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Append-only</p>
@@ -252,6 +238,16 @@ function RealityQuestionPage() {
           ))}
         </ol>
       </article>
+
+      <Identifiers
+        rows={[
+          ["Question", question.id],
+          ...detail.targets.map((target): [string, string] => [
+            target.display_name || "Subject",
+            target.id,
+          ]),
+        ]}
+      />
     </section>
   );
 }

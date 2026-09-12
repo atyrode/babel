@@ -41,7 +41,7 @@ function RealityFactsPage() {
       <div className="page-heading">
         <div>
           <p className="eyebrow">Reality Ledger</p>
-          <h1>Beliefs</h1>
+          <h1>What it believes</h1>
           <p className="subtitle">
             The most recent revisions Babel has recorded, whatever they are about. A fact is never
             edited: a correction is a new revision, and the one it replaced stays readable.
@@ -59,7 +59,7 @@ function RealityFactsPage() {
       </div>
 
       {statuses.length > 0 && (
-        <div className="toolbar card">
+        <div className="toolbar surface">
           <div className="filter-chips" aria-label="Filter by status">
             <button
               type="button"
@@ -83,17 +83,17 @@ function RealityFactsPage() {
       )}
 
       {loading && !data && (
-        <div className="state-card"><span className="spinner" /> Reading the ledger…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading the ledger…</div>
       )}
       {error && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>The ledger could not be read.</strong>
           <span>{error}</span>
           <button type="button" onClick={load}>Try again</button>
         </div>
       )}
       {!loading && !error && items.length === 0 && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>{status ? `Nothing is ${status}` : "Babel believes nothing yet"}</strong>
           <span>
@@ -107,14 +107,14 @@ function RealityFactsPage() {
       )}
 
       {items.length > 0 && (
-        <div className="table-card">
+        <div className="surface flush">
           <div className="table-scroll">
             <table className="frontier-table">
               <thead>
                 <tr>
                   <th>Subject</th>
                   <th>Says</th>
-                  <th>Status</th>
+                  <th>Standing</th>
                   <th>Authority</th>
                   <th>Recorded</th>
                 </tr>
@@ -132,17 +132,18 @@ function RealityFactsPage() {
                         {/* The predicate is the link to the revision's own
                             page, which is where the chain it sits in — what
                             it replaced and what replaced it — is readable. */}
-                        <Link className="mono" to={`/reality/facts/${encodeURIComponent(row.fact.id)}`}>
-                          {row.fact.predicate}
+                        <Link to={`/ask/facts/${encodeURIComponent(row.fact.id)}`}>
+                          <span className="mono">{row.fact.predicate}</span>{" "}
+                          <FactValue fact={row.fact} />
                         </Link>
-                        <FactValue fact={row.fact} />
                       </td>
                       <td><Badge label={row.fact.status} tone={factTone(row.fact.status)} /></td>
                       <td>
+                        {/* The authority's kind, not its identifier: "an
+                            operator said so" and "analysis proposed it" are
+                            the two things that matter here, and the exact
+                            actor is on the revision's own page. */}
                         <span className="secondary">{row.fact.authority.kind}</span>
-                        {row.fact.authority.id && (
-                          <span className="secondary mono"> {row.fact.authority.id}</span>
-                        )}
                       </td>
                       <td>
                         {recorded

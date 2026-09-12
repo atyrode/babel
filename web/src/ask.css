@@ -1,0 +1,571 @@
+/* Ask — the ledger read as answers rather than as rows.
+ *
+ * Every page under /ask used to lead with a hex identifier and then explain
+ * itself underneath. The rule this file exists to hold is the opposite one:
+ * the claim, the name or the question is the headline, and the machinery that
+ * makes it addressable is behind a disclosure. The identifier never
+ * disappears — a merge is argued about with one, and a command takes one —
+ * but it is never what a reader meets first.
+ *
+ * Colour, type and spacing come from styles.css's tokens and from nowhere
+ * else. Derived tokens carry a literal fallback so a component still renders
+ * sanely if the design system has not landed one.
+ */
+
+/* The four sub-tabs answer four questions, and the question is the label.
+ * "Questions / Asked / Subjects / Beliefs" named four stores; a reader had to
+ * know the data model to pick one. The store's own noun stays as the second
+ * line, because it is the word the CLI and the spec use. */
+.ask-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+  border-bottom: 1px solid var(--rule);
+}
+
+.ask-nav a {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 2px solid transparent;
+  color: var(--ink-muted);
+  text-decoration: none;
+  transition: color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+
+.ask-nav a:hover {
+  color: var(--ink);
+}
+
+.ask-nav a.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.ask-nav-question {
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.ask-nav-noun {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* Identifiers, everywhere they appear: a closed disclosure, mono inside. */
+.ask-ids {
+  margin-top: var(--space-3);
+  font-size: 0.85rem;
+}
+
+.ask-ids > summary {
+  cursor: pointer;
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  list-style: none;
+}
+
+.ask-ids > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  transition: transform var(--motion-fast) ease;
+}
+
+.ask-ids[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.ask-ids > summary:hover {
+  color: var(--ink-muted);
+}
+
+.ask-ids dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-4);
+}
+
+.ask-ids dl > div {
+  display: contents;
+}
+
+.ask-ids dt {
+  color: var(--ink-faint);
+}
+
+.ask-ids dd {
+  margin: 0;
+  color: var(--ink-muted);
+  word-break: break-all;
+}
+
+/* The answer, and what it will be.
+ *
+ * The outcome used to be a `<select>` beside the submit button, under the
+ * textarea: two of the three outcomes were behind a click, and what each one
+ * does next was a phrase inside an option. It is the `.rule-bar` primitive
+ * now — one decision, three segments — above the textarea, because what kind
+ * of answer this is decides whether there is anything to type.
+ *
+ * The note under the bar is the sentence for whichever segment the pointer or
+ * the focus ring is on, falling back to the chosen one. Its height is
+ * reserved so that reading along the bar does not move the textarea under the
+ * reader's cursor. */
+.answer-outcome {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}
+
+.answer-outcome-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.answer-outcome-note {
+  min-height: 2.6em;
+  margin: 0;
+  max-width: var(--measure);
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+  line-height: 1.3;
+}
+
+/* An answer that is only an outcome. "I don't know" and "stop asking" are
+ * answers with nothing quoted in them, and a quotation frame around no words
+ * claims the operator said something blank. */
+.answer-bare {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+/* A row's subject is a link and reads as the text it replaced: ink, not
+ * accent, because a column of blue underlines is a column nobody can scan.
+ * It became a link so that the browser can show its URL, open it in a new
+ * tab and middle-click it — which an onclick handler cannot — and the colour
+ * arrives on hover, where it says "this one". */
+.ask-row-link {
+  color: var(--ink);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.ask-row-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* Identifiers after a form are the quietest thing on the card and should read
+ * as the foot of it rather than as the form's last field. */
+.answer-form + .ask-ids {
+  margin-top: var(--space-5);
+}
+
+/* "About" — the line that used to read `About: ent_4468a31b…`. */
+.ask-about {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+}
+
+.ask-about-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.ask-subject {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-line, transparent);
+}
+
+.ask-subject:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* The way from an inbox card to the question's own page. It used to be the
+ * question's identifier, which was the one readable thing on the row and
+ * said nothing about where it went. */
+.question-open {
+  margin-left: auto;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.82rem;
+}
+
+.question-open:hover {
+  text-decoration: underline;
+}
+
+/* Why a question is ranked where it is. §4.8's five factors, the ledger's
+ * weights, and its own total — a horizontal bar each, so the shape of the
+ * ranking is readable before any number is. */
+.why-rank {
+  margin-top: var(--space-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.why-rank > summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+  list-style: none;
+}
+
+.why-rank > summary::-webkit-details-marker {
+  display: none;
+}
+
+.why-rank > summary:hover {
+  color: var(--ink);
+}
+
+.why-rank-score {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.why-rank-body {
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.why-rank-body .muted {
+  margin: 0 0 var(--space-3);
+  font-size: 0.78rem;
+}
+
+.rank-factors {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.rank-factor {
+  display: grid;
+  grid-template-columns: minmax(8rem, 14rem) 1fr 3rem;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.rank-factor-name {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.rank-factor-why {
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+}
+
+.rank-track {
+  display: block;
+  height: var(--space-2);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  overflow: hidden;
+}
+
+.rank-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-pill, 999px);
+  transition: width var(--motion-peel) ease;
+}
+
+.rank-fill.negative {
+  background: var(--bad);
+}
+
+.rank-factor-weight {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.rank-total {
+  display: flex;
+  justify-content: space-between;
+  margin: var(--space-3) 0 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--rule);
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
+
+.rank-total .mono {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rank-fill {
+    transition: none;
+  }
+}
+
+/* A subject's page: a name, chips for what it is called and what it touches,
+ * and one append-only timeline of everything that has happened to it. */
+.subject-head h1 {
+  font-family: var(--font-editorial);
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  line-height: 1.15;
+  margin: var(--space-2) 0 0;
+  max-width: var(--measure);
+}
+
+.ask-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ask-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-pill, 999px);
+  background: var(--bg-raised);
+  font-size: 0.8rem;
+  color: var(--ink);
+}
+
+.ask-chip a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.ask-chip a:hover {
+  text-decoration: underline;
+}
+
+.ask-chip-kind {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.ask-chip.retired {
+  opacity: 0.6;
+}
+
+/* The timeline. One vertical rule, one dot per event, newest first, dates in
+ * mono so a column of them is scannable. Facts, status changes, merges and
+ * splits are all events on one line rather than four sections: what happened
+ * to a subject happened in one order, and the order is the point. */
+.subject-timeline {
+  position: relative;
+  list-style: none;
+  margin: var(--space-4) 0 0;
+  padding: 0 0 0 var(--space-5);
+}
+
+.subject-timeline::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--rule);
+}
+
+.subject-event {
+  position: relative;
+  padding: 0 0 var(--space-4);
+}
+
+.subject-event:last-child {
+  padding-bottom: 0;
+}
+
+.subject-event::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--space-5) + 1px);
+  top: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  box-shadow: 0 0 0 3px var(--bg);
+}
+
+.subject-event.active::before {
+  background: var(--good);
+}
+
+.subject-event.disputed::before {
+  background: var(--bad);
+}
+
+.subject-event.proposed::before {
+  background: var(--warn);
+}
+
+.subject-event-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.subject-event-when {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.subject-event-claim {
+  margin: var(--space-1) 0 0;
+  color: var(--ink);
+}
+
+.subject-event-claim a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule);
+}
+
+.subject-event-claim a:hover {
+  border-bottom-color: var(--accent);
+}
+
+.subject-event-note {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-muted);
+  font-size: 0.86rem;
+  max-width: var(--measure);
+}
+
+/* What analysis was ever scoped to this subject. */
+.subject-candidates {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.subject-candidate a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.subject-candidate a:hover {
+  border-bottom-color: var(--accent);
+}
+
+.subject-candidate-meta {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+}
+
+/* A belief read as a claim: standing as the badge, the value as the headline,
+ * the reasoning as prose, the provenance in mono at the bottom. */
+.belief-standing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.belief-claim {
+  font-family: var(--font-editorial);
+  font-size: clamp(1.5rem, 3.4vw, 2.2rem);
+  line-height: 1.2;
+  margin: var(--space-2) 0 0;
+  max-width: var(--measure);
+  color: var(--ink);
+}
+
+.belief-claim .belief-predicate {
+  font-family: var(--font-mono);
+  font-size: 0.6em;
+  color: var(--ink-muted);
+  display: block;
+  letter-spacing: 0.02em;
+}
+
+.belief-claim a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule);
+}
+
+.belief-claim a:hover {
+  border-bottom-color: var(--accent);
+}
+
+.belief-prose {
+  max-width: var(--measure);
+  margin: var(--space-4) 0 0;
+  color: var(--ink);
+}
+
+.belief-provenance {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+
+.belief-provenance dt {
+  font-family: var(--font-ui);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.belief-provenance dd {
+  margin: 2px 0 0;
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}

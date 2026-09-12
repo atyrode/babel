@@ -43,15 +43,23 @@ import (
 // policy an operator will want to argue with, and a bare number cannot be
 // argued with.
 type QuestionSummary struct {
-	ID               string         `json:"id"`
-	Kind             string         `json:"kind"`
-	Class            string         `json:"class"`
-	State            string         `json:"state"`
-	Sensitivity      string         `json:"sensitivity"`
-	CreatedAt        string         `json:"created_at"`
-	Prompt           string         `json:"prompt"`
-	WhyAsked         string         `json:"why_asked"`
-	TargetEntityIDs  []string       `json:"target_entity_ids"`
+	ID              string   `json:"id"`
+	Kind            string   `json:"kind"`
+	Class           string   `json:"class"`
+	State           string   `json:"state"`
+	Sensitivity     string   `json:"sensitivity"`
+	CreatedAt       string   `json:"created_at"`
+	Prompt          string   `json:"prompt"`
+	WhyAsked        string   `json:"why_asked"`
+	TargetEntityIDs []string `json:"target_entity_ids"`
+	// AboutNames names the same entities, positionally: index i is what a
+	// reader calls target_entity_ids[i], empty where the ledger can no
+	// longer name it. The identifiers stay because they are what a link
+	// resolves and what a merge is argued about; the names are here
+	// because "About: ent_4468a31b" is a lookup task rather than a
+	// sentence, and the surface that printed it was asking the operator
+	// to do the ledger's job.
+	AboutNames       []string       `json:"about_name"`
 	TargetPredicates []string       `json:"target_predicates,omitempty"`
 	Score            int            `json:"score"`
 	Terms            map[string]int `json:"terms,omitempty"`
@@ -151,6 +159,7 @@ func (s *Server) summarizeQuestion(ctx context.Context, item reality.InboxItem) 
 	if summary.TargetEntityIDs == nil {
 		summary.TargetEntityIDs = []string{}
 	}
+	summary.AboutNames = s.entityNames(ctx, summary.TargetEntityIDs)
 	for _, predicate := range question.TargetPredicates {
 		summary.TargetPredicates = append(summary.TargetPredicates, string(predicate))
 	}
@@ -221,8 +230,11 @@ type questionRow struct {
 	Prompt          string   `json:"prompt"`
 	WhyAsked        string   `json:"why_asked"`
 	TargetEntityIDs []string `json:"target_entity_ids"`
-	Answers         int      `json:"answers"`
-	Plans           int      `json:"plans"`
+	// AboutNames names those targets positionally, on QuestionSummary's
+	// terms and for its reason.
+	AboutNames []string `json:"about_name"`
+	Answers    int      `json:"answers"`
+	Plans      int      `json:"plans"`
 	// Pending is whether the ledger considers this question the operator's
 	// to move, which is what the ranked inbox is made of. It is here so a
 	// listing row can say "this one is waiting on you" without the page
@@ -290,7 +302,14 @@ func (s *Server) handleRealityQuestions(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	start, end := pg.window(len(rows))
-	result.Items = append(result.Items, rows[start:end]...)
+	// Naming is done after the window rather than in viewQuestionRow: a
+	// scan of every question the ledger ever asked would otherwise cost an
+	// entity read per target on rows nobody is about to see.
+	page := rows[start:end]
+	for i := range page {
+		page[i].AboutNames = s.entityNames(r.Context(), page[i].TargetEntityIDs)
+	}
+	result.Items = append(result.Items, page...)
 	s.writeJSON(w, http.StatusOK, result)
 }
 
@@ -404,6 +423,10 @@ func (s *Server) handleRealityQuestion(w http.ResponseWriter, r *http.Request) {
 	for _, target := range question.TargetEntityIDs {
 		detail.Targets = append(detail.Targets, s.entityRef(ctx, target))
 	}
+	// The row carries the names too, so a question rendered from the
+	// listing and one rendered from its own page say the same thing about
+	// what it is about.
+	detail.Question.AboutNames = s.entityNames(ctx, detail.Question.TargetEntityIDs)
 	for _, predicate := range question.TargetPredicates {
 		detail.Predicates = append(detail.Predicates, string(predicate))
 	}
@@ -432,6 +455,8 @@ func (s *Server) handleRealityQuestion(w http.ResponseWriter, r *http.Request) {
 		s.serviceError(w, r, err)
 		return
 	}
+	s.nameFactObjects(ctx, detail.ExistingFacts)
+	s.nameFactObjects(ctx, detail.ConflictFacts)
 	s.writeJSON(w, http.StatusOK, detail)
 }
 
@@ -541,6 +566,11 @@ type factValueView struct {
 	Enum     string `json:"enum,omitempty"`
 	Text     string `json:"text,omitempty"`
 	ObjectID string `json:"object_id,omitempty"`
+	// ObjectName is what the reader calls the object, filled in by the
+	// handler rather than by viewFact: the ledger stores the identifier
+	// and the name is a second read, so the renderer stays a pure
+	// projection of one record.
+	ObjectName string `json:"object_name,omitempty"`
 }
 
 type factAuthorityView struct {
@@ -658,13 +688,42 @@ func (s *Server) handleRealityEntities(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, result)
 }
 
+// candidateRow is one frontier candidate that was scoped to a subject, named
+// by what it says rather than by its identifier.
+//
+// It is the only link there is between a subject and the analysis that
+// concerns it: a run resolves a hypothesis to the entities it is about and
+// records that resolution in a context snapshot, and nothing else in Babel
+// writes down which subject a record is about. Findings and proposals reach a
+// subject only through the candidates they develop, which is what the record
+// page's own related section already walks — so this stops at the candidate
+// and lets the record page continue from there rather than guessing at a
+// transitive set here.
+type candidateRow struct {
+	ID        string `json:"id"`
+	Statement string `json:"statement"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+}
+
 type entityDetail struct {
 	Entity        entityView         `json:"entity"`
 	Aliases       []aliasView        `json:"aliases"`
 	Relationships []relationshipView `json:"relationships"`
 	Facts         []factView         `json:"facts"`
 	Resolutions   []resolutionView   `json:"resolutions"`
+	// Candidates are the frontier records scoped to this subject, newest
+	// first, capped. Absent rather than empty when the frontier is not
+	// configured, so a page can tell "nothing was scoped here" from "this
+	// deployment cannot answer that".
+	Candidates []candidateRow `json:"candidates"`
 }
+
+// candidateCap bounds the candidate list a subject's page carries. A subject
+// Babel has been exploring for months has more candidates than anyone reads
+// in one sitting, and the ones worth reading are the recent ones; the whole
+// set is the Read surface's job.
+const candidateCap = 40
 
 // handleRealityEntity serves one entity's current reality: its identity, the
 // names it is known by, its edges, its facts, and the merges and splits it has
@@ -751,6 +810,7 @@ func (s *Server) handleRealityEntity(w http.ResponseWriter, r *http.Request) {
 	for _, fact := range facts {
 		detail.Facts = append(detail.Facts, viewFact(fact))
 	}
+	s.nameFactObjects(ctx, detail.Facts)
 	for _, resolution := range resolutions {
 		view := resolutionView{
 			ID:         resolution.ID,
@@ -770,7 +830,45 @@ func (s *Server) handleRealityEntity(w http.ResponseWriter, r *http.Request) {
 		}
 		detail.Resolutions = append(detail.Resolutions, view)
 	}
+	if detail.Candidates, err = s.candidatesFor(ctx, id); err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, detail)
+}
+
+// candidatesFor reads the frontier candidates a subject was scoped to.
+//
+// A candidate the ledger names and the frontier no longer holds is skipped
+// rather than failed: the two are separate durable components and a snapshot
+// is append-only, so a hypothesis that was revised away leaves a snapshot
+// pointing at a record this store will not answer for. That is the ledger
+// working, and it must not take the subject's page down with it.
+func (s *Server) candidatesFor(ctx context.Context, entityID string) ([]candidateRow, error) {
+	if s.opts.Frontier == nil {
+		return nil, nil
+	}
+	ids, err := s.opts.Reality.HypothesesForEntity(ctx, entityID)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]candidateRow, 0, min(len(ids), candidateCap))
+	for _, id := range ids {
+		if len(rows) == candidateCap {
+			break
+		}
+		record, err := s.opts.Frontier.Hypothesis(ctx, id)
+		if err != nil {
+			continue
+		}
+		rows = append(rows, candidateRow{
+			ID:        record.ID,
+			Statement: record.Payload.Statement,
+			Status:    string(record.Status),
+			CreatedAt: timeText(record.CreatedAt),
+		})
+	}
+	return rows, nil
 }
 
 // viewFact renders one immutable revision whole, every field the ledger
@@ -820,6 +918,63 @@ func (s *Server) entityRef(ctx context.Context, id string) entityRef {
 		ref.DisplayName = entity.Payload.DisplayName
 	}
 	return ref
+}
+
+// entityNames names a list of identifiers positionally, for the surfaces that
+// already ship the identifiers and cannot change their shape.
+//
+// A name the ledger cannot produce comes back as the empty string rather than
+// as the identifier repeated, so a page can tell "this is called X" from
+// "this has no name left" and print the identifier itself only where that is
+// the whole truth. Repeats are looked up once: a question with the same
+// target twice, or a page of questions about one subject, is the common case
+// and each lookup is a row read.
+func (s *Server) entityNames(ctx context.Context, ids []string) []string {
+	names := make([]string, len(ids))
+	if len(ids) == 0 {
+		return names
+	}
+	seen := make(map[string]string, len(ids))
+	for i, id := range ids {
+		name, known := seen[id]
+		if !known {
+			if entity, err := s.opts.Reality.Entity(ctx, id); err == nil {
+				name = entity.Payload.DisplayName
+			}
+			seen[id] = name
+		}
+		names[i] = name
+	}
+	return names
+}
+
+// nameFactObjects fills in the display name of every entity-valued fact in a
+// list. An entity-valued fact asserts "contains the repository Babel", and a
+// surface that printed its object identifier was asking the reader to go and
+// look up the claim it had just shown them.
+func (s *Server) nameFactObjects(ctx context.Context, facts []factView) {
+	named := map[string]string{}
+	for i := range facts {
+		id := facts[i].Value.ObjectID
+		if id == "" {
+			continue
+		}
+		name, known := named[id]
+		if !known {
+			name = s.entityRef(ctx, id).DisplayName
+			named[id] = name
+		}
+		facts[i].Value.ObjectName = name
+	}
+}
+
+// nameFactObject is the same for one revision reached through a pointer,
+// which is how a chain's two neighbours travel.
+func (s *Server) nameFactObject(ctx context.Context, fact *factView) {
+	if fact == nil || fact.Value.ObjectID == "" {
+		return
+	}
+	fact.Value.ObjectName = s.entityRef(ctx, fact.Value.ObjectID).DisplayName
 }
 
 // factRow is one revision in a listing, with the subject it is about named
@@ -888,8 +1043,9 @@ func (s *Server) handleRealityFacts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	start, end := pg.window(len(shown))
-	// The subject's name is resolved once per distinct subject: a listing
-	// of twenty revisions about one entity is one read, not twenty.
+	// Every entity a row mentions — the subject it is about and the object
+	// an entity-valued fact points at — is resolved once: a listing of
+	// twenty revisions about one entity is one read, not twenty.
 	subjects := map[string]entityRef{}
 	for _, fact := range shown[start:end] {
 		ref, known := subjects[fact.SubjectID]
@@ -897,7 +1053,16 @@ func (s *Server) handleRealityFacts(w http.ResponseWriter, r *http.Request) {
 			ref = s.entityRef(r.Context(), fact.SubjectID)
 			subjects[fact.SubjectID] = ref
 		}
-		result.Items = append(result.Items, factRow{Fact: viewFact(fact), Subject: ref})
+		view := viewFact(fact)
+		if view.Value.ObjectID != "" {
+			object, seen := subjects[view.Value.ObjectID]
+			if !seen {
+				object = s.entityRef(r.Context(), view.Value.ObjectID)
+				subjects[view.Value.ObjectID] = object
+			}
+			view.Value.ObjectName = object.DisplayName
+		}
+		result.Items = append(result.Items, factRow{Fact: view, Subject: ref})
 	}
 	s.writeJSON(w, http.StatusOK, result)
 }
@@ -973,6 +1138,7 @@ func (s *Server) handleRealityFact(w http.ResponseWriter, r *http.Request) {
 	if fact.Value.ObjectID != "" {
 		object := s.entityRef(ctx, fact.Value.ObjectID)
 		detail.Object = &object
+		detail.Fact.Value.ObjectName = object.DisplayName
 	}
 	if fact.Supersedes != "" {
 		prior, err := s.opts.Reality.Fact(ctx, fact.Supersedes)
@@ -1000,6 +1166,8 @@ func (s *Server) handleRealityFact(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	s.nameFactObject(ctx, detail.Supersedes)
+	s.nameFactObject(ctx, detail.SupersededBy)
 	for _, event := range history {
 		detail.History = append(detail.History, factStatusEventView{
 			ID:         event.ID,

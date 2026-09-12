@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { getRealityEntities, type EntitiesResponse, type SubjectCreateResult } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge } from "../analysis";
@@ -39,7 +39,7 @@ function RealityEntitiesPage() {
   // which is exactly what a creation hands back.
   function named(result: SubjectCreateResult) {
     setNaming(false);
-    navigate(`/reality/focus?subject=${encodeURIComponent(result.subject.entity_id)}`);
+    navigate(`/settings?section=ceilings&subject=${encodeURIComponent(result.subject.entity_id)}`);
   }
 
   const load = useCallback(() => {
@@ -62,7 +62,7 @@ function RealityEntitiesPage() {
       <div className="page-heading">
         <div>
           <p className="eyebrow">Reality Ledger</p>
-          <h1>Subjects</h1>
+          <h1>Who and what</h1>
           <p className="subtitle">
             The things Babel knows about, and how much it holds on each. A subject keeps its
             identity through renames and merges, so nothing here is ever lost — only folded.
@@ -85,7 +85,7 @@ function RealityEntitiesPage() {
       </div>
 
       {naming && (
-        <article className="card">
+        <article className="surface">
           <div className="section-heading">
             <div>
               <p className="eyebrow">A subject Babel does not know yet</p>
@@ -103,7 +103,7 @@ function RealityEntitiesPage() {
       )}
 
       {kinds.length > 0 && (
-        <div className="toolbar card">
+        <div className="toolbar surface">
           <div className="filter-chips" aria-label="Filter by kind">
             <button
               type="button"
@@ -127,17 +127,17 @@ function RealityEntitiesPage() {
       )}
 
       {loading && !data && (
-        <div className="state-card"><span className="spinner" /> Reading the ledger…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading the ledger…</div>
       )}
       {error && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>The subjects could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={load}>Try again</button>
         </div>
       )}
       {!loading && !error && items.length === 0 && (
-        <div className="state-card empty-state">
+        <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>{kind ? `No ${kind} subjects` : "Babel knows of nothing yet"}</strong>
           <span>
@@ -155,7 +155,7 @@ function RealityEntitiesPage() {
       )}
 
       {items.length > 0 && (
-        <div className="table-card">
+        <div className="surface flush">
           <div className="table-scroll">
             <table className="frontier-table">
               <thead>
@@ -172,7 +172,15 @@ function RealityEntitiesPage() {
                 {items.map((item) => {
                   const latest = formatTime(item.latest_fact);
                   const merged = item.canonical_id !== item.id;
-                  const open = () => navigate(`/reality/entities/${encodeURIComponent(item.id)}`);
+                  const to = `/ask/entities/${encodeURIComponent(item.id)}`;
+                  // The name is a real link, so a click that landed on it has
+                  // already been handled; following the row as well would
+                  // navigate twice and break middle-click and modified
+                  // clicks, which are the whole reason the link exists.
+                  const open = (event: ReactMouseEvent | ReactKeyboardEvent) => {
+                    if (event.target instanceof Element && event.target.closest("a")) return;
+                    navigate(to);
+                  };
                   return (
                     <tr
                       key={item.id}
@@ -180,12 +188,16 @@ function RealityEntitiesPage() {
                       role="link"
                       onClick={open}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") open();
+                        if (event.key === "Enter" || event.key === " ") open(event);
                       }}
                     >
+                      {/* The name, and nothing under it. The identifier
+                          used to be a second line on every row: a column of
+                          hex a reader had to look past to find the thing
+                          they came for. It lives on the subject's own page,
+                          under the machinery disclosure. */}
                       <td className="statement-cell">
-                        <strong className="untrusted-inline">{item.display_name}</strong>
-                        <span className="secondary mono">{item.id}</span>
+                        <Link className="ask-row-link untrusted-inline" to={to}>{item.display_name}</Link>
                       </td>
                       <td>
                         <Badge label={item.kind} tone="cyan" />

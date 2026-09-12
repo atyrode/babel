@@ -41,8 +41,8 @@ function ComplaintPage() {
   if (error && !detail) {
     return (
       <section className="page">
-        <Link className="back-link" to="/review">← Review</Link>
-        <div className="state-card error-state">
+        <Link className="back-link" to="/">← Decide</Link>
+        <div className="surface state-note error-state">
           <strong>Complaint could not be loaded.</strong>
           <span>{error}</span>
         </div>
@@ -53,7 +53,7 @@ function ComplaintPage() {
   if (!detail) {
     return (
       <section className="page">
-        <div className="state-card"><span className="spinner" /> Loading complaint…</div>
+        <div className="surface state-note"><span className="spinner" /> Loading complaint…</div>
       </section>
     );
   }
@@ -63,7 +63,7 @@ function ComplaintPage() {
 
   return (
     <section className="page complaint-page">
-      <Link className="back-link" to="/review">← Review</Link>
+      <Link className="back-link" to="/">← Decide</Link>
       <div className="page-heading">
         <div>
           <p className="eyebrow">Operator steering</p>
@@ -91,14 +91,14 @@ function ComplaintPage() {
         {told ? ` · ${told.relative} · ${told.absolute}` : ` · ${complaint.at}`}
       </p>
 
-      <article className="card statement-card">
+      <article className="surface claim-quote">
         <Quoted label="What the operator said" text={complaint.text} />
         {complaint.redacted && (
           <p className="secondary">Secret-shaped material was replaced with placeholders before this was stored.</p>
         )}
       </article>
 
-      <article className="card revisions-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Append-only</p>

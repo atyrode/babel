@@ -264,35 +264,21 @@ export const reconsiderDecisionBasis = (value: string): string =>
 export const reconsiderDecisionTone = (value: string): Tone =>
   RECONSIDER_DECISION_TONES[value] ?? "neutral";
 
-// The route that opens one subject's evaluation page. Built from the kind and
-// the id by this module's own table rather than from anything a record
-// carries, on references.tsx's terms: nothing a model wrote may become a link
+// The route that opens one record. One record is one page, so the kind is not
+// part of the destination any more: it is served with the record. The route is
+// still built by this module's own table rather than from anything a record
+// carries, on references.tsx's terms — nothing a model wrote may become a link
 // destination.
-export function evaluationRoute(subject: EvaluationSubject): string {
-  return `/evaluation/${encodeURIComponent(subject.kind)}/${encodeURIComponent(subject.id)}`;
+export function recordRoute(subject: EvaluationSubject): string {
+  return `/r/${encodeURIComponent(subject.id)}`;
 }
 
-// The producing record's own page, where one exists. Observations are rendered
-// inside their hypothesis and evaluation meta-records have no page of their
-// own, so both answer null and the caller renders the identifier as text
-// rather than a link that would land on the catch-all redirect.
-const ARTIFACT_ROUTES: Record<string, (id: string) => string> = {
-  hypothesis: (id) => `/hypotheses/${encodeURIComponent(id)}`,
-  finding: (id) => `/findings/${encodeURIComponent(id)}`,
-  proposal: (id) => `/proposals/${encodeURIComponent(id)}`,
-};
-
-export function artifactRoute(subject: EvaluationSubject): string | null {
-  const build = ARTIFACT_ROUTES[subject.kind];
-  return build ? build(subject.id) : null;
-}
-
-// SubjectLink names a subject and opens its evaluation page. The identifier is
-// shown beside the title because a title is a model's wording and two records
-// may carry the same one; the id is what an operator quotes.
+// SubjectLink names a subject and opens its record. The identifier is shown
+// beside the title because a title is a model's wording and two records may
+// carry the same one; the id is what an operator quotes.
 export function SubjectLink({ subject, title }: { subject: EvaluationSubject; title: string }) {
   return (
-    <Link className="evaluation-subject-link" to={evaluationRoute(subject)}>
+    <Link className="evaluation-subject-link" to={recordRoute(subject)}>
       {title ? (
         <strong className="untrusted-inline">{title}</strong>
       ) : (
@@ -303,22 +289,6 @@ export function SubjectLink({ subject, title }: { subject: EvaluationSubject; ti
   );
 }
 
-// EvaluationCrossLink is the way from a record's own page to its evaluation.
-//
-// It exists on the hypothesis, proposal and review record pages because §8.5
-// requires the lifecycle to be followable without a guessed URL, and because
-// those three pages are where an operator is already holding the record he
-// wants the reception for. It is a link and never a summary: rendering a vote
-// count here would put a second, unexplained tally beside the record with no
-// room for the ordering basis, the coverage or the freshness that make it
-// readable.
-export function EvaluationCrossLink({ kind, id }: { kind: string; id: string }) {
-  return (
-    <Link className="back-link evaluation-cross-link" to={evaluationRoute({ kind, id })}>
-      Evaluation of this revision →
-    </Link>
-  );
-}
 
 // Reception renders what was said about a revision, and refuses to say
 // anything else.
@@ -443,7 +413,7 @@ export function CoverageSummary({ coverage }: { coverage: EvaluationCoverage }) 
     ["reviewed", coverage.reviewed],
   ];
   return (
-    <div className="card evaluation-coverage-card">
+    <div className="surface coverage-block">
       <div className="evaluation-coverage-counts">
         {counts.map(([state, count]) => (
           <div className="evaluation-coverage-count" key={state}>
@@ -541,7 +511,7 @@ export function WhyHere({ item }: { item: EvaluationItem }) {
 export function StaleNotice({ stale, unavailable }: { stale: boolean; unavailable: string }) {
   if (!stale && !unavailable) return null;
   return (
-    <div className="state-card evaluation-stale" role="status">
+    <div className="surface state-note evaluation-stale" role="status">
       <strong>{stale ? "This ordering is not current." : "Part of this reading is missing."}</strong>
       {unavailable && <span className="untrusted-inline">{unavailable}</span>}
       <span className="muted">

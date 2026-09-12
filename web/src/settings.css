@@ -1,0 +1,67 @@
+/* Settings — what the operator configures and then stops thinking about.
+ *
+ * The four sections under Settings are read once a month, so nothing here
+ * competes for attention; what it has to do is answer the question that made
+ * someone open the section at all. The archive's is "is the corpus safe",
+ * which is three figures, not a table.
+ *
+ * Colour, type and spacing come from styles.css's tokens and from nowhere
+ * else, and the figures use the `.stat` primitive rather than a shape of
+ * their own.
+ */
+
+/* The archive's summary: how much is stored, how recently anything landed,
+ * and how many machines write into it. It wraps rather than shrinking,
+ * because a figure that has been squeezed out of tabular alignment is no
+ * longer comparable with the one beside it. */
+.archive-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-6);
+}
+
+.archive-summary .stat {
+  flex: 1 1 12rem;
+}
+
+/* "What Babel is" — the one-page explanation, set as one.
+ *
+ * It rendered as chrome: 13.6px system sans running the full width of the
+ * surface, which is about 115 characters a line — the shape of a settings
+ * form, not of something anybody reads end to end. Decision 90 puts prose in
+ * the editorial register, so the running text here is the serif at reading
+ * size and bounded to `--measure`. The tables, the diagrams and the badge
+ * lists stay as they are: they are data, and data is observatory.
+ *
+ * The selectors carry `.settings-page` so they outrank the `.help-section`
+ * rules in styles.css on specificity rather than on which stylesheet the
+ * bundler happened to emit second. */
+.settings-page .help-section p:not(.eyebrow):not(.panel-caption),
+.settings-page .help-section .help-list li,
+.settings-page .help-section .help-lifecycle li,
+.settings-page .help-section .help-terms dd {
+  max-width: var(--measure);
+  font-family: var(--font-editorial);
+  font-size: 1rem;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+/* The eyebrow is a label over the section, not prose: `.help-section p` used
+ * to enlarge it to 0.85rem, which is where the micro-caps lost their shape. */
+.settings-page .help-section p.eyebrow {
+  font-size: 0.66rem;
+}
+
+/* A definition list of eight terms is prose in two columns; the column is
+ * already narrower than the measure, so only the face and size change. */
+.settings-page .help-section .help-terms dd {
+  max-width: none;
+  font-size: 0.95rem;
+}
+
+/* The badge meanings sit in a grid beside a badge and are read as a legend,
+ * so they keep the UI face — but at the same size as the prose around them. */
+.settings-page .help-section .help-badge-list li span {
+  font-size: 0.86rem;
+}

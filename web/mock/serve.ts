@@ -14,6 +14,8 @@ import type {
 
 import { evaluationResponse } from "./evaluation";
 import { OVERVIEW_ROWS, overviewPhaseB, phasebResponse } from "./phaseb";
+import { recordResponse } from "./record";
+import { watchResponse } from "./watch";
 
 const distRoot = resolve(import.meta.dir, "..", "dist");
 const port = Number(Bun.env.PORT ?? 4174);
@@ -32,6 +34,12 @@ const sessions: SessionSummary[] = [
     title_provenance: "derived",
     workspace: "/home/demo/projects/atlas",
     continuation_grade: true,
+    // Two of the three fixtures carry usage and one does not, because the
+    // absence is half of what the table has to render honestly.
+    cost_usd: 4.182,
+    total_tokens: 1_284_002,
+    turns: 96,
+    tool_errors: 3,
   },
   {
     harness: "claude-code",
@@ -43,6 +51,10 @@ const sessions: SessionSummary[] = [
     title_provenance: "recorded",
     workspace: "/home/demo/projects/kepler",
     continuation_grade: false,
+    cost_usd: 0.42,
+    total_tokens: 88_400,
+    turns: 11,
+    tool_errors: 0,
   },
   {
     harness: "omp",
@@ -54,6 +66,10 @@ const sessions: SessionSummary[] = [
     title_provenance: null,
     workspace: "/home/demo/scratch",
     continuation_grade: true,
+    cost_usd: null,
+    total_tokens: null,
+    turns: null,
+    tool_errors: null,
   },
 ];
 
@@ -249,6 +265,12 @@ function fillerSession(index: number): SessionSummary {
     title_provenance: index % 4 === 0 ? null : ["recorded", "derived", "inferred"][index % 3],
     workspace: `/home/demo/projects/synthetic-${index % 5}`,
     continuation_grade: index % 3 !== 0,
+    // Every fifth filler session recorded no usage, so the table's absent
+    // case, its cost bar and its totals are all previewable.
+    cost_usd: index % 5 === 0 ? null : Number((0.08 * (index + 1)).toFixed(3)),
+    total_tokens: index % 5 === 0 ? null : 18_000 * (index + 1),
+    turns: index % 5 === 0 ? null : 2 + index,
+    tool_errors: index % 5 === 0 ? null : index % 4,
   };
 }
 
@@ -286,6 +308,46 @@ for (let index = 0; index < 15; index += 1) {
   transcripts[summary.selector] = [
     { index: 0, role: "user", kind: "message", time: summary.modified, text: `Generated filler prompt for ${summary.selector}.` },
     { index: 1, role: "assistant", kind: "message", time: summary.modified, text: "Generated filler response. No real transcript content is present." },
+  ];
+}
+
+// Babel's own analysis passes, in the shape the babelself adapter records
+// them: one log per supervised job of a run, a source id of "<run>/<job>",
+// and a title the writer puts into the log itself. A machine that has been
+// exploring for a week holds more of these than it holds the operator's own
+// conversations, which is the proportion the sessions surface has to preview
+// — a list that is mostly Babel talking to itself is the thing the default
+// view exists to answer.
+const babelJobs = ["explore", "challenge", "consolidate"];
+
+function babelPass(index: number): SessionSummary {
+  const run = `run_discovery-${String(7 + Math.floor(index / babelJobs.length)).padStart(2, "0")}`;
+  const job = babelJobs[index % babelJobs.length];
+  const sourceId = `${run}/${job}`;
+  return {
+    harness: "babel",
+    source_id: sourceId,
+    selector: `babel/${sourceId}`,
+    size: 68_000 + index * 12_400,
+    modified: new Date(Date.UTC(2026, 7, 28, 12, index * 23)).toISOString(),
+    title: `babel ${job} pass of run ${run}`,
+    title_provenance: "recorded",
+    workspace: "/home/demo/.local/share/babel/analysis",
+    continuation_grade: true,
+    cost_usd: Number((0.21 + index * 0.043).toFixed(3)),
+    total_tokens: 96_000 + index * 8_400,
+    turns: 6 + index,
+    tool_errors: index % 3 === 0 ? 0 : 1,
+  };
+}
+
+for (let index = 0; index < 9; index += 1) {
+  const summary = babelPass(index);
+  catalog.push(summary);
+  details[summary.selector] = fillerDetail(summary);
+  transcripts[summary.selector] = [
+    { index: 0, role: "user", kind: "message", time: summary.modified, text: `Generated analysis prompt for ${summary.selector}.` },
+    { index: 1, role: "assistant", kind: "message", time: summary.modified, text: "Generated analysis response. No real transcript content is present." },
   ];
 }
 
@@ -692,6 +754,16 @@ const server = Bun.serve({
     // their own and do not belong in either of the other two.
     const evaluation = await evaluationResponse(request, url);
     if (evaluation) return evaluation;
+    // The record peel, last of the three: /api/record/{id} is an id-shaped
+    // route and the sub-resources above it — revisions, dispositions, links —
+    // are exact paths ./phaseb.ts answers first, so ordering is what keeps an
+    // id from swallowing one of them.
+    const record = await recordResponse(request, url);
+    if (record) return record;
+    // The control room's own path space, in its own file: thirty-one runs in
+    // flight and a conductor configuration are a body of state of their own.
+    const watch = await watchResponse(request, url);
+    if (watch) return watch;
     const api = apiResponse(request, url);
     return api ?? staticResponse(url);
   },

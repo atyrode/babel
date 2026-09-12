@@ -472,6 +472,27 @@ CREATE TRIGGER frontier_triage_cluster_immutable BEFORE UPDATE ON frontier_triag
 BEGIN SELECT RAISE(ABORT, 'the cluster of one piece of triage advice is immutable; a later pass records its own advice'); END;
 CREATE TRIGGER frontier_triage_cluster_kept BEFORE DELETE ON frontier_triage_cluster
 BEGIN SELECT RAISE(ABORT, 'the cluster of one piece of triage advice is never deleted; an advice whose peers vanished could not be read'); END;
+`,
+	// Migration 7 indexes the run that wrote each record.
+	//
+	// All four record tables have carried run_id since migration 1, and
+	// nothing could ask it a question: the column is written on every insert
+	// and read back on every row, but "what else did this run write" meant
+	// four full table scans. That question is what a reader has as soon as
+	// he finishes one record — the rest of what that run said is the other
+	// half of the same thought — and answering it by scanning means a page
+	// view whose cost grows with every record the machine has ever written.
+	//
+	// Indexes rather than a table, because the relation is already stored.
+	// This migration asserts no new fact, touches no row, and cannot fail on
+	// data. IF NOT EXISTS keeps it idempotent against a file that acquired
+	// the same index some other way, which is the one thing a pure-index
+	// migration can meet and does not need to fail on.
+	`
+CREATE INDEX IF NOT EXISTS frontier_hypothesis_run ON frontier_hypothesis(run_id);
+CREATE INDEX IF NOT EXISTS frontier_observation_run ON frontier_observation(run_id);
+CREATE INDEX IF NOT EXISTS frontier_finding_run ON frontier_finding(run_id);
+CREATE INDEX IF NOT EXISTS frontier_proposal_run ON frontier_proposal(run_id);
 `}
 
 // Store is the durable hypothesis frontier. It exposes no operation that

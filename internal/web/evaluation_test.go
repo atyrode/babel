@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,8 @@ type fakeEvaluation struct {
 	detail   evaluation.Detail
 	coverage evaluation.Coverage
 	policy   evaluation.Policy
+	// assessmentDays is the reviews-per-day series the Watch surface reads.
+	assessmentDays []evaluation.AssessmentDay
 
 	// err, when set, is returned by every method, so the sentinel
 	// classification can be exercised through a real request.
@@ -47,6 +50,11 @@ type fakeEvaluation struct {
 	lastPolicy   evaluation.Policy
 	lastInput    evaluation.OperatorInput
 	writes       int
+	// refreshes counts the deferred projection refreshes a route actually
+	// ran. It is guarded because the route runs them after the response, on
+	// a goroutine of their own.
+	mu        sync.Mutex
+	refreshes int
 }
 
 func (f *fakeEvaluation) List(_ context.Context, q evaluation.Query) (evaluation.Page, error) {
@@ -70,6 +78,13 @@ func (f *fakeEvaluation) Coverage(context.Context) (evaluation.Coverage, error) 
 		return evaluation.Coverage{}, f.err
 	}
 	return f.coverage, nil
+}
+
+func (f *fakeEvaluation) AssessmentDays(context.Context, time.Time) ([]evaluation.AssessmentDay, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.assessmentDays, nil
 }
 
 func (f *fakeEvaluation) Policy(context.Context) (evaluation.Policy, error) {
@@ -105,7 +120,25 @@ func (f *fakeEvaluation) Operator(_ context.Context, in evaluation.OperatorInput
 	return evaluation.Record{
 		ID: "evr_operator-1", Kind: in.Kind, Subject: in.Subject,
 		ActorKind: "operator", ActorID: in.Operator, Reason: in.Reason,
-		Decision: in.Decision, RelatedID: in.RelatedID, CreatedAt: time.Now().UTC(),
+		Decision: in.Decision, Stance: in.Stance, RelatedID: in.RelatedID,
+		CreatedAt: time.Now().UTC(),
+	}, nil
+}
+
+// OperatorDeferred records like Operator and hands back the refresh the real
+// service defers. The counter it bumps is the fake's own, so a test can prove
+// the route ran the refresh it was given rather than dropping it.
+func (f *fakeEvaluation) OperatorDeferred(ctx context.Context, in evaluation.OperatorInput) (
+	evaluation.Record, func(context.Context) error, error) {
+	record, err := f.Operator(ctx, in)
+	if err != nil {
+		return evaluation.Record{}, nil, err
+	}
+	return record, func(context.Context) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.refreshes++
+		return nil
 	}, nil
 }
 

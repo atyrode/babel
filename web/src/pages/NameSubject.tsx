@@ -107,7 +107,7 @@ function NameSubjectForm({
 
   if (vocabularyError) {
     return (
-      <div className="state-card error-state">
+      <div className="surface state-note error-state">
         <strong>The ledger's own vocabulary could not be read.</strong>
         <span>{vocabularyError}</span>
         <span className="muted">

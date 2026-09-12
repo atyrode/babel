@@ -30,24 +30,24 @@ const REVIEW_STATUSES: Array<[string, string]> = [
 ];
 
 const COMMANDS: Array<[string, string, string, string]> = [
-  ["babel web", "Serves this interface on loopback behind a one-time launch link.", "/", "Dashboard"],
-  ["babel storage configure", "Stores the repository and catalog configuration.", "/archive", "Archive"],
-  ["babel archive push", "Backs this host's sessions into the restic repository.", "/archive", "Archive"],
-  ["babel archive status", "Reports snapshots per host and the catalog's lag.", "/archive", "Archive"],
-  ["babel archive verify", "Checks repository integrity, standard or deep.", "/archive", "Archive"],
+  ["babel web", "Serves this interface on loopback behind a one-time launch link.", "/", "Decide"],
+  ["babel storage configure", "Stores the repository and catalog configuration.", "/settings?section=archive", "Settings › Archive"],
+  ["babel archive push", "Backs this host's sessions into the restic repository.", "/settings?section=archive", "Settings › Archive"],
+  ["babel archive status", "Reports snapshots per host and the catalog's lag.", "/settings?section=archive", "Settings › Archive"],
+  ["babel archive verify", "Checks repository integrity, standard or deep.", "/settings?section=archive", "Settings › Archive"],
   ["babel sessions list", "Lists the session transcripts the harnesses have written.", "/sessions", "Sessions"],
   ["babel sessions inspect", "Shows one session whole, with its transcript.", "/sessions", "Sessions"],
   ["babel sessions fetch", "Restores one archived session's files locally.", "/sessions", "Sessions"],
-  ["babel prepare", "Fixes an exploration's corpus scope and builds its index.", "/explore", "Explore"],
-  ["babel explore", "Runs one exploration through the Code worker.", "/explore", "Explore"],
-  ["babel hypotheses", "Lists the candidate frontier.", "/hypotheses", "Hypotheses"],
-  ["babel findings", "Lists consolidated findings.", "/findings", "Hypotheses → Findings"],
-  ["babel review queue", "Lists records awaiting a human decision.", "/review", "Review"],
-  ["babel review decide", "Appends one attributed decision.", "/review", "Review"],
-  ["babel reality inbox", "Lists the prioritized question inbox.", "/reality", "Reality"],
-  ["babel reality answer", "Records an attributed answer, verbatim.", "/reality", "Reality"],
-  ["babel conductor status", "Reports this host's duty state and what the fleet announced.", "/fleet", "Fleet"],
-  ["babel export", "Renders one record as JSON or Markdown.", "/review", "Review"],
+  ["babel prepare", "Fixes an exploration's corpus scope and builds its index.", "/watch", "Watch"],
+  ["babel explore", "Runs one exploration through the Code worker.", "/watch", "Watch"],
+  ["babel hypotheses", "Lists the candidate frontier.", "/read?kind=hypothesis", "Read"],
+  ["babel findings", "Lists consolidated findings.", "/read?kind=finding", "Read"],
+  ["babel review queue", "Lists records awaiting a human decision.", "/", "Decide"],
+  ["babel review decide", "Appends one attributed decision.", "/", "Decide"],
+  ["babel reality inbox", "Lists the prioritized question inbox.", "/ask", "Ask"],
+  ["babel reality answer", "Records an attributed answer, verbatim.", "/ask", "Ask"],
+  ["babel conductor status", "Reports this host's duty state and what other machines announced.", "/watch", "Watch"],
+  ["babel export", "Renders one record as JSON or Markdown.", "/", "Decide"],
 ];
 
 // The "Am I talking to an AI?" table. One row per surface an operator actually
@@ -92,12 +92,13 @@ const AI_SURFACES: Array<{
       "Preparation never infers.",
   },
   {
-    surface: "babel explore",
-    mono: true,
+    surface: "babel explore · Watch › Ask for a run",
+    mono: false,
     answer: "only during a run",
     reason:
-      "Starts the one sandboxed Code worker. When the run ends the worker is terminated, and no " +
-      "agent exists anywhere.",
+      "Both start the one sandboxed Code worker — the browser by running this machine's own " +
+      "binary with the flags the CLI takes, never a run of its own assembly. When the run ends " +
+      "the worker is terminated, and no agent exists anywhere.",
   },
   {
     surface: "Titles — recorded · derived",
@@ -117,10 +118,11 @@ const AI_SURFACES: Array<{
   },
 ];
 
-// In-page cross-links. The router owns the URL fragment (#/help is a route),
-// so a native #anchor link would be read as navigation to a route that does
-// not exist. The href stays the page's own route — which keeps middle-click
-// and the link-audit test honest — and the click scrolls instead.
+// In-page cross-links. The router owns the URL fragment (this text is a
+// section of #/settings, not a route of its own), so a native #anchor link
+// would be read as navigation to a route that does not exist. The href stays
+// the section's own URL — which keeps middle-click and the link-audit test
+// honest — and the click scrolls instead.
 function scrollTo(id: string) {
   return (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
@@ -176,7 +178,7 @@ function ArchiveLoopDiagram() {
       <rect className="rt-box" x="14" y="248" width="332" height="48" rx="9" />
       <text className="rt-title" x="180" y="268" textAnchor="middle">Web pages · CLI browsing</text>
       <text className="rt-sub" x="180" y="284" textAnchor="middle">
-        show what the loop already wrote — and start nothing
+        show what the loop already wrote — and never write it back
       </text>
     </svg>
   );
@@ -192,12 +194,12 @@ function ExploreRunDiagram() {
     >
       <title id="rt-run-title">An exploration run: the only place a model runs</title>
       <desc id="rt-run-desc">
-        The operator starts a run from a terminal with babel explore. Inside the AI boundary,
-        exactly one sandboxed Code worker runs under the profile fixed by the operator's terminal
-        ceremony. Its evidence requests cross the boundary to Babel's broker, which grants or
-        denies each one and receipts every decision. Everything the run produces lands in Babel's
-        own records: the hypothesis frontier and the run receipt. The worker is terminated when
-        the run ends; between runs, no agent exists.
+        The operator starts a run, from a terminal with babel explore or from Watch, which runs
+        that same command. Inside the AI boundary, exactly one sandboxed Code worker runs under
+        the profile fixed by the operator's terminal ceremony. Its evidence requests cross the
+        boundary to Babel's broker, which grants or denies each one and receipts every decision.
+        Everything the run produces lands in Babel's own records: the hypothesis frontier and the
+        run receipt. The worker is terminated when the run ends; between runs, no agent exists.
       </desc>
       <defs>
         <marker id="rt-arrow-run" markerWidth="7" markerHeight="7" refX="5.4" refY="3" orient="auto">
@@ -208,7 +210,7 @@ function ExploreRunDiagram() {
         </marker>
       </defs>
       <rect className="rt-box" x="14" y="14" width="332" height="52" rx="9" />
-      <text className="rt-title" x="180" y="36" textAnchor="middle">You, in a terminal</text>
+      <text className="rt-title" x="180" y="36" textAnchor="middle">You — a terminal, or Watch</text>
       <text className="rt-sub rt-mono" x="180" y="54" textAnchor="middle">
         babel explore --preparation ID
       </text>
@@ -265,19 +267,12 @@ function ExploreRunDiagram() {
 
 function HelpPage() {
   return (
-    <section className="page help-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Orientation</p>
-          <h1>What Babel is — and what it is not</h1>
-          <p className="subtitle">
-            Babel is an exploratory instrument for archived agent conversations. It records where an
-            idea came from and how it was investigated; it does not promise the idea is correct.
-          </p>
-        </div>
-      </div>
+    // A section of Settings rather than a page of its own. It is reference
+    // text: long by intention, read once, and reached deliberately — which is
+    // the one kind of page the three-screen rule does not govern.
+    <div className="page-section help-section">
 
-      <article className="card help-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">The frame</p>
@@ -319,7 +314,7 @@ function HelpPage() {
         </ul>
       </article>
 
-      <article className="card help-card" id="runtime-model">
+      <article className="surface" id="runtime-model">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Runtime model</p>
@@ -331,7 +326,7 @@ function HelpPage() {
           here to talk to. It runs as <strong>two loops that never overlap</strong>. The first
           archives this host every hour and involves no model at all. The second is an exploration
           run — the only place a model ever executes — and it exists exactly as long as the run
-          you started. <a href="#/help" onClick={scrollTo("lifecycle")}>The lifecycle</a> below
+          you started. <a href="#/settings?section=help" onClick={scrollTo("lifecycle")}>The lifecycle</a> below
           follows the records these loops write.
         </p>
         <div className="runtime-loops">
@@ -350,8 +345,8 @@ function HelpPage() {
               <Badge label="AI · only inside the boundary" tone="violet" />
               <strong>An exploration run</strong>
               <span className="runtime-loop-sub">
-                Exists only after you run <code>babel explore</code>, and ends by terminating its
-                worker.
+                Exists only after you ask for one — <code>babel explore</code> in a terminal, or
+                Watch — and ends by terminating its worker.
               </span>
             </figcaption>
             <ExploreRunDiagram />
@@ -391,13 +386,17 @@ function HelpPage() {
 
         <h3>Who holds authority</h3>
         <p>
-          Every run today is <strong>operator-started</strong>: <code>babel explore</code> and{" "}
-          <code>babel sessions title infer --confirm</code> are the only doors, and both are
-          terminal commands. The <strong>profile</strong> — which model, which provider — is
-          chosen only through an operator's terminal ceremony
-          (<code>babel analysis profile configure</code> for exploration,{" "}
-          <code>babel titles configure</code> for title inference); no page and no API can pick
-          or change it, and inference refuses until that ceremony has happened. A{" "}
+          Every run is <strong>operator-started</strong>, and since 2026-09-12 there are two
+          doors rather than one: <code>babel explore</code> in a terminal, and{" "}
+          <strong>Ask for a run</strong> on Watch, which runs this machine's own binary with the
+          flags that command takes. The browser assembles no run of its own — same ceilings, same
+          profile, same grants, same receipt, attributed to the session that asked — and a
+          deployment with no ceilings set refuses both with one sentence. Stopping is graceful or
+          it is nothing, and this server can stop only a run it started itself. The{" "}
+          <strong>profile</strong> — which model, which provider — is still chosen only through
+          an operator's terminal ceremony (<code>babel analysis profile configure</code> for
+          exploration, <code>babel titles configure</code> for title inference); no page and no
+          API can pick or change it, and inference refuses until that ceremony has happened. A{" "}
           <strong>broker grant is per-run</strong>: a capability the grant never named is
           denied even where policy would allow it, and the receipt records every decision. And
           nothing Babel runs <strong>publishes or writes outside Babel's own records</strong> — no
@@ -405,13 +404,13 @@ function HelpPage() {
         </p>
         <p className="help-planned">
           <strong>Planned, not built.</strong> An autonomous conductor that could start runs on
-          its own is designed with per-run attributable authority — every run it started would
-          name it and be bounded by the same per-run grant. Today it does not exist: nothing
-          starts a run but you.
+          its own schedule is designed with per-run attributable authority — every run it started
+          would name it and be bounded by the same per-run grant. Today it does not exist: a run
+          starts because you asked for it, from a terminal or from Watch.
         </p>
       </article>
 
-      <article className="card help-card" id="lifecycle">
+      <article className="surface" id="lifecycle">
         <div className="section-heading">
           <div>
             <p className="eyebrow">How work flows</p>
@@ -423,7 +422,7 @@ function HelpPage() {
             <strong>Archive</strong> — <code>babel archive push</code> backs this host's session
             files into the encrypted restic repository. The repository is authoritative for what
             exists; recovery needs only restic and the password.
-            <Link className="panel-link" to="/archive">Archive →</Link>
+            <Link className="panel-link" to="/settings?section=archive">Settings › Archive →</Link>
           </li>
           <li>
             <strong>Catalog</strong> — Babel discovers, normalizes and hashes sessions without
@@ -435,42 +434,45 @@ function HelpPage() {
             <strong>Prepare</strong> — <code>babel prepare</code> fixes one exploration's corpus
             scope and builds the retrieval index over it. The preparation is an immutable record, so
             two runs over the same scope reference one description of it.
-            <Link className="panel-link" to="/explore">Explore →</Link>
+            <Link className="panel-link" to="/watch">Watch →</Link>
           </li>
           <li>
             <strong>Explore</strong> — <code>babel explore</code> runs one exploration inside a
-            contained Code worker, under a capability grant and a recipe. Exploration cannot be
-            started from this interface: a run outlives the browser session, and the disclosure
-            consent belongs to a terminal.
-            <Link className="panel-link" to="/explore">Explore →</Link>
-            <a className="panel-link" href="#/help" onClick={scrollTo("runtime-model")}>
+            contained Code worker, under a capability grant and a recipe. Watch can ask for that
+            same run: it starts this machine's own binary with the same flags, so the ceilings,
+            the profile and the receipt are the terminal's either way. The run outlives the
+            browser session that asked for it, and closing the tab stops nothing.
+            <Link className="panel-link" to="/watch">Watch →</Link>
+            <a className="panel-link" href="#/settings?section=help" onClick={scrollTo("runtime-model")}>
               When does Babel run? ↑
             </a>
           </li>
           <li>
-            <strong>Hypotheses</strong> — every emergent candidate is preserved in a resumable
+            <strong>Candidates</strong> — every emergent hypothesis is preserved in a resumable
             frontier, in the model's own wording, with the observations and evidence locators that
-            develop it.
-            <Link className="panel-link" to="/hypotheses">Hypotheses →</Link>
+            develop it. Nothing in the interface is called a frontier: it is read as what Babel has
+            found.
+            <Link className="panel-link" to="/read?kind=hypothesis">Read →</Link>
           </li>
           <li>
             <strong>Findings and proposals</strong> — developed candidates are consolidated into
             findings, and a finding or a strong claim can carry proposals: what to do about it,
             with prerequisites, verification criteria, risks and open questions. This is Babel's
-            output, and it is the first two entries in the row above.
-            <Link className="panel-link" to="/findings">Findings →</Link>
-            <Link className="panel-link" to="/proposals">Proposals →</Link>
+            output, and Read is where all of it is read.
+            <Link className="panel-link" to="/read">Read →</Link>
           </li>
           <li>
-            <strong>Review</strong> — a human decides. Each decision is an appended, attributed
-            event; the record's whole history stays readable. Reality questions collect missing
-            context, and an interpreted plan applies only on explicit acceptance.
-            <Link className="panel-link" to="/review">Review →</Link>
+            <strong>Decide</strong> — a human rules. Each decision is an appended, attributed
+            event; the record's whole history stays readable. What only you can answer is asked
+            under Ask, where an answer is kept verbatim and an interpreted plan applies only on
+            your explicit acceptance.
+            <Link className="panel-link" to="/">Decide →</Link>
+            <Link className="panel-link" to="/ask">Ask →</Link>
           </li>
         </ol>
       </article>
 
-      <article className="card help-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Vocabulary</p>
@@ -512,7 +514,7 @@ function HelpPage() {
             <dt>Presence · heartbeat</dt>
             <dd>
               While a conductor cycle or an exploration runs, it announces itself into the shared
-              catalog and writes a heartbeat. <Link to="/fleet">Fleet</Link> lists those
+              catalog and writes a heartbeat. <Link to="/watch">Watch</Link> lists those
               announcements from every machine, this one included. A heartbeat is evidence and never
               an observation: a run that has gone quiet may be working, blocked, or gone, and no
               host can tell those apart — so the page states the age of the last word rather than
@@ -537,11 +539,14 @@ function HelpPage() {
             </dd>
           </div>
           <div>
-            <dt>Reality question · plan</dt>
+            <dt>Question · answer · plan</dt>
             <dd>
-              When ownership, lifecycle or focus context is missing or stale, Babel asks. Answers are
-              retained verbatim and attributed; a versioned interpreter turns one into a plan, and
-              only an operator's explicit acceptance lets that plan touch the ledger.
+              When ownership, lifecycle or focus context is missing or stale, Babel asks, and{" "}
+              <Link to="/ask">Ask</Link> is where those questions are read and answered. Answers
+              are retained verbatim and attributed; a versioned interpreter turns one into a plan,
+              and only an operator's explicit acceptance lets that plan touch the ledger. The
+              store underneath is the reality ledger, which is the word the CLI still uses
+              (<code>babel reality inbox</code>).
             </dd>
           </div>
         </dl>
@@ -574,7 +579,7 @@ function HelpPage() {
         </div>
       </article>
 
-      <article className="card help-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">Terminal and browser</p>
@@ -582,9 +587,11 @@ function HelpPage() {
           </div>
         </div>
         <p className="muted">
-          Both surfaces reach one implementation, so a command and its page cannot disagree. The
-          browser holds no authority the terminal does not: it never starts an exploration, and it
-          cannot delete archived data.
+          Both surfaces reach one implementation, so a command and its page cannot disagree. Where
+          the browser acts — asking for a run, stopping one it started, recording a decision or an
+          answer — it runs the command's own path under the command's own refusals, and it holds
+          no authority the terminal does not: it cannot choose a model profile, and it cannot
+          delete archived data.
         </p>
         <div className="table-scroll">
           <table>
@@ -608,7 +615,7 @@ function HelpPage() {
         </div>
       </article>
 
-      <article className="card help-card">
+      <article className="surface">
         <div className="section-heading">
           <div>
             <p className="eyebrow">From nothing</p>
@@ -633,12 +640,13 @@ function HelpPage() {
           </li>
           <li>
             <strong>Explore, then read.</strong> <code>babel explore --preparation ID</code> in a
-            terminal. Its records appear in <Link to="/hypotheses">Hypotheses</Link> and{" "}
-            <Link to="/explore">Explore</Link> as soon as it commits them.
+            terminal, or <strong>Ask for a run</strong> on <Link to="/watch">Watch</Link>, which
+            starts the same thing. Its records appear in <Link to="/read">Read</Link> and on{" "}
+            <Link to="/watch">Watch</Link> as soon as it commits them.
           </li>
           <li>
-            <strong>Decide.</strong> Work <Link to="/review">Review</Link> and{" "}
-            <Link to="/reality">Reality</Link>. Every decision is attributed and appended, so the
+            <strong>Decide.</strong> Work <Link to="/">Decide</Link> and{" "}
+            <Link to="/ask">Ask</Link>. Every decision is attributed and appended, so the
             trail of what you concluded and when stays readable.
           </li>
         </ol>
@@ -648,7 +656,7 @@ function HelpPage() {
           <code>babel web</code> for a new one.
         </p>
       </article>
-    </section>
+    </div>
   );
 }
 

@@ -111,6 +111,32 @@ async function show(target: Page): Promise<void> {
   visited.push(target.url());
 }
 
+// decided waits for Decide — the page the scrubbed launch URL lands on — to
+// have answered rather than merely painted, and it is what makes every
+// assertion below non-vacuous. Every read behind that page is authorized, so
+// the queue reaching either of its settled shapes proves the bootstrap
+// exchange established a session; a refused read renders `.error-state`
+// instead and never satisfies this, which is how an unauthenticated context
+// is told apart from an empty deployment.
+async function decided(target: Page): Promise<void> {
+  await target.waitForFunction(
+    () => {
+      const page_ = document.querySelector(".decide-page");
+      if (!page_ || page_.querySelector(".state-note .spinner")) return false;
+      return page_.querySelector(".decide-queue, .empty-state") !== null;
+    },
+    { timeout: 30_000 },
+  );
+}
+
+// answered reports the same thing without waiting, for the contexts that must
+// never reach it.
+function answered(target: Page): Promise<boolean> {
+  return target.evaluate(
+    () => document.querySelector(".decide-page .decide-queue, .decide-page .empty-state") !== null,
+  );
+}
+
 beforeAll(async () => {
   if (!chrome) return;
 
@@ -208,14 +234,11 @@ afterAll(async () => {
 
 test.skipIf(!chrome)("the fragment nonce becomes a cookie the page cannot read", async () => {
   await page.goto(primary.url, { waitUntil: "networkidle2" });
-  // The scrubbed launch URL carries no hash, so it lands on the dashboard.
-  // Waiting for its own authorized read is the non-vacuity check: the panel
-  // heading below only appears once GET /api/overview answered 200, which it
-  // cannot do without the session this test is about.
-  await page.waitForFunction(
-    () => document.body.innerText.includes("Archive health"),
-    { timeout: 30_000 },
-  );
+  // The scrubbed launch URL carries no hash, so it lands on Decide. Waiting
+  // for that page's own authorized read is the non-vacuity check: the queue
+  // only settles once its reads answered 200, which they cannot do without
+  // the session this test is about.
+  await decided(page);
   await show(page);
 
   expect(page.url()).not.toContain(primary.nonce);
@@ -238,9 +261,10 @@ test.skipIf(!chrome)("the fragment nonce becomes a cookie the page cannot read",
   expect(await page.evaluate(() => Object.keys(sessionStorage))).toHaveLength(0);
   expect(await page.evaluate(() => Object.keys(localStorage))).not.toContain("babel.web.token");
 
-  // The rest of this suite browses the session and its transcript, which is
-  // where the §548 channels are, so it starts from the listing. The hash
-  // navigation is a real history entry, exactly as clicking the nav is.
+  // The rest of this suite browses a session and its transcript, which is
+  // where the §548 channels are. Sessions carries no nav entry any more — a
+  // transcript is where a citation lands — so the route is entered the way a
+  // followed citation enters it, as a real history entry.
   await page.evaluate(() => {
     window.location.hash = "#/sessions";
   });
@@ -420,10 +444,7 @@ test.skipIf(!chrome)("the launch link authenticates once and is then refused", a
   try {
     const opened = await first.newPage();
     await opened.goto(single.url, { waitUntil: "networkidle2" });
-    await opened.waitForFunction(
-      () => document.body.innerText.includes("Archive health"),
-      { timeout: 30_000 },
-    );
+    await decided(opened);
     const established = await sessionCookie(first);
     expect(established, "the first use established no session").toBeDefined();
 
@@ -435,23 +456,20 @@ test.skipIf(!chrome)("the launch link authenticates once and is then refused", a
     await replayed.goto(single.url, { waitUntil: "networkidle2" });
     await replayed.waitForFunction(
       () => /already used|unauthorized/i.test(document.body.innerText)
-        || document.body.innerText.includes("Archive health"),
+        || document.querySelector(".decide-page .decide-queue, .decide-page .empty-state") !== null,
       { timeout: 30_000 },
     );
     const refused = await replayed.evaluate(() => document.body.innerText);
     expect(refused).toMatch(/already used/i);
     expect(refused).toMatch(/babel web/i);
-    expect(refused).not.toContain("Archive health");
+    expect(await answered(replayed), "a spent nonce still reached the queue").toBe(false);
     expect(await sessionCookie(second)).toBeUndefined();
 
     // And the legitimate page is undisturbed by the replay: a reload still
     // authenticates with the cookie it holds, which is what makes the refusal
     // above a property of the nonce rather than of a server that broke.
     await opened.reload({ waitUntil: "networkidle2" });
-    await opened.waitForFunction(
-      () => document.body.innerText.includes("Archive health"),
-      { timeout: 30_000 },
-    );
+    await decided(opened);
     expect((await sessionCookie(first))!.value).toBe(established!.value);
   } finally {
     await first.close();
@@ -481,10 +499,7 @@ test.skipIf(!chrome)("no reachable history entry retains the launch nonce", asyn
   try {
     const trail = await walker.newPage();
     await trail.goto(walked.url, { waitUntil: "networkidle2" });
-    await trail.waitForFunction(
-      () => document.body.innerText.includes("Archive health"),
-      { timeout: 30_000 },
-    );
+    await decided(trail);
 
     // Visit two more routes so the stack has somewhere to walk back from, and
     // so the walk crosses the landing entry the nonce arrived on.

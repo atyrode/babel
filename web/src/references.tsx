@@ -57,9 +57,9 @@ const EDGE_PHRASING: Record<string, { out: string; in: string }> = {
 // says so instead of linking into the catch-all redirect.
 const ROUTES: Record<string, (id: string) => string> = {
   session: (id) => `/sessions/${encodeURIComponent(id)}`,
-  hypothesis: (id) => `/hypotheses/${encodeURIComponent(id)}`,
-  finding: (id) => `/findings/${encodeURIComponent(id)}`,
-  proposal: (id) => `/review/proposal/${encodeURIComponent(id)}`,
+  hypothesis: (id) => `/r/${encodeURIComponent(id)}`,
+  finding: (id) => `/r/${encodeURIComponent(id)}`,
+  proposal: (id) => `/r/${encodeURIComponent(id)}`,
   // #115's record pages exist now, so a complaint endpoint is followable
   // rather than inert.
   complaint: (id) => `/complaints/${encodeURIComponent(id)}`,
@@ -104,7 +104,7 @@ export function RecordLinks({
   if (links && !links.available) return null;
 
   return (
-    <article className="card references-card">
+    <article className="surface">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Typed references</p>

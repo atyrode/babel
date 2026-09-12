@@ -172,8 +172,14 @@ jobs:
           fi
           echo "$dir" >> "$GITHUB_PATH"
 
+      # internal/web spins a full server harness per test and, since the
+      # reading surface grew its record, watch and search routes, takes
+      # ~740s under -race on a 96-core box — past `go test`'s default
+      # 10-minute per-package deadline, which reports a healthy suite as a
+      # timeout panic. The deadline is raised for the job, not the suite
+      # shortened, so nothing this job covers is lost.
       - name: go test -race
-        run: go test -race -count=1 ./internal/...
+        run: go test -race -count=1 -timeout 45m ./internal/...
 
   web:
     runs-on: ubuntu-latest

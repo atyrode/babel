@@ -70,17 +70,20 @@ export function Badge({ label, tone = "neutral" }: { label: string; tone?: Tone 
   return <span className={`badge tone-${tone}`}>{label}</span>;
 }
 
-// FallibilityNote is the §1 frame, rendered beside analytical content rather
-// than on an "about" page: creative, fallible, incomplete interpretation for
-// human review — never an audit or a verified fact.
+// FallibilityNote renders nothing, and the export stays.
+//
+// The §1 frame is still owed to the reader: Babel's analytical output is
+// creative, fallible, incomplete interpretation recorded for human review,
+// never an audit or a verified fact. It is now stated once, in the shell's
+// footer (App.tsx, `.app-footer`), instead of once per analytical panel. A
+// record page with four panels said it four times, and a caveat repeated four
+// times on one screen is read zero times.
+//
+// The component keeps its name and its call sites so that the callers still
+// mark where analytical content begins; what changed is that the mark is no
+// longer a box on the page.
 export function FallibilityNote() {
-  return (
-    <p className="fallibility-note">
-      <span aria-hidden="true">≈</span>
-      Fallible interpretation, not established fact — Babel's analytical output is creative and
-      incomplete, recorded for human review. Follow the evidence locators before believing a claim.
-    </p>
-  );
+  return null;
 }
 
 // unescapeWhitespace turns the server's escaped whitespace back into real
@@ -473,7 +476,7 @@ export function AuthorityMark({ authority }: { authority: RunAuthority | undefin
 // the retry.
 export function PartialListNotice() {
   return (
-    <div className="state-card scope-notice" role="status">
+    <div className="surface state-note scope-notice" role="status">
       <strong>This list may be incomplete</strong>
       <span>
         Part of the catalog did not answer, so records it holds are missing here. Everything

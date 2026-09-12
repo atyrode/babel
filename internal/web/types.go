@@ -18,6 +18,7 @@ import (
 	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/reference"
 	"github.com/atyrode/babel/internal/review"
+	"github.com/atyrode/babel/internal/run"
 	"github.com/atyrode/babel/internal/transcript"
 )
 
@@ -64,6 +65,42 @@ type Options struct {
 	Reality  RealityService
 	Runs     RunLister
 	Search   SearchIndex
+	// Receipts reads run receipts whole, which is what the Watch surface's
+	// run page and the record page's machinery peel need and what Runs
+	// above cannot give them: a listing carries §9's plaintext half of a
+	// header, and what a run searched, fetched, declined, spent and how
+	// long it took is in the body. The body is sealed for the fleet and
+	// plaintext on the machine that wrote it, so this is a read only a
+	// local surface can perform, and it is a read — the store's appends
+	// are not representable here.
+	//
+	// Nil is a state rather than a fault, on Complaints' terms: a build
+	// with no durable store keeps every page it already served, and the
+	// run detail reports that this session holds no receipts.
+	Receipts RunReceiptReader
+	// Launcher starts and stops the analysis this machine runs for itself
+	// (§8.4's withdrawn refusal: runs are startable from the UI).
+	//
+	// It is the one option on this surface that spawns a process, and the
+	// authority is the method set: it launches this machine's own binary
+	// under the same subcommands, ceilings and profile checks the CLI
+	// enforces, and it can stop a child it started. There is no method
+	// that reaches another host — cross-machine invocation is explicitly
+	// out of scope (#118) — and none that kills one, because a run
+	// interrupted at a safe point keeps everything it committed and a
+	// killed one does not.
+	//
+	// Nil is a state: a build with no launcher reports that this session
+	// cannot start runs, and the Watch page keeps showing what is running.
+	Launcher Launcher
+	// Drain reports this process's last automatic publication attempt.
+	//
+	// It is separate from SyncJournal because the two answer different
+	// questions: the journal says where one record stands, and this says
+	// what the drainer this launch owns most recently achieved. A surface
+	// that inferred the second from the first would be reporting a
+	// publication attempt nobody observed.
+	Drain DrainReader
 	// Focus is §4.8's expenditure policy: the versioned mapping from ledger
 	// state to what analysis may spend, and the operator's own statement of
 	// intent about one subject.
@@ -240,9 +277,25 @@ type EvaluationService interface {
 	List(context.Context, evaluation.Query) (evaluation.Page, error)
 	Detail(context.Context, evaluation.Subject) (evaluation.Detail, error)
 	Coverage(context.Context) (evaluation.Coverage, error)
+	// AssessmentDays counts the assessments recorded per UTC day, which is
+	// the Watch surface's reviews-per-day series. It is a count rather
+	// than a listing for the reason Coverage above is an aggregate: a
+	// ninety-day series assembled by paging records would read the whole
+	// store to render ninety numbers.
+	AssessmentDays(context.Context, time.Time) ([]evaluation.AssessmentDay, error)
 	Policy(context.Context) (evaluation.Policy, error)
 	Configure(context.Context, string, evaluation.Policy) (evaluation.Record, error)
 	Operator(context.Context, evaluation.OperatorInput) (evaluation.Record, error)
+	// OperatorDeferred is Operator with the projection refresh handed back
+	// instead of performed, and it is here because a click is not a command.
+	// The stance an operator records is durable when the transaction commits;
+	// what followed it inline was a refresh of a rebuildable projection that
+	// reads this instance's evaluation records, assignments, attempts and
+	// effective policy in order to replace one row, and on the live catalog
+	// that was six of the six and a half seconds an upvote took. The route
+	// answers on the write and runs the refresh after the response.
+	OperatorDeferred(context.Context, evaluation.OperatorInput) (
+		evaluation.Record, func(context.Context) error, error)
 }
 
 // FrontierReader is the read-only subset of *frontier.Store the API renders
@@ -267,6 +320,12 @@ type FrontierReader interface {
 	// them: ProposalsAddressing answers about one claim, and Proposal
 	// answers about one id.
 	Proposals(context.Context, frontier.ListFilter) ([]frontier.Proposal, int, error)
+	// RecordDays counts the records written per UTC day and kind, which is
+	// the Watch surface's records-per-day series. It is here rather than
+	// beside the enumerations because it is the same authority read a
+	// different way: it decodes no payload, and it is the only read that
+	// can answer for observations, which no listing above enumerates.
+	RecordDays(context.Context, time.Time) ([]frontier.RecordDay, error)
 	// TriageAdvice reads what a triage pass said about one proposal before
 	// anybody ruled on it, which the review page shows beside the record it
 	// is about. It is a read like every other name here, and that is the
@@ -312,6 +371,13 @@ type FrontierReader interface {
 	// neither is reachable from a browser.
 	Revisions(context.Context, frontier.Ref) ([]frontier.Revision, error)
 	Head(context.Context, frontier.Ref) (frontier.Ref, error)
+	// OutputsOfRun lists the head revisions one run wrote, which is the one
+	// connection a record carries that no page could follow: every record
+	// names its run, and until now nothing could ask a run what else it
+	// said. A reader who has just read a finding wants the observations it
+	// consolidated and the remedy proposed beside it, and they are the same
+	// pass's work rather than four unrelated rows.
+	OutputsOfRun(context.Context, string) ([]frontier.RunOutput, error)
 }
 
 // FrontierReviver is the one frontier write this surface may perform, and it
@@ -391,6 +457,7 @@ type RealityService interface {
 	Fact(context.Context, string) (reality.Fact, error)
 	FactStatusHistory(context.Context, string) ([]reality.FactStatusEvent, error)
 	DisputesFor(context.Context, string) ([]reality.Dispute, error)
+	HypothesesForEntity(context.Context, string) ([]string, error)
 	RecordAnswer(context.Context, reality.AnswerInput) (reality.Answer, error)
 	AcceptPlan(context.Context, reality.AcceptanceInput) (reality.Acceptance, reality.Application, error)
 }
@@ -513,13 +580,33 @@ type SearchIndex interface {
 // RunLister supplies the run receipts GET /api/analysis/state lists, newest
 // first, bounded by the caller's page.
 //
-// It is an interface rather than a *run.Store because internal/run exposes no
-// receipt listing — it answers Receipt(id) and Revisions(runID) — so the
-// listing is assembled by whatever wired this server. A nil provider reports
-// no runs rather than an error: a build with no analysis history has nothing
-// to list, which is different from a failure.
+// It is an interface rather than a *run.Store because the listing's shape is
+// this package's: the store enumerates receipts whole, and a listing carries
+// only §9's plaintext half of each header, so the mapping between the two
+// lives at the wiring site. A nil provider reports no runs rather than an
+// error: a build with no analysis history has nothing to list, which is
+// different from a failure.
 type RunLister interface {
 	Runs(ctx context.Context, limit, offset int) ([]RunSummary, int, error)
+}
+
+// RunReceiptReader reads run receipts whole, which is what a run page and a
+// record's machinery peel are: the header plus the half of the record that
+// never reaches the wire — what the run searched, what it fetched, what it
+// declined, what it spent and how long it took.
+//
+// It is satisfied by *run.Store, and the method set is the whole authority:
+// two reads. PutReceipt, Amend and the sync markers are not representable
+// here, so a browser request cannot append to a run's history or claim one
+// published; §7 makes receipts append-only and the only writer is the run
+// itself.
+//
+// Reading a body is a local read by construction. §9 seals a receipt's body
+// before it leaves the machine, so this surface can open one exactly because
+// it is the machine that wrote it, and never for another host's run.
+type RunReceiptReader interface {
+	Receipts(ctx context.Context, limit, offset int) ([]run.Receipt, int, error)
+	Revisions(ctx context.Context, runID string) ([]run.Receipt, error)
 }
 
 // RunSummary is one run receipt as a listing shows it: the plaintext-eligible
@@ -593,6 +680,7 @@ var (
 	_ DispositionService   = (*disposition.Store)(nil)
 	_ ComplaintService     = (*complaint.Store)(nil)
 	_ SearchIndex          = (*index.Index)(nil)
+	_ RunReceiptReader     = (*run.Store)(nil)
 	_ EvaluationService    = (*evaluation.Service)(nil)
 )
 
@@ -635,6 +723,22 @@ type SessionRow struct {
 	TitleProvenance   *string `json:"title_provenance"`
 	Workspace         *string `json:"workspace"`
 	ContinuationGrade *bool   `json:"continuation_grade"`
+	// CostUSD, TotalTokens, Turns and ToolErrors are what the harness itself
+	// recorded about the model work in this session, summed by the adapter
+	// over the raw transcript. The CLI's listing has carried them since the
+	// usage columns landed and `sessions list --json` emits them; the browser
+	// is the surface an operator actually sorts a corpus on, so they cross
+	// the wire here too.
+	//
+	// Null is not zero, exactly as in the CLI's row: a session that cost
+	// nothing and a session whose adapter extracted no usage are different
+	// answers, and only the first one is a statement about the session. A
+	// page that rendered the second as $0.00 would be reporting a
+	// measurement nobody took.
+	CostUSD     *float64 `json:"cost_usd"`
+	TotalTokens *int64   `json:"total_tokens"`
+	Turns       *int64   `json:"turns"`
+	ToolErrors  *int64   `json:"tool_errors"`
 }
 
 // ScanState mirrors internal/cli scanState field-for-field. It reports the

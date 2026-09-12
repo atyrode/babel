@@ -1380,12 +1380,53 @@ func (s *Service) nextPolicyVersion(ctx context.Context) (string, error) {
 // The kind is passed through unfiltered and the store refuses what an operator
 // may not author. That is deliberate: one refusal, in the place that owns the
 // vocabulary, rather than a second filter here that could drift from it.
+//
+// The projection is refreshed before this returns, which is what a command
+// wants: `babel evaluation feedback` prints the queue it just changed, and a
+// listing drawn from a projection that has not caught up would show the
+// operator his own act missing. A caller that has to answer first uses
+// OperatorDeferred.
 func (s *Service) Operator(ctx context.Context, in OperatorInput) (Record, error) {
-	record, err := s.store.Operator(ctx, in)
+	record, refresh, err := s.OperatorDeferred(ctx, in)
 	if err != nil {
 		return Record{}, err
 	}
+	if err := refresh(ctx); err != nil {
+		return record, err
+	}
+	return record, nil
+}
+
+// OperatorDeferred records the same act and hands back the projection refresh
+// it owes rather than performing it.
+//
+// It exists because the two halves of Operator have nothing in common but
+// their order. The durable write is the authority — one insert, one
+// transaction, and the operator's stance is a fact the moment it commits — and
+// the refresh is bookkeeping over a rebuildable cache that reads this
+// instance's evaluation records, its assignments, its attempts, the subject's
+// artifact and the effective policy in order to replace one row. On a browser
+// click the second one is the whole latency: an operator agreeing with a
+// record waited on work that had nothing to do with recording that he agreed,
+// measured at 6.5 seconds on a live catalog under concurrent lane writes.
+//
+// The refresh is still owed and the caller still owes it. It is a closure
+// rather than a flag so that the obligation is visible at the call site, and
+// it takes its own context because the caller running it after a response has
+// no request context left to run it under. Skipping it entirely is not a
+// corruption — the projection is rebuilt from the durable records on the
+// launch's own schedule — but it is a projection that lags, so a caller that
+// drops it is choosing a stale read for as long as that takes.
+func (s *Service) OperatorDeferred(ctx context.Context, in OperatorInput) (
+	Record, func(context.Context) error, error) {
+	record, err := s.store.Operator(ctx, in)
+	if err != nil {
+		return Record{}, nil, err
+	}
 	if in.Kind == KindPolicy && in.Policy != nil {
+		// The policy memo is part of the write rather than of the refresh:
+		// it is what makes the recorded policy readable at all, and a
+		// caller deferring the refresh is not deferring that.
 		if err := s.proj.rememberPolicies(ctx, []policyRecord{{
 			RecordID:  record.ID,
 			CreatedAt: record.CreatedAt,
@@ -1394,13 +1435,11 @@ func (s *Service) Operator(ctx context.Context, in OperatorInput) (Record, error
 			ActorID:   record.ActorID,
 			Policy:    *in.Policy,
 		}}); err != nil {
-			return Record{}, err
+			return Record{}, nil, err
 		}
 	}
-	if err := s.reproject(ctx, in.Subject); err != nil {
-		return record, err
-	}
-	return record, nil
+	subject := in.Subject
+	return record, func(ctx context.Context) error { return s.reproject(ctx, subject) }, nil
 }
 
 // Submit records a worker's assessment, skip or failure.

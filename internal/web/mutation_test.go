@@ -306,8 +306,9 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			surface:  reflect.TypeOf((*FrontierReader)(nil)).Elem(),
 			concrete: reflect.TypeOf((*frontier.Store)(nil)),
 			permitted: []string{"Finding", "Head", "Hypotheses", "Hypothesis", "LinksFrom", "LinksTo",
-				"Observation", "ObservationsFor", "Proposal", "Proposals", "ProposalsAddressing",
-				"ReviewStatus", "Revisions", "StatusHistory", "TriageAdvice", "TriageAdvised"},
+				"Observation", "ObservationsFor", "OutputsOfRun", "Proposal", "Proposals",
+				"ProposalsAddressing", "RecordDays", "ReviewStatus", "Revisions", "StatusHistory",
+				"TriageAdvice", "TriageAdvised"},
 			// Every frontier write, including its own Decide and the
 			// revive transition #87 added: one disposition log exists and
 			// internal/review is the only way this surface may append to
@@ -356,9 +357,9 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			surface:  reflect.TypeOf((*RealityService)(nil)).Elem(),
 			concrete: reflect.TypeOf((*reality.Store)(nil)),
 			permitted: []string{"AcceptPlan", "Aliases", "Answers", "DisputesFor", "Entities",
-				"Entity", "Fact", "FactStatusHistory", "Facts", "Inbox", "Plan", "Plans",
-				"Question", "QuestionHistory", "Questions", "RecentFacts", "RecordAnswer",
-				"Relationships", "ResolutionHistory"},
+				"Entity", "Fact", "FactStatusHistory", "Facts", "HypothesesForEntity", "Inbox",
+				"Plan", "Plans", "Question", "QuestionHistory", "Questions", "RecentFacts",
+				"RecordAnswer", "Relationships", "ResolutionHistory"},
 			// The ledger's authoritative writes. This surface reaches
 			// them only through a plan an operator accepted, so nothing
 			// a model proposed becomes reality by passing through a
@@ -647,6 +648,10 @@ func (failingServices) FactStatusHistory(context.Context, string) ([]reality.Fac
 }
 
 func (failingServices) DisputesFor(context.Context, string) ([]reality.Dispute, error) {
+	return nil, leakyError
+}
+
+func (failingServices) HypothesesForEntity(context.Context, string) ([]string, error) {
 	return nil, leakyError
 }
 

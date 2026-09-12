@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
 import {
   getEvaluationPolicy,
   saveEvaluationPolicy,
@@ -174,7 +173,10 @@ function EvaluationPolicyPage() {
       const result = await saveEvaluationPolicy(draft);
       setData(result);
       setDraft(result.policy);
-      setAnnouncement(`Policy ${result.policy.version} stored. ${result.saving}`);
+      // The server's consequence sentence is announced as it is served —
+      // "Policy eval-policy-2 stored. the policy is stored." was two claims
+      // about the same write, one of them mid-sentence.
+      setAnnouncement(`Policy ${result.policy.version}: ${result.saving}`);
     } catch (reason) {
       setFailure(errorMessage(reason));
     } finally {
@@ -192,30 +194,19 @@ function EvaluationPolicyPage() {
   const status = data?.status ?? "unavailable";
 
   return (
-    <section className="page evaluation-policy-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Evaluation</p>
-          <h1>Review policy</h1>
-          <p className="subtitle">
-            What authorized evaluation work is allowed to cost and how it chooses what to read.
-            Saving these settings starts nothing: a schedule draws the work, and a raised ceiling
-            on a paused policy still draws none.
-          </p>
-        </div>
-        <div className="heading-meta">
-          <Link className="back-link" to="/evaluation">← Backlog</Link>
-          <Link className="back-link" to="/evaluation/coverage">Coverage →</Link>
-        </div>
-      </div>
+    // A section of Settings rather than a page of its own: this is what
+    // authorized evaluation work is allowed to cost. Saving it starts
+    // nothing, which is the server's own sentence and is rendered verbatim
+    // beside the form.
+    <div className="page-section policy-section">
 
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       {loading && !data && (
-        <div className="state-card"><span className="spinner" /> Reading the review policy…</div>
+        <div className="surface state-note"><span className="spinner" /> Reading the review policy…</div>
       )}
       {error && (
-        <div className="state-card error-state">
+        <div className="surface state-note error-state">
           <strong>The review policy could not be loaded.</strong>
           <span>{error}</span>
           <button type="button" onClick={load}>Try again</button>
@@ -223,7 +214,7 @@ function EvaluationPolicyPage() {
       )}
 
       {data && (
-        <div className="card evaluation-status-card" data-status={status}>
+        <div className="surface policy-status" data-status={status}>
           <div className="evaluation-row-marks">
             <Badge label={STATUS_LABELS[status]} tone={STATUS_TONES[status]} />
             <span className="secondary mono">policy {data.policy.version || "unversioned"}</span>
@@ -250,8 +241,8 @@ function EvaluationPolicyPage() {
       {data && <CoverageSummary coverage={data.coverage} />}
 
       {draft && data && (
-        <form className="card evaluation-policy-form" onSubmit={save}>
-          <h2>Settings</h2>
+        <form className="surface evaluation-policy-form" onSubmit={save}>
+          <h2>What review work may cost</h2>
 
           <label className="evaluation-enabled">
             <input
@@ -313,7 +304,7 @@ function EvaluationPolicyPage() {
       )}
 
       {data?.record && (
-        <div className="card evaluation-policy-record">
+        <div className="surface">
           <h2>Recorded</h2>
           <p className="secondary">
             Your change is an attributed record, not a settings blob:{" "}
@@ -322,7 +313,7 @@ function EvaluationPolicyPage() {
           </p>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 

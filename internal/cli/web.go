@@ -117,6 +117,21 @@ func (a *app) webCmd(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The surface an operator keeps open is this machine's drainer. A
+	// workstation running bare explore and evaluate lanes has no conductor
+	// cycle to publish at, so without this its records wait for somebody to
+	// type `babel sync`; with it, a browser left open is enough to keep this
+	// disk from being the only place its analysis exists (SPEC.md §9.1).
+	//
+	// It is started after the server is built, so its diagnostics reach the
+	// same serialized stream every other producer writes to, and under the
+	// signal context, so Ctrl-C ends the loop with the listener. The recorder
+	// it reports to is the one the Watch surface reads, which is why it comes
+	// from the services the server was built against rather than being made
+	// here: the page and the loop must hold the same value.
+	stopDrain := a.startDrain(ctx, servedDrainInterval, services.drain.observe)
+	defer stopDrain()
+
 	fmt.Fprintf(a.stdout, "babel web listening at %s\n", srv.URL())
 	// The sentence states the two properties the link actually has, and takes
 	// the lifetime from the server rather than repeating it, so the printed
@@ -259,6 +274,30 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	opts.Cookbook = services.cookbook
 	opts.References = services.references()
 	opts.Complaints = services.complaints()
+	opts.Receipts = services.receipts()
+
+	// The Watch surface's control room (Contract W). The launcher starts this
+	// machine's own binary with the CLI's own flags and refusals, so a
+	// browser-started run is a typed run; internal/cli/launch.go states why
+	// that is the only way it is offered at all.
+	//
+	// A machine whose own executable cannot be resolved keeps every page it
+	// already served and reports that it cannot start runs, on the same terms
+	// every other absent service here does. It is wired even when no operator
+	// was named: launching then refuses for want of an attributable author,
+	// while listing and stopping what an earlier server started do not need
+	// one.
+	if launcher, err := a.newWebLauncher(d, operator); err != nil {
+		a.diagf("warning: runs cannot be started from the browser: %s\n",
+			Sanitize(err.Error()))
+	} else {
+		opts.Launcher = launcher
+	}
+	// The drainer's last attempt. It is recorded here and read by the Watch
+	// surface because only the drainer sees an attempt happen; webCmd hands
+	// this recorder to the loop it starts.
+	services.drain = &webDrain{}
+	opts.Drain = services.drain
 
 	// The two identities one session has, for the citation surfaces. A machine
 	// with no deployment identity leaves this nil, and internal/web renders
@@ -392,6 +431,11 @@ type webServices struct {
 	// Lister option serves, so the sessions page and a citation's endpoint can
 	// never disagree about which sessions this host has.
 	sessions *webSessionKeys
+	// drain is what the served drainer most recently achieved, which the
+	// Watch surface reads. It holds no handle: it is here because the loop
+	// that feeds it is started by webCmd after this server is built, and the
+	// recorder has to be the same value both of them hold.
+	drain *webDrain
 	// Evaluation refresh must stop before the readers it borrows are closed.
 	evaluationStop  func()
 	evaluationClose func()
@@ -705,6 +749,10 @@ func webSessionRow(row sessionRow) web.SessionRow {
 		TitleProvenance:   row.TitleProvenance,
 		Workspace:         row.Workspace,
 		ContinuationGrade: row.Continuous,
+		CostUSD:           row.CostUSD,
+		TotalTokens:       row.TotalTokens,
+		Turns:             row.Turns,
+		ToolErrors:        row.ToolErrors,
 	}
 }
 
