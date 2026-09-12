@@ -15,7 +15,11 @@ export default defineConfig({
     port: 8851,
     strictPort: true,
     proxy: {
-      "/api": "http://127.0.0.1:8850",
+      // Object form on purpose: the string shorthand rewrites the Host
+      // header to the target, and babel web's origin guard compares the
+      // page's Origin against the Host it was asked for. Leaving Host as
+      // the browser sent it keeps the two equal.
+      "/api": { target: "http://127.0.0.1:8850", changeOrigin: false },
     },
   },
 });
