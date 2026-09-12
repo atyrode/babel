@@ -437,6 +437,162 @@ func (l *webLauncher) Stop(_ context.Context, pid int) (web.StopResult, error) {
 	}, nil
 }
 
+// Ceilings reads the conductor configuration this machine holds.
+//
+// It is the command layer's own read: loadConductorSettings, rendered through
+// the document `conductor configure --json` and `conductor status --json` both
+// emit. So the browser and the terminal report one configuration, including
+// the default a dial the operator never set actually runs under — which is the
+// figure that matters, because it is the one the loop obeys.
+func (l *webLauncher) Ceilings(_ context.Context) (web.CeilingSettings, error) {
+	settings, err := loadConductorSettings()
+	if err != nil {
+		return web.CeilingSettings{}, err
+	}
+	path, err := conductorPath()
+	if err != nil {
+		return web.CeilingSettings{}, err
+	}
+	return ceilingView(settings, path), nil
+}
+
+// Configure stores the configuration by running `babel conductor configure`.
+//
+// Nothing here validates a ceiling, orders the two numbers, or decides what an
+// unnamed dial means. All of that is the command's, and the command runs — in
+// this process, against a captured stream — so a browser meets the same
+// refusals a terminal does and a saved ceiling is saved by one writer. The
+// answer is then read back off disk rather than echoed, because `configure` is
+// incremental and fills defaults: the operator has to see what is in force.
+func (l *webLauncher) Configure(ctx context.Context, req web.CeilingRequest) (web.CeilingSettings, error) {
+	if err := l.runConfigure(ceilingArgv(req)); err != nil {
+		return web.CeilingSettings{}, err
+	}
+	return l.Ceilings(ctx)
+}
+
+// runConfigure invokes the command and carries its refusal, verbatim.
+//
+// The capture is refusalText's: a shallow copy of the app with the diagnostic
+// streams replaced, so every handle stays the same and the command's own
+// printing does not reach the server's log. A usage error is the command
+// rejecting the invocation — a ceiling above the day's, a negative floor, a
+// duration that is not one — and its sentence is what the operator needs, so
+// it becomes a bad request wrapping that sentence rather than a status code.
+func (l *webLauncher) runConfigure(argv []string) error {
+	var captured bytes.Buffer
+	quiet := *l.app
+	quiet.stdout = &captured
+	quiet.stderr = &captured
+	err := quiet.conductorConfigure(argv)
+	var usage *usageError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &usage):
+		return refusedCeiling{text: usage.Error()}
+	default:
+		return err
+	}
+}
+
+// ceilingView renders the stored settings onto the wire shape.
+func ceilingView(settings conductorSettings, path string) web.CeilingSettings {
+	doc := conductorConfigDocument(settings, path)
+	view := web.CeilingSettings{
+		Configured:           settings.Ceilings != nil,
+		Currency:             doc.Currency,
+		Floor:                doc.Floor,
+		IntervalSeconds:      doc.IntervalSeconds,
+		SliceSessions:        doc.SliceSessions,
+		ConsolidateOneIn:     doc.ConsolidateOneIn,
+		ConsolidateRoots:     doc.ConsolidateRoots,
+		EvaluateOneIn:        doc.EvaluateOneIn,
+		EvaluateCadence:      doc.EvaluateCadence,
+		BabelImprovesBabel:   doc.BabelImprovesBabel,
+		BabelTunesItself:     doc.BabelTunesItself,
+		BabelTriagesTheQueue: doc.BabelTriagesTheQueue,
+		ConfiguredAt:         doc.ConfiguredAt,
+		Path:                 doc.Path,
+	}
+	// The two ceilings are absent rather than zero on a machine that never
+	// stated them. The conductor refuses to run either way, and the operator
+	// has to be able to tell the two apart: a limit nobody chose is not a
+	// limit of nothing.
+	if settings.Ceilings != nil {
+		perCycle, perDay := doc.PerCycle, doc.PerDay
+		view.PerCycle, view.PerDay = &perCycle, &perDay
+	}
+	return view
+}
+
+// ceilingArgv turns one request into the flags `conductor configure` parses.
+//
+// A field the request did not name contributes no flag at all, which is what
+// keeps the command incremental through this route: an operator raising the
+// day's ceiling in a browser has not withdrawn a standing duty, exactly as he
+// has not when raising it in a terminal.
+func ceilingArgv(req web.CeilingRequest) []string {
+	var argv []string
+	argv = appendAmount(argv, "--per-cycle", req.PerCycle)
+	argv = appendAmount(argv, "--per-day", req.PerDay)
+	argv = appendText(argv, "--currency", req.Currency)
+	argv = appendCount(argv, "--floor", req.Floor)
+	argv = appendText(argv, "--interval", req.Interval)
+	argv = appendCount(argv, "--slice-sessions", req.Slice)
+	argv = appendCount(argv, "--consolidate", req.Consolidate)
+	argv = appendCount(argv, "--consolidate-roots", req.ConsolidateRoots)
+	argv = appendCount(argv, "--evaluate", req.Evaluate)
+	argv = appendText(argv, "--evaluate-cadence", req.EvaluateCadence)
+	argv = appendDuty(argv, conductor.DutyImprovesBabel, req.ImprovesBabel)
+	argv = appendDuty(argv, conductor.DutyTunesItself, req.TunesItself)
+	argv = appendDuty(argv, conductor.DutyTriagesTheQueue, req.TriagesTheQueue)
+	return argv
+}
+
+// appendAmount names a money flag exactly when the request named it, at the
+// precision it was sent: a ceiling of half a cent is a ceiling the operator
+// chose, and rounding it to two places here would store a limit he did not.
+func appendAmount(argv []string, flag string, value *float64) []string {
+	if value == nil {
+		return argv
+	}
+	return append(argv, flag, strconv.FormatFloat(*value, 'f', -1, 64))
+}
+
+func appendText(argv []string, flag, value string) []string {
+	if value == "" {
+		return argv
+	}
+	return append(argv, flag, value)
+}
+
+// appendDuty names a standing duty's own flag, or its --no- form, or neither.
+// The three states are the command's: authorize, withdraw, and leave alone.
+func appendDuty(argv []string, duty string, set *bool) []string {
+	switch {
+	case set == nil:
+		return argv
+	case *set:
+		return append(argv, "--"+duty)
+	default:
+		return append(argv, "--no-"+duty)
+	}
+}
+
+// refusedCeiling carries `conductor configure`'s own rejection to the browser.
+//
+// It is a bad request rather than a conflict, and the difference is real: a
+// refused launch is a machine saying it is not configured to do this, while
+// this is the machine saying the configuration being asked for is not one — a
+// per-cycle ceiling above the day's would refuse every cycle. The sentence is
+// the command's, flattened to one line for the response sanitizer.
+type refusedCeiling struct{ text string }
+
+func (r refusedCeiling) Error() string { return oneLine(r.text) }
+
+func (r refusedCeiling) Is(target error) bool { return target == web.ErrBadRequest }
+
 // launchArgv turns one request into the argv the CLI parses, and refuses an
 // argument the named kind has no flag for.
 //

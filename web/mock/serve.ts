@@ -15,6 +15,7 @@ import type {
 import { evaluationResponse } from "./evaluation";
 import { OVERVIEW_ROWS, overviewPhaseB, phasebResponse } from "./phaseb";
 import { recordResponse } from "./record";
+import { watchResponse } from "./watch";
 
 const distRoot = resolve(import.meta.dir, "..", "dist");
 const port = Number(Bun.env.PORT ?? 4174);
@@ -719,6 +720,10 @@ const server = Bun.serve({
     // id from swallowing one of them.
     const record = await recordResponse(request, url);
     if (record) return record;
+    // The control room's own path space, in its own file: thirty-one runs in
+    // flight and a conductor configuration are a body of state of their own.
+    const watch = await watchResponse(request, url);
+    if (watch) return watch;
     const api = apiResponse(request, url);
     return api ?? staticResponse(url);
   },

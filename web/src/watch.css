@@ -81,19 +81,32 @@
   overflow-wrap: anywhere;
 }
 
+/* Two or three figures, not always three: the spend is omitted on a run whose
+ * receipt does not exist yet rather than dashed, so the row has to close up
+ * around what is actually known. */
 .watch-page .live-card-figures {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(4rem, 1fr));
   gap: var(--space-2);
   padding: var(--space-2) 0;
   border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
 }
 
+/* A clock that wraps is a clock that jumps: "41m 27s" advances every second,
+ * and a figure reflowing onto a second line once a minute drags the whole card
+ * with it. The card's figures are therefore a step smaller than a page
+ * heading's — this is the dense register, and three of them share 250px. */
+.watch-page .live-card-figures .stat-value {
+  font-size: 1.05rem;
+  white-space: nowrap;
+}
+
 .watch-page .live-card-word {
   margin: 0;
   color: var(--ink-faint);
-  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
 }
 
 .watch-page .live-card-foot {
@@ -107,8 +120,86 @@
   font-size: 0.8125rem;
 }
 
-.watch-page .live-card-stop {
+/* On a card the stop takes the far end of the footer, away from the link that
+ * opens the receipt: the two are a destructive act and a navigation, and a
+ * hand reaching for one must not graze the other. In a table row it is the
+ * row's own last cell and needs no pushing. */
+.watch-page .live-card-foot .live-stop {
   margin-left: auto;
+}
+
+/* --- The dense half of the strip ---------------------------------------- */
+
+/* Past the fourth card the same runs are a table. It is the observatory
+ * register (§8.6): one row per run, figures mono and tabular so thirty of them
+ * compare down a column, and every cell something the run itself said. */
+.watch-page .live-surface {
+  margin-bottom: var(--space-4);
+}
+
+.watch-page .live-table-caption {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.watch-page .live-table {
+  width: 100%;
+}
+
+.watch-page .live-table td,
+.watch-page .live-table th {
+  vertical-align: top;
+}
+
+.watch-page .live-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The live dot sits inside the row's first cell, so it needs the same
+ * baseline correction the heading's does: a dot owns no margin of its own. */
+.watch-page .live-table .live-dot {
+  margin-right: var(--space-2);
+}
+
+.watch-page .live-row-kind {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.watch-page .live-row-recipe,
+.watch-page .live-row-word {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.watch-page .live-row-stop {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* The runs nothing has been heard from. Peeled, not dropped: the summary says
+ * what the classification does and does not establish, and the rows behind it
+ * are the same table as the one above. */
+.watch-page .live-lost {
+  margin: 0 0 var(--space-4);
+}
+
+/* The caveat under the headline: how many of the runs in flight this host has
+ * actually heard from recently. Set as prose rather than as figures, because
+ * it is a qualification of the number above it and not a second number. */
+.watch-page .watch-headline-note {
+  max-width: var(--measure);
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
 }
 
 .watch-page .watch-drain {
@@ -240,9 +331,13 @@
 
 /* --- Small multiples ---------------------------------------------------- */
 
+/* Four panels across a desk and two on a laptop, never four at 220px: thirty
+ * days in a fifth of a screen is a shape nobody can read, which is what made
+ * these postage stamps. The minimum is the width thirty columns need to stay
+ * distinguishable, and auto-fit reflows rather than a breakpoint deciding. */
 .watch-page .series-multiples {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
   gap: var(--space-3);
   margin-top: var(--space-3);
 }
@@ -251,11 +346,29 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
+  padding: var(--space-4);
 }
 
+/* The chart is the panel, not a strip at the bottom of it: it spans the full
+ * width and takes the height the component asks for (--spark-height), and the
+ * gap above it separates it from the figure it is the shape of. */
 .watch-page .series-panel .spark {
+  margin-top: var(--space-1);
   color: var(--ink-faint);
+}
+
+/* The axis: two dates, in the mono face figures are set in, pinned to the
+ * ends of the chart they bound. Every column carries its own day on hover, so
+ * these two are the whole of what a reader needs read off the edge. */
+.watch-page .series-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.02em;
 }
 
 .watch-page .series-footer {
@@ -313,20 +426,52 @@
 
 /* --- One run ------------------------------------------------------------ */
 
-/* The headline is an identifier, not a claim. Editorial display weight belongs
- * to a record's sentence (§8.6); a run id set at 40px would give machinery the
- * voice of an argument, so it is set as the mono label it is. */
+/* The headline is what the run was — "Exploration ·
+ * code-health-comprehensibility" — so it is the sentence this page is about
+ * and it is set in the editorial face every page title uses (decision 90).
+ *
+ * What stood here before was the run id at display size in mono: an
+ * identifier wearing the voice of an argument, and the one line on the page
+ * nobody can read aloud. The identifier is now the subtitle, which is where an
+ * identifier belongs — small, mono, selectable, beside the time its receipt
+ * was written. The size is held a little under a landing page's title because
+ * a kind and a recipe are a compound label rather than a claim, and a recipe
+ * id has no spaces to break at 44px.
+ */
 .run-page h1 {
-  font-family: var(--font-mono);
-  font-size: 1.375rem;
-  letter-spacing: 0;
+  font-size: clamp(1.6rem, 2.6vw, 2.1rem);
   overflow-wrap: anywhere;
 }
 
 .run-page .run-subhead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
   margin: var(--space-1) 0 0;
   color: var(--ink-muted);
   font-size: 0.8125rem;
+}
+
+/* The run id in the subtitle: the brightest thing in a quiet line, because it
+ * is the identity everything else on this surface joins on and the string an
+ * operator copies into a terminal. */
+.run-page .run-subhead .run-id {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* The subtitle is a row of facts rather than a sentence, so the parts are
+ * separated the way figures are: an interpunct between them, drawn by the row
+ * rather than typed into each fact, so a fact the receipt does not carry
+ * leaves no orphaned dot behind it. */
+.run-page .run-subhead > span + span::before {
+  content: "·";
+  margin-right: var(--space-2);
+  color: var(--ink-faint);
 }
 
 .run-page .run-figures {
@@ -501,4 +646,164 @@
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* --- The spend ceilings (Settings › Ceilings) ---------------------------- */
+
+/* They are styled here, in Watch's own stylesheet, because they are Watch's
+ * own document: the two numbers the control room's launch refusal names, held
+ * in the file `babel conductor configure` writes. The section lives under
+ * Settings for the reason every drawer does — it is set once and revised
+ * rarely — but a figure on it has to look like the same kind of figure it is
+ * beside a run's spend, and a second stylesheet would let the two drift.
+ *
+ * Everything is scoped under .spend-ceilings, so nothing here reaches the rest
+ * of Settings. */
+
+.spend-ceilings {
+  font-family: var(--font-ui);
+}
+
+.spend-ceilings .spend-ceilings-blurb {
+  max-width: var(--measure);
+  margin: 0 0 var(--space-4);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+/* What is in force, before the controls that change it: four figures in the
+ * observatory register, each with the sentence that says what it bounds. */
+.spend-ceilings .spend-ceilings-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-4);
+}
+
+/* A machine with no ceilings is configured, not broken: the note states the
+ * consequence and the remedy without the red of a failure. The state-note
+ * vocabulary centres its children, which is right for "nothing here yet" and
+ * wrong for a sentence with a remedy in it. */
+.spend-ceilings .spend-ceilings-unset {
+  min-height: 0;
+  align-items: flex-start;
+  border-left: 2px solid var(--warn);
+  text-align: left;
+}
+
+.spend-ceilings .spend-ceilings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.spend-ceilings .spend-ceilings-form h3:first-child {
+  margin-top: 0;
+}
+
+.spend-ceilings .spend-ceilings-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+
+/* A field is the width of the value it takes plus the sentence under it: two
+ * dollar amounts, a ratio and a duration are short, and the hint is what makes
+ * them settable without the manual open. */
+.spend-ceilings .spend-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.spend-ceilings .spend-label {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.spend-ceilings .spend-field input {
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  background: var(--bg-sunken);
+  font-family: var(--font-mono);
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.spend-ceilings .spend-field input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.spend-ceilings .spend-hint {
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.spend-ceilings .spend-ceilings-duties {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* A duty is a consent, so the control and the sentence it consents to are one
+ * target: the checkbox, the name, and what it authorizes. Two columns rather
+ * than a flex row, because the box must sit at the same x in all three rows —
+ * a column of checkboxes that steps in and out with the length of the
+ * sentence beside it reads as three unrelated controls. */
+.spend-ceilings .spend-duty {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-3);
+  max-width: var(--measure);
+  font-size: 0.875rem;
+}
+
+.spend-ceilings .spend-duty input {
+  margin-top: 0.2rem;
+}
+
+.spend-ceilings .spend-duty > span {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.spend-ceilings .spend-ceilings-saving {
+  max-width: var(--measure);
+  margin: var(--space-3) 0 0;
+  font-size: 0.8125rem;
+}
+
+/* A save is a button, not a bar: the column layout would stretch it across
+ * the whole surface, which is the shape of a page-wide action and not of one
+ * form's submit. */
+.spend-ceilings .spend-ceilings-form > button[type="submit"] {
+  align-self: flex-start;
+}
+
+/* The refusal is the command's own sentence about the configuration it would
+ * not store, so it is set as one line of text beside the button that asked for
+ * it — quoted weight, not a shouted error. */
+.spend-ceilings .spend-ceilings-refusal {
+  max-width: var(--measure);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+/* The heading that separates the two ceilings under one word. It is a page
+ * level heading rather than a panel's, because what follows it is a whole
+ * section and not a group inside one. */
+.settings-page .settings-subheading {
+  margin-top: var(--space-6);
 }

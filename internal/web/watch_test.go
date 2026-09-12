@@ -79,6 +79,11 @@ type fakeLauncher struct {
 	launchNo error
 	stopped  int
 	stopNo   error
+	// ceilings is the document this machine holds, and configured is the
+	// request the route asked it to store.
+	ceilings    CeilingSettings
+	configured  CeilingRequest
+	configureNo error
 }
 
 func (f *fakeLauncher) Launched() []LaunchedRun { return f.children }
@@ -97,6 +102,18 @@ func (f *fakeLauncher) Stop(_ context.Context, pid int) (StopResult, error) {
 		return StopResult{}, f.stopNo
 	}
 	return StopResult{Method: "stop-file", Detail: "asked to stop at its next safe point"}, nil
+}
+
+func (f *fakeLauncher) Ceilings(context.Context) (CeilingSettings, error) {
+	return f.ceilings, nil
+}
+
+func (f *fakeLauncher) Configure(_ context.Context, req CeilingRequest) (CeilingSettings, error) {
+	f.configured = req
+	if f.configureNo != nil {
+		return CeilingSettings{}, f.configureNo
+	}
+	return f.ceilings, nil
 }
 
 type fakeDrain struct {
@@ -351,6 +368,35 @@ func TestWatchRunDetailCarriesTheBodyNobodyCouldSee(t *testing.T) {
 	}
 }
 
+// TestWatchRunOutputsSeparateNoneFromUnanswerable is the one absence on this
+// receipt that two different facts used to share.
+//
+// "This run published nothing" and "the record index cannot answer for this
+// run" both render as no rows, and only the first is a statement about the
+// run — so the page says different sentences for them and the wire has to
+// carry the difference. It did not: the field was `omitempty`, so an empty
+// answer and no answer serialized identically and a run that wrote nothing
+// was reported as one nobody could ask about.
+func TestWatchRunOutputsSeparateNoneFromUnanswerable(t *testing.T) {
+	receipts := &fakeReceipts{receipts: []run.Receipt{tracedReceipt(t, "run_traced")}}
+
+	// A frontier that answered, with nothing: an empty array, which is a
+	// measurement of the run.
+	answered := watchRequest(t, Options{Receipts: receipts, Frontier: &fakeSeriesFrontier{}},
+		"/api/watch/runs/run_traced")
+	rows, ok := answered["outputs"].([]any)
+	if !ok || len(rows) != 0 {
+		t.Errorf("a run that published nothing reports outputs %v, want an empty array", answered["outputs"])
+	}
+
+	// No frontier at all: null, which is a statement about this session.
+	unanswerable := watchRequest(t, Options{Receipts: receipts}, "/api/watch/runs/run_traced")
+	value, present := unanswerable["outputs"]
+	if !present || value != nil {
+		t.Errorf("a session that cannot ask the frontier reports outputs %v, want null", value)
+	}
+}
+
 // TestWatchRunDetailReportsAnUnknownRun keeps a mistyped id from reading as a
 // run that did nothing.
 func TestWatchRunDetailReportsAnUnknownRun(t *testing.T) {
@@ -495,6 +541,98 @@ func TestWatchStopReportsHowItAsked(t *testing.T) {
 	}
 }
 
+// TestWatchCeilingsReadsAndWritesWhatTheCommandHolds is the route pair the
+// launch refusal points at: an operator told "the conductor has no budget
+// ceilings" has to be able to set them from the surface that refused him, and
+// what he sets has to arrive as the command's own flags.
+func TestWatchCeilingsReadsAndWritesWhatTheCommandHolds(t *testing.T) {
+	perCycle, perDay := 0.5, 5.0
+	launcher := &fakeLauncher{ceilings: CeilingSettings{
+		Configured: true, Currency: "USD", PerCycle: &perCycle, PerDay: &perDay,
+		Floor: 3, IntervalSeconds: 1800, SliceSessions: 3,
+		EvaluateCadence: "1h0m0s", BabelTriagesTheQueue: true,
+	}}
+	s, httpServer := testServer(t, Options{Launcher: launcher, Operator: "alex"})
+	session := bootstrapSession(t, s, httpServer)
+
+	read := request(t, httpServer.Client(), http.MethodGet, httpServer.URL+"/api/watch/ceilings", session)
+	defer read.Body.Close()
+	if read.StatusCode != http.StatusOK {
+		t.Fatalf("reading the ceilings answered %d, want 200", read.StatusCode)
+	}
+	var held map[string]any
+	if err := json.NewDecoder(read.Body).Decode(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held["per_cycle"] != 0.5 || held["per_day"] != 5.0 || held["interval_seconds"] != 1800.0 {
+		t.Errorf("the stored configuration reads %v, want the two ceilings and the interval", held)
+	}
+
+	// Every named dial reaches the launcher as the flag the operator would
+	// have typed, and an unnamed one is not named at all: `configure` is
+	// incremental, so a form that sent zeros for the fields it does not show
+	// would withdraw dials nobody touched.
+	write := postWatch(t, httpServer, session, "/api/watch/ceilings",
+		`{"per_cycle":0.75,"per_day":6,"floor":3,"interval":"30m","babel_improves_babel":true}`)
+	defer write.Body.Close()
+	if write.StatusCode != http.StatusOK {
+		t.Fatalf("storing the ceilings answered %d, want 200", write.StatusCode)
+	}
+	asked := launcher.configured
+	if asked.PerCycle == nil || *asked.PerCycle != 0.75 || asked.PerDay == nil || *asked.PerDay != 6 {
+		t.Errorf("the launcher was asked for %+v, want the two ceilings the page sent", asked)
+	}
+	if asked.Interval != "30m" || asked.Floor == nil || *asked.Floor != 3 {
+		t.Errorf("the launcher was asked for interval %q floor %v", asked.Interval, asked.Floor)
+	}
+	if asked.ImprovesBabel == nil || !*asked.ImprovesBabel {
+		t.Errorf("the duty authorization did not reach the launcher: %+v", asked)
+	}
+	if asked.TunesItself != nil || asked.TriagesTheQueue != nil {
+		t.Errorf("a duty the request never named arrived as %v/%v, which would withdraw it",
+			asked.TunesItself, asked.TriagesTheQueue)
+	}
+}
+
+// TestWatchCeilingsRefusalIsTheCommandsOwn keeps the one thing that makes this
+// form usable: the machine says which number it objected to, in the words
+// `conductor configure` uses, and it says so as a bad request rather than as a
+// server fault — the request was read, and the configuration it asked for is
+// the thing that is not allowed.
+func TestWatchCeilingsRefusalIsTheCommandsOwn(t *testing.T) {
+	const refusal = "--per-cycle 9.00 is above --per-day 5.00, which would refuse every cycle"
+	launcher := &fakeLauncher{configureNo: badRequestForTest(refusal)}
+	s, httpServer := testServer(t, Options{Launcher: launcher, Operator: "alex"})
+	session := bootstrapSession(t, s, httpServer)
+
+	response := postWatch(t, httpServer, session, "/api/watch/ceilings",
+		`{"per_cycle":9,"per_day":5}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a malformed ceiling answered %d, want 400", response.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != refusal {
+		t.Errorf("the refusal reached the browser as %q, want the command's own words", body["error"])
+	}
+}
+
+// TestWatchCeilingsNeedAnOperator: widening what the machine may spend without
+// itself is an attributed act, on the launch's terms.
+func TestWatchCeilingsNeedAnOperator(t *testing.T) {
+	s, httpServer := testServer(t, Options{Launcher: &fakeLauncher{}})
+	session := bootstrapSession(t, s, httpServer)
+
+	response := postWatch(t, httpServer, session, "/api/watch/ceilings", `{"per_cycle":1,"per_day":5}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("an unattributed ceiling answered %d, want 409", response.StatusCode)
+	}
+}
+
 // TestWatchRunsListingAddsWhatTheBodyKnows is the recent-runs table's reason to
 // move off the analysis listing: cost, duration and the run's own records, each
 // absent rather than zero where the receipt does not say.
@@ -555,6 +693,17 @@ type testRefusal struct{ text string }
 func (r testRefusal) Error() string { return r.text }
 
 func (r testRefusal) Is(target error) bool { return errors.Is(target, ErrConflict) }
+
+// badRequestForTest is the other half of that: a rejection of the
+// configuration being asked for rather than of the machine's state, which is
+// what a malformed ceiling is.
+func badRequestForTest(text string) error { return testRejection{text: text} }
+
+type testRejection struct{ text string }
+
+func (r testRejection) Error() string { return r.text }
+
+func (r testRejection) Is(target error) bool { return errors.Is(target, ErrBadRequest) }
 
 // pricedReceipt is one finished run whose engine reported what it cost.
 func pricedReceipt(runID string, startedAt time.Time, cost float64) run.Receipt {

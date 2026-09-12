@@ -59,7 +59,8 @@ import (
 	"github.com/atyrode/babel/internal/run"
 )
 
-// Launcher starts and stops the analysis this machine runs for itself.
+// Launcher starts and stops the analysis this machine runs for itself, and
+// holds the spend ceilings it runs under.
 //
 // It is an interface for the reason every other service on this surface is:
 // the method set is the whole authority. There is no method that reaches
@@ -71,6 +72,13 @@ import (
 // A child this server started is the only run it can stop, and pairing a pid
 // with a run this server did not start is exactly the mistake that would stop
 // the wrong work.
+//
+// The ceilings belong here rather than beside the analysis settings for the
+// same reason the launch does: they are `babel conductor configure`'s own
+// document, they are the thing a refused launch tells the operator to set, and
+// the only honest way to write them from a browser is to run the command that
+// owns them. A second writer of conductor.json would be a second set of
+// refusals about the same two numbers.
 type Launcher interface {
 	// Launched lists the children this machine started that have not exited.
 	Launched() []LaunchedRun
@@ -81,6 +89,15 @@ type Launcher interface {
 	Launch(ctx context.Context, req LaunchRequest) (LaunchedRun, error)
 	// Stop asks one child to stop at a safe point and reports how it asked.
 	Stop(ctx context.Context, pid int) (StopResult, error)
+	// Ceilings reads the stored conductor configuration — the same document
+	// `babel conductor status --json` reports, read from the same file.
+	Ceilings(ctx context.Context) (CeilingSettings, error)
+	// Configure stores it by running `babel conductor configure` with the
+	// flags this request names, so a ceiling set from a browser is a ceiling
+	// set by the command: same validation, same incremental semantics, same
+	// refusals. A malformed one comes back as ErrBadRequest wrapping the
+	// command's own sentence.
+	Configure(ctx context.Context, req CeilingRequest) (CeilingSettings, error)
 }
 
 // LaunchRequest is one run the operator asked for.
@@ -145,6 +162,75 @@ type StopResult struct {
 	Method string
 	// Detail is one sentence naming what will happen, in the CLI's terms.
 	Detail string
+}
+
+// CeilingSettings is the conductor configuration this machine holds: the two
+// spend ceilings autonomy is bounded by, the scheduling dials, and the
+// standing duties the operator has authorized.
+//
+// It is the shape `babel conductor configure --json` and `babel conductor
+// status --json` already emit, under the same field names, because it is the
+// same document read from the same file. A surface that renamed these keys
+// would make an operator comparing the browser with the terminal wonder
+// whether they are looking at two configurations.
+//
+// Configured is what keeps "no ceilings" apart from "ceilings of zero", which
+// the conductor refuses for the same reason but tells the operator differently:
+// PerCycle and PerDay are absent entirely on a machine that has never set
+// them, because a limit nobody chose is not a limit of nothing.
+type CeilingSettings struct {
+	Configured bool     `json:"configured"`
+	Currency   string   `json:"currency,omitempty"`
+	PerCycle   *float64 `json:"per_cycle,omitempty"`
+	PerDay     *float64 `json:"per_day,omitempty"`
+	// The dials below always have a value: where the operator set none, the
+	// figure is the default the loop actually runs under, which is what
+	// `conductor status` reports and is a fact rather than a blank.
+	Floor                int    `json:"serendipity_floor"`
+	IntervalSeconds      int    `json:"interval_seconds"`
+	SliceSessions        int    `json:"slice_sessions"`
+	ConsolidateOneIn     int    `json:"consolidate_one_in"`
+	ConsolidateRoots     int    `json:"consolidate_roots"`
+	EvaluateOneIn        int    `json:"evaluate_one_in"`
+	EvaluateCadence      string `json:"evaluate_cadence"`
+	BabelImprovesBabel   bool   `json:"babel_improves_babel"`
+	BabelTunesItself     bool   `json:"babel_tunes_itself"`
+	BabelTriagesTheQueue bool   `json:"babel_triages_the_queue"`
+	ConfiguredAt         string `json:"configured_at,omitempty"`
+	// Path is where the document is, so an operator who would rather edit it
+	// in a terminal knows which file the browser just wrote.
+	Path string `json:"path,omitempty"`
+}
+
+// CeilingRequest is one `babel conductor configure` invocation.
+//
+// Every field is one of that command's flags, and every one is a pointer or an
+// empty-able string because the command is incremental: an operator raising the
+// day's ceiling has not withdrawn a standing duty, so "not named" has to stay
+// distinguishable from "named as zero" and from "named as off". The Launcher
+// turns a named field into a flag and leaves an unnamed one off the command
+// line entirely.
+//
+// Interval and EvaluateCadence travel as the durations the flags take —
+// "45m", "1h30m" — so the parse, and the refusal for a malformed one, stay the
+// flag package's inside the command rather than becoming a second dialect here.
+type CeilingRequest struct {
+	PerCycle *float64 `json:"per_cycle,omitempty"`
+	PerDay   *float64 `json:"per_day,omitempty"`
+	Currency string   `json:"currency,omitempty"`
+	Floor    *int     `json:"floor,omitempty"`
+	Interval string   `json:"interval,omitempty"`
+	// Slice is --slice-sessions: how many sessions a serendipity draw reads.
+	Slice            *int   `json:"slice_sessions,omitempty"`
+	Consolidate      *int   `json:"consolidate,omitempty"`
+	ConsolidateRoots *int   `json:"consolidate_roots,omitempty"`
+	Evaluate         *int   `json:"evaluate,omitempty"`
+	EvaluateCadence  string `json:"evaluate_cadence,omitempty"`
+	// The three standing-duty authorizations, each tri-state: true is the
+	// duty's flag, false is its --no- form, and absent names neither.
+	ImprovesBabel   *bool `json:"babel_improves_babel,omitempty"`
+	TunesItself     *bool `json:"babel_tunes_itself,omitempty"`
+	TriagesTheQueue *bool `json:"babel_triages_the_queue,omitempty"`
 }
 
 // DrainReader reports the last automatic publication attempt this process
@@ -228,6 +314,17 @@ func (s *Server) routeWatch(w http.ResponseWriter, r *http.Request) bool {
 	case rest == "stop":
 		if s.requireMethod(w, r, http.MethodPost) {
 			s.handleWatchStop(w, r)
+		}
+	// The one path on this surface that both reads and writes the same
+	// document: what the machine may spend, and the operator setting it.
+	case rest == "ceilings":
+		switch r.Method {
+		case http.MethodGet:
+			s.handleWatchCeilings(w, r)
+		case http.MethodPost:
+			s.handleWatchConfigureCeilings(w, r)
+		default:
+			s.writeError(w, http.StatusBadRequest, "unsupported method")
 		}
 	default:
 		return false
@@ -831,15 +928,23 @@ type watchRun struct {
 	// both are readable.
 	Candidates []watchCandidate `json:"candidates"`
 	Failures   []watchFailure   `json:"failures"`
-	// Outputs are the run's own records. The section is absent rather than
-	// empty when this build's frontier cannot answer by run id.
+	// Outputs are the run's own records: null when this build's frontier
+	// cannot answer by run id, and an empty array when it answered that the
+	// run published nothing.
+	//
+	// The two must not collapse, which is why this field carries no
+	// `omitempty`: with it, a run that genuinely wrote nothing serialized
+	// identically to a frontier that could not be asked, and the page then
+	// told the operator "the record index cannot answer for this run" about a
+	// run the index had answered for perfectly well. Every other array on
+	// this receipt follows the same rule for the same reason.
 	//
 	// It deliberately shadows the embedded listing row's count of the same
 	// name: a page that is showing the records themselves has no use for the
 	// number beside them, and encoding/json resolves the collision in favour
 	// of the shallower field, which is this one. The run-detail test asserts
 	// the array, so the resolution is pinned rather than relied upon.
-	Outputs []watchOutput `json:"outputs,omitempty"`
+	Outputs []watchOutput `json:"outputs"`
 }
 
 type watchTiming struct {
@@ -1329,6 +1434,78 @@ func (s *Server) handleWatchStop(w http.ResponseWriter, r *http.Request) {
 		Method:  result.Method,
 		Detail:  result.Detail,
 	})
+}
+
+// handleWatchCeilings is GET /api/watch/ceilings: what this machine is allowed
+// to spend on autonomous work, read from the document the CLI keeps it in.
+//
+// It is a launcher read rather than a settings read because the ceilings are
+// the CLI's own file and the CLI is what enforces them. A second reader that
+// parsed conductor.json here would be a second answer to "what is in force",
+// and the two would disagree the first time a default changed.
+func (s *Server) handleWatchCeilings(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Launcher != nil, "reading the spend ceilings") {
+		return
+	}
+	settings, err := s.opts.Launcher.Ceilings(r.Context())
+	if err != nil {
+		// The path of a settings document and whatever a decoder said about
+		// its contents stay out of both the answer and the log (§9): what a
+		// reader can act on is that this machine's configuration could not be
+		// read, and the terminal says the rest.
+		s.logf("watch: the stored spend ceilings could not be read")
+		s.writeError(w, http.StatusInternalServerError,
+			"the stored spend ceilings could not be read on this machine; "+
+				"\"babel conductor status\" reports the same document")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, settings)
+}
+
+// handleWatchConfigureCeilings is POST /api/watch/ceilings: the operator
+// setting them.
+//
+// It is an attributed act for the launch's reason — the ceilings are what
+// bounds every future autonomous run's spend, so a session that cannot name an
+// operator does not get to widen them — and it answers with the stored
+// document read back rather than with the request, because `conductor
+// configure` is incremental and fills defaults: echoing the request would show
+// the operator a configuration that is not the one in force.
+func (s *Server) handleWatchConfigureCeilings(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.Launcher != nil, "setting the spend ceilings") {
+		return
+	}
+	if s.opts.Operator == "" {
+		s.writeError(w, http.StatusConflict,
+			"this session cannot set the spend ceilings because it could not name an operator; "+
+				"relaunch with --operator ID or set $BABEL_OPERATOR")
+		return
+	}
+	var req CeilingRequest
+	if !s.decodeBody(w, r, &req) {
+		return
+	}
+	stored, err := s.opts.Launcher.Configure(r.Context(), req)
+	if err != nil {
+		s.ceilingError(w, err)
+		return
+	}
+	s.logf("watch: %s set the spend ceilings", s.opts.Operator)
+	s.writeJSON(w, http.StatusOK, stored)
+}
+
+// ceilingError reports a refused configuration with the refusing layer's own
+// words, on launchError's terms: "--per-cycle 9.00 is above --per-day 5.00,
+// which would refuse every cycle" is the product, and a bare 400 would leave an
+// operator with two numbers and no idea which one the machine objected to.
+func (s *Server) ceilingError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrBadRequest), errors.Is(err, ErrConflict), errors.Is(err, ErrNotFound):
+		s.operationError(w, err)
+	default:
+		s.logf("watch: the spend ceilings could not be stored")
+		s.writeError(w, http.StatusInternalServerError, "the spend ceilings could not be stored")
+	}
 }
 
 // runCounts mirrors a receipt's counts onto the listing shape this package

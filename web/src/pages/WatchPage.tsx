@@ -61,15 +61,91 @@ const LIVE_POLL_MS = 5_000;
 const SERIES_DAYS = 30;
 const RUNS_LIMIT = 50;
 
+// How many runs in flight get a card of their own before the strip becomes a
+// table.
+//
+// Four, because a card is a thing with four changing figures and the point of
+// it is that the eye can hold it: sixteen of them is thirty-one identical
+// rectangles saying "Exploration · code-health-comprehensibility · SPEND —",
+// which is a wall, not a control room. Past the fourth, the same runs read far
+// better as one dense table — the register §8.6 asks for on this surface
+// anyway — where thirty rows compare down a column instead of tiling.
+const LIVE_CARDS = 4;
+
+// How tall a small multiple's chart is. Thirty days in forty pixels is a
+// postage stamp: the shape is the message on this surface and it has to be
+// legible, so the chart gets roughly half the panel's height rather than a
+// strip at the bottom of it.
+const SERIES_CHART_HEIGHT = "6.875rem";
+
 // FRESHNESS_NOTE says what each classification does and does not establish.
 // "lost" is the one that matters: nothing observed a death, and the interface
 // never renders it as one.
+//
+// These are captions rather than sentences a row prints beside its own figure:
+// every card and every row already says how old its last word is, in one
+// clause, from the number the server sent. Printing both produced the walk's
+// "Last word 0ms ago. Heartbeat seconds old." — one claim, twice, in two
+// units, the second of them a guess about the first.
 const FRESHNESS_NOTE: Record<string, string> = {
-  fresh: "Heartbeat seconds old.",
-  recent: "Last word a minute or two ago.",
+  fresh: "Heard from seconds ago.",
+  recent: "Heard from a minute or two ago.",
   stale: "No word recently. Running or finished — this host cannot tell.",
   lost: "Nothing heard for a long time. That is not the same as dead.",
 };
+
+// Whether a row still counts as in flight.
+//
+// Only "lost" is excluded, and it is excluded from the headline, the header
+// pill and the strip alike: a run nothing has been heard from for a long time
+// is evidence about a heartbeat, not a process, and neither counting it as
+// running nor reporting it as dead would be honest. The peel below keeps them
+// all, with their last word, which is the only fact there is.
+function inFlight(run: LiveRun): boolean {
+  return run.freshness !== "lost";
+}
+
+// Whether this host has heard from a run within the freshness window presence
+// calls recent. It is the stricter count the header pill uses, and the page
+// states it too whenever it differs: two numbers in the chrome that disagree
+// silently are worse than one number with its caveat printed.
+function heardFrom(run: LiveRun): boolean {
+  return run.freshness === "fresh" || run.freshness === "recent" || run.freshness === undefined;
+}
+
+// elapsedClock renders a ticking wall clock: whole seconds always, so the
+// figure visibly advances between reads, and never the sub-second precision
+// `seconds` keeps for a recorded duration — a card that opened on "0ms
+// elapsed" was reporting a measurement at a precision nobody watches.
+function elapsedClock(total: number): string {
+  const whole = Math.max(0, Math.round(total));
+  if (whole < 60) return `${whole}s`;
+  const minutes = Math.floor(whole / 60);
+  if (minutes < 60) return `${minutes}m ${String(whole % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+// lastWord is the one clause a card and a row both say about a run's age, and
+// the whole of what either says about it: how old the last thing this host
+// heard from it is. A run that has not announced at all has said nothing,
+// which is a third state and not a stale one.
+function lastWord(run: LiveRun): string {
+  const age = run.heartbeat_age_s;
+  if (age == null || !Number.isFinite(age) || age < 0) return "no word yet";
+  if (age < 1) return "last word just now";
+  const whole = Math.round(age);
+  if (whole < 60) return `last word ${whole}s ago`;
+  const minutes = Math.floor(whole / 60);
+  if (minutes < 60) return `last word ${minutes}m ago`;
+  return `last word ${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m ago`;
+}
+
+// What a row is about, in the two words a receipt records: the kind of work
+// and the recipe it is applying. It is the heading on a card and the first two
+// columns of the table, so it is derived once.
+function runKindLabel(run: LiveRun): string {
+  return RUN_KIND_LABELS[run.kind ?? ""] ?? run.kind ?? "Run";
+}
 
 // The four record kinds a day's output is composed of, in the order they
 // stack: a hypothesis is the cheapest thing a run can make and a proposal the
@@ -167,10 +243,45 @@ function unmetDependency(args: LaunchArgs): string | null {
 
 const HARNESSES = ["omp", "codex", "claude-code"];
 
+// StopButton is the one control a live row carries.
+//
+// It is offered only where it can actually act: a run this server launched,
+// whose child process it holds. A row from another machine carries no pid and
+// is not stoppable, and a button that posted a number from another host's
+// process table would stop whatever happens to hold that number here.
+function StopButton({
+  run,
+  stopping,
+  onStop,
+}: {
+  run: LiveRun;
+  stopping: boolean;
+  onStop: (run: LiveRun) => void;
+}) {
+  if (!run.stoppable || run.pid == null) return null;
+  return (
+    <button
+      type="button"
+      className="danger-button live-stop"
+      disabled={stopping}
+      onClick={() => onStop(run)}
+      title="Ask this run to stop at its next safe point"
+    >
+      {stopping && <span className="spinner small" />}
+      {stopping ? "Stopping…" : "Stop"}
+    </button>
+  );
+}
+
 // LiveCard is one run in flight. Everything on it is either something the run
 // said or something this page can compute from what it said: elapsed ticks
 // client-side from the start time, and the figures are absent rather than zero
 // until the run reports them.
+//
+// An unknown spend is the one absence that is omitted rather than dashed. A
+// run in flight has no receipt yet — it is written when the run ends — so
+// "SPEND —" is the normal state of every card, and four columns of em dashes
+// is a figure that says nothing occupying the room of one that would.
 function LiveCard({
   run,
   now,
@@ -183,83 +294,164 @@ function LiveCard({
   onStop: (run: LiveRun) => void;
 }) {
   const started = Date.parse(run.started_at);
-  const elapsed = Number.isFinite(started) ? seconds(Math.max(0, (now - started) / 1000)) : ABSENT;
-  const alive = run.freshness === "fresh" || run.freshness === "recent" || run.freshness === undefined;
+  const elapsed = Number.isFinite(started) ? elapsedClock((now - started) / 1000) : ABSENT;
   const note = run.freshness ? FRESHNESS_NOTE[run.freshness] : undefined;
-  const heartbeat = run.heartbeat_age_s == null ? null : seconds(run.heartbeat_age_s);
 
   return (
     <article className="panel live-card">
       <header className="live-card-head">
         <span className="live-card-kind">
-          {alive && <span className="live-dot" aria-hidden="true" />}
-          {RUN_KIND_LABELS[run.kind ?? ""] ?? run.kind ?? "Run"}
+          {heardFrom(run) && <span className="live-dot" aria-hidden="true" />}
+          {runKindLabel(run)}
         </span>
         {run.state && <Badge label={run.state} tone={run.state === "running" ? "green" : "neutral"} />}
       </header>
 
-      <p className="live-card-stage">{run.stage || "no stage reported"}</p>
+      <p className="live-card-stage">{run.stage || run.recipe || "no stage reported"}</p>
 
       <div className="live-card-figures">
         <div className="stat">
           <span className="stat-label">elapsed</span>
           <strong className="stat-value">{elapsed}</strong>
         </div>
-        <div className="stat">
-          <span className="stat-label">spend</span>
-          <strong className="stat-value">{dollars(run.spend_usd)}</strong>
-        </div>
+        {run.spend_usd != null && (
+          <div className="stat">
+            <span className="stat-label">spend</span>
+            <strong className="stat-value">{dollars(run.spend_usd)}</strong>
+          </div>
+        )}
         <div className="stat">
           <span className="stat-label">records</span>
           <strong className="stat-value">{count(run.records)}</strong>
         </div>
       </div>
 
-      <p className="live-card-word">
-        {heartbeat ? `Last word ${heartbeat} ago.` : "No heartbeat recorded yet."}
-        {note ? ` ${note}` : ""}
+      {/* One clause, from the figure the server sent. The classification's
+          own caveat is the title rather than a second sentence: it says the
+          same thing in words, and printing both is what made every card read
+          "Last word 0ms ago. Heartbeat seconds old." */}
+      <p className="live-card-word" title={note}>
+        {lastWord(run)}
       </p>
 
       <footer className="live-card-foot">
-        <Link className="live-card-open" to={`/watch/runs/${encodeURIComponent(run.run_id)}`}>
-          Open the receipt →
-        </Link>
-        {run.authority && <AuthorityMark authority={run.authority} />}
-        {/* Stop is offered only where it can actually act: a run this server
-            launched, whose child process it holds. A row from another machine
-            carries no pid and is not stoppable, and a button that posted a
-            number from another host's process table would stop whatever
-            happens to hold that number here. */}
-        {run.stoppable && run.pid != null && (
-          <button
-            type="button"
-            className="danger-button live-card-stop"
-            disabled={stopping}
-            onClick={() => onStop(run)}
-            title="Ask this run to stop at its next safe point"
-          >
-            {stopping && <span className="spinner small" />}
-            {stopping ? "Stopping…" : "Stop"}
-          </button>
+        {run.run_id ? (
+          <Link className="live-card-open" to={`/watch/runs/${encodeURIComponent(run.run_id)}`}>
+            Open the receipt →
+          </Link>
+        ) : (
+          // A child mints its own identity and reports it in its receipt, so
+          // a run this server started a moment ago has a pid and no name. A
+          // link built from the empty string would open nothing.
+          <span className="live-card-open muted">not named itself yet</span>
         )}
+        {run.authority && <AuthorityMark authority={run.authority} />}
+        <StopButton run={run} stopping={stopping} onStop={onStop} />
       </footer>
     </article>
   );
 }
 
+// LiveRows is the dense half of the live strip: the runs past the fourth, and
+// the ones nothing has been heard from.
+//
+// Six columns, and every one of them is something the row said: what kind of
+// work it is, which recipe it is applying, how long it has been going, how
+// much it has written, how old its last word is, and the stop where this
+// server can act. It is the observatory register — mono figures, tabular, one
+// row per run — which is what thirty concurrent runs need and what thirty
+// cards cannot be.
+function LiveRows({
+  runs,
+  now,
+  stoppingPid,
+  onStop,
+}: {
+  runs: LiveRun[];
+  now: number;
+  stoppingPid: number | null;
+  onStop: (run: LiveRun) => void;
+}) {
+  return (
+    <div className="table-scroll">
+      <table className="live-table">
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th>Recipe</th>
+            <th className="numeric">Elapsed</th>
+            <th className="numeric">Records</th>
+            <th>Last word</th>
+            <th>
+              <span className="sr-only">Stop</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => {
+            const started = Date.parse(run.started_at);
+            const elapsed = Number.isFinite(started) ? elapsedClock((now - started) / 1000) : ABSENT;
+            return (
+              <tr key={`${run.run_id}:${run.pid ?? "remote"}`}>
+                <td>
+                  {run.run_id ? (
+                    <Link className="runs-open" to={`/watch/runs/${encodeURIComponent(run.run_id)}`}>
+                      {heardFrom(run) && <span className="live-dot" aria-hidden="true" />}
+                      {runKindLabel(run)}
+                    </Link>
+                  ) : (
+                    <span className="live-row-kind">
+                      {heardFrom(run) && <span className="live-dot" aria-hidden="true" />}
+                      {runKindLabel(run)}
+                    </span>
+                  )}
+                  <span className="secondary mono">{run.run_id || "not named itself yet"}</span>
+                </td>
+                <td className="mono live-row-recipe">{run.recipe || run.stage || ABSENT}</td>
+                <td className="numeric mono">{elapsed}</td>
+                <td className="numeric mono">{count(run.records)}</td>
+                <td className="mono live-row-word" title={run.freshness ? FRESHNESS_NOTE[run.freshness] : undefined}>
+                  {lastWord(run)}
+                </td>
+                <td className="live-row-stop">
+                  <StopButton
+                    run={run}
+                    stopping={stoppingPid != null && stoppingPid === run.pid}
+                    onStop={onStop}
+                  />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // SeriesPanel is one of the four small multiples: a label, the last day's
-// figure as the readable number, the shape of thirty days, and one line saying
-// what the window holds.
+// figure as the readable number, the shape of thirty days over a baseline,
+// the first and last day it covers, and one line saying what the window
+// holds.
+//
+// The two dates are the whole axis, and they are here rather than in the
+// chart because they are the only two a reader needs: the shape says which
+// way the window runs and every column carries its own day on hover, so a
+// thirty-label axis would be thirty labels nobody can read at this width.
 function SeriesPanel({
   label,
   value,
   note,
+  first,
+  last,
   footer,
   children,
 }: {
   label: string;
   value: string;
   note?: string;
+  first?: string;
+  last?: string;
   footer: string;
   children: ReactNode;
 }) {
@@ -271,6 +463,12 @@ function SeriesPanel({
         {note && <span className="stat-note">{note}</span>}
       </div>
       {children}
+      {first && last && (
+        <p className="series-axis" aria-hidden="true">
+          <span>{first}</span>
+          <span>{last}</span>
+        </p>
+      )}
       <p className="series-footer">{footer}</p>
     </article>
   );
@@ -344,16 +542,27 @@ function WatchPage() {
     };
   }, [loadLive]);
 
-  const running = live?.runs.length ?? 0;
+  // The live read, split the way the page renders it. A run nothing has been
+  // heard from for a long time is kept — it is a claim a process made and may
+  // still be true — and it is kept out of the count, because counting it as
+  // running would be asserting liveness on evidence that has gone cold.
+  const liveRuns = live?.runs ?? [];
+  const flying = liveRuns.filter(inFlight);
+  const lost = liveRuns.filter((run) => !inFlight(run));
+  const heard = flying.filter(heardFrom).length;
+  const running = flying.length;
 
   // Elapsed ticks locally rather than arriving from the server, so a card
   // counts up smoothly between five-second reads. The clock runs only while
-  // something is on it.
+  // something is on it — including the rows in the lost peel, whose elapsed
+  // is still a clock and would otherwise freeze at whatever second the last
+  // read happened on.
+  const rendered = liveRuns.length;
   useEffect(() => {
-    if (running === 0) return undefined;
+    if (rendered === 0) return undefined;
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
-  }, [running]);
+  }, [rendered]);
 
   useEffect(() => {
     let mounted = true;
@@ -551,9 +760,25 @@ function WatchPage() {
           <h1>
             {running > 0 && <span className="live-dot" aria-hidden="true" />}
             {running === 0
-              ? "Nothing is running"
+              ? lost.length === 0
+                ? "Nothing is running"
+                : "Nothing is in contact"
               : `${running} ${running === 1 ? "run" : "runs"} in flight`}
           </h1>
+          {/* The stricter count, printed whenever it differs from the
+              headline's. The header's own mark counts only what this host has
+              heard from recently, and two numbers in the chrome that disagree
+              silently are worse than one number with its caveat beside it. */}
+          {running > 0 && heard < running && (
+            <p className="watch-headline-note">
+              {heard === 0
+                ? "None of them has been heard from in the last minute or two"
+                : `${heard} heard from in the last minute or two`}
+              {" · "}
+              {running - heard} {running - heard === 1 ? "has" : "have"} not said anything recently —
+              running or finished, this host cannot tell
+            </p>
+          )}
         </div>
         {drain && (
           <p className="watch-drain" title="Publication is automatic: every run's output is sealed and published as the process exits.">
@@ -580,9 +805,13 @@ function WatchPage() {
         </div>
       )}
 
-      {running > 0 && (
+      {/* Up to four cards, then the table. The threshold is not a
+          breakpoint: it is where a card stops being a thing the eye holds and
+          becomes one of sixteen identical rectangles, which is what the walk
+          met. */}
+      {flying.length > 0 && (
         <div className="live-strip">
-          {live?.runs.map((run) => (
+          {flying.slice(0, LIVE_CARDS).map((run) => (
             <LiveCard
               key={`${run.run_id}:${run.pid ?? "remote"}`}
               run={run}
@@ -592,6 +821,35 @@ function WatchPage() {
             />
           ))}
         </div>
+      )}
+
+      {flying.length > LIVE_CARDS && (
+        <article className="surface live-surface">
+          <p className="live-table-caption">The other {flying.length - LIVE_CARDS} in flight</p>
+          <LiveRows runs={flying.slice(LIVE_CARDS)} now={now} stoppingPid={stoppingPid} onStop={stop} />
+        </article>
+      )}
+
+      {/* Lost contact is a statement about a heartbeat, not about a process.
+          Nothing observed a death here: a host that stopped announcing looks
+          exactly like one that finished, and these rows are peeled rather
+          than dropped because a run that is still spending money while its
+          announcements go missing is exactly what an operator has to be able
+          to find. */}
+      {lost.length > 0 && (
+        <details className="peel live-lost">
+          <summary>
+            {lost.length} lost contact — not the same as dead
+          </summary>
+          <div className="peel-body">
+            <p className="muted">
+              Nothing has been heard from these for a long time, and nothing observed them stop.
+              They are not counted as running and they are not reported as ended; each row's last
+              word is how old the evidence is.
+            </p>
+            <LiveRows runs={lost} now={now} stoppingPid={stoppingPid} onStop={stop} />
+          </div>
+        </details>
       )}
 
       {stopNote && (
@@ -743,88 +1001,94 @@ function WatchPage() {
         )}
 
         {days.length > 0 && (
-          <>
-            <div className="series-multiples">
-              <SeriesPanel
-                label="records"
-                value={count(lastRecordTotal)}
-                note={last ? `on ${last.day}` : undefined}
-                footer={`${count(recordTotal)} over ${days.length} days`}
-              >
-                <StackedBars
-                  bands={bands}
-                  titles={dayTitles}
-                  label="Records published per day, by kind"
-                  height="3rem"
-                />
-                <ul className="series-legend">
-                  {RECORD_BANDS.map((band) => (
-                    <li key={band.key}>
-                      <span className="series-swatch" style={{ background: band.color }} aria-hidden="true" />
-                      {band.label}
-                    </li>
-                  ))}
-                </ul>
-              </SeriesPanel>
+          <div className="series-multiples">
+            <SeriesPanel
+              label="records"
+              value={count(lastRecordTotal)}
+              note={last ? `on ${last.day}` : undefined}
+              first={days[0].day}
+              last={days[days.length - 1].day}
+              footer={`${count(recordTotal)} over ${days.length} days`}
+            >
+              <StackedBars
+                bands={bands}
+                titles={dayTitles}
+                label="Records published per day, by kind"
+                height={SERIES_CHART_HEIGHT}
+              />
+              <ul className="series-legend">
+                {RECORD_BANDS.map((band) => (
+                  <li key={band.key}>
+                    <span className="series-swatch" style={{ background: band.color }} aria-hidden="true" />
+                    {band.label}
+                  </li>
+                ))}
+              </ul>
+            </SeriesPanel>
 
-              <SeriesPanel
-                label="reviews"
-                value={count(last?.reviews)}
-                note={last ? `on ${last.day}` : undefined}
-                footer={`${count(reviewTotal)} over ${days.length} days`}
-              >
-                <Bars
-                  values={reviewValues}
-                  titles={days.map((day) => `${day.day} — ${day.reviews} reviews`)}
-                  label="Reviews per day"
-                  color="var(--accent)"
-                  height="3rem"
-                />
-              </SeriesPanel>
+            <SeriesPanel
+              label="reviews"
+              value={count(last?.reviews)}
+              note={last ? `on ${last.day}` : undefined}
+              first={days[0].day}
+              last={days[days.length - 1].day}
+              footer={`${count(reviewTotal)} over ${days.length} days`}
+            >
+              <Bars
+                values={reviewValues}
+                titles={days.map((day) => `${day.day} — ${day.reviews} reviews`)}
+                label="Reviews per day"
+                color="var(--accent)"
+                height={SERIES_CHART_HEIGHT}
+              />
+            </SeriesPanel>
 
-              <SeriesPanel
-                label="sessions"
-                value={count(last?.sessions)}
-                note={last ? `on ${last.day}` : undefined}
-                footer={`${count(sessionTotal)} over ${days.length} days`}
-              >
-                <Bars
-                  values={sessionValues}
-                  titles={days.map((day) => `${day.day} — ${day.sessions} sessions`)}
-                  label="Sessions recorded per day"
-                  color="var(--info)"
-                  height="3rem"
-                />
-              </SeriesPanel>
+            <SeriesPanel
+              label="sessions"
+              value={count(last?.sessions)}
+              note={last ? `on ${last.day}` : undefined}
+              first={days[0].day}
+              last={days[days.length - 1].day}
+              footer={`${count(sessionTotal)} over ${days.length} days`}
+            >
+              <Bars
+                values={sessionValues}
+                titles={days.map((day) => `${day.day} — ${day.sessions} sessions`)}
+                label="Sessions recorded per day"
+                color="var(--info)"
+                height={SERIES_CHART_HEIGHT}
+              />
+            </SeriesPanel>
 
-              {/* Spend's gaps are the honest part. A day whose receipts this
-                  machine does not hold is unknown, not free, so it draws as a
-                  faint tick and is excluded from the total — which is why the
-                  footer says how many days the figure covers. */}
-              <SeriesPanel
-                label="spend"
-                value={dollars(last?.spend_usd)}
-                note={last ? `on ${last.day}` : undefined}
-                footer={
-                  spendKnown.length === days.length
-                    ? `${dollars(spendTotal)} over ${days.length} days`
-                    : `${dollars(spendTotal)} over the ${spendKnown.length} of ${days.length} days with receipts here`
-                }
-              >
-                <Bars
-                  values={spendValues}
-                  titles={days.map((day) =>
-                    day.spend_usd == null
-                      ? `${day.day} — no receipt on this machine says`
-                      : `${day.day} — ${dollars(day.spend_usd)}`,
-                  )}
-                  label="Spend per day"
-                  color="var(--warn)"
-                  height="3rem"
-                />
-              </SeriesPanel>
-            </div>
-          </>
+            {/* Spend's gaps are the honest part. A day whose receipts this
+                machine does not hold is unknown, not free, so it draws as a
+                faint tick on the baseline and is excluded from the total —
+                which is why the footer says how many days the figure covers. */}
+            <SeriesPanel
+              label="spend"
+              value={dollars(last?.spend_usd)}
+              note={last ? `on ${last.day}` : undefined}
+              first={days[0].day}
+              last={days[days.length - 1].day}
+              footer={
+                spendKnown.length === days.length
+                  ? `${dollars(spendTotal)} over ${days.length} days`
+                  : `${dollars(spendTotal)} over the ${spendKnown.length} of ${days.length} days with receipts here`
+              }
+            >
+              <Bars
+                values={spendValues}
+                titles={days.map((day) =>
+                  day.spend_usd == null
+                    ? `${day.day} — no receipt on this machine says`
+                    : `${day.day} — ${dollars(day.spend_usd)}`,
+                )}
+                label="Spend per day"
+                color="var(--warn)"
+                height={SERIES_CHART_HEIGHT}
+              />
+            </SeriesPanel>
+          </div>
         )}
       </article>
 

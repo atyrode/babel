@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,28 @@ func newWebLaunchFixture(t *testing.T) *webLaunchFixture {
 	}
 	launcher.executable = f.executable
 	f.launcher = launcher
+	// The reaper is a goroutine, and it outlives the assertion that observed
+	// the stop: a pid stops being listed as soon as the process is gone,
+	// while reap is still forgetting the child, rewriting the record under
+	// the state directory and removing the stop file. t.TempDir's own
+	// RemoveAll fails if a file reappears under it mid-sweep — "directory
+	// not empty" — and that failure would fail a test whose subject already
+	// passed. Clearing the launch directory here, until it stays cleared,
+	// gives those last writes somewhere to land and nowhere to be found.
+	t.Cleanup(func() {
+		for attempt := 0; attempt < 25; attempt += 1 {
+			if err := os.RemoveAll(d.launchDir()); err != nil {
+				return
+			}
+			entries, err := os.ReadDir(d.launchDir())
+			if errors.Is(err, os.ErrNotExist) || (err == nil && len(entries) == 0) {
+				if attempt > 0 {
+					return
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 	return f
 }
 
@@ -343,6 +366,148 @@ func TestWebLaunchSurvivesARestartedServer(t *testing.T) {
 		t.Fatalf("a restarted server could not stop what it inherited: %v", err)
 	}
 	f.waitGone(t, child.PID)
+}
+
+// TestWebCeilingsRoundTripThroughTheRoutes is the loop the launch refusal
+// closes: a browser told "the conductor has no budget ceilings, so it will not
+// run" posts two numbers to the surface that refused it, and the machine it
+// refused on is configured afterwards.
+//
+// It is driven over HTTP against a real server wired to the real launcher,
+// because the claim is about the whole path — route, attribution, the command
+// layer's own validation, the document on disk — and every layer in it has
+// been the one that dropped a flag at some point. The executable is the
+// fixture's fake one for the file's usual reason, and no process is started by
+// either route: setting a ceiling runs `conductor configure` in this process,
+// which is what makes its refusals available verbatim.
+func TestWebCeilingsRoundTripThroughTheRoutes(t *testing.T) {
+	f := newWebLaunchFixture(t)
+	srv, err := web.New(web.Options{Launcher: f.launcher, Operator: "alex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := serveWeb(t, srv)
+
+	// Before anything is set: the route answers, and it answers that nothing
+	// is configured. The two ceilings are absent rather than zero, because a
+	// limit nobody chose is not a limit of nothing.
+	code, body := client.get("/api/watch/ceilings")
+	if code != http.StatusOK {
+		t.Fatalf("GET ceilings on an unconfigured machine = %d, want 200: %.200s", code, body)
+	}
+	if !strings.Contains(body, `"configured":false`) {
+		t.Errorf("an unconfigured machine reports %s", body)
+	}
+	for _, absent := range []string{`"per_cycle"`, `"per_day"`} {
+		if strings.Contains(body, absent) {
+			t.Errorf("an unconfigured machine reports %s in %s", absent, body)
+		}
+	}
+	// The dials it never set are still reported, at the figure the loop
+	// actually runs under: `conductor status` answers the same way, and a
+	// blank would hide the default rather than disclose it.
+	if !strings.Contains(body, `"serendipity_floor":4`) {
+		t.Errorf("the default serendipity floor is not reported: %s", body)
+	}
+
+	code, body = client.do(http.MethodPost, "/api/watch/ceilings",
+		`{"per_cycle":0.5,"per_day":5,"floor":3,"interval":"30m","babel_triages_the_queue":true}`)
+	if code != http.StatusOK {
+		t.Fatalf("POST ceilings = %d, want 200: %.300s", code, body)
+	}
+	for _, want := range []string{
+		`"configured":true`, `"per_cycle":0.5`, `"per_day":5`,
+		`"serendipity_floor":3`, `"interval_seconds":1800`, `"babel_triages_the_queue":true`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the stored configuration does not carry %s: %s", want, body)
+		}
+	}
+
+	// The write went through the command layer to the document the CLI
+	// keeps, so the machine is now one a launch will not refuse: the same
+	// preflight that refused a conductor above accepts it here, and the
+	// review authorization the same POST granted is what `evaluate` needs.
+	settings, err := loadConductorSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.Ceilings == nil || settings.Ceilings.PerCycle != 0.5 || settings.Ceilings.PerDay != 5 {
+		t.Fatalf("the document on disk holds %+v", settings.Ceilings)
+	}
+	if settings.Ceilings.Currency != "USD" || settings.Floor != 3 || settings.IntervalSeconds != 1800 {
+		t.Errorf("the stored dials are %+v", settings)
+	}
+	if !settings.BabelTriagesTheQueue {
+		t.Error("the duty the operator authorized in the browser was not stored")
+	}
+
+	// A second write names one dial and nothing else. `configure` is
+	// incremental, so the ceilings and the duty it does not mention survive:
+	// an operator slowing the loop down has not withdrawn his budget.
+	if code, body = client.do(http.MethodPost, "/api/watch/ceilings", `{"interval":"2h"}`); code != http.StatusOK {
+		t.Fatalf("POST one dial = %d, want 200: %.200s", code, body)
+	}
+	for _, want := range []string{`"per_cycle":0.5`, `"interval_seconds":7200`, `"babel_triages_the_queue":true`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("an incremental write lost %s: %s", want, body)
+		}
+	}
+
+	// And the refusal is the command's own sentence, about the number it
+	// objected to. A per-cycle ceiling above the day's would refuse every
+	// cycle, which is a configuration mistake and not a server fault.
+	code, body = client.do(http.MethodPost, "/api/watch/ceilings", `{"per_cycle":9,"per_day":5}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("a per-cycle ceiling above the day's = %d, want 400: %.200s", code, body)
+	}
+	for _, want := range []string{"--per-cycle", "--per-day", "would refuse every cycle"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the refusal does not carry the command's own words %q: %s", want, body)
+		}
+	}
+	// The refused write changed nothing: the stored ceilings are the ones
+	// that were already in force.
+	if settings, err = loadConductorSettings(); err != nil {
+		t.Fatal(err)
+	} else if settings.Ceilings.PerCycle != 0.5 || settings.Ceilings.PerDay != 5 {
+		t.Errorf("a refused write stored %+v", settings.Ceilings)
+	}
+
+	// A malformed duration is refused by the flag package inside the
+	// command, which is the point of sending the duration the flag takes
+	// rather than a number of seconds this route would have to parse.
+	if code, body = client.do(http.MethodPost, "/api/watch/ceilings", `{"interval":"pancake"}`); code != http.StatusBadRequest {
+		t.Fatalf("a malformed interval = %d, want 400: %.200s", code, body)
+	}
+	if !strings.Contains(body, "interval") {
+		t.Errorf("the refusal does not name the flag it rejected: %s", body)
+	}
+}
+
+// TestWebCeilingsNeedAnOperatorToSetThem keeps the widening of what a machine
+// may spend attributable, the way a launch is: a session that cannot name
+// anybody may read the ceilings and may not raise them.
+func TestWebCeilingsNeedAnOperatorToSetThem(t *testing.T) {
+	f := newWebLaunchFixture(t)
+	srv, err := web.New(web.Options{Launcher: f.launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := serveWeb(t, srv)
+
+	if code, body := client.get("/api/watch/ceilings"); code != http.StatusOK {
+		t.Fatalf("GET ceilings = %d, want 200: %.200s", code, body)
+	}
+	code, body := client.do(http.MethodPost, "/api/watch/ceilings", `{"per_cycle":1,"per_day":5}`)
+	if code != http.StatusConflict {
+		t.Fatalf("an unattributed write = %d, want 409: %.200s", code, body)
+	}
+	if settings, err := loadConductorSettings(); err != nil {
+		t.Fatal(err)
+	} else if settings.Ceilings != nil {
+		t.Errorf("an unattributed write stored %+v", settings.Ceilings)
+	}
 }
 
 // waitForFile waits for the child to write one of its markers and returns what

@@ -155,6 +155,20 @@ function RunPage() {
   const job = run.versions?.job;
   const policy = run.versions?.policy;
 
+  // What the run was, in the two things a receipt records about why it ran:
+  // the kind of work, and the cookbook asset it applied. That is the headline
+  // — an operator arriving from a link wants to know what he is looking at,
+  // and "run_0f3c…" answers a different question — and the recipe is read
+  // from the applied set rather than invented, so a receipt that records no
+  // asset headlines the kind alone.
+  //
+  // The recipe is the first asset of kind "recipe" where the set names one,
+  // because a receipt records the whole applied set — lenses included — and
+  // the lens is a modifier on the investigation rather than the subject of it.
+  const applied = cookbook.find((asset) => asset.kind === "recipe") ?? cookbook[0];
+  const kindLabel = run.kind ? RUN_KIND_LABELS[run.kind] ?? run.kind : "";
+  const headline = [kindLabel, applied?.id].filter(Boolean).join(" · ") || "A run this receipt does not name";
+
   return (
     <section className="page run-page">
       <div className="page-heading">
@@ -162,18 +176,19 @@ function RunPage() {
           <p className="eyebrow">
             <Link to="/watch">Watch</Link> › Run
           </p>
-          <h1 className="mono">{run.run_id}</h1>
+          <h1>{headline}</h1>
           <p className="run-subhead">
-            {RUN_KIND_LABELS[run.kind ?? ""] ?? "Kind not recorded"}
+            <span className="run-id">{run.run_id}</span>
+            {!kindLabel && <span>kind not recorded</span>}
             {recorded && (
-              <>
-                {" · receipt written "}
+              <span>
+                {"receipt written "}
                 <time dateTime={run.recorded_at} title={recorded.absolute}>
                   {recorded.relative}
                 </time>
-              </>
+              </span>
             )}
-            {run.revision != null && run.revision > 1 ? ` · revision ${run.revision}` : ""}
+            {run.revision != null && run.revision > 1 && <span>revision {run.revision}</span>}
           </p>
         </div>
         <div className="run-figures">

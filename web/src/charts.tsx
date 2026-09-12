@@ -35,11 +35,18 @@ function SparkHost({
   height,
   block,
   label,
+  baseline,
   children,
 }: {
   height?: string;
   block?: boolean;
   label: string;
+  // A rule at zero, drawn under the marks. A column chart needs one: without
+  // it a reader cannot tell a bar of one from the bottom of the box, and the
+  // faint tick that stands for an unmeasured day has nothing to sit on. A
+  // sparkline does not — it is the shape of a number written beside it, and a
+  // line chart with an axis is a chart, which is a different object.
+  baseline?: boolean;
   children: ReactNode;
 }) {
   // --spark-height is DesignSystem's own hook on .spark; a chart sets it
@@ -48,6 +55,22 @@ function SparkHost({
   return (
     <span className={block ? "spark block" : "spark"} style={style}>
       <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label={label}>
+        {baseline && (
+          // Non-scaling so it stays a hairline whatever height the host
+          // gives the box: the vertical scale here is not uniform, and a
+          // rect would be four times thicker in a 110px panel than in a 24px
+          // row.
+          <line
+            x1={0}
+            y1={H}
+            x2={W}
+            y2={H}
+            stroke="currentColor"
+            strokeOpacity={0.5}
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
         {children}
       </svg>
     </span>
@@ -184,7 +207,7 @@ export function StackedBars({
   const width = Math.max(slot - gap, 0.4);
 
   return (
-    <SparkHost height={height} block={block} label={label}>
+    <SparkHost height={height} block={block} label={label} baseline>
       {totals.map((total, index) => {
         const left = index * slot + gap / 2;
         if (max === 0 || total === 0) {
@@ -238,7 +261,7 @@ export function Bars({
   const width = Math.max(slot - gap, 0.4);
 
   return (
-    <SparkHost height={height} block={block} label={label}>
+    <SparkHost height={height} block={block} label={label} baseline>
       {values.map((value, index) => {
         const left = index * slot + gap / 2;
         const known = typeof value === "number" && Number.isFinite(value) ? value : null;

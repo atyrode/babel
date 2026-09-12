@@ -368,6 +368,91 @@ export interface StopResult {
 }
 
 // ---------------------------------------------------------------------------
+// The spend ceilings (Contract W).
+//
+// This is `babel conductor configure`'s own document, read and written through
+// the launcher: the two ceilings autonomy is bounded by, the scheduling dials,
+// and the three standing-duty authorizations. The field names are the CLI's,
+// because it is the same document — an operator comparing the browser with
+// `babel conductor status --json` must not have to translate.
+//
+// `configured` is what separates "no ceilings" from "ceilings of zero". The
+// conductor refuses to run on either, and says so differently: per_cycle and
+// per_day are absent entirely until somebody states them, because a limit
+// nobody chose is not a limit of nothing.
+// ---------------------------------------------------------------------------
+
+export interface Ceilings {
+  configured: boolean;
+  currency?: string;
+  per_cycle?: number | null;
+  per_day?: number | null;
+  // The dials always carry a figure: where the operator set none, it is the
+  // default the loop actually runs under, which is what `conductor status`
+  // reports and is a fact rather than a blank.
+  serendipity_floor: number;
+  interval_seconds: number;
+  slice_sessions: number;
+  consolidate_one_in: number;
+  consolidate_roots: number;
+  evaluate_one_in: number;
+  evaluate_cadence: string;
+  babel_improves_babel: boolean;
+  babel_tunes_itself: boolean;
+  babel_triages_the_queue: boolean;
+  configured_at?: string;
+  path?: string;
+}
+
+// What a save may ask for: one `conductor configure` invocation, field for
+// flag. Only what the operator changed is sent, because the command is
+// incremental — a form that posted every field would withdraw a duty the
+// operator never touched — and the durations travel as the durations the flags
+// take, so the parse and the refusal for a malformed one stay the command's.
+export interface CeilingRequest {
+  per_cycle?: number;
+  per_day?: number;
+  currency?: string;
+  floor?: number;
+  interval?: string;
+  slice_sessions?: number;
+  consolidate?: number;
+  consolidate_roots?: number;
+  evaluate?: number;
+  evaluate_cadence?: string;
+  babel_improves_babel?: boolean;
+  babel_tunes_itself?: boolean;
+  babel_triages_the_queue?: boolean;
+}
+
+export function getWatchCeilings(): Promise<Ceilings> {
+  return request<Ceilings>("/api/watch/ceilings");
+}
+
+// saveWatchCeilings runs `babel conductor configure` on this machine with the
+// flags named here, attributed to the operator of this session, and answers
+// with the stored document read back. A configuration the command refuses
+// arrives as the message of an APIError and is rendered verbatim.
+export function saveWatchCeilings(input: CeilingRequest): Promise<Ceilings> {
+  return postJSON<Ceilings>("/api/watch/ceilings", input);
+}
+
+// durationText renders a stored number of seconds as the duration its flag
+// takes: `--interval 30m`, not 1800. It is the one place the two forms meet,
+// and it renders the coarsest exact form so a round trip through the form
+// leaves the figure unchanged.
+export function durationText(total: number | null | undefined): string {
+  if (total == null || !Number.isFinite(total) || total <= 0) return "";
+  const whole = Math.round(total);
+  const parts = [
+    [Math.floor(whole / 3600), "h"],
+    [Math.floor((whole % 3600) / 60), "m"],
+    [whole % 60, "s"],
+  ] as const;
+  return parts.filter(([value]) => value > 0).map(([value, unit]) => `${value}${unit}`).join("");
+}
+
+// ---------------------------------------------------------------------------
 // Rendering an absence.
 //
 // These three live beside the types rather than in a page because the rule

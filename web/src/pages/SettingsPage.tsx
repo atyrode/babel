@@ -3,6 +3,7 @@ import ArchiveSection from "./ArchivePage";
 import CeilingsSection from "./FocusPage";
 import HelpSection from "./HelpPage";
 import PolicySection from "./EvaluationPolicyPage";
+import SpendCeilingsSection from "./SpendCeilingsPage";
 import "../settings.css";
 
 // Settings holds what the operator configures and then stops thinking about.
@@ -29,9 +30,9 @@ const SECTIONS = [
     value: "ceilings",
     label: "Ceilings",
     title:
-      "What Babel is allowed to spend on each subject. A policy you state here is your own " +
-      "fact in the ledger, in force until you supersede it: nothing is deleted, and a " +
-      "subject's sessions are never removed from the corpus.",
+      "What Babel is allowed to spend: on autonomous work at all, and on each subject. A policy " +
+      "you state here is your own fact in the ledger, in force until you supersede it: nothing " +
+      "is deleted, and a subject's sessions are never removed from the corpus.",
   },
   {
     value: "policy",
@@ -89,7 +90,26 @@ function SettingsPage() {
       </nav>
 
       {section === "archive" && <ArchiveSection />}
-      {section === "ceilings" && <CeilingsSection />}
+      {section === "ceilings" && (
+        <>
+          {/* Two ceilings under one word, and they were not the same thing.
+              The spend ceilings are what the machine may spend on autonomous
+              work at all — the two numbers `babel conductor configure` holds,
+              and the ones Watch's own refusal sends the operator here to set.
+              The focus policy below is per subject: what analysis may spend on
+              this project rather than that one. Both belong in this section;
+              which one a refusal meant has to be legible, so each carries its
+              own heading and the one the refusal names is first. */}
+          <SpendCeilingsSection />
+          <div className="section-heading settings-subheading">
+            <div>
+              <p className="eyebrow">Per subject</p>
+              <h2>Focus policy</h2>
+            </div>
+          </div>
+          <CeilingsSection />
+        </>
+      )}
       {section === "policy" && <PolicySection />}
       {section === "help" && <HelpSection />}
     </section>
