@@ -69,6 +69,12 @@ const RecordSchema = 1
 // next allowance, and an unavailable dependency by retrying once it is back.
 // Collapsing them would make a stale worker's refused write indistinguishable
 // from a malformed one.
+// SweepLease bounds how long one process may hold the right to rebuild the
+// projection. It expires, so a process killed mid-sweep cannot wedge the
+// deployment, and it is short enough that a genuinely stale snapshot is
+// rebuilt on the next cadence rather than the one after it.
+const SweepLease = 2 * time.Minute
+
 var (
 	// ErrInvalid reports input this package refuses to record: an unknown
 	// vocabulary value, a missing attribution, an outcome with no admissible
