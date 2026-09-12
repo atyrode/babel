@@ -23,12 +23,20 @@
 // and renders as an absence of review rather than as three zeroes, which read
 // as unanimous absence of opposition.
 //
+// That the same rule holds row by row: reception is drawn where somebody said
+// something and nowhere else, so an unreviewed record is a row with an empty
+// slot rather than a flat chart of zeroes.
+//
 // That a stale projection still answers and says so, rather than refusing or
 // presenting itself as current.
 //
 // And that no control on this surface casts a vote: the browser holds no run
 // identity and no claim, and §4.12's separation is kept by there being nothing
 // here to press.
+//
+// And that the review policy — what authorized evaluation work may cost — is a
+// section of Settings reached by its old path, states the server's own
+// consequence sentence before the save, and offers nothing that starts work.
 //
 // The record page's own gate covers what one record shows. The corpus is
 // synthetic and disposable; nothing here reads a real session.
@@ -39,14 +47,16 @@ import { resolveChrome } from "./chrome";
 
 const chrome = resolveChrome({
   gate: "Ranked reading gate",
-  covers: "issue #219's ranked output listing — ordering, filters, paging and coverage — on Read, in a browser",
+  covers: "issue #219's ranked output listing — ordering, filters, paging, coverage and reception — on Read, and the review policy under Settings, in a browser",
   unverified: [
     "that each ordering names its basis on the page and actually reorders the listing",
     "that filters, sorts and pages live in the URL and survive reload and Back",
     "that paging stays inside one ranked snapshot",
     "that a never-reviewed record is findable and never renders as unopposed",
+    "that a row's reception is drawn where there is one and nowhere else",
     "that a stale projection still answers and says it is not current",
     "that no control on this surface casts a vote",
+    "that the review policy is a section of Settings and that saving it starts nothing",
   ],
 });
 
@@ -267,6 +277,58 @@ test.skipIf(!chrome)("a never-reviewed record is found and is not rendered as un
   expect(roles.some((entry) => entry.startsWith("Outcome verification"))).toBe(true);
 });
 
+test.skipIf(!chrome)("a row's reception is drawn where there is one and nowhere else", async () => {
+  await open("read");
+  await visible("What has Babel found?");
+
+  const listing = await page.evaluate(async () => {
+    // The same read the page made, so the rendering is compared against what
+    // the projection said about each row rather than against a copy of the
+    // fixtures.
+    const answer = (await fetch("/api/evaluation/list?limit=25").then((response) =>
+      response.json(),
+    )) as {
+      items?: Array<{
+        artifact: { subject: { id: string } };
+        reception: { reviews: number; support: number; oppose: number; unsure: number };
+      }>;
+    };
+    const served: Record<string, { reviews: number; support: number; oppose: number; unsure: number }> = {};
+    for (const item of answer.items ?? []) served[item.artifact.subject.id] = item.reception;
+    return {
+      served,
+      rows: Array.from(document.querySelectorAll("[data-item]")).map((row) => ({
+        id: row.getAttribute("data-item") ?? "",
+        spark: row.querySelector(".read-spark") !== null,
+        // The three facts beside the claim. The claim itself is the record's
+        // own words and may say anything, so the reception assertions are
+        // scoped to the strip the page composes.
+        facts: (row.querySelector(".read-facts") as HTMLElement | null)?.innerText ?? "",
+      })),
+    };
+  });
+
+  const voted = listing.rows.filter((row) => {
+    const reception = listing.served[row.id];
+    return reception && Math.max(reception.support, reception.oppose, reception.unsure) > 0;
+  });
+  const unreviewed = listing.rows.filter((row) => (listing.served[row.id]?.reviews ?? 0) === 0);
+  // Both cases are on this page, or the equivalence below would be vacuous.
+  expect(voted.length).toBeGreaterThan(0);
+  expect(unreviewed.length).toBeGreaterThan(0);
+
+  // Where somebody said something, the shape of what they said is drawn.
+  for (const row of voted) expect(row.spark).toBe(true);
+  // Where nobody has, the slot is empty rather than three zeroes: an
+  // unreviewed record drawn as a flat chart reads as one nobody objected to,
+  // and twenty-five rows saying "no reviews yet" is a fact about the review
+  // budget rather than about any row on the page.
+  for (const row of unreviewed) {
+    expect(row.spark).toBe(false);
+    expect(row.facts.toLowerCase()).not.toMatch(/support|oppose|unsure|review/u);
+  }
+});
+
 test.skipIf(!chrome)("a stale projection still answers and says it is not current", async () => {
   const degraded = await startMock({ MOCK_EVALUATION: "degraded" });
   const bare = await browser!.newPage();
@@ -304,5 +366,50 @@ test.skipIf(!chrome)("no control on this surface casts a vote", async () => {
       expect(label).not.toContain("downvote");
       expect(label).not.toMatch(/\bvote\b/u);
     }
+  }
+});
+
+test.skipIf(!chrome)("the review policy is a section of Settings, and saving it starts nothing", async () => {
+  // What evaluation may spend is configuration rather than a destination, so
+  // it is a drawer in Settings — and the path it used to have still opens it,
+  // because an operator's bookmark outlives a navigation redesign.
+  await open("evaluation/policy");
+  await page.waitForFunction(() => window.location.hash.startsWith("#/settings"), {
+    timeout: 15_000,
+  });
+  expect(page.url()).toContain("section=policy");
+  await page.waitForSelector(".policy-section .evaluation-policy-form", { timeout: 15_000 });
+
+  const section = await page.evaluate(async () => {
+    const served = (await fetch("/api/evaluation/policy").then((response) => response.json())) as {
+      saving?: string;
+      detail?: string;
+    };
+    return {
+      served,
+      open: document.querySelector(".section-nav button[aria-pressed='true']")?.textContent ?? "",
+      saving: document.querySelector(".evaluation-saving")?.textContent ?? "",
+      detail: document.querySelector(".policy-status .untrusted-inline")?.textContent ?? "",
+      controls: Array.from(
+        document.querySelectorAll(".policy-section button, .policy-section input[type='submit']"),
+      ).map((control) => ((control as HTMLElement).innerText || "").toLowerCase()),
+    };
+  });
+
+  expect(section.open).toBe("Review policy");
+  // What is running, and what saving does, are the server's own sentences
+  // rendered verbatim: whether authorized work is drawing is observed from
+  // claimed assignments, and only the surface that observed it can say so.
+  expect(section.saving).toBe(section.served.saving ?? "");
+  expect(section.saving.length).toBeGreaterThan(0);
+  expect(section.detail).toBe(section.served.detail ?? "");
+
+  // And the consequence is stated before the press, not after it: the operator
+  // is about to press a button on a form with a dollar figure in it. Saving a
+  // ceiling is not permission to spend it, so there is no control here that
+  // starts work.
+  expect(section.controls.length).toBeGreaterThan(0);
+  for (const label of section.controls) {
+    expect(label).not.toMatch(/\b(start|launch|draw now|run)\b/u);
   }
 });
