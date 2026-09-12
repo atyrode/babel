@@ -1280,6 +1280,10 @@ blockquote.quote {
 
 .table-scroll {
   overflow-x: auto;
+  /* A positioned containing block, so an absolutely placed helper inside
+     the table — an .sr-only header label, say — is clipped with the table
+     instead of landing outside the scroller and widening the document. */
+  position: relative;
 }
 
 table {
