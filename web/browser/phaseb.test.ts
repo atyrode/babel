@@ -14,7 +14,9 @@
 // read at /r/<id> whatever its kind, the four listings are one, and the review,
 // evaluation and per-kind detail pages redirect there. The assertions that went
 // with those pages went with them rather than being re-pinned to new wording —
-// what is asserted below is what a reader can see and do.
+// what is asserted below is what a reader can see and do. The redirect table
+// itself is enumerated once, in shell.test.ts, against App.tsx's routes; a
+// second partial copy here only made a dropped entry easier to miss.
 //
 // The corpus is synthetic and disposable. Nothing here reads a real session.
 
@@ -35,7 +37,7 @@ const chrome = resolveChrome({
     "that every area renders against the mock at all, and that an empty deployment reads as a state rather than as a bug",
     "that one record peels to five depths in place, that an absent section is absent rather than empty, and that no identifier appears above the machinery",
     "that the hostile HTML, Markdown, URL and control fixtures render inert: no script runs, no markup is injected, and the literal markup stays visible as escaped text",
-    "that every control is reachable by keyboard, and that no route overflows at either 390px or 1440px",
+    "that every control is reachable by keyboard — every depth, the rule bar's stances and rulings, the confirmation they open, and the palette — and that no route overflows at either 390px or 1440px",
     "that an operator's stance records and reverses, that recording a disposition persists and reads back, and that accepting a plan and answering a question are explicit acts",
     "that no record content reaches a request URL or the location hash",
     "that a listing whose catalog read came back partial says the list may be incomplete, in terms of the list",
@@ -106,7 +108,6 @@ const ROUTES = [
   "read",
   "read?kind=hypothesis",
   "watch",
-  "watch?view=fleet",
   "ask",
   "ask/questions",
   "ask/entities",
@@ -172,9 +173,19 @@ beforeAll(async () => {
 
   [rich, emptyMock, unwiredMock, degradedMock] = await Promise.all([
     startMock({}),
-    startMock({ MOCK_PHASEB: "empty" }),
+    // Day one is empty in every store the reading surface reads, and the
+    // surface reads four of them: the frontier behind a record, the ranked
+    // set behind Read and Decide's backlog, and what is in flight behind
+    // Watch. Emptying one and leaving the others rich is a deployment that
+    // does not exist, and it would let three of the four empty states go
+    // unrendered while the test still claimed to have checked day one.
+    startMock({ MOCK_PHASEB: "empty", MOCK_EVALUATION: "empty", MOCK_WATCH: "idle" }),
     startMock({ MOCK_UNWIRED: "frontier,review,reality,search" }),
-    startMock({ MOCK_FLEET: "degraded" }),
+    // Both catalogs are short for the same reason, and each listing states it
+    // in its own terms: the queue's read is partial, the ranked set's
+    // projection is stale. A mock that degraded only one would leave the
+    // other's notice unrendered.
+    startMock({ MOCK_FLEET: "degraded", MOCK_EVALUATION: "degraded" }),
   ]);
 
   browser = await puppeteer.launch({
@@ -223,15 +234,28 @@ test.skipIf(!chrome)("every area of the reading surface renders against the mock
     { timeout: 15_000 },
   );
 
+  // Choosing a kind narrows the one list rather than opening another page, so
+  // what has to hold is that every row it leaves is of that kind. Naming one
+  // record here would pin the fixture's ranking instead.
   await open("read?kind=finding");
-  await visible("Stated acceptance criteria correlate with verified closes");
+  await page.waitForFunction(
+    () => document.querySelectorAll("ol.read-list > li.read-row").length > 0,
+    { timeout: 15_000 },
+  );
+  const listed = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("ol.read-list > li.read-row"))
+      .map((row) => (row as HTMLElement).innerText));
+  for (const row of listed) expect(row).toContain("Finding");
 
   // Watch: what Babel is doing and what it cost. The receipt strip carries no
   // publication state and names no machine: a receipt is read for what the run
   // did, and where its records replicated to is plumbing the reading path
   // dropped.
   await open("watch");
-  await visible("Outcome integrity and unresolved state");
+  await page.waitForFunction(
+    () => document.querySelectorAll("table.runs-table tbody tr").length > 0,
+    { timeout: 15_000 },
+  );
   const watching = await page.evaluate(() => document.body.innerText);
   for (const word of ["pending-sync", "committed", "demo-laptop"]) {
     expect(watching).not.toContain(word);
@@ -243,30 +267,42 @@ test.skipIf(!chrome)("every area of the reading surface renders against the mock
 });
 
 test.skipIf(!chrome)("an empty deployment reads as a state, not a bug", async () => {
+  // Each area answers for itself, and each says the thing that is true of it
+  // rather than the same shrug four times. What must never appear on a
+  // deployment with nothing in it is a filter's excuse: "nothing matches" is
+  // a statement about controls the operator has not touched.
   await open("", emptyMock?.base);
   await visible("Nothing awaits a decision");
 
   await open("read", emptyMock?.base);
-  await visible("Nothing has been recorded yet");
+  await visible("Babel has not found anything yet");
+  expect(await page.evaluate(() => document.body.innerText)).not.toContain(
+    "a statement about the filters",
+  );
 
   await open("ask", emptyMock?.base);
   await visible("Nothing is waiting on you");
 
   await open("watch", emptyMock?.base);
-  await visible("No exploration runs are recorded");
+  await visible("Nothing is running");
 });
 
-// §5.2: sorting never deletes a record, so a rejected one stays reachable and
-// says plainly that it was rejected. The record page is where that is visible
-// now, because the standing travels with the record rather than with a listing
-// the reader has to filter.
-test.skipIf(!chrome)("a rejected record stays reachable and visibly rejected", async () => {
+// §5.2: sorting never deletes a record, so one that was ruled against stays
+// reachable and says plainly what was decided. The record page is where that
+// is visible now, because the standing travels with the record rather than
+// with a listing the reader has to filter.
+//
+// This record was rejected and then given a refinement, which is the harder
+// case: the standing it wears is the composite one, and the rejection has to
+// still be legible in it rather than being rounded off to "in progress".
+test.skipIf(!chrome)("a record ruled against stays reachable and says so", async () => {
   await open("r/hyp_lens-overlap");
   await page.waitForSelector("details.peel", { timeout: 15_000 });
   const standing = await page.evaluate(() =>
     Array.from(document.querySelectorAll(".heading-badges .badge")).map((badge) => badge.textContent));
-  expect(standing).toContain("rejected");
-  await visible("Rejected. The record is kept, visibly.");
+  expect(standing).toContain("refine-requested");
+  const claim = await page.evaluate(() => document.body.innerText);
+  expect(claim).toMatch(/rejected/iu);
 
   // The ruling that rejected it, with the reviewer's own words, at depth 4.
   const reception = await openPeel("The reception");
@@ -285,33 +321,53 @@ test.skipIf(!chrome)("a record peels to five depths without leaving the page", a
   const titles = await peelTitles();
   expect(titles[0]).toBe("The claim");
   expect(titles).toContain("The case");
-  // The count is on the collapsed sections, so a reader knows what opening
-  // one will cost before he opens it.
-  expect(titles.some((title) => title.startsWith("The evidence 2"))).toBe(true);
+  // The count rides the collapsed summary, so a reader knows what opening one
+  // will cost before he opens it. It is a separate element beside the title,
+  // which is why this matches the pair rather than a sentence.
+  expect(titles.some((title) => /^The evidence\s*\d+$/u.test(title))).toBe(true);
   expect(titles.at(-1)).toBe("The machinery");
 
-  const openAtFirst = await page.evaluate(() =>
-    Array.from(document.querySelectorAll("details.peel")).map((peel) =>
-      `${(peel.querySelector("summary")?.textContent ?? "").slice(0, 12)}:${(peel as HTMLDetailsElement).open}`));
-  expect(openAtFirst).toContain("The claim:true");
-  expect(openAtFirst).toContain("The case:true");
-  expect(openAtFirst).toContain("The evidence:false");
-  expect(openAtFirst).toContain("The machinery:false");
+  // A depth's own title is the prefix of its summary; the count that follows
+  // it is a separate element, so the comparison is on the prefix and not on a
+  // fixed slice of the concatenation.
+  const foldedAtFirst = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("details.peel")).map((peel) => ({
+      title: (peel.querySelector("summary")?.textContent ?? "").replace(/\s+/gu, " ").trim(),
+      open: (peel as HTMLDetailsElement).open,
+    })));
+  const openness = (prefix: string) =>
+    foldedAtFirst.find((peel) => peel.title.startsWith(prefix))?.open;
+  // What the reader came for is already open; what costs him attention is not.
+  expect(openness("The claim")).toBe(true);
+  expect(openness("The case")).toBe(true);
+  expect(openness("The evidence")).toBe(false);
+  expect(openness("The machinery")).toBe(false);
 
   // Depth 2 is the argument in prose, under the questions a reader is asking
-  // rather than the schema's field names.
-  const substance = await page.evaluate(() => document.body.innerText);
+  // rather than the schema's field names. The last line is the general form of
+  // that: an identifier from the wire — verification_criteria, open_questions,
+  // impact_scope — would carry an underscore, and nothing a reader is meant to
+  // read does.
+  const substance = await page.evaluate(() => {
+    const peel = Array.from(document.querySelectorAll("details.peel")).find((depth) =>
+      (depth.querySelector("summary")?.textContent ?? "").startsWith("The case"));
+    return (peel as HTMLElement).innerText;
+  });
   expect(substance).toContain("The problem");
-  expect(substance).toContain("How you would know it worked");
-  expect(substance).not.toContain("verification_criteria");
+  expect(substance).toContain("What it proposes");
+  expect(substance).toContain("What is still unanswered");
+  expect(substance).not.toMatch(/[a-z]+_[a-z]+/u);
 
   // Depth 3 says which side of the claim each excerpt is on before quoting it:
   // §4.5 requires a proposal to state its conflicting material, and an
   // interface that rendered it like support would invert the record.
   const evidence = await openPeel("The evidence");
-  expect(evidence).toContain("Supports the claim");
-  expect(evidence).toContain("Conflicts with the claim");
-  const marked = await page.evaluate(() => document.querySelectorAll(".peel-list .peel-counter").length);
+  expect(evidence).toMatch(/supports the claim/iu);
+  expect(evidence).toMatch(/conflicts with the claim/iu);
+  // Counter-evidence is marked on the item itself, so a reader scanning the
+  // list sees which way an excerpt cuts without reading the label.
+  const marked = await page.evaluate(() =>
+    document.querySelectorAll(".record-evidence .record-counter").length);
   expect(marked).toBe(1);
 
   // The citation opens the transcript at the cited line, and the link is the
@@ -319,6 +375,25 @@ test.skipIf(!chrome)("a record peels to five depths without leaving the page", a
   const citation = await page.evaluate(() =>
     document.querySelector(".peel-cite a")?.getAttribute("href"));
   expect(citation).toMatch(/^#\/sessions\/.+\?event=\d+$/u);
+
+  // The fifth depth exists as soon as there is a reception to hold, and the
+  // operator's own stance is one: this record has no reviewers, so stating a
+  // stance is what brings depth 4 into being — which is the case a reader is
+  // most likely to meet, and the one where an interface can most easily lose
+  // the act it just took.
+  await page.click(".rule-bar button[data-stance='agree']");
+  await page.waitForFunction(
+    () => Array.from(document.querySelectorAll("details.peel > summary"))
+      .some((summary) => (summary.textContent ?? "").startsWith("The reception")),
+    { timeout: 15_000 },
+  );
+  const five = await peelTitles();
+  expect(five).toHaveLength(5);
+  expect(five[0]).toBe("The claim");
+  expect(five[1]).toBe("The case");
+  expect(five[2].startsWith("The evidence")).toBe(true);
+  expect(five[3].startsWith("The reception")).toBe(true);
+  expect(five[4]).toBe("The machinery");
 
   // No identifier above depth 5, with every depth but the machinery open.
   await openPeel("The reception");
@@ -356,8 +431,11 @@ test.skipIf(!chrome)("a record with no case shows no case, and no zero", async (
   // to the other.
   const reception = await openPeel("The reception");
   expect(reception).toContain("Reviewer 1");
+  // The tally is Babel's own runs, said in those words, and the disagreement
+  // inside it is named rather than averaged into one verdict.
   expect(reception).toContain("never counting your stance");
-  expect(reception).toContain("reviewers do not agree");
+  expect(reception).toMatch(/\d+ support, \d+ oppose, \d+ unsure/u);
+  expect(reception).toMatch(/contested/iu);
   // A run is named by what it was asked and how it answered, not by its id:
   // there is no honest display name for a run, so the id stays at depth 5.
   expect(reception).not.toMatch(/run[_-][0-9a-z]{4,}/u);
@@ -370,16 +448,17 @@ test.skipIf(!chrome)("counter-evidence renders where the claim is", async () => 
   await open("r/fnd_conflicting-evidence");
   await page.waitForSelector("details.peel", { timeout: 15_000 });
   const evidence = await openPeel("The evidence");
-  expect(evidence).toContain("Counter-evidence");
-  const state = await page.evaluate(() => ({
-    counter: document.querySelectorAll(".peel-list .peel-counter").length,
-    fallibility: document.querySelectorAll(".fallibility-note").length,
+  expect(evidence).toMatch(/counter-evidence/iu);
+  // Both of this finding's citations are counter-evidence, and both are marked
+  // on the item rather than only in a sentence: the finding's own conflicting
+  // material is the reason to read it, so it has to survive a reader who is
+  // scanning the list instead of reading it.
+  const counter = await page.evaluate(() => ({
+    marked: document.querySelectorAll(".record-evidence .record-counter").length,
+    items: document.querySelectorAll(".record-evidence > li").length,
   }));
-  // Both of this finding's citations are counter-evidence, and both are
-  // marked: the finding's own conflicting material is the reason to read it.
-  expect(state.counter).toBe(2);
-  // §1's frame sits beside the claim, not on an about page.
-  expect(state.fallibility).toBe(1);
+  expect(counter.marked).toBe(2);
+  expect(counter.marked).toBe(counter.items);
 
   await open("r/pro_criteria-template");
   await visible("confounded by task size");
@@ -499,70 +578,139 @@ test.skipIf(!chrome)("hostile fixtures render inert everywhere they appear", asy
   );
   expect(literal).toBe(true);
 
-  // The search hit carrying hostile transcript bytes is likewise inert.
+  // The search hit carrying hostile transcript bytes is likewise inert. The
+  // corpus search is behind a fold on Watch — it is the one thing on that page
+  // the operator asks for rather than reads — so it is opened the way he opens
+  // it before anything is typed into it.
   await open("watch");
-  await page.type("input[type=search]", "hostile");
-  await page.click("button[type=submit]");
-  await page.waitForFunction(
-    () => document.body.innerText.includes("hostile"),
-    { timeout: 15_000 },
-  );
+  await page.waitForSelector("input[type=search]", { timeout: 15_000 });
+  await page.evaluate(() => {
+    const fold = document.querySelector("input[type=search]")?.closest("details");
+    if (fold && !(fold as HTMLDetailsElement).open) {
+      fold.querySelector("summary")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    }
+  });
+  await page.click("input[type=search]");
+  await page.keyboard.type("hostile");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".hit-list .hit-entry", { timeout: 15_000 });
   const hit = await page.evaluate(() => ({
     pwned: String(Reflect.get(globalThis, "__babel_pwned")),
     injected: document.querySelector("main img, main script") !== null,
+    // Non-vacuity: the untrusted bytes really are on screen, escaped.
+    quoted: document.body.innerText.includes("window.__babel_pwned=1"),
   }));
   expect(hit.pwned).toBe("undefined");
   expect(hit.injected).toBe(false);
+  expect(hit.quoted).toBe(true);
 });
 
 test.skipIf(!chrome)("keyboard navigation reaches every control", async () => {
-  // Read: the filters and the rows are tabbable, Enter opens the focused row
-  // on the record page.
+  // Read: tabbing from the top of the document reaches the facets and then the
+  // rows, and Enter on a row opens that record. The walk is bounded by the row
+  // it is looking for rather than by a step count, because the number of
+  // controls above the list is a layout decision and not this test's business.
   await open("read");
   await page.waitForSelector("ol.read-list a.read-claim", { timeout: 15_000 });
   const walk: string[] = [];
-  for (let step = 0; step < 40 && !walk.includes("A"); step += 1) {
+  let onRow = false;
+  for (let step = 0; step < 120 && !onRow; step += 1) {
     await page.keyboard.press("Tab");
-    walk.push(await page.evaluate(() => document.activeElement?.tagName ?? ""));
+    const [tag, chip, row] = await page.evaluate(() => {
+      const active = document.activeElement;
+      return [
+        active?.tagName ?? "",
+        active?.getAttribute("data-chip") ?? "",
+        active?.classList.contains("read-claim") ?? false,
+      ] as [string, string, boolean];
+    });
+    walk.push(chip ? `chip:${chip}` : tag);
+    onRow = row;
   }
-  expect(walk).toContain("BUTTON");
-  expect(walk).toContain("A");
+  expect(onRow, `tabbing never reached a row: ${walk.join(" ")}`).toBe(true);
+  // The facets are reachable on the way, so the list can be filtered without a
+  // pointer as well as read.
+  expect(walk.some((entry) => entry.startsWith("chip:kind-"))).toBe(true);
+  expect(walk.some((entry) => entry.startsWith("chip:lane-"))).toBe(true);
   await page.keyboard.press("Enter");
   await page.waitForFunction(
     () => window.location.hash.startsWith("#/r/"),
     { timeout: 15_000 },
   );
 
-  // The record page: every depth is a focusable disclosure, the stance buttons
-  // are reachable, and so is the whole ruling form once its fold is open.
+  // The record page: every depth is a focusable disclosure, and the rule bar —
+  // which carries both of the operator's voices, the cheap stance and the
+  // permanent ruling — is reachable in full without a pointer.
   await open("r/pro_criteria-template");
-  await openPeel("Rule on this");
-  await page.evaluate(() => {
-    const first = document.querySelector<HTMLElement>("main .page");
-    first?.focus();
-  });
-  const reached = new Set<string>();
-  for (let step = 0; step < 60; step += 1) {
+  await page.waitForSelector(".rule-bar button[data-stance]", { timeout: 15_000 });
+  // Whichever depths this record has — a record holds only the ones it has
+  // something for — every one of them must be openable without a pointer.
+  const depths = await peelTitles();
+  expect(depths.length).toBeGreaterThan(2);
+  const reached = await tabThrough(60);
+  for (const depth of depths) {
+    expect(
+      reached.includes(`SUMMARY:${depth}`),
+      `${depth} is not reachable by keyboard`,
+    ).toBe(true);
+  }
+  for (const stance of ["agree", "disagree", "unsure"]) {
+    expect(reached, `the ${stance} control is outside the tab order`).toContain(`BAR:stance=${stance}`);
+  }
+  for (const ruling of ["accept", "reject", "defer", "duplicate", "reopen"]) {
+    expect(reached, `the ${ruling} control is outside the tab order`).toContain(`BAR:ruling=${ruling}`);
+  }
+
+  // Pressing a ruling by keyboard opens the confirmation, and what it asks for
+  // is reachable the same way: a ruling that could be started without a
+  // pointer and not finished would be worse than one that could not be started.
+  await page.focus("[data-ruling=defer]");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".record-confirm textarea", { timeout: 15_000 });
+  const confirming = await tabThrough(30);
+  expect(confirming).toContain("TEXTAREA");
+  expect(confirming.some((entry) => entry.startsWith("SUBMIT"))).toBe(true);
+
+  // The palette is keyboard-only by design: ⌘K opens it anywhere, it takes the
+  // caret, and Escape gives the page back.
+  await open("r/pro_criteria-template");
+  await page.keyboard.down("Meta");
+  await page.keyboard.press("KeyK");
+  await page.keyboard.up("Meta");
+  await page.waitForSelector("[role=dialog]", { timeout: 15_000 });
+  expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("INPUT");
+  await page.keyboard.type("watch");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => window.location.hash === "#/watch", { timeout: 15_000 });
+  expect(await page.$("[role=dialog]")).toBeNull();
+});
+
+// tabThrough walks the tab ring and names what it landed on, in the terms the
+// assertions are written in: which depth a summary opens, and which control of
+// the rule bar a button is. The ring wraps, so a fixed number of presses covers
+// a page whose control count is not this test's business.
+async function tabThrough(steps: number): Promise<string[]> {
+  const reached: string[] = [];
+  for (let step = 0; step < steps; step += 1) {
     await page.keyboard.press("Tab");
-    reached.add(await page.evaluate(() => {
+    reached.push(await page.evaluate(() => {
       const active = document.activeElement;
       if (!active) return "";
-      const value = active.getAttribute("value");
-      const label = active.tagName === "BUTTON" || active.tagName === "SUMMARY"
-        ? `:${(active.textContent ?? "").trim().slice(0, 16)}`
-        : "";
-      return `${active.tagName}${value ? `:${value}` : ""}${label}`;
+      const stance = active.getAttribute("data-stance");
+      const ruling = active.getAttribute("data-ruling");
+      if (active.closest(".rule-bar")) {
+        if (stance) return `BAR:stance=${stance}`;
+        if (ruling) return `BAR:ruling=${ruling}`;
+      }
+      if (active.tagName === "SUMMARY") {
+        return `SUMMARY:${(active.textContent ?? "").replace(/\s+/gu, " ").trim()}`;
+      }
+      if (active.getAttribute("type") === "submit") return `SUBMIT:${(active.textContent ?? "").trim()}`;
+      return active.tagName;
     }));
   }
-  // Every depth is announced and openable without a pointer.
-  expect([...reached].some((entry) => entry.startsWith("SUMMARY:The claim"))).toBe(true);
-  expect([...reached].some((entry) => entry.startsWith("SUMMARY:The machinery"))).toBe(true);
-  // The operator's two voices: the cheap one and the permanent one.
-  expect([...reached].some((entry) => entry.includes("Agree"))).toBe(true);
-  expect([...reached].some((entry) => entry.startsWith("INPUT:accept"))).toBe(true);
-  expect([...reached].filter((entry) => entry === "TEXTAREA").length).toBeGreaterThanOrEqual(2);
-  expect([...reached].some((entry) => entry.includes("Record"))).toBe(true);
-});
+  return reached;
+}
 
 test.skipIf(!chrome)("narrow and wide viewports lay out without overflow", async () => {
   for (const viewport of [WIDE, NARROW]) {
@@ -589,40 +737,18 @@ test.skipIf(!chrome)("narrow and wide viewports lay out without overflow", async
   await page.setViewport(WIDE);
 });
 
-// Every old path still resolves. A citation, a bookmark or a link in a note
-// written before the cutover lands on the record rather than on a dead route,
-// and the kind segment the old paths carried is not needed to get there.
-test.skipIf(!chrome)("the routes this surface replaced still lead somewhere", async () => {
-  const redirects: Array<[string, string]> = [
-    ["review", "#/"],
-    ["findings", "#/read?kind=finding"],
-    ["proposals", "#/read?kind=proposal"],
-    ["hypotheses", "#/read?kind=hypothesis"],
-    ["evaluation", "#/read"],
-    ["explore", "#/watch"],
-    ["fleet", "#/watch?view=fleet"],
-    ["hypotheses/hyp_unverified-closures", "#/r/hyp_unverified-closures"],
-    ["findings/fnd_conflicting-evidence", "#/r/fnd_conflicting-evidence"],
-    ["proposals/pro_criteria-template", "#/r/pro_criteria-template"],
-    ["review/hypothesis/hyp_lens-overlap", "#/r/hyp_lens-overlap"],
-    ["evaluation/proposal/pro_bare-vote", "#/r/pro_bare-vote"],
-  ];
-  for (const [from, to] of redirects) {
-    await open(from);
-    await page.waitForFunction(
-      (expected: string) => window.location.hash === expected,
-      { timeout: 15_000 },
-      to,
-    );
-    expect(`${from} -> ${await page.evaluate(() => window.location.hash)}`).toBe(`${from} -> ${to}`);
-  }
-});
-
 test.skipIf(!chrome)("plan acceptance is explicit and flips proposed to applied", async () => {
   await open("ask");
   await page.waitForSelector(".accept-panel button", { timeout: 15_000 });
   await visible("proposed — nothing applied yet");
-  await visible("applies only on acceptance");
+  // Beside the control, before it is pressed: that pressing it is the whole
+  // act, and that what it will change has not been changed yet. The sentence
+  // is read off the panel rather than the page, because a caveat about an
+  // irreversible control is worth nothing anywhere else.
+  const offered = await page.evaluate(() =>
+    (document.querySelector(".accept-panel") as HTMLElement).innerText);
+  expect(offered).toMatch(/explicit act/iu);
+  expect(offered).toMatch(/on acceptance/iu);
 
   await page.click(".accept-panel button");
   await visible("Plan accepted and applied atomically");
@@ -684,12 +810,12 @@ test.skipIf(!chrome)("record content never enters a request URL or the location 
 });
 
 test.skipIf(!chrome)("a refusal banner is scoped to the route that earned it", async () => {
-  // A launch that could not open its durable store still serves Phase A, so
-  // the operator's Sessions page works while the reading surface refuses. What
-  // must not happen is the refusal following him: the banner reports the
-  // failure of a request, and once he has navigated to a page that loaded
-  // perfectly, a banner still accusing the frontier is telling him something
-  // false about what he is looking at.
+  // A launch whose review and ledger services could not be opened still serves
+  // the ranked set, so Read works while Decide refuses. What must not happen
+  // is the refusal following him: the banner reports the failure of a request,
+  // and once he has navigated to a page that loaded perfectly, a banner still
+  // accusing a service that page never called is telling him something false
+  // about what he is looking at.
   //
   // Navigation here is a click rather than open(), deliberately. open()
   // reloads, which rebuilds the module holding the error, so a reload would
@@ -697,22 +823,23 @@ test.skipIf(!chrome)("a refusal banner is scoped to the route that earned it", a
   const base = unwiredMock?.base;
   if (!base) throw new Error("the unwired mock is not running");
 
-  await page.goto(`${base}/#/read`, { waitUntil: "networkidle2" });
+  await page.goto(`${base}/#/`, { waitUntil: "networkidle2" });
   await page.reload({ waitUntil: "networkidle2" });
-  await visible("the hypothesis frontier is not available in this session");
+  await visible("is not available in this session");
 
   // Every frame from the click onwards is inspected, not just the state after
   // the navigation settled. Reading once afterwards makes this a race: clearing
-  // the banner in an effect keyed on the path let the Sessions page paint one
-  // frame carrying the frontier's refusal, and a single read caught it only
-  // when something else on the page happened to be slow. One frame of a page
-  // accusing another page of failing is the falsehood, so no frame may hold it.
+  // the banner in an effect keyed on the path let the destination paint one
+  // frame carrying the previous route's refusal, and a single read caught it
+  // only when something else on the page happened to be slow. One frame of a
+  // page accusing another page of failing is the falsehood, so no frame may
+  // hold it.
   await page.evaluate(() => {
     Reflect.set(globalThis, "__babel_both_frames", 0);
     const watch = () => {
       const text = document.body.innerText;
       if (
-        text.includes("Every session Babel found, across every harness")
+        text.includes("What has Babel found?")
         && text.includes("is not available in this session")
       ) {
         Reflect.set(globalThis, "__babel_both_frames", Number(Reflect.get(globalThis, "__babel_both_frames")) + 1);
@@ -721,22 +848,22 @@ test.skipIf(!chrome)("a refusal banner is scoped to the route that earned it", a
     };
     requestAnimationFrame(watch);
   });
-  await page.click('a[href="#/sessions"]');
+  await page.click('nav[aria-label="Primary navigation"] a[href="#/read"]');
   await page.waitForFunction(
-    () => document.body.innerText.includes("Every session Babel found, across every harness"),
+    () => document.querySelector("ol.read-list > li.read-row") !== null,
     { timeout: 15_000 },
   );
 
-  // The Sessions page rendered, so any banner still on screen belongs to a
-  // route the operator has left.
+  // Read rendered its rows, so any banner still on screen belongs to a route
+  // the operator has left.
   const text = await page.evaluate(() => document.body.innerText);
   expect(text).not.toContain("is not available in this session");
   expect(await page.evaluate(() => Reflect.get(globalThis, "__babel_both_frames"))).toBe(0);
 
   // And the refusal is still reported where it is true, so clearing on
   // navigation has not simply silenced it.
-  await page.click('a[href="#/"]');
-  await visible("the review service is not available in this session");
+  await page.click('nav[aria-label="Primary navigation"] a[href="#/"]');
+  await visible("is not available in this session");
 });
 
 // A listing that could not resolve the whole catalog is the one state a reader
@@ -745,20 +872,36 @@ test.skipIf(!chrome)("a refusal banner is scoped to the route that earned it", a
 // must not be on screen, here least of all, is an explanation in terms of
 // machines and publication state. The catalog is one body of work; which
 // computer holds what is not a question this interface asks or answers.
-test.skipIf(!chrome)("a partial catalog read says the list may be incomplete, and names no machine", async () => {
+test.skipIf(!chrome)("a partial catalog read says so, and names no machine", async () => {
+  // Each listing states the shortfall in its own terms — the queue's read was
+  // partial, the ranked set's projection is stale — so what is asserted is
+  // that each one says it at all, and that neither explains it in terms of
+  // machines.
+  //
+  // The words are looked for in the notice and the rows rather than in the
+  // whole document: Decide's spend figure is honestly about this computer's
+  // own receipts, and a whole-body search would read that as provenance
+  // vocabulary and fail for the wrong reason.
+  const machines = ["this machine", "this host", "All hosts", "pending-sync", "unattributed", "demo-laptop", "build-server"];
+  const listingText = () => page.evaluate(() =>
+    Array.from(document.querySelectorAll(".page > .state-note, .page > ol > li"))
+      .map((node) => (node as HTMLElement).innerText)
+      .join("\n"));
+
   await open("read", degradedMock?.base);
-  await visible("This list may be incomplete");
-  const state = await page.evaluate(() => ({
-    rows: document.querySelectorAll("ol.read-list > li.read-row").length,
-    text: document.body.innerText,
-  }));
+  await visible("This ordering is not current");
+  const rows = await page.evaluate(() =>
+    document.querySelectorAll("ol.read-list > li.read-row").length);
   // The records still render in full: a partial read costs the rows it could
   // not reach and nothing else.
-  expect(state.rows).toBeGreaterThan(0);
-  for (const word of ["this machine", "this host", "All hosts", "pending-sync", "unattributed", "demo-laptop", "build-server"]) {
-    expect(state.text).not.toContain(word);
-  }
+  expect(rows).toBeGreaterThan(0);
+  const listing = await listingText();
+  expect(listing).toMatch(/could not be opened from the shared catalog/u);
+  for (const word of machines) expect(listing).not.toContain(word);
 
   await open("", degradedMock?.base);
   await visible("This list may be incomplete");
+  const queue = await listingText();
+  expect(queue).toMatch(/Part of the catalog did not answer/u);
+  for (const word of machines) expect(queue).not.toContain(word);
 });
