@@ -81,7 +81,7 @@ const LIVE_CARDS = 4;
 // postage stamp: the shape is the message on this surface and it has to be
 // legible, so the chart gets roughly half the panel's height rather than a
 // strip at the bottom of it.
-const SERIES_CHART_HEIGHT = "6.875rem";
+const SERIES_CHART_HEIGHT = "6rem";
 
 // FRESHNESS_NOTE says what each classification does and does not establish.
 // "lost" is the one that matters: nothing observed a death, and the interface

@@ -585,12 +585,14 @@ test.skipIf(!chrome)("hostile fixtures render inert everywhere they appear", asy
   await open("watch");
   await page.waitForSelector("input[type=search]", { timeout: 15_000 });
   await page.evaluate(() => {
+    // Open the fold by property rather than by a synthetic click on its
+    // summary: the peel animates open over 220ms, and a pointer click on the
+    // input during that wipe can land outside it on a slower machine.
     const fold = document.querySelector("input[type=search]")?.closest("details");
-    if (fold && !(fold as HTMLDetailsElement).open) {
-      fold.querySelector("summary")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    }
+    if (fold) (fold as HTMLDetailsElement).open = true;
   });
-  await page.click("input[type=search]");
+  await page.waitForSelector("input[type=search]", { visible: true, timeout: 15_000 });
+  await page.$eval("input[type=search]", (input) => (input as HTMLInputElement).focus());
   await page.keyboard.type("hostile");
   await page.keyboard.press("Enter");
   await page.waitForSelector(".hit-list .hit-entry", { timeout: 15_000 });

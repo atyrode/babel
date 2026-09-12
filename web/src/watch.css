@@ -175,6 +175,14 @@
   line-height: 1.3;
 }
 
+/* The launch form is a peel that is folded whenever anything is in flight.
+ * Folded, it is one line, and one line does not need a surface's gutter
+ * around it; open, the form gets its room back. */
+.watch-page .launch-surface:not([open]) {
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
 .watch-page .live-table .numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
