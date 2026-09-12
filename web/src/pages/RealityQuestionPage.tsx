@@ -4,6 +4,7 @@ import { getRealityQuestion, type QuestionDetail } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge, Quoted, TimelineEntry } from "../analysis";
 import {
+  AnswerEntry,
   AnswerForm,
   FactEntry,
   PlanCard,
@@ -180,18 +181,7 @@ function RealityQuestionPage() {
           </p>
         ) : (
           <div className="answer-list">
-            {detail.answers.map((answer) => {
-              const at = formatTime(answer.at);
-              return (
-                <div key={answer.id}>
-                  <Quoted
-                    label={`Operator answer — ${answer.author}, kept verbatim · ${answer.outcome}`}
-                    text={answer.text}
-                  />
-                  {at && <p className="secondary" title={at.absolute}>answered {at.relative}</p>}
-                </div>
-              );
-            })}
+            {detail.answers.map((answer) => <AnswerEntry key={answer.id} answer={answer} />)}
           </div>
         )}
         {answerable && <AnswerForm questionId={question.id} onChanged={onChanged} />}

@@ -9,6 +9,23 @@ import {
 } from "../api";
 import { errorMessage, formatTime } from "../format";
 
+// newestSnapshot is the most recent snapshot time in the repository, taken
+// across every host rather than from this one.
+//
+// The section's figures are about the repository, which is the thing that
+// would be restored from; a summary that reported only the local host would
+// read as "nothing since Tuesday" on a laptop that has been shut since
+// Tuesday while the deployment kept pushing. A host that has never pushed
+// carries no time at all and contributes nothing here — an absent time is
+// absent, never the epoch.
+function newestSnapshot(status: ArchiveStatus): string | null {
+  let newest = "";
+  for (const host of status.hosts) {
+    if (host.latest_time && host.latest_time > newest) newest = host.latest_time;
+  }
+  return newest || null;
+}
+
 function ArchivePage() {
   const [configuration, setConfiguration] = useState<StateInfo | null>(null);
   const [status, setStatus] = useState<ArchiveStatus | null>(null);
@@ -32,6 +49,8 @@ function ArchivePage() {
   }, []);
 
   useEffect(loadArchive, [loadArchive]);
+
+  const newest = status ? formatTime(newestSnapshot(status)) : null;
 
   async function runVerification(deep: boolean) {
     const prompt = deep
@@ -83,10 +102,37 @@ function ArchivePage() {
             <div className="repository-facts">
               <span>Host ID</span>
               <strong className="mono">{configuration.host_id || "—"}</strong>
-              <span>Snapshots</span>
-              <strong>{status?.snapshots ?? "—"}</strong>
             </div>
           </article>
+
+          {/* The section's summary, and the reason it exists: an operator who
+              opens Archive is asking "is the corpus safe" — how much is in
+              the repository, how recently anything landed in it, and how many
+              machines are pushing. The table under it answers "which host",
+              which is the next question rather than the first. The snapshot
+              count used to be a label-value pair in the head above, where it
+              was the same size as the host id it sat beside. */}
+          {status && status.hosts.length > 0 && (
+            <div className="surface archive-summary">
+              <div className="stat">
+                <span className="stat-label">Snapshots</span>
+                <strong className="stat-value">{status.snapshots.toLocaleString()}</strong>
+                <span className="stat-note">in the repository</span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Newest snapshot</span>
+                <strong className="stat-value">{newest ? newest.relative : "—"}</strong>
+                <span className="stat-note">
+                  {newest ? newest.absolute : "no host has pushed yet"}
+                </span>
+              </div>
+              <div className="stat">
+                <span className="stat-label">Hosts</span>
+                <strong className="stat-value">{status.hosts.length.toLocaleString()}</strong>
+                <span className="stat-note">pushing into it</span>
+              </div>
+            </div>
+          )}
 
           {loading && !status && <div className="surface state-note"><span className="spinner" /> Reading snapshot status…</div>}
           {status && status.hosts.length === 0 && (

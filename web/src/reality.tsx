@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import {
   acceptPlan,
   answerQuestion,
+  type AnswerView,
   type EntityRef,
   type FactView,
   type PlanAcceptResult,
@@ -157,6 +158,76 @@ export function FactEntry({ fact }: { fact: FactView }) {
   );
 }
 
+// AnswerEntry is one recorded answer, wherever it is read.
+//
+// An answer with no text is not an empty quotation. `unknown` and `declined`
+// are answers in themselves — §4.8 stores them as outcomes precisely so that
+// the ledger stops asking — and the operator who gives one owes no prose. The
+// quoted frame is for words that were typed; when none were, the outcome is
+// stated as a sentence instead of framing nothing.
+export function AnswerEntry({ answer }: { answer: AnswerView }) {
+  const at = formatTime(answer.at);
+  const spoken = answer.text.trim().length > 0;
+  return (
+    <div>
+      {spoken ? (
+        <Quoted
+          label={`Operator answer — ${answer.author}, kept verbatim · ${answer.outcome}`}
+          text={answer.text}
+        />
+      ) : (
+        <p className="answer-bare">
+          {answer.author}{" "}
+          {answer.outcome === "declined"
+            ? "declined this question"
+            : "answered that they do not know"}
+          , and left no note.
+        </p>
+      )}
+      {at && <p className="secondary" title={at.absolute}>answered {at.relative}</p>}
+    </div>
+  );
+}
+
+// OUTCOMES are the three things an answer can be (§4.8), each with the one
+// sentence that says what recording it does next.
+//
+// They were a `<select>` whose first option read "answered — send to the
+// interpreter", which hid two of the three behind a click and made the
+// consequence of each — interpretation, closure, suppression — a phrase the
+// reader had to open a menu to find. They are three segments of one bar now,
+// because they are one decision with three answers, and the sentence for the
+// segment under the cursor or the keyboard is printed under it.
+const OUTCOMES: { value: string; label: string; note: string; verb: string; busy: string }[] = [
+  {
+    value: "answered",
+    label: "Answer it",
+    note:
+      "Kept verbatim and attributed to you, then read by the Answer Interpreter. What it proposes " +
+      "changes nothing until you accept the plan here.",
+    verb: "Record answer",
+    busy: "Recording…",
+  },
+  {
+    value: "unknown",
+    label: "I don't know",
+    note:
+      "Closes the question with nothing to interpret, and stops Babel asking it again until " +
+      "materially new evidence turns up.",
+    verb: "Record that you don't know",
+    busy: "Recording…",
+  },
+  {
+    value: "declined",
+    label: "Stop asking",
+    note:
+      "Refuses the question. It stays on the record, visibly declined, and is suppressed until " +
+      "materially new evidence justifies asking again.",
+    verb: "Decline the question",
+    busy: "Declining…",
+  },
+];
+
 // AnswerForm is §4.8's answer, offered where the question is read. It takes an
 // identifier rather than a record so that the inbox card and the question's own
 // page offer the same control over the same act.
@@ -169,12 +240,21 @@ export function AnswerForm({
 }) {
   const [text, setText] = useState("");
   const [outcome, setOutcome] = useState("answered");
+  // What the reader is pointing at, which is not what they have chosen. The
+  // note under the bar follows the pointer or the focus ring and falls back
+  // to the chosen segment, so reading what an outcome would do never costs
+  // the choice already made.
+  const [previewed, setPreviewed] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  const chosen = OUTCOMES.find((entry) => entry.value === outcome) ?? OUTCOMES[0];
+  const shown = OUTCOMES.find((entry) => entry.value === previewed) ?? chosen;
+  const substantive = outcome === "answered";
+
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!text.trim() && outcome === "answered") return;
+    if (!text.trim() && substantive) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -190,31 +270,49 @@ export function AnswerForm({
 
   return (
     <form className="answer-form" onSubmit={submit}>
+      <div className="answer-outcome">
+        <span className="answer-outcome-label" id={`outcome-${questionId}`}>
+          What your answer is
+        </span>
+        <div className="rule-bar" role="group" aria-labelledby={`outcome-${questionId}`}>
+          {OUTCOMES.map((entry) => (
+            <button
+              type="button"
+              key={entry.value}
+              aria-pressed={entry.value === outcome}
+              onClick={() => setOutcome(entry.value)}
+              onMouseEnter={() => setPreviewed(entry.value)}
+              onMouseLeave={() => setPreviewed(null)}
+              onFocus={() => setPreviewed(entry.value)}
+              onBlur={() => setPreviewed(null)}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+        <p className="answer-outcome-note">{shown.note}</p>
+      </div>
       <label>
-        Your answer
+        {substantive ? "Your answer" : "Why, if you want to say (optional)"}
         <textarea
           value={text}
           onChange={(event) => setText(event.target.value)}
           rows={3}
-          placeholder="Answered text is retained verbatim and attributed to you."
+          placeholder={
+            substantive
+              ? "Answered text is retained verbatim and attributed to you."
+              : "Kept verbatim beside the outcome, for whoever reads this question next."
+          }
         />
       </label>
       <div className="answer-actions">
-        <label className="outcome-select">
-          Outcome
-          <select value={outcome} onChange={(event) => setOutcome(event.target.value)}>
-            <option value="answered">answered — send to the interpreter</option>
-            <option value="unknown">unknown — I don't know</option>
-            <option value="declined">declined — stop asking this</option>
-          </select>
-        </label>
         <button
           type="submit"
           className="primary-button"
-          disabled={submitting || (outcome === "answered" && !text.trim())}
+          disabled={submitting || (substantive && !text.trim())}
         >
           {submitting && <span className="spinner small" />}
-          {submitting ? "Recording…" : "Record answer"}
+          {submitting ? chosen.busy : chosen.verb}
         </button>
       </div>
       {submitError && <p className="inline-error" role="alert">{submitError}</p>}

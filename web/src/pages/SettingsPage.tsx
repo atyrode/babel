@@ -3,6 +3,7 @@ import ArchiveSection from "./ArchivePage";
 import CeilingsSection from "./FocusPage";
 import HelpSection from "./HelpPage";
 import PolicySection from "./EvaluationPolicyPage";
+import "../settings.css";
 
 // Settings holds what the operator configures and then stops thinking about.
 //

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { getRealityEntities, type EntitiesResponse, type SubjectCreateResult } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge } from "../analysis";
@@ -172,7 +172,15 @@ function RealityEntitiesPage() {
                 {items.map((item) => {
                   const latest = formatTime(item.latest_fact);
                   const merged = item.canonical_id !== item.id;
-                  const open = () => navigate(`/ask/entities/${encodeURIComponent(item.id)}`);
+                  const to = `/ask/entities/${encodeURIComponent(item.id)}`;
+                  // The name is a real link, so a click that landed on it has
+                  // already been handled; following the row as well would
+                  // navigate twice and break middle-click and modified
+                  // clicks, which are the whole reason the link exists.
+                  const open = (event: ReactMouseEvent | ReactKeyboardEvent) => {
+                    if (event.target instanceof Element && event.target.closest("a")) return;
+                    navigate(to);
+                  };
                   return (
                     <tr
                       key={item.id}
@@ -180,7 +188,7 @@ function RealityEntitiesPage() {
                       role="link"
                       onClick={open}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") open();
+                        if (event.key === "Enter" || event.key === " ") open(event);
                       }}
                     >
                       {/* The name, and nothing under it. The identifier
@@ -189,7 +197,7 @@ function RealityEntitiesPage() {
                           they came for. It lives on the subject's own page,
                           under the machinery disclosure. */}
                       <td className="statement-cell">
-                        <strong className="untrusted-inline">{item.display_name}</strong>
+                        <Link className="ask-row-link untrusted-inline" to={to}>{item.display_name}</Link>
                       </td>
                       <td>
                         <Badge label={item.kind} tone="cyan" />

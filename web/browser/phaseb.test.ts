@@ -388,63 +388,72 @@ test.skipIf(!chrome)("counter-evidence renders where the claim is", async () => 
 // The operator's own voice, at the point of reading: cheap, attributed,
 // reversible, and deciding nothing. The last part is what the interface has to
 // say out loud, because the control sits beside the one that does decide.
+//
+// What it must also do is show him the act. His stance lands at depth four,
+// which is folded, so a record Babel has no reviewers for used to acknowledge
+// an agreement with nothing but a pressed button — and a projection a second
+// behind the write took even that back on the next read.
 test.skipIf(!chrome)("an operator's stance records, reverses, and keeps what it replaced", async () => {
   await open("r/pro_stdin-credential");
-  await page.waitForSelector(".peel-stance", { timeout: 15_000 });
-  await visible("Your take. Decides nothing.");
-
-  const click = (label: string) => page.evaluate((needle: string) => {
-    Array.from(document.querySelectorAll<HTMLButtonElement>(".peel-stance"))
-      .find((button) => button.textContent?.trim() === needle)
-      ?.click();
-  }, label);
-
-  await page.evaluate(() => {
-    const field = document.querySelector<HTMLTextAreaElement>(".peel-voice textarea");
-    if (field) {
-      field.value = "Worth trying before the release.";
-      field.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-  });
-  await click("Agree");
+  await page.waitForSelector(".rule-bar button[data-stance]", { timeout: 15_000 });
+  // The sentence beside the control, in whatever case the shell sets it in:
+  // what §4.12 requires here is that the page says a reception decides
+  // nothing, not that it says it in small capitals.
   await page.waitForFunction(
-    () => document.querySelector(".peel-stance[aria-pressed='true']")?.textContent?.trim() === "Agree",
+    () => /your take · decides nothing/iu.test(document.body.innerText),
     { timeout: 15_000 },
   );
 
-  // It reads back as his, with his words, and the page says what it is.
-  let reception = await openPeel("The reception");
-  expect(reception).toContain("You said agree");
-  expect(reception).toContain("Worth trying before the release.");
-  expect(reception).toContain("A reception decides nothing");
+  const click = (stance: string) => page.evaluate((value: string) => {
+    document.querySelector<HTMLButtonElement>(`[data-stance="${value}"]`)?.click();
+  }, stance);
+
+  await click("agree");
+  await page.waitForFunction(
+    () => document.querySelector("[data-stance='agree']")?.getAttribute("aria-pressed") === "true",
+    { timeout: 15_000 },
+  );
+
+  // The act is on screen without being looked for: the depth it landed in
+  // opens itself, and its summary carries the stance for a reader who folds
+  // it again.
+  await visible("You: agree");
+  const summary = await peelTitles();
+  expect(summary.some((title) => title.includes("you: agree"))).toBe(true);
+  await visible("A reception is attributed, reversible and decides nothing");
 
   // Reversing it appends: §4.12 is append-only, so the earlier stance stays
   // readable rather than being replaced by the later one.
-  await click("Unsure");
+  await click("unsure");
   await page.waitForFunction(
-    () => document.querySelector(".peel-stance[aria-pressed='true']")?.textContent?.trim() === "Unsure",
+    () => document.querySelector("[data-stance='unsure']")?.getAttribute("aria-pressed") === "true",
     { timeout: 15_000 },
   );
   await open("r/pro_stdin-credential");
-  reception = await openPeel("The reception");
-  expect(reception).toContain("You said unsure");
+  const reception = await openPeel("The reception");
+  expect(reception).toContain("You: unsure");
   expect(reception).toContain("Earlier you said");
-  expect(reception).toContain("Worth trying before the release.");
+  expect(reception).toContain("agree");
 });
 
 test.skipIf(!chrome)("a disposition appends through the API and reads back", async () => {
   await open("r/hyp_hostile-content");
   await page.waitForSelector("details.peel", { timeout: 15_000 });
 
-  // The ruling control is a fold named by the act the record wants, so depth 1
-  // stays the claim until the operator says he is ruling.
-  await openPeel("Rule on this");
-  await page.waitForSelector(".decide-form input[value=reject]", { timeout: 15_000 });
-  await page.click(".decide-form input[value=reject]");
-  const areas = await page.$$(".decide-form .decide-field textarea");
+  // The ruling is five buttons and, on the one he presses, one sentence: the
+  // reader has already decided by the time he reaches the bar, and the
+  // confirmation's job is to take the decision rather than present the
+  // options again.
+  await page.waitForSelector("[data-ruling=reject]", { timeout: 15_000 });
+  await page.click("[data-ruling=reject]");
+  await page.waitForSelector(".record-confirm textarea", { timeout: 15_000 });
+  const areas = await page.$$(".record-confirm textarea");
   await areas[0].type("Synthetic reviewer note");
+  // The guidance is folded, because it is the one field that is not about
+  // this decision. A reader who wants it opens it, so the test does too.
+  await page.click(".record-confirm details summary");
   await areas[1].type("Synthetic attributed guidance");
-  await page.click(".decide-form button[type=submit]");
+  await page.click(".record-confirm button[type=submit]");
 
   // The standing is part of the record, so recording a ruling moves it on the
   // page that recorded it rather than on a listing the operator has to revisit.

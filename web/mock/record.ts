@@ -94,6 +94,28 @@ function digestOf(id: string): string {
 // machinery list is an index of other records, not a place to read their text.
 const LINK_TITLE_BYTES = 240;
 
+// What producing a record cost, by the run that produced it, as the real
+// handler reads it out of that run's own receipt.
+//
+// The two runs answer differently on purpose, because the page has to say two
+// different things. The discovery run's worker never reported its own session
+// accounting: it has a duration and a model and no price, and the record page
+// must say so in a sentence rather than print a word where a dollar figure
+// goes. The challenge run priced itself, so its records carry the figures. A
+// run neither of them names has no cost block at all, which is the third
+// state: §9 seals a worker's accounting before a receipt leaves its host, so
+// only the producing machine can price a record.
+const RUN_COSTS: Record<string, Record<string, unknown>> = {
+  "run_discovery-07": { usd: null, duration_s: 181.556, model: "claude-opus-5" },
+  "run_challenge-08": {
+    usd: 1.42,
+    input_tokens: 184320,
+    output_tokens: 12907,
+    duration_s: 512.4,
+    model: "claude-opus-5",
+  },
+};
+
 // linkRow is one machinery edge: the relation, which way it points, the other
 // record's id, and as much of its title as an index is allowed to carry.
 function linkRow(
@@ -192,6 +214,7 @@ function machineryBlock(input: {
     schema: input.schema,
     created_at: input.createdAt,
     run_id: input.runID,
+    ...(RUN_COSTS[input.runID] ? { cost: RUN_COSTS[input.runID] } : {}),
     // The policy a run acted under, when its receipt recorded one. An older
     // receipt written before receipts carried an authority has none, and the
     // row is then absent rather than blank.

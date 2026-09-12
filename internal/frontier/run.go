@@ -50,6 +50,16 @@ type RunOutput struct {
 // frontier says now, and a siblings list that carried both wordings would
 // offer a reader the same record twice and let him rule on the older one.
 //
+// A run's separate jobs are the same run's output. SPEC.md §5.4 makes the
+// challenger and the synthesizer logically separate jobs with their own run
+// identity, and internal/explore spells those identities `<run>/<stage>`, so
+// the records of one exploration are stored under the run's own id and under
+// each stage's. A query for the bare id alone answered for the candidates and
+// left out the finding the synthesizer wrote — on the live catalog, 69 of 179
+// findings — and the run page read that as a run that had published nothing.
+// internal/sync makes the same reduction in the other direction, for the same
+// reason it holds here: a stage is a job within a run, not a run.
+//
 // An empty run id answers nothing rather than everything. Every record row
 // requires a run, so the empty string names no run at all — it is what a
 // caller passes when it could not read the producing run — and a query on it
@@ -75,20 +85,22 @@ func (s *Store) OutputsOfRun(ctx context.Context, runID string) ([]RunOutput, er
 // The predicate is the revision chain's rather than the ancestor column's,
 // which is headOutputs' judgement and holds for the same reason: the chain is
 // where supersession is asserted, and reading the same fact from two places is
-// how the two come to disagree. The run_id filter is what migration 7's index
-// serves.
+// how the two come to disagree. The run_id filter and the stage range are both
+// what migration 7's index serves.
 func (s *Store) runOutputs(ctx context.Context, kind EntityType, runID string) ([]RunOutput, error) {
 	table, err := tableFor(kind)
 	if err != nil {
 		return nil, err
 	}
+	from, to := stageBounds(runID)
 	query := `SELECT r.id, COALESCE(v.root_id, r.id), r.created_at, r.payload_json
 		FROM ` + table + ` r
 		LEFT JOIN frontier_revision v ON v.entity_type = ? AND v.entity_id = r.id
-		WHERE r.run_id = ? AND NOT EXISTS (SELECT 1 FROM frontier_revision s
-			WHERE s.entity_type = ? AND s.supersedes_id = r.id)
+		WHERE (r.run_id = ? OR (r.run_id >= ? AND r.run_id < ?))
+			AND NOT EXISTS (SELECT 1 FROM frontier_revision s
+				WHERE s.entity_type = ? AND s.supersedes_id = r.id)
 		ORDER BY r.created_at, r.id`
-	rows, err := s.db.QueryContext(ctx, query, string(kind), runID, string(kind))
+	rows, err := s.db.QueryContext(ctx, query, string(kind), runID, from, to, string(kind))
 	if err != nil {
 		return nil, fmt.Errorf("read %s records of run %s: %w", kind, runID, err)
 	}
@@ -114,6 +126,26 @@ func (s *Store) runOutputs(ctx context.Context, kind EntityType, runID string) (
 		out = append(out, record)
 	}
 	return out, rows.Err()
+}
+
+// stageSeparator is what internal/explore puts between a run and one of its
+// separate jobs. It is the frontier's business because the frontier stores
+// the compound identity: a challenger's records name `<run>/challenge` in the
+// column every other read filters on.
+const stageSeparator = '/'
+
+// stageBounds brackets the run ids of one run's separate stages: every value
+// that begins with `<run>/`, as the half-open range a B-tree answers with one
+// seek. The upper bound is the separator's successor, which is the exclusive
+// end of any prefix range.
+//
+// It is a range rather than a pattern because the match has to be exact as
+// well as indexed. A run id is whatever its writer minted — the store requires
+// only that it is not empty — so a LIKE pattern would read an underscore in
+// one as a wildcard and a GLOB pattern would read an asterisk as one, and
+// either would answer with another run's records.
+func stageBounds(runID string) (from, to string) {
+	return runID + string(rune(stageSeparator)), runID + string(rune(stageSeparator+1))
 }
 
 // runOutputTitle is the record's own line, per kind.

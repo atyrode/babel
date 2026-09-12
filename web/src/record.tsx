@@ -21,6 +21,7 @@ import {
   type EvidenceKind,
   type ModelReception,
   type ModelRole,
+  type OperatorReception,
   type OperatorStance,
   type RecordCase,
   type RecordCost,
@@ -83,6 +84,8 @@ import "./record.css";
 //   rule-bar       a segmented button group (Contract T primitive)
 //   stat           a figure with a label (Contract T primitive)
 //   kbd            a key hint (Contract T primitive)
+//   long           on the h1: this headline is a statement, not a name, so
+//                  the shell sets it at a reading size instead of display
 //
 // plus the surviving utilities — muted, secondary, mono, sr-only, spinner,
 // primary-button, inline-error, untrusted-inline, badge tone-* through
@@ -330,11 +333,13 @@ function Figure({ label, value, note }: { label: string; value: string; note?: s
   );
 }
 
-// money renders a dollar figure, or says that nobody measured one. A null cost
-// is an engine that never reported its own accounting, and "$0.00" would be a
-// measurement this deployment did not take.
-function money(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "unpriced";
+// money renders a dollar figure. It takes a number rather than a nullable one
+// on purpose: an absent cost is not a dollar figure with a word where the
+// digits go, and each caller here says the absence in its own register — the
+// cost block in a sentence, the origin strip by leaving the clause out. A
+// "$0.00" would be neither, and this is the one page where a fabricated zero
+// would be a claim about money.
+function money(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
@@ -358,12 +363,18 @@ export function RuleBar({
   kind,
   stance: recorded,
   onActed,
+  onStance,
   barRef,
 }: {
   id: string;
   kind: RecordKind;
   stance?: OperatorStance;
   onActed: (message: string) => void;
+  // onStance hands back what the store recorded — its stance and its own
+  // timestamp, never the request's — so a page can show the act while the
+  // projection it reads receptions out of is still catching up with it. A
+  // queue row has nowhere to show it and passes nothing.
+  onStance?: (recorded: OperatorReception) => void;
   // barRef lets the page that owns the keyboard reach the real controls
   // rather than reimplementing what they do. The record page's `a`/`d`/`u`
   // press this bar's own buttons, so a stance recorded by key and a stance
@@ -385,7 +396,8 @@ export function RuleBar({
     setPending(next);
     setStanceError(null);
     try {
-      await putReception(id, next);
+      const stored = await putReception(id, next);
+      onStance?.({ stance: stored.stance, at: stored.at });
       onActed(`Your stance is recorded: ${next}. It decides nothing.`);
     } catch (error) {
       setStance(previous);
@@ -586,15 +598,23 @@ function RuleConfirm({
 // past four depths to rule is being asked to rule on his memory of the claim.
 function ClaimPeel({
   record,
+  stance,
   open,
   onToggle,
   onActed,
+  onStance,
   barRef,
 }: {
   record: RecordPeel;
+  // stance is the position the page is showing, which is the record's own
+  // reception until the reader replaces it and the one he just recorded
+  // after that: a read that has not caught up with his act must not take the
+  // pressed button back off the bar.
+  stance: OperatorStance | undefined;
   open: boolean;
   onToggle: (open: boolean) => void;
   onActed: (message: string) => void;
+  onStance: (recorded: OperatorReception) => void;
   barRef: RefObject<HTMLDivElement | null>;
 }) {
   const standing = record.standing;
@@ -618,8 +638,9 @@ function ClaimPeel({
       <RuleBar
         id={record.id}
         kind={record.kind}
-        stance={record.reception?.operator?.stance}
+        stance={stance}
         onActed={onActed}
+        onStance={onStance}
         barRef={barRef}
       />
 
@@ -936,29 +957,55 @@ function ReceptionPeel({
   // earlier stances are not counted — they are the same voice, superseded.
   const entries = (operator ? 1 : 0) + reviewers.length + decisions.length;
   const operatorAt = formatTime(operator?.at);
+  // The summary carries the reader's own position, so a stance is visible
+  // before this depth is opened. That absence was the whole complaint: he
+  // agreed, the button stayed pressed, and nothing else on the record
+  // acknowledged that he had said anything. The contested mark keeps its
+  // place beside it — they are two different facts about the same depth.
+  const note = [
+    operator ? `you: ${operator.stance}` : undefined,
+    reception.contested ? "a role is contested" : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <Peel
       title="The reception"
       count={entries}
-      note={reception.contested ? "a role is contested" : undefined}
+      note={note || undefined}
       open={open}
       onToggle={onToggle}
     >
       {(operator || earlier.length > 0) && (
         <section className="panel">
-          <h3>You</h3>
           {operator ? (
-            <p>
-              You said <strong>{operator.stance}</strong>
-              {operatorAt && <span className="secondary">, {operatorAt.relative}</span>}. A
-              reception decides nothing; your rulings are below.
-            </p>
+            <>
+              {/* The lead line of the depth, and the first thing in it: what
+                  he said and when he said it. It is above Babel's reviewers
+                  and above the rulings because it is the one line on this
+                  page the reader wrote himself. */}
+              <p className="record-you">
+                You: <strong>{operator.stance}</strong>
+                {operatorAt && (
+                  <span className="record-you-when">
+                    {" · "}
+                    <time dateTime={operator.at} title={operatorAt.absolute}>
+                      {operatorAt.relative}
+                    </time>
+                  </span>
+                )}
+              </p>
+              {operator.reason && (
+                <p className="quote untrusted-inline">{unescapeWhitespace(operator.reason)}</p>
+              )}
+              <p className="muted record-you-note">
+                A reception is attributed, reversible and decides nothing
+                {decisions.length > 0 ? "; the rulings that do are below." : "."}
+              </p>
+            </>
           ) : (
             <p>You hold no stance on this now.</p>
-          )}
-          {operator?.reason && (
-            <p className="quote untrusted-inline">{unescapeWhitespace(operator.reason)}</p>
           )}
           {/* What he used to say, kept rather than replaced. A reception is
               appended like everything else here, so changing his mind leaves
@@ -1278,17 +1325,20 @@ function MachineryPeel({
 //
 // Absent for a record this machine did not produce, because §9 seals the
 // worker's accounting before a receipt leaves its host — so an absent block
-// means nobody here can price it, and an unpriced figure means the engine
-// never reported what it spent. Neither is zero, and this is the one place on
-// the page where a fabricated zero would be a claim about money.
+// means nobody here can price it. A readable receipt that carries no price is
+// a different fact and gets a different treatment: one small sentence, and no
+// SPENT figure at all. "Unpriced" set as a 32-pixel mono figure is an unknown
+// wearing a measurement's clothes, and the reader scanning the row of
+// statistics reads the word as the amount.
 function CostBlock({ cost }: { cost: RecordCost | undefined }) {
   if (!cost) return null;
   const tokens = (cost.input_tokens ?? 0) + (cost.output_tokens ?? 0);
+  const spent = cost.usd ?? undefined;
   return (
     <section className="panel">
       <h3>What it cost to produce</h3>
       <div className="record-cost">
-        <Figure label="spent" value={money(cost.usd)} />
+        {spent !== undefined && <Figure label="spent" value={money(spent)} />}
         {tokens > 0 && (
           <Figure
             label="tokens"
@@ -1301,6 +1351,17 @@ function CostBlock({ cost }: { cost: RecordCost | undefined }) {
         )}
         {cost.model && <Figure label="model" value={cost.model} />}
       </div>
+      {/* Which of the two absences this is, in the record's own terms. A run
+          whose receipt reports tokens and no dollars was priced by nobody; a
+          run whose receipt reports neither recorded no usage at all. Neither
+          of them is a free run and neither is a zero. */}
+      {spent === undefined && (
+        <p className="muted record-unpriced">
+          {tokens > 0
+            ? "the engine reported no price for what it used"
+            : "the run recorded no usage"}
+        </p>
+      )}
     </section>
   );
 }
@@ -1315,6 +1376,45 @@ const DEPTHS = 5;
 // are folded because digging is a choice.
 const INITIAL_DEPTHS = [true, true, false, false, false];
 
+// withRecordedStance is the reception as the reader must see it the instant
+// after he acts.
+//
+// His stance is durable the moment the write returns; the reception the page
+// reads back is a projection over this instance's evaluation records, and on
+// a machine with lanes writing it is seconds behind that write. Between the
+// two the page said nothing at all — no operator in the response is no depth
+// four for a record Babel has no reviewers for — so the only trace of the act
+// was the button staying pressed.
+//
+// So the confirmed write stands in until the read catches up. It is the
+// store's own echo and not the request's: the route answers with the stance
+// it recorded and the time it recorded it, so what stands in here is a fact
+// about the store rather than an optimism about it. A later read carrying a
+// stance at least as new replaces it, and the stance it displaces becomes the
+// first of the earlier ones — which is what §4.12's append says happened.
+function withRecordedStance(
+  reception: RecordReception | undefined,
+  recorded: OperatorReception | undefined,
+): RecordReception | undefined {
+  if (!recorded) return reception;
+  const served = reception?.operator;
+  if (served && !recordedBefore(served.at, recorded.at)) return reception;
+  const history = served ? [served, ...(reception?.history ?? [])] : reception?.history;
+  return { ...reception, operator: recorded, ...(history?.length ? { history } : {}) };
+}
+
+// recordedBefore orders two recorded times, treating a time this build cannot
+// read as the older of the two: the confirmation in hand is a fact, and an
+// unparseable timestamp beside it is not a reason to keep showing an answer
+// the operator has already replaced.
+function recordedBefore(earlier: string, later: string): boolean {
+  const left = Date.parse(earlier);
+  const right = Date.parse(later);
+  if (Number.isNaN(left)) return true;
+  if (Number.isNaN(right)) return false;
+  return left < right;
+}
+
 // RecordPeels is the record itself, five depths deep, with the connections
 // strip between the evidence and the reception.
 export function RecordPeels({
@@ -1324,7 +1424,11 @@ export function RecordPeels({
   record: RecordPeel;
   onActed: (message: string) => void;
 }) {
-  const reception = record.reception;
+  // What the store confirmed on this page's own act, held until a read
+  // carries it. It is cleared by nothing: a second stance replaces it, and
+  // leaving the record unmounts it.
+  const [recorded, setRecorded] = useState<OperatorReception | undefined>(undefined);
+  const reception = withRecordedStance(record.reception, recorded);
   const evidence = record.evidence ?? [];
   const [open, setOpen] = useState<boolean[]>(INITIAL_DEPTHS);
   const bar = useRef<HTMLDivElement | null>(null);
@@ -1344,6 +1448,19 @@ export function RecordPeels({
   const setDepth = useCallback((depth: number, value: boolean) => {
     setOpen((current) => current.map((entry, index) => (index === depth ? value : entry)));
   }, []);
+
+  // An act the reader performs is an act he has to be able to see. His stance
+  // lands at depth 4, which is folded until he opens it, so agreeing changed
+  // nothing on the page except the button he pressed. Opening the reception
+  // when he acts puts his own position on screen beside Babel's, and does it
+  // for a ruling too — a disposition is appended to the same depth.
+  const acted = useCallback(
+    (message: string) => {
+      setDepth(3, true);
+      onActed(message);
+    },
+    [onActed, setDepth],
+  );
 
   // Contract K, for this page. The handler presses the real controls rather
   // than duplicating what they do: a stance recorded by key goes through the
@@ -1399,9 +1516,11 @@ export function RecordPeels({
     <div className="surface">
       <ClaimPeel
         record={record}
+        stance={reception?.operator?.stance}
         open={open[0]}
         onToggle={(value) => setDepth(0, value)}
-        onActed={onActed}
+        onActed={acted}
+        onStance={setRecorded}
         barRef={bar}
       />
       {hasCase(record.case) && (
@@ -1453,6 +1572,19 @@ export function RecordPeels({
   );
 }
 
+// LONG_CLAIM is where a headline stops being one.
+//
+// A record that wrote itself a title wrote a name: a few words, which is what
+// display type is for. A record that did not is headed by its own statement —
+// a hypothesis and an observation write no name, and the server hands their
+// statement over as the title as well — and a statement is a sentence that
+// routinely runs to several hundred characters. Past this length the shell's
+// display size stops being display type and becomes eight lines of it, so the
+// heading says it is long and the shell sets it at an editorial reading size.
+// The test is the length rather than the presence of a title, because the
+// length is what breaks the type.
+const LONG_CLAIM = 120;
+
 // RecordHeading is the record's identity: what kind of thing it is, where it
 // stands, and the sentence it is. The two badges are the only ones on the page
 // — standing and kind — and nothing else wears one.
@@ -1468,6 +1600,7 @@ export function RecordPeels({
 export function RecordHeading({ record }: { record: RecordPeel }) {
   const standing = record.standing;
   const headline = record.title ?? record.claim;
+  const long = headline !== undefined && headline.length > LONG_CLAIM;
   return (
     <header className="surface">
       <div className="heading-badges">
@@ -1475,7 +1608,9 @@ export function RecordHeading({ record }: { record: RecordPeel }) {
         {standing && <Badge label={standing.label} tone={standingTone(standing.tone)} />}
       </div>
       {headline ? (
-        <h1 className="quote untrusted-inline record-claim">{unescapeWhitespace(headline)}</h1>
+        <h1 className={`quote untrusted-inline record-claim${long ? " long" : ""}`}>
+          {unescapeWhitespace(headline)}
+        </h1>
       ) : (
         <h1>{KIND_WORDS[record.kind] ?? "Record"}</h1>
       )}

@@ -64,6 +64,50 @@
    class of its own.
    --------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+   THE EDITORIAL FACE, BUNDLED.
+
+   Source Serif 4 (OFL, see public/fonts/LICENSE.txt) is served from this
+   application rather than asked of the operating system, because the stack
+   this file used to name — Charter, Iowan, Palatino, Georgia — exists on a
+   Mac and on nothing else. On Linux every one of those missed and the
+   editorial register silently became the UI sans: decision 90's serif display
+   for claims vanished on exactly the machine the operator reads on. A register
+   that only renders on some machines is not a register.
+
+   Three faces, no more: regular for prose, italic for the human's own words in
+   a pull-quote, semibold for a claim at display size. Bold and bold-italic are
+   deliberately absent — the browser synthesises them, and nothing in the
+   editorial register asks for a fourth weight.
+
+   `swap` because the alternative is worse than a reflow: `block` would leave a
+   record's headline invisible for up to three seconds on the one page whose
+   headline is the point.
+   --------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("/fonts/source-serif-4-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("/fonts/source-serif-4-italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("/fonts/source-serif-4-semibold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
 
@@ -92,8 +136,12 @@
   /* Type. Three faces and one measure: a serif for what a human reads, a
      system sans for the chrome around it, and a mono for every figure, id,
      timestamp and key — those are compared column-wise, so they are set in
-     tabular figures wherever they appear. */
-  --font-editorial: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, "Times New Roman", serif;
+     tabular figures wherever they appear.
+
+     The editorial face is the one this application ships (see the @font-face
+     block above); the names after it are what a browser can still find while
+     the woff2 is arriving, or if it never does. */
+  --font-editorial: "Source Serif 4", Charter, "Iowan Old Style", "Palatino Linotype", Georgia, "Times New Roman", serif;
   --font-ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", ui-monospace, monospace;
   --measure: 68ch;
@@ -422,6 +470,96 @@ time {
   pointer-events: none;
 }
 
+/* The instrument cluster: what is running, what can be pressed, and the stop.
+   It is one flex row so the narrow header can move all of it under the
+   navigation at once, instead of letting five controls wrap one at a time into
+   a third and fourth row.
+
+   It is also the positioning context for the … menu, deliberately: the menu is
+   anchored to the right edge of this row rather than to the button that opens
+   it, which is the header's own padding edge. Hung off the button, a menu wide
+   enough to read left the screen on a 360px phone — the button is not the last
+   control in the row, the stop is. */
+.shell-instruments {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+}
+
+/* The density switch says which density it is in. The glyph alone was a
+   control with no name — an operator cannot press what they cannot read — so
+   the word travels with it and the tooltip says what pressing it does. */
+.shell-density {
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+}
+
+.shell-density-word {
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+}
+
+/* The folded header's one extra control, and the menu it opens. The menu is a
+   `.surface` because that is the container vocabulary; everything here is
+   position and rhythm. */
+.shell-menu-host {
+  display: inline-flex;
+}
+
+.shell-menu-button {
+  padding: var(--space-1) var(--space-3);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.shell-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  display: grid;
+  /* Wide enough to read, never wider than the header it hangs under. The rows
+     do not wrap — an item on two lines reads as two items — which is why each
+     is two words. */
+  min-width: 13rem;
+  max-width: calc(100vw - var(--space-5));
+  padding: var(--space-1);
+  gap: 1px;
+  box-shadow: var(--shadow-raised);
+}
+
+.shell-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: 0.5rem;
+  color: var(--ink-muted);
+  background: none;
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.shell-menu button:hover,
+.shell-menu button:focus-visible {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.shell-menu-meta {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
 /* The key hints. A dialog rather than a page, because the answer to "what can
    I press" is wanted where the reader already is. */
 .keyhints {
@@ -649,6 +787,23 @@ h1 {
   letter-spacing: -0.015em;
 }
 
+/* A claim that is a paragraph, worn as a headline. A hypothesis often has no
+   title, so the record page promotes the whole statement to the h1 — and at
+   display size a 200-character sentence was eight lines of 28px on a phone
+   (shot 49): a headline nobody can take in at a glance, and the first screen
+   of the record spent entirely on it.
+
+   Display size is a property of a short sentence, not of a headline, so a long
+   one drops to a reading size and keeps everything else about the register:
+   the serif, the measure, the leading of prose. record.tsx adds `long` when a
+   promoted claim passes its threshold — that class is the contract between the
+   two files. */
+h1.record-claim.long {
+  font-size: 1.35rem;
+  line-height: 1.35;
+  letter-spacing: normal;
+}
+
 h2 {
   margin-bottom: var(--space-3);
   font-family: var(--font-editorial);
@@ -787,6 +942,15 @@ blockquote.quote {
    floating in a gutter. Five `*-card` rules each said this; now one does. */
 .surface > .table-scroll {
   margin: 0 calc(-1 * var(--space-5)) calc(-1 * var(--space-5));
+}
+
+/* …and a flush surface has no gutter to reach through. The rule above is
+   written for the padded case, so on the four data tables that live in a
+   `.surface.flush` it pulled the scroller 24px outside a container with
+   `overflow: hidden` — which sliced the first character off every first column
+   and the tail off the last. */
+.surface.flush > .table-scroll {
+  margin: 0;
 }
 
 .toolbar {
@@ -1021,6 +1185,18 @@ blockquote.quote {
 .rule-bar > button[aria-pressed="true"] {
   color: var(--accent-ink);
   background: var(--accent);
+}
+
+/* The chosen segment keeps its fill under the cursor. The hover rule above
+   carries a `:not()` and therefore out-weighs a bare `.active`, so hovering
+   the current ruling repainted it as an unchosen one and the selection
+   disappeared under the pointer — on every rule bar in the interface. The
+   selected hover is stated deliberately instead, and it lifts rather than
+   erases: same fill, slightly brighter. */
+.rule-bar > button.active:hover:not(:disabled),
+.rule-bar > button[aria-pressed="true"]:hover:not(:disabled) {
+  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--ink) 12%, var(--accent));
 }
 
 .rule-bar > button .kbd {
@@ -2723,10 +2899,6 @@ a.link-target:hover {
   gap: 0.75rem;
 }
 
-.outcome-select {
-  flex: 1 1 16rem;
-}
-
 /* One plan, inset inside the question that produced it. It is a surface with
    tighter spacing rather than a shape of its own. */
 .plan-inset {
@@ -3443,20 +3615,12 @@ a.link-target:hover {
   color: var(--warn);
 }
 
-/* Eight destinations, the help link and the stop control no longer fit one row
-   on narrow screens; the topbar wraps rather than clipping the newest areas. */
+/* The topbar wraps rather than clipping: at any width where the brand, the
+   destinations and the instruments do not fit on one line, the row grows a
+   second one. What lands on that second line is decided below. */
 .topbar {
   flex-wrap: wrap;
   row-gap: 0.25rem;
-}
-
-/* The help entry is a character, so it needs a square hit area rather than the
-   word-shaped padding the other destinations carry. */
-.topbar nav a.help-link {
-  min-width: 2.2rem;
-  padding: 0.65rem 0.5rem;
-  text-align: center;
-  font-weight: 800;
 }
 
 @media (max-width: 850px) {
@@ -3527,6 +3691,70 @@ a.link-target:hover {
   }
 }
 
+/* ---------------------------------------------------------------------------
+   THE HEADER BELOW ONE ROW. Two rows, never three.
+
+   Everything fits one row at 1024px and up. Below that it does not, and the
+   question is only what wraps: on the walked phone it was brand, then the five
+   destinations, then a third row of pill + Search + ▦ + ? + Lock — 130px of
+   chrome above a page whose own title then started below the fold (shot 48).
+
+   So the wrap is decided here instead of being left to whichever control runs
+   out of room first. The instrument cluster takes a row of its own and the
+   destinations stay beside the brand, which is the pairing a reader uses: what
+   Babel is and where to go, then what is running and what can be pressed.
+
+   `display: contents` is what makes that possible — the actions wrapper stops
+   being a box, so the navigation and the instrument cluster become items of
+   the topbar's own flex row and wrap independently of each other.
+   --------------------------------------------------------------------------- */
+@media (max-width: 1023px) {
+  .topbar-actions {
+    display: contents;
+  }
+
+  .shell-instruments {
+    flex: 1 0 100%;
+    justify-content: flex-end;
+  }
+
+  /* The banner sticks under the header, so its offset is the header's height:
+     two rows here rather than one. Left at the one-row figure it parked
+     halfway up the chrome it is supposed to hang from. */
+  .error-banner {
+    top: 6.2rem;
+  }
+}
+
+/* Below 640px the row under the brand is the one that cannot hold five
+   controls, so search, density and the key hints fold into the … menu that
+   ShellControls renders at this same width — 640px is NARROW_HEADER in
+   shell.tsx, and changing one means changing both. What is running and how to
+   stop it are never folded: they are the two things the operator may need in a
+   hurry. */
+@media (max-width: 640px) {
+  /* One row, beside the brand: the destinations are how the operator leaves
+     the page they are on, and wrapping them is what grew the third row. The
+     five words fit a 390px phone at this size with room to spare — measured,
+     not guessed — and on anything narrower the row scrolls sideways rather
+     than growing, because a destination that has to be swiped to is still a
+     destination and a third row is not. */
+  .topbar nav {
+    min-width: 0;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    gap: 0.15rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .topbar nav a {
+    padding: 0.45rem 0.3rem;
+    font-size: 0.78rem;
+  }
+}
+
 @media (max-width: 560px) {
   .topbar {
     min-height: 4.2rem;
@@ -3539,36 +3767,12 @@ a.link-target:hover {
     height: 2.15rem;
   }
 
-  .topbar nav a {
-    padding: var(--space-2);
-    font-size: 0.8rem;
-  }
-
-  /* Every instrument in the header pays for its width on a phone: the row is
-     already two lines deep and a third one pushes the page's own title below
-     the fold. The build string is in the footer, the key hint is meaningless
-     without a keyboard, and the gap between controls is the last thing a
-     thumb needs. */
+  /* The build string is the one instrument that pays nothing back on a phone:
+     it is in the footer, and the wordmark beside it is what the reader is
+     looking for. Everything else in the header keeps its width — the fold
+     above gave the instruments a row of their own, so the pill can carry its
+     dollars and the destinations keep their words. */
   .version {
-    display: none;
-  }
-
-  .topbar-actions {
-    gap: var(--space-2);
-  }
-
-  /* The pill keeps the count and the dot on a phone and drops the dollars:
-     the figure is on Watch, one tap away, and carrying it here costs the row
-     that the stop control needs. */
-  .live-indicator .live-spend {
-    display: none;
-  }
-
-  .shell-search {
-    padding: var(--space-1) var(--space-2);
-  }
-
-  .shell-search .kbd {
     display: none;
   }
 
@@ -3576,8 +3780,10 @@ a.link-target:hover {
     padding: var(--space-1) var(--space-2);
   }
 
+  /* Same two rows, a little shorter: the brand mark and the build string are
+     smaller on a phone. */
   .error-banner {
-    top: 4.2rem;
+    top: 5.6rem;
     border-right: 0;
     border-left: 0;
     border-radius: 0;

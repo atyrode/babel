@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { getRealityQuestions, type QuestionsResponse } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge } from "../analysis";
@@ -126,7 +126,15 @@ function RealityQuestionsPage() {
               <tbody>
                 {items.map((item) => {
                   const created = formatTime(item.created_at);
-                  const open = () => navigate(`/ask/questions/${encodeURIComponent(item.id)}`);
+                  const to = `/ask/questions/${encodeURIComponent(item.id)}`;
+                  // The prompt is a real link, so a click that landed on it
+                  // has already been handled; following the row as well would
+                  // navigate twice and break middle-click and modified
+                  // clicks, which are the whole reason the link exists.
+                  const open = (event: ReactMouseEvent | ReactKeyboardEvent) => {
+                    if (event.target instanceof Element && event.target.closest("a")) return;
+                    navigate(to);
+                  };
                   return (
                     <tr
                       key={item.id}
@@ -134,7 +142,7 @@ function RealityQuestionsPage() {
                       role="link"
                       onClick={open}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") open();
+                        if (event.key === "Enter" || event.key === " ") open(event);
                       }}
                     >
                       {/* The prompt, and nothing under it. The identifier
@@ -143,7 +151,7 @@ function RealityQuestionsPage() {
                           question. It is on the question's own page, under
                           the machinery disclosure. */}
                       <td className="statement-cell">
-                        <strong className="untrusted-inline">{item.prompt}</strong>
+                        <Link className="ask-row-link untrusted-inline" to={to}>{item.prompt}</Link>
                       </td>
                       <td className="statement-cell">
                         {item.target_entity_ids.length === 0 ? (

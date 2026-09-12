@@ -4,6 +4,7 @@ import { getRealityInbox, type QuestionSummary } from "../api";
 import { errorMessage, formatTime } from "../format";
 import { Badge, Quoted } from "../analysis";
 import {
+  AnswerEntry,
   AnswerForm,
   PlanCard,
   answerableStates,
@@ -153,11 +154,7 @@ function QuestionCard({
       {question.answers.length > 0 && (
         <div className="answer-list">
           {question.answers.map((answer) => (
-            <Quoted
-              key={answer.id}
-              label={`Operator answer — ${answer.author}, kept verbatim · ${answer.outcome}`}
-              text={answer.text}
-            />
+            <AnswerEntry key={answer.id} answer={answer} />
           ))}
         </div>
       )}

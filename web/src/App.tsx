@@ -34,9 +34,9 @@ import SessionPage from "./pages/SessionPage";
 import SessionsPage from "./pages/SessionsPage";
 import SettingsPage from "./pages/SettingsPage";
 import WatchPage from "./pages/WatchPage";
-import Palette, { openPalette } from "./palette";
+import Palette from "./palette";
 import RenderBoundary from "./boundary";
-import { KeyHints, LiveIndicator, ShellFooter, useDensity } from "./shell";
+import { KeyHints, LiveIndicator, ShellControls, ShellFooter, useDensity } from "./shell";
 
 const LOCK_PROMPT =
   "Lock and stop the server?\n\nThe session is revoked immediately and this " +
@@ -269,56 +269,37 @@ function App() {
               Settings
             </NavLink>
           </nav>
-          {/* Three instruments and a stop. The live mark renders only while
-              something is running, so the row is one control shorter on a
-              quiet deployment; the others are always here because they are
-              how the reader changes the interface rather than the data. */}
-          <LiveIndicator />
-          {/* The search control says "Search" rather than wearing a magnifier
-              glyph: U+2315 is missing from most Linux font stacks and renders
-              as a tofu box, and a control the operator cannot name is a
-              control they do not press. The key is on the button beside the
-              word, which is also how they learn it. */}
-          <button
-            type="button"
-            className="shell-toggle shell-search"
-            onClick={openPalette}
-            title="Search records, sessions, entities and questions"
-          >
-            Search
-            <kbd className="kbd">⌘K</kbd>
-          </button>
-          <button
-            type="button"
-            className="shell-toggle"
-            onClick={() => setDensity(density === "compact" ? "comfortable" : "compact")}
-            aria-pressed={density === "compact"}
-            title={density === "compact" ? "Compact spacing — click for comfortable" : "Comfortable spacing — click for compact"}
-            aria-label="Toggle density"
-          >
-            {density === "compact" ? "▤" : "▦"}
-          </button>
-          <button
-            type="button"
-            className="shell-toggle"
-            onClick={() => setHintsOpen(true)}
-            title="Keyboard shortcuts (?)"
-            aria-label="Keyboard shortcuts"
-          >
-            ?
-          </button>
-          {/* The stop control lives in the shell rather than on a page because
-              it ends the whole session, not one page's work. */}
-          <button
-            type="button"
-            className="danger-button lock-button"
-            onClick={lockAndStop}
-            disabled={stopping}
-            title="Revoke this session and stop this server"
-          >
-            {stopping && <span className="spinner small" />}
-            {stopping ? "Stopping…" : "Lock & stop"}
-          </button>
+          {/* The instruments and the stop, in one cluster. They are grouped
+              rather than loose in the row because the narrow header stacks
+              them under the navigation as a unit: brand and destinations on
+              one row, what is running and what can be pressed on the next.
+
+              The live mark renders only while something is running, so the
+              cluster is one control shorter on a quiet deployment; search,
+              density and the key hints fold into a single … menu below 640px,
+              which ShellControls decides. */}
+          <div className="shell-instruments">
+            <LiveIndicator />
+            <ShellControls
+              density={density}
+              setDensity={setDensity}
+              onKeyHints={() => setHintsOpen(true)}
+            />
+            {/* The stop control lives in the shell rather than on a page
+                because it ends the whole session, not one page's work, and it
+                is never folded into a menu: it is the one thing the operator
+                may need in a hurry. */}
+            <button
+              type="button"
+              className="danger-button lock-button"
+              onClick={lockAndStop}
+              disabled={stopping}
+              title="Revoke this session and stop this server"
+            >
+              {stopping && <span className="spinner small" />}
+              {stopping ? "Stopping…" : "Lock & stop"}
+            </button>
+          </div>
         </div>
       </header>
 

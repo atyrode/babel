@@ -9,6 +9,88 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Added
+
+- **One record, peeled.** A finding, proposal, hypothesis or observation is
+  one page at `/r/<id>`, opened at its claim and expanding in place through
+  five depths: the claim, the case, the evidence, the reception, the
+  machinery. The first three carry no identifier at all and the fifth is
+  collapsed by default, so a reader deciding whether a proposal is right
+  never meets a digest, and a reader debugging Babel never has to leave the
+  record to find one. `GET /api/record/{id}` serves the whole peel in one
+  request and falls back to the shared catalog, which closes the defect where
+  a record merged from another instance listed and then answered 404 on
+  click (SPEC §8.6, #235).
+- **The evidence is the hero.** Each cited locator is quoted from the
+  transcript itself — the operator's own words, or the tool output the model
+  read — with the speaker, the session it came from, Babel's note beneath,
+  and a link that lands on the cited line. A record also says where it was
+  born: the session's title, its workspace, the date, what that session cost
+  and how many turns it ran.
+- **The connections nobody could follow.** A record shows the other
+  proposals addressing the same problem, the candidate Babel already
+  suspects it restates (with the overlap it measured — computed and stored
+  since the frontier existed, never served), what supersedes it, and the
+  records made in the same run. Reception is tallied per review role with
+  the opposing rationales readable, and *contested* now means disagreement
+  within one role rather than any mixture.
+- **The operator's voice, where he reads.** Agree, disagree or unsure on the
+  record and on the queue, recorded as an operator-authored feedback record
+  with explicit polarity; it decides nothing and the page says so in four
+  words. §4.12's boundary does not move: a person still cannot author an
+  assessment. The ruling — accept, reject, defer, duplicate, reopen — is a
+  rule bar with a one-sentence confirm instead of a five-radio ballot.
+- **Navigation names decisions.** Decide (what needs me), Read (what has
+  Babel found), Watch (what is it doing and what did it cost), Ask (what
+  does it know and need from me) and Settings replace eleven destinations
+  named after record kinds and storage concepts. Every old path redirects.
+  Decide leads with the queue, tiered so a proposal outranks a finding
+  outranks a candidate at equal urgency, with *why it is next* on every row
+  and *since you last looked* in its header. Read is one list with chips,
+  not four pages with selects.
+- **Keyboard triage.** `j`/`k` move, `Enter` opens, `a`/`d`/`u` record a
+  stance without leaving the list, `r` opens the rule bar, `1`–`5` toggle a
+  record's depths, `?` shows the keys, and `⌘K` opens a palette that finds
+  records, sessions, subjects and open questions by name and jumps.
+- **Watch is a control room.** Runs in flight with elapsed time ticking,
+  records so far and a graceful Stop; a form that starts exploration,
+  evaluation or the conductor on this machine under exactly the ceilings and
+  refusals the CLI enforces (SPEC §8.4's deferral withdrawn, decision 90);
+  thirty days of records, reviews, sessions and spend as small multiples;
+  and a run page that reads a receipt as a story — what it was asked, what
+  it searched for, what it fetched, what it wrote, what it declined and why,
+  what went wrong, what it cost and which versions ran it. None of that body
+  had ever reached the browser.
+- **Sessions as data.** Cost, tokens, turns and tool errors — recorded per
+  session since `migrations/0006` and dropped by the web handler until now —
+  are on the wire and in a sortable table with totals; a session shows who
+  cites it, and arriving from a citation lands on the cited line as the hero.
+- **Ask shows reasons, not ids.** A question's rank is explained factor by
+  factor, its subject is named, and a subject is one append-only timeline of
+  what Babel recorded about it with the candidates that were scoped to it.
+
+### Changed
+
+- **Publication needs nobody.** `babel web` drains the machine's journal at
+  startup and every minute while it serves, and every run drains once on
+  exit, so a run killed before declaring its closure is sealed and published
+  by the next run that finishes rather than by someone who noticed. Measured
+  on 2026-09-12: a workstation running lanes with no conductor stranded 300
+  records behind 379 undeclared closures until `babel sync` was typed by
+  hand. `babel sync` is a diagnostic again (SPEC §9.1).
+- **The surface has a register.** Editorial where a record is read — a
+  bundled serif for the claim, a bounded measure, quoted evidence — and
+  observatory where Babel is watched: tabular figures, sparklines, live
+  state. Thirty-seven card classes collapsed to `surface`, `panel` and
+  `quote`; badges are rationed to standing and kind; the fallibility
+  disclaimer is said once, in the footer, instead of on every record. The
+  Manifold plugin framing no longer constrains the surface (SPEC §2.8,
+  decision 90).
+- **The machine that produced something is not a dimension of reading.**
+  Host tabs, host chips and host sorts are gone from Watch and Sessions; a
+  host appears only under Settings › Archive, where a snapshot is a backup
+  of a machine.
+
 ## [0.2.6] - 2026-09-12
 
 ### Added

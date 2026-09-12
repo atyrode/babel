@@ -204,22 +204,30 @@ function RealityEntityPage() {
           </div>
           <span className="count-label">{events.length}</span>
         </div>
-        <p className="muted">
-          Every revision Babel recorded about this subject and every judgement about its
-          identity, in the order they were written. A correction is a new entry rather than an
-          edit, so what was replaced is still here and says so.
-        </p>
+        {/* A subject with nothing recorded got two paragraphs: the rule the
+            timeline follows, and then the sentence saying there is no
+            timeline to follow it. An empty section is one sentence — the one
+            that says what would put something here — and the explanation of
+            how the ledger writes arrives when there is something written to
+            explain. */}
         {events.length === 0 ? (
           <p className="muted">
-            Nothing has been recorded yet. An entry appears when a question about this subject
-            is answered and the interpretation accepted, or when its identity is judged.
+            Nothing recorded yet: an entry appears when an answer about this subject is
+            interpreted and accepted, or when its identity is judged.
           </p>
         ) : (
-          <ol className="subject-timeline">
-            {events.map((event) => (
-              <SubjectEvent key={event.id} event={event} current={entity.id} />
-            ))}
-          </ol>
+          <>
+            <p className="muted">
+              Every revision Babel recorded about this subject and every judgement about its
+              identity, in the order they were written. A correction is a new entry rather than an
+              edit, so what was replaced is still here and says so.
+            </p>
+            <ol className="subject-timeline">
+              {events.map((event) => (
+                <SubjectEvent key={event.id} event={event} current={entity.id} />
+              ))}
+            </ol>
+          </>
         )}
       </article>
 
@@ -238,9 +246,8 @@ function RealityEntityPage() {
         </div>
         {candidates.length === 0 ? (
           <p className="muted">
-            No exploration has been scoped to this subject. A candidate is tied to a subject
-            when a run resolves what it is about, so this fills in as analysis runs — and the
-            whole frontier is under <Link to="/read">Read</Link>.
+            No exploration has been scoped to it yet — a candidate joins a subject when a run
+            resolves what it is about.
           </p>
         ) : (
           <ul className="subject-candidates">

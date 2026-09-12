@@ -353,6 +353,38 @@
   list-style: none;
 }
 
+/* Depth 4 leads with the operator's own act — "You: agree · an hour ago" —
+ * because that is the one line at this depth he wrote himself. It is set in
+ * the observatory's face at reading weight rather than as another paragraph
+ * of prose: the stance is the word the eye has to land on, and the time
+ * beside it is a figure. */
+.record-you {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  color: var(--ink-muted);
+}
+
+.record-you strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* When he said it, on the same line as what he said. The shell's `.secondary`
+ * is a block, which is right under a list item and wrong here: a lead line
+ * broken in two reads as two facts. */
+.record-you-when {
+  color: var(--ink-faint);
+  font-size: 0.8rem;
+}
+
+/* The §4.12 boundary, restated once at the depth where both voices are on
+ * screen together. Small, because the bar at depth 1 already said it. */
+.record-you-note {
+  margin: var(--space-2) 0 0;
+  font-size: 0.8rem;
+}
+
 /* Depth 5's cost block: the run's own figures, side by side, as statistics
  * rather than as a sentence. `.stat` is the design system's. */
 .record-cost {
@@ -360,6 +392,15 @@
   flex-wrap: wrap;
   gap: var(--space-5);
   margin: var(--space-2) 0;
+}
+
+/* What the receipt did not say, in one line beneath the figures. It is a
+ * sentence rather than a figure because it is not a measurement: a word set
+ * at a statistic's size reads as the amount, which is how "unpriced" came to
+ * stand where a dollar figure goes. */
+.record-unpriced {
+  margin: var(--space-2) 0 0;
+  font-size: 0.8rem;
 }
 
 /* The keyboard hints, at the foot of the page, in the smallest type that is

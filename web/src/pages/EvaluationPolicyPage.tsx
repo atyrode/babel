@@ -173,7 +173,10 @@ function EvaluationPolicyPage() {
       const result = await saveEvaluationPolicy(draft);
       setData(result);
       setDraft(result.policy);
-      setAnnouncement(`Policy ${result.policy.version} stored. ${result.saving}`);
+      // The server's consequence sentence is announced as it is served —
+      // "Policy eval-policy-2 stored. the policy is stored." was two claims
+      // about the same write, one of them mid-sentence.
+      setAnnouncement(`Policy ${result.policy.version}: ${result.saving}`);
     } catch (reason) {
       setFailure(errorMessage(reason));
     } finally {
