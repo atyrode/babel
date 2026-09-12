@@ -278,11 +278,92 @@ func (s *Service) Refresh(ctx context.Context) error {
 // publishing instance is attributed by the catalog row rather than by a claimed
 // author.
 func (s *Service) Check(ctx context.Context) (Coverage, error) {
-	meta, err := s.rebuild(ctx, true)
+	now := time.Now().UTC()
+	meta, fresh, err := s.sweptWithin(ctx, now)
+	if err != nil {
+		return Coverage{}, err
+	}
+	if fresh {
+		return s.proj.coverage(ctx, meta)
+	}
+
+	taken, err := s.proj.claimSweep(ctx, now, SweepLease)
+	if err != nil {
+		return Coverage{}, err
+	}
+	if !taken {
+		if meta.ID != "" {
+			// Another process is scanning. Serving the snapshot it is
+			// about to replace is what a coverage read is for; paying
+			// for a second identical scan is not.
+			return s.proj.coverage(ctx, meta)
+		}
+		waited, ok, err := s.awaitSnapshot(ctx)
+		if err != nil {
+			return Coverage{}, err
+		}
+		if ok {
+			return s.proj.coverage(ctx, waited)
+		}
+		// The holder never produced one, so this caller does the work
+		// rather than reporting an inventory nobody built.
+	}
+	defer s.proj.releaseSweep(ctx)
+
+	meta, err = s.rebuild(ctx, true)
 	if err != nil {
 		return Coverage{}, err
 	}
 	return s.proj.coverage(ctx, meta)
+}
+
+// sweptWithin reports the current snapshot and whether it is young enough to
+// answer for a sweep under the deployment's configured cadence.
+//
+// The cadence has to be read from the projection rather than remembered in
+// memory: every `babel evaluate` is its own process, so an in-memory "last
+// swept" is always zero at startup and every process rebuilds. Measured
+// 2026-09-12 on 4,692 records: 32 concurrent draws, three engine sessions, no
+// reviews - the spend was in duplicated scans.
+func (s *Service) sweptWithin(ctx context.Context, now time.Time) (snapshotMeta, bool, error) {
+	meta, ok, err := s.proj.current(ctx)
+	if err != nil || !ok {
+		return snapshotMeta{}, false, err
+	}
+	policy, _, err := s.effectivePolicy(ctx)
+	if err != nil && !errors.Is(err, ErrUnavailable) {
+		return meta, false, err
+	}
+	if errors.Is(err, ErrUnavailable) {
+		policy = DefaultPolicy()
+	}
+	cadence := time.Duration(policy.CadenceSeconds) * time.Second
+	if cadence <= 0 {
+		cadence = time.Duration(DefaultPolicy().CadenceSeconds) * time.Second
+	}
+	age := now.Sub(meta.CreatedAt)
+	return meta, age >= 0 && age < cadence, nil
+}
+
+// awaitSnapshot waits briefly for the lease holder's first snapshot, for the
+// one case where nothing exists to serve yet.
+func (s *Service) awaitSnapshot(ctx context.Context) (snapshotMeta, bool, error) {
+	deadline := time.Now().Add(SweepLease)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return snapshotMeta{}, false, ctx.Err()
+		case <-time.After(time.Second):
+		}
+		meta, ok, err := s.proj.current(ctx)
+		if err != nil {
+			return snapshotMeta{}, false, err
+		}
+		if ok {
+			return meta, true, nil
+		}
+	}
+	return snapshotMeta{}, false, nil
 }
 
 // rebuild does the work of Refresh and Check.

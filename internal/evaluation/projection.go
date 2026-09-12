@@ -553,6 +553,55 @@ func (p *projection) current(ctx context.Context) (snapshotMeta, bool, error) {
 	return meta, ok, err
 }
 
+// claimSweep takes the deployment-local right to rebuild the projection.
+//
+// The in-memory mutex only serializes one process. Every `babel evaluate` is
+// its own process, so N of them starting at once each found the snapshot stale
+// and each paid for a full scan of the corpus - measured 2026-09-12: 32
+// concurrent draws produced three engine sessions and no reviews, because the
+// work was in the rebuilds rather than in the reviews.
+//
+// The lease is a row rather than a file lock: it expires, so a process killed
+// mid-sweep does not wedge the deployment, and a caller that loses the race
+// keeps serving the snapshot that already exists rather than waiting.
+func (p *projection) claimSweep(ctx context.Context, now time.Time, lease time.Duration) (bool, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("evaluation: claim sweep: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var until string
+	err = tx.QueryRowContext(ctx,
+		`SELECT v FROM eval_meta WHERE k = 'sweep_lease'`).Scan(&until)
+	switch {
+	case err == nil:
+		if at, parseErr := parseProjectionTime(until); parseErr == nil && now.Before(at) {
+			return false, nil
+		}
+	case errors.Is(err, sql.ErrNoRows):
+	default:
+		return false, fmt.Errorf("evaluation: read sweep lease: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO eval_meta(k, v) VALUES('sweep_lease', ?)
+		 ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
+		formatProjectionTime(now.Add(lease))); err != nil {
+		return false, fmt.Errorf("evaluation: take sweep lease: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("evaluation: commit sweep lease: %w", err)
+	}
+	return true, nil
+}
+
+// releaseSweep drops the lease so the next cadence window is not spent waiting
+// for it to expire.
+func (p *projection) releaseSweep(ctx context.Context) {
+	_, _ = p.db.ExecContext(ctx, `DELETE FROM eval_meta WHERE k = 'sweep_lease'`)
+}
+
 // snapshot reads one snapshot's metadata.
 func (p *projection) snapshot(ctx context.Context, id string) (snapshotMeta, bool, error) {
 	var (
