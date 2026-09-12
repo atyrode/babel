@@ -1,6 +1,7 @@
 package evaluation
 
 import (
+	"context"
 	"errors"
 	"math/rand/v2"
 	"slices"
@@ -826,6 +827,7 @@ func TestPolicyValidationRefusesUnhonourableSettings(t *testing.T) {
 		{"daily below cycle", func(p *Policy) { p.DailyCost = 0.1; p.PerCycleCost = 1 }},
 		{"zero batch", func(p *Policy) { p.BatchSize = 0 }},
 		{"zero lease", func(p *Policy) { p.LeaseSeconds = 0 }},
+		{"lease under the batch's floor", func(p *Policy) { p.LeaseSeconds, p.BatchSize = 240, 24 }},
 	} {
 		policy := DefaultPolicy()
 		tc.mutate(&policy)
@@ -838,6 +840,52 @@ func TestPolicyValidationRefusesUnhonourableSettings(t *testing.T) {
 	}
 	if DefaultPolicy().Enabled {
 		t.Fatal("the default policy must not authorize work before an operator does")
+	}
+}
+
+// The lease floor is measured rather than chosen, and the number it refuses is
+// the number this deployment actually ran: lease 240s against batch 24. Its
+// four review runs took 386s, 461s, 556s and 630s - 16s to 26s per subject in
+// the batch - so a lease that allows under 20s per assignment, or under five
+// minutes at all, is refused with the floor named.
+func TestPolicyRefusesALeaseThatCannotCoverItsBatch(t *testing.T) {
+	lost := DefaultPolicy()
+	lost.LeaseSeconds, lost.BatchSize = 240, 24
+	err := ValidatePolicy(lost)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("the policy that lost four runs = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "480") {
+		t.Fatalf("the refusal must name the 480s floor a batch of 24 needs: %v", err)
+	}
+	// An operator cannot record it either: the refusal is at the write, so a
+	// policy nothing can honour never becomes a durable instruction.
+	h := newHarness(t)
+	if _, err := h.store.Operator(context.Background(), OperatorInput{
+		Kind: KindPolicy, Operator: "alex", Policy: &lost,
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("recording the policy = %v, want ErrInvalid", err)
+	}
+
+	// The floor scales with the batch and never drops below five minutes,
+	// because a batch of one still has to cover one review's preparation.
+	small := DefaultPolicy()
+	small.BatchSize, small.LeaseSeconds = 1, leaseFloorSeconds-1
+	if err := ValidatePolicy(small); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a %ds lease for one assignment = %v, want ErrInvalid", small.LeaseSeconds, err)
+	}
+	small.LeaseSeconds = leaseFloorSeconds
+	if err := ValidatePolicy(small); err != nil {
+		t.Fatalf("a lease exactly at the floor: %v", err)
+	}
+	// The shipped default clears its own floor, which is what stops the
+	// default from being the policy this test refuses.
+	if floor := leaseFloor(DefaultPolicy().BatchSize); defaultLeaseSeconds < floor {
+		t.Fatalf("the default lease %ds is under the %ds its batch of %d needs",
+			defaultLeaseSeconds, floor, DefaultPolicy().BatchSize)
+	}
+	if err := ValidatePolicy(DefaultPolicy()); err != nil {
+		t.Fatalf("the shipped default must be valid: %v", err)
 	}
 }
 

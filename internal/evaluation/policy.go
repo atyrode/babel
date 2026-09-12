@@ -75,13 +75,50 @@ const (
 	defaultMaxItemReviews = 6
 	// defaultLeaseSeconds is how long a claim survives a worker that stops
 	// answering. Fifteen minutes is longer than any single review invocation
-	// and short enough that a crashed worker's subject is drawable again
-	// within one cadence period.
+	// - the four reviews measured on 2026-09-12 took 386s, 461s, 556s and
+	// 630s end to end - and short enough that a crashed worker's subject is
+	// drawable again within one cadence period.
 	defaultLeaseSeconds = 900
 	// defaultBatchSize bounds one cycle's assignments, so a cadence tick can
 	// never turn the whole eligible set into concurrent work.
 	defaultBatchSize = 4
+	// leaseSecondsPerSubject and leaseFloorSeconds are the floor a lease has
+	// to clear for the batch it is granted against. Both are measured rather
+	// than chosen.
+	//
+	// This deployment lost four review runs on 2026-09-12 under a policy of
+	// lease 240s and batch 24. Measured from the live store - each
+	// evaluation_claim's created_at against the evaluation_settlement that
+	// recorded its failure - they ran 386s, 461s, 556s and 630s, a mean of
+	// 508s, which is 16s to 26s of wall clock per subject in the batch and a
+	// mean of 21s. Every one of them died at the same place: the claim
+	// expired during the corpus scan and scope fixing that precede the
+	// worker, and the review context was then refused as a lapsed lease. So
+	// twenty seconds per subject is that measurement rounded down to a number
+	// an operator can hold in their head, and five minutes is the floor under
+	// any batch size at all, because a batch of one still has to cover that
+	// same preparation.
+	//
+	// The floor stands beside renewal rather than instead of it. What carries
+	// a long review past its lease is Service.RenewClaim, ticked at a third
+	// of the lease while the review runs; what the floor refuses is the
+	// policy that needs those renewals to have worked at all. That case is
+	// real rather than theoretical: a shared deployment cannot renew - the
+	// catalog records a claim attempt as immutable except for its finish - so
+	// there the granted lease is the whole window the work gets, and a lease
+	// that could not cover one batch would hand out claims the fleet is
+	// certain to expire.
+	leaseSecondsPerSubject = 20
+	leaseFloorSeconds      = 300
 )
+
+// leaseFloor is the shortest lease a policy may grant for one batch size.
+func leaseFloor(batchSize int) int {
+	if floor := leaseSecondsPerSubject * batchSize; floor > leaseFloorSeconds {
+		return floor
+	}
+	return leaseFloorSeconds
+}
 
 // The default policy's shares and ceilings.
 const (
@@ -149,6 +186,11 @@ func DefaultPolicy() Policy {
 //   - MaxItemReviews below InitialReviews makes a role permanently
 //     under-reviewed while the cap reports the item as finished.
 //   - A daily ceiling below one cycle's makes the per-cycle bound decorative.
+//   - A lease too short for the batch it is granted against hands out claims
+//     that expire before the work they authorize can start, which is the
+//     failure four of this deployment's review runs actually had: the claim
+//     lapsed during the preparation that precedes the worker, and the review
+//     context was then refused as a conflicting claim. See leaseFloor.
 func ValidatePolicy(p Policy) error {
 	if strings.TrimSpace(p.Version) == "" {
 		return fmt.Errorf("%w: policy has no version", ErrInvalid)
@@ -206,6 +248,11 @@ func ValidatePolicy(p Policy) error {
 	}
 	if p.BatchSize < 1 {
 		return fmt.Errorf("%w: batch size %d must be at least one", ErrInvalid, p.BatchSize)
+	}
+	if floor := leaseFloor(p.BatchSize); p.LeaseSeconds < floor {
+		return fmt.Errorf("%w: lease %ds cannot cover a batch of %d: a lease must allow at least "+
+			"%ds per assignment and never less than %ds, so this batch needs %ds",
+			ErrInvalid, p.LeaseSeconds, p.BatchSize, leaseSecondsPerSubject, leaseFloorSeconds, floor)
 	}
 	return nil
 }

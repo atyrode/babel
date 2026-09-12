@@ -52,6 +52,15 @@ type Coordinator interface {
 	// Validate reports whether this holder may still act. An expired lease
 	// fails it, because the question it answers is "may I read and work now".
 	Validate(ctx context.Context, id, runID string, fence int64) error
+	// Renew extends the lease this holder is working under by the policy's
+	// lease, measured from now, and reports the new expiry.
+	//
+	// Its authority test is Validate's rather than Finish's: renewal is
+	// permission to keep working, so a lapsed lease and a takeover are both
+	// refused. A worker that has already lost the claim must not be able to
+	// take it back by asking for more time, because the next claimer may
+	// hold it already.
+	Renew(ctx context.Context, id, runID string, fence int64, p Policy) (time.Time, error)
 	// Finish reconciles the reservation with what was actually spent.
 	//
 	// Its authority test is takeover, not expiry: a completion from the
@@ -142,6 +151,28 @@ func (m *mirrored) Validate(ctx context.Context, id, runID string, fence int64) 
 		return err
 	}
 	return m.shared.Validate(ctx, id, runID, fence)
+}
+
+func (m *mirrored) Renew(ctx context.Context, id, runID string, fence int64, p Policy) (time.Time, error) {
+	// The fleet goes first and its refusal is final, for Finish's reason
+	// inverted: the authority that granted the lease is the only one that can
+	// extend it, and a mirror extended on its own would tell a worker it may
+	// keep reading after the fleet has already let its claim go.
+	extended, err := m.shared.Renew(ctx, id, runID, fence, p)
+	if err != nil {
+		return time.Time{}, err
+	}
+	// The mirror then extends on its own clock, as adopt dates a grant on
+	// its own clock: the local row exists so every local write path can
+	// refuse a stale worker without a round trip, and a mirror still holding
+	// the old expiry would refuse the holder the fleet has just extended. A
+	// mirror this fails on is reported rather than swallowed - Validate asks
+	// the mirror first, so an unextended mirror is an extension the worker
+	// does not actually have.
+	if _, err := m.local.Renew(ctx, id, runID, fence, p); err != nil {
+		return time.Time{}, err
+	}
+	return extended, nil
 }
 
 func (m *mirrored) Finish(ctx context.Context, id, runID string, fence int64, cost float64) error {
@@ -384,6 +415,77 @@ func (l *localCoordinator) Validate(ctx context.Context, id, runID string, fence
 			ErrConflict, id, row.assignment.ExpiresAt.Format(time.RFC3339))
 	}
 	return nil
+}
+
+// Renew extends a live claim's lease to one full policy lease from now.
+//
+// It exists because a lease is not a deadline for the work, it is a bound on
+// how long an unanswered worker keeps its claim - and the two were being
+// conflated. The four reviews this deployment lost on 2026-09-12 ran 386s to
+// 630s under a 240s lease and every one of them died the same way: the claim
+// lapsed while the corpus was being scanned, and the review context was then
+// refused for a claim the worker had never stopped holding. A worker that is
+// still answering says so by renewing, which is what distinguishes it from
+// the crashed worker expiry exists to release.
+//
+// The refusals are Validate's and deliberately not Finish's. A finish from a
+// lapsed holder is accepted because that spend really happened; an extension
+// is permission to start something new, so an expired claim is refused rather
+// than resurrected - the next claimer may have taken it already, and two live
+// opinions on one assignment is what the fence exists to prevent. A takeover
+// is refused at Validate's wording, and a finished claim has no lease left to
+// extend.
+//
+// The expiry never moves backwards. A renewal is the holder keeping the
+// authority it has, so a policy whose lease has since been shortened governs
+// the next claim rather than cutting short a window already granted.
+func (l *localCoordinator) Renew(ctx context.Context, id, runID string, fence int64,
+	p Policy) (time.Time, error) {
+	if p.LeaseSeconds <= 0 {
+		return time.Time{}, fmt.Errorf("%w: policy %s grants no lease duration, so a claim could never expire",
+			ErrInvalid, p.Version)
+	}
+	var extended time.Time
+	err := l.transact(ctx, func(tx *sql.Tx) error {
+		// Read under the write lock for Claim's reason: an expiry decided on
+		// a moment sampled before the lock could extend a claim another
+		// worker took over while this call was waiting.
+		now := l.now().UTC()
+		row, found, err := readClaim(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%w: assignment %q", ErrNotFound, id)
+		}
+		if row.finishedAt != "" {
+			return fmt.Errorf("%w: assignment %s was finished by run %q at fence %d, so there is no "+
+				"lease left to extend", ErrConflict, id, row.finishedRun, row.finishedFence)
+		}
+		if row.assignment.RunID != runID || row.assignment.Fence != fence {
+			return fmt.Errorf("%w: assignment %s is held by run %q at fence %d, not by %q at fence %d",
+				ErrConflict, id, row.assignment.RunID, row.assignment.Fence, runID, fence)
+		}
+		if !row.assignment.ExpiresAt.After(now) {
+			return fmt.Errorf("%w: the lease on assignment %s expired at %s",
+				ErrConflict, id, row.assignment.ExpiresAt.Format(time.RFC3339))
+		}
+		extended = now.Add(time.Duration(p.LeaseSeconds) * time.Second)
+		if !extended.After(row.assignment.ExpiresAt) {
+			extended = row.assignment.ExpiresAt
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE evaluation_claim SET expires_at = ?
+			WHERE id = ? AND run_id = ? AND fence = ?`,
+			formatTime(extended), id, runID, fence); err != nil {
+			return fmt.Errorf("extend evaluation lease: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return extended, nil
 }
 
 // Finish reconciles the reservation with what was spent.
@@ -877,6 +979,19 @@ func (s *Store) Assignments(ctx context.Context) ([]Assignment, error) {
 // be told yes by the one that did not know.
 func (s *Store) ValidateClaim(ctx context.Context, id, runID string, fence int64) error {
 	return s.coord.Validate(ctx, id, runID, fence)
+}
+
+// RenewClaim extends the lease on a claim whose holder is still working, and
+// reports the new expiry.
+//
+// Nothing is published for a renewal. The attempt journal records what became
+// of the work - exposed, completed, skipped, failed - and "the worker is still
+// alive" is not one of those; a record per renewal would be a durable row per
+// few minutes of every review, saying only that a clock was still ticking.
+// The claim row carries the current lease, which is what every authority check
+// reads.
+func (s *Store) RenewClaim(ctx context.Context, id, runID string, fence int64, p Policy) (time.Time, error) {
+	return s.coord.Renew(ctx, id, runID, fence, p)
 }
 
 // settlement is one completion in flight: the receipt that is owed, and the

@@ -270,20 +270,6 @@ type evaluationRunner struct {
 // preparation records exactly what was read.
 func (r *evaluationRunner) Run(ctx context.Context, runID string, draw conductor.ReviewDraw,
 	authority runstore.Authority) (conductor.Result, *explore.ReviewRun, error) {
-	sessions, _ := r.app.scanCorpus(ctx, r.adapters, r.scanRoots, true)
-	if len(sessions) == 0 {
-		// A review with no corpus cannot check a locator, so it is not run at
-		// all: the claim is given back as a skip and the gap stays visible.
-		// Submitting an assessment formed with no ability to verify anything
-		// would be the manufactured judgement §4.12 forbids.
-		return conductor.Result{}, nil, r.giveBack(ctx, draw,
-			"this host has no sessions to check the record's evidence against")
-	}
-	scoped, err := r.app.fixScope(ctx, r.state.runs, sessions, r.host, false)
-	if err != nil {
-		return conductor.Result{}, nil, err
-	}
-
 	assignment := evaluation.Assignment{
 		ID:             draw.AssignmentID,
 		Subject:        evaluation.Subject{Kind: draw.SubjectKind, ID: draw.SubjectID},
@@ -298,6 +284,27 @@ func (r *evaluationRunner) Run(ctx context.Context, runID string, draw conductor
 		ReservedCost:   draw.ReservedCost,
 		Lane:           draw.Lane,
 		Subjects:       draw.Subjects,
+	}
+	// The lease is kept alive from here rather than from the launch, because
+	// the claim is already held here and the corpus scan and scope fixing
+	// below are what actually consumed it: the four reviews this deployment
+	// lost on 2026-09-12 never reached a model, they were refused a review
+	// context for a claim that lapsed during this preparation. Stopping is
+	// deferred, so the renewals end with this review rather than outliving it.
+	defer r.keepLease(ctx, assignment)()
+
+	sessions, _ := r.app.scanCorpus(ctx, r.adapters, r.scanRoots, true)
+	if len(sessions) == 0 {
+		// A review with no corpus cannot check a locator, so it is not run at
+		// all: the claim is given back as a skip and the gap stays visible.
+		// Submitting an assessment formed with no ability to verify anything
+		// would be the manufactured judgement §4.12 forbids.
+		return conductor.Result{}, nil, r.giveBack(ctx, draw,
+			"this host has no sessions to check the record's evidence against")
+	}
+	scoped, err := r.app.fixScope(ctx, r.state.runs, sessions, r.host, false)
+	if err != nil {
+		return conductor.Result{}, nil, err
 	}
 	return r.carry(ctx, assignment, scoped, authority)
 }
@@ -350,6 +357,132 @@ func (r *evaluationRunner) carry(ctx context.Context, assignment evaluation.Assi
 	}
 	r.app.reportReview(out)
 	return result, out, runErr
+}
+
+// leaseRenewalDivisor is how many renewals fit in one lease window.
+//
+// Three: the first renewal lands a third of the way in, so two consecutive
+// ticks can be lost - a slow write, a busy database - before the lease the
+// worker is holding lapses. Renewing at half the lease leaves one chance and
+// renewing every few seconds writes to the claim table for no more safety.
+const leaseRenewalDivisor = 3
+
+// keepLease renews this review's claim while it runs, and returns the stop
+// that ends the renewals.
+//
+// The ticker is the counterpart of what a lease is for: expiry exists to
+// release the claim of a worker that stopped answering, so a worker that is
+// still answering has to say so. Nothing here extends the work - the
+// reservation, the ceilings and the allowance are untouched - it extends only
+// the window in which this run is the holder.
+func (r *evaluationRunner) keepLease(ctx context.Context, a evaluation.Assignment) func() {
+	every := renewalInterval(r.leaseWindow(ctx, a))
+	if every <= 0 {
+		// An assignment with neither a readable policy nor a window left is
+		// not a claim this runner can extend, and a ticker on a zero interval
+		// is a busy loop.
+		r.app.diagf("review: the lease on %s cannot be renewed, so it runs on the window it was granted\n",
+			Sanitize(a.ID))
+		return func() {}
+	}
+	return leaseKeeper{
+		id:    a.ID,
+		every: every,
+		diag:  r.app.diagf,
+		renew: func(c context.Context) (time.Time, error) {
+			return r.service.RenewClaim(c, a.ID, a.RunID, a.Fence)
+		},
+	}.start(ctx)
+}
+
+// leaseKeeper is one claim's renewal loop.
+//
+// It holds the renewal as a function rather than a service handle because what
+// this type owns is a lifetime, not an authority: who may extend a lease and
+// by how much is internal/evaluation's, and keeping the two apart is what
+// makes the loop's stop-and-join testable without a deployment.
+type leaseKeeper struct {
+	id    string
+	every time.Duration
+	diag  func(string, ...any)
+	renew func(context.Context) (time.Time, error)
+}
+
+// start begins the renewals and returns the stop that ends them.
+//
+// stop cancels the loop and waits for it, so no renewal can outlive the review
+// that asked for it: a renewal arriving after the run has finished would be
+// this process holding an assignment nothing is working on, which is the state
+// expiry exists to release.
+func (k leaseKeeper) start(ctx context.Context) func() {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(k.every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				expires, err := k.renew(ctx)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					k.diag("review: the lease on %s was not extended: %s\n",
+						Sanitize(k.id), Sanitize(err.Error()))
+					if unrenewable(err) {
+						// The authority is gone, or this deployment cannot
+						// extend a lease at all. Ticking on would repeat one
+						// sentence every interval for the rest of the review
+						// and never regain what was lost.
+						return
+					}
+					continue
+				}
+				k.diag("review: the lease on %s now runs to %s\n",
+					Sanitize(k.id), expires.UTC().Format(time.RFC3339))
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
+}
+
+// unrenewable reports whether a refused renewal will stay refused. A takeover,
+// an unknown assignment and an authority that cannot extend a lease at all are
+// final; anything else - a busy database, a slow write - is this tick's
+// problem and not the review's.
+func unrenewable(err error) bool {
+	return errors.Is(err, evaluation.ErrConflict) || errors.Is(err, evaluation.ErrNotFound) ||
+		errors.Is(err, evaluation.ErrUnavailable) || errors.Is(err, evaluation.ErrInvalid)
+}
+
+// leaseWindow is how long a lease this review may renew for.
+//
+// The effective policy's lease is the authorized window. A policy this
+// instance cannot read falls back to what is left of the window the grant
+// itself carries, which is a lower bound on the same number: a tick too often
+// is a wasted write, while a tick too rarely is the failure renewal exists to
+// fix.
+func (r *evaluationRunner) leaseWindow(ctx context.Context, a evaluation.Assignment) time.Duration {
+	if policy, err := r.service.Policy(ctx); err == nil && policy.LeaseSeconds > 0 {
+		return time.Duration(policy.LeaseSeconds) * time.Second
+	}
+	if a.ExpiresAt.IsZero() {
+		return 0
+	}
+	return time.Until(a.ExpiresAt)
+}
+
+// renewalInterval is how often a lease of this length is renewed: a third of
+// it, never under a second.
+func renewalInterval(lease time.Duration) time.Duration {
+	if lease <= 0 {
+		return 0
+	}
+	return max(lease/leaseRenewalDivisor, time.Second)
 }
 
 // review is the conductor runner's evaluation path: one drawn review carried
@@ -754,14 +887,6 @@ func (a *app) correctReview(ctx context.Context, services *evaluationServices, s
 	if err != nil {
 		return err
 	}
-	sessions, _ := a.scanCorpus(ctx, adapters(), cfg.scanRoots, true)
-	if len(sessions) == 0 {
-		return fmt.Errorf("babel: this host has no sessions to check the record's evidence against")
-	}
-	scoped, err := a.fixScope(ctx, state.runs, sessions, cfg.host, false)
-	if err != nil {
-		return err
-	}
 	runner := &evaluationRunner{
 		app:       a,
 		state:     state,
@@ -772,6 +897,19 @@ func (a *app) correctReview(ctx context.Context, services *evaluationServices, s
 		adapters:  adapters(),
 		scanRoots: cfg.scanRoots,
 		budget:    cfg.budget,
+	}
+	// The correction's claim is reserved above and is held from here, so its
+	// lease is kept alive from here too - the scan below is the same
+	// preparation that outlived a 240s lease four times on this machine.
+	defer runner.keepLease(ctx, assignment)()
+
+	sessions, _ := a.scanCorpus(ctx, adapters(), cfg.scanRoots, true)
+	if len(sessions) == 0 {
+		return fmt.Errorf("babel: this host has no sessions to check the record's evidence against")
+	}
+	scoped, err := a.fixScope(ctx, state.runs, sessions, cfg.host, false)
+	if err != nil {
+		return err
 	}
 	announcer, closePresence := a.openPresence(ctx)
 	defer closePresence()

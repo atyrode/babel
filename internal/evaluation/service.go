@@ -1882,6 +1882,22 @@ func mergeAttempts(projected, local []Attempt) []Attempt {
 	return out
 }
 
+// RenewClaim extends the lease on an assignment whose run is still working on
+// it, and reports the new expiry.
+//
+// The lease comes from the effective policy rather than from the caller, for
+// the reason Claim's does: the authorized window is the operator's current
+// setting, and a worker that could name its own would be extending its
+// authority by asserting it. A run holding a lapsed claim is refused - see
+// Coordinator.Renew - so this is a heartbeat and never a resurrection.
+func (s *Service) RenewClaim(ctx context.Context, id, runID string, fence int64) (time.Time, error) {
+	policy, _, err := s.effectivePolicy(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return s.store.RenewClaim(ctx, id, runID, fence, policy)
+}
+
 // Review serves one assignment's read context.
 //
 // It validates the claim, records the exposure, and then assembles what the role

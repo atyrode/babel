@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -942,6 +943,8 @@ type stubCoordinator struct {
 	finishErr   error
 	validateErr error
 	finishes    int
+	renewErr    error
+	renewals    int
 }
 
 func (c *stubCoordinator) Claim(ctx context.Context, a Assignment, p Policy) (Assignment, error) {
@@ -960,6 +963,18 @@ func (c *stubCoordinator) Claim(ctx context.Context, a Assignment, p Policy) (As
 
 func (c *stubCoordinator) Validate(ctx context.Context, id, runID string, fence int64) error {
 	return c.validateErr
+}
+
+func (c *stubCoordinator) Renew(ctx context.Context, id, runID string, fence int64,
+	p Policy) (time.Time, error) {
+	c.renewals++
+	if c.renewErr != nil {
+		return time.Time{}, c.renewErr
+	}
+	// The fleet answers with its own clock, which is why the mirror keeps its
+	// own window rather than adopting this one.
+	return time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC).
+		Add(time.Duration(p.LeaseSeconds) * time.Second), nil
 }
 
 func (c *stubCoordinator) Finish(ctx context.Context, id, runID string, fence int64, cost float64) error {
@@ -1352,5 +1367,156 @@ func TestOverrunIsChargedInFullAndReportedOnEveryRetry(t *testing.T) {
 	}
 	if record.ID == "" {
 		t.Fatalf("an accounted overrun discarded the result")
+	}
+}
+
+// A review that outlives its lease is not a crashed worker, and this
+// deployment paid to learn the difference: on 2026-09-12 four review runs took
+// 386s, 461s, 556s and 630s under a 240s lease, and every one of them was
+// refused its read context - "the lease on assignment ... expired" - for a
+// claim it had never stopped holding. Nothing was published and the store
+// holds zero reviewer votes as a result.
+//
+// So the first half of this test is that failure, and the second is the fix:
+// a holder that renews at a third of its lease works for as long as it keeps
+// answering, and its assessment lands.
+func TestALongReviewKeepsItsClaimByRenewingTheLease(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	lease := time.Duration(policy.LeaseSeconds) * time.Second
+
+	lapsed := newHarness(t)
+	stale := lapsed.claim(t, "asg_lapsed", RoleReception, testRun)
+	lapsed.clock.at = lapsed.clock.at.Add(lease + time.Second)
+	err := lapsed.store.Expose(ctx, stale.ID, testRun, stale.Fence)
+	if !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("the read context after expiry = %v, want the recorded expired-lease conflict", err)
+	}
+
+	h := newHarness(t)
+	granted := h.claim(t, "asg_long", RoleReception, testRun)
+	// Three leases' worth of work, renewed on the cadence the runner ticks.
+	step := lease / 3
+	until := granted.CreatedAt.Add(3 * lease)
+	for h.clock.at.Before(until) {
+		h.clock.at = h.clock.at.Add(step)
+		extended, err := h.store.RenewClaim(ctx, granted.ID, testRun, granted.Fence, policy)
+		if err != nil {
+			t.Fatalf("renew %s into the review: %v", h.clock.at.Sub(granted.CreatedAt), err)
+		}
+		if !extended.After(h.clock.at) {
+			t.Fatalf("a renewal at %s answered with %s, which is not a window to work in",
+				h.clock.at.Format(time.RFC3339), extended.Format(time.RFC3339))
+		}
+	}
+	if elapsed := h.clock.at.Sub(granted.CreatedAt); elapsed <= lease {
+		t.Fatalf("the review only ran %s, which is inside its original %s lease", elapsed, lease)
+	}
+
+	// The gate that refused the four lost runs now admits this one, and the
+	// vote it produces is durable.
+	if err := h.store.Expose(ctx, granted.ID, testRun, granted.Fence); err != nil {
+		t.Fatalf("the read context after renewing: %v", err)
+	}
+	record, err := h.store.Submit(ctx, Submission{
+		AssignmentID: granted.ID, RunID: testRun, Fence: granted.Fence,
+		Assessment: &Assessment{Vote: VoteSupport}, Cost: 0.5,
+		Provenance: Provenance{Model: "m", Profile: "p", Recipe: "r", RecipeVersion: 1, Blinded: true},
+	})
+	if err != nil {
+		t.Fatalf("the assessment of a renewed claim: %v", err)
+	}
+	if record.Assessment == nil || record.Assessment.Vote != VoteSupport {
+		t.Fatalf("the record carries %+v, want the support vote the review produced", record.Assessment)
+	}
+}
+
+// Renewal is the holder's heartbeat and never a way back in. Every refusal
+// here is a different worker or a different epoch asking for time on a claim
+// that is not its own to extend.
+func TestLeaseRenewalIsRefusedOnceTheClaimIsNotHeld(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	h := newHarness(t)
+	granted := h.claim(t, "asg_renew_refused", RoleReception, testRun)
+
+	if _, err := h.store.RenewClaim(ctx, granted.ID, otherRun, granted.Fence, policy); !errors.Is(err, ErrConflict) {
+		t.Fatalf("renewal by another run = %v, want ErrConflict", err)
+	}
+	if _, err := h.store.RenewClaim(ctx, granted.ID, testRun, granted.Fence+1, policy); !errors.Is(err, ErrConflict) {
+		t.Fatalf("renewal at an unheld fence = %v, want ErrConflict", err)
+	}
+	if _, err := h.store.RenewClaim(ctx, "asg_missing", testRun, 1, policy); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("renewal of an unknown assignment = %v, want ErrNotFound", err)
+	}
+
+	// Once the lease has lapsed the holder is refused too: the next claimer
+	// may already have taken it, so an expired claim is released rather than
+	// resurrected by the worker that let it go.
+	h.clock.at = h.clock.at.Add(time.Duration(policy.LeaseSeconds+1) * time.Second)
+	if _, err := h.store.RenewClaim(ctx, granted.ID, testRun, granted.Fence, policy); !errors.Is(err, ErrConflict) ||
+		!strings.Contains(err.Error(), "expired") {
+		t.Fatalf("renewal after expiry = %v, want the expired-lease conflict", err)
+	}
+	// A refused renewal writes no window: the claim is still expired.
+	if err := h.store.ValidateClaim(ctx, granted.ID, testRun, granted.Fence); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a refused renewal extended the claim anyway: validate = %v", err)
+	}
+
+	// After a takeover the superseded epoch stays refused and the new holder
+	// renews on its own fence.
+	taken, err := claimWith(t, h, granted.ID, otherRun, 1, policy)
+	if err != nil {
+		t.Fatalf("takeover after expiry: %v", err)
+	}
+	if _, err := h.store.RenewClaim(ctx, granted.ID, testRun, granted.Fence, policy); !errors.Is(err, ErrConflict) {
+		t.Fatalf("renewal from the superseded epoch = %v, want ErrConflict", err)
+	}
+	if _, err := h.store.RenewClaim(ctx, taken.ID, otherRun, taken.Fence, policy); err != nil {
+		t.Fatalf("the current holder could not renew: %v", err)
+	}
+
+	// A finished claim has no lease left to extend.
+	if _, err := h.store.Submit(ctx, Submission{
+		AssignmentID: taken.ID, RunID: otherRun, Fence: taken.Fence,
+		SkipReason: "nothing to check against", Cost: 0.1,
+	}); err != nil {
+		t.Fatalf("finish the claim with a skip: %v", err)
+	}
+	if _, err := h.store.RenewClaim(ctx, taken.ID, otherRun, taken.Fence, policy); !errors.Is(err, ErrConflict) {
+		t.Fatalf("renewal of a finished claim = %v, want ErrConflict", err)
+	}
+}
+
+// In shared mode the fleet owns the lease and the mirror follows it. A fleet
+// refusal is the answer; a fleet extension has to reach the local row, because
+// every local write path asks the mirror first and an unextended mirror would
+// refuse the holder the fleet had just extended.
+func TestSharedLeaseRenewalFollowsTheFleetAndReachesTheMirror(t *testing.T) {
+	ctx := context.Background()
+	policy := testPolicy()
+	stub := &stubCoordinator{}
+	h := newHarness(t, WithCoordinator(stub))
+	granted := h.claim(t, "asg_shared_renew", RoleReception, testRun)
+
+	stub.renewErr = fmt.Errorf("%w: assignment %s was taken over", ErrConflict, granted.ID)
+	if _, err := h.store.RenewClaim(ctx, granted.ID, testRun, granted.Fence, policy); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a fleet refusal = %v, want ErrConflict", err)
+	}
+	if stub.renewals != 1 {
+		t.Fatalf("the fleet was asked %d times, want once", stub.renewals)
+	}
+
+	stub.renewErr = nil
+	lease := time.Duration(policy.LeaseSeconds) * time.Second
+	h.clock.at = h.clock.at.Add(lease - time.Minute)
+	if _, err := h.store.RenewClaim(ctx, granted.ID, testRun, granted.Fence, policy); err != nil {
+		t.Fatalf("renew in shared mode: %v", err)
+	}
+	// Past the window the grant carried, which only the mirrored extension
+	// can carry the holder through.
+	h.clock.at = h.clock.at.Add(2 * time.Minute)
+	if err := h.store.ValidateClaim(ctx, granted.ID, testRun, granted.Fence); err != nil {
+		t.Fatalf("the mirror refused a claim the fleet extended: %v", err)
 	}
 }

@@ -213,6 +213,23 @@ func (c *evaluationCatalogCoordinator) Validate(ctx context.Context, id, runID s
 	return evaluationCoordinationError(sharedcatalog.ValidateEvaluationClaim(ctx, db, c.cfg.DeploymentID, id, runID, fence))
 }
 
+// Renew is the one authority operation the shared catalog cannot serve.
+//
+// migrations/0013's evaluation_claims_finish_only trigger names expires_at
+// among the columns a claim attempt may not change: fleet-wide, a lease is
+// fixed at the grant and the only transition an attempt may make is claimed ->
+// finished. Extending one there is a catalog schema change rather than a call
+// this adapter can make, so it says so instead of reporting an extension the
+// fleet never granted - a worker told its lease was extended when it was not
+// would keep reading against an authority the fleet has already let go.
+func (c *evaluationCatalogCoordinator) Renew(ctx context.Context, id, runID string, fence int64,
+	policy evaluation.Policy) (time.Time, error) {
+	return time.Time{}, fmt.Errorf("%w: the shared catalog records a claim attempt as immutable except "+
+		"for its finish, so the lease on assignment %s cannot be extended fleet-wide; a review that "+
+		"needs longer than %ds needs a policy with a longer lease",
+		evaluation.ErrUnavailable, id, policy.LeaseSeconds)
+}
+
 func (c *evaluationCatalogCoordinator) Finish(ctx context.Context, id, runID string, fence int64, cost float64) error {
 	db, err := c.connection(ctx)
 	if err != nil {
