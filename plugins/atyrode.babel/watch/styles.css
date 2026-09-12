@@ -1,15 +1,396 @@
-/*
-  WATCH'S SKIN. Every selector's leftmost compound is this plugin's own root class
-  (docs/PLUGINS.md §10, ADR 0025 §7); the tokens come from the ground, never from `:root`.
+/* ---------------------------------------------------------------------------
+   BABEL'S SKIN, UNDER ONE ROOT.
 
-  STUB (Scaffold, P0): belongs to the watch slice with its web half; replace both together.
-*/
+   Every selector's leftmost compound is `.plugin-atyrode_babel_watch` or one of
+   its `__` parts, which is the whole of what the hub admits a plugin sheet for
+   (manifold ADR 0025 §7): a stranger's stylesheet may paint its own subtree and
+   nothing else, and a rule with no class of ours would reach every node in the
+   document.
+
+   The tokens are Babel's own, declared under our root rather than at `:root`,
+   because a plugin that wrote the document's variables would be re-theming the
+   shell. They are the palette the standalone interface settled on: neutral
+   graphite from near-black to near-white, five signals with one meaning each,
+   one four-pixel space scale, and two registers — an editorial serif for a
+   title, mono with tabular figures for every figure, id and clock. Watch is the
+   observatory register, so almost everything here is the second one.
+
+   Two buttons and one chip, which is the whole control vocabulary: the quiet
+   word that grows a border when the pointer arrives, the one accent fill a
+   section is allowed, and the pressable token for a recipe. A third button
+   style would be a ranking nobody encoded.
+   --------------------------------------------------------------------------- */
 
 .plugin-atyrode_babel_watch {
-  color: var(--fg);
-  font-size: 0.875rem;
+  --babel-bg: #0d0f12;
+  --babel-bg-raised: #14171c;
+  --babel-bg-sunken: #0a0b0e;
+  --babel-rule: #23272e;
+  --babel-rule-strong: #2e343c;
+  --babel-ink-strong: #f2f4f7;
+  --babel-ink: #e8eaed;
+  --babel-ink-muted: #9aa3ad;
+  --babel-ink-faint: #6b7480;
+  --babel-accent: #4c8dff;
+  --babel-accent-ink: #a9c8ff;
+  --babel-good: #3ecf8e;
+  --babel-bad: #ff6b6b;
+  --babel-warn: #f0b429;
+  --babel-live: #5ee08a;
+  --babel-font-editorial: "Source Serif 4", Charter, "Iowan Old Style", Georgia, serif;
+  --babel-font-mono: "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, ui-monospace, monospace;
+  --babel-space-1: 4px;
+  --babel-space-2: 8px;
+  --babel-space-3: 12px;
+  --babel-space-4: 16px;
+  --babel-space-5: 24px;
+  --babel-space-6: 32px;
+  --babel-radius: 10px;
+  --babel-radius-sm: 6px;
+  --babel-motion-fast: 120ms;
+
+  padding: var(--babel-space-5);
+  color: var(--babel-ink);
+  background: var(--babel-bg);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.plugin-atyrode_babel_watch__title {
+  margin: 0;
+  color: var(--babel-ink-strong);
+  font-family: var(--babel-font-editorial);
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.plugin-atyrode_babel_watch__lede {
+  margin: 0;
+  max-width: 68ch;
+  color: var(--babel-ink-muted);
+}
+
+.plugin-atyrode_babel_watch__muted {
+  color: var(--babel-ink-muted);
+}
+
+.plugin-atyrode_babel_watch__mono {
+  font-family: var(--babel-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.82rem;
 }
 
 .plugin-atyrode_babel_watch__note {
-  color: var(--fg-muted);
+  margin: 0;
+  padding: var(--babel-space-2) var(--babel-space-3);
+  border-left: 2px solid color-mix(in srgb, var(--babel-warn) 60%, transparent);
+  color: var(--babel-ink);
+  background: color-mix(in srgb, var(--babel-warn) 8%, transparent);
+}
+
+/* --------------------------------------------------------------- start something */
+
+.plugin-atyrode_babel_watch__presets {
+  align-items: stretch;
+}
+
+/* A preset is a request, so the card carries the request's own two lines and
+   nothing else: what it is called, and what asking for it does. Pressed is the
+   accent's job — one open card at a time, because the knobs below belong to it. */
+.plugin-atyrode_babel_watch__preset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--babel-space-1);
+  flex: 1 1 14rem;
+  min-width: 0;
+  padding: var(--babel-space-3);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius);
+  color: var(--babel-ink);
+  background: var(--babel-bg-raised);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--babel-motion-fast) ease,
+    background var(--babel-motion-fast) ease;
+}
+
+.plugin-atyrode_babel_watch__preset:hover {
+  border-color: var(--babel-rule-strong);
+}
+
+.plugin-atyrode_babel_watch__preset[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--babel-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--babel-accent) 10%, var(--babel-bg-raised));
+}
+
+.plugin-atyrode_babel_watch__preset-title {
+  color: var(--babel-ink-strong);
+  font-weight: 600;
+}
+
+.plugin-atyrode_babel_watch__preset-does {
+  color: var(--babel-ink-muted);
+  font-size: 0.84rem;
+}
+
+.plugin-atyrode_babel_watch__open {
+  padding: var(--babel-space-4);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius);
+  background: var(--babel-bg-sunken);
+}
+
+.plugin-atyrode_babel_watch__knob {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--babel-space-2);
+}
+
+.plugin-atyrode_babel_watch__knob-label {
+  color: var(--babel-ink-muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.plugin-atyrode_babel_watch__knob-unit {
+  color: var(--babel-ink-muted);
+}
+
+.plugin-atyrode_babel_watch__knob-input {
+  width: 5.5rem;
+  padding: var(--babel-space-1) var(--babel-space-2);
+  border: 1px solid var(--babel-rule-strong);
+  border-radius: var(--babel-radius-sm);
+  color: var(--babel-ink);
+  background: var(--babel-bg);
+  font-family: var(--babel-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-atyrode_babel_watch__picker {
+  max-width: 22rem;
+  padding: var(--babel-space-1) var(--babel-space-2);
+  border: 1px solid var(--babel-rule-strong);
+  border-radius: var(--babel-radius-sm);
+  color: var(--babel-ink);
+  background: var(--babel-bg);
+}
+
+.plugin-atyrode_babel_watch__chip {
+  padding: 2px var(--babel-space-2);
+  border: 1px solid var(--babel-rule);
+  border-radius: 2rem;
+  color: var(--babel-ink-muted);
+  background: transparent;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.plugin-atyrode_babel_watch__chip[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--babel-accent) 45%, transparent);
+  color: var(--babel-accent-ink);
+  background: color-mix(in srgb, var(--babel-accent) 14%, transparent);
+}
+
+/* What will run: the one sentence this section exists for. It is set apart by a
+   rule rather than by a fourth kind of box. */
+.plugin-atyrode_babel_watch__willrun {
+  padding-top: var(--babel-space-3);
+  border-top: 1px solid var(--babel-rule);
+}
+
+.plugin-atyrode_babel_watch__willrun-line {
+  margin: 0;
+  max-width: 78ch;
+  color: var(--babel-ink);
+}
+
+.plugin-atyrode_babel_watch__primary {
+  padding: var(--babel-space-2) var(--babel-space-4);
+  border: 1px solid color-mix(in srgb, var(--babel-accent) 60%, transparent);
+  border-radius: var(--babel-radius-sm);
+  color: var(--babel-bg);
+  background: var(--babel-accent);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.plugin-atyrode_babel_watch__primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.plugin-atyrode_babel_watch__quiet {
+  padding: var(--babel-space-1) var(--babel-space-2);
+  border: 1px solid transparent;
+  border-radius: var(--babel-radius-sm);
+  color: var(--babel-ink-muted);
+  background: transparent;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.plugin-atyrode_babel_watch__quiet:hover {
+  border-color: var(--babel-rule);
+  color: var(--babel-ink);
+}
+
+/* --------------------------------------------------------------------- runs */
+
+.plugin-atyrode_babel_watch__table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius);
+}
+
+.plugin-atyrode_babel_watch__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.plugin-atyrode_babel_watch__table th {
+  padding: var(--babel-space-2) var(--babel-space-3);
+  border-bottom: 1px solid var(--babel-rule);
+  color: var(--babel-ink-faint);
+  text-align: left;
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.plugin-atyrode_babel_watch__table td {
+  padding: var(--babel-space-2) var(--babel-space-3);
+  border-bottom: 1px solid color-mix(in srgb, var(--babel-rule) 62%, var(--babel-bg));
+  vertical-align: middle;
+}
+
+.plugin-atyrode_babel_watch__numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-atyrode_babel_watch__elapsed {
+  font-family: var(--babel-font-mono);
+  color: var(--babel-ink-strong);
+}
+
+/* The only colour that moves: something is running right now. */
+.plugin-atyrode_babel_watch__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--babel-live);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--babel-live) 55%, transparent);
+  animation: plugin-atyrode_babel_watch__breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes plugin-atyrode_babel_watch__breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--babel-live) 55%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--babel-live) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plugin-atyrode_babel_watch__dot {
+    animation: none;
+  }
+}
+
+.plugin-atyrode_babel_watch__closed {
+  font-family: var(--babel-font-mono);
+  font-size: 0.78rem;
+  color: var(--babel-ink-muted);
+}
+
+.plugin-atyrode_babel_watch__closed.is-finished {
+  color: var(--babel-good);
+}
+
+.plugin-atyrode_babel_watch__closed.is-failed {
+  color: var(--babel-bad);
+}
+
+.plugin-atyrode_babel_watch__closed.is-stopped {
+  color: var(--babel-warn);
+}
+
+/* ------------------------------------------------------------------ recipes */
+
+.plugin-atyrode_babel_watch__recipes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plugin-atyrode_babel_watch__recipe {
+  padding: var(--babel-space-3) 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--babel-rule) 62%, var(--babel-bg));
+}
+
+.plugin-atyrode_babel_watch__recipe-name {
+  color: var(--babel-ink-strong);
+  font-weight: 600;
+}
+
+.plugin-atyrode_babel_watch__recipe-looks {
+  margin: 0;
+  max-width: 78ch;
+  color: var(--babel-ink-muted);
+}
+
+.plugin-atyrode_babel_watch__off {
+  padding: 0 var(--babel-space-1);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius-sm);
+  color: var(--babel-ink-faint);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ----------------------------------------------------------------- ceilings */
+
+.plugin-atyrode_babel_watch__stat {
+  min-width: 0;
+}
+
+.plugin-atyrode_babel_watch__stat-label {
+  color: var(--babel-ink-faint);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.plugin-atyrode_babel_watch__stat-value {
+  color: var(--babel-ink-strong);
+  font-family: var(--babel-font-mono);
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.plugin-atyrode_babel_watch__spend {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--babel-bg-raised);
+  overflow: hidden;
+}
+
+.plugin-atyrode_babel_watch__spend-fill {
+  display: block;
+  height: 100%;
+  background: var(--babel-accent);
+}
+
+.plugin-atyrode_babel_watch__lane {
+  color: var(--babel-ink-muted);
+  font-size: 0.82rem;
 }
