@@ -35,6 +35,17 @@ The product, not the implementation:
 - **The operator is the boundary.** Only his acceptance creates an entity,
   asserts a fact or applies a plan.
 
+**The end goal, unscheduled** (operator, 2026-09-12): once Babel, omp, git
+and code are plugins on one hub, accepting a proposal that is an issue can
+start a code task with the click of a button — the proposal's case as the
+prompt, its evidence and topic as the context, the entity it is filed under
+as the repository — and run to completion; §4.12's observed outcomes then
+judge whether the task met the proposal's own verification criteria, which
+closes the loop Babel improves itself by. Nothing in the phases below builds
+it and nothing may foreclose it: a proposal's target system, the acceptance
+hook that applies plans, and the code plugin's authorize-then-host-executes
+door are the seam it will hang on.
+
 What is retired: the Go tree, `babel web`, the standalone loopback security
 model (§2.7), the shared PostgreSQL catalog, the sealed-payload S3 object store,
 the plaintext allowlist, the publication journal and `babel sync`, the fleet
