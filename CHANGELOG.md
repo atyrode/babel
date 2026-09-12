@@ -121,7 +121,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   §4.13's triage recipe has yet to revisit them. The observation is
   read-only, runs once per distinct workspace per scan, and never writes to
   a checkout (SPEC §4.13).
-<<<<<<< ours
 - **Babel proposes a topic; the operator creates it.** A topic question is
   the Reality Ledger's answer to a name a run cannot resolve (SPEC §4.8,
   §4.13): it names the entity it would create — kind, binding, aliases, why
@@ -175,8 +174,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   one leaves them as reported gaps rather than making them disappear
   (`POST /api/topics/{id}/interest`, `/retire`, `/api/topics/merge`,
   `/api/topics/split`; SPEC §4.13, §4.8, §4.12).
-||||||| base
-=======
 - **Babel files its own output.** A new off-by-default meta recipe,
   `babel-files-its-output`, runs under the evaluation policy as its own draw
   kind beside coverage, exploration and discovery: a tenth of a cycle
@@ -194,7 +191,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   receipts are ordinary receipts and name which of the three answers it
   reached; a filing is not a review, so it consumes no review cap and clears
   no coverage obligation (SPEC §4.13, §4.12).
->>>>>>> theirs
 
 ### Changed
 
