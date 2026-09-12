@@ -369,6 +369,20 @@ export function PlanCard({
       </div>
       <Quoted label="Interpreter summary — model text, untrusted" text={plan.summary} />
 
+      {/* The actions are the plan's machinery. The summary above and the
+          acceptance below are what a reader decides on; the list of what
+          would change is opened when he wants to check it, which keeps a
+          plan-ready question from being a screen and a half on its own. */}
+      <details className="peel plan-actions">
+        <summary>
+          What it would do
+          <span className="peel-count">{plan.actions.length}</span>
+          <span className="muted">
+            {mutating.length} {mutating.length === 1 ? "applies" : "apply"} on acceptance
+            {retained.length > 0 ? ` · ${retained.length} retained regardless` : ""}
+          </span>
+        </summary>
+        <div className="peel-body">
       <ol className="action-list">
         {plan.actions.map((action) => {
           const authoritative = AUTHORITATIVE_KINDS[action.kind] ?? false;
@@ -404,6 +418,8 @@ export function PlanCard({
           );
         })}
       </ol>
+        </div>
+      </details>
 
       {proposed && !acceptResult && (
         <div className="accept-panel">
