@@ -351,6 +351,60 @@ func (c *Cache) SessionIdentities(ctx context.Context) ([]SessionIdentity, error
 	return out, nil
 }
 
+// Repositories reports the repository each named session's workspace belongs
+// to, preferring the remote, and omits a session whose repository this host
+// never observed.
+//
+// It is a lookup where SessionIdentities is a scan, and the difference is the
+// question. A caller here already knows which sessions it cares about — the
+// ones a record cited — and wants the one thing §4.13 says is observable about
+// a topic without a model: the repository the work was in. Returning the whole
+// corpus for that would pull every cached row through a caller that needs a
+// handful.
+//
+// The remote is preferred over the common directory for the reason
+// adapter.Repository states: a remote survives the same repository being
+// cloned to another path on another machine, while the common directory is the
+// identity this host can always observe. A session with neither is absent from
+// the result rather than present with an empty string — §3's rule that an
+// unobserved value is explained by its absence and never synthesized.
+func (c *Cache) Repositories(ctx context.Context, sourceIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(sourceIDs))
+	if len(sourceIDs) == 0 {
+		return out, nil
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT COALESCE(source_id, ''), COALESCE(repository_remote, ''), COALESCE(repository_identity, '')
+		FROM sessions`)
+	if err != nil {
+		return nil, fmt.Errorf("read session repositories: %w", err)
+	}
+	defer rows.Close()
+	wanted := make(map[string]struct{}, len(sourceIDs))
+	for _, id := range sourceIDs {
+		wanted[id] = struct{}{}
+	}
+	for rows.Next() {
+		var sourceID, remote, identity string
+		if err := rows.Scan(&sourceID, &remote, &identity); err != nil {
+			return nil, fmt.Errorf("scan session repository: %w", err)
+		}
+		if _, ok := wanted[sourceID]; !ok {
+			continue
+		}
+		switch {
+		case remote != "":
+			out[sourceID] = remote
+		case identity != "":
+			out[sourceID] = identity
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read session repositories: %w", err)
+	}
+	return out, nil
+}
+
 type liveRef struct {
 	ref       Ref
 	size      int64

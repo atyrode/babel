@@ -578,6 +578,15 @@ func (s *Service) project(artifacts []Artifact, records []Record, assignments []
 			if superseded[record.ID] {
 				continue
 			}
+			if role == RoleFiling {
+				// A filing says where a record belongs, not
+				// whether it is any good. Counting it as an
+				// assessment would spend the per-revision review
+				// cap on naming and would take the record out of
+				// the protected discovery lane, which draws
+				// artifacts nobody has assessed in any role.
+				continue
+			}
 			holder.assessments = append(holder.assessments,
 				roledAssessment{Record: record, Role: role})
 			if record.Assessment.Outcome != "" {
@@ -1563,6 +1572,38 @@ func (s *Service) reproject(ctx context.Context, subject Subject) error {
 	return s.proj.replaceItem(ctx, meta.ID, items[0], history[subject])
 }
 
+// unfiledDraw is how many unfiled records one draw reads.
+//
+// The filing lane clears its backlog oldest first, so a draw never needs more
+// than its head; a page rather than the whole list keeps a deployment with
+// thousands of unfiled records from paying for a full scan on every draw.
+// Sixty-four is far more than one cycle's batch can consume, which leaves room
+// for the records at the head that this projection cannot serve — a record the
+// reviewable inventory does not hold is reported as a gap and the next one is
+// still there to draw.
+const unfiledDraw = 64
+
+// unfiledBacklog reads the records with no filing, or nothing when this
+// deployment has allocated the filing share nothing or its read surface cannot
+// answer.
+//
+// The share is consulted before the store is, so a deployment that files by
+// hand pays for no query at all. A read that fails is an error rather than an
+// empty backlog: the same durable store backs the reviewable inventory, so
+// "nothing is unfiled" and "I could not ask" must not arrive at the draw as the
+// same answer — the first would spend the filing share on nothing while
+// reporting every record as filed.
+func (s *Service) unfiledBacklog(ctx context.Context, policy Policy) ([]Subject, error) {
+	if policy.FilingShare <= 0 {
+		return nil, nil
+	}
+	source, ok := s.src.(UnfiledSource)
+	if !ok {
+		return nil, nil
+	}
+	return source.Unfiled(ctx, unfiledDraw)
+}
+
 // Draw reserves the next review and claims it.
 //
 // The whole selection happens here and the claim happens through the store, so
@@ -1590,6 +1631,10 @@ func (s *Service) Draw(ctx context.Context, runID string, seed uint64) (Assignme
 	if err != nil {
 		return Assignment{}, err
 	}
+	unfiled, err := s.unfiledBacklog(ctx, policy)
+	if err != nil {
+		return Assignment{}, err
+	}
 
 	now := time.Now().UTC()
 	result, drawErr := selectDraw(drawInput{
@@ -1601,6 +1646,7 @@ func (s *Service) Draw(ctx context.Context, runID string, seed uint64) (Assignme
 		SpentToday:   today,
 		SpentCycle:   cycle,
 		ActiveClaims: active,
+		Unfiled:      unfiled,
 		Now:          now,
 	}, runID, seed)
 

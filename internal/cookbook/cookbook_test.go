@@ -23,6 +23,10 @@ var shipped = []struct {
 	enabled  bool
 	minScope int
 }{
+	// The filing recipe reads the session corpus and the ledger's topics:
+	// it decides what a record is about (§4.13) and never materializes a
+	// repository to do it.
+	{id: "babel-files-its-output", kind: KindMeta, enabled: false, minScope: 1},
 	{id: "babel-improves-babel", kind: KindMeta, enabled: false, minScope: 2},
 	// The evaluation recipe reads the session corpus and nothing else: a
 	// review checks what a record cited against the archive that recorded the
@@ -64,8 +68,14 @@ var drafts = []string{
 }
 
 // duties is the set of recipes the conductor's duty rung can schedule (#88,
-// #94), which is exactly the set of meta recipes this build ships.
+// #94), plus the two meta recipes the evaluation policy draws rather than the
+// duty rung: `babel-triages-the-queue` is the review share's contract and
+// `babel-files-its-output` is §4.13's filing share. Together they are exactly
+// the set of meta recipes this build ships, and the assertions below are the
+// ones that hold for all of them — a meta recipe is never default-enabled,
+// whichever share schedules it.
 var duties = []string{
+	"babel-files-its-output",
 	"babel-improves-babel",
 	"babel-triages-the-queue",
 	"babel-tunes-itself",

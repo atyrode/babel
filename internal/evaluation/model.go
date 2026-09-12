@@ -269,6 +269,110 @@ func Roles() []string {
 // ValidRole reports whether role is one of §4.12's review roles.
 func ValidRole(role string) bool { return slices.Contains(Roles(), role) }
 
+// RoleFiling is the filing lane's work role: deciding what a record is about
+// (§4.13), rather than judging the record itself.
+//
+// It is deliberately not one of Roles(). A review role is an obligation the
+// coverage inventory tracks, so a record with no evidence check is a visible
+// gap; filing is not that. A record nobody has filed is the filing lane's
+// backlog, not an unmet review obligation, and admitting filing to the
+// coverage vocabulary would report every record this deployment ever produced
+// as unreviewed in a role no reviewer was going to answer. What it shares with
+// a review is everything else: it is drawn under the same policy, claimed
+// against the same allowance, carried out by one supervised worker, and
+// recorded as an attributed, append-only assessment.
+const RoleFiling = "filing"
+
+// WorkRoles lists every role an assignment can carry — the review roles and
+// filing — in a stable order.
+func WorkRoles() []string { return append(Roles(), RoleFiling) }
+
+// ValidWorkRole reports whether role is one an assignment can be drawn in.
+func ValidWorkRole(role string) bool { return role == RoleFiling || ValidRole(role) }
+
+// WorkRoleApplies reports whether a subject kind can carry a work role.
+//
+// Filing applies to every evaluable kind except this package's own records: an
+// evaluation is not a frontier record, so there is no `about` edge to write for
+// it and no topic a reader would look for it under.
+func WorkRoleApplies(subjectKind, role string) bool {
+	if role == RoleFiling {
+		return subjectKind != SubjectKindEvaluation && len(RolesForKind(subjectKind)) > 0
+	}
+	return RoleApplies(subjectKind, role)
+}
+
+// The outcomes one filing assignment can reach (§4.13). They are three because
+// the honest answers are three: the record is about something the ledger
+// already names, it is about something nobody has created an entity for yet, or
+// it is about nothing in particular and saying so is the result.
+const (
+	// FilingFiled is an `about` edge written to an existing entity.
+	FilingFiled = "filed"
+	// FilingProposed is a topic question raised because no entity answered.
+	// The record stays unfiled until the operator accepts the question:
+	// only the operator creates entities (§4.8).
+	FilingProposed = "topic-proposed"
+	// FilingNone is the recorded judgement that the record is about nothing
+	// in particular, with the reason kept.
+	FilingNone = "no-topic"
+)
+
+// FilingOutcomes lists the filing outcomes in a stable order.
+func FilingOutcomes() []string { return []string{FilingFiled, FilingProposed, FilingNone} }
+
+// Filing is what a filing assignment produced.
+//
+// The `about` edge itself lives in the frontier and the topic question in the
+// Reality ledger; this is the attributed evaluation record saying which of the
+// three a paid draw reached. It exists so that a receipt, and the accounting of
+// what the filing share bought, can be read without opening either store — and
+// so that a filing run that reached an honest "nothing in particular" is a
+// completion rather than a skip.
+type Filing struct {
+	Outcome string `json:"outcome"`
+	// Entity is the reality entity the record was filed under. Filed only.
+	Entity string `json:"entity,omitempty"`
+	// Question is the topic question the run raised. Proposed only.
+	Question string `json:"question,omitempty"`
+	// Reason is the rationale for the filing, the why of the proposal, or
+	// the reason the record is about nothing in particular. It is required
+	// in all three: a filing with no reason is a link nobody can argue with.
+	Reason string `json:"reason"`
+}
+
+func (f Filing) validate() error {
+	if !slices.Contains(FilingOutcomes(), f.Outcome) {
+		return fmt.Errorf("%w: %q is not a filing outcome", ErrInvalid, f.Outcome)
+	}
+	switch f.Outcome {
+	case FilingFiled:
+		if strings.TrimSpace(f.Entity) == "" {
+			return fmt.Errorf("%w: a filed record must name the entity it was filed under", ErrInvalid)
+		}
+		if f.Question != "" {
+			return fmt.Errorf("%w: a filed record names an entity, not a topic question", ErrInvalid)
+		}
+	case FilingProposed:
+		if strings.TrimSpace(f.Question) == "" {
+			return fmt.Errorf("%w: a proposed topic must name the question that carries it", ErrInvalid)
+		}
+		if f.Entity != "" {
+			return fmt.Errorf("%w: a proposed topic has no entity yet; only the operator creates one",
+				ErrInvalid)
+		}
+	case FilingNone:
+		if f.Entity != "" || f.Question != "" {
+			return fmt.Errorf("%w: a record about nothing in particular names neither entity nor question",
+				ErrInvalid)
+		}
+	}
+	if strings.TrimSpace(f.Reason) == "" {
+		return fmt.Errorf("%w: a filing must say why", ErrInvalid)
+	}
+	return nil
+}
+
 // RolesForKind is the applicability registry: which review roles apply to one
 // subject kind, in a stable order.
 //
@@ -639,6 +743,11 @@ type Assessment struct {
 	// was made under. It is the read context, never the current one: a stale
 	// result must not be able to represent current-context coverage.
 	ContextVersion string `json:"context_version,omitempty"`
+	// Filing is where this record belongs (§4.13), for a filing assignment
+	// and no other. It is on the assessment rather than in a record kind of
+	// its own because it is the same thing every other field here is: one
+	// paid draw's attributed statement about one record.
+	Filing *Filing `json:"filing,omitempty"`
 }
 
 // validateShape checks everything about an assessment that does not depend on
@@ -657,9 +766,14 @@ func (a Assessment) validateShape() error {
 	if a.Outcome != "" && !slices.Contains(Outcomes(), a.Outcome) {
 		return fmt.Errorf("%w: %q is not an outcome value", ErrInvalid, a.Outcome)
 	}
-	if a.Vote == "" && len(a.Contributions) == 0 && a.Outcome == "" {
-		return fmt.Errorf("%w: an assessment states no vote, no contribution and no outcome; record a skip instead",
-			ErrInvalid)
+	if a.Filing != nil {
+		if err := a.Filing.validate(); err != nil {
+			return err
+		}
+	}
+	if a.Vote == "" && len(a.Contributions) == 0 && a.Outcome == "" && a.Filing == nil {
+		return fmt.Errorf("%w: an assessment states no vote, no contribution, no outcome and no filing; "+
+			"record a skip instead", ErrInvalid)
 	}
 	for i, contribution := range a.Contributions {
 		if err := contribution.validate(); err != nil {
@@ -714,8 +828,8 @@ func (a Assessment) validateShape() error {
 // review and no role requires prose: what is refused is a statement the grant
 // did not authorize, never a modest one.
 func (a Assessment) validate(role string) error {
-	if !ValidRole(role) {
-		return fmt.Errorf("%w: %q is not a review role", ErrInvalid, role)
+	if !ValidWorkRole(role) {
+		return fmt.Errorf("%w: %q is not a role an assignment can carry", ErrInvalid, role)
 	}
 	if a.Vote != "" && role != RoleReception {
 		return fmt.Errorf("%w: a reception vote needs the %s role, not %q: a vote meets no other role's "+
@@ -727,6 +841,14 @@ func (a Assessment) validate(role string) error {
 	if len(a.Results) > 0 && role != RoleEvidence && role != RoleOutcome {
 		return fmt.Errorf("%w: criterion results are what an evidence check or an outcome verification "+
 			"produces, not a %s review", ErrInvalid, role)
+	}
+	if a.Filing != nil && role != RoleFiling {
+		return fmt.Errorf("%w: a filing needs the %s role, not %q: where a record belongs is not a "+
+			"judgement about it", ErrInvalid, RoleFiling, role)
+	}
+	if role == RoleFiling && len(a.Contributions) > 0 {
+		return fmt.Errorf("%w: a filing assignment records where a record belongs and contributes "+
+			"nothing to the review of it", ErrInvalid)
 	}
 	for i, contribution := range a.Contributions {
 		if contribution.Kind == ContributionComparison && role != RoleComparison {
@@ -767,6 +889,8 @@ func (a Assessment) satisfiesRole(role string) error {
 		})
 	case RoleOutcome:
 		stated = a.Outcome != ""
+	case RoleFiling:
+		stated = a.Filing != nil
 	}
 	if !stated {
 		return fmt.Errorf("%w: this assessment states nothing the %s role counts; a skip is the honest "+
@@ -974,11 +1098,15 @@ type Policy struct {
 	CoverageShare    float64 `json:"coverage_share"`
 	ExplorationShare float64 `json:"exploration_share"`
 	DiscoveryShare   float64 `json:"discovery_share"`
-	MaxItemReviews   int     `json:"max_item_reviews"`
-	PerCycleCost     float64 `json:"per_cycle_cost"`
-	DailyCost        float64 `json:"daily_cost"`
-	LeaseSeconds     int     `json:"lease_seconds"`
-	BatchSize        int     `json:"batch_size"`
+	// FilingShare is §4.13's draw kind: the share of a cycle spent deciding
+	// what a record is about. Zero is a policy, not a fault — a deployment
+	// whose operator files by hand spends nothing here.
+	FilingShare    float64 `json:"filing_share,omitempty"`
+	MaxItemReviews int     `json:"max_item_reviews"`
+	PerCycleCost   float64 `json:"per_cycle_cost"`
+	DailyCost      float64 `json:"daily_cost"`
+	LeaseSeconds   int     `json:"lease_seconds"`
+	BatchSize      int     `json:"batch_size"`
 }
 
 // Assignment is one bounded grant of review attention.
@@ -1044,10 +1172,10 @@ func (a Assignment) validate() error {
 		return fmt.Errorf("%w: assignment %s run id %q is not a well-formed run identifier",
 			ErrInvalid, a.ID, a.RunID)
 	}
-	if !ValidRole(a.Role) {
-		return fmt.Errorf("%w: %q is not a review role", ErrInvalid, a.Role)
+	if !ValidWorkRole(a.Role) {
+		return fmt.Errorf("%w: %q is not a role an assignment can carry", ErrInvalid, a.Role)
 	}
-	if !RoleApplies(a.Subject.Kind, a.Role) {
+	if !WorkRoleApplies(a.Subject.Kind, a.Role) {
 		return fmt.Errorf("%w: the %s role does not apply to a %s", ErrInvalid, a.Role, a.Subject.Kind)
 	}
 	if strings.TrimSpace(a.PolicyVersion) == "" {

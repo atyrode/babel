@@ -31,7 +31,8 @@ import (
 // composeReviewPrompt renders one review's prompt.
 func composeReviewPrompt(contract worker.OutputContract, recipe *cookbook.Recipe,
 	target reviewTarget, alternatives []reviewTarget, previous []evaluation.Record,
-	sources []worker.Source, params map[string]string, tools []worker.HostTool, blinded bool) (string, error) {
+	sources []worker.Source, params map[string]string, tools []worker.HostTool, blinded bool,
+	ledger *TopicLedger) (string, error) {
 	var b strings.Builder
 	b.WriteString("# Babel evaluation\n\n")
 
@@ -131,6 +132,22 @@ func composeReviewPrompt(contract worker.OutputContract, recipe *cookbook.Recipe
 		b.WriteString("\n")
 	}
 
+	if ledger != nil {
+		b.WriteString("## What the ledger already names\n\n")
+		b.WriteString("The topics that exist, why some were retired, why some proposals were declined, and the ")
+		b.WriteString("repositories the sessions this record cites were in. Prefer one of these entities: a topic ")
+		b.WriteString("nobody needed a second name for is the one an operator can act on. The retired and declined ")
+		b.WriteString("reasons are why Babel got a topic wrong before, and repeating one of them is the failure this ")
+		b.WriteString("material exists to prevent.\n\n")
+		encoded, err := json.MarshalIndent(ledger, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("explore: render the topic ledger: %w", err)
+		}
+		b.WriteString("```json\n")
+		b.Write(encoded)
+		b.WriteString("\n```\n\n")
+	}
+
 	return b.String(), nil
 }
 
@@ -187,6 +204,13 @@ func reviewInstructions(role string, auth reviewAuthority) string {
 	fmt.Fprintf(&b, "You are reviewing one record in the %s role.\n\n", role)
 	b.WriteString(reviewRoleQuestion(role))
 	b.WriteString("\n")
+	if auth.filing {
+		// A filing pass reads none of the common review instructions and
+		// contributes nothing: the blocks below are about judging a
+		// record, and this role is about naming what it is about.
+		b.WriteString(instructionsReviewFiling)
+		return b.String()
+	}
 	b.WriteString(instructionsReviewCommon)
 	if auth.vote {
 		b.WriteString(instructionsReviewVote)
@@ -234,6 +258,11 @@ func reviewRoleQuestion(role string) string {
 		return "The question is whether this record is relevant to the recorded work, pain and constraints " +
 			"shown with it. Relevance is not quality and not reception: a correct finding about something " +
 			"nobody is working on is correct and not relevant, and saying so is the useful answer.\n"
+	case evaluation.RoleFiling:
+		return "The question is what this record is about: which topic a reader would look for it under. " +
+			"A topic is a thing in the world with a name and a binding — a repository, a project, a " +
+			"machine, a service, a concept — and never a folder, a directory or the workspace the work " +
+			"happened in. You are not judging this record, and no part of your answer is a vote.\n"
 	default:
 		return ""
 	}
@@ -292,4 +321,34 @@ refinement or comparison. An evidence contribution must cite at least one
 locator; a comparison must name its alternatives; every other kind carries text
 or evidence. Use ` + "`would_change`" + ` to say what would change your mind
 where you know it, and leave it empty where you do not.
+`
+
+const instructionsReviewFiling = `
+Answer with exactly one of three fields.
+
+` + "`filing`" + ` files this record under a topic that already exists. Name the
+entity by any name or alias it is listed under and say in ` + "`rationale`" + `
+why this record is about it. This is the answer to prefer: a second topic for
+something the ledger already names is a merge the operator has to do by hand.
+
+` + "`topic`" + ` proposes a topic nobody has created, when the record is about
+something no listed entity names. It is a question for the operator and not a
+creation: give the ` + "`name`" + `, the ` + "`kind`" + `, an
+` + "`identity`" + ` that is the same string for the same thing every time — a
+normalized remote, a common directory, a hostname, or a slug for a concept —
+and bind it to something real with ` + "`remote`" + `, ` + "`paths`" + ` or a
+one-sentence ` + "`definition`" + `. Say in ` + "`reasoning`" + ` why the topic
+should exist and list in ` + "`considered`" + ` the existing topics you weighed
+and rejected.
+
+` + "`no_topic`" + ` records that the record is about nothing in particular,
+with the reason. Some outputs are about the process, about a passing question,
+about nothing an operator would ever go looking for by name, and saying so is
+the honest result. It is not a failure and it is not a skip: a skip means you
+could not read the record, and this means you read it and it has no topic.
+
+A name you use in ` + "`filing`" + ` that no listed entity answers to becomes a
+topic question rather than a filing, so guessing at a name costs the operator a
+question to decline. Set ` + "`skip`" + ` only when the record itself is
+unreadable from here.
 `

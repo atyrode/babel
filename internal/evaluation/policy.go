@@ -135,6 +135,15 @@ const (
 	// role, so a deployment that is busy arguing about its favourite
 	// proposal still notices the observation nobody has read.
 	DefaultDiscoveryShare = 0.10
+	// DefaultFilingShare is §4.13's own draw kind: the share of a cycle
+	// spent deciding what a record is about rather than what it is worth. A
+	// tenth, the same reservation protected discovery gets, and for the same
+	// reason — an unfiled record is invisible on a surface organized by
+	// topic, so a deployment that only ever reviewed would keep producing
+	// output nobody can find. It is not a protected share: an operator who
+	// files by hand from the topic page and wants nothing spent on it sets
+	// zero, and that is a legitimate policy rather than a broken one.
+	DefaultFilingShare = 0.10
 	// DefaultPerCycleCost and DefaultDailyCost are the authorized spend, in
 	// the same cost unit internal/conductor's budget accounting uses. They
 	// are deliberately small: an operator raising them is an explicit act,
@@ -163,6 +172,7 @@ func DefaultPolicy() Policy {
 		CoverageShare:    DefaultCoverageShare,
 		ExplorationShare: DefaultExplorationShare,
 		DiscoveryShare:   DefaultDiscoveryShare,
+		FilingShare:      DefaultFilingShare,
 		MaxItemReviews:   defaultMaxItemReviews,
 		PerCycleCost:     DefaultPerCycleCost,
 		DailyCost:        DefaultDailyCost,
@@ -219,6 +229,7 @@ func ValidatePolicy(p Policy) error {
 		{"coverage share", p.CoverageShare, false},
 		{"exploration share", p.ExplorationShare, true},
 		{"discovery share", p.DiscoveryShare, true},
+		{"filing share", p.FilingShare, false},
 	} {
 		if share.value < 0 || share.value > 1 {
 			return fmt.Errorf("%w: %s %v is outside [0,1]", ErrInvalid, share.name, share.value)
@@ -228,7 +239,7 @@ func ValidatePolicy(p Policy) error {
 				ErrInvalid, share.name)
 		}
 	}
-	if total := p.CoverageShare + p.ExplorationShare + p.DiscoveryShare; total > 1 {
+	if total := p.CoverageShare + p.ExplorationShare + p.DiscoveryShare + p.FilingShare; total > 1 {
 		return fmt.Errorf("%w: reserved shares total %v and over-commit one cycle", ErrInvalid, total)
 	}
 	if p.MaxItemReviews < p.InitialReviews {
@@ -347,6 +358,9 @@ func (p Policy) Invalidates(prev Policy) Invalidation {
 	}
 	if p.DiscoveryShare != prev.DiscoveryShare {
 		note("discovery share", true, false, false)
+	}
+	if p.FilingShare != prev.FilingShare {
+		note("filing share", true, false, false)
 	}
 	if p.MaxItemReviews != prev.MaxItemReviews {
 		note("max item reviews", true, true, true)

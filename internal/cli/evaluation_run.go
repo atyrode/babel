@@ -253,6 +253,10 @@ type evaluationRunner struct {
 	adapters  []adapter.Adapter
 	scanRoots []string
 	presence  presence.Announcer
+	// topics is §4.13's filing surface, nil on a machine that could not open
+	// the ledger. A filing assignment drawn without it is refused before a
+	// worker starts rather than producing an answer nothing can record.
+	topics explore.TopicService
 	// budget bounds one review's retrieval and egress, on the same terms an
 	// exploration's does.
 	budget explore.Budget
@@ -316,7 +320,7 @@ func (r *evaluationRunner) Run(ctx context.Context, runID string, draw conductor
 // that the assignment names the statement it supersedes.
 func (r *evaluationRunner) carry(ctx context.Context, assignment evaluation.Assignment,
 	scoped scopedCorpus, authority runstore.Authority) (conductor.Result, *explore.ReviewRun, error) {
-	reviewer, release, err := r.reviewer()
+	reviewer, release, err := r.reviewer(assignment.Role)
 	if err != nil {
 		return conductor.Result{}, nil, err
 	}
@@ -505,6 +509,7 @@ func (r *conductorRunner) review(ctx context.Context, runID string,
 		adapters:  r.adapters,
 		scanRoots: r.scanRoots,
 		presence:  r.presence,
+		topics:    r.topics,
 	}
 	result, _, err := runner.Run(ctx, runID, *a.Evaluation, a.Authority)
 	return result, err
@@ -527,14 +532,25 @@ func (r *evaluationRunner) giveBack(ctx context.Context, draw conductor.ReviewDr
 // repository, executes nothing, and reaches no network — so granting a
 // capability this build cannot serve would name a facility with no version to
 // record, which is the same rule an exploration's grant follows.
-func (r *evaluationRunner) reviewer() (*explore.Reviewer, func(), error) {
+//
+// The recipe is chosen by the assignment's role, because §4.13's filing pass
+// and §4.12's review are two methods rather than one: a filing decides what a
+// record is about and may create nothing, and a reviewer handed the filing
+// recipe's body would be reading instructions for an authority it does not
+// have. Both recipes are loaded either way, so the receipt records the
+// cookbook this build carries rather than the subset one assignment used.
+func (r *evaluationRunner) reviewer(role string) (*explore.Reviewer, func(), error) {
 	d, err := babelDirs()
 	if err != nil {
 		return nil, nil, err
 	}
-	recipes, err := recipeSet([]string{EvaluationRecipe})
+	recipes, err := recipeSet([]string{EvaluationRecipe, FilingRecipe})
 	if err != nil {
 		return nil, nil, err
+	}
+	recipe := EvaluationRecipe
+	if role == evaluation.RoleFiling {
+		recipe = FilingRecipe
 	}
 	idx, err := index.Open(d.indexDir())
 	if err != nil {
@@ -558,7 +574,8 @@ func (r *evaluationRunner) reviewer() (*explore.Reviewer, func(), error) {
 	reviewer, err := explore.NewReviewer(explore.ReviewConfig{
 		Service: r.service,
 		Recipes: recipes,
-		Recipe:  EvaluationRecipe,
+		Recipe:  recipe,
+		Topics:  r.topics,
 		Grant: worker.Grant{
 			Capabilities: []worker.Capability{worker.CapabilityCorpusSearch},
 			Disclosure:   worker.DisclosureLocal,
@@ -826,6 +843,7 @@ func (a *app) evaluate(ctx context.Context, args []string) error {
 		adapters:  adapters(),
 		scanRoots: sf.rootList(),
 		presence:  nil,
+		topics:    topicService(state.frontier, services.reality, state.sessionCatalog),
 		budget:    explore.Budget{Retrievals: *retrievals, Fetches: *fetches},
 	}
 	announcer, closePresence := a.openPresence(ctx)
@@ -835,7 +853,10 @@ func (a *app) evaluate(ctx context.Context, args []string) error {
 	result, out, runErr := runner.Run(ctx, draw.RunID, draw, assignment.Authority)
 	res.ReceiptID, res.Cost, res.Currency = result.ReceiptID, result.Cost, result.Currency
 	res.Recipe = EvaluationRecipe
-	if version, ok := evaluationRecipeVersion(); ok {
+	if draw.Role == evaluation.RoleFiling {
+		res.Recipe = FilingRecipe
+	}
+	if version, ok := recipeVersion(res.Recipe); ok {
 		res.RecipeVersion = version
 	}
 	if out != nil {
@@ -896,6 +917,7 @@ func (a *app) correctReview(ctx context.Context, services *evaluationServices, s
 		host:      cfg.host,
 		adapters:  adapters(),
 		scanRoots: cfg.scanRoots,
+		topics:    topicService(state.frontier, services.reality, state.sessionCatalog),
 		budget:    cfg.budget,
 	}
 	// The correction's claim is reserved above and is held from here, so its
@@ -1042,12 +1064,20 @@ func newEvaluationRunID(at time.Time) string {
 
 // evaluationRecipeVersion reports the version of the recipe a review runs
 // under, for the operator-facing surfaces that state which contract applied.
-func evaluationRecipeVersion() (int, bool) {
+func evaluationRecipeVersion() (int, bool) { return recipeVersion(EvaluationRecipe) }
+
+// recipeVersion reports one embedded recipe's version.
+//
+// It is the version a receipt, a provenance record and a topic question record
+// as the contract that produced them: §5.1 makes a semantic change a version
+// increment, so a stored artifact naming the version stays readable under the
+// method that actually applied.
+func recipeVersion(id string) (int, bool) {
 	set, err := cookbook.Embedded()
 	if err != nil {
 		return 0, false
 	}
-	recipe, ok := set.ByID(EvaluationRecipe)
+	recipe, ok := set.ByID(id)
 	if !ok {
 		return 0, false
 	}

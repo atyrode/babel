@@ -161,8 +161,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   point. `POST /api/record/{id}/file` and `/unfile` are the operator's own two
   acts, and a name the ledger does not hold is a 404 that says so: filing does
   not create an entity (SPEC §4.13).
-||||||| base
-=======
 - **Not interested is a signal, not a deletion.** A topic's page states what
   the operator thinks of it — *working on it*, *keep an eye*, *not now*,
   *excluded* — and each is §4.8's lifecycle and analysis-policy facts,
@@ -177,6 +175,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   one leaves them as reported gaps rather than making them disappear
   (`POST /api/topics/{id}/interest`, `/retire`, `/api/topics/merge`,
   `/api/topics/split`; SPEC §4.13, §4.8, §4.12).
+||||||| base
+=======
+- **Babel files its own output.** A new off-by-default meta recipe,
+  `babel-files-its-output`, runs under the evaluation policy as its own draw
+  kind beside coverage, exploration and discovery: a tenth of a cycle
+  (`filing_share`, refusable to zero) goes to records the frontier reports as
+  unfiled, oldest first, and each pass files the record under a topic the
+  ledger already names, proposes one the operator decides on, or records that
+  it is about nothing in particular with the reason. A name no entity answers
+  to is not a failure and not a new entity: it becomes a topic question, which
+  is §4.8's rule that only the operator creates identity, enforced in the one
+  place a run would otherwise be tempted to break it. The pass reads what the
+  ledger already holds — every live topic with its aliases and binding, the
+  repositories the cited sessions were in, and the reasons earlier topics were
+  retired and earlier proposals declined — so Babel gets better at naming
+  topics from its own history rather than from an unparsed memory prompt. Its
+  receipts are ordinary receipts and name which of the three answers it
+  reached; a filing is not a review, so it consumes no review cap and clears
+  no coverage obligation (SPEC §4.13, §4.12).
 >>>>>>> theirs
 
 ### Changed

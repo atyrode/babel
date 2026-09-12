@@ -166,6 +166,17 @@ type Inventory interface {
 	Produced(ctx context.Context) ([]KindInventory, error)
 }
 
+// UnfiledSource is the optional interface a Source implements when it can
+// report which open records carry no filing (§4.13).
+//
+// Optional for the reason StatusSource and Inventory are: a Source that cannot
+// answer is a deployment whose filing lane draws nothing, which is a
+// configuration rather than a fault, and the read surfaces a test assembles by
+// hand must not have to grow a method to keep compiling.
+type UnfiledSource interface {
+	Unfiled(ctx context.Context, limit int) ([]Subject, error)
+}
+
 // maxConcurrentOpens bounds how many sealed objects are opened at once.
 //
 // Eight, against two costs that pull in opposite directions: an open is one
@@ -316,6 +327,36 @@ func (s *babelSource) Status() SourceStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.status
+}
+
+// Unfiled reports the open records with no live non-heuristic filing, oldest
+// first (§4.13).
+//
+// The answer is the frontier's and only the translation is here. What counts
+// as filed is that store's rule — a withdrawn filing, a filing under a retired
+// entity and a heuristic seed all leave a record unfiled — and restating it
+// would be a second answer to "what still needs a topic". A ref whose kind
+// this package does not review is dropped rather than guessed at, because a
+// filing draw has to be able to serve the record's own review context.
+//
+// It reads this machine's durable frontier alone. A record another host
+// published is that host's to file: the `about` edge is written beside the
+// record, and filing a remote record from here would mint an edge whose author
+// never read the thing.
+func (s *babelSource) Unfiled(ctx context.Context, limit int) ([]Subject, error) {
+	refs, err := s.front.Unfiled(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read the filing backlog: %w", err)
+	}
+	out := make([]Subject, 0, len(refs))
+	for _, ref := range refs {
+		kind, ok := subjectKindOfEntity(ref.Type)
+		if !ok {
+			continue
+		}
+		out = append(out, Subject{Kind: kind, ID: ref.ID})
+	}
+	return out, nil
 }
 
 // Artifacts enumerates the head revision of every covered artifact this

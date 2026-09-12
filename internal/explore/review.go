@@ -131,6 +131,12 @@ const (
 	// it and the assignment's reservation is reconciled as failed rather than
 	// left to expire.
 	FailureReviewSubmit = "review-submit"
+	// FailureFiling reports that a filing pass reached an answer and the
+	// stores would not take it: an entity the ledger no longer holds, a
+	// question it refused, an unreachable frontier. The worker boundary
+	// already happened, so the assignment is reconciled as failed and the
+	// record stays unfiled rather than being reported as filed.
+	FailureFiling = "review-filing"
 )
 
 // ErrReviewBlinded reports material that would have broken a blinded
@@ -195,6 +201,14 @@ type ReviewResult struct {
 	// subject, a target whose evidence this worker cannot reach. A skip is
 	// not a vote and never becomes one.
 	Skip string `json:"skip,omitempty"`
+	// Filing, Topic and NoTopic are the filing role's three answers, and
+	// exactly one of them is set (§4.13). They are three fields rather than
+	// one tagged union because that is what the recipe's result contract
+	// says on the wire, and a schema a model fills is easier to fill
+	// correctly when the alternatives are named.
+	Filing  *FiledUnder    `json:"filing,omitempty"`
+	Topic   *TopicProposal `json:"topic,omitempty"`
+	NoTopic *NoTopic       `json:"no_topic,omitempty"`
 }
 
 // reviewAuthority is what one role's result may contain. It is the review
@@ -219,6 +233,11 @@ type reviewAuthority struct {
 	// preference. Comparison only: an alternative preferred in a named
 	// context is the comparison role's whole output.
 	alternatives bool
+	// filing admits the three answers of §4.13's filing pass and nothing
+	// else. It is the one authority that subtracts as well as adds: a
+	// filing says where a record belongs, so a contribution to the review
+	// of it would be a judgement the pass was not drawn to make.
+	filing bool
 }
 
 // reviewAuthorities is the role table. A role absent from it is unsupported by
@@ -231,6 +250,7 @@ var reviewAuthorities = map[string]reviewAuthority{
 	evaluation.RoleComparison: {alternatives: true},
 	evaluation.RoleOutcome:    {outcome: true, criteria: true},
 	evaluation.RoleRelevance:  {},
+	evaluation.RoleFiling:     {filing: true},
 }
 
 // ReviewOutputContract is the result contract one role's review job is held
@@ -287,6 +307,17 @@ func reviewSchema(auth reviewAuthority) (json.RawMessage, error) {
 		doc.remove("results")
 		doc.remove("environment")
 		doc.remove("as_of")
+	}
+	if !auth.filing {
+		doc.remove("filing")
+		doc.remove("topic")
+		doc.remove("no_topic")
+	} else {
+		// The filing role's whole result is which of the three answers it
+		// reached. A contribution field would invite the pass to review
+		// the record it was drawn to name, and the role table refuses one
+		// anyway — so it is pruned rather than offered and then rejected.
+		doc.remove("contributions")
 	}
 	defs := &object{}
 	for _, defName := range g.reachable(root) {
@@ -419,8 +450,9 @@ func parseReviewResult(rec *worker.ResultRecord, role string, self reviewSelf) (
 	res.Uncertainty = strings.TrimSpace(res.Uncertainty)
 	res.Skip = strings.TrimSpace(res.Skip)
 	res.Environment = strings.TrimSpace(res.Environment)
+	filed := res.Filing != nil || res.Topic != nil || res.NoTopic != nil
 	if res.Skip != "" && (res.Vote != "" || res.Outcome != "" || len(res.Contributions) > 0 ||
-		len(res.Results) > 0 || res.Uncertainty != "") {
+		len(res.Results) > 0 || res.Uncertainty != "" || filed) {
 		return nil, fmt.Errorf("explore: a skip cannot also state an assessment")
 	}
 
@@ -439,6 +471,21 @@ func parseReviewResult(rec *worker.ResultRecord, role string, self reviewSelf) (
 		return nil, fmt.Errorf("%w: the %s role may not record criterion results", ErrReviewRole, role)
 	case (res.Environment != "" || !res.AsOf.IsZero()) && !auth.criteria:
 		return nil, fmt.Errorf("%w: the %s role may not report outcome scope", ErrReviewRole, role)
+	}
+	if filed && !auth.filing {
+		return nil, fmt.Errorf("%w: the %s role may not decide what a record is about", ErrReviewRole, role)
+	}
+	if auth.filing {
+		if len(res.Contributions) > 0 {
+			return nil, fmt.Errorf("%w: a filing pass says where a record belongs and contributes "+
+				"nothing to the review of it", ErrReviewRole)
+		}
+		if res.Skip == "" {
+			if err := validateFilingResult(&res); err != nil {
+				return nil, err
+			}
+		}
+		return &res, nil
 	}
 	for i, contribution := range res.Contributions {
 		kind := strings.TrimSpace(contribution.Kind)
@@ -537,6 +584,13 @@ type ReviewConfig struct {
 	// Service is the evaluation service the review reads its context from
 	// and writes its assessment to.
 	Service ReviewService
+
+	// Topics is the filing pass's write surface: internal/frontier's about
+	// edge and internal/reality's topic question (§4.13). Nil is the
+	// feature absent, and a filing assignment drawn on a deployment that
+	// did not wire it is refused before any worker starts, rather than
+	// producing an answer nothing can record.
+	Topics TopicService
 
 	// Recipes are the cookbook assets this build reviews under, and Recipe
 	// is the one whose body the prompt carries. Both are required: a review
@@ -767,6 +821,10 @@ func (r *Reviewer) Review(ctx context.Context, opt ReviewOptions) (*ReviewRun, e
 	if !ok {
 		return nil, fmt.Errorf("%w: %q has no result contract", ErrReviewRole, a.Role)
 	}
+	if auth.filing && r.cfg.Topics == nil {
+		return nil, fmt.Errorf("explore: a %s assignment was drawn on a deployment with no topic "+
+			"service wired; the answer would have nowhere to go", a.Role)
+	}
 	if err := opt.Preparation.Verify(); err != nil {
 		return nil, err
 	}
@@ -876,6 +934,21 @@ func (r *Reviewer) Review(ctx context.Context, opt ReviewOptions) (*ReviewRun, e
 		now:        r.now,
 	}
 	self := reviewSelfOf(a.RunID, input)
+	if auth.filing {
+		// The ledger read happens before the worker starts and after the
+		// review context is claimed: a filing pass that could not be told
+		// what the ledger already names would propose topics beside the
+		// entities it should have filed under, which is the duplicate the
+		// operator then has to merge by hand.
+		ledger, err := r.cfg.Topics.Ledger(st.ctx, preparationSourceIDs(opt.Preparation))
+		if err != nil {
+			st.fail(FailureFiling, r.now(),
+				fmt.Errorf("explore: read the topic ledger for %s: %w", a.ID, err))
+			r.finishFailed(st, st.err)
+			return st.out, st.err
+		}
+		st.ledger = &ledger
+	}
 
 	receipt, runErr := r.launch(st, broker, contract, target, alternatives, input.Previous, blinded, self)
 	steps, served := broker.trace()
@@ -943,6 +1016,24 @@ func (r *Reviewer) Review(ctx context.Context, opt ReviewOptions) (*ReviewRun, e
 		st.out.Receipt = r.receipt(st, receipt, steps)
 		return st.out, st.err
 	}
+	if auth.filing && res.Skip == "" {
+		filing, err := r.file(st, res)
+		switch {
+		case errors.Is(err, ErrTopicKnown):
+			// The answer was already in the ledger. Nothing was
+			// written, so there is no filing to record and no
+			// failure to report: the assignment ends as the skip it
+			// actually was, with the reason kept.
+			res.Skip = err.Error()
+		case err != nil:
+			st.fail(FailureFiling, r.now(), err)
+			r.finishFailed(st, st.err)
+			st.out.Receipt = r.receipt(st, receipt, steps)
+			return st.out, st.err
+		default:
+			st.filing = filing
+		}
+	}
 
 	r.record(st, res, input)
 	st.out.Receipt = r.receipt(st, receipt, steps)
@@ -993,7 +1084,13 @@ type reviewState struct {
 	out     *ReviewRun
 	started time.Time
 	steps   []run.RetrievalStep
-	model   string
+	// ledger is what the filing pass was shown about the entities the
+	// record could be about, read once before the worker starts.
+	ledger *TopicLedger
+	// filing is the answer a filing pass reached and the stores took, nil
+	// for every other role and for a filing that skipped.
+	filing *evaluation.Filing
+	model  string
 	// correcting is the earlier record this pass supersedes, empty for a
 	// first statement.
 	correcting string
@@ -1072,6 +1169,7 @@ func (r *Reviewer) record(st *reviewState, res *ReviewResult, input evaluation.R
 			AsOf:           res.AsOf,
 			Uncertainty:    res.Uncertainty,
 			ContextVersion: a.ContextVersion,
+			Filing:         st.filing,
 		}
 		if len(res.Results) > 0 || res.Outcome != "" {
 			// The criteria version is what links a criterion result to the
@@ -1190,7 +1288,8 @@ func (r *Reviewer) launch(st *reviewState, broker *retrieval, contract worker.Ou
 	tools := reviewTools(r.cfg.Grant, blinded)
 	params := reviewParams(a, blinded)
 	sources := preparationSources(st.opt.Preparation)
-	prompt, err := composeReviewPrompt(contract, r.recipe, target, alternatives, previous, sources, params, tools, blinded)
+	prompt, err := composeReviewPrompt(contract, r.recipe, target, alternatives, previous, sources,
+		params, tools, blinded, st.ledger)
 	if err != nil {
 		return nil, err
 	}
@@ -1253,6 +1352,14 @@ func (r *Reviewer) receipt(st *reviewState, workerReceipt *worker.Receipt, steps
 	}
 	if st.out.Cancelled {
 		body.Checkpoint.Reason = "operator stop or context cancellation"
+	}
+	if st.filing != nil && body.Checkpoint.Reason == "" {
+		// What a filing pass did is the receipt's answer to "what did this
+		// cycle buy". The record it wrote is in Records below; this is the
+		// one line that says which of §4.13's three answers it was, so a
+		// receipt listing distinguishes a record that found its topic from
+		// one that raised a question about it.
+		body.Checkpoint.Reason = filingOutcome(st.filing)
 	}
 	if st.out.Record.ID != "" {
 		body.Checkpoint.Records = []string{st.out.Record.ID}
