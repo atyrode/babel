@@ -21,7 +21,7 @@ import { Identifiers, ScoreBreakdown, Subjects } from "./RealityData";
 // them here would make the inbox the list of everything rather than the list of
 // what to do. They are read on Questions instead, which is the sibling page
 // §8.4 required: a record that leaves this page must still be reachable.
-const INBOX_PAGE = 6;
+const INBOX_PAGE = 4;
 
 function RealityPage() {
   const [items, setItems] = useState<QuestionSummary[] | null>(null);
@@ -29,7 +29,7 @@ function RealityPage() {
   const [error, setError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   // The inbox is answered one question at a time, and each card carries a
-  // form; six of them is already a page. The rest stay one click away rather
+  // form; four of them is already a page. The rest stay one click away rather
   // than pushing the page past §8.6's ceiling.
   const [shown, setShown] = useState(INBOX_PAGE);
 
