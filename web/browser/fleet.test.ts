@@ -118,8 +118,27 @@ function live(): Promise<ServedRun[]> {
   });
 }
 
-function strip(): Promise<unknown> {
-  return page.waitForSelector(".live-card, .live-table", { timeout: 15_000 });
+async function strip(): Promise<unknown> {
+  const found = await page.waitForSelector(".live-card, .live-table", { timeout: 15_000 });
+  // Both in-flight tables page ten rows at a time behind a "show more"
+  // control, which is the pagination §8.6 allows; the tests below reason
+  // about every run the server sent, so they ask for all of them first and
+  // wait for each click to have added rows before asking again.
+  for (let round = 0; round < 20; round += 1) {
+    const selector = ".live-surface .runs-more button, .live-lost .runs-more button";
+    const more = await page.$(selector);
+    if (!more) break;
+    const before = await page.$$eval(".live-table tbody tr", (rows) => rows.length);
+    // A DOM click, because the lost group's control sits inside a folded
+    // <details> and is not a pointer target until the reader opens it.
+    await page.$eval(selector, (button) => (button as HTMLButtonElement).click());
+    await page.waitForFunction(
+      (count: number) => document.querySelectorAll(".live-table tbody tr").length > count,
+      { timeout: 5_000 },
+      before,
+    );
+  }
+  return found;
 }
 
 // shoot photographs one element rather than the viewport, so a panel below the
@@ -238,7 +257,7 @@ test.skipIf(!chrome)("freshness is the server's word, and no row paints a colour
         dot: card.querySelector(".live-dot") !== null,
       })),
       rows: rows.map((row) => ({
-        run: (row.querySelector(".secondary.mono") as HTMLElement | null)?.innerText ?? "",
+        run: (row.querySelector(".live-row-run a, .live-row-run .live-row-kind") as HTMLElement | null)?.innerText.trim() ?? "",
         word: (row.querySelector(".live-row-word") as HTMLElement | null)?.innerText ?? "",
         dot: row.querySelector(".live-dot") !== null,
         inLostGroup: lost !== null && lost.contains(row),
