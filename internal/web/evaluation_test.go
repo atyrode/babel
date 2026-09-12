@@ -35,6 +35,8 @@ type fakeEvaluation struct {
 	detail   evaluation.Detail
 	coverage evaluation.Coverage
 	policy   evaluation.Policy
+	// assessmentDays is the reviews-per-day series the Watch surface reads.
+	assessmentDays []evaluation.AssessmentDay
 
 	// err, when set, is returned by every method, so the sentinel
 	// classification can be exercised through a real request.
@@ -70,6 +72,13 @@ func (f *fakeEvaluation) Coverage(context.Context) (evaluation.Coverage, error) 
 		return evaluation.Coverage{}, f.err
 	}
 	return f.coverage, nil
+}
+
+func (f *fakeEvaluation) AssessmentDays(context.Context, time.Time) ([]evaluation.AssessmentDay, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.assessmentDays, nil
 }
 
 func (f *fakeEvaluation) Policy(context.Context) (evaluation.Policy, error) {

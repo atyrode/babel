@@ -306,8 +306,9 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			surface:  reflect.TypeOf((*FrontierReader)(nil)).Elem(),
 			concrete: reflect.TypeOf((*frontier.Store)(nil)),
 			permitted: []string{"Finding", "Head", "Hypotheses", "Hypothesis", "LinksFrom", "LinksTo",
-				"Observation", "ObservationsFor", "Proposal", "Proposals", "ProposalsAddressing",
-				"ReviewStatus", "Revisions", "StatusHistory", "TriageAdvice", "TriageAdvised"},
+				"Observation", "ObservationsFor", "OutputsOfRun", "Proposal", "Proposals",
+				"ProposalsAddressing", "RecordDays", "ReviewStatus", "Revisions", "StatusHistory",
+				"TriageAdvice", "TriageAdvised"},
 			// Every frontier write, including its own Decide and the
 			// revive transition #87 added: one disposition log exists and
 			// internal/review is the only way this surface may append to

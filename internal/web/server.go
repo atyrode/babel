@@ -714,7 +714,12 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		// restate this table in order not to swallow /api/record/revisions.
 		// Reaching the default means every named path has been tried, so
 		// what is left under the prefix is a record identifier or a
-		// mistake, and internal/web/record.go says which.
+		// mistake, and internal/web/record.go says which. The Watch
+		// surface's routes are resolved the same way and for the same
+		// reason: one of them carries a run id in its path.
+		if s.routeWatch(w, r) {
+			return
+		}
 		if s.routeRecord(w, r) {
 			return
 		}

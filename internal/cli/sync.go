@@ -868,7 +868,15 @@ const exitDrainDeadline = 5 * time.Second
 // loop publishes through are closed here, and a caller that could close them
 // while an attempt still held a transaction would have a use-after-close it
 // could only reproduce under load.
-func (a *app) startDrain(ctx context.Context, interval time.Duration) (stop func()) {
+//
+// The observer is how a surface learns what an attempt achieved. Only the
+// drainer sees one happen, and reportDrain deliberately says nothing when
+// nothing moved, so a caller that wanted every attempt — the web server's
+// Watch surface does — has to be handed them rather than reading them out of
+// the diagnostics stream. It is nil for every caller that does not, and the
+// reporting below is then exactly what it always was.
+func (a *app) startDrain(ctx context.Context, interval time.Duration,
+	observe func(babelsync.Report)) (stop func()) {
 	d, err := babelDirs()
 	if err != nil {
 		a.diagf("warning: could not publish durable records: %s\n", Sanitize(err.Error()))
@@ -881,7 +889,14 @@ func (a *app) startDrain(ctx context.Context, interval time.Duration) (stop func
 		a.diagf("note: they stay durable and pending; run `babel sync` once the reason is fixed\n")
 		return func() {}
 	}
-	stopDrainer := babelsync.NewDrainer(pub, a.reportDrain, a.reportJournalFailure).Start(ctx, interval)
+	report := a.reportDrain
+	if observe != nil {
+		report = func(rep babelsync.Report) {
+			observe(rep)
+			a.reportDrain(rep)
+		}
+	}
+	stopDrainer := babelsync.NewDrainer(pub, report, a.reportJournalFailure).Start(ctx, interval)
 	return func() {
 		stopDrainer()
 		cleanup()
