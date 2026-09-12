@@ -61,6 +61,11 @@ export function LiveIndicator() {
   useEffect(() => {
     let live = true;
     let timer = 0;
+    // One quick retry after a refusal covers the first-load race with the
+    // bootstrap; after that a refused page is a page with no session — a
+    // spent launch link, a locked server — and it must not knock every two
+    // seconds for as long as it stays open.
+    let refusals = 0;
 
     async function poll(): Promise<void> {
       let next = LIVE_POLL_MS;
@@ -74,8 +79,10 @@ export function LiveIndicator() {
         // knocking on a missing door four times a minute.
         if (response.status === 404) return;
         if (response.status === 401) {
-          next = LIVE_RETRY_MS;
+          refusals += 1;
+          if (refusals === 1) next = LIVE_RETRY_MS;
         } else if (response.ok) {
+          refusals = 0;
           const body = (await response.json()) as LiveResponse;
           if (!live) return;
           setRuns(Array.isArray(body.runs) ? body.runs : []);
