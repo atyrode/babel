@@ -396,11 +396,11 @@ function LiveRows({
             const elapsed = Number.isFinite(started) ? elapsedClock((now - started) / 1000) : ABSENT;
             return (
               <tr key={`${run.run_id}:${run.pid ?? "remote"}`}>
-                <td>
+                <td className="live-row-run">
                   {run.run_id ? (
-                    <Link className="runs-open" to={`/watch/runs/${encodeURIComponent(run.run_id)}`}>
+                    <Link className="runs-open mono" to={`/watch/runs/${encodeURIComponent(run.run_id)}`}>
                       {heardFrom(run) && <span className="live-dot" aria-hidden="true" />}
-                      {runKindLabel(run)}
+                      {run.run_id}
                     </Link>
                   ) : (
                     <span className="live-row-kind">
@@ -408,7 +408,7 @@ function LiveRows({
                       {runKindLabel(run)}
                     </span>
                   )}
-                  <span className="secondary mono">{run.run_id || "not named itself yet"}</span>
+                  {run.run_id && <span className="muted live-row-kind-word"> {runKindLabel(run)}</span>}
                 </td>
                 <td className="mono live-row-recipe">{run.recipe || run.stage || ABSENT}</td>
                 <td className="numeric mono">{elapsed}</td>
@@ -1154,7 +1154,8 @@ function WatchPage() {
                         <Link className="runs-open" to={`/watch/runs/${encodeURIComponent(row.run_id)}`}>
                           <span className="mono">{row.run_id}</span>
                         </Link>
-                        <span className="secondary">
+                        <span className="muted">
+                          {" "}
                           {RUN_KIND_LABELS[row.kind ?? ""] ?? "kind not recorded"}
                           {row.revision != null && row.revision > 1 ? ` · rev ${row.revision}` : ""}
                         </span>
