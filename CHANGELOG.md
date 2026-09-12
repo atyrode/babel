@@ -35,19 +35,27 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   or declines it with the note as the reason. The coordinator: lanes, the
   weighted draw, claims with fences and takeover, the day's spend against the
   ceilings, the measured lease floor. The machine half: `scan`, `prepare`,
-  `explore` and `evaluate` as one bundled `machine.js` run by a pinned `bun`
-  with a pinned `code` engine, the omp RPC client with a fake engine that
-  breaks the wire twenty-six ways; `archive` waits on a restic artifact format
-  (atyrode/manifold#515). The loop: the hub draws under the policy, requests
-  jobs on the machine that holds the cited sessions, ingests finished outputs
-  into the store and settles the claim at the receipt's cost, woken by
-  `onJobSettled` (atyrode/manifold#510) and by the `pulse`, `runs` and
-  `launch` doors; Watch's presets become `launch`, with a dry preview of the
-  profile, model, cost and ceilings before the button. Proof: 436 tests on a
-  real plugin database and the packed bundles installed by the kit's `verify`
-  on a real engine. Known gaps, each an issue: the beat cannot self-register
-  from a hardened half (atyrode/manifold#513, #514), recipe bodies do not
-  cross a job input yet (#252). #242-#246.
+  `explore` and `evaluate` as one bundled `machine.js`, run by `bun` with the
+  `code` engine - both runtime tools the machine's owner binds with their
+  closures, never artifacts the manifest pins, because a job sandbox has no
+  libc and neither ships a static build; the omp RPC client with a fake engine
+  that breaks the wire twenty-six ways; `archive` waits on a restic artifact
+  format (atyrode/manifold#515). The loop: the hub draws under the policy,
+  requests jobs on the machine that holds the cited sessions, ingests
+  finished outputs into the store and settles the claim at the receipt's
+  cost, woken by `onJobSettled` (atyrode/manifold#510) and by the `pulse`,
+  `runs` and `launch` doors; Watch's presets become `launch`, a governed door
+  admitted at the operation node under the operator's consent, with a dry
+  preview of the profile, model, cost and ceilings before the button. Proof:
+  438 tests on a real plugin database; the bundles installed on a hub built
+  from the converged SDK with the operator's own 90,718 rows imported, Home
+  read and a ruling recorded through the panel; and one real `scan` job
+  launched from Watch, admitted, executed under bubblewrap on this machine,
+  settled and ingested - exit 0 in 3.7 s, its receipt a `runs` row, 98
+  sessions catalogued (job_131f45e8). Known gaps, each an issue: the beat
+  cannot self-register from a hardened half (atyrode/manifold#513, #514),
+  recipe bodies do not cross a job input yet (#252), git is not a runtime tool
+  of the sandbox yet so no session carries a repository (#254). #242-#246.
 - **One record, peeled.** A finding, proposal, hypothesis or observation is
   one page at `/r/<id>`, opened at its claim and expanding in place through
   five depths: the claim, the case, the evidence, the reception, the
