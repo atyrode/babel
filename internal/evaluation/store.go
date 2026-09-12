@@ -570,7 +570,7 @@ func (s *Store) Operator(ctx context.Context, in OperatorInput) (Record, error) 
 		if in.Policy == nil {
 			return Record{}, fmt.Errorf("%w: a policy act carries a policy", ErrInvalid)
 		}
-		if err := ValidatePolicy(*in.Policy); err != nil {
+		if err := ValidateNewPolicy(*in.Policy); err != nil {
 			return Record{}, err
 		}
 	case KindCriteria:

@@ -827,7 +827,6 @@ func TestPolicyValidationRefusesUnhonourableSettings(t *testing.T) {
 		{"daily below cycle", func(p *Policy) { p.DailyCost = 0.1; p.PerCycleCost = 1 }},
 		{"zero batch", func(p *Policy) { p.BatchSize = 0 }},
 		{"zero lease", func(p *Policy) { p.LeaseSeconds = 0 }},
-		{"lease under the batch's floor", func(p *Policy) { p.LeaseSeconds, p.BatchSize = 240, 24 }},
 	} {
 		policy := DefaultPolicy()
 		tc.mutate(&policy)
@@ -848,10 +847,15 @@ func TestPolicyValidationRefusesUnhonourableSettings(t *testing.T) {
 // four review runs took 386s, 461s, 556s and 630s - 16s to 26s per subject in
 // the batch - so a lease that allows under 20s per assignment, or under five
 // minutes at all, is refused with the floor named.
+//
+// It is refused when installed and nowhere else: a deployment that stored
+// such a policy before the floor existed keeps drawing under it, because
+// renewal now carries those reviews, and stopping every review until the
+// operator noticed would be the outage the floor is there to prevent.
 func TestPolicyRefusesALeaseThatCannotCoverItsBatch(t *testing.T) {
 	lost := DefaultPolicy()
 	lost.LeaseSeconds, lost.BatchSize = 240, 24
-	err := ValidatePolicy(lost)
+	err := ValidateNewPolicy(lost)
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("the policy that lost four runs = %v, want ErrInvalid", err)
 	}
@@ -866,16 +870,21 @@ func TestPolicyRefusesALeaseThatCannotCoverItsBatch(t *testing.T) {
 	}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("recording the policy = %v, want ErrInvalid", err)
 	}
+	// Already stored, it still draws: the floor is not a reason to refuse
+	// the deployment its own current policy.
+	if err := ValidatePolicy(lost); err != nil {
+		t.Fatalf("a stored policy under the floor must still validate for a draw: %v", err)
+	}
 
 	// The floor scales with the batch and never drops below five minutes,
 	// because a batch of one still has to cover one review's preparation.
 	small := DefaultPolicy()
 	small.BatchSize, small.LeaseSeconds = 1, leaseFloorSeconds-1
-	if err := ValidatePolicy(small); !errors.Is(err, ErrInvalid) {
+	if err := ValidateNewPolicy(small); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("a %ds lease for one assignment = %v, want ErrInvalid", small.LeaseSeconds, err)
 	}
 	small.LeaseSeconds = leaseFloorSeconds
-	if err := ValidatePolicy(small); err != nil {
+	if err := ValidateNewPolicy(small); err != nil {
 		t.Fatalf("a lease exactly at the floor: %v", err)
 	}
 	// The shipped default clears its own floor, which is what stops the

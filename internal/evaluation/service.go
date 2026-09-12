@@ -1303,7 +1303,7 @@ func (s *Service) Configure(ctx context.Context, operator string, p Policy) (Rec
 		return Record{}, err
 	}
 	p.Version = version
-	if err := ValidatePolicy(p); err != nil {
+	if err := ValidateNewPolicy(p); err != nil {
 		return Record{}, err
 	}
 	record, err := s.store.Operator(ctx, OperatorInput{

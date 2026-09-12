@@ -248,6 +248,23 @@ func ValidatePolicy(p Policy) error {
 	if p.BatchSize < 1 {
 		return fmt.Errorf("%w: batch size %d must be at least one", ErrInvalid, p.BatchSize)
 	}
+	return nil
+}
+
+// ValidateNewPolicy is ValidatePolicy plus the rule that only a policy being
+// installed has to satisfy: its lease must be able to cover its batch.
+//
+// It is separate because the floor arrived after policies had been stored
+// under it. A deployment whose current policy predates the floor keeps
+// drawing under it — renewal carries those reviews now — and is refused only
+// when it tries to install another policy that would need renewal to work
+// at all. Refusing the stored one at draw time would stop every review on
+// the deployment until the operator noticed, which is the outage the floor
+// exists to prevent.
+func ValidateNewPolicy(p Policy) error {
+	if err := ValidatePolicy(p); err != nil {
+		return err
+	}
 	if floor := leaseFloor(p.BatchSize); p.LeaseSeconds < floor {
 		return fmt.Errorf("%w: lease %ds cannot cover a batch of %d: a lease must allow at least "+
 			"%ds per assignment and never less than %ds, so this batch needs %ds",
