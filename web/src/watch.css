@@ -135,6 +135,17 @@
  * compare down a column, and every cell something the run itself said. */
 .watch-page .live-surface {
   margin-bottom: var(--space-4);
+  /* A grid child defaults to min-width:auto, which lets a 470px table widen
+   * the surface past a 390px viewport instead of scrolling inside it. */
+  min-width: 0;
+}
+
+/* The scroller keeps the surface's gutter here: the negative margin
+ * styles.css gives `.surface > .table-scroll` reaches 24px past a narrow
+ * viewport's edge, and the table already scrolls within the surface. */
+.watch-page .live-surface > .table-scroll {
+  margin: 0;
+  overflow-x: auto;
 }
 
 .watch-page .live-table-caption {

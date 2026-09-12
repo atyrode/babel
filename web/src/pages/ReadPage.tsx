@@ -442,7 +442,7 @@ function ReadPage() {
           <button type="button" onClick={load}>Try again</button>
         </div>
       )}
-      {!loading && !error && items.length === 0 && (
+      {!loading && !error && items.length === 0 && (lane || kind || coverage || role ? (
         <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
           <strong>Nothing matches this view</strong>
@@ -454,7 +454,16 @@ function ReadPage() {
             .
           </span>
         </div>
-      )}
+      ) : (
+        <div className="surface state-note empty-state">
+          <span className="empty-icon" aria-hidden="true">◇</span>
+          <strong>Babel has not found anything yet</strong>
+          <span>
+            Output appears here as exploration records it. Nothing is running until a run is
+            started under <Link to="/watch">Watch</Link>.
+          </span>
+        </div>
+      ))}
 
       {items.length > 0 && (
         <ol className="read-list">
