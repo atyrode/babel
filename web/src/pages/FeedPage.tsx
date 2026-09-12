@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Badge, type Tone } from "../analysis";
 import { kindLabel } from "../evaluation";
@@ -8,6 +8,7 @@ import {
   FEED_WINDOWS,
   getFeed,
   getTopics,
+  INTEREST_LABEL,
   UNFILED,
   windowed,
   type FeedKind,
@@ -15,6 +16,7 @@ import {
   type FeedResponse,
   type FeedSort,
   type FeedWindow,
+  type InterestState,
   type TopicRow,
   type TopicsResponse,
 } from "../feedapi";
@@ -77,7 +79,6 @@ const KIND_TONES: Record<FeedKind, Tone> = {
   proposal: "blue",
   finding: "green",
   hypothesis: "violet",
-  observation: "neutral",
   question: "amber",
 };
 
@@ -115,11 +116,15 @@ const WINDOW_LABEL: Record<FeedWindow, string> = {
 // disposition, so a row for one offers no rulings. The kinds that do are the
 // record kinds, and a kind this build has no word for is a row with no
 // controls rather than a cast that lies.
+//
+// An observation is not in the feed at all (operator decision, 2026-09-12):
+// it is evidence at depth 3 of the hypothesis that cites it, and §6.7 makes
+// it a review subject of nothing — so there was never a row for it to rule
+// on.
 const RECORD_KINDS: Record<string, RecordKind> = {
   proposal: "proposal",
   finding: "finding",
   hypothesis: "hypothesis",
-  observation: "observation",
 };
 
 function isTyping(target: EventTarget | null): boolean {
@@ -135,7 +140,12 @@ interface Acted {
   at: number;
 }
 
-function FeedPage() {
+// `heading` is the page's own header, when the page is not the front page.
+// The topic page passes its header — the name, the figures, the binding and
+// the operator's stance — and everything below it is this feed, narrowed by
+// the same route parameter: one list, one set of controls, one pagination,
+// whichever heading stands above it.
+function FeedPage({ heading }: { heading?: ReactNode } = {}) {
   const [params, setParams] = useSearchParams();
   const routed = useParams();
   const navigate = useNavigate();
@@ -333,17 +343,19 @@ function FeedPage() {
     <section className="page feed-page">
       <div className="feed-layout">
         <div className="feed-column">
-          <div className="page-heading">
-            <div>
-              <p className="eyebrow">{topic ? "Topic" : "The feed"}</p>
-              <h1>{where}</h1>
+          {heading ?? (
+            <div className="page-heading">
+              <div>
+                <p className="eyebrow">The feed</p>
+                <h1>{where}</h1>
+              </div>
+              {answer && (
+                <p className="feed-count">
+                  {total.toLocaleString()} {total === 1 ? "post" : "posts"}
+                </p>
+              )}
             </div>
-            {answer && (
-              <p className="feed-count">
-                {total.toLocaleString()} {total === 1 ? "post" : "posts"}
-              </p>
-            )}
-          </div>
+          )}
 
           {!wide && (
             <details className="peel topics-peel">
@@ -638,7 +650,16 @@ function FeedRow({
         {voted ? post.score : "—"}
       </span>
       <div className="feed-body">
-        <Link className="feed-claim untrusted-inline" to={post.href}>
+        {/* The row's own filings travel with the click. There is no route
+            that reads one record's filings — the peel carries none — so the
+            topics a reader can see on the row are the topics the page he
+            opens can show, and the alternative is a post that loses what it
+            is about by being opened. */}
+        <Link
+          className="feed-claim untrusted-inline"
+          to={post.href}
+          state={{ topics: post.topics }}
+        >
           {post.title || "a record with no title recorded"}
         </Link>
         <span className="feed-facts">
@@ -700,10 +721,13 @@ function FeedRow({
 
 // Every topic, which is where the rail's "all topics" goes.
 //
-// It is a list of communities and their sizes, not a page about storage: a
-// topic is a name bound to something real, with a reason (§4.13), and this
-// deployment binding it to a repository's identity is a fact about the binding
-// rather than a path the reading path may print.
+// It is the same three lists the rail carries, read at a size that can afford
+// the figures: what the operator has accepted with where he stands toward it,
+// what Babel has proposed about a topic and nobody has ruled on, and how much
+// is filed under neither. Nothing here is a page about storage — a topic is an
+// entity bound to something real (§4.13) — and no row prints a path, because a
+// binding's identity can be a checkout directory and a locator is evidence
+// about a topic rather than the topic.
 export function TopicsIndex() {
   const [answer, setAnswer] = useState<TopicsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -721,6 +745,7 @@ export function TopicsIndex() {
   useEffect(load, [load]);
 
   const topics = answer?.topics ?? [];
+  const proposed = answer?.proposed ?? [];
 
   return (
     <section className="page feed-page topics-page">
@@ -755,10 +780,11 @@ export function TopicsIndex() {
       {!loading && !error && topics.length === 0 && (
         <div className="surface state-note empty-state">
           <span className="empty-icon" aria-hidden="true">◇</span>
-          <strong>Nothing is filed under a topic yet</strong>
+          <strong>Nobody has created a topic yet</strong>
           <span>
-            A topic is what a record is about, bound to something real — today, the repository
-            the work happened in. <Link to="/">The feed</Link> holds every post either way.
+            A topic is what a record is about, and only you create one: Babel proposes an
+            identity and the proposal is what you rule on.{" "}
+            <Link to="/">The feed</Link> holds every post either way.
           </span>
         </div>
       )}
@@ -767,27 +793,26 @@ export function TopicsIndex() {
         <ul className="topic-index">
           {topics.map((row) => {
             const latest = formatTime(row.latest_at);
-            // What the name is bound to, for the one gesture that asks. It is
-            // a title rather than a line of the list because §4.13 is
-            // explicit that a binding is evidence about a topic and not the
-            // topic: the name is what the reader reads, and the identity
-            // behind it is what he can check.
-            const bound = row.binding
-              ? `${row.binding.kind}: ${row.binding.identity} — ${
-                  row.heuristic
-                    ? "seeded from repository identity and not yet reviewed"
-                    : "filed with a reason"
-                }`
-              : undefined;
+            const state = row.interest.state as InterestState;
             return (
-              <li key={row.name}>
-                <Link to={`/t/${encodeURIComponent(row.name)}`} title={bound}>
+              <li key={row.id || row.name}>
+                {/* What the name is bound to stays in the title, for the one
+                    gesture that asks: §4.13 is explicit that a binding is
+                    evidence about a topic and not the topic, and its identity
+                    may be a path. */}
+                <Link to={`/t/${encodeURIComponent(row.name)}`} title={bindingTitle(row)}>
                   t/{row.name}
                 </Link>
                 <span className="topic-facts">
                   {row.posts.toLocaleString()} {row.posts === 1 ? "post" : "posts"}
+                  {row.awaiting > 0 && <> · {row.awaiting.toLocaleString()} waiting on you</>}
                   {latest && <> · newest {latest.relative}</>}
-                  {row.heuristic && <> · seeded, not yet reviewed</>}
+                  {/* The stance, in the operator's own vocabulary. An empty
+                      state says nothing rather than reading as one of the
+                      four: silence is not a refusal. */}
+                  {row.interest.state && (
+                    <> · {INTEREST_LABEL[state] ?? row.interest.state}</>
+                  )}
                 </span>
               </li>
             );
@@ -795,17 +820,49 @@ export function TopicsIndex() {
         </ul>
       )}
 
+      {proposed.length > 0 && (
+        <>
+          <h2 className="topic-index-heading">Babel proposes</h2>
+          <ul className="topic-index">
+            {proposed.map((row) => (
+              <li key={row.proposal_id}>
+                <Link to={`/r/${encodeURIComponent(row.proposal_id)}`}>{row.title}</Link>
+                <span className="topic-facts">
+                  {row.posts.toLocaleString()} {row.posts === 1 ? "record" : "records"}
+                  {row.why && <> · {row.why}</>}
+                  {row.run_id && <> · by {row.run_id}</>}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="topic-note">
+            Each of these is an ordinary proposal: you rule on it where you read it, and Babel
+            performs what it proposed.
+          </p>
+        </>
+      )}
+
       {answer && answer.unfiled > 0 && (
         <p className="topic-note">
           <Link to={`/?topic=${UNFILED}&needs=${NEEDS_ALL}`}>
             {answer.unfiled.toLocaleString()} posts
           </Link>{" "}
-          are about nothing this deployment can name yet. They are in the feed, unfiled, which is
-          the triage backlog and not a bin.
+          are filed under nothing. Unfiled is an honest state and the triage backlog, not a bin.
         </p>
       )}
     </section>
   );
+}
+
+// What a topic's binding says when the pointer rests on its name: the kind,
+// the identity, and how many checkouts were seen. The paths themselves are
+// the topic page's fold — they are locators, and a list of them in a title
+// would be the reading path printing filesystem paths by another route.
+function bindingTitle(row: TopicRow): string | undefined {
+  if (!row.binding) return undefined;
+  const seen = row.binding.paths?.length ?? 0;
+  const where = seen > 0 ? ` · ${seen} ${seen === 1 ? "checkout" : "checkouts"}` : "";
+  return `${row.binding.kind}: ${row.binding.remote || row.binding.identity}${where}`;
 }
 
 

@@ -348,6 +348,96 @@
   font-size: 0.72rem;
 }
 
+/* The rail's sections: which stance a group of topics is under, and the
+   proposals below them. A label is four small words and never a heading —
+   the rail already has one — so it reads as a divider rather than as a second
+   navigation level. */
+.feed-page .topic-group {
+  margin-top: var(--space-2);
+}
+
+.feed-page .topic-group-label {
+  margin: 0 0 var(--space-1);
+  padding: 0 var(--space-2);
+  /* Muted rather than faint, measured in a screenshot at 1440x900: at
+     0.68rem uppercase the faint token is legible only if you are looking for
+     it, and these labels are what makes the rail a list of stances rather
+     than a list of names. */
+  color: var(--ink-muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Parked and excluded, folded. The fold is the shell's `.peel` and takes only
+   the type size down: a stance is not a depth of a record, and a summary the
+   size of a record's would make the rail look like a page. */
+.feed-page .topic-fold {
+  margin-top: var(--space-2);
+}
+
+.feed-page .topic-fold > summary {
+  padding: var(--space-1) var(--space-2);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.feed-page .topic-fold > .peel-body {
+  padding: var(--space-1) 0 0;
+}
+
+/* One proposal: what it would do and how much it touches on the first line,
+   why and who wrote it on the second, and the two rulings under it. The row
+   is taller than a topic's because it is a decision rather than a
+   destination. */
+.feed-page .topic-proposal {
+  padding-bottom: var(--space-2);
+}
+
+.feed-page .topic-why {
+  margin: 0 0 var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--ink-muted);
+  font-size: 0.7rem;
+}
+
+.feed-page .topic-acts,
+.feed-page .topic-reason-acts {
+  display: flex;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+}
+
+.feed-page .topic-acts button,
+.feed-page .topic-reason-acts button {
+  min-height: 1.6rem;
+  padding: 0 var(--space-2);
+  font-size: 0.72rem;
+}
+
+.feed-page .topic-reason {
+  display: grid;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+}
+
+.feed-page .topic-reason label {
+  display: grid;
+  gap: 2px;
+  color: var(--ink-faint);
+  font-size: 0.7rem;
+}
+
+/* What was ruled, in place of the row it was ruled on. It is the receipt for
+   the moment between the act and the next read — the same rule the feed row's
+   `.feed-acted` keeps. */
+.feed-page .topic-ruled {
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+}
+
 /* The same list, folded, on a viewport with no room beside the feed. */
 .feed-page .topics-peel {
   margin-bottom: var(--space-4);
@@ -386,6 +476,18 @@
   font-size: 0.74rem;
 }
 
+/* "Babel proposes", above the second list on the index. It is a real heading
+   because it separates two lists with different acts on them, and it is set
+   small for the same reason the rail's labels are: the page's subject is the
+   topics, not its own sections. */
+.topics-page .topic-index-heading {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
 /* Narrow: the arrows stay beside the claim — they are the row's act and
    putting them above it would cost a line on every row — and the facts wrap
    under it, which they already do. */
@@ -401,5 +503,14 @@
 
   .feed-page .feed-claim {
     font-size: 0.92rem;
+  }
+
+  /* The key hints wrap here rather than holding one line. The line is 497px
+     of mono at its shortest, so `nowrap` made the whole document 509px wide
+     at a 390px viewport — a horizontally scrolling front page, measured in
+     the overflow audit. Keeping the pairs on one line is worth less than the
+     page fitting the screen, and a phone has no keys to press anyway. */
+  .feed-page .feed-basis .feed-keys {
+    white-space: normal;
   }
 }

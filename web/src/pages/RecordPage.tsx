@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 import RenderBoundary from "../boundary";
 import { errorMessage } from "../format";
 import { RecordHeading, RecordPeels, RecordThread } from "../record";
@@ -25,6 +25,12 @@ import { getRecord, type RecordPeel } from "../recordapi";
 export default function RecordPage() {
   const { id: routeID } = useParams();
   const id = routeID ?? "";
+  // The topics the feed row carried through the click, when the reader
+  // arrived from one. `undefined` means this page was opened cold — a
+  // bookmark, a citation, the address bar — and knows nothing about the
+  // record's filings, which is a different state from a record filed under
+  // nothing and is rendered as one.
+  const arrived = (useLocation().state as { topics?: string[] } | null)?.topics;
   const [record, setRecord] = useState<RecordPeel | null>(null);
   const [error, setError] = useState<string | null>(null);
   // What the operator's last act did, announced rather than drawn: a ruling
@@ -83,7 +89,12 @@ export default function RecordPage() {
 
   return (
     <section className="page">
-      <RecordHeading record={record} />
+      {/* What the row that opened this page said the record is filed under.
+          A filing is an edge in the frontier and no route reads one record's
+          edges — GET /api/record/{id} carries none — so the topics arrive
+          with the navigation or not at all, and the header distinguishes
+          "not known here" from "filed under nothing". */}
+      <RecordHeading record={record} topics={arrived} />
 
       {/* The terms the record is being shown on, when they are not the usual
           ones — a record resolved through the shared catalog while the catalog

@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { getTopics, UNFILED, type TopicsResponse } from "./feedapi";
+import { decideReview } from "./api";
+import {
+  getTopics,
+  INTEREST_LABEL,
+  OPERATION_LABEL,
+  UNFILED,
+  type InterestState,
+  type TopicProposal,
+  type TopicRow,
+  type TopicsResponse,
+} from "./feedapi";
+import { errorMessage } from "./format";
 import { openPalette } from "./palette";
 import { SteeringSection } from "./steering";
 
@@ -256,18 +267,74 @@ const RAIL_TOPICS = 12;
 // a narrow one, so it lives here with the shell's other instruments rather
 // than inside the page that happens to mount it.
 //
-// A topic is a name and a count. Nothing here assumes it is a directory — it
-// is the workspace a cited session came from today and could be a mailbox or
-// a tracker tomorrow — so the list neither prints a path nor offers to open
-// one.
+// What orders it is the operator's attention rather than the corpus's size
+// (§4.13): what he is working on, what he is keeping an eye on, what he has
+// said nothing about — then, folded, what he has parked and what he excluded,
+// because *not interested is a signal, not a deletion* and a stance that
+// hid the topic would be a deletion with extra steps.
+//
+// A topic is a name, a count and a stance. Nothing here prints a path: a
+// binding's identity may be a checkout directory, and §4.13 is explicit that
+// a locator is evidence about a topic and never the topic — so the identity
+// travels in the row's title and nowhere else.
+//
+// Below the accepted topics is what Babel has proposed and nobody has ruled
+// on. Those rows are shortcuts to an ordinary proposal record: accepting one
+// is the same review decision the record page makes, because the operator
+// ruled that everything about a topic goes through Babel's own chain.
+
+// The three stances that read flat, in order, with the words the section
+// carries. The other two are folded below them.
+const RAIL_GROUPS: Array<{ state: string; label: string }> = [
+  { state: "working", label: "Working on it" },
+  { state: "watching", label: "Keep an eye" },
+  { state: "", label: "Nothing said" },
+];
+
+// What one row of a proposal says it would do, from the proposal's own
+// fields. The operation is the server's word and an unknown one is rendered as
+// itself: a plan this build has no sentence for must still be readable and
+// rulable, because the ruling is on the proposal rather than on the sentence.
+function proposalLine(proposal: TopicProposal): string {
+  const subject = proposal.name || proposal.targets?.[0]?.name || "";
+  const into = proposal.targets?.[1]?.name ?? "";
+  switch (proposal.operation) {
+    case "create":
+      return `New topic t/${subject}`;
+    case "merge":
+      return into ? `Merge t/${subject} into t/${into}` : `Merge t/${subject}`;
+    case "split":
+      return `Split t/${subject}`;
+    case "retire":
+      return `Retire t/${subject}`;
+    default:
+      return `${OPERATION_LABEL[proposal.operation] ?? proposal.operation} t/${subject}`;
+  }
+}
+
 export function TopicList({ current }: { current: string }) {
   const [answer, setAnswer] = useState<TopicsResponse | null>(null);
   const [failed, setFailed] = useState(false);
+  // What this browser ruled on a proposal, in place of the acts, until the
+  // next read: a permanent act that left the row looking exactly as it did is
+  // an act the operator performs twice.
+  const [ruled, setRuled] = useState<Record<string, string>>({});
+  // Which proposal's reason box is open. Declining keeps the reason verbatim
+  // and the ruling refuses one without it, so the box is where the reason is
+  // written rather than a prompt the server has to reject first.
+  const [declining, setDeclining] = useState<string>("");
+  const [reason, setReason] = useState("");
+  const [working, setWorking] = useState("");
+  const [failure, setFailure] = useState<string>("");
+  // Bumped by every act, so the read below runs again and the row lands in
+  // the list the act moved it into.
+  const [acted, setActed] = useState(0);
 
-  // Re-read when the reader moves and once a minute while he stays: the feed
-  // index behind these counts rebuilds every sixty seconds and the session
-  // catalog can still be scanning when the page first opens, so a rail read
-  // once at mount would show a day-one deployment under a full feed.
+  // Re-read when the reader moves, after every act, and once a minute while
+  // he stays: the feed index behind these counts rebuilds every sixty seconds
+  // and the session catalog can still be scanning when the page first opens,
+  // so a rail read once at mount would show a day-one deployment under a full
+  // feed.
   useEffect(() => {
     let live = true;
     const read = () => {
@@ -288,7 +355,42 @@ export function TopicList({ current }: { current: string }) {
       live = false;
       window.clearInterval(timer);
     };
-  }, [current]);
+  }, [acted, current]);
+
+  // One ruling, on the proposal's own record, through the route the record
+  // page uses. Nothing here writes to the ledger directly: the row is a
+  // shortcut to a decision, and what the decision then does to the ledger is
+  // the answer's own account of it.
+  async function rule(proposal: TopicProposal, disposition: "accept" | "reject", note: string) {
+    setWorking(proposal.proposal_id);
+    setFailure("");
+    try {
+      const result = await decideReview({
+        subject: { type: "proposal", id: proposal.proposal_id },
+        disposition,
+        note: note || undefined,
+      });
+      const outcome = result.topic;
+      const said = disposition === "accept" ? "Accepted" : "Declined";
+      // The ruling and the ledger act are two facts and can part company. A
+      // ruling that stands over an act that did not land is exactly what the
+      // operator has to be told, because the proposal is gone and the topic
+      // is not there.
+      const ledger = outcome?.error
+        ? ` · the ruling stands, the ledger act did not: ${outcome.error}`
+        : outcome?.applied
+          ? ` · ${outcome.filed ?? 0} filed`
+          : "";
+      setRuled((current_) => ({ ...current_, [proposal.proposal_id]: `${said}${ledger}` }));
+      setDeclining("");
+      setReason("");
+      setActed((count) => count + 1);
+    } catch (reason_) {
+      setFailure(errorMessage(reason_));
+    } finally {
+      setWorking("");
+    }
+  }
 
   // A rail that could not be read says so in one line and takes no more room
   // than that: the feed beside it is fine, and a failed decoration must not
@@ -297,6 +399,22 @@ export function TopicList({ current }: { current: string }) {
   if (!answer) return <p className="topic-note">Reading the topics…</p>;
 
   const topics = answer.topics ?? [];
+  const proposed = (answer.proposed ?? []).filter((row) => !(row.proposal_id in ruled));
+  const flat = topics.filter((topic) => !PARKED.includes(topic.interest.state));
+  const shown = flat.slice(0, RAIL_TOPICS);
+  const row = (topic: TopicRow) => (
+    <li key={topic.id || topic.name}>
+      <Link
+        to={`/t/${encodeURIComponent(topic.name)}`}
+        aria-current={current === topic.name ? "page" : undefined}
+        title={topicTitle(topic)}
+      >
+        <span>t/{topic.name}</span>
+        <span className="topic-count">{topic.posts.toLocaleString()}</span>
+      </Link>
+    </li>
+  );
+
   return (
     <>
       <ul className="topic-list">
@@ -305,41 +423,177 @@ export function TopicList({ current }: { current: string }) {
             All posts
           </Link>
         </li>
-        {topics.slice(0, RAIL_TOPICS).map((topic) => (
-          <li key={topic.name}>
-            <Link
-              to={`/t/${encodeURIComponent(topic.name)}`}
-              aria-current={current === topic.name ? "page" : undefined}
-              title={`${topic.posts.toLocaleString()} posts filed under evidence from ${topic.name}`}
-            >
-              <span>t/{topic.name}</span>
-              <span className="topic-count">{topic.posts.toLocaleString()}</span>
-            </Link>
-          </li>
-        ))}
-        {/* The posts whose origin this deployment could not resolve. They are
-            in the feed rather than hidden (§8.7) and this is the filter that
-            selects exactly them; a deployment that has none says nothing. */}
-        {answer.unfiled > 0 && (
+      </ul>
+      {RAIL_GROUPS.map(({ state, label }) => {
+        const group = shown.filter((topic) => interestOf(topic) === state);
+        if (group.length === 0) return null;
+        return (
+          <section className="topic-group" key={label || "unset"}>
+            <p className="topic-group-label">{label}</p>
+            <ul className="topic-list">{group.map(row)}</ul>
+          </section>
+        );
+      })}
+      {/* Parked and excluded, folded with their counts. They are here rather
+          than gone because §4.13 keeps them: the topic, its filings and its
+          history all survive a stance, and a reader has to be able to find
+          the thing he parked. */}
+      {PARKED.map((state) => {
+        const group = topics.filter((topic) => topic.interest.state === state);
+        if (group.length === 0) return null;
+        return (
+          <details className="peel topic-fold" key={state}>
+            <summary>
+              {state === "not-now" ? "Not now" : "Excluded"}
+              <span className="peel-count">{group.length.toLocaleString()}</span>
+            </summary>
+            <div className="peel-body">
+              <ul className="topic-list">{group.map(row)}</ul>
+            </div>
+          </details>
+        );
+      })}
+      {/* The posts nothing has filed. They are in the feed rather than hidden
+          (§8.7) and this is the filter that selects exactly them — the triage
+          backlog, not a bin; a deployment with none says nothing. */}
+      {answer.unfiled > 0 && (
+        <ul className="topic-list">
           <li>
             <Link
-              to={`/?topic=${UNFILED}`}
+              to={`/?topic=${UNFILED}&needs=all`}
               aria-current={current === UNFILED ? "page" : undefined}
-              title="Posts whose evidence cites no session this deployment can resolve"
+              title="Posts nothing has said what they are about. Unfiled is the triage backlog, not a bin."
             >
               <span>no topic</span>
               <span className="topic-count">{answer.unfiled.toLocaleString()}</span>
             </Link>
           </li>
-        )}
-      </ul>
-      {topics.length > RAIL_TOPICS && (
+        </ul>
+      )}
+      {flat.length > RAIL_TOPICS && (
         <Link className="topic-all" to="/t">
           all {topics.length.toLocaleString()} topics →
         </Link>
       )}
+
+      {(proposed.length > 0 || Object.keys(ruled).length > 0) && (
+        <section className="topic-group topic-proposed">
+          <p className="topic-group-label">Babel proposes</p>
+          <ul className="topic-list">
+            {proposed.map((proposal) => (
+              <li key={proposal.proposal_id} className="topic-proposal">
+                <Link
+                  to={`/r/${encodeURIComponent(proposal.proposal_id)}`}
+                  title={proposal.title}
+                  data-proposal={proposal.proposal_id}
+                >
+                  <span>{proposalLine(proposal)}</span>
+                  <span className="topic-count">{proposal.posts.toLocaleString()}</span>
+                </Link>
+                <p className="topic-why">
+                  {proposal.why}
+                  {proposal.run_id && <> · by {proposal.run_id}</>}
+                </p>
+                {declining === proposal.proposal_id ? (
+                  <form
+                    className="topic-reason"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void rule(proposal, "reject", reason.trim());
+                    }}
+                  >
+                    <label>
+                      Why this is not a topic (kept verbatim)
+                      <input
+                        value={reason}
+                        onChange={(event) => setReason(event.target.value)}
+                        // The ruling refuses a decline with no reason, so the
+                        // control says so rather than letting the server say
+                        // it.
+                        required
+                        autoFocus
+                      />
+                    </label>
+                    <div className="topic-reason-acts">
+                      <button type="submit" disabled={working === proposal.proposal_id}>
+                        Decline
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeclining("");
+                          setReason("");
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="topic-acts">
+                    <button
+                      type="button"
+                      data-topic-act="accept"
+                      disabled={working === proposal.proposal_id}
+                      title="Rule accept on this proposal. Babel performs the change and files what it named."
+                      onClick={() => void rule(proposal, "accept", "")}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      data-topic-act="decline"
+                      onClick={() => {
+                        setDeclining(proposal.proposal_id);
+                        setReason("");
+                      }}
+                    >
+                      Decline
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+            {Object.entries(ruled).map(([id, said]) => (
+              <li key={id} className="topic-ruled" data-topic-ruled={id}>
+                {said}
+              </li>
+            ))}
+          </ul>
+          {failure && (
+            <p className="inline-error" role="alert">
+              {failure}
+            </p>
+          )}
+        </section>
+      )}
     </>
   );
+}
+
+// The two stances that fold. They are the ones the operator has said he is
+// not spending attention on, and folding is what keeps the rail about what he
+// is.
+const PARKED = ["not-now", "excluded"];
+
+// Which flat group a topic belongs in. A stance this build has no word for
+// reads as nothing said rather than as a refusal, which is the same
+// distinction §4.12 draws about feedback: silence is not opposition.
+function interestOf(topic: TopicRow): string {
+  const state = topic.interest.state;
+  return state === "working" || state === "watching" ? state : "";
+}
+
+// What the row says when the pointer rests on it: how much is filed, how much
+// of it is waiting, and what the name is bound to. The binding is here rather
+// than in the row because it can be a path, and a path is a locator rather
+// than a topic (§4.13).
+function topicTitle(topic: TopicRow): string {
+  const facts = [`${topic.posts.toLocaleString()} posts`];
+  if (topic.awaiting > 0) facts.push(`${topic.awaiting.toLocaleString()} waiting on you`);
+  if (topic.binding) facts.push(`${topic.binding.kind}: ${topic.binding.identity}`);
+  if (topic.interest.state) facts.push(INTEREST_LABEL[topic.interest.state as InterestState] ?? topic.interest.state);
+  return facts.join(" · ");
 }
 
 // ShellControls is the instruments between the live mark and the stop: the

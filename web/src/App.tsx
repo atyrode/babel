@@ -31,6 +31,7 @@ import RunPage from "./pages/RunPage";
 import SessionPage from "./pages/SessionPage";
 import SessionsPage from "./pages/SessionsPage";
 import SettingsPage from "./pages/SettingsPage";
+import TopicPage from "./pages/TopicPage";
 import WatchPage from "./pages/WatchPage";
 import Palette from "./palette";
 import RenderBoundary from "./boundary";
@@ -337,11 +338,13 @@ function App() {
             fault instead of stranding the reader on it. */}
         <RenderBoundary key={location.pathname}>
         <Routes>
-          {/* Home is the feed, and a topic is the same feed filtered to one
-              community. /t is the directory behind the rail's twelve. */}
+          {/* Home is the feed, and a topic is the same feed narrowed to one
+              community under its own header: where the operator's interest in
+              it is stated and where he asks Babel to change its identity
+              (§4.13). /t is the directory behind the rail's twelve. */}
           <Route path="/" element={<FeedPage />} />
           <Route path="/t" element={<TopicsIndex />} />
-          <Route path="/t/:topic" element={<FeedPage />} />
+          <Route path="/t/:topic" element={<TopicPage />} />
           {/* The mod queue is the feed, arriving as it always did: what needs
               the operator, in §8.5's order. It kept nothing of its own — the
               figures it counted are the feed's own total under the filter, and

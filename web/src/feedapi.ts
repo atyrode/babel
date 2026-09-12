@@ -1,4 +1,4 @@
-import { request } from "./api";
+import { postJSON, request } from "./api";
 
 // The feed's two reads: the front page and the topics beside it.
 //
@@ -25,11 +25,17 @@ export type FeedSort = "next" | "hot" | "new" | "top" | "controversial" | "risin
 // control can show what is in force rather than what was asked for.
 export type FeedWindow = "hour" | "day" | "week" | "month" | "year" | "all";
 
-// The five kinds of thing that are posts. `question` is here because §8.7
+// The four kinds of thing that are posts. `question` is here because §8.7
 // makes a question Babel asks a post like any other; it is not a record kind
 // the corpus stores under that name, which is why this union is the feed's
 // own and not ./recordapi's RecordKind.
-export type FeedKind = "hypothesis" | "observation" | "finding" | "proposal" | "question";
+//
+// An observation is not here, by operator decision (2026-09-12): it is
+// evidence at depth 3 of the hypothesis that cites it, never a row of its
+// own. The corpus still stores observations and still files them; the feed
+// simply does not list them, and `?kind=observation` is refused as the
+// unknown kind it now is rather than answered with an empty feed.
+export type FeedKind = "hypothesis" | "finding" | "proposal" | "question";
 
 export const FEED_SORTS: FeedSort[] = [
   "next",
@@ -40,13 +46,7 @@ export const FEED_SORTS: FeedSort[] = [
   "rising",
 ];
 export const FEED_WINDOWS: FeedWindow[] = ["hour", "day", "week", "month", "year", "all"];
-export const FEED_KINDS: FeedKind[] = [
-  "proposal",
-  "finding",
-  "hypothesis",
-  "observation",
-  "question",
-];
+export const FEED_KINDS: FeedKind[] = ["proposal", "finding", "hypothesis", "question"];
 
 // Whether a sort reads the window at all. The control only appears for the two
 // that do, because a period selector beside "new" is a control that does
@@ -115,33 +115,150 @@ export interface FeedResponse {
   notice: string;
 }
 
+// One topic as the rail, the index and the topic's own page read it (§4.13).
+//
+// A topic is a Reality Ledger entity and nothing else: it has a global id, a
+// kind, and a binding to something real, so the same repository seen from two
+// deployments is one topic rather than two names. That is why `id` is here
+// beside `name` — the acts are performed on the entity, and the name is what
+// the reader reads.
 export interface TopicRow {
+  id: string;
   name: string;
-  posts: number;
-  latest_at: string;
+  // "repository" today; a machine, a service or a concept just as
+  // legitimately, so the kind travels rather than being inferred from the
+  // shape of the binding.
+  kind: string;
   // What the topic's name is bound to, and how. §4.13: a topic is a name
-  // bound to something real, with a reason, and "nothing in the surface may
-  // assume a topic is a directory" — so the binding travels as an identity
-  // with its own kind, is never rendered as a path in the reading path, and
-  // is `null` for a name this deployment cannot bind.
+  // bound to something real, with a reason, and *a topic is not a folder* —
+  // so the binding travels as an identity with its own kind, is never
+  // rendered as a path in the reading path, and is `null` for an entity this
+  // deployment holds no binding facts about.
   binding: TopicBinding | null;
-  // Whether the filing was seeded from repository identity rather than
-  // decided (§4.13). Every seeded filing says so, because the recipe that
-  // will revisit it reads exactly this.
-  heuristic: boolean;
+  posts: number;
+  // How many of those posts are waiting on the operator. A topic with forty
+  // posts and nothing waiting is a different thing to open from one with
+  // three that all need a ruling.
+  awaiting: number;
+  latest_at: string;
+  // Where the operator stands toward it, as §4.8 facts on the entity. An
+  // empty state is "nobody has said anything", which is a different answer
+  // from "not now" and is rendered as one.
+  interest: TopicInterest;
 }
+
+// §4.13's stance: working on it, keeping an eye, not now, excluded — with the
+// reason kept verbatim and the act attributed. `state` is a bare string
+// rather than the union below because a state this build has no word for must
+// render as itself rather than as one of the four.
+export interface TopicInterest {
+  state: string;
+  reason: string;
+  at: string;
+  by: string;
+}
+
+// The four words the interest control offers. They are the ledger's own
+// vocabulary (internal/reality's InterestStates), and the server refuses
+// anything outside it.
+export type InterestState = "working" | "watching" | "not-now" | "excluded";
+
+export const INTEREST_STATES: InterestState[] = ["working", "watching", "not-now", "excluded"];
+
+// What each stance is called where the operator states it, and what stating it
+// does. §4.13 spells the four in the operator's own terms — *keep an eye*
+// means Babel keeps filing into the topic and spends nothing there — and the
+// sentence is what makes the difference between "not now" and "excluded"
+// legible without a manual.
+export const INTEREST_LABEL: Record<InterestState, string> = {
+  working: "Working on it",
+  watching: "Keep an eye",
+  "not-now": "Not now",
+  excluded: "Excluded",
+};
+
+export const INTEREST_MEANS: Record<InterestState, string> = {
+  working: "Babel files into it and analysis may spend on it.",
+  watching: "Babel keeps filing into it and spends nothing there.",
+  "not-now": "Parked: the review lane draws elsewhere. Nothing is deleted.",
+  excluded: "Left out of analysis. Not interested is a signal, not a deletion.",
+};
 
 export interface TopicBinding {
   kind: string;
+  // The remote as host/owner/repo when the repository has one, and the common
+  // directory otherwise — which is why it is never printed as a row: an
+  // identity that may be a path belongs in a title or a fold.
   identity: string;
+  // The remote alone, absent for a repository nobody has recorded one for.
+  // It is beside the identity rather than derived from it because a reader
+  // looking at a topic bound only by a checkout is owed the absence.
+  remote?: string;
   paths: string[] | null;
 }
 
+// One topic change Babel has proposed and nobody has ruled on (§4.13).
+//
+// It is an ordinary proposal in the corpus — a record with an id, a page and
+// the same four rulings — rather than a topic-shaped act of its own: the
+// operator ruled that everything about a topic goes through Babel's normal
+// chain, so the rail's rows are shortcuts to that record and never a second
+// authority over it.
+export interface TopicProposal {
+  // The proposal record's own id, which is where the row links and what the
+  // ruling names.
+  proposal_id: string;
+  // The proposal's own headline, which is what the record page shows.
+  title: string;
+  // The topic it would create, and that topic's kind. Both are empty for a
+  // merge and a retirement, which name only topics that already exist.
+  name: string;
+  kind: string;
+  // What it proposes doing: "create", "split", "merge" or "retire". A word
+  // this build does not know renders as itself rather than as one of them.
+  operation: string;
+  // The topics the operation names — the target of a merge, the parent of a
+  // split, the topic retired — as entities, because the row reads the name
+  // and links the id.
+  targets: TopicTarget[] | null;
+  // The run that wrote it. §8.7 makes a run the author of what it wrote, so
+  // the row carries the byline; it is empty for a proposal this deployment
+  // cannot attribute.
+  run_id: string;
+  // How many of the records the proposal names this deployment holds, which
+  // is what accepting it would file.
+  posts: number;
+  // The plan's own one-line reasoning — "32 sessions in 3 checkouts cite it"
+  // — rather than this surface's paraphrase of it.
+  why: string;
+}
+
+export interface TopicTarget {
+  id: string;
+  name: string;
+}
+
+// What each operation is called where the operator reads it, and the shape of
+// the sentence the row builds from the proposal's own fields. The vocabulary
+// is the server's; an operation this build has no word for is shown as the
+// word the server sent.
+export const OPERATION_LABEL: Record<string, string> = {
+  create: "New topic",
+  split: "Split",
+  merge: "Merge",
+  retire: "Retire",
+};
+
 export interface TopicsResponse {
   topics: TopicRow[] | null;
-  // How many posts this deployment could not file under any topic. They are in
-  // the feed rather than hidden (§8.7), and `topic=unfiled` selects exactly
-  // them.
+  // What Babel has proposed and the operator has not ruled on. A separate
+  // list from the topics rather than a flag on one, because a proposal is not
+  // a topic: nothing is filed under it, and until it is accepted the records
+  // it names are unfiled.
+  proposed: TopicProposal[] | null;
+  // How many posts nothing has filed. They are in the feed rather than hidden
+  // (§8.7), `topic=unfiled` selects exactly them, and *unfiled* is an honest
+  // state and the triage backlog rather than a bin.
   unfiled: number;
 }
 
@@ -176,4 +293,67 @@ export function getFeed(query: FeedQuery = {}): Promise<FeedResponse> {
 
 export function getTopics(): Promise<TopicsResponse> {
   return request<TopicsResponse>("/api/topics");
+}
+
+// The operator's stance toward one topic, recorded as attributed §4.8 facts.
+//
+// The reason is sent as typed and is optional for every one of the four: the
+// server requires none — a stance is often the whole statement — so a client
+// that refused the act for want of prose would lose a lawful stance to gain
+// nothing.
+export function setTopicInterest(
+  id: string,
+  state: InterestState,
+  reason: string,
+): Promise<{ interest: TopicInterest }> {
+  return postJSON<{ interest: TopicInterest }>(
+    `/api/topics/${encodeURIComponent(id)}/interest`,
+    { state, reason },
+  );
+}
+
+// One filing as the record page reads it back: which record, which topic, in
+// whose words, and whether it is the seeder's guess or a person's judgement.
+export interface RecordFiling {
+  id: string;
+  record: string;
+  record_kind: string;
+  topic: string;
+  topic_name?: string;
+  rationale: string;
+  author: string;
+  author_id?: string;
+  heuristic: boolean;
+  withdrawn: boolean;
+  withdraw_reason?: string;
+  created_at: string;
+}
+
+// Filing is a link: an `about` edge from the record to the entity, carrying a
+// rationale and its author (§4.13). The topic is named rather than created —
+// a name the ledger does not know is refused, because entities are created by
+// an attributed operator act and never as a side effect of filing.
+export function fileRecord(
+  id: string,
+  entity: string,
+  rationale: string,
+): Promise<{ filing: RecordFiling }> {
+  return postJSON<{ filing: RecordFiling }>(
+    `/api/record/${encodeURIComponent(id)}/file`,
+    { entity, rationale },
+  );
+}
+
+// Unfiling withdraws the link and keeps the reason verbatim. It deletes
+// nothing: the filing stays readable as a withdrawn row, which is what makes
+// "where this record was filed and why" a history rather than a current value.
+export function unfileRecord(
+  id: string,
+  entity: string,
+  reason: string,
+): Promise<{ filing: RecordFiling }> {
+  return postJSON<{ filing: RecordFiling }>(
+    `/api/record/${encodeURIComponent(id)}/unfile`,
+    { entity, reason },
+  );
 }

@@ -488,10 +488,16 @@
 
 /* A topic is a community, so its chip is the shell's chip — one container
  * vocabulary for the whole surface — with the two properties an anchor needs
- * that a button does not. */
+ * that a button does not.
+ *
+ * The chip carries two controls now: the name, which opens the topic, and the
+ * × that withdraws the filing. So the chip is the container and the name is
+ * the link inside it, which is why the anchor's own rules are stated below
+ * rather than on the chip. */
 .record-topic {
   display: inline-flex;
   align-items: center;
+  gap: var(--space-1);
   min-height: 1.6rem;
   padding: 0 var(--space-2);
   border: 1px solid var(--rule-strong);
@@ -505,6 +511,118 @@
   border-color: var(--accent-line);
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+.record-topic > a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.record-topic > a:hover {
+  color: var(--accent);
+}
+
+/* Withdrawing the filing. It is the one destructive-looking control on the
+ * header and it is deliberately small and quiet: the act it starts is a
+ * withdrawal with a reason, not a deletion, and it opens a box rather than
+ * doing anything. */
+.record-unfile {
+  min-width: 1rem;
+  min-height: 1rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.record-unfile:hover {
+  color: var(--bad-ink);
+}
+
+/* The filing desk: the fold that files this record under a topic, and the box
+ * that withdraws a filing. Both are the record's own controls, so their rules
+ * are here beside the ruling's for the reason stated at the top of this file
+ * — one control, one set of rules, whichever surface mounts it. The forms
+ * borrow the confirmation's shape because they are the same gesture: a few
+ * words, and one button that records. */
+.record-filing {
+  margin-top: var(--space-3);
+  max-width: var(--measure);
+}
+
+/* The fold's own handle. It is not a depth — the depths are `.peel` and the
+ * keyboard walks those — so it is set as what it is: a small control at the
+ * foot of the header. */
+.record-filing > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+  color: var(--ink-muted);
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.record-filing > summary:hover {
+  color: var(--accent);
+}
+
+.record-filing-body {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 0;
+}
+
+.record-filing-body > p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.record-filing form {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.record-filing label {
+  display: grid;
+  gap: var(--space-1);
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+}
+
+.record-filing-open {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  max-width: var(--measure);
+  border: 1px solid var(--accent-line, var(--rule));
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.record-filing-open label {
+  display: grid;
+  gap: var(--space-1);
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+}
+
+.record-filing-acts {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* What the last act recorded, in place of nothing: a filing that left the
+ * page looking the same is a filing the operator repeats. */
+.record-filing-said {
+  margin: 0;
+  color: var(--good);
+  font-size: 0.8rem;
 }
 
 /* A run's name is an identifier, and it is here because §8.7 makes a run the

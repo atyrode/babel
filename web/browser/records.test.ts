@@ -220,11 +220,15 @@ test.skipIf(!chrome)("a ruling is confirmed before it is recorded, and it is app
     // reviewers' and his acts the rulings, so there is no control here that
     // records an opinion beside the authority.
     stances: document.querySelectorAll("[data-stance]").length,
-    // Every field on the page that is not the thread's comment box. §8.7's box
-    // is the operator's own words about the record and belongs to nothing
-    // being confirmed; the ruling's note is what must not exist yet.
+    // Every field the reader can see that is not the thread's comment box.
+    // §8.7's box is the operator's own words about the record and belongs to
+    // nothing being confirmed; the ruling's note is what must not exist yet.
+    // A field inside a fold he has not opened — the header's "File under…" —
+    // is not on screen and is not a form the page is presenting him with,
+    // which is what this counts.
     fields: Array.from(document.querySelectorAll("textarea"))
-      .filter((field) => !field.closest(".record-comment-form")).length,
+      .filter((field) => !field.closest(".record-comment-form"))
+      .filter((field) => field.closest("details:not([open])") === null).length,
   }));
   // The five dispositions the record page keeps, plus the two acts that are
   // not dispositions: a refinement, which is the existing invitation, and the

@@ -10,6 +10,12 @@ import {
 import { Link } from "react-router-dom";
 import { Badge, unescapeWhitespace, type Tone } from "./analysis";
 import { errorMessage, formatDuration, formatTime } from "./format";
+import {
+  fileRecord,
+  getTopics,
+  unfileRecord,
+  type TopicRow,
+} from "./feedapi";
 import { POST_ACTS, RULE_KEYS, RuleActs, reviewSubject } from "./ruling";
 import {
   getComments,
@@ -1277,14 +1283,22 @@ const LONG_CLAIM = 120;
 // their claim is the heading instead. The kind is not a fallback heading: the
 // badge beside it already says "Observation", and an h1 repeating that would
 // name the class of thing twice and the thing itself never.
-export function RecordHeading({ record }: { record: RecordPeel }) {
+export function RecordHeading({ record, topics }: { record: RecordPeel; topics?: string[] }) {
   const standing = record.standing;
   const headline = record.title ?? record.claim;
   const long = headline !== undefined && headline.length > LONG_CLAIM;
   const tally = babelTally(record.reception);
-  const topics = topicsOf(record.origin);
   const runID = record.machinery?.run_id;
   const age = formatTime(record.machinery?.created_at);
+  // What this record is filed under, and what this browser has filed it
+  // under since. `topics` is the row's own list, carried through the click
+  // that opened this page: a filing is an `about` edge in the frontier and
+  // no route reads one record's edges, so the feed row is where the page
+  // learns them. `undefined` is therefore "not known here" and never
+  // "unfiled" — the two are different answers and the control below says
+  // which one is on screen.
+  const [filed, setFiled] = useState<string[]>(topics ?? []);
+  const [unfiling, setUnfiling] = useState("");
   return (
     <header className="surface record-post">
       {/* Babel's score, in the column the arrows had, with the breakdown by
@@ -1310,14 +1324,28 @@ export function RecordHeading({ record }: { record: RecordPeel }) {
           <h1>{KIND_WORDS[record.kind] ?? "Record"}</h1>
         )}
         {/* One line, at most three facts: where it is filed, who wrote it and
-            how old it is. A record whose origin this deployment cannot resolve
-            has no topic and says nothing in its place. */}
-        {(topics.length > 0 || runID || age) && (
+            how old it is. The chips are the filings — what the record is
+            about, which is a link somebody made with a reason, never a
+            directory it was produced in. */}
+        {(filed.length > 0 || runID || age) && (
           <p className="record-post-meta">
-            {topics.map((topic) => (
-              <Link className="chip record-topic" key={topic} to={`/t/${encodeURIComponent(topic)}`}>
-                t/{topic}
-              </Link>
+            {filed.map((topic) => (
+              <span className="chip record-topic" key={topic}>
+                <Link to={`/t/${encodeURIComponent(topic)}`}>t/{topic}</Link>
+                {/* Withdrawing the filing, with a reason: the edge is
+                    append-only, so this records a withdrawal rather than
+                    deleting the claim that it belonged here. */}
+                <button
+                  type="button"
+                  className="record-unfile"
+                  data-unfile={topic}
+                  aria-label={`Unfile from t/${topic}`}
+                  title={`This record is not about t/${topic}`}
+                  onClick={() => setUnfiling(unfiling === topic ? "" : topic)}
+                >
+                  ×
+                </button>
+              </span>
             ))}
             {runID && (
               <span>
@@ -1334,6 +1362,17 @@ export function RecordHeading({ record }: { record: RecordPeel }) {
             )}
           </p>
         )}
+        <FilingDesk
+          id={record.id}
+          filed={filed}
+          known={topics !== undefined}
+          unfiling={unfiling}
+          onDone={(next) => {
+            setFiled(next);
+            setUnfiling("");
+          }}
+          onCancel={() => setUnfiling("")}
+        />
       </div>
     </header>
   );
@@ -1388,25 +1427,198 @@ function babelTally(reception: RecordReception | undefined): {
   };
 }
 
-// topicsOf names the topic a record's own origin points at.
+// The filing desk: withdrawing a filing, and adding one.
 //
-// §4.13: a topic is what a record is about, and today's topics are mostly
-// repositories, bound by the repository's own identity. The peel carries one
-// origin — the first cited session this deployment holds — and this is the
-// last element of that session's workspace, which is a heuristic and says so
-// wherever the filing is shown: the binding the feed reads is the
-// repository's, observed during the scan, and the same record may be filed
-// under more there. The list shape is what keeps the two from being different
-// ideas.
+// §4.13: filing is a link — an `about` edge from the record to the entity,
+// carrying a rationale and its author, append-only, so a re-filing supersedes
+// and a withdrawal is a row rather than an absence. Both acts therefore ask
+// for words: the rationale says why this record is about that topic, and the
+// withdrawal says why it is not, and the routes refuse either without them.
 //
-// Nothing here assumes the name is a directory in the reading path: it is a
-// name, and a workspace this deployment did not record leaves the record
-// unfiled rather than hidden.
-function topicsOf(origin: RecordOrigin | undefined): string[] {
-  const workspace = origin?.workspace?.replace(/[/\\]+$/u, "") ?? "";
-  if (!workspace) return [];
-  const name = workspace.split(/[/\\]/u).pop() ?? "";
-  return name ? [name] : [];
+// The topic is picked from the topics that exist. Filing does not create one:
+// §4.8 gives entity creation to an attributed operator act on the subject
+// surface, and a name the ledger does not hold is refused rather than minted
+// — which is why this is a list of accepted topics and not a text box.
+//
+// The whole desk is folded. A record is read for its claim, and the reader who
+// has decided what it is about is a reader who has finished reading; opening
+// the fold is also what reads the topics, so the page still fetches nothing
+// on open.
+function FilingDesk({
+  id,
+  filed,
+  known,
+  unfiling,
+  onDone,
+  onCancel,
+}: {
+  id: string;
+  filed: string[];
+  // Whether this page knows what the record is filed under. It arrives with
+  // the row that was clicked; a page opened cold knows nothing, and saying
+  // "unfiled" then would be inventing a fact.
+  known: boolean;
+  // The topic whose withdrawal is being written, empty when none is.
+  unfiling: string;
+  onDone: (filed: string[]) => void;
+  onCancel: () => void;
+}) {
+  const [catalog, setCatalog] = useState<TopicRow[] | null>(null);
+  const [entity, setEntity] = useState("");
+  const [words, setWords] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [failure, setFailure] = useState("");
+  const [said, setSaid] = useState("");
+
+  // The topics are read when the fold opens or an unfiling begins, never on
+  // page load: the record arrives whole in one request and this control is
+  // not part of it.
+  const read = useCallback(() => {
+    if (catalog !== null) return;
+    getTopics()
+      .then((next) => setCatalog(next.topics ?? []))
+      .catch((reason) => setFailure(errorMessage(reason)));
+  }, [catalog]);
+
+  useEffect(() => {
+    if (unfiling !== "") setWords("");
+  }, [unfiling]);
+
+  async function file(event: FormEvent) {
+    event.preventDefault();
+    if (saving || entity === "" || words.trim() === "") return;
+    setSaving(true);
+    setFailure("");
+    try {
+      const result = await fileRecord(id, entity, words.trim());
+      const name = result.filing.topic_name || entity;
+      onDone([...filed.filter((topic) => topic !== name), name]);
+      setSaid(`Filed under t/${name}.`);
+      setEntity("");
+      setWords("");
+    } catch (reason) {
+      setFailure(errorMessage(reason));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function unfile(event: FormEvent) {
+    event.preventDefault();
+    if (saving || words.trim() === "") return;
+    setSaving(true);
+    setFailure("");
+    try {
+      await unfileRecord(id, unfiling, words.trim());
+      onDone(filed.filter((topic) => topic !== unfiling));
+      setSaid(`Withdrawn from t/${unfiling}. The filing and the reason stay readable.`);
+      setWords("");
+    } catch (reason) {
+      setFailure(errorMessage(reason));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (unfiling !== "") {
+    return (
+      <form className="record-filing record-filing-open" onSubmit={unfile}>
+        <label>
+          Why this record is not about t/{unfiling} (required, kept verbatim)
+          <input value={words} onChange={(event) => setWords(event.target.value)} autoFocus required />
+        </label>
+        <div className="record-filing-acts">
+          <button type="submit" className="primary-button" disabled={saving}>
+            {saving && <span className="spinner small" />}
+            {saving ? "Recording…" : "Withdraw the filing"}
+          </button>
+          <button type="button" onClick={onCancel} disabled={saving}>
+            Cancel
+          </button>
+        </div>
+        {failure && (
+          <p className="inline-error" role="alert">
+            {failure}
+          </p>
+        )}
+      </form>
+    );
+  }
+
+  return (
+    // Not a `.peel`: on this page a peel is one of the five depths and the
+    // keyboard's 1-5 walk them, so a sixth <details> wearing that class would
+    // join a vocabulary it is not part of. It is a fold of the header, and
+    // record.css styles it as one.
+    <details className="record-filing" onToggle={read}>
+      <summary>File under…</summary>
+      <div className="record-filing-body">
+        {/* What this page can and cannot say about where the record is filed.
+            It is stated here rather than beside the chips because it is a
+            fact about this surface rather than about the record. */}
+        {!known && (
+          <p className="muted">
+            What this record is already filed under is not on this page: it is shown on the
+            record's row in the feed, and this deployment has no route that reads one record's
+            filings.
+          </p>
+        )}
+        {known && filed.length === 0 && (
+          <p className="muted">Nothing has said what this record is about.</p>
+        )}
+        <form onSubmit={file}>
+          <label>
+            Topic
+            <select
+              value={entity}
+              onChange={(event) => setEntity(event.target.value)}
+              data-filing="topic"
+              required
+            >
+              <option value="">
+                {catalog === null ? "Reading the topics…" : "Pick a topic…"}
+              </option>
+              {(catalog ?? [])
+                .filter((topic) => !filed.includes(topic.name))
+                .map((topic) => (
+                  <option key={topic.id} value={topic.name}>
+                    t/{topic.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label>
+            Why it belongs there (required, kept verbatim)
+            <textarea
+              value={words}
+              onChange={(event) => setWords(event.target.value)}
+              rows={2}
+              required
+            />
+          </label>
+          <div className="record-filing-acts">
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={saving || entity === "" || words.trim() === ""}
+            >
+              {saving && <span className="spinner small" />}
+              {saving ? "Filing…" : "File it"}
+            </button>
+          </div>
+        </form>
+        {said && <p className="record-filing-said" role="status">{said}</p>}
+        {failure && (
+          <p className="inline-error" role="alert">
+            {failure}
+          </p>
+        )}
+        <p className="muted">
+          Filing does not create a topic. Only you create one, and Babel proposes the identity.
+        </p>
+      </div>
+    </details>
+  );
 }
 
 // The conversation under the post.
