@@ -267,7 +267,7 @@ function StopButton({
   return (
     <button
       type="button"
-      className="danger-button live-stop"
+      className="live-stop"
       disabled={stopping}
       onClick={() => onStop(run)}
       title="Ask this run to stop at its next safe point"

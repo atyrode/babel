@@ -170,7 +170,7 @@ function RealityEntityPage() {
             has to be able to report that ambiguity rather than be handed a
             guess. */}
         <div className="heading-meta">
-          <Link className="secondary-button" to={`/settings?section=ceilings&subject=${encodeURIComponent(entity.id)}`}>
+          <Link to={`/settings?section=ceilings&subject=${encodeURIComponent(entity.id)}`}>
             Analysis policy
           </Link>
         </div>

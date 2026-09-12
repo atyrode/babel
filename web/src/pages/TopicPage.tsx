@@ -120,7 +120,7 @@ function TopicHeader({
           <h1>t/{name}</h1>
         </div>
         {topic && (
-          <p className="feed-count">
+          <p className="topic-posts">
             {topic.posts.toLocaleString()} {topic.posts === 1 ? "post" : "posts"}
             {topic.awaiting > 0 && <> · {topic.awaiting.toLocaleString()} awaiting you</>}
           </p>

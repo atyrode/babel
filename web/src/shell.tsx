@@ -152,68 +152,11 @@ export function LiveIndicator() {
   );
 }
 
-export type Density = "comfortable" | "compact";
-
-const DENSITY_KEY = "babel.density";
-
-// The density attribute lives on <html> rather than in React state alone,
-// because the six space tokens it retunes are read by every stylesheet
-// including the ones React does not own.
-export function useDensity() {
-  const [density, setDensity] = useState<Density>(() => {
-    try {
-      return window.localStorage.getItem(DENSITY_KEY) === "compact" ? "compact" : "comfortable";
-    } catch {
-      // A browser that refuses storage still gets a working interface.
-      return "comfortable";
-    }
-  });
-
-  useEffect(() => {
-    document.documentElement.dataset.density = density;
-    try {
-      window.localStorage.setItem(DENSITY_KEY, density);
-    } catch {
-      // Same: the preference is lost on reload, the interface is not.
-    }
-  }, [density]);
-
-  // The command palette can flip density too, so the two controls do not each
-  // own half the truth: it dispatches `babel:density` on the document and the
-  // switch that actually holds the state is here. A detail.mode is honoured if
-  // one is sent; a bare event is a toggle.
-  useEffect(() => {
-    function onDensity(event: Event) {
-      const mode = (event as CustomEvent<{ mode?: Density } | undefined>).detail?.mode;
-      setDensity((current) => {
-        if (mode === "compact" || mode === "comfortable") return mode;
-        return current === "compact" ? "comfortable" : "compact";
-      });
-    }
-    document.addEventListener("babel:density", onDensity);
-    return () => document.removeEventListener("babel:density", onDensity);
-  }, []);
-
-  return { density, setDensity };
-}
-
-// The two words the density switch can be in, and the glyph that has always
-// stood for each. The glyph alone was the whole control, and an unlabelled
-// ▦ in a header is a button an operator never presses: the word is now beside
-// it, and the label says what pressing it does rather than what it is.
-const DENSITY_GLYPH: Record<Density, string> = { comfortable: "▦", compact: "▤" };
-const DENSITY_WORD: Record<Density, string> = { comfortable: "Comfortable", compact: "Compact" };
-
-function densityLabel(density: Density): string {
-  const other = density === "compact" ? "comfortable" : "compact";
-  return `${DENSITY_WORD[density]} spacing — switch to ${other}`;
-}
-
 // The width at which the header folds. It is the same number as the media
-// query in styles.css that stacks the instruments under the navigation, and
-// the two must stay equal: this decides *what* is in the header, the
-// stylesheet decides *where*, and a header that folded its controls at one
-// width and its rows at another would be neither layout.
+// query in styles.css that narrows the row, and the two must stay equal: this
+// decides *what* is in the header, the stylesheet decides *where*, and a
+// header that folded its controls at one width and its rows at another would
+// be neither layout.
 const NARROW_HEADER = "(max-width: 640px)";
 
 function useNarrowHeader(): boolean {
@@ -596,181 +539,190 @@ function topicTitle(topic: TopicRow): string {
   return facts.join(" · ");
 }
 
-// ShellControls is the instruments between the live mark and the stop: the
-// box the operator tells Babel what is going badly into, search, density and
-// keys. Nothing about them changes with the viewport except how many buttons
-// they occupy — on a phone the header had five controls and the navigation on
-// three rows, which pushed the page's own title off the screen, so below
-// NARROW_HEADER they fold into one … menu and the two controls that must
-// never be a click away — what is running, and how to stop it — stay where
-// they are.
+// ShellControls is the right end of the header: search, the box the operator
+// tells Babel what is going badly into, and one menu for the two things that
+// are neither — the keys, and the stop.
+//
+// The menu exists because the header used to carry six controls at four
+// weights: Tell Babel, Search, a density switch, a "?", a bordered stop, and
+// the live mark, none of them ranked against the others. Two of those are
+// things the operator reaches for while reading — say what is going badly,
+// find a record — and they stay in the row as themselves. The other two are
+// asked for once: what can I press, and end this session. Those are behind
+// the …, which is the quietest control on the surface because it is the least
+// used.
+//
+// Below NARROW_HEADER search and the capture box join them, because a 390px
+// row cannot hold a field, a button, a menu and three destinations — and what
+// the operator loses is a click, not a capability.
 //
 // Tell Babel is here rather than on a page because of where it used to be:
 // folded at the foot of the queue, which meant the operator could only
 // complain from the one surface he complained about. #115's box is reachable
 // from everywhere now, and it is the same box and the same write.
 export function ShellControls({
-  density,
-  setDensity,
   onKeyHints,
   onTell,
+  onLock,
+  stopping,
 }: {
-  density: Density;
-  setDensity: (density: Density) => void;
   onKeyHints: () => void;
   onTell: () => void;
+  // Ending the session. It lives in App because App is what the stop replaces
+  // with the terminal note; the header only offers it.
+  onLock: () => void;
+  stopping: boolean;
 }) {
   const narrow = useNarrowHeader();
   const [open, setOpen] = useState(false);
   const host = useRef<HTMLDivElement | null>(null);
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const menu = useRef<HTMLDivElement | null>(null);
 
-  // A menu that is only rendered in the folded header must not still be open
-  // when the window grows and then shrinks again.
+  // The set of items changes with the viewport, so a menu left open across a
+  // resize would be showing a different menu than the one that was opened.
   useEffect(() => setOpen(false), [narrow]);
 
+  // The menu is worked by keyboard or it is not a control: opening it moves
+  // the focus into it, Tab walks the items the browser's own way, and Escape
+  // closes it and hands the keyboard back to the button that opened it.
   useEffect(() => {
     if (!open) return;
+    menu.current?.querySelector<HTMLElement>("button")?.focus();
     function onPointerDown(event: PointerEvent) {
       if (!host.current?.contains(event.target as Node)) setOpen(false);
     }
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setOpen(false);
+      opener.current?.focus();
+    }
+    // A Tab that leaves the menu closes it rather than leaving an open panel
+    // behind the reader.
+    function onFocusOut(event: FocusEvent) {
+      if (!host.current?.contains(event.relatedTarget as Node | null)) setOpen(false);
     }
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKey);
+    host.current?.addEventListener("focusout", onFocusOut);
+    const surface = host.current;
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKey);
+      surface?.removeEventListener("focusout", onFocusOut);
     };
   }, [open]);
 
-  const other: Density = density === "compact" ? "comfortable" : "compact";
-  const label = densityLabel(density);
-
-  if (!narrow) {
-    return (
-      <>
-        {/* First of the instruments, because it is the one the operator
-            reaches for while reading something else: what is going badly is
-            said where it is noticed. */}
+  return (
+    <>
+      {/* Search is drawn as the field it opens rather than as a magnifier
+          glyph: U+2315 is missing from most Linux font stacks and renders as a
+          tofu box, and a control the operator cannot name is a control they do
+          not press. The key sits at the field's end, which is also how they
+          learn it. */}
+      {!narrow && (
         <button
           type="button"
-          className="shell-toggle shell-tell"
+          className="shell-search"
+          onClick={openPalette}
+          title="Search records, sessions, entities and questions"
+        >
+          <span>Search</span>
+          <kbd className="kbd">⌘K</kbd>
+        </button>
+      )}
+      {/* The one the operator reaches for while reading something else: what
+          is going badly is said where it is noticed. */}
+      {!narrow && (
+        <button
+          type="button"
+          className="shell-tell"
           onClick={onTell}
           title="Say what is going badly. It opens nothing and assigns nothing."
         >
           Tell Babel
         </button>
-        {/* The search control says "Search" rather than wearing a magnifier
-            glyph: U+2315 is missing from most Linux font stacks and renders
-            as a tofu box, and a control the operator cannot name is a control
-            they do not press. The key is on the button beside the word, which
-            is also how they learn it. */}
-        <button
-          type="button"
-          className="shell-toggle shell-search"
-          onClick={openPalette}
-          title="Search records, sessions, entities and questions"
-        >
-          Search
-          <kbd className="kbd">⌘K</kbd>
-        </button>
-        <button
-          type="button"
-          className="shell-toggle shell-density"
-          onClick={() => setDensity(other)}
-          aria-pressed={density === "compact"}
-          title={label}
-          aria-label={label}
-        >
-          <span aria-hidden="true">{DENSITY_GLYPH[density]}</span>
-          <span className="shell-density-word">{DENSITY_WORD[density]}</span>
-        </button>
-        <button
-          type="button"
-          className="shell-toggle"
-          onClick={onKeyHints}
-          title="Keyboard shortcuts (?)"
-          aria-label="Keyboard shortcuts"
-        >
-          ?
-        </button>
-      </>
-    );
-  }
-
-  return (
-    <div className="shell-menu-host" ref={host}>
-      <button
-        type="button"
-        className="shell-toggle shell-menu-button"
-        onClick={() => setOpen((current) => !current)}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        title="Tell Babel, search, density and keyboard shortcuts"
-        aria-label="More controls"
-      >
-        <span aria-hidden="true">…</span>
-      </button>
-      {open && (
-        <div className="surface shell-menu" role="menu" aria-label="More controls">
-          <button
-            type="button"
-            role="menuitem"
-            className="shell-menu-tell"
-            onClick={() => {
-              setOpen(false);
-              onTell();
-            }}
-          >
-            <span>Tell Babel</span>
-            <span className="shell-menu-meta">what is going badly</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              openPalette();
-            }}
-          >
-            <span>Search</span>
-            <kbd className="kbd">⌘K</kbd>
-          </button>
-          {/* The item states the density it is in and the one it goes to, so
-              the reader does not have to press it to find out which is which.
-              That is also why it carries no pressed state: `aria-pressed` is
-              not a property of a menuitem, and the two words are a better
-              answer to "which am I in" than a checkmark. */}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              setDensity(other);
-            }}
-          >
-            {/* Two words, because the menu is 390px wide minus a thumb: the
-                density it is in, and the one it goes to. */}
-            <span>
-              <span aria-hidden="true">{DENSITY_GLYPH[density]}</span> {DENSITY_WORD[density]}
-            </span>
-            <span className="shell-menu-meta">→ {other}</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onKeyHints();
-            }}
-          >
-            <span>Keyboard shortcuts</span>
-            <kbd className="kbd">?</kbd>
-          </button>
-        </div>
       )}
-    </div>
+      <div className="shell-menu-host" ref={host}>
+        <button
+          type="button"
+          className="shell-menu-button"
+          ref={opener}
+          onClick={() => setOpen((current) => !current)}
+          aria-expanded={open}
+          aria-haspopup="menu"
+          title={narrow ? "Search, Tell Babel, keys and the stop" : "Keys and the stop"}
+          aria-label="More controls"
+        >
+          <span aria-hidden="true">…</span>
+        </button>
+        {open && (
+          <div
+            className="surface shell-menu"
+            role="menu"
+            aria-label="More controls"
+            ref={menu}
+          >
+            {narrow && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  openPalette();
+                }}
+              >
+                <span>Search</span>
+                <kbd className="kbd">⌘K</kbd>
+              </button>
+            )}
+            {narrow && (
+              <button
+                type="button"
+                role="menuitem"
+                className="shell-menu-tell"
+                onClick={() => {
+                  setOpen(false);
+                  onTell();
+                }}
+              >
+                <span>Tell Babel</span>
+                <span className="shell-menu-meta">what is going badly</span>
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onKeyHints();
+              }}
+            >
+              <span>Keys</span>
+              <kbd className="kbd">?</kbd>
+            </button>
+            {/* The stop, and the only irreversible item on the surface. It
+                keeps its own confirmation in App — a native dialogue — so
+                reaching it through a menu costs it nothing. */}
+            <button
+              type="button"
+              role="menuitem"
+              className="shell-menu-stop"
+              disabled={stopping}
+              onClick={() => {
+                setOpen(false);
+                onLock();
+              }}
+              title="Revoke this session and stop this server"
+            >
+              <span>{stopping ? "Stopping…" : "Lock & stop"}</span>
+              <span className="shell-menu-meta">ends the session</span>
+            </button>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -791,6 +743,9 @@ const KEY_HINTS: { group: string; keys: { press: string[]; does: string }[] }[] 
     keys: [
       { press: ["j", "k"], does: "Move down and up the posts" },
       { press: ["Enter"], does: "Open the focused post" },
+      { press: ["s"], does: "Change the order — and, for top and controversial, the period" },
+      { press: ["c"], does: "Choose which kinds of post are in the list" },
+      { press: ["m"], does: "Switch between what needs you and everything" },
       { press: ["y", "n", "d"], does: "Accept, reject or defer the focused post — each confirmed first" },
       { press: ["f"], does: "Send the focused post back to Babel for refinement" },
       { press: ["q"], does: "Ask Babel a question about the focused post" },
@@ -927,14 +882,8 @@ export function TellBabel({ onClose }: { onClose: () => void }) {
             <p className="eyebrow">Steering pressure</p>
             <h2>Tell Babel</h2>
           </div>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={onClose}
-            aria-label="Close"
-            title="Close (Esc)"
-          >
-            ×
+          <button type="button" onClick={onClose} title="Close (Esc)">
+            Close
           </button>
         </div>
         <SteeringSection />

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Badge, type Tone } from "../analysis";
 import { kindLabel } from "../evaluation";
 import {
   FEED_KINDS,
@@ -72,19 +71,25 @@ const PAGE_SIZE = 15;
 const NEEDS_ME = "me";
 const NEEDS_ALL = "all";
 
-// The flair colours. A kind is a name and not a judgement, so the tones are
-// the quiet half of the palette; `question` is amber because it is the one
-// kind that is addressed to the reader rather than produced for him.
-const KIND_TONES: Record<FeedKind, Tone> = {
-  proposal: "blue",
-  finding: "green",
-  hypothesis: "violet",
-  question: "amber",
+// The kind's tone. A kind is a name and not a judgement, so the tones are the
+// quiet half of the palette; `question` is amber because it is the one kind
+// that is addressed to the reader rather than produced for him.
+//
+// It is worn as small-caps text in the tone's colour rather than as a filled
+// badge. Fifteen boxed badges down a list of fifteen one-line claims made the
+// kind the loudest thing on every row — a coloured rectangle beats a sentence
+// every time — and the kind is the least surprising fact about a post.
+const KIND_TONES: Record<FeedKind, string> = {
+  proposal: "accent",
+  finding: "good",
+  hypothesis: "info",
+  question: "warn",
 };
 
 // What each ordering is computed from, in one sentence, in the reader's terms
 // rather than as the formula. The formula is in feed.go; this is what it is
-// for.
+// for. It used to be printed under the control bar on every read; it is on the
+// control itself now, which is where a reader asks what it means.
 const SORT_BASIS: Record<FeedSort, string> = {
   next: "What is waiting on you: the most urgent first, and at equal urgency a proposal before a finding before a candidate, oldest first.",
   hot: "The score against how long ago the post arrived.",
@@ -103,14 +108,56 @@ const SORT_LABEL: Record<FeedSort, string> = {
   rising: "Rising",
 };
 
-const WINDOW_LABEL: Record<FeedWindow, string> = {
-  hour: "Hour",
-  day: "Day",
-  week: "Week",
-  month: "Month",
-  year: "Year",
-  all: "All",
+// The same six words inside the sentence, where they are read as part of it
+// rather than as the name of a control.
+const SORT_WORD: Record<FeedSort, string> = {
+  next: "next",
+  hot: "hot",
+  new: "newest",
+  top: "top",
+  controversial: "controversial",
+  rising: "rising",
 };
+
+// The window as the reader would say it, because it is read inside a sentence:
+// "sorted by top · this week", not "Top / Week".
+const WINDOW_LABEL: Record<FeedWindow, string> = {
+  hour: "this hour",
+  day: "today",
+  week: "this week",
+  month: "this month",
+  year: "this year",
+  all: "all time",
+};
+
+// The kinds in the plural, for the same reason: the sentence says what is in
+// the list, and a list holds proposals rather than Proposal.
+const KIND_PLURAL: Record<FeedKind, string> = {
+  proposal: "proposals",
+  finding: "findings",
+  hypothesis: "hypotheses",
+  question: "questions",
+};
+
+// The two states of the filter as the sentence says them.
+const NEEDS_WORD = "what needs me";
+const EVERYTHING_WORD = "everything";
+
+// What the kinds segment says. One kind is named, two are named, and past
+// that the sentence counts them: "proposals, findings and hypotheses" is
+// longer than the sentence it is inside, and the menu is one press away for
+// anybody who needs to know which three.
+function kindsWord(chosen: FeedKind[]): string {
+  if (chosen.length === 0) return "all kinds";
+  if (chosen.length === 1) return KIND_PLURAL[chosen[0]];
+  if (chosen.length === 2) return `${KIND_PLURAL[chosen[0]]} and ${KIND_PLURAL[chosen[1]]}`;
+  return `${chosen.length} kinds`;
+}
+
+// How many rows a cold load draws in place of the list. Six is what fills the
+// first screen at 1440×900 without claiming a page length the answer has not
+// arrived to confirm.
+const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
 
 // A question is answered where answers are written and carries no review
 // disposition, so a row for one offers no rulings. The kinds that do are the
@@ -138,6 +185,103 @@ function isTyping(target: EventTarget | null): boolean {
 interface Acted {
   act: RuleAct;
   at: number;
+}
+
+// Which of the sentence's three segments is open. One at a time, held by the
+// page rather than by each menu, because the keys that open them (`s`, `c`,
+// `m`) are the page's and a second copy of "is this one open" is the first
+// thing to disagree.
+type PickName = "needs" | "sort" | "kinds";
+
+// One editable segment of the sentence: a word the reader can press, and the
+// menu of the words it could be instead.
+//
+// It is a menu and not a `<select>` because two of the three are not one
+// choice — the kinds are a set, and the order carries a period beside it —
+// and a native select cannot hold either. Everything a native select gives
+// for free is therefore stated here: the button says it opens a menu and
+// whether it is open, the arrows walk the items, Enter takes the one under
+// the keyboard, Escape closes and hands the keyboard back, and a press
+// outside closes.
+function FeedMenu({
+  name,
+  label,
+  title,
+  wide,
+  open,
+  setOpen,
+  children,
+}: {
+  name: PickName;
+  label: string;
+  title: string;
+  // The order's menu carries a second column when the order reads a period.
+  wide?: boolean;
+  open: boolean;
+  setOpen: (next: PickName | null) => void;
+  children: ReactNode;
+}) {
+  const host = useRef<HTMLSpanElement | null>(null);
+  const opener = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const surface = host.current;
+    surface?.querySelector<HTMLElement>("[role^='menuitem']")?.focus();
+    function onPointerDown(event: PointerEvent) {
+      if (!surface?.contains(event.target as Node)) setOpen(null);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(null);
+        opener.current?.focus();
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      const items = [...(surface?.querySelectorAll<HTMLElement>("[role^='menuitem']") ?? [])];
+      if (items.length === 0) return;
+      event.preventDefault();
+      const at = items.indexOf(document.activeElement as HTMLElement);
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      // A wrap rather than a stop: the list is five items long and the reader
+      // who holds the key down is looking for one of them, not for the end.
+      items[(at + step + items.length) % items.length]?.focus();
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, setOpen]);
+
+  return (
+    <span className="feed-pick" ref={host}>
+      <button
+        type="button"
+        ref={opener}
+        data-pick={name}
+        className="feed-pick-button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={title}
+        onClick={() => setOpen(open ? null : name)}
+      >
+        {label}
+        <span className="feed-pick-caret" aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <div
+          className={wide ? "surface feed-menu feed-menu-wide" : "surface feed-menu"}
+          role="menu"
+          aria-label={title}
+        >
+          {children}
+        </div>
+      )}
+    </span>
+  );
 }
 
 // `heading` is the page's own header, when the page is not the front page.
@@ -194,8 +338,15 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
   const [focus, setFocus] = useState(-1);
   const [acted, setActed] = useState<Record<string, Acted>>({});
   const [announcement, setAnnouncement] = useState("");
+  const [pick, setPick] = useState<PickName | null>(null);
   const rows = useRef(new Map<string, HTMLLIElement>());
 
+  // A read replaces the rows when it answers and not before. Changing the
+  // order used to blank the list, paint a "Reading the feed…" note where
+  // fifteen rows had been, and paint them back — three layouts for one
+  // gesture, and the rail jumped twice on the way. The rows on screen are the
+  // last true answer until there is a newer one; what says a newer one is
+  // coming is the line above the list.
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -260,11 +411,15 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
   // One gesture, and the ordering follows it: turning the filter off drops a
   // sort the reader never asked for, so "everything" arrives hot rather than
   // in the order the queue was in. A sort he did name is his and stays.
-  function toggleNeeds() {
+  function chooseNeeds(mine: boolean) {
     const next = new URLSearchParams(params);
-    next.set("needs", needsMe ? NEEDS_ALL : NEEDS_ME);
+    next.set("needs", mine ? NEEDS_ME : NEEDS_ALL);
     if (!(FEED_SORTS as string[]).includes(askedSort)) next.delete("sort");
     setParams(next);
+  }
+
+  function toggleNeeds() {
+    chooseNeeds(!needsMe);
   }
 
   const shown = posts ?? [];
@@ -287,6 +442,29 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
     function onKey(event: KeyboardEvent) {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (isTyping(event.target)) return;
+      // While a segment of the sentence is open it owns the keyboard: the
+      // arrows walk its items and Escape closes it. A `j` that moved the row
+      // focus behind an open menu would be two things listening to one press.
+      if (pick !== null) return;
+      switch (event.key) {
+        // The three keys that edit the sentence. They are here rather than on
+        // the controls because the reader is looking at the list when he
+        // decides the list is wrong.
+        case "s":
+          event.preventDefault();
+          setPick("sort");
+          return;
+        case "c":
+          event.preventDefault();
+          setPick("kinds");
+          return;
+        case "m":
+          event.preventDefault();
+          toggleNeeds();
+          return;
+        default:
+          break;
+      }
       if (shown.length === 0) return;
       switch (event.key) {
         case "j":
@@ -327,7 +505,9 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [focused, navigate, shown.length]);
+    // `toggleNeeds` closes over the current URL parameters, which is exactly
+    // what `m` has to read, so the effect is re-bound when they change.
+  }, [focused, navigate, pick, shown.length, needsMe, askedSort, params]);
 
   const built = formatTime(answer?.built_at);
   const filtered =
@@ -349,11 +529,6 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
                 <p className="eyebrow">The feed</p>
                 <h1>{where}</h1>
               </div>
-              {answer && (
-                <p className="feed-count">
-                  {total.toLocaleString()} {total === 1 ? "post" : "posts"}
-                </p>
-              )}
             </div>
           )}
 
@@ -366,85 +541,154 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
             </details>
           )}
 
-          <div className="feed-controls">
-            <div className="rule-bar" role="group" aria-label="Sort">
-              {FEED_SORTS.map((name) => (
-                <button
-                  type="button"
-                  key={name}
-                  data-sort={name}
-                  aria-pressed={sort === name}
-                  title={SORT_BASIS[name]}
-                  onClick={() => select("sort", name)}
-                >
-                  {SORT_LABEL[name]}
-                </button>
-              ))}
-            </div>
-            {/* The window is a control for the two sorts that read it and is
-                absent for the four that do not: a period selector beside
-                "new" is a control that does nothing and does not say so. */}
-            {windowed(sort) && (
-              <div className="rule-bar" role="group" aria-label="Period">
-                {FEED_WINDOWS.map((name) => (
+          {/* The controls, as one sentence the reader edits.
+
+              They were a segmented control of six orderings, a second one of
+              six periods, six pill chips, and a paragraph under all of it
+              explaining the ordering and listing the keys — four rows of
+              chrome above a list of fifteen one-line posts, and the operator
+              could not tell from it what he was looking at. The sentence says
+              exactly that in the words he would use, and each word he can
+              change is the control that changes it. The count and the
+              ordering's freshness end the sentence, because §8.5 asks a
+              ranked list to say what it is ranked by and when, and the answer
+              to the first is on the word "sorted by". */}
+          <p className="feed-sentence">
+            Showing{" "}
+            <FeedMenu
+              name="needs"
+              label={needsMe ? NEEDS_WORD : EVERYTHING_WORD}
+              title="Whether the list is only the posts waiting on you (m)"
+              open={pick === "needs"}
+              setOpen={setPick}
+            >
+              <button
+                type="button"
+                role="menuitemradio"
+                data-needs="me"
+                aria-checked={needsMe}
+                onClick={() => {
+                  setPick(null);
+                  chooseNeeds(true);
+                }}
+              >
+                <span>What needs me</span>
+                <span className="feed-menu-note">a ruling or an answer is waiting</span>
+              </button>
+              <button
+                type="button"
+                role="menuitemradio"
+                data-needs="all"
+                aria-checked={!needsMe}
+                onClick={() => {
+                  setPick(null);
+                  chooseNeeds(false);
+                }}
+              >
+                <span>Everything</span>
+                <span className="feed-menu-note">every post Babel has produced</span>
+              </button>
+            </FeedMenu>
+            {" · sorted by "}
+            <FeedMenu
+              name="sort"
+              wide
+              label={windowed(sort) ? `${SORT_WORD[sort]} · ${WINDOW_LABEL[t]}` : SORT_WORD[sort]}
+              title={SORT_BASIS[sort]}
+              open={pick === "sort"}
+              setOpen={setPick}
+            >
+              <div className="feed-menu-column" role="group" aria-label="Order">
+                {FEED_SORTS.map((name) => (
                   <button
                     type="button"
                     key={name}
-                    data-window={name}
-                    aria-pressed={t === name}
-                    onClick={() => select("t", name === "day" ? "" : name)}
+                    role="menuitemradio"
+                    data-sort={name}
+                    aria-checked={sort === name}
+                    title={SORT_BASIS[name]}
+                    onClick={() => {
+                      // An order computed over a period needs the period, so
+                      // choosing one of those two opens the column that names
+                      // it rather than closing and asking for a second press.
+                      if (!windowed(name)) setPick(null);
+                      select("sort", name);
+                    }}
                   >
-                    {WINDOW_LABEL[name]}
+                    {SORT_LABEL[name]}
                   </button>
                 ))}
               </div>
-            )}
-            {/* The kinds and the one filter that is not a kind, on the same
-                row as the ordering because they are the same gesture — what
-                to read and in what order — and two rows of controls above a
-                list is the header growing into the page it is a handle
-                for. */}
-            <div className="feed-kinds" role="group" aria-label="Kind">
+              {/* The period belongs to the two orders that read it and is
+                  absent for the four that do not: a period selector beside
+                  "newest" is a control that does nothing and does not say
+                  so. */}
+              {windowed(sort) && (
+                <div className="feed-menu-column" role="group" aria-label="Period">
+                  <p className="feed-menu-head">Over</p>
+                  {FEED_WINDOWS.map((name) => (
+                    <button
+                      type="button"
+                      key={name}
+                      role="menuitemradio"
+                      data-window={name}
+                      aria-checked={t === name}
+                      onClick={() => {
+                        setPick(null);
+                        select("t", name === "day" ? "" : name);
+                      }}
+                    >
+                      {WINDOW_LABEL[name]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </FeedMenu>
+            {" · "}
+            <FeedMenu
+              name="kinds"
+              label={kindsWord(kinds)}
+              title="Which kinds of post are in the list (c)"
+              open={pick === "kinds"}
+              setOpen={setPick}
+            >
               <button
                 type="button"
-                data-chip="needs-me"
-                className={needsMe ? "chip active feed-needs" : "chip feed-needs"}
-                aria-pressed={needsMe}
-                title="Only the posts waiting on you: a record awaiting a ruling, or a question awaiting your answer."
-                onClick={toggleNeeds}
+                role="menuitemradio"
+                data-kind="all"
+                aria-checked={kinds.length === 0}
+                onClick={() => {
+                  setPick(null);
+                  select("kind", "");
+                }}
               >
-                Needs me
+                <span className="feed-menu-tick" aria-hidden="true">
+                  {kinds.length === 0 ? "✓" : ""}
+                </span>
+                <span>All kinds</span>
               </button>
-              <button
-                type="button"
-                data-chip="all"
-                className={kinds.length === 0 ? "chip active" : "chip"}
-                aria-pressed={kinds.length === 0}
-                onClick={() => select("kind", "")}
-              >
-                Everything
-              </button>
+              {/* A set rather than a choice, so the menu stays open while it
+                  is being built: pressing a second kind widens the list, and
+                  a menu that closed after the first would make widening a
+                  four-press gesture. */}
               {FEED_KINDS.map((kind) => (
                 <button
                   type="button"
                   key={kind}
-                  data-chip={`kind-${kind}`}
-                  className={kinds.includes(kind) ? "chip active" : "chip"}
-                  aria-pressed={kinds.includes(kind)}
+                  role="menuitemcheckbox"
+                  data-kind={kind}
+                  aria-checked={kinds.includes(kind)}
                   onClick={() => toggleKind(kind)}
                 >
-                  {kindLabel(kind)}
+                  <span className="feed-menu-tick" aria-hidden="true">
+                    {kinds.includes(kind) ? "✓" : ""}
+                  </span>
+                  <span>{kindLabel(kind)}</span>
                 </button>
               ))}
-            </div>
-          </div>
-
-          <p className="feed-basis">
-            {SORT_BASIS[sort]}
-            {built && <> Ranked {built.relative}.</>}{" "}
-            <span className="feed-keys">
-              j/k move · ↵ open · y/n/d accept, reject, defer · f refine · q ask
-            </span>
+            </FeedMenu>
+            {answer && <span className="feed-count"> · {total.toLocaleString()}</span>}
+            {built && <span className="feed-ranked"> · ranked {built.relative}</span>}
           </p>
 
           {/* Every act on a row happens in place, so the page says what it
@@ -460,125 +704,154 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
             </p>
           )}
 
-          {loading && !posts && (
-            <div className="surface state-note">
-              <span className="spinner" /> Reading the feed…
-            </div>
-          )}
+          {/* The list, and the floor under it. The floor is what stops a
+              narrower answer from shortening the page: without it, moving from
+              fifteen rows to two pulled the footer up nine hundred pixels and
+              took the sticky rail with it, so every filter change was a jump
+              as well as a read. */}
+          <div className="feed-results" aria-busy={loading || appending}>
+            {/* A read is in flight. It is a line rather than a spinner
+                because the rows under it are still true — a spinner over live
+                content says the content is not there. */}
+            {(loading || appending) && <span className="feed-progress" aria-hidden="true" />}
 
-          {error && (
-            <div className="surface state-note error-state">
-              <strong>The feed could not be read.</strong>
-              <span>{error}</span>
-              <button type="button" onClick={load}>
-                Try again
-              </button>
-            </div>
-          )}
+            {/* A cold load, drawn as the rows it is about to be. The blocks
+                are inside the row's own elements, so their height is the real
+                row's height by construction rather than by a number somebody
+                has to keep in step.
 
-          {!loading &&
-            !error &&
-            shown.length === 0 &&
-            (needsMe && kinds.length === 0 && topic === "" ? (
-              <div className="surface state-note empty-state">
-                <span className="empty-icon" aria-hidden="true">◇</span>
-                <strong>Nothing is waiting on you</strong>
-                <span>
-                  Records arrive here when exploration develops them far enough to be worth a
-                  ruling.{" "}
-                  <button type="button" className="link-button" onClick={toggleNeeds}>
-                    Read everything
-                  </button>{" "}
-                  in the meantime.
-                </span>
-              </div>
-            ) : filtered ? (
-              <div className="surface state-note empty-state">
-                <span className="empty-icon" aria-hidden="true">◇</span>
-                <strong>Nothing matches this view</strong>
-                <span>
-                  That is a statement about the filters, not about what Babel has produced.{" "}
-                  <button
-                    type="button"
-                    className="link-button"
-                    onClick={() => navigate(`/?needs=${NEEDS_ALL}`)}
-                  >
-                    Clear them
-                  </button>
-                  .
-                </span>
-              </div>
-            ) : sort === "rising" ? (
-              <div className="surface state-note empty-state">
-                <span className="empty-icon" aria-hidden="true">◇</span>
-                <strong>Nothing has been voted on or commented in the last twelve hours</strong>
-                <span>
-                  Rising is activity against age, so an unvisited deployment has none.{" "}
-                  <Link to={`/?needs=${NEEDS_ALL}`}>Read the feed hot</Link> instead.
-                </span>
-              </div>
-            ) : (
-              <div className="surface state-note empty-state">
-                <span className="empty-icon" aria-hidden="true">◇</span>
-                <strong>Babel has not posted anything yet</strong>
-                <span>
-                  Every record it produces appears here. Nothing is running until a run is
-                  started under <Link to="/watch">Watch</Link>.
-                </span>
-              </div>
-            ))}
+                It is deliberately not a `.feed-list`: that class means "these
+                are posts" to every reader and to every test that waits for
+                one, and a placeholder wearing it would be fifteen rows of
+                nothing answering to the name. */}
+            {posts === null && loading && !error && (
+              <ol className="feed-waiting" aria-hidden="true">
+                {SKELETON_ROWS.map((row) => (
+                  <li className="feed-row feed-skeleton" key={row}>
+                    <span className="feed-claim">
+                      <span className="feed-skeleton-block">&nbsp;</span>
+                    </span>
+                    <span className="feed-facts">
+                      <span className="feed-skeleton-block">&nbsp;</span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
 
-          {shown.length > 0 && (
-            <ol className="feed-list">
-              {shown.map((post, index) => (
-                <FeedRow
-                  key={post.id}
-                  post={post}
-                  focused={index === focus}
-                  acted={acted[post.id]}
-                  onFocus={() => setFocus(index)}
-                  onActed={(act, message) => {
-                    setActed((current) => ({
-                      ...current,
-                      [post.id]: { act, at: Date.now() },
-                    }));
-                    setAnnouncement(message);
-                    // A question is a comment, and the count beside the claim
-                    // is the one number on the row that moves the moment it is
-                    // recorded: the thread is read live, while the feed's own
-                    // projection is rebuilt on its own schedule.
-                    if (act === "ask") {
-                      setPosts((current) =>
-                        (current ?? []).map((row) =>
-                          row.id === post.id ? { ...row, comments: row.comments + 1 } : row,
-                        ),
-                      );
-                    }
-                  }}
-                  register={(element) => {
-                    if (element) rows.current.set(post.id, element);
-                    else rows.current.delete(post.id);
-                  }}
-                />
+            {error && (
+              <div className="surface state-note error-state">
+                <strong>The feed could not be read.</strong>
+                <span>{error}</span>
+                <button type="button" onClick={load}>
+                  Try again
+                </button>
+              </div>
+            )}
+
+            {!loading &&
+              !error &&
+              shown.length === 0 &&
+              (needsMe && kinds.length === 0 && topic === "" ? (
+                <div className="surface state-note empty-state">
+                  <span className="empty-icon" aria-hidden="true">◇</span>
+                  <strong>Nothing is waiting on you</strong>
+                  <span>
+                    Records arrive here when exploration develops them far enough to be worth a
+                    ruling.{" "}
+                    <button type="button" className="link-button" onClick={toggleNeeds}>
+                      Read everything
+                    </button>{" "}
+                    in the meantime.
+                  </span>
+                </div>
+              ) : filtered ? (
+                <div className="surface state-note empty-state">
+                  <span className="empty-icon" aria-hidden="true">◇</span>
+                  <strong>Nothing matches this view</strong>
+                  <span>
+                    That is a statement about the filters, not about what Babel has produced.{" "}
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => navigate(`/?needs=${NEEDS_ALL}`)}
+                    >
+                      Clear them
+                    </button>
+                    .
+                  </span>
+                </div>
+              ) : sort === "rising" ? (
+                <div className="surface state-note empty-state">
+                  <span className="empty-icon" aria-hidden="true">◇</span>
+                  <strong>Nothing has been voted on or commented in the last twelve hours</strong>
+                  <span>
+                    Rising is activity against age, so an unvisited deployment has none.{" "}
+                    <Link to={`/?needs=${NEEDS_ALL}`}>Read the feed hot</Link> instead.
+                  </span>
+                </div>
+              ) : (
+                <div className="surface state-note empty-state">
+                  <span className="empty-icon" aria-hidden="true">◇</span>
+                  <strong>Babel has not posted anything yet</strong>
+                  <span>
+                    Every record it produces appears here. Nothing is running until a run is
+                    started under <Link to="/watch">Watch</Link>.
+                  </span>
+                </div>
               ))}
-            </ol>
-          )}
 
-          {shown.length > 0 && shown.length < total && (
-            <div className="feed-more">
-              <button type="button" onClick={more} disabled={appending}>
-                {appending && <span className="spinner small" />}
-                {appending ? "Reading…" : `Show ${Math.min(PAGE_SIZE, total - shown.length)} more`}
-              </button>
-              <span className="muted">
-                {shown.length.toLocaleString()} of {total.toLocaleString()}
-              </span>
-            </div>
-          )}
+            {shown.length > 0 && (
+              <ol className="feed-list">
+                {shown.map((post, index) => (
+                  <FeedRow
+                    key={post.id}
+                    post={post}
+                    focused={index === focus}
+                    acted={acted[post.id]}
+                    onFocus={() => setFocus(index)}
+                    onActed={(act, message) => {
+                      setActed((current) => ({
+                        ...current,
+                        [post.id]: { act, at: Date.now() },
+                      }));
+                      setAnnouncement(message);
+                      // A question is a comment, and the count beside the claim
+                      // is the one number on the row that moves the moment it is
+                      // recorded: the thread is read live, while the feed's own
+                      // projection is rebuilt on its own schedule.
+                      if (act === "ask") {
+                        setPosts((current) =>
+                          (current ?? []).map((row) =>
+                            row.id === post.id ? { ...row, comments: row.comments + 1 } : row,
+                          ),
+                        );
+                      }
+                    }}
+                    register={(element) => {
+                      if (element) rows.current.set(post.id, element);
+                      else rows.current.delete(post.id);
+                    }}
+                  />
+                ))}
+              </ol>
+            )}
 
-          {shown.length > 0 && shown.length >= total && total > PAGE_SIZE && (
-            <p className="feed-end">That is all {total.toLocaleString()} of them.</p>
-          )}
+            {shown.length > 0 && shown.length < total && (
+              <div className="feed-more">
+                <button type="button" onClick={more} disabled={appending}>
+                  {appending ? "Reading…" : `Show ${Math.min(PAGE_SIZE, total - shown.length)} more`}
+                </button>
+                <span className="muted">
+                  {shown.length.toLocaleString()} of {total.toLocaleString()}
+                </span>
+              </div>
+            )}
+
+            {shown.length > 0 && shown.length >= total && total > PAGE_SIZE && (
+              <p className="feed-end">That is all {total.toLocaleString()} of them.</p>
+            )}
+          </div>
         </div>
 
         {wide && (
@@ -594,17 +867,27 @@ function FeedPage({ heading }: { heading?: ReactNode } = {}) {
 
 // One post.
 //
-// The score, the claim, the facts a reader decides with, why it is next when
-// it is, and the acts it invites when it is waiting on him. A fact this record
-// does not have is absent rather than empty — an unattributed record carries
-// no "by", an unfiled one carries no topic, an unassessed one carries no score
-// — and no absence is rendered as a dash on a row that has twenty-five
-// neighbours.
+// Two lines and no box: the claim as a link, then the facts a reader decides
+// with — Babel's score when there is one, what kind of thing it is, where it
+// is filed, who wrote it, how old it is, how much has been said about it. A
+// fact this record does not have is absent rather than empty: an unattributed
+// record carries no "by", an unfiled one carries no topic, and an unassessed
+// one carries no score.
 //
-// The controls are on the awaiting rows only. A row that offered a ruling on a
-// record already ruled on would be offering to overwrite an append-only
-// decision, and one that offered it on a question would be offering to rule on
-// something answered somewhere else.
+// The score used to hold a column of its own with an em dash in it wherever
+// no reviewer had voted, which on the arriving front page was most rows: a
+// 44px gutter of dashes down the left of the list, spending the reader's first
+// glance on an absence. It is a figure at the head of the fact line now, and
+// a record nobody has assessed simply has no figure.
+//
+// The acts are hidden until the row is under the pointer, holds the keyboard,
+// or is the row `j`/`k` put the focus on. Five controls on every waiting row
+// meant seventy-five buttons on the first screen — the operator asked whether
+// a row needs its acts "at all time, or only on hover", and the answer a list
+// of fifteen gives is on hover. They are still on the awaiting rows only: a
+// row that offered a ruling on a record already ruled on would be offering to
+// overwrite an append-only decision, and one that offered it on a question
+// would be offering to rule on something answered somewhere else.
 function FeedRow({
   post,
   focused,
@@ -624,13 +907,11 @@ function FeedRow({
   const [first, second, ...rest] = post.topics;
   const kind = RECORD_KINDS[post.kind];
   // What Babel's reviewers said, for the one gesture that explains the
-  // number. A record no reviewer has assessed says so rather than reading as
-  // nought support and nought opposition, which §8.5 refuses: an unreviewed
-  // record rendered as a zero reads as one nobody objected to.
+  // number. A record no reviewer has assessed carries no figure rather than a
+  // zero, which §8.5 refuses: an unreviewed record rendered as a zero reads as
+  // one nobody objected to.
   const voted = post.support + post.oppose + post.unsure > 0;
-  const breakdown = voted
-    ? `Babel's reviewers: ${post.support} support, ${post.oppose} oppose, ${post.unsure} unsure`
-    : "Babel's reviewers have not assessed this yet.";
+  const breakdown = `Babel's reviewers: ${post.support} support, ${post.oppose} oppose, ${post.unsure} unsure`;
   const recorded = acted ? formatTime(new Date(acted.at).toISOString()) : null;
   return (
     <li
@@ -643,78 +924,76 @@ function FeedRow({
       onFocus={onFocus}
       aria-label={`${kindLabel(post.kind)}: ${post.title}`}
     >
-      {/* Babel's score, read-only, with what it is made of one gesture away.
-          It is a figure and is set as one; it is not a control, because the
-          operator does not vote. */}
-      <span className="feed-score" title={breakdown} aria-label={breakdown}>
-        {voted ? post.score : "—"}
-      </span>
-      <div className="feed-body">
-        {/* The row's own filings travel with the click. There is no route
-            that reads one record's filings — the peel carries none — so the
-            topics a reader can see on the row are the topics the page he
-            opens can show, and the alternative is a post that loses what it
-            is about by being opened. */}
-        <Link
-          className="feed-claim untrusted-inline"
-          to={post.href}
-          state={{ topics: post.topics }}
-        >
-          {post.title || "a record with no title recorded"}
-        </Link>
-        <span className="feed-facts">
-          <Badge label={kindLabel(post.kind)} tone={KIND_TONES[post.kind]} />
-          {first && (
-            <Link className="feed-topic" to={`/t/${encodeURIComponent(first)}`}>
-              t/{first}
-            </Link>
-          )}
-          {second && (
-            <Link className="feed-topic" to={`/t/${encodeURIComponent(second)}`}>
-              t/{second}
-            </Link>
-          )}
-          {rest.length > 0 && (
-            <span className="feed-topic" title={rest.map((name) => `t/${name}`).join(" · ")}>
-              +{rest.length}
-            </span>
-          )}
-          {post.author && (
-            <Link className="feed-author" to={post.author.href}>
-              by {post.author.run_id}
-            </Link>
-          )}
-          {created && (
-            <time className="feed-age" dateTime={post.created_at} title={created.absolute}>
-              {created.relative}
-            </time>
-          )}
-          {post.comments > 0 && (
-            <Link className="feed-comments" to={`${post.href}#comments`}>
-              {post.comments.toLocaleString()} {post.comments === 1 ? "comment" : "comments"}
-            </Link>
-          )}
-        </span>
-        {/* Why it is next, from the fields the post's own store returned. It
-            is the one fact on the row a reader cannot reconstruct for
-            himself, and it is absent rather than empty for a post nobody is
-            waiting on. */}
-        {post.awaiting && post.why && <span className="feed-why">{post.why}</span>}
-        {/* What he did, in place of what he could do. It stays until the next
-            read: the standing the read carries is the store's answer, and
-            this is the receipt for the moment in between. */}
-        {acted && (
-          <span className="feed-acted" data-act={acted.act}>
-            {ACT_DONE[acted.act]}
-            {recorded && ` · ${recorded.relative}`}
+      {/* The row's own filings travel with the click. There is no route
+          that reads one record's filings — the peel carries none — so the
+          topics a reader can see on the row are the topics the page he
+          opens can show, and the alternative is a post that loses what it
+          is about by being opened. */}
+      <Link className="feed-claim untrusted-inline" to={post.href} state={{ topics: post.topics }}>
+        {post.title || "a record with no title recorded"}
+      </Link>
+      <span className="feed-facts">
+        {/* Babel's score, read-only, with what it is made of one gesture
+            away. It is a figure and is set as one; it is not a control,
+            because the operator does not vote. */}
+        {voted && (
+          <span className="feed-score" title={breakdown} aria-label={breakdown}>
+            {post.score}
           </span>
         )}
-        {!acted && post.awaiting && kind && (
-          <div className="feed-acts">
-            <RuleActs id={post.id} kind={kind} acts={ROW_ACTS} onActed={onActed} />
-          </div>
+        <span className="feed-kind" data-tone={KIND_TONES[post.kind]}>
+          {kindLabel(post.kind)}
+        </span>
+        {first && (
+          <Link className="feed-topic" to={`/t/${encodeURIComponent(first)}`}>
+            t/{first}
+          </Link>
         )}
-      </div>
+        {second && (
+          <Link className="feed-topic" to={`/t/${encodeURIComponent(second)}`}>
+            t/{second}
+          </Link>
+        )}
+        {rest.length > 0 && (
+          <span className="feed-topic" title={rest.map((name) => `t/${name}`).join(" · ")}>
+            +{rest.length}
+          </span>
+        )}
+        {post.author && (
+          <Link className="feed-author" to={post.author.href}>
+            by {post.author.run_id}
+          </Link>
+        )}
+        {created && (
+          <time className="feed-age" dateTime={post.created_at} title={created.absolute}>
+            {created.relative}
+          </time>
+        )}
+        {post.comments > 0 && (
+          <Link className="feed-comments" to={`${post.href}#comments`}>
+            {post.comments.toLocaleString()} {post.comments === 1 ? "comment" : "comments"}
+          </Link>
+        )}
+      </span>
+      {/* Why it is next, from the fields the post's own store returned. It
+          is the one fact on the row a reader cannot reconstruct for
+          himself, and it is absent rather than empty for a post nobody is
+          waiting on. */}
+      {post.awaiting && post.why && <span className="feed-why">{post.why}</span>}
+      {/* What he did, in place of what he could do. It stays until the next
+          read: the standing the read carries is the store's answer, and
+          this is the receipt for the moment in between. */}
+      {acted && (
+        <span className="feed-acted" data-act={acted.act}>
+          {ACT_DONE[acted.act]}
+          {recorded && ` · ${recorded.relative}`}
+        </span>
+      )}
+      {!acted && post.awaiting && kind && (
+        <div className="feed-acts">
+          <RuleActs id={post.id} kind={kind} acts={ROW_ACTS} onActed={onActed} plain />
+        </div>
+      )}
     </li>
   );
 }

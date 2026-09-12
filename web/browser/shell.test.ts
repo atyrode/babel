@@ -129,7 +129,8 @@ async function landed(prefix: string): Promise<string> {
 function rendered(): Promise<unknown> {
   return page.waitForFunction(
     () => document.querySelector("main .page") !== null
-      && document.querySelector(".state-note .spinner") === null,
+      && document.querySelector(".state-note .spinner") === null
+      && document.querySelector(".feed-skeleton") === null,
     { timeout: 15_000 },
   );
 }

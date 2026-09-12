@@ -26,6 +26,17 @@
   margin-bottom: 0;
 }
 
+/* How much is filed here, and how much of it is waiting. A figure, so it is
+   mono; it is the header's own count and not the feed's, which is at the end
+   of the sentence below. */
+.topic-header .topic-posts {
+  margin: 0;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /* What kind of thing this is, and what it is bound to, on one line. The badge
    is the kind; the binding is muted because it is evidence about the topic
    rather than the topic. */

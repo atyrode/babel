@@ -181,7 +181,7 @@ function ArchivePage() {
                 {verifying === "standard" && <span className="spinner small" />}
                 {verifying === "standard" ? "Verifying…" : "Verify"}
               </button>
-              <button type="button" className="danger-button" onClick={() => runVerification(true)} disabled={verifying !== null}>
+              <button type="button" onClick={() => runVerification(true)} disabled={verifying !== null}>
                 {verifying === "deep" && <span className="spinner small" />}
                 {verifying === "deep" ? "Deep verification running…" : "Deep verify"}
               </button>

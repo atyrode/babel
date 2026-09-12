@@ -123,7 +123,23 @@
 /* On a card the stop takes the far end of the footer, away from the link that
  * opens the receipt: the two are a destructive act and a navigation, and a
  * hand reaching for one must not graze the other. In a table row it is the
- * row's own last cell and needs no pushing. */
+ * row's own last cell and needs no pushing.
+ *
+ * It is a quiet button in `--bad` ink rather than a tinted box of its own.
+ * Ending somebody's run is the consequence, and the colour is the whole of
+ * what distinguishes it: a second button *shape* for destructive acts was one
+ * of the five the surface used to carry. */
+.watch-page .live-stop {
+  color: var(--bad-ink);
+}
+
+.watch-page .live-stop:hover:not(:disabled),
+.watch-page .live-stop:focus-visible {
+  border-color: var(--bad-line);
+  color: var(--bad);
+  background: var(--bad-soft);
+}
+
 .watch-page .live-card-foot .live-stop {
   margin-left: auto;
 }
@@ -792,7 +808,7 @@
 }
 
 .spend-ceilings .spend-duty input {
-  margin-top: 0.2rem;
+  margin-top: var(--space-1);
 }
 
 .spend-ceilings .spend-duty > span {

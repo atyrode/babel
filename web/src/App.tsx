@@ -41,7 +41,6 @@ import {
   ShellControls,
   ShellFooter,
   TellBabel,
-  useDensity,
 } from "./shell";
 
 const LOCK_PROMPT =
@@ -102,7 +101,6 @@ function App() {
   // while he is reading something else, and navigating away from that to
   // write it down is how a complaint goes unwritten.
   const [tellOpen, setTellOpen] = useState(false);
-  const { density, setDensity } = useDensity();
 
   // Arriving 900px into a record because the previous page was scrolled there
   // is the kind of fault that makes an interface feel haunted. Every route
@@ -169,15 +167,12 @@ function App() {
     };
   }, []);
 
+  // The footer wears the whole build string, and nothing else does: a
+  // describe-style version is forty characters of commit and timestamp, and in
+  // the wordmark it pushed the navigation onto a second row on a 1440px screen
+  // — the chrome growing to fit an identifier nobody reads at a glance.
   const versionLabel = version
     ? `${version.version}${version.dirty ? " · dirty" : ""}`
-    : "version unavailable";
-  // The header wears the release and the footer wears the whole build string.
-  // A describe-style version is forty characters of commit and timestamp, and
-  // in the wordmark it pushed the navigation onto a second row on a 1440px
-  // screen — the chrome growing to fit an identifier nobody reads at a glance.
-  const shortVersion = version
-    ? `${version.version.split("-")[0]}${version.dirty ? " · dirty" : ""}`
     : "version unavailable";
 
   // The confirmation is a native dialog, matching how the archive section
@@ -227,18 +222,13 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        {/* The wordmark is the way home, and home is the feed. It carries no
-            nav entry of its own because Home is the first one. */}
-        <Link className="brand-block" to="/" title="The feed">
-          <span className="brand-mark" aria-hidden="true">B</span>
-          <div>
-            <div className="brand">Babel</div>
-            <div className="version" title={version ? `${versionLabel} · ${version.commit} · ${version.go} · ${version.platform}` : undefined}>
-              {shortVersion}
-            </div>
-          </div>
-        </Link>
-        <div className="topbar-actions">
+        <div className="topbar-where">
+          {/* The wordmark is the way home, and home is the feed. It carries no
+              nav entry of its own because Home is the first one, and no build
+              string: the footer is where a version is read. */}
+          <Link className="brand" to="/" title="The feed">
+            Babel
+          </Link>
           {/* Three destinations, and the fourth — search — is the palette
               rather than a word in the row (§8.7). Nothing here is the name
               of a record kind or of a place Babel keeps bytes: the kinds are
@@ -289,46 +279,30 @@ function App() {
               Settings
             </NavLink>
           </nav>
-          {/* The instruments and the stop, in one cluster. They are grouped
-              rather than loose in the row because the narrow header stacks
-              them under the navigation as a unit: brand and destinations on
-              one row, what is running and what can be pressed on the next.
-
-              The live mark renders only while something is running, so the
-              cluster is one control shorter on a quiet deployment; Tell Babel,
-              search, density and the key hints fold into a single … menu below
-              640px, which ShellControls decides. */}
-          <div className="shell-instruments">
-            <LiveIndicator />
-            <ShellControls
-              density={density}
-              setDensity={setDensity}
-              onKeyHints={() => setHintsOpen(true)}
-              onTell={() => setTellOpen(true)}
-            />
-            {/* The stop control lives in the shell rather than on a page
-                because it ends the whole session, not one page's work, and it
-                is never folded into a menu: it is the one thing the operator
-                may need in a hurry. */}
-            <button
-              type="button"
-              className="danger-button lock-button"
-              onClick={lockAndStop}
-              disabled={stopping}
-              title="Revoke this session and stop this server"
-            >
-              {stopping && <span className="spinner small" />}
-              {stopping ? "Stopping…" : "Lock & stop"}
-            </button>
-          </div>
+          {/* What is running, beside the destination it links to. It renders
+              nothing at all on a quiet deployment, so the header is one mark
+              shorter when there is nothing to report. */}
+          <LiveIndicator />
+        </div>
+        {/* Search, the capture box, and one menu holding the keys and the
+            stop. Below 640px the first two join the menu, which ShellControls
+            decides: the stylesheet decides where the row sits, this decides
+            what is in it, and the two share NARROW_HEADER. */}
+        <div className="topbar-actions">
+          <ShellControls
+            onKeyHints={() => setHintsOpen(true)}
+            onTell={() => setTellOpen(true)}
+            onLock={lockAndStop}
+            stopping={stopping}
+          />
         </div>
       </header>
 
       {failure && !stale && (
         <div className="error-banner" role="alert">
           <span>{failure.message}</span>
-          <button type="button" className="icon-button" onClick={dismissAPIError} aria-label="Dismiss error">
-            ×
+          <button type="button" onClick={dismissAPIError} aria-label="Dismiss error">
+            Dismiss
           </button>
         </div>
       )}
