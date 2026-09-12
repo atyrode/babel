@@ -542,10 +542,16 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
         blank(text(row["related_id"]) || field(document, "related_id")), text(row["created_at"]),
       ]);
     } else if (kind === "policy") {
+      // The Go policy is snake_case on the wire; the coordinator's PolicySchema is camelCase
+      // with a measured default per field, so an unrenamed payload would parse as every default.
       const policy = nested(document, "policy");
+      const renamed: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(policy)) {
+        renamed[key.replace(/_([a-z])/gu, (_, letter: string) => letter.toUpperCase())] = value;
+      }
       policyRows.push([
         field(policy, "version"), count(row["seq"]), text(row["actor_id"]),
-        field(document, "reason"), JSON.stringify(policy), text(row["created_at"]),
+        field(document, "reason"), JSON.stringify(renamed), text(row["created_at"]),
       ]);
     }
   }
@@ -622,9 +628,12 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     if (!entityIds.has(entityId)) continue;
     const id = text(row["id"]);
     const event = aliasState.get(id);
+    // The Go store keyed an alias by a sealed digest; on the hub the value is plain, and the
+    // acts resolve a topic by name through value_key, so the key is the normalized value itself.
+    const value = field(payload(row["payload_json"]), "value");
     aliasRows.push([
-      id, entityId, text(row["alias_kind"]), field(payload(row["payload_json"]), "value"),
-      text(row["value_key"]),
+      id, entityId, text(row["alias_kind"]), value,
+      value.trim().toLowerCase(),
       event !== undefined && text(event["state"]) === "retired" ? text(event["recorded_at"]) : null,
       text(row["created_at"]),
     ]);
