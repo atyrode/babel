@@ -121,6 +121,63 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   §4.13's triage recipe has yet to revisit them. The observation is
   read-only, runs once per distinct workspace per scan, and never writes to
   a checkout (SPEC §4.13).
+<<<<<<< ours
+- **Babel proposes a topic; the operator creates it.** A topic question is
+  the Reality Ledger's answer to a name a run cannot resolve (SPEC §4.8,
+  §4.13): it names the entity it would create — kind, binding, aliases, why
+  — the records it would file under it, and the entities it weighed and
+  rejected, and it waits in the Reality Inbox with every other question.
+  Accepting one mints the subject with its typed names and its binding facts
+  under the accepting operator's authority and files the records the
+  proposal named; declining one keeps the reason verbatim and suppresses the
+  same proposal until more sessions stand behind it than there were when he
+  refused. Two proposals of one repository are one question, because a topic
+  question is keyed by the identity it proposes rather than by its wording,
+  and an identity that already binds a live entity is refused with that
+  entity named. `babel topics seed` raises one per repository identity this
+  host observed and is idempotent by construction — bound, already
+  proposed, or declined with nothing new to say — and `babel topics` lists
+  what the operator accepted beside what is still waiting. Interest is not a
+  preference knob: *working on it*, *keep an eye*, *not now* and *excluded*
+  are §4.8's lifecycle and analysis-policy facts, each an attributed act
+  whose reason is kept verbatim and whose predecessor is superseded rather
+  than edited, so a paused project is paused everywhere Babel looks;
+  retiring a topic is a lifecycle fact too, and nothing is deleted.
+- **Filing is a link, and a topic is an entity.** A record's membership in a
+  topic is now an append-only filing in the frontier — record to Reality
+  Ledger entity, carrying its rationale and its author — published as an
+  `about` edge whose kind and endpoints travel in the clear while the reason
+  stays sealed with the record (migrations/0015). Re-filing supersedes,
+  unfiling withdraws with a reason, and both rows survive, so where a record
+  was filed and why is readable rather than inferred. `GET /api/topics` is
+  three lists in one answer: the topics the operator accepted, ordered by his
+  own stance — working, watching, nothing said, not now, excluded — with what
+  each is bound to and how much is filed under it; the topics Babel has
+  proposed and nobody has answered; and the count of records nothing has
+  filed. A post's topics in `/api/feed` are the entities it is filed under and
+  `?topic=` takes either a name or an id, so a repository name Babel derived
+  is a proposal rather than a community until somebody accepts it — which,
+  until an entity exists, makes every post unfiled, and saying so is the
+  point. `POST /api/record/{id}/file` and `/unfile` are the operator's own two
+  acts, and a name the ledger does not hold is a 404 that says so: filing does
+  not create an entity (SPEC §4.13).
+||||||| base
+=======
+- **Not interested is a signal, not a deletion.** A topic's page states what
+  the operator thinks of it — *working on it*, *keep an eye*, *not now*,
+  *excluded* — and each is §4.8's lifecycle and analysis-policy facts,
+  attributed to him, with the reason kept verbatim and the revision it
+  replaced still readable; a topic that names two things is split, two that
+  name one are merged, and one that should never have existed is retired,
+  each an append-only §4.8 resolution with a required reason and nothing
+  deleted. The consequence is where it has to be: the review lane now reads
+  the topics a record is *filed* under, not only the names its producing run
+  happened to write down, so pausing a project moves the draws off its
+  records even when nothing in their wording spells its name, and excluding
+  one leaves them as reported gaps rather than making them disappear
+  (`POST /api/topics/{id}/interest`, `/retire`, `/api/topics/merge`,
+  `/api/topics/split`; SPEC §4.13, §4.8, §4.12).
+>>>>>>> theirs
 
 ### Changed
 

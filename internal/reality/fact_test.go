@@ -299,6 +299,7 @@ func TestPredicateFreshnessIsDeclaredPerPredicate(t *testing.T) {
 		PredicateServicePlacement: true,
 		PredicateDeploymentState:  true,
 		PredicateLocalPath:        true,
+		PredicateRepositoryRemote: false,
 	}
 	known := Predicates()
 	if len(known) != len(expected) {

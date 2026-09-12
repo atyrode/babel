@@ -231,6 +231,52 @@ type Options struct {
 	// construction: a *cookbook.Set exposes lookups and nothing that
 	// changes an asset.
 	Cookbook *cookbook.Set
+	// Filings, TopicQuestions and Stance are §4.13's three halves of what a
+	// record is about: the frontier's filings, the ledger's unaccepted topic
+	// proposals, and the operator's recorded stance toward a topic he has
+	// accepted.
+	//
+	// They are three fields rather than one for the reason Focus and
+	// Subjects are separate from Reality: they carry different authorities
+	// over different stores. Filing a record asserts nothing about reality
+	// and can be done by anybody who can read the record; accepting a topic
+	// creates an entity, which §4.8 reserves to an attributed operator act;
+	// recording a stance asserts a fact about the world. A build can wire
+	// any of the three without the others, and the topics page degrades
+	// field by field rather than disappearing: no filings means every post
+	// is unfiled, no proposals means the page offers none, and no stance
+	// reader means the topics render with their interest unset.
+	Filings        FilingService
+	TopicQuestions TopicQuestionService
+	Stance         TopicStanceReader
+	// Topics is §4.13's topic surface over the Reality Ledger: the
+	// operator's stance toward a topic, and the merge, split and
+	// retirement its identity can need.
+	//
+	// It is its own field beside Reality, Focus and Subjects for the
+	// reason those three are separate from each other: it holds a
+	// different authority. Reality reaches the ledger's authoritative
+	// writes only through a plan the operator accepted, because a model
+	// proposed their content; this one carries the operator's own acts on
+	// a topic page, where nothing was proposed by anything and the person
+	// clicking is the authority §4.8 requires.
+	//
+	// Nil is a state rather than a fault, on Complaints' terms: a build
+	// whose ledger did not open keeps every page it already served, and
+	// the topic routes report that this session holds no ledger.
+	Topics TopicLedger
+	// TopicFiler is the one frontier write the topic routes perform: the
+	// records a split moves to the part they belong to (§4.13).
+	//
+	// It is one method for FrontierReviver's reason. Filing is otherwise a
+	// record's own act and is reached from the record's routes; what a
+	// split needs is the ability to complete its own operator act, because
+	// a split whose records stayed under the name the operator has just
+	// said was wrong would have produced an empty topic and left the
+	// evidence behind. Nil leaves the split route reporting that this
+	// session holds no frontier to file into, rather than performing half
+	// of it.
+	TopicFiler TopicFiler
 }
 
 // ReviewService is the §4.7 review surface the web API may reach, satisfied by
@@ -713,6 +759,8 @@ var (
 	_ FrontierReader       = (*frontier.Store)(nil)
 	_ FrontierReviver      = (*frontier.Store)(nil)
 	_ RealityService       = (*reality.Store)(nil)
+	_ TopicLedger          = (*reality.Store)(nil)
+	_ TopicFiler           = (*frontier.Store)(nil)
 	_ FocusPolicyService   = (*reality.FocusPolicy)(nil)
 	_ SubjectNamingService = (*reality.SubjectNaming)(nil)
 	_ DispositionService   = (*disposition.Store)(nil)
@@ -1060,4 +1108,175 @@ type TranscriptReaderFunc func(string, string, int, int) (int, []transcript.Even
 
 func (f TranscriptReaderFunc) Events(path, harness string, offset, limit int) (int, []transcript.Event, error) {
 	return f(path, harness, offset, limit)
+}
+
+// FilingService is §4.13's filing surface: what a record is about, as the
+// frontier stores it. It is satisfied by *frontier.Store.
+//
+// Both halves are here, unlike FrontierReader and FrontierReviver, because
+// unlike a disposition a filing has no service in front of it and needs none:
+// the rules a filing has to satisfy — the record exists, the rationale is
+// stated, the author is named, a re-filing supersedes — are the store's own
+// and are enforced there. What this type bounds is the authority, and the
+// authority a browser has over filings is exactly these five acts: file,
+// unfile, record that a record is about nothing in particular, and read.
+//
+// Unfiled is deliberately absent. It is the evaluation lane's backlog read,
+// answered over the whole corpus, and a page that could ask for it would be a
+// page that could scan the deployment on a click.
+type FilingService interface {
+	File(context.Context, frontier.FilingInput) (frontier.Filing, error)
+	Unfile(ctx context.Context, record frontier.Ref, entityID string,
+		author frontier.FilingAuthor, authorID, reason string) (frontier.Filing, error)
+	NoTopic(ctx context.Context, record frontier.Ref, author frontier.FilingAuthor,
+		authorID, reason string) (frontier.Filing, error)
+	FilingsOf(context.Context, frontier.Ref) ([]frontier.Filing, error)
+	FiledUnder(ctx context.Context, entityID string) ([]frontier.Ref, error)
+}
+
+// TopicProposalView is one topic question as the topics page renders it: the
+// entity a run proposed, what it would be bound to, and why it thinks the
+// topic exists.
+//
+// It is this package's own shape rather than the ledger's, and the reason is
+// the boundary rather than convenience. A proposal is an unaccepted question:
+// it has no entity id, no facts and no aliases, so rendering it through the
+// entity types would mean rendering a subject that does not exist. Stating the
+// six fields a page shows keeps the ledger free to hold whatever a topic
+// question needs, and keeps this surface unable to show anything else.
+type TopicProposalView struct {
+	QuestionID string
+	Name       string
+	Kind       string
+	// Identity is the dedup key the proposal was raised under — a
+	// normalized remote for a repository, a slug for a concept — and
+	// Remote and Paths are the binding it proposes.
+	Identity string
+	Remote   string
+	Paths    []string
+	// Records are the frontier record ids the proposal would file under the
+	// entity if the operator accepted it.
+	Records []string
+	// Why is the proposal's own sentence: "32 sessions in 3 checkouts cite
+	// it".
+	Why string
+}
+
+// TopicQuestionService is §4.13's proposal half: what Babel has proposed as a
+// topic, and the operator's two answers to it.
+//
+// The three methods are the whole authority: a browser can read the open
+// proposals, accept one — which creates the entity and files the records it
+// named, in one act — and decline one with a reason. It cannot create an
+// entity directly, which is §4.8's rule and the reason this is not a widening
+// of SubjectNamingService.
+//
+// It is satisfied by an adapter over the ledger rather than by the store
+// itself, because accepting a topic commits into two stores at once: the
+// ledger's entity and the frontier's filings. The adapter is where those are
+// joined, and this surface names only the act.
+type TopicQuestionService interface {
+	TopicProposals(context.Context) ([]TopicProposalView, error)
+	// AcceptTopic creates the proposed entity and files the records the
+	// proposal named, returning the entity id the operator now owns.
+	AcceptTopic(ctx context.Context, questionID, operator string) (string, error)
+	DeclineTopic(ctx context.Context, questionID, operator, reason string) error
+}
+
+// TopicInterestView is the operator's recorded stance toward one topic, as the
+// topics page shows it: working on it, keeping an eye, not now, excluded, or
+// nothing said (§4.13).
+//
+// The empty state is a real answer and the page renders it as one — a topic
+// nobody has taken a position on is not the same as one deliberately parked —
+// which is why this is four strings rather than a bool and a reason.
+type TopicInterestView struct {
+	State  string
+	Reason string
+	At     string
+	By     string
+}
+
+// TopicStanceReader reads the operator's stance toward one topic.
+//
+// It is read-only and separate from the routes that record a stance, on
+// Focus's terms: the topics listing needs to show what the operator said, and
+// the authority to say something new belongs to the route that asks for a
+// reason.
+type TopicStanceReader interface {
+	TopicInterest(ctx context.Context, entityID string) (TopicInterestView, error)
+}
+
+// TopicStanceFunc adapts a function to TopicStanceReader, which is how the
+// ledger's own interest read is wired without this package importing its
+// types.
+type TopicStanceFunc func(context.Context, string) (TopicInterestView, error)
+
+func (f TopicStanceFunc) TopicInterest(ctx context.Context, entityID string) (TopicInterestView, error) {
+	return f(ctx, entityID)
+}
+
+// TopicLedger is §4.13's topic surface over the Reality Ledger, satisfied by
+// *reality.Store.
+//
+// A topic is a Reality entity and nothing else, so every act a topic page
+// offers is a §4.8 act: the operator's stance toward the subject, the merge
+// that says two names meant one thing, the split that says one name meant
+// two, and the retirement that says a name should never have existed. This is
+// the fourth reality surface in this file, and it is a fourth type rather than
+// four more methods on any of the other three because it holds a fourth
+// authority.
+//
+// RealityService reaches the ledger's authoritative writes only through a plan
+// an operator accepted, because a model proposed their content. The acts here
+// were proposed by nothing: the operator opened a topic he is looking at and
+// said what he thinks about it, which is the attributed operator action §4.8
+// takes as authority itself — the same judgement FocusPolicyService makes
+// about an operator stating what his machines are worth spending on.
+//
+// SetInterest and RetireEntity do assert facts, and the vocabulary is what
+// makes that safe rather than a promise a handler keeps. §4.13 records a
+// stance as §4.8's lifecycle and analysis-policy facts, so these two write
+// exactly those two predicates and only the values the four stances and a
+// retirement spell; there is no method here that takes a predicate, a value or
+// an authority from a request, which is why AssertFact stays forbidden on
+// every surface in this file including this one.
+//
+// Ask, AcceptPlan and CreateEntity are absent, and their absence is the line
+// §4.13 draws between the two halves of the feature. Babel proposes identity
+// and only the operator creates it: a topic *question* is raised by a run and
+// accepted through the Reality Inbox, which is RealityService's AcceptPlan
+// under an operator's explicit acceptance of a displayed plan. A route that
+// could mint an entity from a topic page would be the browser doing what the
+// section reserves for that acceptance — except through SplitEntity, which
+// creates the parts of an identity the operator has just said covers two
+// things, and which cannot be used to name a new subject out of nothing
+// because it needs a parent that already exists.
+//
+// The three reads are the writes' own preconditions, on FocusPolicyService's
+// terms. Entity is how a refusal names the topic it is refusing about,
+// EntityInterest is what the page was showing before the click and what it
+// shows after, and Resolve follows the merge history so a stance stated about
+// a folded identity lands on the entity that now speaks for it.
+type TopicLedger interface {
+	Entity(ctx context.Context, id string) (reality.Entity, error)
+	EntityInterest(ctx context.Context, entityID string) (reality.Interest, error)
+	MergeEntities(ctx context.Context, in reality.MergeInput) (reality.Resolution, error)
+	Resolve(ctx context.Context, id string) (string, error)
+	RetireEntity(ctx context.Context, entityID, operator, reason string) error
+	SetInterest(ctx context.Context, entityID, operator, state, reason string) error
+	SplitEntity(ctx context.Context, in reality.SplitInput) (reality.Resolution, []reality.Entity, error)
+}
+
+// TopicFiler is §4.13's filing write the topic routes may perform, satisfied
+// by *frontier.Store.
+//
+// One method, and it is the one a split cannot finish without: the records the
+// operator named as belonging to the new part have to move with it, in the
+// same request, or the act he authorized happened only halfway. Unfile,
+// NoTopic and the filing reads are absent here because they are the record
+// surface's rather than the topic's, and this type exists so that a handler
+// holding a filer for one purpose cannot quietly grow the others.
+type TopicFiler interface {
+	File(ctx context.Context, in frontier.FilingInput) (frontier.Filing, error)
 }

@@ -318,50 +318,50 @@ func TestTheFeedRanksTheWholeDeploymentBeforeItPages(t *testing.T) {
 	}
 }
 
-// TestTheFeedFilesRecordsUnderTheTopicsTheirEvidenceCameFrom is §8.7's second
-// paragraph: a topic is a community, and it is where the evidence came from
-// rather than anything the record says about itself.
+// TestTheFeedShowsOnlyTheTopicsSomebodyFiled is §4.13's correction to §8.7's
+// first topics, asserted where a reader meets it.
 //
-// The propagation is what is being asserted. Only the observation cites a
-// session; the candidate it develops, the finding that consolidates it and the
-// proposal that rests on that finding all inherit the topic through the
-// development path, which is the whole reason a proposal has a community at
-// all.
-func TestTheFeedFilesRecordsUnderTheTopicsTheirEvidenceCameFrom(t *testing.T) {
+// Stage 1 filed a record under the repository its evidence came from, which
+// made a name Babel derived look exactly like a community somebody agreed to.
+// It does not any more: a post's topics are the ledger entities it has been
+// filed under, so a deployment whose repositories nobody has accepted shows
+// the records unfiled and the repositories as proposals. The fixture here has
+// a cited workspace precisely so that the derivation has something to offer
+// and the feed still refuses to file on it.
+func TestTheFeedShowsOnlyTheTopicsSomebodyFiled(t *testing.T) {
 	h := newPhaseB(t, feedText, withCitedWorkspace)
 
-	var filed feedList
-	decodeResponse(t, h.ok(t, "/api/feed?topic="+feedTopic+"&limit=100"), &filed)
-	got := map[string]bool{}
-	for _, post := range filed.Posts {
-		got[post.ID] = true
-		if !contains(post.Topics, feedTopic) {
-			t.Errorf("%s is in the topic feed with topics %v", post.ID, post.Topics)
-		}
-	}
-	for _, want := range []string{h.hypothesis.ID, h.finding.ID, h.proposal.ID, h.observationID(t)} {
-		if !got[want] {
-			t.Errorf("%s is not filed under %s; the lineage did not propagate", want, feedTopic)
-		}
+	var derived feedList
+	decodeResponse(t, h.ok(t, "/api/feed?topic="+feedTopic+"&limit=100"), &derived)
+	if derived.Total != 0 {
+		t.Errorf("%d posts are filed under the repository name %s that nobody accepted",
+			derived.Total, feedTopic)
 	}
 
+	// What is filed is what the operator filed: the harness's own filing of
+	// the finding under the ledger entity.
 	var topics topicList
 	decodeResponse(t, h.ok(t, "/api/topics"), &topics)
-	var counted topicCount
+	var counted topicRow
 	for _, topic := range topics.Topics {
-		if topic.Name == feedTopic {
+		if topic.ID == h.entity.ID {
 			counted = topic
 		}
+		if topic.Name == feedTopic {
+			t.Errorf("a repository name is a topic before anybody accepted it: %+v", topic)
+		}
 	}
-	if counted.Posts != len(filed.Posts) {
+	var filed feedList
+	decodeResponse(t, h.ok(t, "/api/feed?topic="+h.entity.ID+"&limit=100"), &filed)
+	if counted.Posts != filed.Total || counted.Posts == 0 {
 		t.Errorf("the sidebar counts %d posts under %s and the feed shows %d",
-			counted.Posts, feedTopic, len(filed.Posts))
+			counted.Posts, counted.Name, filed.Total)
 	}
 	if counted.LatestAt == "" {
 		t.Errorf("topic = %+v, want the newest post's time", counted)
 	}
-	// A record whose origin this deployment cannot resolve is in the feed
-	// without a topic rather than hidden, and the sidebar says how many.
+	// A record nothing has filed is in the feed without a topic rather than
+	// hidden, and the sidebar says how many.
 	if topics.Unfiled == 0 {
 		t.Error("no post is unfiled, so the reserved topic asserts nothing")
 	}

@@ -333,7 +333,38 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			// permitted above; writing it belongs to a run.
 			forbidden: []string{"CreateHypothesis", "CreateObservation", "CreateFinding", "CreateProposal",
 				"CreateCandidateProposal", "Decide", "RejectAndRefine", "SetStatus", "Link",
-				"DeferFrontier", "Revive", "Triage", "Close"},
+				"DeferFrontier", "Revive", "Triage", "Close",
+				// §4.13's filings. A record's topics are a read this
+				// surface performs on every front page, and saying what
+				// a record is about is a write: it belongs to
+				// FilingService below, which is the type the two routes
+				// hold, so a page that only reads records cannot file
+				// one.
+				"File", "Unfile", "NoTopic"},
+		},
+		{
+			name:     "filings",
+			surface:  reflect.TypeOf((*FilingService)(nil)).Elem(),
+			concrete: reflect.TypeOf((*frontier.Store)(nil)),
+			// §4.13's five acts: file, unfile, record that a record is
+			// about nothing in particular, and the two reads the topics
+			// page and the feed are assembled from. The writes are here
+			// rather than behind a service because a filing has no
+			// service in front of it and needs none — the rules it has to
+			// satisfy are the store's own, enforced in the store — and
+			// because none of them asserts anything about reality: filing
+			// a record under an entity leaves the ledger believing exactly
+			// what it believed before.
+			permitted: []string{"File", "FiledUnder", "FilingsOf", "NoTopic", "Unfile"},
+			// The backlog read is the one filing operation a browser must
+			// not hold. It is a scan of every record the deployment has
+			// ever written against every live filing, answered for the
+			// evaluation lane once per draw; a page that could ask for it
+			// would put that scan behind a click. EntitiesFiled is the
+			// same read one record at a time and is the lane's too — the
+			// feed reaches the same fact through FiledUnder, which is one
+			// query per topic rather than one per post.
+			forbidden: []string{"Unfiled", "EntitiesFiled", "Close"},
 		},
 		{
 			name:      "frontier reviver",
@@ -389,6 +420,48 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 				"RegisterTrustedSource", "CreateEntity", "AddAlias", "AddRelationship",
 				"RetractAlias", "RetractRelationship", "Ask", "RecordPlan", "RejectPlan",
 				"SetQuestionState", "BeginInterpretation", "ExpireStale", "CaptureSnapshot", "Close"},
+		},
+		{
+			name:     "topics",
+			surface:  reflect.TypeOf((*TopicLedger)(nil)).Elem(),
+			concrete: reflect.TypeOf((*reality.Store)(nil)),
+			permitted: []string{"Entity", "EntityInterest", "MergeEntities", "Resolve",
+				"RetireEntity", "SetInterest", "SplitEntity"},
+			// §4.13's acts on a topic's identity, and the row is where
+			// the widening is justified. MergeEntities and SplitEntity
+			// are forbidden on the reality row above and permitted
+			// here, on the terms the subject-naming row is: the
+			// reality page must not be able to resolve an identity
+			// while it can also assert facts about one, and this
+			// surface can do neither of the two things that would
+			// make that dangerous. SetInterest and RetireEntity do
+			// write facts, and what makes them safe is that they are
+			// not AssertFact: each writes one of two predicates with
+			// the closed vocabulary §4.13 spells, and neither takes a
+			// predicate, a value or an authority from a request.
+			//
+			// Ask, RecordPlan and AcceptPlan are forbidden because
+			// the other half of §4.13 runs through them: a topic
+			// question is raised by a run and accepted through the
+			// Reality Inbox, and a topic page that could raise or
+			// accept one would be minting identity from the surface
+			// that is supposed to be looking at it.
+			forbidden: []string{"AssertFact", "SupersedeFact", "CreateEntity", "AddAlias",
+				"ImportFacts", "PutFocusRules", "RegisterTrustedSource", "Ask", "RecordPlan",
+				"AcceptPlan", "RejectPlan", "UndoResolution", "DisputeFacts", "Close"},
+		},
+		{
+			name:      "topic filer",
+			surface:   reflect.TypeOf((*TopicFiler)(nil)).Elem(),
+			concrete:  reflect.TypeOf((*frontier.Store)(nil)),
+			permitted: []string{"File"},
+			// One method, for FrontierReviver's reason. A split has to
+			// move the records the operator named or it produced an
+			// empty topic; everything else a filing can be — withdrawn,
+			// answered with "no topic", or read back — belongs to the
+			// record surface, and Unfiled is the triage backlog a lane
+			// draws from rather than anything a page writes.
+			forbidden: []string{"Unfile", "NoTopic", "Unfiled", "CreateHypothesis", "Close"},
 		},
 		{
 			name:     "focus policy",

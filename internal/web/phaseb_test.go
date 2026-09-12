@@ -112,6 +112,15 @@ type phaseB struct {
 	complaint  complaint.Complaint
 	superseded complaint.Complaint
 	amended    complaint.Complaint
+	// The three identities §4.13's acts consume. They are their own
+	// entities rather than the subjects above because each act uses one
+	// up: a merge leaves its source speaking for the target, and a split
+	// leaves its parent speaking for its parts, so a route sweep driven
+	// against a shared subject would refuse on its second pass and every
+	// test after it would be measuring that refusal.
+	duplicate reality.Entity
+	canonical reality.Entity
+	divisible reality.Entity
 }
 
 // newPhaseB opens the services, writes one whole §4.2 development path plus one
@@ -172,6 +181,7 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 	h.writeFrontier(text)
 	h.writeActions(text)
 	h.writeReality(text)
+	h.writeFilings(text)
 	h.indexSession(text)
 	h.writeComplaints(text)
 	recipes, err := cookbook.Embedded()
@@ -245,6 +255,31 @@ func newPhaseB(t *testing.T, text string, mutate func(*Options)) *phaseB {
 		// sweep has to see one without a test remembering to ask.
 		// references_test.go describes the fixture.
 		References: referencesFixture(h, text),
+		// §4.13's filings: what a record is about. The frontier is both the
+		// reader and the writer here, which is the store's own shape — a
+		// filing has no service in front of it — and it is wired by
+		// default because the feed's topics are filings now: a harness that
+		// left it out would exercise the front page's vocabulary only in
+		// the tests that remembered to ask.
+		Filings: front,
+		// §4.13's topic proposals, over a fixture rather than the ledger,
+		// for fleetFixture's reason: a proposal's name and its "why" are a
+		// run's wording, so the escaping sweep has to see them without a
+		// test asking. filing_test.go describes the fixture.
+		TopicQuestions: topicQuestionsFixture(h, text),
+		// The operator's stance toward a topic, over the same fixture: the
+		// reason he gave for parking a topic is his own prose.
+		Stance: topicStanceFixture(h, text),
+		// §4.13's topic surface, over the same ledger and the same
+		// frontier, wired by default for the focus surface's reason: a
+		// topic's display name and the operator's reason for retiring,
+		// merging or splitting one are words somebody typed, so the
+		// escaping sweep has to see them without a test remembering to
+		// ask. TopicFiler is the frontier because a split re-files the
+		// records it moves, which is the one filing write these routes
+		// perform.
+		Topics:     ledger,
+		TopicFiler: front,
 	}
 	if mutate != nil {
 		mutate(&opts)
@@ -583,6 +618,31 @@ func (h *phaseB) writeReality(text string) {
 		h.t.Fatalf("RecordPlan: %v", err)
 	}
 	h.plan = plan
+
+	// §4.13's three identities: two repositories that turn out to be one
+	// checkout, and one that turns out to be two things. They carry no
+	// facts, because an act on a topic's identity is not an act on what
+	// Babel believes about it — the routes that merge, split and retire
+	// read the entity and write the resolution or the lifecycle, and a
+	// fixture with a policy already in force would be testing the focus
+	// surface instead.
+	for _, topic := range []struct {
+		display string
+		into    *reality.Entity
+	}{
+		{"a duplicate checkout " + text, &h.duplicate},
+		{"the canonical checkout " + text, &h.canonical},
+		{"two repositories in one name " + text, &h.divisible},
+	} {
+		created, err := h.reality.CreateEntity(h.ctx, reality.EntityInput{
+			Kind:    reality.EntityRepository,
+			Payload: reality.EntityPayload{DisplayName: topic.display},
+		})
+		if err != nil {
+			h.t.Fatalf("CreateEntity: %v", err)
+		}
+		*topic.into = created
+	}
 }
 
 // writeComplaints records what the operator told Babel: one plain complaint,
@@ -945,9 +1005,11 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		// response carrying a line of every record in the deployment, so
 		// it is the widest surface for model wording this server serves.
 		//
-		// The topic list is `fixed` because its every value is a workspace
-		// basename this host resolved out of its own session catalog and a
-		// count — no model wrote any of it.
+		// The topic list is no longer `fixed`: since §4.13 made a topic a
+		// ledger entity, every row on it carries a display name somebody
+		// typed and a proposal's "why" a run wrote, so the escaping sweep
+		// has to hold it to what every other content-bearing read is held
+		// to.
 		{name: "feed", method: http.MethodGet, path: "/api/feed?sort=new&limit=100"},
 		{name: "feed top", method: http.MethodGet, path: "/api/feed?sort=top&t=all"},
 		// The queue, which is the same feed narrowed to what awaits the
@@ -956,7 +1018,33 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 		// a sentence this server composed — the five-word why — and a
 		// sweep that only saw the unfiltered feed would never see one.
 		{name: "feed next", method: http.MethodGet, path: "/api/feed?needs=me&sort=next&limit=100"},
-		{name: "topics", method: http.MethodGet, path: "/api/topics", fixed: true},
+		{name: "topics", method: http.MethodGet, path: "/api/topics"},
+		// §4.13's four filing acts. Filing and unfiling are two paths
+		// rather than one toggle because both append: a withdrawal is a row
+		// that says who stopped believing this and why, so the two are
+		// different acts with different bodies. The topic answers are the
+		// operator's two replies to a proposal, and accepting mints the
+		// entity, which is why it answers 201.
+		{
+			name: "record file", method: http.MethodPost, mutating: true, created: true,
+			path: "/api/record/" + h.hypothesis.ID + "/file",
+			body: `{"entity":"` + h.entity.ID + `","rationale":"the claim is about that project"}`,
+		},
+		{
+			name: "record unfile", method: http.MethodPost, mutating: true,
+			path: "/api/record/" + h.finding.ID + "/unfile",
+			body: `{"entity":"` + h.entity.ID + `","reason":"it turned out to be about the other one"}`,
+		},
+		{
+			name: "topic accept", method: http.MethodPost, mutating: true, created: true,
+			path: "/api/topics/accept",
+			body: `{"question_id":"` + topicProposalQuestionID + `"}`,
+		},
+		{
+			name: "topic decline", method: http.MethodPost, mutating: true,
+			path: "/api/topics/decline",
+			body: `{"question_id":"` + topicProposalQuestionID + `","reason":"that directory is not a project"}`,
+		},
 		// The conversation under a record, read and written at one path.
 		// The read carries the reviewers' prose and the operator's own
 		// words; the writes are the box §8.7 puts under the post, which
@@ -975,6 +1063,38 @@ func phaseBRoutes(h *phaseB) []phaseBRoute {
 			name: "record question", method: http.MethodPost, mutating: true, dual: true, created: true,
 			path: "/api/record/" + h.proposal.ID + "/comments",
 			body: `{"text":"what would this cost on the whole corpus?","kind":"question"}`,
+		},
+		// §4.13's four acts on a topic's own identity. All four are
+		// enrolled because each carries operator prose — a stance's
+		// reason, a retirement's, a merge's, a split's — and because two
+		// of them take an entity id from the path, so a hostile
+		// identifier reaches the router rather than the query parser.
+		//
+		// Each acts on a different subject, because each consumes the
+		// one it names: the sweep runs every route once per harness, and
+		// a merge whose source had already been folded would be
+		// measuring the ledger's refusal instead of the guard.
+		{
+			name: "topic interest", method: http.MethodPost, mutating: true,
+			path: "/api/topics/" + h.entity.ID + "/interest",
+			body: `{"state":"not-now","reason":"the operator is elsewhere this quarter"}`,
+		},
+		{
+			name: "topic retire", method: http.MethodPost, mutating: true,
+			path: "/api/topics/" + h.restricted.ID + "/retire",
+			body: `{"reason":"this name never described one thing"}`,
+		},
+		{
+			name: "topic merge", method: http.MethodPost, mutating: true, path: "/api/topics/merge",
+			body: `{"from":"` + h.duplicate.ID + `","into":"` + h.canonical.ID +
+				`","reason":"the same checkout under two paths"}`,
+		},
+		{
+			name: "topic split", method: http.MethodPost, mutating: true, created: true,
+			path: "/api/topics/split",
+			body: `{"entity":"` + h.divisible.ID + `","name":"the second repository",` +
+				`"kind":"repository","records":["` + h.hypothesis.ID + `"],` +
+				`"reason":"the name covered a library and the service that uses it"}`,
 		},
 	}
 }
@@ -1424,6 +1544,11 @@ func TestPhaseBRoutesAnswerHonestlyWithoutServices(t *testing.T) {
 		{http.MethodGet, "/api/complaints", ""},
 		{http.MethodGet, "/api/complaint?id=cmp-1", ""},
 		{http.MethodPost, "/api/complaint/tell", `{"text":"x"}`},
+		{http.MethodPost, "/api/topics/ent-1/interest", `{"state":"working","reason":"x"}`},
+		{http.MethodPost, "/api/topics/ent-1/retire", `{"reason":"x"}`},
+		{http.MethodPost, "/api/topics/merge", `{"from":"ent-1","into":"ent-2","reason":"x"}`},
+		{http.MethodPost, "/api/topics/split",
+			`{"entity":"ent-1","name":"x","kind":"repository","records":[],"reason":"x"}`},
 	} {
 		var reader io.Reader
 		if route.body != "" {
@@ -1529,6 +1654,25 @@ func (h *phaseB) snapshot() string {
 		for _, event := range history {
 			fmt.Fprintf(&out, "status %s %s seq=%d actor=%s/%s\n", id, event.Status,
 				event.Sequence, event.Actor.Kind, event.Actor.ID)
+		}
+	}
+	// §4.13's filings. They join the snapshot with the file and unfile
+	// routes for the reason #115's complaints did: a filing is durable state
+	// this surface can now write, and a snapshot that did not describe it
+	// could not tell a refused filing from a successful one.
+	for _, ref := range []frontier.Ref{
+		{Type: frontier.EntityHypothesis, ID: h.hypothesis.ID},
+		{Type: frontier.EntityFinding, ID: h.finding.ID},
+		{Type: frontier.EntityProposal, ID: h.proposal.ID},
+	} {
+		filings, err := h.front.FilingsOf(h.ctx, ref)
+		if err != nil {
+			h.t.Fatalf("FilingsOf: %v", err)
+		}
+		for _, filing := range filings {
+			fmt.Fprintf(&out, "filing %s %s/%s topic=%s by=%s/%s withdrawn=%t\n", filing.ID,
+				filing.Record.Type, filing.Record.ID, filing.EntityID, filing.Author,
+				filing.AuthorID, filing.Withdrawn)
 		}
 	}
 	inbox, err := h.reality.Inbox(h.ctx, reality.InboxQuery{})

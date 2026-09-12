@@ -701,10 +701,15 @@ func TestPlanActionVocabularyCannotBypassThePipelineOrPublish(t *testing.T) {
 			}
 		}
 	}
-	if len(ActionKinds()) != 11 {
-		t.Errorf("the vocabulary has %d actions, want §4.8's 11", len(ActionKinds()))
+	if len(ActionKinds()) != 13 {
+		t.Errorf("the vocabulary has %d actions, want §4.8's 11 plus §4.13's two", len(ActionKinds()))
 	}
 
+	// Everything that touches reality waits for the operator. §4.13's two
+	// additions are gated for §4.8's own reason: creating a subject and
+	// filing records under it are attributed operator acts, and an
+	// interpretation that could perform either without acceptance would be
+	// agent interpretation becoming reality.
 	gated := map[ActionKind]bool{
 		ActionAssertFact:    true,
 		ActionSupersedeFact: true,
@@ -712,6 +717,8 @@ func TestPlanActionVocabularyCannotBypassThePipelineOrPublish(t *testing.T) {
 		ActionMergeEntities: true,
 		ActionSplitEntity:   true,
 		ActionChangeFocus:   true,
+		ActionCreateEntity:  true,
+		ActionFileRecords:   true,
 	}
 	for _, kind := range ActionKinds() {
 		if got := kind.RequiresAcceptance(); got != gated[kind] {

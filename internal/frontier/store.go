@@ -493,6 +493,63 @@ CREATE INDEX IF NOT EXISTS frontier_hypothesis_run ON frontier_hypothesis(run_id
 CREATE INDEX IF NOT EXISTS frontier_observation_run ON frontier_observation(run_id);
 CREATE INDEX IF NOT EXISTS frontier_finding_run ON frontier_finding(run_id);
 CREATE INDEX IF NOT EXISTS frontier_proposal_run ON frontier_proposal(run_id);
+`,
+	// Migration 8 gives a record somewhere to say what it is about
+	// (SPEC.md §4.13).
+	//
+	// A filing is a record's membership in a topic, and a topic is a Reality
+	// Ledger entity — a repository, a project, a service, a concept — so the
+	// entity id is stored as an opaque identifier rather than a foreign key:
+	// the ledger is another component with its own durable tables, and a
+	// cross-component constraint here would make the frontier refuse to open
+	// on a machine whose ledger is absent.
+	//
+	// The table is append-only like every other table in this file, and the
+	// consequences are the whole design. Re-filing a record under the same
+	// topic inserts a row naming the one it supersedes; unfiling inserts a
+	// row marked withdrawn; nothing is ever edited, so §4.13's "the history
+	// of where a record was filed and why is readable" is a property of the
+	// storage rather than a promise made by the code above it. Which filing
+	// is current is therefore derived — the newest row for a record and an
+	// entity, live when it is not withdrawn — and cannot drift from the rows
+	// the way a mutable `current` flag would.
+	//
+	// An empty entity_id is §4.13's other honest answer: "about nothing in
+	// particular", recorded with a reason rather than left as an absence, so
+	// that the triage recipe can tell a record it has considered from one it
+	// has not reached. It is a value rather than NULL because it is a filing
+	// with a target of none, and because the uniqueness this table needs is
+	// over the newest row rather than over the column.
+	//
+	// The rationale and the withdrawal reason are in payload_json, on the
+	// terms migration 4 settled for a duplicate warning's overlap: §9's
+	// plaintext allowlist admits identifiers, counts, lifecycle state and
+	// timestamps, and prose about why a record belongs to a topic is content.
+	// The author, its identity and the heuristic flag stay in columns because
+	// each is an identifier or a lifecycle bit, and because §4.13 requires a
+	// seeded filing to be recognizable as one without opening it.
+	`
+CREATE TABLE frontier_filing(
+	id             TEXT PRIMARY KEY,
+	record_kind    TEXT NOT NULL,
+	record_id      TEXT NOT NULL,
+	entity_id      TEXT NOT NULL,
+	author         TEXT NOT NULL,
+	author_id      TEXT NOT NULL,
+	heuristic      INTEGER NOT NULL,
+	withdrawn      INTEGER NOT NULL,
+	supersedes_id  TEXT REFERENCES frontier_filing(id),
+	schema_version INTEGER NOT NULL,
+	created_at     TEXT NOT NULL,
+	payload_json   TEXT NOT NULL
+);
+CREATE INDEX frontier_filing_record ON frontier_filing(record_kind, record_id);
+CREATE INDEX frontier_filing_entity ON frontier_filing(entity_id);
+
+CREATE TRIGGER frontier_filing_immutable BEFORE UPDATE ON frontier_filing
+BEGIN SELECT RAISE(ABORT, 'a filing is immutable; file again to supersede it, or unfile it with a reason'); END;
+CREATE TRIGGER frontier_filing_kept BEFORE DELETE ON frontier_filing
+BEGIN SELECT RAISE(ABORT, 'filings are never deleted; where a record was filed and why stays readable (SPEC.md 4.13)'); END;
 `}
 
 // Store is the durable hypothesis frontier. It exposes no operation that
@@ -525,6 +582,12 @@ type Store struct {
 	// path behaving exactly as it did before #113; see reference.go.
 	refs     reference.Appender
 	refsDiag func(error)
+
+	// entities answers whether a topic has been retired, so a filing under
+	// one can be treated as absent (§4.13). It is nil unless WithEntities
+	// was passed, which is the default and the truthful state of a frontier
+	// opened beside no ledger; see filing.go.
+	entities EntityLifecycle
 }
 
 // Open opens the durable database in dir, creating the directory and applying

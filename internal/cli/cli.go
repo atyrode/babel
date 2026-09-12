@@ -141,6 +141,8 @@ Commands:
   reality accept PLAN_ID      accept one interpreter plan
   reality import --source ID  apply one trusted source's versioned fact batch
   reality focus               show or install the expenditure policy
+  topics                      list the topics records are filed under
+  topics seed                 propose a topic per observed repository identity
   cookbook list               list the analysis recipes
   cookbook check              check recipe versions against their bodies
   analysis profile configure  hand this terminal to Code's configuration
@@ -313,6 +315,8 @@ func (a *app) dispatch(ctx context.Context, args []string) error {
 		return a.exportCmd(ctx, args[1:])
 	case "reality":
 		return a.reality(ctx, args[1:])
+	case "topics":
+		return a.topicsCmd(ctx, args[1:])
 	case "cookbook":
 		return a.cookbookCmd(args[1:])
 	case "conductor":

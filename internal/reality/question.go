@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/atyrode/babel/internal/frontier"
 )
 
 // QuestionState is §4.8's question state machine, in full.
@@ -126,7 +128,7 @@ func (s QuestionState) live() bool {
 // for different reasons are different questions.
 type QuestionKind string
 
-// The §4.8 question kinds.
+// The question kinds: §4.8's seven, and §4.13's topic proposal.
 const (
 	KindAcquireContext  QuestionKind = "acquire-context"
 	KindRefreshStale    QuestionKind = "refresh-stale"
@@ -135,12 +137,24 @@ const (
 	KindSetFocus        QuestionKind = "set-focus"
 	KindClarifyAnswer   QuestionKind = "clarify-answer"
 	KindFactCheckDrift  QuestionKind = "fact-check-drift"
+	// QuestionTopic is §4.13's topic proposal: a run met records it
+	// believes are about one thing the ledger does not name, and asks the
+	// operator to create it. It is a question kind rather than a record of
+	// its own because §4.8's rule is what makes it legitimate — a name a
+	// run cannot resolve is a question, and only the operator creates an
+	// entity — so it ranks, dedupes, suppresses and declines exactly as
+	// every other question does.
+	//
+	// It is the one kind whose targets are empty: the entity it is about
+	// does not exist yet, which is the whole point, so its subject matter
+	// is keyed by the proposed identity instead.
+	QuestionTopic QuestionKind = "topic"
 )
 
 func (k QuestionKind) valid() bool {
 	switch k {
 	case KindAcquireContext, KindRefreshStale, KindResolveConflict, KindResolveEntity,
-		KindSetFocus, KindClarifyAnswer, KindFactCheckDrift:
+		KindSetFocus, KindClarifyAnswer, KindFactCheckDrift, QuestionTopic:
 		return true
 	}
 	return false
@@ -319,6 +333,12 @@ type QuestionInput struct {
 	MaterialEvidence  []string
 	AvoidedCost       int
 	Payload           QuestionPayload
+
+	// identity is the subject matter of a question about something the
+	// ledger does not name yet. It is unexported because only AskTopic sets
+	// it: every other question is about entities that exist, and their
+	// subject matter is those entities.
+	identity string
 }
 
 func (in QuestionInput) validate() error {
@@ -338,7 +358,15 @@ func (in QuestionInput) validate() error {
 		return fmt.Errorf("%w: expected authority %s cannot authorize an answer",
 			ErrNotAuthoritative, in.ExpectedAuthority)
 	}
-	if len(in.TargetEntityIDs) == 0 {
+	// A topic question is the one kind whose subject does not exist yet
+	// (§4.13), so its identity stands where its targets would: a proposal
+	// with neither names nothing at all and is refused for the same reason
+	// a targetless question of any other kind is.
+	if in.Kind == QuestionTopic {
+		if in.identity == "" {
+			return fmt.Errorf("%w: topic question names no proposed identity", ErrInvalidValue)
+		}
+	} else if len(in.TargetEntityIDs) == 0 {
 		return fmt.Errorf("%w: question names no target entity", ErrInvalidValue)
 	}
 	for _, p := range in.TargetPredicates {
@@ -360,8 +388,15 @@ func (in QuestionInput) validate() error {
 // dedupeKey derives the question's subject-matter key from its canonical
 // targets. The caller's entity IDs are resolved first, so a question about a
 // merged-away identity dedupes against one about the identity it merged into.
-func dedupeKey(kind QuestionKind, entityIDs []string, predicates []Predicate) string {
+//
+// The identity is the topic proposal's key and is empty for every other kind:
+// two proposals of one repository are one question however differently the two
+// runs worded them, and a question about entities is keyed by those entities.
+func dedupeKey(kind QuestionKind, identity string, entityIDs []string, predicates []Predicate) string {
 	parts := []string{string(kind)}
+	if identity != "" {
+		parts = append(parts, identity)
+	}
 	parts = append(parts, sortedUnique(entityIDs)...)
 	names := make([]string, 0, len(predicates))
 	for _, p := range predicates {
@@ -486,7 +521,7 @@ func (o AnswerOutcome) suppressesRepeats() bool {
 // finding → proposal (§4.2, §4.6, decision 13) however it is composed.
 type ActionKind string
 
-// The §4.8 plan actions.
+// The plan actions: §4.8's eleven, and the two §4.13 needs to accept a topic.
 const (
 	ActionAssertFact           ActionKind = "assert-fact"
 	ActionSupersedeFact        ActionKind = "supersede-fact"
@@ -499,6 +534,19 @@ const (
 	ActionRequestRefinement    ActionKind = "request-refinement"
 	ActionAskFollowUp          ActionKind = "ask-follow-up"
 	ActionNone                 ActionKind = "no-action"
+	// ActionCreateEntity mints the subject a proposal named, with its
+	// aliases and the facts that bind it to something real. It does not
+	// weaken §4.8's rule that only the operator creates an entity — it is
+	// the mechanism of it, exactly as split-entity already is: the identity
+	// appears on one explicit acceptance, under the accepting operator's
+	// authority, and a plan that is never accepted creates nothing.
+	ActionCreateEntity ActionKind = "create-entity"
+	// ActionFileRecords files records under a topic (§4.13). The filings
+	// are the frontier's rows rather than this package's, so applying one
+	// needs an injected Filer and happens after the ledger's transaction
+	// commits; AcceptPlanWith says why that ordering is the only one
+	// available.
+	ActionFileRecords ActionKind = "file-records"
 )
 
 // ActionKinds lists the vocabulary in a stable order, so a UI or a test can
@@ -507,6 +555,7 @@ func ActionKinds() []ActionKind {
 	return []ActionKind{
 		ActionAssertFact, ActionSupersedeFact, ActionDisputeFact,
 		ActionMergeEntities, ActionSplitEntity, ActionChangeFocus,
+		ActionCreateEntity, ActionFileRecords,
 		ActionCreateHypothesis, ActionRequestInvestigation,
 		ActionRequestRefinement, ActionAskFollowUp, ActionNone,
 	}
@@ -531,7 +580,8 @@ func (k ActionKind) valid() bool {
 func (k ActionKind) RequiresAcceptance() bool {
 	switch k {
 	case ActionAssertFact, ActionSupersedeFact, ActionDisputeFact,
-		ActionMergeEntities, ActionSplitEntity, ActionChangeFocus:
+		ActionMergeEntities, ActionSplitEntity, ActionChangeFocus,
+		ActionCreateEntity, ActionFileRecords:
 		return true
 	}
 	return false
@@ -596,6 +646,12 @@ type ActionPayload struct {
 	FollowUp *QuestionInput `json:"follow_up,omitempty"`
 	// Request is the investigation or refinement request.
 	Request *RequestDraft `json:"request,omitempty"`
+	// Entity is the subject create-entity would mint.
+	Entity *EntityDraft `json:"entity,omitempty"`
+	// Filings are the records file-records would file, and the topic they
+	// would be filed under. An empty EntityID means the entity this plan
+	// creates, which is what a topic proposal says.
+	Filings []FilingDraft `json:"filings,omitempty"`
 }
 
 // HypothesisDraft is a candidate hypothesis an interpretation produced. It is
@@ -737,6 +793,15 @@ type Application struct {
 	FactIDs       []string
 	DisputeIDs    []string
 	ResolutionIDs []string
+	// EntityIDs are the subjects a create-entity action minted. §4.8 makes
+	// the accepting operator the author of them, exactly as it does of the
+	// facts beside them.
+	EntityIDs []string
+	// Filings are the record-to-topic links a file-records action produced.
+	// They are filed after the ledger's transaction commits, because they
+	// are another component's rows; AcceptPlanWith says why that ordering
+	// is the only one available.
+	Filings []frontier.Filing
 	// FocusVersions are the focus rule set versions the acceptance
 	// installed.
 	FocusVersions []int

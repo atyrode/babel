@@ -680,8 +680,12 @@ func (s *babelSource) attachContext(ctx context.Context, artifacts []Artifact,
 		return err
 	}
 	names := resolveNames(artifacts)
+	filed, err := s.filedTopics(ctx, artifacts)
+	if err != nil {
+		return err
+	}
 	for i := range artifacts {
-		artifacts[i].Context, err = view.contextFor(ctx, names[i], asOf)
+		artifacts[i].Context, err = view.contextFor(ctx, names[i], filed[i], asOf)
 		if err != nil {
 			return err
 		}
@@ -691,6 +695,48 @@ func (s *babelSource) attachContext(ctx context.Context, artifacts []Artifact,
 		status.Unavailable = joinReasons(status.Unavailable, view.unavailable)
 	}
 	return nil
+}
+
+// filedTopics reports, per artifact, the Reality entities the record is filed
+// under (§4.13).
+//
+// It is the second half of "what this record is about", and the half the
+// operator actually stated. resolveNames reads terms a run wrote down and asks
+// the ledger to resolve them; a filing is already an entity id, asserted by
+// the run that produced the record, by the triage recipe or by the operator
+// himself — so a topic the operator paused moves the draws away from its
+// records whether or not their labels happen to spell its aliases.
+//
+// Withdrawn filings and filings under a retired topic are absent, because
+// internal/frontier reads them that way: retiring a topic returns its records
+// to the backlog, and a record whose only topic was retired is one whose
+// context is again unstated rather than one restricted by a subject that is no
+// longer one.
+//
+// A remote record has no local filing and gets none: the frontier this reads
+// is this machine's, and a record another host published is filed wherever
+// that host filed it. Reporting nothing is the honest answer rather than a
+// gap, because the topic set of a record this instance did not write is not
+// something it can observe.
+func (s *babelSource) filedTopics(ctx context.Context, artifacts []Artifact) ([][]string, error) {
+	filed := make([][]string, len(artifacts))
+	if s.front == nil {
+		return filed, nil
+	}
+	for i := range artifacts {
+		kind, ok := entityTypeOf(artifacts[i].Subject.Kind)
+		if !ok {
+			continue
+		}
+		entities, err := s.front.EntitiesFiled(ctx,
+			frontier.Ref{Type: kind, ID: artifacts[i].Subject.ID})
+		if err != nil {
+			return nil, fmt.Errorf("evaluation: read the topics of %s %s: %w",
+				artifacts[i].Subject.Kind, artifacts[i].Subject.ID, err)
+		}
+		filed[i] = entities
+	}
+	return filed, nil
 }
 
 // resolveNames reports, per artifact, the terms its subject is known by.
@@ -1484,16 +1530,26 @@ func unresolvedQuestionStates() []reality.QuestionState {
 // ambiguous one, an uninstalled focus policy, and an absent lifecycle or
 // ownership fact each append an Unknown entry, because §E5 requires the gap to
 // be visible rather than defaulted.
-func (v *ledgerView) contextFor(ctx context.Context, names []string, asOf time.Time) (Context, error) {
+//
+// filed are §4.13's topics: the entities this record is filed under, which are
+// subjects of this context exactly as a resolved name is. Nothing downstream
+// distinguishes them, and that is the point — the operator's stance toward a
+// topic is lifecycle and analysis-policy facts, so a record filed under a
+// paused one draws under the allowance those facts produce whether the pause
+// was stated about a word the run happened to write down or about the topic
+// the record was filed under.
+func (v *ledgerView) contextFor(ctx context.Context, names, filed []string,
+	asOf time.Time) (Context, error) {
 	out := Context{Version: "", Allowance: string(reality.AllowanceFull)}
 	for _, note := range []string{v.unavailable, v.notes} {
 		if note != "" {
 			out.Unknown = append(out.Unknown, note)
 		}
 	}
-	if len(names) == 0 {
+	if len(names) == 0 && len(filed) == 0 {
 		out.Unknown = append(out.Unknown,
-			"this record carries no recorded label, scope or target, so no Reality subject could be consulted")
+			"this record carries no recorded label, scope or target and is filed under no topic, "+
+				"so no Reality subject could be consulted")
 	}
 	// A complaint the operator recorded is pain the deployment holds, but it
 	// names no entity: matching its text against a model-authored title
@@ -1513,9 +1569,10 @@ func (v *ledgerView) contextFor(ctx context.Context, names []string, asOf time.T
 	}
 
 	admission, err := v.attention.Admit(ctx, reality.AdmitRequest{
-		Names: names,
-		Work:  reality.WorkSubjectSpecific,
-		AsOf:  asOf,
+		Names:     names,
+		EntityIDs: filed,
+		Work:      reality.WorkSubjectSpecific,
+		AsOf:      asOf,
 	})
 	if err != nil {
 		return Context{}, fmt.Errorf("evaluation: consult Reality attention: %w", err)
@@ -1530,7 +1587,7 @@ func (v *ledgerView) contextFor(ctx context.Context, names []string, asOf time.T
 	}
 	if admission.Unresolved > 0 {
 		out.Unknown = append(out.Unknown, fmt.Sprintf(
-			"%d recorded name(s) resolve to no Reality entity", admission.Unresolved))
+			"%d recorded name(s) or filed topic(s) resolve to no Reality entity", admission.Unresolved))
 	}
 	if admission.Ambiguous > 0 {
 		out.Unknown = append(out.Unknown, fmt.Sprintf(
@@ -1553,9 +1610,14 @@ func (v *ledgerView) contextFor(ctx context.Context, names []string, asOf time.T
 				"%d unresolved Reality question(s) target %s", open, entity))
 		}
 	}
-	if len(admission.Subjects) == 0 && len(names) > 0 {
+	if len(filed) > 0 {
+		out.Reasons = append(out.Reasons, fmt.Sprintf(
+			"this record is filed under %d Reality topic(s), whose recorded facts apply to it", len(filed)))
+	}
+	if len(admission.Subjects) == 0 && (len(names) > 0 || len(filed) > 0) {
 		out.Unknown = append(out.Unknown,
-			"none of this record's recorded names resolve to a Reality subject, so no work allowance applies")
+			"none of this record's recorded names or topics resolve to a Reality subject, "+
+				"so no work allowance applies")
 	}
 	sort.Strings(out.Unknown)
 	out.Version = contextDigest(out, v.version)

@@ -132,30 +132,76 @@ type feedList struct {
 	Notice  string `json:"notice"`
 }
 
-// topicCount is one community in the sidebar: what it is called, how much is
-// in it, and — since topics became repository-bound (§4.13) — what the name
-// is actually bound to and how the filing was produced.
-type topicCount struct {
-	Name     string `json:"name"`
-	Posts    int    `json:"posts"`
-	LatestAt string `json:"latest_at"`
-	// Binding is the real thing the name names, and is null only when this
-	// deployment cannot bind the name to one repository.
+// topicRow is one topic in the sidebar: a Reality Ledger entity the operator
+// created, what it is bound to, how much is filed under it, and where he
+// stands toward it (§4.13).
+//
+// It is an entity and never a name, which is the whole of §4.13's correction
+// to stage 1: a topic has a global id, a kind and a binding to something real,
+// so a client can open its page, and two deployments talking about one
+// repository are talking about one topic. The heuristic names stage 1 derived
+// from repository identity are proposals now, and travel in Proposed below.
+type topicRow struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Binding is the real thing the topic names, and is null for an entity
+	// the ledger holds no binding facts about — a concept, or a repository
+	// nobody has recorded a remote or a checkout for.
 	Binding *topicBinding `json:"binding"`
-	// Heuristic is true for every topic this deployment seeds, and stays
-	// true until §4.13's triage recipe has run: these filings come from
-	// repository identity alone, with no model and no operator act behind
-	// them, and the section requires them to say so rather than to read as
-	// entities somebody created.
-	Heuristic bool `json:"heuristic"`
+	// Posts counts the records filed under this topic and Awaiting how many
+	// of them are waiting on the operator, because a topic with forty posts
+	// and nothing waiting is a different thing to open from one with three
+	// posts that all need a ruling.
+	Posts    int    `json:"posts"`
+	Awaiting int    `json:"awaiting"`
+	LatestAt string `json:"latest_at"`
+	// Interest is the operator's own stance, recorded as §4.8 facts on the
+	// entity and rendered here because it is what orders the list. An
+	// empty state is "nothing said", which is a different answer from
+	// "not now" and is shown as one.
+	Interest topicInterest `json:"interest"`
 }
 
-// topicList is GET /api/topics. Unfiled is counted rather than named, because
-// the records in it have nothing in common except that this deployment could
-// not resolve where they came from.
+// topicInterest is §4.13's stance: working on it, keeping an eye, not now,
+// excluded — with the reason kept verbatim and the act attributed.
+type topicInterest struct {
+	State  string `json:"state"`
+	Reason string `json:"reason"`
+	At     string `json:"at"`
+	By     string `json:"by"`
+}
+
+// topicProposal is one topic Babel has proposed and nobody has accepted.
+//
+// It is a separate list from the topics rather than a flag on one, because a
+// proposal is not a topic: it has no id, nothing is filed under it, and until
+// the operator accepts it the records it names are unfiled. A client that
+// rendered the two together would show the operator a vocabulary he never
+// agreed to, which is exactly what §4.13 replaced.
+type topicProposal struct {
+	QuestionID string        `json:"question_id"`
+	Name       string        `json:"name"`
+	Kind       string        `json:"kind"`
+	Binding    *topicBinding `json:"binding"`
+	// Posts is how many of the records the proposal names this deployment
+	// actually holds, which is what accepting it would file.
+	Posts int `json:"posts"`
+	// Why is the proposal's own sentence — "32 sessions in 3 checkouts cite
+	// it" — rather than this surface's paraphrase of it.
+	Why string `json:"why"`
+}
+
+// topicList is GET /api/topics: the topics the operator has accepted, the
+// ones Babel has proposed, and how much is filed under neither.
+//
+// Unfiled is counted rather than named, because the records in it have nothing
+// in common except that nothing has said what they are about — which is
+// §4.13's honest state and the triage backlog, not a bin.
 type topicList struct {
-	Topics  []topicCount `json:"topics"`
-	Unfiled int          `json:"unfiled"`
+	Topics   []topicRow      `json:"topics"`
+	Proposed []topicProposal `json:"proposed"`
+	Unfiled  int             `json:"unfiled"`
 }
 
 // The sorts §8.7 names. They are a closed set and an unknown one is refused:
@@ -353,13 +399,22 @@ type feedCache struct {
 	index *feedIndex
 }
 
-// feedIndex is the projection: one entry per post, plus the topic vocabulary
-// derived from the same pass.
+// feedIndex is the projection: one entry per post, plus the topics the
+// deployment's filings resolve to, derived from the same pass.
 type feedIndex struct {
 	builtAt time.Time
 	cost    time.Duration
 	posts   []feedEntry
-	topics  []topicCount
+	// topics is one row per topic the ledger holds, counted from the posts
+	// filed under it. It carries no interest: a stance is read per request,
+	// because an operator who has just parked a topic must not have to wait
+	// out this index's minute to see it parked.
+	topics []topicRow
+	// unfiled counts the posts no live filing names a topic for. It is the
+	// feed's own notion and not the evaluation lane's: a heuristic filing
+	// gives a post a topic here, because the operator accepted the entity
+	// even though nothing has judged this record's membership yet, while
+	// the lane's backlog counts exactly those unjudged memberships.
 	unfiled int
 	// notice is what the response says when the deployment could not be
 	// consulted. It is the listings' own sentence, because the reader is
@@ -386,7 +441,12 @@ type feedEntry struct {
 	// activity is when each vote and comment landed, which is what the
 	// rising rank counts inside a window that moves after this was built.
 	activity []time.Time
+	// topics and topicIDs are the live topics this post is filed under, by
+	// name and by id. Both travel because ?topic= takes either: a reader
+	// following a sidebar row has the id, and a reader who typed the name
+	// has the name.
 	topics   []string
+	topicIDs []string
 	// urgency is which of sortNext's groups this post belongs to. It is
 	// read only when the post awaits the operator, because it answers "how
 	// urgent is this wait" and a post nobody is waiting on has no answer.
@@ -471,8 +531,21 @@ func (s *Server) handleFeed(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, result)
 }
 
-// handleTopics serves the sidebar's vocabulary: what a record's evidence came
-// from, with how much of it there is.
+// handleTopics serves what the deployment's records are about: the topics the
+// operator accepted, the ones Babel has proposed, and the backlog of records
+// nothing has filed (§4.13).
+//
+// The three lists are one answer because they are one decision. A reader
+// deciding what to read next is choosing between a topic he is working on, a
+// proposal he could accept in a click, and a backlog he could leave alone; a
+// page that had to ask three times would let the three disagree about what
+// exists.
+//
+// Until the operator has accepted anything, topics is empty, proposed carries
+// whatever the seeder raised, and every post is unfiled. That is the intended
+// day-one state rather than a degradation: §4.13 gives entity creation to an
+// attributed operator act, so a deployment that has not performed one has no
+// topics, and saying so is the honest answer.
 func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 	if !s.requireService(w, s.opts.Frontier != nil, "the hypothesis frontier") {
 		return
@@ -482,9 +555,297 @@ func (s *Server) handleTopics(w http.ResponseWriter, r *http.Request) {
 		s.serviceError(w, r, err)
 		return
 	}
-	result := topicList{Topics: []topicCount{}, Unfiled: index.unfiled}
-	result.Topics = append(result.Topics, index.topics...)
+	result := topicList{
+		Topics:   s.topicStances(r, index.topics),
+		Proposed: s.topicProposals(r, index),
+		Unfiled:  index.unfiled,
+	}
 	s.writeJSON(w, http.StatusOK, result)
+}
+
+// topicStances attaches the operator's stance to each topic and puts the list
+// in the order §4.13 asks for.
+//
+// The order is the operator's attention rather than the corpus's size: what he
+// is working on, what he is keeping an eye on, what he has said nothing about,
+// what he has parked, and what he excluded — and inside each group the
+// busiest first. A stance nobody recorded sorts above "not now" because
+// silence is not a refusal, which is the same distinction §4.12 draws about
+// feedback.
+//
+// A stance this build cannot read leaves every topic unset rather than failing
+// the page: the counts and the bindings are unaffected, and a topics page that
+// refused because the ledger's interest facts were unreadable would take the
+// vocabulary away over its ordering.
+func (s *Server) topicStances(r *http.Request, topics []topicRow) []topicRow {
+	out := make([]topicRow, 0, len(topics))
+	out = append(out, topics...)
+	if s.opts.Stance != nil {
+		for i := range out {
+			stance, err := s.opts.Stance.TopicInterest(r.Context(), out[i].ID)
+			if err != nil {
+				s.logf("GET %s: the stance toward topic %s is unread; it renders unset",
+					r.URL.Path, out[i].ID)
+				continue
+			}
+			out[i].Interest = topicInterest{
+				State: stance.State, Reason: stance.Reason, At: stance.At, By: stance.By,
+			}
+		}
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		if left, right := interestRank(out[a].Interest.State), interestRank(out[b].Interest.State); left != right {
+			return left < right
+		}
+		if out[a].Posts != out[b].Posts {
+			return out[a].Posts > out[b].Posts
+		}
+		return out[a].Name < out[b].Name
+	})
+	return out
+}
+
+// interestRank is the reading order of §4.13's stances. An unrecognized state
+// sorts with the unset ones rather than last: a stance this build does not
+// know is not a stance it may read as a refusal.
+func interestRank(state string) int {
+	switch state {
+	case interestWorking:
+		return 0
+	case interestWatching:
+		return 1
+	case interestNotNow:
+		return 3
+	case interestExcluded:
+		return 4
+	}
+	return 2
+}
+
+// The stances §4.13 offers on a topic's own page. They are this surface's
+// copy of the ledger's vocabulary because the sort and the route that records
+// one both need to name them, and a misspelled state must be refused rather
+// than silently sorted into the unset group.
+const (
+	interestWorking  = "working"
+	interestWatching = "watching"
+	interestNotNow   = "not-now"
+	interestExcluded = "excluded"
+)
+
+// topicProposals reads what Babel has proposed as a topic and nobody has
+// answered.
+//
+// The post count is over the records this deployment actually holds rather
+// than over the ids the proposal names, because that is what accepting it
+// would file here: a proposal raised on another host's corpus would otherwise
+// promise a number this machine cannot deliver.
+func (s *Server) topicProposals(r *http.Request, index *feedIndex) []topicProposal {
+	out := []topicProposal{}
+	if s.opts.TopicQuestions == nil {
+		return out
+	}
+	proposals, err := s.opts.TopicQuestions.TopicProposals(r.Context())
+	if err != nil {
+		s.logf("GET %s: the ledger's topic proposals are unread; the page offers none", r.URL.Path)
+		return out
+	}
+	held := make(map[string]struct{}, len(index.posts))
+	for _, entry := range index.posts {
+		held[entry.post.ID] = struct{}{}
+	}
+	for _, proposal := range proposals {
+		posts := 0
+		for _, id := range proposal.Records {
+			if _, ok := held[id]; ok {
+				posts++
+			}
+		}
+		out = append(out, topicProposal{
+			QuestionID: proposal.QuestionID,
+			Name:       proposal.Name,
+			Kind:       proposal.Kind,
+			Binding:    proposedBinding(proposal),
+			Posts:      posts,
+			Why:        proposal.Why,
+		})
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		if out[a].Posts != out[b].Posts {
+			return out[a].Posts > out[b].Posts
+		}
+		return out[a].Name < out[b].Name
+	})
+	return out
+}
+
+// proposedBinding renders what a proposal says the topic would be bound to,
+// and nothing when it proposes no binding: a concept has none, and a null is
+// what the accepted topics say in the same situation.
+func proposedBinding(proposal TopicProposalView) *topicBinding {
+	if proposal.Identity == "" && proposal.Remote == "" && len(proposal.Paths) == 0 {
+		return nil
+	}
+	identity := proposal.Identity
+	if identity == "" {
+		identity = proposal.Remote
+	}
+	return &topicBinding{
+		Kind:     proposal.Kind,
+		Identity: identity,
+		Remote:   proposal.Remote,
+		Paths:    proposal.Paths,
+	}
+}
+
+// topicsQuestionPrefix is where the two answers to a topic question live.
+const topicsQuestionPrefix = "/api/topics/"
+
+// routeTopicQuestions dispatches the operator's answers to a topic proposal,
+// reporting whether the path was one of them.
+//
+// Accepting and declining are the two acts §4.13 gives him over a proposal,
+// and they are here rather than beside the topic's own acts because they are
+// answers to a question rather than statements about a topic: until one of
+// them is recorded there is no topic to act on.
+func (s *Server) routeTopicQuestions(w http.ResponseWriter, r *http.Request) bool {
+	rest, found := strings.CutPrefix(r.URL.Path, topicsQuestionPrefix)
+	if !found {
+		return false
+	}
+	switch rest {
+	case "accept":
+		if s.requireMethod(w, r, http.MethodPost) {
+			s.handleTopicAccept(w, r)
+		}
+		return true
+	case "decline":
+		if s.requireMethod(w, r, http.MethodPost) {
+			s.handleTopicDecline(w, r)
+		}
+		return true
+	}
+	return false
+}
+
+// topicAnswer is POST /api/topics/accept and /api/topics/decline: which
+// proposal, and — for a decline — why.
+//
+// The reason is required on a decline and refused on an accept, which is
+// §4.8's asymmetry rather than an omission: a decline suppresses the same
+// proposal until materially new evidence exists, so the ledger keeps the
+// operator's words verbatim as the record of why, while an acceptance is
+// self-explaining — the entity it creates is the reason.
+type topicAnswer struct {
+	QuestionID string `json:"question_id"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// topicResult confirms the topic an acceptance created.
+type topicResult struct {
+	Topic topicRow `json:"topic"`
+}
+
+// handleTopicAccept creates the proposed entity and files the records the
+// proposal named, in one operator act (§4.8, §4.13).
+//
+// The filings it creates stay heuristic, and that is deliberate: the operator
+// accepted the topic, not each of the memberships the seeder guessed. §4.13
+// keeps a seeded filing labelled until the triage recipe revisits it, so the
+// recipe still owes an answer on every record even though the entity is now
+// real.
+func (s *Server) handleTopicAccept(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.TopicQuestions != nil, topicQuestionServiceName) {
+		return
+	}
+	by, ok := s.requireOperator(w)
+	if !ok {
+		return
+	}
+	var request topicAnswer
+	if !s.decodeBody(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.QuestionID) == "" {
+		s.writeError(w, http.StatusBadRequest, "accepting a topic names the question it answers")
+		return
+	}
+	if strings.TrimSpace(request.Reason) != "" {
+		s.writeError(w, http.StatusBadRequest,
+			"accepting a topic records no reason; the entity it creates is the reason")
+		return
+	}
+	entityID, err := s.opts.TopicQuestions.AcceptTopic(r.Context(), request.QuestionID, by.ID())
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	// The filings the acceptance created are invisible to the built index,
+	// so the page an operator lands on after clicking accept would show the
+	// topic he just created with nothing in it.
+	s.invalidateFeed()
+	index, err := s.feedIndex(r)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	for _, topic := range s.topicStances(r, index.topics) {
+		if topic.ID == entityID {
+			s.writeJSON(w, http.StatusCreated, topicResult{Topic: topic})
+			return
+		}
+	}
+	// The entity exists — the acceptance said so — and this build cannot see
+	// it, which is a ledger read this surface could not perform rather than
+	// an acceptance that did not happen.
+	s.writeJSON(w, http.StatusCreated, topicResult{Topic: topicRow{ID: entityID}})
+}
+
+// handleTopicDecline records that this proposal is not a topic, with the
+// reason kept verbatim.
+func (s *Server) handleTopicDecline(w http.ResponseWriter, r *http.Request) {
+	if !s.requireService(w, s.opts.TopicQuestions != nil, topicQuestionServiceName) {
+		return
+	}
+	by, ok := s.requireOperator(w)
+	if !ok {
+		return
+	}
+	var request topicAnswer
+	if !s.decodeBody(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.QuestionID) == "" {
+		s.writeError(w, http.StatusBadRequest, "declining a topic names the question it answers")
+		return
+	}
+	if strings.TrimSpace(request.Reason) == "" {
+		s.writeError(w, http.StatusBadRequest,
+			"declining a topic keeps the reason verbatim, and suppresses the proposal until "+
+				"something materially new turns up; this one gives none")
+		return
+	}
+	if err := s.opts.TopicQuestions.DeclineTopic(r.Context(), request.QuestionID, by.ID(),
+		request.Reason); err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]string{"question_id": request.QuestionID})
+}
+
+// topicQuestionServiceName is what a build with no ledger says it lacks.
+const topicQuestionServiceName = "the Reality Ledger's topic proposals"
+
+// invalidateFeed drops the built index so the next read rebuilds it.
+//
+// It is called by the acts that change what is filed rather than by every
+// mutation, because the index's minute of staleness is affordable for
+// everything else on it — a vote, a ruling — and is not affordable for the
+// filing an operator has just performed and is looking at.
+func (s *Server) invalidateFeed() {
+	s.feed.mu.Lock()
+	defer s.feed.mu.Unlock()
+	s.feed.index = nil
 }
 
 // feedKindFilter resolves the ?kind= list, refusing an unknown kind rather
@@ -572,11 +933,20 @@ func filterFeed(posts []feedEntry, topic string, kinds []string, sortBy, window 
 	return out
 }
 
+// entryInTopic reports whether one post belongs to the topic a reader asked
+// for, by the topic's name or by its id.
+//
+// Both are accepted because both are what a reader has. A sidebar row carries
+// the entity id and is unambiguous; a name is what an operator types and what
+// a link in somebody's notes holds, and refusing it would make the id the only
+// way to open a topic. A name that two entities answer to opens both, which is
+// the honest answer to an ambiguous question and the same one the reserved
+// unfiled value gets: what matched is shown rather than one of them picked.
 func entryInTopic(entry feedEntry, topic string) bool {
 	if topic == topicUnfiled {
 		return len(entry.topics) == 0
 	}
-	return contains(entry.topics, topic)
+	return contains(entry.topics, topic) || contains(entry.topicIDs, topic)
 }
 
 // sortFeed orders the eligible set. Ties resolve newer first everywhere, and
@@ -740,11 +1110,11 @@ func (s *Server) feedIndex(r *http.Request) (*feedIndex, error) {
 // buildFeedIndex assembles the whole deployment's posts.
 //
 // The order of the passes is the order of the dependencies and nothing else.
-// The session catalog is read once because the topics of every record resolve
-// through it; the four enumerations are read once because the lineage that
-// files a proposal under a topic runs backwards through them; the rulings and
-// the reception are one read each rather than one per record, which is the
-// difference between a front page and a scan.
+// The ledger's topics are read once and the frontier is asked what is filed
+// under each of them, because a post's topics are its filings (§4.13); the
+// four enumerations are read once; the rulings and the reception are one read
+// each rather than one per record, which is the difference between a front
+// page and a scan.
 func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 	started := time.Now()
 	ctx := r.Context()
@@ -755,12 +1125,12 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 	// clock per row would let two rows of one page disagree about now.
 	now := index.builtAt
 
-	sessions := s.sessionsBySourceID(ctx)
 	corpus, err := s.readCorpus(ctx)
 	if err != nil {
 		return nil, err
 	}
-	topics := corpus.topics(sessions)
+	index.topics = s.ledgerTopics(ctx, r)
+	topics := s.filedTopics(ctx, r, index.topics)
 
 	standings, err := s.opts.Frontier.ReviewStandings(ctx)
 	if err != nil {
@@ -817,7 +1187,7 @@ func (s *Server) buildFeedIndex(r *http.Request) (*feedIndex, error) {
 		}
 	}
 
-	index.countTopics(sessions)
+	index.countTopics()
 	index.cost = time.Since(started)
 	return index, nil
 }
@@ -832,50 +1202,194 @@ func (i *feedIndex) add(entry feedEntry) {
 	i.posts = append(i.posts, entry)
 }
 
-// countTopics derives the sidebar from the posts themselves, so a topic's
-// count and the feed it opens cannot disagree, and binds each name to the
-// repository it came from (§4.13).
+// topicMembership is the topics one record is filed under, by name and by id.
+// Both are carried because the wire shows names and the filter takes either.
+type topicMembership struct {
+	names []string
+	ids   []string
+}
+
+// ledgerTopics reads the topics the operator has created (§4.13): every entity
+// the Reality Ledger holds, with what it is bound to.
 //
-// The counts come from the posts and the bindings from the catalog, because
-// the two answer different questions: how much is filed here, and what this
-// name actually is. A topic with posts and no binding is a name this host
-// cannot resolve to one repository, never a name it made up.
-func (i *feedIndex) countTopics(sessions map[string][]SessionRow) {
-	counts := map[string]int{}
+// Every entity is a topic, not only the ones something is filed under. §4.13
+// makes a topic a ledger entity and nothing else, so a project the operator
+// named and Babel has written nothing about yet is an empty topic rather than
+// an absent one — which is what makes it possible to file the first record
+// under it.
+//
+// A merged-away identity is skipped, because the entity that speaks for it is
+// already in the list and showing both would offer the operator two names for
+// one thing (§4.8's merge is exactly the statement that they are one). A
+// retired entity is skipped for §4.13's own reason: retiring re-queues its
+// filings, so it is no longer a place records live.
+//
+// A ledger this build cannot read leaves the deployment with no topics, which
+// is the same shape as a deployment that has created none: every post is
+// unfiled and the page says so.
+func (s *Server) ledgerTopics(ctx context.Context, r *http.Request) []topicRow {
+	if s.opts.Reality == nil {
+		return nil
+	}
+	entities, err := s.opts.Reality.Entities(ctx, reality.EntityQuery{})
+	if err != nil {
+		s.logf("GET %s: the ledger's entities are unread; the feed renders with no topics", r.URL.Path)
+		return nil
+	}
+	rows := make([]topicRow, 0, len(entities))
+	for _, listing := range entities {
+		entity := listing.Entity
+		if entity.CanonicalID != "" && entity.CanonicalID != entity.ID {
+			continue
+		}
+		binding, retired := s.topicBindingOf(ctx, r, entity)
+		if retired {
+			continue
+		}
+		rows = append(rows, topicRow{
+			ID:      entity.ID,
+			Name:    entity.Payload.DisplayName,
+			Kind:    string(entity.Kind),
+			Binding: binding,
+		})
+	}
+	return rows
+}
+
+// topicBindingOf reads what one topic is bound to, and whether the operator
+// has retired it.
+//
+// The binding is derived from the ledger's own facts rather than from the
+// session catalog stage 1 read: the remote and the checkouts are what the
+// operator accepted when he created the entity, and re-deriving them from what
+// this host happens to hold would let the page show a binding the ledger does
+// not hold. Facts this build could not read leave the topic unbound, which is
+// the same answer a topic with no binding facts gets.
+func (s *Server) topicBindingOf(ctx context.Context, r *http.Request, entity reality.Entity) (
+	*topicBinding, bool) {
+	facts, err := s.opts.Reality.Facts(ctx, reality.FactQuery{
+		SubjectID: entity.ID,
+		Statuses:  []reality.FactStatus{reality.FactActive},
+	})
+	if err != nil {
+		s.logf("GET %s: the facts about topic %s are unread; it renders unbound",
+			r.URL.Path, entity.ID)
+		return nil, false
+	}
+	var (
+		remote  string
+		paths   []string
+		retired bool
+	)
+	for _, fact := range facts {
+		switch fact.Predicate {
+		case topicRemotePredicate:
+			remote = fact.Value.Text
+		case reality.PredicateLocalPath:
+			paths = append(paths, fact.Value.Text)
+		case reality.PredicateLifecycle:
+			retired = fact.Value.Enum == reality.LifecycleRetired
+		}
+	}
+	if retired {
+		return nil, true
+	}
+	if remote == "" && len(paths) == 0 {
+		return nil, false
+	}
+	sort.Strings(paths)
+	identity := remote
+	if identity == "" {
+		identity = paths[0]
+	}
+	return &topicBinding{
+		Kind:     string(entity.Kind),
+		Identity: identity,
+		Remote:   remote,
+		Paths:    paths,
+	}, false
+}
+
+// topicRemotePredicate is the ledger predicate holding a repository's remote.
+//
+// It is spelled here rather than imported because it is the ledger's
+// vocabulary and this surface only reads it; the value is the one
+// internal/reality registers, and a mismatch shows up as a repository topic
+// that renders with its checkouts and no remote rather than as a failure.
+const topicRemotePredicate = reality.Predicate("repository-remote")
+
+// filedTopics asks the frontier what is filed under each topic and inverts the
+// answer into the membership each record carries.
+//
+// The direction is the store's: FiledUnder answers "what is in this topic",
+// which is one indexed read per topic, where the other direction would be one
+// read per record. A topic whose filings could not be read contributes
+// nothing, so the records it holds render unfiled — the honest degradation,
+// because a post that claims no topic is a post nobody has to un-believe.
+func (s *Server) filedTopics(ctx context.Context, r *http.Request, topics []topicRow) map[string]topicMembership {
+	filed := map[string]topicMembership{}
+	if s.opts.Filings == nil {
+		return filed
+	}
+	for _, topic := range topics {
+		records, err := s.opts.Filings.FiledUnder(ctx, topic.ID)
+		if err != nil {
+			s.logf("GET %s: what is filed under topic %s is unread; those posts render unfiled",
+				r.URL.Path, topic.ID)
+			continue
+		}
+		for _, record := range records {
+			membership := filed[record.ID]
+			membership.names = append(membership.names, topic.Name)
+			membership.ids = append(membership.ids, topic.ID)
+			filed[record.ID] = membership
+		}
+	}
+	// A record's topics are a set, and a set rendered in the order the
+	// entities happened to be listed would reshuffle between two reads.
+	for id, membership := range filed {
+		sort.Strings(membership.names)
+		sort.Strings(membership.ids)
+		filed[id] = membership
+	}
+	return filed
+}
+
+// countTopics counts the posts under each topic from the posts themselves, so
+// a topic's count and the feed it opens cannot disagree.
+//
+// Awaiting is counted beside the total because §4.13 puts the operator's
+// attention on the topic page: a topic with forty posts and nothing waiting is
+// a different thing to open from one with three that all need a ruling.
+func (i *feedIndex) countTopics() {
+	posts := map[string]int{}
+	awaiting := map[string]int{}
 	latest := map[string]time.Time{}
 	for _, entry := range i.posts {
-		if len(entry.topics) == 0 {
+		if len(entry.topicIDs) == 0 {
 			i.unfiled++
 			continue
 		}
-		for _, topic := range entry.topics {
-			counts[topic]++
-			if entry.createdAt.After(latest[topic]) {
-				latest[topic] = entry.createdAt
+		for _, id := range entry.topicIDs {
+			posts[id]++
+			if entry.post.Awaiting {
+				awaiting[id]++
+			}
+			if entry.createdAt.After(latest[id]) {
+				latest[id] = entry.createdAt
 			}
 		}
 	}
-	bindings := topicBindings(sessions)
-	i.topics = make([]topicCount, 0, len(counts))
-	for name, count := range counts {
-		i.topics = append(i.topics, topicCount{
-			Name: name, Posts: count, LatestAt: timeText(latest[name]),
-			Binding: bindings[name], Heuristic: true,
-		})
+	for at, topic := range i.topics {
+		i.topics[at].Posts = posts[topic.ID]
+		i.topics[at].Awaiting = awaiting[topic.ID]
+		i.topics[at].LatestAt = timeText(latest[topic.ID])
 	}
-	// Busiest first, then by name: a sidebar that reshuffled two equal
-	// topics between two reads would be unreadable as a list.
-	sort.Slice(i.topics, func(a, b int) bool {
-		if i.topics[a].Posts != i.topics[b].Posts {
-			return i.topics[a].Posts > i.topics[b].Posts
-		}
-		return i.topics[a].Name < i.topics[b].Name
-	})
 }
 
 // feedRecord projects one local record into a post.
 func (s *Server) feedRecord(kind frontier.EntityType, id, runID string, createdAt time.Time,
-	claim string, topics []string, standings map[frontier.Ref]frontier.ReviewStanding,
+	claim string, topics topicMembership, standings map[frontier.Ref]frontier.ReviewStanding,
 	tallies map[evaluation.Subject]evaluation.Tally, now time.Time) feedEntry {
 	standing := feedStanding(kind, frontier.Ref{Type: kind, ID: id}, standings)
 	entry := feedEntry{
@@ -885,11 +1399,12 @@ func (s *Server) feedRecord(kind frontier.EntityType, id, runID string, createdA
 			Title:     boundedLine(claim),
 			Standing:  standing,
 			CreatedAt: timeText(createdAt),
-			Topics:    idList(topics),
+			Topics:    idList(topics.names),
 			Href:      recordHref(id),
 		},
 		createdAt: createdAt,
-		topics:    topics,
+		topics:    topics.names,
+		topicIDs:  topics.ids,
 	}
 	if runID != "" {
 		entry.post.Author = &feedAuthor{RunID: runID, Href: runHref(runID)}

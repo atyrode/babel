@@ -45,6 +45,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -53,6 +54,7 @@ import (
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/reference"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 	"github.com/atyrode/babel/internal/transcript"
@@ -93,6 +95,23 @@ func (s *Server) routeRecord(w http.ResponseWriter, r *http.Request) bool {
 			s.handlePostComment(w, r, id)
 		default:
 			s.writeError(w, http.StatusBadRequest, "unsupported method")
+		}
+		return true
+	}
+	// What the record is about (§4.13). Two paths rather than one resource
+	// because they are two acts with two bodies — a filing names a topic and
+	// says why, a withdrawal names a topic and says why not — and §4.13's
+	// append-only rule means neither is the other's undo: both append, and a
+	// single toggling route would hide which one the operator performed.
+	if id, isFile := strings.CutSuffix(rest, filePathSuffix); isFile {
+		if s.requireMethod(w, r, http.MethodPost) {
+			s.handleFileRecord(w, r, id)
+		}
+		return true
+	}
+	if id, isUnfile := strings.CutSuffix(rest, unfilePathSuffix); isUnfile {
+		if s.requireMethod(w, r, http.MethodPost) {
+			s.handleUnfileRecord(w, r, id)
 		}
 		return true
 	}
@@ -2012,3 +2031,220 @@ const evaluationRefreshBudget = 150 * time.Millisecond
 // has stopped answering does not accumulate goroutines for the life of the
 // launch.
 const evaluationRefreshTimeout = time.Minute
+
+// The two acts that say what a record is about (SPEC.md §4.13).
+const (
+	filePathSuffix   = "/file"
+	unfilePathSuffix = "/unfile"
+)
+
+// filingServiceName is what a build with no frontier filing surface says it
+// lacks.
+const filingServiceName = "the record filing surface"
+
+// fileRequest is POST /api/record/{id}/file: which topic, and why this record
+// belongs to it.
+//
+// Entity takes a name or an entity id, because both are what a reader has: the
+// sidebar carries ids and the operator's own vocabulary is names, and §4.8's
+// alias resolution is exactly the machinery that turns the second into the
+// first. A name the ledger does not know is refused rather than created —
+// entities are created by an attributed operator act on the subject surface,
+// never as a side effect of filing something under a word.
+type fileRequest struct {
+	Entity    string `json:"entity"`
+	Rationale string `json:"rationale"`
+}
+
+// unfileRequest is POST /api/record/{id}/unfile: which topic, and why it does
+// not belong there. The reason is required for §4.13's reason — the filing is
+// not deleted, it is withdrawn, and a withdrawal nobody explained is a hole in
+// the history rather than a correction to it.
+type unfileRequest struct {
+	Entity string `json:"entity"`
+	Reason string `json:"reason"`
+}
+
+// filingResult confirms what was recorded.
+type filingResult struct {
+	Filing filingView `json:"filing"`
+}
+
+// filingView is one filing as this surface renders it.
+//
+// The topic travels as both an id and a name because the two are for different
+// readers: a client follows the id, and a person reads the name. Heuristic and
+// Withdrawn are here because §4.13 makes both load-bearing — a seeded filing
+// is one the triage recipe still owes a judgement on, and a withdrawal is a
+// row rather than an absence.
+type filingView struct {
+	ID             string `json:"id"`
+	Record         string `json:"record"`
+	RecordKind     string `json:"record_kind"`
+	Topic          string `json:"topic"`
+	TopicName      string `json:"topic_name,omitempty"`
+	Rationale      string `json:"rationale"`
+	Author         string `json:"author"`
+	AuthorID       string `json:"author_id,omitempty"`
+	Heuristic      bool   `json:"heuristic"`
+	Withdrawn      bool   `json:"withdrawn"`
+	WithdrawReason string `json:"withdraw_reason,omitempty"`
+	CreatedAt      string `json:"created_at"`
+}
+
+// handleFileRecord records that this record is about a topic, in the
+// operator's own words.
+//
+// It is never heuristic: this is a person saying so, which is exactly the
+// filing §4.13's triage recipe leaves alone. The rationale is required for the
+// same reason it is required in the store — a filing is a claim about the
+// corpus, and one with no reason is a claim nobody can weigh.
+func (s *Server) handleFileRecord(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.requireService(w, s.opts.Filings != nil, filingServiceName) {
+		return
+	}
+	record, ok := s.pathRecordRef(w, id)
+	if !ok {
+		return
+	}
+	by, ok := s.requireOperator(w)
+	if !ok {
+		return
+	}
+	var request fileRequest
+	if !s.decodeBody(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.Rationale) == "" {
+		s.writeError(w, http.StatusBadRequest,
+			"filing a record under a topic says why it belongs there; this one says nothing")
+		return
+	}
+	entityID, name, ok := s.resolveTopic(w, r, request.Entity)
+	if !ok {
+		return
+	}
+	filing, err := s.opts.Filings.File(r.Context(), frontier.FilingInput{
+		Record:    record,
+		EntityID:  entityID,
+		Rationale: request.Rationale,
+		Author:    frontier.FilingOperator,
+		AuthorID:  by.ID(),
+	})
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	s.invalidateFeed()
+	s.writeJSON(w, http.StatusCreated, filingResult{Filing: renderFiling(filing, name)})
+}
+
+// handleUnfileRecord withdraws a filing with the operator's reason kept
+// verbatim.
+func (s *Server) handleUnfileRecord(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.requireService(w, s.opts.Filings != nil, filingServiceName) {
+		return
+	}
+	record, ok := s.pathRecordRef(w, id)
+	if !ok {
+		return
+	}
+	by, ok := s.requireOperator(w)
+	if !ok {
+		return
+	}
+	var request unfileRequest
+	if !s.decodeBody(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.Reason) == "" {
+		s.writeError(w, http.StatusBadRequest,
+			"unfiling a record keeps the reason verbatim; this one gives none")
+		return
+	}
+	entityID, name, ok := s.resolveTopic(w, r, request.Entity)
+	if !ok {
+		return
+	}
+	filing, err := s.opts.Filings.Unfile(r.Context(), record, entityID,
+		frontier.FilingOperator, by.ID(), request.Reason)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	s.invalidateFeed()
+	s.writeJSON(w, http.StatusOK, filingResult{Filing: renderFiling(filing, name)})
+}
+
+// pathRecordRef resolves the record a filing route names from its path,
+// refusing an identifier that names no record kind this surface can open. It
+// is the path-shaped counterpart of requireRecordRef, which reads the ?type=
+// and ?id= pair the record listings use.
+func (s *Server) pathRecordRef(w http.ResponseWriter, id string) (frontier.Ref, bool) {
+	kind, known := kindOfRecordID(id)
+	if !known {
+		s.writeError(w, http.StatusBadRequest,
+			"that identifier names no record kind this surface can open")
+		return frontier.Ref{}, false
+	}
+	return frontier.Ref{Type: kind, ID: id}, true
+}
+
+// resolveTopic turns what the request called the topic into the entity it
+// names, and reports the display name beside it.
+//
+// An entity id is answered by the ledger directly and anything else through
+// §4.8's alias resolution, which is the same resolution a run's structured
+// result goes through. An unknown name is a 404 that says the name, because
+// the operator has to know which word failed — and it is a refusal rather than
+// a creation, which is §4.8's rule that only an attributed operator act on the
+// subject surface brings an entity into being.
+func (s *Server) resolveTopic(w http.ResponseWriter, r *http.Request, value string) (string, string, bool) {
+	name := strings.TrimSpace(value)
+	if name == "" {
+		s.writeError(w, http.StatusBadRequest, "a filing names the topic it files under")
+		return "", "", false
+	}
+	if !s.requireService(w, s.opts.Reality != nil, "the reality ledger") {
+		return "", "", false
+	}
+	ctx := r.Context()
+	if entity, err := s.opts.Reality.Entity(ctx, name); err == nil {
+		return entity.ID, entity.Payload.DisplayName, true
+	}
+	if s.opts.Subjects != nil {
+		switch resolved, err := s.opts.Subjects.Resolve(ctx, name); {
+		case err == nil:
+			entity, err := s.opts.Reality.Entity(ctx, resolved)
+			if err != nil {
+				s.serviceError(w, r, err)
+				return "", "", false
+			}
+			return entity.ID, entity.Payload.DisplayName, true
+		case errors.Is(err, reality.ErrAmbiguousAlias):
+			s.serviceError(w, r, err)
+			return "", "", false
+		}
+	}
+	s.writeError(w, http.StatusNotFound, "no topic in this ledger answers to "+strconv.Quote(name)+
+		"; a topic is an entity somebody created, and filing does not create one")
+	return "", "", false
+}
+
+// renderFiling projects one stored filing onto the wire.
+func renderFiling(filing frontier.Filing, topicName string) filingView {
+	return filingView{
+		ID:             filing.ID,
+		Record:         filing.Record.ID,
+		RecordKind:     string(filing.Record.Type),
+		Topic:          filing.EntityID,
+		TopicName:      topicName,
+		Rationale:      filing.Rationale,
+		Author:         string(filing.Author),
+		AuthorID:       filing.AuthorID,
+		Heuristic:      filing.Heuristic,
+		Withdrawn:      filing.Withdrawn,
+		WithdrawReason: filing.WithdrawReason,
+		CreatedAt:      timeText(filing.CreatedAt),
+	}
+}

@@ -343,6 +343,23 @@ func entityKindOf(ctx context.Context, q querier, id string) (EntityKind, error)
 // AddAlias attaches a typed name to an entity. Aliases are how §4.8 keeps a
 // rename from losing identity, so adding one never touches the entity row.
 func (s *Store) AddAlias(ctx context.Context, in AliasInput) (Alias, error) {
+	var record Alias
+	err := s.transact(ctx, func(tx *sql.Tx) error {
+		added, err := s.addAlias(ctx, tx, in)
+		record = added
+		return err
+	})
+	if err != nil {
+		return Alias{}, err
+	}
+	return record, nil
+}
+
+// addAlias attaches a typed name inside a caller's transaction, so an accepted
+// topic proposal's subject and the names it answers to become durable
+// together: a subject that exists without the name the operator used for it is
+// reachable by identifier and by nothing else.
+func (s *Store) addAlias(ctx context.Context, tx *sql.Tx, in AliasInput) (Alias, error) {
 	if !in.Kind.valid() {
 		return Alias{}, fmt.Errorf("%w: alias kind %q", ErrInvalidValue, in.Kind)
 	}
@@ -367,20 +384,18 @@ func (s *Store) AddAlias(ctx context.Context, in AliasInput) (Alias, error) {
 		State:         StateAsserted,
 		Payload:       in.Payload,
 	}
-	err = s.transact(ctx, func(tx *sql.Tx) error {
-		if err := requireRow(ctx, tx, "reality_entity", "id", in.EntityID); err != nil {
-			return fmt.Errorf("reality: alias subject: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO reality_entity_alias(
-			id, entity_id, alias_kind, value_key, schema_version, created_at, payload_json)
-			VALUES(?, ?, ?, ?, ?, ?, ?)`,
-			record.ID, record.EntityID, string(record.Kind), record.Key, RecordSchema,
-			formatTime(record.CreatedAt), payload); err != nil {
-			return fmt.Errorf("reality: insert alias: %w", err)
-		}
-		return s.appendAttachmentState(ctx, tx, "reality_alias_event", "alias_id", record.ID, StateAsserted, "")
-	})
-	if err != nil {
+	if err := requireRow(ctx, tx, "reality_entity", "id", in.EntityID); err != nil {
+		return Alias{}, fmt.Errorf("reality: alias subject: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO reality_entity_alias(
+		id, entity_id, alias_kind, value_key, schema_version, created_at, payload_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?)`,
+		record.ID, record.EntityID, string(record.Kind), record.Key, RecordSchema,
+		formatTime(record.CreatedAt), payload); err != nil {
+		return Alias{}, fmt.Errorf("reality: insert alias: %w", err)
+	}
+	if err := s.appendAttachmentState(ctx, tx, "reality_alias_event", "alias_id",
+		record.ID, StateAsserted, ""); err != nil {
 		return Alias{}, err
 	}
 	return record, nil

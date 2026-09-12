@@ -41,6 +41,18 @@ const (
 	// PredicateLocalPath is where a repository is checked out on a machine.
 	// Paths move, so it expires; the value is sensitive, so it is payload.
 	PredicateLocalPath Predicate = "local-path"
+	// PredicateRepositoryRemote is the repository's published identity,
+	// normalized to host/owner/repo. §4.13 binds a topic to the
+	// repository's own identity rather than to a checkout, and this is that
+	// binding: the same project seen from three worktrees on two machines
+	// has one remote and therefore one topic, while local-path says only
+	// where one machine happens to keep it.
+	//
+	// It does not expire. A remote is what the repository is called, not an
+	// observation of where it currently sits: a checkout moves, a remote
+	// changes by an act somebody performed, and an expiring identity would
+	// quietly unbind a topic from the thing it is about.
+	PredicateRepositoryRemote Predicate = "repository-remote"
 )
 
 // The lifecycle values of §4.8.
@@ -174,6 +186,10 @@ var predicateSpecs = map[Predicate]predicateSpec{
 		kind: ValueText,
 		ttl:  90 * 24 * time.Hour,
 		why:  "checkouts move and machines are rebuilt, but not weekly",
+	},
+	PredicateRepositoryRemote: {
+		kind: ValueText,
+		why:  "a repository's published identity; it changes by an act, not by time passing",
 	},
 }
 

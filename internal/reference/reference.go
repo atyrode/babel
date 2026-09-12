@@ -45,13 +45,20 @@ const (
 	// KindDuplicates - From records the same idea as To; the dedup path's
 	// explicit trace.
 	KindDuplicates Kind = "duplicates"
+	// KindAbout - From is about To: the topic a record is filed under
+	// (SPEC.md §4.13). It is the one kind that leaves the analysis corpus,
+	// because a topic is a Reality Ledger entity rather than another
+	// record, and the frontier's filings are its only emitter: the filing
+	// row carries the rationale and the author, and this edge is its
+	// graph-visible shadow.
+	KindAbout Kind = "about"
 )
 
 // Valid reports whether k is one of the closed set of edge kinds.
 func (k Kind) Valid() bool {
 	switch k {
 	case KindEvidence, KindSupersedes, KindRefines, KindAddresses,
-		KindInspiredBy, KindDuplicates:
+		KindInspiredBy, KindDuplicates, KindAbout:
 		return true
 	}
 	return false

@@ -578,6 +578,53 @@ BEGIN SELECT RAISE(ABORT, 'context snapshots are never deleted'); END;
 -- that absorbed another by merge has to answer for what was recorded under
 -- the old name too.
 CREATE INDEX reality_snapshot_entity_canonical ON reality_snapshot_entity(canonical_id);
+`, `
+-- §4.13's topic proposal. It hangs off a question rather than replacing one:
+-- the question carries the state machine, the ranking, the refusal and the
+-- suppression, and this carries what would be created if the operator says
+-- yes. A proposal with no question would be a second inbox.
+--
+-- identity_key is a digest for the reason every other lookup column here is
+-- one: the identity is a remote or a directory, which §9 does not allowlist,
+-- so the value lives in the payload and the clear column is opaque.
+--
+-- evidence_weight is what §4.13's "materially new evidence" is measured
+-- against after a decline. It is recorded on the proposal rather than derived
+-- later because the question is how much stood behind the proposal *when the
+-- operator refused it*, and that number stops being observable the moment the
+-- catalog grows.
+CREATE TABLE reality_topic_proposal(
+	question_id     TEXT PRIMARY KEY REFERENCES reality_question(id),
+	identity_key    TEXT NOT NULL,
+	entity_kind     TEXT NOT NULL,
+	evidence_weight INTEGER NOT NULL,
+	created_at      TEXT NOT NULL,
+	payload_json    TEXT NOT NULL
+);
+CREATE INDEX reality_topic_proposal_identity ON reality_topic_proposal(identity_key);
+
+-- The acceptance that created a topic. It is unique per question, which is
+-- what makes a double-click impossible for the same reason a plan's
+-- acceptance is unique, and it names the entity so an answered proposal can
+-- say what it produced.
+CREATE TABLE reality_topic_acceptance(
+	id           TEXT PRIMARY KEY,
+	question_id  TEXT NOT NULL UNIQUE REFERENCES reality_question(id),
+	entity_id    TEXT NOT NULL REFERENCES reality_entity(id),
+	actor        TEXT NOT NULL,
+	recorded_at  TEXT NOT NULL,
+	payload_json TEXT NOT NULL
+);
+
+CREATE TRIGGER reality_topic_proposal_immutable BEFORE UPDATE ON reality_topic_proposal
+BEGIN SELECT RAISE(ABORT, 'a topic proposal is immutable'); END;
+CREATE TRIGGER reality_topic_proposal_kept BEFORE DELETE ON reality_topic_proposal
+BEGIN SELECT RAISE(ABORT, 'topic proposals are never deleted'); END;
+
+CREATE TRIGGER reality_topic_acceptance_immutable BEFORE UPDATE ON reality_topic_acceptance
+BEGIN SELECT RAISE(ABORT, 'a topic acceptance is immutable'); END;
+CREATE TRIGGER reality_topic_acceptance_kept BEFORE DELETE ON reality_topic_acceptance
+BEGIN SELECT RAISE(ABORT, 'topic acceptances are never deleted'); END;
 `}
 
 // HypothesisSink retains a candidate hypothesis a plan produced.
