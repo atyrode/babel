@@ -217,6 +217,16 @@
   gap: var(--space-2) var(--space-3);
 }
 
+/* A row nobody could review. It is the one reception fact that prints
+   without a vote behind it, so it is quiet: a gap in the review budget is
+   not a standing on the record. */
+.read-page .read-skipped {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /* The reception chart. Fixed width because it sits in a column of rows and a
    figure that changed width per row would be unreadable as a column. */
 .read-page .read-spark {

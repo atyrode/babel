@@ -8,7 +8,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   getScan,
   getSessions,
@@ -57,6 +57,20 @@ const ELAPSED_TICK_MS = 1_000;
 // the reader's own choice rather than the default.
 const PAGE_SIZES = [25, 50, 100, 0] as const;
 const DEFAULT_PAGE_SIZE = 50;
+
+// Babel's own analysis passes are a harness in the catalog like any other,
+// and unlike any other in the reading: they are runs Babel made over the
+// corpus, not conversations the operator had with a coding agent. There are
+// hundreds of them, they are titled from the run that wrote them, and on the
+// page an operator opens to find one of his own sessions they outnumbered
+// his. So the default view is his harnesses and Babel's own are one chip
+// away — hidden, said to be hidden, and counted.
+const SELF_HARNESS = "babel";
+
+// The URL value for "including Babel's own". The default is the absence of
+// the parameter, because the view an operator arrives at is the one whose
+// address has nothing in it.
+const EVERY_HARNESS = "all";
 
 // Three different kinds of claim look identical on this page: a title the
 // harness wrote into its own log, one babel computed offline from the session's
@@ -158,6 +172,7 @@ const NUMERIC: Partial<Record<SortColumn, (session: SessionSummary) => number | 
 
 function SessionsPage() {
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const [data, setData] = useState<SessionsResponse | null>(null);
   const [scan, setScan] = useState<ScanState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -167,7 +182,12 @@ function SessionsPage() {
   const [starting, setStarting] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
   const [search, setSearch] = useState("");
-  const [harness, setHarness] = useState<string | null>(null);
+  // Which harness the list is narrowed to: "" is the operator's own, "all"
+  // is every one including Babel's, and anything else is that harness alone.
+  // It lives in the URL because a narrowed catalog is a thing an operator
+  // reloads, shares and walks back out of with the browser's own Back
+  // button — and because the view he lands on has to survive a refresh.
+  const chosen = params.get("harness") ?? "";
   const [sortColumn, setSortColumn] = useState<SortColumn>("modified");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
@@ -256,16 +276,27 @@ function SessionsPage() {
     [data],
   );
 
-  const sessions = useMemo(() => {
+  // What the search matches, before the harness narrows it. It is a step of
+  // its own because the page has to say how many rows the harness choice is
+  // hiding, and hidden has to mean hidden by that choice rather than by the
+  // words in the search box.
+  const searched = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
-    const filtered = (data?.sessions ?? []).filter((session) => {
-      if (harness && session.harness !== harness) return false;
-      if (!needle) return true;
-      // Provenance is in the haystack so "derived" narrows the list to the
-      // sessions babel named itself, which is the question the mark on each
-      // title makes an operator want to ask of the whole corpus.
-      return [session.title, session.title_provenance, session.workspace, session.selector]
-        .some((value) => value?.toLocaleLowerCase().includes(needle));
+    const rows = data?.sessions ?? [];
+    if (!needle) return rows;
+    // Provenance is in the haystack so "derived" narrows the list to the
+    // sessions babel named itself, which is the question the mark on each
+    // title makes an operator want to ask of the whole corpus.
+    return rows.filter((session) =>
+      [session.title, session.title_provenance, session.workspace, session.selector]
+        .some((value) => value?.toLocaleLowerCase().includes(needle)));
+  }, [data, search]);
+
+  const sessions = useMemo(() => {
+    const filtered = searched.filter((session) => {
+      if (chosen === EVERY_HARNESS) return true;
+      if (chosen) return session.harness === chosen;
+      return session.harness !== SELF_HARNESS;
     });
     const direction = sortDirection === "asc" ? 1 : -1;
     const read = NUMERIC[sortColumn];
@@ -290,7 +321,12 @@ function SessionsPage() {
       if (comparison === 0) return left.selector.localeCompare(right.selector);
       return comparison * direction;
     });
-  }, [data, harness, search, sortColumn, sortDirection]);
+  }, [searched, chosen, sortColumn, sortDirection]);
+
+  // How many rows the harness choice is holding back. It is never inferred
+  // from a total: it is the difference between what the search matched and
+  // what is on the page, so it counts exactly what the chip above hid.
+  const hidden = searched.length - sessions.length;
 
   // The totals describe the filter, not the page: an operator who narrows to
   // one harness is asking what that harness cost, and a figure that answered
@@ -329,6 +365,16 @@ function SessionsPage() {
       // top: "sort by cost" means the expensive sessions, every time.
       setSortDirection(NUMERIC[column] ? "desc" : "asc");
     }
+  }
+
+  // The harness chip writes the address bar and returns to the first page,
+  // for the same reason the sort does.
+  function chooseHarness(next: string) {
+    const query = new URLSearchParams(params);
+    if (next) query.set("harness", next);
+    else query.delete("harness");
+    setParams(query);
+    setPage(0);
   }
 
   function sortLabel(column: SortColumn): string {
@@ -426,27 +472,41 @@ function SessionsPage() {
             autoComplete="off"
           />
         </label>
+        {/* Two views and then the harnesses themselves. "Yours" is the
+            default and is not the same claim as "Everything": one is the
+            operator's own conversations, the other adds the passes Babel
+            ran over them. Every harness in the catalog keeps a chip of its
+            own, Babel's included, so nothing here is unreachable. */}
         <div className="filter-chips" aria-label="Filter by harness">
           <button
             type="button"
-            className={!harness ? "chip active" : "chip"}
-            aria-pressed={!harness}
-            onClick={() => {
-              setHarness(null);
-              setPage(0);
-            }}
+            className={chosen === "" ? "chip active" : "chip"}
+            aria-pressed={chosen === ""}
+            title="Every harness except babel: the sessions you drove yourself."
+            onClick={() => chooseHarness("")}
           >
-            All
+            Yours
+          </button>
+          <button
+            type="button"
+            className={chosen === EVERY_HARNESS ? "chip active" : "chip"}
+            aria-pressed={chosen === EVERY_HARNESS}
+            title="Every harness in the catalog, including Babel's own analysis passes."
+            onClick={() => chooseHarness(EVERY_HARNESS)}
+          >
+            Everything
           </button>
           {harnesses.map((name) => (
             <button
               type="button"
-              className={harness === name ? "chip active" : "chip"}
-              aria-pressed={harness === name}
-              onClick={() => {
-                setHarness(name);
-                setPage(0);
-              }}
+              className={chosen === name ? "chip active" : "chip"}
+              aria-pressed={chosen === name}
+              title={
+                name === SELF_HARNESS
+                  ? "Babel's own analysis passes over the corpus."
+                  : `Sessions recorded by ${name}.`
+              }
+              onClick={() => chooseHarness(name)}
               key={name}
             >
               {name}
@@ -457,6 +517,26 @@ function SessionsPage() {
           {running ? "Scanning…" : "Refresh"}
         </button>
       </div>
+
+      {/* What the chip above is holding back, in one line, with the figure
+          that reveals it. A list that silently omits a third of the catalog
+          is a list that lies about the corpus; a list that says what it
+          omitted and how much is a list with a default. */}
+      {hidden > 0 && (
+        <p className="sessions-hidden">
+          {sessions.length.toLocaleString()} shown ·{" "}
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => chooseHarness(EVERY_HARNESS)}
+            title="Show every harness in the catalog."
+          >
+            {hidden.toLocaleString()}
+            {chosen === "" ? " of Babel's own passes" : " in other harnesses"}
+          </button>{" "}
+          hidden
+        </p>
+      )}
 
       {loading && !data && <div className="surface state-note"><span className="spinner" /> Reading the cached catalog…</div>}
       {error && !data && (

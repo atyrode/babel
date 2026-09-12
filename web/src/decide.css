@@ -30,6 +30,45 @@
   max-width: 24ch;
 }
 
+/* What a figure is made of, under the figure. Mono and tabular because the
+   three parts are compared against each other and against the total above
+   them; the separator is drawn by the stylesheet so the numbers stay a list
+   of numbers in the markup and a reader's selection does not pick up the
+   dots between them. */
+.decide-page .decide-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+  margin-top: var(--space-1);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+.decide-page .decide-split strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.decide-page .decide-split > span + span::before {
+  margin-right: var(--space-2);
+  content: "·";
+  color: var(--ink-faint);
+}
+
+/* The kind filter, above the ordering it reorders. It is a row of the shared
+   chip primitive and nothing else: the queue holds four kinds of thing and
+   the only honest default is all of them, so "Everything" is a chip like the
+   rest rather than the absence of one. */
+.decide-page .decide-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
 /* The ordering basis, the keys that drive it, and what the last act did.
    §8.5 requires an ordering to name what it is computed from; the keys are
    beside it because this is the only place on the page where pressing a
@@ -264,8 +303,24 @@
 }
 
 /* Narrow: the facts and the controls drop under the claim rather than
-   squeezing it to a column of single words. */
+   squeezing it to a column of single words, and the bar stacks for the same
+   reason — the keys are a fixed 354px of content, so beside them the
+   ordering sentence was measured at nothing and rendered one word per line
+   down the page. */
 @media (max-width: 60rem) {
+  .decide-page .decide-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .decide-page .decide-order,
+  .decide-page .decide-keys {
+    grid-column: 1;
+  }
+
+  .decide-page .decide-keys {
+    justify-content: flex-start;
+  }
+
   .decide-page .decide-row {
     grid-template-columns: minmax(0, 1fr);
   }

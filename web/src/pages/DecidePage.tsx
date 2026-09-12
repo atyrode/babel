@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   getEvaluationList,
@@ -178,6 +178,11 @@ interface Row {
   // The kind of thing this is, and the row's only badge. Questions and
   // reconsiderations ride the same queue and are told apart by this word.
   kind: { label: string; tone: Tone };
+  // Which kind of thing this is, in the vocabulary the chips and the
+  // ordering use: the record's own kind, or "question". It is kept apart
+  // from the badge above because the badge is what the row says and this is
+  // what the page sorts and filters on.
+  kindKey: string;
   // Why this row is next, in five words at most, from the basis the row's own
   // store returned. Never a score: the queue is grouped, not rated.
   why: string;
@@ -198,6 +203,66 @@ const RECORD_KINDS: Record<string, true> = {
   hypothesis: true,
   observation: true,
 };
+
+// The kinds the review queue holds, in the order the operator answers them.
+//
+// A proposal is a remedy addressed to him; a finding is a conclusion Babel
+// drew and wants confirmed; a hypothesis is a candidate Babel is still
+// developing on its own. Enrolment order alone buried the first under the
+// last — Babel produces candidates faster than it produces remedies, so a
+// queue ordered only by age is a report on Babel's throughput rather than on
+// the operator's work. The weight is applied inside a rank and never across
+// one: a question Babel is blocked on still comes before every record.
+const QUEUE_KINDS = ["proposal", "finding", "hypothesis"] as const;
+
+// The weight a kind carries inside a rank. Anything this build does not know
+// the name of sorts after the three it does.
+const KIND_WEIGHT: Record<string, number> = { proposal: 0, finding: 1, hypothesis: 2 };
+const KIND_WEIGHT_OTHER = 3;
+
+// What this page calls each kind when it is counting them. On Decide the
+// question is which of these Babel is asking the operator to rule on and
+// which it is still developing, and "candidate" is the word for the second;
+// the record's own badge keeps the corpus vocabulary, which is why this is a
+// word for the figure and the chip rather than a relabelling of the kind.
+// The singulars are written down because English does not derive them and a
+// figure reading "1 proposals" is a figure nobody proofread.
+const KIND_WORDS: Record<string, { one: string; many: string }> = {
+  proposal: { one: "proposal", many: "proposals" },
+  finding: { one: "finding", many: "findings" },
+  hypothesis: { one: "candidate", many: "candidates" },
+};
+
+// The queue's own filter. One chip per kind of thing in it, and the default
+// is everything: a filter that hides part of the queue by default would be
+// this page answering a question the operator did not ask.
+const CHIPS: Array<{ key: string; label: string; hint: string }> = [
+  {
+    key: "",
+    label: "Everything",
+    hint: "Every kind, ordered so that at equal urgency a proposal comes before a candidate.",
+  },
+  {
+    key: "proposal",
+    label: "Proposals",
+    hint: "Remedies Babel wrote for you to rule on. These are what a ruling is for.",
+  },
+  {
+    key: "finding",
+    label: "Findings",
+    hint: "Conclusions Babel drew from its own evidence and wants confirmed.",
+  },
+  {
+    key: "hypothesis",
+    label: "Candidates",
+    hint: "Hypotheses — what Babel is still developing rather than asking you to settle.",
+  },
+  {
+    key: "question",
+    label: "Questions",
+    hint: "Things only you can answer. A question is answered on its own page.",
+  },
+];
 
 // The age of something in two words. `formatTime`'s "6 days ago" spends a
 // third of a five-word explanation on the tense.
@@ -266,7 +331,11 @@ function DecidePage() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const [queue, setQueue] = useState<QueueItem[] | null>(null);
-  const [queueTotal, setQueueTotal] = useState(0);
+  // How many of each kind are awaiting a ruling, counted by the store rather
+  // than by the rows on this page: the queue serves a window and the figure
+  // is about the whole backlog. A kind whose read was refused is null and is
+  // reported as unread, because a queue of unknown depth is not an empty one.
+  const [counts, setCounts] = useState<Record<string, number | null>>({});
   const [degraded, setDegraded] = useState(false);
   const [questions, setQuestions] = useState<QuestionSummary[] | null>(null);
   const [reconsider, setReconsider] = useState<EvaluationItem[] | null>(null);
@@ -304,14 +373,25 @@ function DecidePage() {
     [],
   );
 
-  // Three reads, three stores, and a failure in one must not blank the other
-  // two: an operator whose ledger is unreachable still has records enrolled
-  // for a ruling, and a page that refused to show them would be reporting the
-  // ledger's outage as an empty inbox. Only a total failure is an error.
+  // Five reads, three stores, and a failure in one must not blank the
+  // others: an operator whose ledger is unreachable still has records
+  // enrolled for a ruling, and a page that refused to show them would be
+  // reporting the ledger's outage as an empty inbox. Only a total failure
+  // is an error.
+  //
+  // The queue is read once per kind rather than once, and the three reads
+  // are what make this page honest about its own depth. A single read
+  // returns the window the server chose to serve, which is the oldest page
+  // of a backlog two thousand candidates deep: every proposal in it was
+  // invisible, and the one figure on the page said 2,499 without saying
+  // what those were. Each typed read carries its kind's own total, so the
+  // figure can state its parts, and each carries that kind's own oldest
+  // page, so the merged queue can put a proposal above a candidate that was
+  // enrolled first.
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    const reviews = getReviewQueue({});
+    const reviews = Promise.allSettled(QUEUE_KINDS.map((type) => getReviewQueue({ type })));
     const inbox = getRealityInbox();
     const changed = getEvaluationList({
       lane: "reconsider",
@@ -320,13 +400,35 @@ function DecidePage() {
     });
     Promise.allSettled([reviews, inbox, changed])
       .then(([reviewed, asked, reopened]) => {
-        if (reviewed.status === "fulfilled") {
-          setQueue(reviewed.value.items ?? []);
-          setQueueTotal(reviewed.value.total ?? reviewed.value.items?.length ?? 0);
-          setDegraded(reviewed.value.sync_degraded === true);
-        } else {
-          setQueue(null);
-        }
+        const answers = reviewed.status === "fulfilled" ? reviewed.value : [];
+        const items: QueueItem[] = [];
+        // Another host's committed reviews are appended to every typed read,
+        // because they are an attributed appendix and not part of the type
+        // the query named. Three reads would draw each of them three times.
+        const drawn: Record<string, true> = {};
+        const counted: Record<string, number | null> = {};
+        let refused = 0;
+        let partial = false;
+        QUEUE_KINDS.forEach((type, index) => {
+          const answer = answers[index];
+          if (!answer || answer.status === "rejected") {
+            counted[type] = null;
+            refused += 1;
+            return;
+          }
+          const page = answer.value.items ?? [];
+          counted[type] = answer.value.total ?? page.length;
+          if (answer.value.sync_degraded === true) partial = true;
+          for (const item of page) {
+            const id = `${item.subject.type}-${item.subject.id}`;
+            if (drawn[id]) continue;
+            drawn[id] = true;
+            items.push(item);
+          }
+        });
+        setQueue(refused === QUEUE_KINDS.length ? null : items);
+        setCounts(counted);
+        setDegraded(partial);
         if (asked.status === "fulfilled") {
           setQuestions(
             (asked.value.items ?? []).filter((item) => answerableStates.includes(item.state)),
@@ -341,11 +443,12 @@ function DecidePage() {
           setReconsider(null);
         }
         if (
-          reviewed.status === "rejected" &&
+          refused === QUEUE_KINDS.length &&
           asked.status === "rejected" &&
           reopened.status === "rejected"
         ) {
-          setError(errorMessage(reviewed.reason));
+          const first = answers.find((answer) => answer.status === "rejected");
+          setError(errorMessage(first?.status === "rejected" ? first.reason : asked.reason));
         }
       })
       .finally(() => {
@@ -418,8 +521,52 @@ function DecidePage() {
   // and "new since now" is not a sentence.
   const since = seen ? elapsed(seen) : null;
 
-  const shown = merged.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-  const pages = Math.ceil(merged.length / PAGE_SIZE);
+  // What the chips select. An unknown value in the URL is not an error and
+  // not an empty queue: it selects everything, which is what a reader who
+  // typed a word into the address bar meant.
+  const asked = params.get("kind") ?? "";
+  const chosen = CHIPS.some((chip) => chip.key === asked) ? asked : "";
+  const visible = chosen ? merged.filter((row) => row.kindKey === chosen) : merged;
+
+  // How deep the queue is, by kind and in total. The total is the sum of the
+  // kinds that answered and never of all of them: a store that refused is
+  // absent from both the figure and its parts, so the arithmetic on screen
+  // is the arithmetic the reader can check.
+  const awaiting = useMemo(() => {
+    let total: number | null = null;
+    for (const type of QUEUE_KINDS) {
+      const count = counts[type];
+      if (typeof count === "number") total = (total ?? 0) + count;
+    }
+    return total;
+  }, [counts]);
+
+  // The figure's parts, in the order the queue ranks them. A kind the store
+  // reported none of is left out rather than set beside the real counts as a
+  // zero, and a kind that did not answer says so: an unread store is not an
+  // empty one, and the two must not read alike.
+  const split: ReactNode[] = [];
+  for (const type of QUEUE_KINDS) {
+    const count = counts[type];
+    const words = KIND_WORDS[type];
+    if (count === null) {
+      split.push(
+        <span key={type}>
+          <span className="not-observed">{words.many} unread</span>
+        </span>,
+      );
+      continue;
+    }
+    if (!count) continue;
+    split.push(
+      <span key={type}>
+        <strong>{count.toLocaleString()}</strong> {count === 1 ? words.one : words.many}
+      </span>,
+    );
+  }
+
+  const shown = visible.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+  const pages = Math.ceil(visible.length / PAGE_SIZE);
   const focused = focus >= 0 ? shown[focus] : undefined;
   const focusKey = focused?.key ?? null;
 
@@ -462,12 +609,12 @@ function DecidePage() {
     element.focus();
   }, [focusKey]);
 
-  // Turning the page or reloading the queue drops the ring rather than moving
-  // it onto whatever row inherited the index.
+  // Turning the page, changing the filter or reloading the queue drops the
+  // ring rather than moving it onto whatever row inherited the index.
   useEffect(() => {
     setFocus(-1);
     setRuling(null);
-  }, [page]);
+  }, [page, chosen]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -529,6 +676,18 @@ function DecidePage() {
     setParams(query);
   }
 
+  // Choosing a kind is a navigation, so it is in the URL: a filtered queue is
+  // a thing an operator reloads, shares and walks back out of with the
+  // browser's own Back button. It starts at the first page, because page two
+  // of a list that just became one page long is an empty queue.
+  function choose(next: string) {
+    const query = new URLSearchParams(params);
+    if (next) query.set("kind", next);
+    else query.delete("kind");
+    query.delete("page");
+    setParams(query);
+  }
+
   return (
     <section className="page decide-page">
       <div className="page-heading">
@@ -553,8 +712,9 @@ function DecidePage() {
         )}
         <Stat
           label="awaiting a ruling"
-          value={queue === null ? null : queueTotal.toLocaleString()}
+          value={awaiting === null ? null : awaiting.toLocaleString()}
           note="Records Babel developed far enough to ask you about."
+          split={split.length > 0 ? <>{split}</> : undefined}
         />
         <Stat
           label="questions for you"
@@ -600,15 +760,39 @@ function DecidePage() {
 
       {merged.length > 0 && (
         <>
+          {/* One chip per kind of thing in the queue. Everything is the
+              default and stays the default: the operator rules on proposals,
+              but the candidates under them are what Babel is developing into
+              the next ones, and a page that hid them by default would be
+              choosing for him. */}
+          <div className="decide-chips" role="group" aria-label="Kind">
+            {CHIPS.map((chip) => (
+              <button
+                type="button"
+                key={chip.key || "all"}
+                data-chip={chip.key || "all"}
+                className={chosen === chip.key ? "chip active" : "chip"}
+                aria-pressed={chosen === chip.key}
+                title={chip.hint}
+                onClick={() => choose(chip.key)}
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
           <div className="decide-bar">
             <p
               className="decide-order"
               title={
                 "Questions Babel is blocked on come first, then decisions something has changed " +
-                "about, then records enrolled for a ruling, oldest first. Curiosities are last."
+                "about, then records enrolled for a ruling. Inside each of those, a proposal " +
+                "comes before a finding, a finding before a candidate, and the longest wait " +
+                "first. Curiosities are last. Each kind is read one page deep, oldest enrolled " +
+                "first, so the figures above are the backlog and the rows below are its head."
               }
             >
-              Blocked first, then what changed, then what has waited longest.
+              Blocked first, then what changed, then what has waited longest — and at equal
+              urgency a proposal outranks a finding outranks a candidate.
             </p>
             <p className="decide-keys">
               <span><kbd className="kbd">j</kbd><kbd className="kbd">k</kbd> move</span>
@@ -628,30 +812,45 @@ function DecidePage() {
               {announcement}
             </p>
           </div>
-          <ol className="decide-queue">
-            {shown.map((row, index) => (
-              <QueueRow
-                row={row}
-                key={row.key}
-                index={index}
-                focused={index === focus}
-                mark={row.record ? stances[row.record.id] : undefined}
-                pending={pending === row.key}
-                ruling={ruling === row.key}
-                onFocus={() => setFocus(index)}
-                onStance={(stance) => void act(row, stance)}
-                onRule={() => setRuling((current) => (current === row.key ? null : row.key))}
-                onActed={(message) => {
-                  setAnnouncement(message);
-                  load();
-                }}
-                register={(element) => {
-                  if (element) rows.current.set(row.key, element);
-                  else rows.current.delete(row.key);
-                }}
-              />
-            ))}
-          </ol>
+          {shown.length > 0 && (
+            <ol className="decide-queue">
+              {shown.map((row, index) => (
+                <QueueRow
+                  row={row}
+                  key={row.key}
+                  index={index}
+                  focused={index === focus}
+                  mark={row.record ? stances[row.record.id] : undefined}
+                  pending={pending === row.key}
+                  ruling={ruling === row.key}
+                  onFocus={() => setFocus(index)}
+                  onStance={(stance) => void act(row, stance)}
+                  onRule={() => setRuling((current) => (current === row.key ? null : row.key))}
+                  onActed={(message) => {
+                    setAnnouncement(message);
+                    load();
+                  }}
+                  register={(element) => {
+                    if (element) rows.current.set(row.key, element);
+                    else rows.current.delete(row.key);
+                  }}
+                />
+              ))}
+            </ol>
+          )}
+          {visible.length === 0 && (
+            <div className="surface state-note empty-state">
+              <span className="empty-icon" aria-hidden="true">◇</span>
+              <strong>Nothing of this kind is waiting</strong>
+              <span>
+                That is a statement about the filter, not about the queue.{" "}
+                <button type="button" className="link-button" onClick={() => choose("")}>
+                  Show everything
+                </button>
+                .
+              </span>
+            </div>
+          )}
         </>
       )}
 
@@ -661,10 +860,16 @@ function DecidePage() {
           <button type="button" disabled={page === 0} onClick={() => turn(page - 1)}>
             ← Previous
           </button>
-          <span className="muted">
+          <span
+            className="muted"
+            title={
+              "The queue is read one page deep per kind, oldest enrolled first. How much is " +
+              "waiting altogether is the figure above."
+            }
+          >
             {(page * PAGE_SIZE + 1).toLocaleString()}–
-            {Math.min(page * PAGE_SIZE + shown.length, merged.length).toLocaleString()} of{" "}
-            {merged.length.toLocaleString()}
+            {Math.min(page * PAGE_SIZE + shown.length, visible.length).toLocaleString()} of{" "}
+            {visible.length.toLocaleString()}
           </span>
           <button type="button" disabled={page + 1 >= pages} onClick={() => turn(page + 1)}>
             Next →
@@ -688,21 +893,30 @@ function DecidePage() {
   );
 }
 
-// One figure with its label, and the sentence that says what it is about
-// rather than how Babel derived it.
+// One figure with its label, the parts it is made of, and the sentence that
+// says what it is about rather than how Babel derived it.
 //
 // A store that did not answer says so. A zero here would claim nothing is
 // waiting, which is a different thing from not having looked.
+//
+// The split exists because one number answered the wrong question. "2,499
+// awaiting a ruling" is a figure an operator cannot act on: nearly all of it
+// is candidates Babel is still developing, and the two hundred proposals
+// addressed to him are the part he came for. A figure whose parts are
+// different kinds of work is two facts pretending to be one.
 function Stat({
   label,
   value,
   note,
+  split,
   title,
   hero,
 }: {
   label: string;
   value: string | null;
   note: string;
+  // What the figure is made of, in the same order the queue ranks them.
+  split?: ReactNode;
   title?: string;
   // The one figure that is about the operator rather than about the corpus.
   // It is marked rather than positional because it is conditional: a first
@@ -715,6 +929,7 @@ function Stat({
       <strong className="stat-value">
         {value === null ? <span className="not-observed" title={note}>unread</span> : value}
       </strong>
+      {split && <span className="decide-split">{split}</span>}
       <span className="stat-note">{note}</span>
     </div>
   );
@@ -835,8 +1050,14 @@ function QueueRow({
 // is a question that is not blocking anything, which is the only group here
 // that is genuinely optional.
 //
-// Within a rank the oldest is first, on the ordinary grounds that a queue
-// nobody drains from the bottom is a queue with a permanent bottom.
+// Within a rank the kind decides before the age does: at equal urgency a
+// proposal outranks a finding outranks a candidate, because a proposal is a
+// remedy addressed to the operator and a candidate is something Babel is
+// still developing on its own. Within a kind the oldest is first, on the
+// ordinary grounds that a queue nobody drains from the bottom is a queue
+// with a permanent bottom — and a row that carries no enrolment time at all,
+// which is every row another host committed, sorts after the dated ones
+// rather than claiming the longest wait.
 //
 // Each row's `why` is built from the fields the row's own endpoint returned and
 // from nothing else. The review queue is ordered by how long something has
@@ -865,6 +1086,7 @@ function merge(
       claim: item.prompt || "a question with no prompt recorded",
       href: `/ask/questions/${encodeURIComponent(item.id)}`,
       kind: { label: "Question", tone: blocking ? "amber" : "cyan" },
+      kindKey: "question",
       why: [stuck, age ? `asked ${age}` : null].filter(Boolean).join(" · "),
       whyTitle: item.why_asked || asked?.absolute,
       at: item.created_at,
@@ -893,6 +1115,7 @@ function merge(
       claim: item.artifact.title || "a record with no title recorded",
       href: `/r/${encodeURIComponent(subject.id)}`,
       kind: { label: kindLabel(subject.kind), tone: "violet" },
+      kindKey: subject.kind,
       why: [head, tail].filter(Boolean).join(" · "),
       whyTitle: reason,
       at,
@@ -924,6 +1147,7 @@ function merge(
       claim: item.excerpt || `a ${item.subject.type} with no summary recorded`,
       href: `/r/${encodeURIComponent(item.subject.id)}`,
       kind: { label: kindLabel(item.subject.type), tone: "neutral" },
+      kindKey: item.subject.type,
       why: [head, standing, age ? `waiting ${age}` : null].filter(Boolean).join(" · "),
       whyTitle: enrolled ? `Enrolled ${enrolled.absolute}` : undefined,
       at: item.enrolled_at,
@@ -933,6 +1157,11 @@ function merge(
 
   rows.sort((left, right) => {
     if (left.rank !== right.rank) return left.rank - right.rank;
+    const weight =
+      (KIND_WEIGHT[left.kindKey] ?? KIND_WEIGHT_OTHER) -
+      (KIND_WEIGHT[right.kindKey] ?? KIND_WEIGHT_OTHER);
+    if (weight !== 0) return weight;
+    if (!left.at || !right.at) return left.at ? -1 : right.at ? 1 : 0;
     return left.at.localeCompare(right.at);
   });
   return rows;

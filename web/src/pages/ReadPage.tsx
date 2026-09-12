@@ -397,7 +397,11 @@ function ReadPage() {
           </span>
           {kindOrder.map((name) => {
             const count = breakdown?.byKind[name];
-            if (count === undefined) return null;
+            // A kind the corpus holds none of is not a fact about the corpus
+            // worth a figure: "0 evaluations" beside four real counts reads
+            // as a measurement of an absence nobody took. A count that did
+            // not answer is absent for the same reason and not the same one.
+            if (!count) return null;
             const word =
               count === 1
                 ? kindLabel(name).toLocaleLowerCase()
@@ -526,8 +530,18 @@ function shortLane(name: string): string {
 // reads as a measurement of the idea, when it is a position in one ordering
 // under one recorded policy. Everything else this record holds is a peel down
 // on its own page, which is one click away and never four.
+//
+// A record nobody has reviewed carries nothing at all in the reception slot.
+// The words "no reviews yet" were on every row of a corpus that is mostly
+// unreviewed — twenty-five rows of the same sentence, which is a fact about
+// the review budget and not about any row on the page. The absence is still
+// stated where it is the question being asked: the coverage filter, the peel
+// below the list, and the record's own page all name it. A skip is not a
+// review and not a vote, so it is the one thing here that prints without one:
+// somebody tried and could not.
 function OutputRow({ item }: { item: EvaluationItem }) {
   const created = formatTime(item.artifact.created_at);
+  const { reviews, skips } = item.reception;
   return (
     <li className="read-row" data-item={item.artifact.subject.id}>
       <Link
@@ -540,8 +554,20 @@ function OutputRow({ item }: { item: EvaluationItem }) {
       <span className="read-facts">
         <Badge label={kindLabel(item.artifact.subject.kind)} tone="neutral" />
         <Badge label={laneLabel(item.lane)} tone={laneTone(item.lane)} />
-        <ReceptionSpark reception={item.reception} />
-        <Reception reception={item.reception} />
+        {reviews > 0 && (
+          <>
+            <ReceptionSpark reception={item.reception} />
+            <Reception reception={item.reception} />
+          </>
+        )}
+        {reviews === 0 && skips > 0 && (
+          <span
+            className="read-skipped"
+            title="Reviews that could not be completed. A skip is not a vote and is not a review."
+          >
+            {skips} skipped
+          </span>
+        )}
       </span>
     </li>
   );

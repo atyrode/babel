@@ -243,12 +243,17 @@ test.skipIf(!chrome)("a never-reviewed record is found and is not rendered as un
   const listing = await ids();
   expect(listing).toContain("hyp_never-reviewed");
 
-  // The absence is stated as an absence. Three zeroes would read as a record
-  // nobody objected to.
+  // The row carries no reception at all: no counts, no chart, and no
+  // sentence about the absence. Three zeroes would read as a record nobody
+  // objected to, and "no reviews yet" on every row of a mostly unreviewed
+  // corpus is a fact about the review budget rather than about this record.
+  // Where the absence is the question being asked — this filter, the peel
+  // below, the record's own page — it is still stated.
   const row = await page.evaluate(() =>
     (document.querySelector("[data-item='hyp_never-reviewed']") as HTMLElement | null)?.innerText ?? "");
-  expect(row).toContain("no reviews yet");
+  expect(row).not.toContain("no reviews yet");
   expect(row).not.toContain("+0");
+  expect(row).not.toContain("review");
 
   // And the inventory behind the peel still reports what is owed, role by
   // role, because coverage is role-specific: a reception vote discharges no

@@ -24,6 +24,22 @@
   text-align: right;
 }
 
+/* What the harness chip is holding back. It sits between the toolbar and
+   the table, in mono because it is two figures, and quiet because it is a
+   caption on a default rather than a warning about one. */
+.sessions-page .sessions-hidden {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sessions-page .sessions-hidden .link-button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
 /* A flush surface has no padding, so the shared rule that pulls a table out
    of a surface's gutter has nothing to pull it out of here: it moves the
    table under the surface's own clipped edge and cuts the first and last

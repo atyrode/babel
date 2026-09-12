@@ -311,6 +311,46 @@ for (let index = 0; index < 15; index += 1) {
   ];
 }
 
+// Babel's own analysis passes, in the shape the babelself adapter records
+// them: one log per supervised job of a run, a source id of "<run>/<job>",
+// and a title the writer puts into the log itself. A machine that has been
+// exploring for a week holds more of these than it holds the operator's own
+// conversations, which is the proportion the sessions surface has to preview
+// — a list that is mostly Babel talking to itself is the thing the default
+// view exists to answer.
+const babelJobs = ["explore", "challenge", "consolidate"];
+
+function babelPass(index: number): SessionSummary {
+  const run = `run_discovery-${String(7 + Math.floor(index / babelJobs.length)).padStart(2, "0")}`;
+  const job = babelJobs[index % babelJobs.length];
+  const sourceId = `${run}/${job}`;
+  return {
+    harness: "babel",
+    source_id: sourceId,
+    selector: `babel/${sourceId}`,
+    size: 68_000 + index * 12_400,
+    modified: new Date(Date.UTC(2026, 7, 28, 12, index * 23)).toISOString(),
+    title: `babel ${job} pass of run ${run}`,
+    title_provenance: "recorded",
+    workspace: "/home/demo/.local/share/babel/analysis",
+    continuation_grade: true,
+    cost_usd: Number((0.21 + index * 0.043).toFixed(3)),
+    total_tokens: 96_000 + index * 8_400,
+    turns: 6 + index,
+    tool_errors: index % 3 === 0 ? 0 : 1,
+  };
+}
+
+for (let index = 0; index < 9; index += 1) {
+  const summary = babelPass(index);
+  catalog.push(summary);
+  details[summary.selector] = fillerDetail(summary);
+  transcripts[summary.selector] = [
+    { index: 0, role: "user", kind: "message", time: summary.modified, text: `Generated analysis prompt for ${summary.selector}.` },
+    { index: 1, role: "assistant", kind: "message", time: summary.modified, text: "Generated analysis response. No real transcript content is present." },
+  ];
+}
+
 // Scan simulation. MOCK_SCAN=running (default) starts from a cold cache and
 // advances one describe per /api/scan poll; MOCK_SCAN=error fails part-way;
 // MOCK_SCAN=idle presents a fully warm cache; MOCK_SCAN=empty presents a cold
