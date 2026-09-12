@@ -17,7 +17,12 @@ import {
 import { Badge, unescapeWhitespace, type Tone } from "./analysis";
 import { errorMessage, formatDuration, formatTime } from "./format";
 import {
+  getComments,
+  postComment,
   putReception,
+  type Act,
+  type Comment,
+  type CommentThread,
   type EvidenceKind,
   type ModelReception,
   type ModelRole,
@@ -37,6 +42,7 @@ import {
   type Speaker,
   type StandingTone,
 } from "./recordapi";
+import { VoteArrows, type VoteStance } from "./vote";
 import "./record.css";
 
 // One record, peeled.
@@ -89,7 +95,10 @@ import "./record.css";
 //
 // plus the surviving utilities — muted, secondary, mono, sr-only, spinner,
 // primary-button, inline-error, untrusted-inline, badge tone-* through
-// analysis.tsx's Badge. Everything prefixed `record-` is in record.css.
+// analysis.tsx's Badge. Everything prefixed `record-` is in record.css, which
+// also holds the `vote` group — the arrows are src/vote.tsx's and the feed
+// mounts the same component, so their rules live beside the record's rather
+// than in a third stylesheet.
 
 // standingTone maps the record's own four-tone judgement onto the interface's
 // colour scale. The judgement is the server's: whether "superseded" reads as
@@ -365,6 +374,7 @@ export function RuleBar({
   onActed,
   onStance,
   barRef,
+  withStance = true,
 }: {
   id: string;
   kind: RecordKind;
@@ -381,6 +391,12 @@ export function RuleBar({
   // recorded by click are the same code path — including the optimistic
   // selection and the refusal handling.
   barRef?: RefObject<HTMLDivElement | null>;
+  // withStance drops the left-hand group for a surface that takes the
+  // operator's stance somewhere else. §8.7 makes the arrows the stance and
+  // puts them at the top of the post, so the record page offers them once and
+  // this bar carries the ruling alone; a queue row has no arrows and keeps
+  // both groups.
+  withStance?: boolean;
 }) {
   const subject = reviewSubject(kind);
   const [stance, setStance] = useState<OperatorStance | undefined>(recorded);
@@ -407,32 +423,42 @@ export function RuleBar({
     }
   }
 
+  // An observation invites no ruling, so a bar with the stance taken out of it
+  // has nothing left to offer and renders nothing at all rather than an empty
+  // row of gaps.
+  if (!withStance && !subject) return null;
+
   return (
     <>
       <div className="record-acts" ref={barRef}>
-        <div className="rule-bar" role="group" aria-label="Your stance on this record">
-          {STANCES.map((option) => (
-            <button
-              type="button"
-              key={option.value}
-              data-stance={option.value}
-              className={stance === option.value ? "active" : undefined}
-              aria-pressed={stance === option.value}
-              disabled={pending !== null}
-              onClick={() => choose(option.value)}
-            >
-              {pending === option.value && <span className="spinner small" />}
-              {option.label}
-            </button>
-          ))}
-        </div>
-        {/* The whole explanation of the left-hand group. A reception is
-            attributed, reversible and without authority; three words say that
-            and a paragraph would make it sound like more than it is. */}
-        <span className="record-acts-label">your take · decides nothing</span>
+        {withStance && (
+          <>
+            <div className="rule-bar" role="group" aria-label="Your stance on this record">
+              {STANCES.map((option) => (
+                <button
+                  type="button"
+                  key={option.value}
+                  data-stance={option.value}
+                  className={stance === option.value ? "active" : undefined}
+                  aria-pressed={stance === option.value}
+                  disabled={pending !== null}
+                  onClick={() => choose(option.value)}
+                >
+                  {pending === option.value && <span className="spinner small" />}
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            {/* The whole explanation of the left-hand group. A reception is
+                attributed, reversible and without authority; three words say
+                that and a paragraph would make it sound like more than it
+                is. */}
+            <span className="record-acts-label">your take · decides nothing</span>
+          </>
+        )}
         {subject && (
           <>
-            <span className="record-acts-split" aria-hidden="true" />
+            {withStance && <span className="record-acts-split" aria-hidden="true" />}
             <div className="rule-bar" role="group" aria-label={`Rule on this ${subject}`}>
               {DISPOSITIONS.map((option) => (
                 <button
@@ -592,29 +618,23 @@ function RuleConfirm({
   );
 }
 
-// ClaimPeel is depth 1: the claim, what its standing does to it, and the acts
-// it invites. The operator's two voices live here rather than at the foot of
-// the page, because the act follows the reading and a reader who has to scroll
-// past four depths to rule is being asked to rule on his memory of the claim.
+// ClaimPeel is depth 1: the claim, what its standing does to it, and the one
+// act it invites. The ruling lives here rather than at the foot of the page,
+// because the act follows the reading and a reader who has to scroll past four
+// depths to rule is being asked to rule on his memory of the claim. The
+// operator's other voice — his vote — is the arrows in the post header, where
+// §8.7 puts it and where a reader arriving from the feed already found it.
 function ClaimPeel({
   record,
-  stance,
   open,
   onToggle,
   onActed,
-  onStance,
   barRef,
 }: {
   record: RecordPeel;
-  // stance is the position the page is showing, which is the record's own
-  // reception until the reader replaces it and the one he just recorded
-  // after that: a read that has not caught up with his act must not take the
-  // pressed button back off the bar.
-  stance: OperatorStance | undefined;
   open: boolean;
   onToggle: (open: boolean) => void;
   onActed: (message: string) => void;
-  onStance: (recorded: OperatorReception) => void;
   barRef: RefObject<HTMLDivElement | null>;
 }) {
   const standing = record.standing;
@@ -635,13 +655,15 @@ function ClaimPeel({
         </p>
       )}
 
+      {/* The ruling alone. The operator's stance is the arrows in the post
+          header — §8.7 makes them the vote — and a second set of stance
+          buttons one depth down would be two controls recording one thing. */}
       <RuleBar
         id={record.id}
         kind={record.kind}
-        stance={stance}
         onActed={onActed}
-        onStance={onStance}
         barRef={barRef}
+        withStance={false}
       />
 
       {/* A question is answered where answers are written, which is the one
@@ -1429,15 +1451,21 @@ function recordedBefore(earlier: string, later: string): boolean {
 // strip between the evidence and the reception.
 export function RecordPeels({
   record,
+  recorded,
+  voteRef,
   onActed,
 }: {
   record: RecordPeel;
+  // What the store confirmed on this page's own vote, held by the page until
+  // a read carries it. The arrows live in the post header, so the confirmation
+  // arrives from above rather than from a control inside these depths.
+  recorded?: OperatorReception;
+  // The header's arrows, so `a`/`d`/`u` press the real control rather than
+  // reimplementing what it does: a vote recorded by key and a vote recorded by
+  // click are then the same code path, optimistic update and refusal included.
+  voteRef: RefObject<HTMLDivElement | null>;
   onActed: (message: string) => void;
 }) {
-  // What the store confirmed on this page's own act, held until a read
-  // carries it. It is cleared by nothing: a second stance replaces it, and
-  // leaving the record unmounts it.
-  const [recorded, setRecorded] = useState<OperatorReception | undefined>(undefined);
   const reception = withRecordedStance(record.reception, recorded);
   const evidence = record.evidence ?? [];
   const [open, setOpen] = useState<boolean[]>(INITIAL_DEPTHS);
@@ -1459,11 +1487,9 @@ export function RecordPeels({
     setOpen((current) => current.map((entry, index) => (index === depth ? value : entry)));
   }, []);
 
-  // An act the reader performs is an act he has to be able to see. His stance
-  // lands at depth 4, which is folded until he opens it, so agreeing changed
-  // nothing on the page except the button he pressed. Opening the reception
-  // when he acts puts his own position on screen beside Babel's, and does it
-  // for a ruling too — a disposition is appended to the same depth.
+  // An act the reader performs is an act he has to be able to see. A ruling
+  // lands at depth 4, which is folded until he opens it, so deciding would
+  // otherwise change nothing on the page except the button he pressed.
   const acted = useCallback(
     (message: string) => {
       setDepth(3, true);
@@ -1473,22 +1499,16 @@ export function RecordPeels({
   );
 
   // Contract K, for this page. The handler presses the real controls rather
-  // than duplicating what they do: a stance recorded by key goes through the
-  // same optimistic post and the same refusal handling as a stance recorded by
+  // than duplicating what they do: a vote recorded by key goes through the
+  // same optimistic post and the same refusal handling as a vote recorded by
   // click, and `r` moves the focus to the ruling the reader is about to make
   // instead of recording one for him — a permanent, attributed event is never
   // one keystroke away.
   useEffect(() => {
-    function act(selector: string, press: boolean) {
-      setDepth(0, true);
-      // The claim may have been folded, so the control is reached on the next
-      // frame rather than in this one, when it may not be mounted yet.
-      requestAnimationFrame(() => {
-        const node = bar.current?.querySelector<HTMLElement>(selector);
-        if (!node) return;
-        node.focus();
-        if (press) node.click();
-      });
+    function press(node: HTMLElement | null | undefined) {
+      if (!node) return;
+      node.focus();
+      node.click();
     }
 
     function onKey(event: KeyboardEvent) {
@@ -1506,31 +1526,40 @@ export function RecordPeels({
         event.preventDefault();
         return;
       }
-      const stance = STANCES.find((option) => option.key === event.key);
-      if (stance) {
-        act(`[data-stance="${stance.value}"]`, true);
+      if (event.key === "a" || event.key === "d") {
+        const stance = event.key === "a" ? "agree" : "disagree";
+        press(voteRef.current?.querySelector<HTMLElement>(`[data-stance="${stance}"]`));
+        event.preventDefault();
+        return;
+      }
+      if (event.key === "u") {
+        // Unsure is what a lit arrow records when it is pressed again, so the
+        // key presses the vote he has cast rather than a third control that
+        // no longer exists. With no vote cast there is nothing to withdraw.
+        press(voteRef.current?.querySelector<HTMLElement>('[aria-pressed="true"]'));
         event.preventDefault();
         return;
       }
       if (event.key === "r") {
-        act("[data-ruling]", false);
+        setDepth(0, true);
+        // The claim may have been folded, so the control is reached on the
+        // next frame rather than in this one, when it may not be mounted yet.
+        requestAnimationFrame(() => bar.current?.querySelector<HTMLElement>("[data-ruling]")?.focus());
         event.preventDefault();
       }
     }
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setDepth, toggle]);
+  }, [setDepth, toggle, voteRef]);
 
   return (
     <div className="surface">
       <ClaimPeel
         record={record}
-        stance={reception?.operator?.stance}
         open={open[0]}
         onToggle={(value) => setDepth(0, value)}
         onActed={acted}
-        onStance={setRecorded}
         barRef={bar}
       />
       {hasCase(record.case) && (
@@ -1571,8 +1600,10 @@ export function RecordPeels({
         </span>
         <span>
           <kbd className="kbd">a</kbd>
-          <kbd className="kbd">d</kbd>
-          <kbd className="kbd">u</kbd> your stance
+          <kbd className="kbd">d</kbd> vote
+        </span>
+        <span>
+          <kbd className="kbd">u</kbd> withdraw
         </span>
         <span>
           <kbd className="kbd">r</kbd> rule
@@ -1595,35 +1626,484 @@ export function RecordPeels({
 // length is what breaks the type.
 const LONG_CLAIM = 120;
 
-// RecordHeading is the record's identity: what kind of thing it is, where it
-// stands, and the sentence it is. The two badges are the only ones on the page
-// — standing and kind — and nothing else wears one.
+// RecordHeading is the post: the score with the operator's arrows, what kind
+// of thing this is, where it stands, the sentence it is, and the one line of
+// facts §8.7 gives a post — its topics, its author and its age.
 //
-// The heading is the record's own words, so it carries the quoted frame even
-// as an h1, and it is set in the editorial face at one measure: decision 90
-// makes depth 1 editorial, and the claim is what that decision is about. It is
-// the title when the record wrote one; a hypothesis and an observation write
-// none — the statement is the record, not a name for it — so their claim is
-// the heading instead. The kind is not a fallback heading: the badge beside it
-// already says "Observation", and an h1 repeating that would name the class of
-// thing twice and the thing itself never.
-export function RecordHeading({ record }: { record: RecordPeel }) {
+// It is the feed row opened. The arrows are the same component the feed
+// mounts, the topics are the same chips, and the claim is the same line: a
+// reader who clicked a row finds the row he clicked at the top of the page,
+// which is the whole of "the shape of a post".
+//
+// The two badges are the only ones here — standing and kind — and nothing else
+// wears one. The heading is the record's own words, so it carries the quoted
+// frame even as an h1, and it is set in the editorial face at one measure:
+// decision 90 makes depth 1 editorial, and the claim is what that decision is
+// about. It is the title when the record wrote one; a hypothesis and an
+// observation write none — the statement is the record, not a name for it — so
+// their claim is the heading instead. The kind is not a fallback heading: the
+// badge beside it already says "Observation", and an h1 repeating that would
+// name the class of thing twice and the thing itself never.
+export function RecordHeading({
+  record,
+  recorded,
+  voteRef,
+  onVoted,
+}: {
+  record: RecordPeel;
+  // The stance this page has recorded and the read has not caught up with,
+  // exactly as depth 4 uses it: the arrows seed from the reception, and the
+  // reception the page shows includes his own act the moment it is confirmed.
+  recorded?: OperatorReception;
+  voteRef?: RefObject<HTMLDivElement | null>;
+  onVoted?: (recorded: OperatorReception) => void;
+}) {
   const standing = record.standing;
   const headline = record.title ?? record.claim;
   const long = headline !== undefined && headline.length > LONG_CLAIM;
+  const tally = receptionTally(withRecordedStance(record.reception, recorded));
+  const topics = topicsOf(record.origin);
+  const runID = record.machinery?.run_id;
+  const age = formatTime(record.machinery?.created_at);
   return (
-    <header className="surface">
-      <div className="heading-badges">
-        <Badge label={KIND_WORDS[record.kind] ?? record.kind} tone="neutral" />
-        {standing && <Badge label={standing.label} tone={standingTone(standing.tone)} />}
+    <header className="surface record-post">
+      {/* The arrows take the left column of the post, where a reader coming
+          from the feed already found them — and under them the four words
+          §8.6 requires of the operator's own voice. They are here rather than
+          inside the arrows because the arrows are also a feed row's, and a
+          sentence repeated down twenty-five rows is noise; on the page where
+          he acts on one record, it is the thing he has to be told. */}
+      <div className="record-post-vote" ref={voteRef}>
+        <VoteArrows
+          id={record.id}
+          score={tally.score}
+          support={tally.support}
+          oppose={tally.oppose}
+          unsure={tally.unsure}
+          you={tally.you}
+          onVoted={(next) =>
+            onVoted?.({ stance: next.you as OperatorStance, at: new Date().toISOString() })
+          }
+        />
+        <span className="record-acts-label record-post-note">your vote · decides nothing</span>
       </div>
-      {headline ? (
-        <h1 className={`quote untrusted-inline record-claim${long ? " long" : ""}`}>
-          {unescapeWhitespace(headline)}
-        </h1>
-      ) : (
-        <h1>{KIND_WORDS[record.kind] ?? "Record"}</h1>
-      )}
+      <div className="record-post-body">
+        <div className="heading-badges">
+          <Badge label={KIND_WORDS[record.kind] ?? record.kind} tone="neutral" />
+          {standing && <Badge label={standing.label} tone={standingTone(standing.tone)} />}
+        </div>
+        {headline ? (
+          <h1 className={`quote untrusted-inline record-claim${long ? " long" : ""}`}>
+            {unescapeWhitespace(headline)}
+          </h1>
+        ) : (
+          <h1>{KIND_WORDS[record.kind] ?? "Record"}</h1>
+        )}
+        {/* One line, at most three facts: where it is filed, who wrote it and
+            how old it is. A record whose origin this deployment cannot resolve
+            has no topic and says nothing in its place. */}
+        {(topics.length > 0 || runID || age) && (
+          <p className="record-post-meta">
+            {topics.map((topic) => (
+              <Link className="chip record-topic" key={topic} to={`/t/${encodeURIComponent(topic)}`}>
+                t/{topic}
+              </Link>
+            ))}
+            {runID && (
+              <span>
+                by{" "}
+                <Link className="record-post-run" to={`/watch/runs/${encodeURIComponent(runID)}`}>
+                  {runID}
+                </Link>
+              </span>
+            )}
+            {age && (
+              <time dateTime={record.machinery?.created_at} title={age.absolute}>
+                {age.relative}
+              </time>
+            )}
+          </p>
+        )}
+      </div>
     </header>
   );
+}
+
+// receptionTally is §8.7's one number, out of depth four.
+//
+// "The score is support minus oppose across all of them, because a vote is a
+// vote and the operator is one voter among Babel's reviewers." Babel's side is
+// the reception tally the evaluation store keeps for this revision, and the
+// per-role rows stand in when the store sent none: `counts` is omitted rather
+// than zeroed when it is empty, and a record whose votes only reached the page
+// as role rows would otherwise score nought with five supports on screen.
+//
+// The operator is added as the one vote he is. Nothing here sums his stance
+// into Babel's own figures — the depth-4 table still reads model-only, which
+// is §4.12's boundary — and the arrows subtract him back out for the
+// breakdown, so the number is one number and its parts stay attributed.
+function receptionTally(reception: RecordReception | undefined): {
+  score: number;
+  support: number;
+  oppose: number;
+  unsure: number;
+  you: VoteStance;
+} {
+  const roles = reception?.by_role ?? [];
+  const babel =
+    reception?.counts ??
+    roles.reduce(
+      (total, role) => ({
+        support: total.support + role.support,
+        oppose: total.oppose + role.oppose,
+        unsure: total.unsure + role.unsure,
+      }),
+      { support: 0, oppose: 0, unsure: 0 },
+    );
+  const you: VoteStance = reception?.operator?.stance ?? "";
+  const support = babel.support + (you === "agree" ? 1 : 0);
+  const oppose = babel.oppose + (you === "disagree" ? 1 : 0);
+  const unsure = babel.unsure + (you === "unsure" ? 1 : 0);
+  return { score: support - oppose, support, oppose, unsure, you };
+}
+
+// topicsOf files a record under the topics its evidence came from.
+//
+// §8.7: "today a topic is a repository: the workspace of the sessions a record
+// cites, named by its last path element, so the same project seen from two
+// machines is one topic". The peel carries one origin — the first cited
+// session this deployment holds — so a record page files under one topic and
+// the feed, which resolves the whole lineage, may file the same record under
+// more. The list shape is what keeps those two from being different ideas.
+//
+// Nothing here assumes the name is a directory. It is the last element of
+// whatever the workspace string is, and a workspace this deployment did not
+// record leaves the record untopiced rather than hidden.
+function topicsOf(origin: RecordOrigin | undefined): string[] {
+  const workspace = origin?.workspace?.replace(/[/\\]+$/u, "") ?? "";
+  if (!workspace) return [];
+  const name = workspace.split(/[/\\]/u).pop() ?? "";
+  return name ? [name] : [];
+}
+
+// The conversation under the post.
+//
+// §8.7: "a reviewer's contribution prose, a refinement, the operator's reason
+// in his own words, the answer to a question and the reason on a
+// reconsideration are all comments, threaded by what they relate to and shown
+// newest-first under the record's five depths, with a box the operator writes
+// into". Five kinds of record and one thread, because they are one thing to
+// read: the store each line was written into is Babel's business, which is the
+// sentence this whole surface is built on.
+//
+// Rulings are in the list and are not comments. Accept, reject, defer,
+// duplicate and reopen are §4.7's append-only authority, so they render as
+// attributed acts in their own chronological place, with their own shape and
+// their own class: a decision that looked like an opinion would be the one
+// confusion this thread cannot afford.
+//
+// The box records a reason and no polarity. The operator's vote is the arrows
+// at the top of the post and nothing else moves the score, so writing here
+// says something without voting — which is exactly what §8.6's third act is.
+
+// COMMENT_PAGE is how much conversation one page shows. §8.6's density rule
+// bounds the page at roughly three screens, and a record Babel reviewed four
+// times with a refinement round runs past that on comments alone.
+const COMMENT_PAGE = 20;
+
+// The word a comment needs beside its author, and only when it disambiguates.
+// A reviewer's prose and the operator's own reason are what a comment is, so
+// they are unlabelled; a refinement, an answer and a reconsideration are three
+// different acts wearing the same shape, so each says which it is.
+const COMMENT_WORDS: Record<Comment["kind"], string> = {
+  contribution: "",
+  reason: "",
+  refinement: "refinement",
+  answer: "answer",
+  reconsideration: "reconsidered",
+};
+
+// The five rulings in the past tense, because the thread shows what was done
+// rather than offering to do it. The control that offers them is the rule bar
+// at depth 1, and it keeps the imperative.
+const ACT_WORDS: Record<Act["act"], string> = {
+  accept: "accepted",
+  reject: "rejected",
+  defer: "deferred",
+  duplicate: "marked duplicate",
+  reopen: "reopened",
+};
+
+// One row of the thread: a comment or an act, with the time it sorts by
+// already parsed, because the merge orders both by one clock.
+interface ThreadEntry {
+  at: number;
+  comment?: Comment;
+  act?: Act;
+}
+
+export function RecordThread({
+  id,
+  reload = 0,
+  onPosted,
+}: {
+  id: string;
+  // A ruling recorded on this page appends to the thread, so the page that
+  // records one bumps this and the thread reads itself again. It is a counter
+  // rather than a callback because the thread owns its own read.
+  reload?: number;
+  onPosted?: (message: string) => void;
+}) {
+  const [thread, setThread] = useState<CommentThread | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [text, setText] = useState("");
+  const [posting, setPosting] = useState(false);
+  const [shown, setShown] = useState(COMMENT_PAGE);
+
+  useEffect(() => {
+    let live = true;
+    setThread(null);
+    setFailure(null);
+    setShown(COMMENT_PAGE);
+    getComments(id)
+      .then((value) => {
+        if (live) setThread(value);
+      })
+      .catch((reason) => {
+        if (live) setFailure(errorMessage(reason));
+      });
+    return () => {
+      live = false;
+    };
+  }, [id, reload]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    const written = text.trim();
+    if (!written) return;
+    setPosting(true);
+    setFailure(null);
+    try {
+      const result = await postComment(id, written);
+      // His own words go in at the top, where the thread's order puts them,
+      // rather than the page reading itself again: the response is the record
+      // the store wrote, so showing it is showing a fact about the store.
+      setThread((current) => ({
+        comments: [result.comment, ...(current?.comments ?? [])],
+        acts: current?.acts ?? [],
+        total: (current?.total ?? 0) + 1,
+      }));
+      setText("");
+      onPosted?.("Your comment is recorded. It changes no vote.");
+    } catch (reason) {
+      setFailure(errorMessage(reason));
+    } finally {
+      setPosting(false);
+    }
+  }
+
+  const comments = thread?.comments ?? [];
+  const entries = threadEntries(comments, thread?.acts ?? []);
+  const visible = entries.slice(0, shown);
+  const total = thread?.total ?? 0;
+  const operators = operatorIDs(comments);
+
+  return (
+    <section className="surface record-thread" id="comments">
+      <h2>{total === 1 ? "1 comment" : `${total} comments`}</h2>
+
+      <form className="record-comment-form" onSubmit={submit}>
+        <textarea
+          aria-label="Your comment"
+          value={text}
+          rows={3}
+          onChange={(event) => setText(event.target.value)}
+          placeholder="Your own words, kept verbatim."
+        />
+        <div className="record-comment-acts">
+          <button type="submit" className="primary-button" disabled={posting || !text.trim()}>
+            {posting && <span className="spinner small" />}
+            {posting ? "Recording…" : "Comment"}
+          </button>
+          {/* What writing here does and does not do, in the register the rule
+              bar uses for the same distinction one depth up. */}
+          <span className="record-acts-label">kept verbatim · changes no vote</span>
+        </div>
+      </form>
+
+      {failure && (
+        <p className="inline-error" role="alert">
+          {failure}
+        </p>
+      )}
+
+      {thread === null && !failure && (
+        <p className="muted">
+          <span className="spinner" /> Reading the thread…
+        </p>
+      )}
+      {thread !== null && entries.length === 0 && <p className="muted">No comments yet.</p>}
+
+      {visible.length > 0 && (
+        <ol className="record-thread-list">
+          {visible.map((entry) =>
+            entry.comment ? (
+              <CommentRow key={entry.comment.id} comment={entry.comment} />
+            ) : entry.act ? (
+              <ActRow key={entry.act.id} act={entry.act} operators={operators} />
+            ) : null,
+          )}
+        </ol>
+      )}
+
+      {entries.length > visible.length && (
+        <button type="button" onClick={() => setShown((current) => current + COMMENT_PAGE)}>
+          Show {Math.min(COMMENT_PAGE, entries.length - visible.length)} more
+        </button>
+      )}
+    </section>
+  );
+}
+
+// CommentRow is one line of the conversation and its answers.
+//
+// Replies nest exactly one level. A thread that indents every answer walks off
+// the right edge after four of them, and §8.6's density rule is what says one
+// level is enough: this is a discussion under a claim, not a tree the reader
+// has to navigate.
+function CommentRow({ comment }: { comment: Comment }) {
+  const replies = descendants(comment);
+  return (
+    <li className="record-comment">
+      <CommentLine comment={comment} />
+      {replies.length > 0 && (
+        <ol className="record-replies">
+          {replies.map((reply) => (
+            <li className="record-comment" key={reply.id}>
+              <CommentLine comment={reply} />
+            </li>
+          ))}
+        </ol>
+      )}
+    </li>
+  );
+}
+
+// CommentLine is who said it, in what capacity, when — and then what they
+// said, verbatim, inside the quoted frame every piece of untrusted prose on
+// this page wears. The operator is "you" and a run is its own name, which
+// reaches its run page: §8.7 makes a run the author of what it wrote.
+function CommentLine({ comment }: { comment: Comment }) {
+  const at = formatTime(comment.at);
+  const word = COMMENT_WORDS[comment.kind] ?? "";
+  const who = comment.author.kind === "operator" ? "you" : comment.author.id;
+  const role = comment.role ? (ROLE_WORDS[comment.role as ModelRole] ?? comment.role) : "";
+  return (
+    <>
+      <p className="record-comment-by">
+        {comment.author.href ? (
+          <Link className="record-comment-who" to={comment.author.href}>
+            {who}
+          </Link>
+        ) : (
+          <span className="record-comment-who">{who}</span>
+        )}
+        {role && <> · asked {role}</>}
+        {word && <> · {word}</>}
+        {at && (
+          <>
+            {" · "}
+            <time dateTime={comment.at} title={at.absolute}>
+              {at.relative}
+            </time>
+          </>
+        )}
+      </p>
+      <p className="quote untrusted-inline record-comment-text">
+        {unescapeWhitespace(comment.text)}
+      </p>
+    </>
+  );
+}
+
+// ActRow is one ruling, in the thread, as the act it is: one line, attributed,
+// dated, with the reason it carried. It is not a comment and does not look
+// like one — §8.7 calls the rulings "the moderator's log" — so it wears its
+// own class and the thread's own shape stops at the indent.
+function ActRow({ act, operators }: { act: Act; operators: Set<string> }) {
+  const at = formatTime(act.at);
+  return (
+    <li className="record-ruling">
+      <p>
+        <strong>{ACT_WORDS[act.act] ?? act.act}</strong>
+        {act.by && <> by {operators.has(act.by) ? "you" : act.by}</>}
+        {at && (
+          <>
+            {" · "}
+            <time dateTime={act.at} title={at.absolute}>
+              {at.relative}
+            </time>
+          </>
+        )}
+        {act.reason && <> · <span className="untrusted-inline">{unescapeWhitespace(act.reason)}</span></>}
+      </p>
+    </li>
+  );
+}
+
+// threadEntries merges the conversation and the log into one newest-first
+// list. §8.7 puts the rulings in the thread rather than beside it, so they
+// sort by the same clock as the comments and land where they happened.
+function threadEntries(comments: Comment[], acts: Act[]): ThreadEntry[] {
+  const entries: ThreadEntry[] = [
+    ...comments.map((comment) => ({ at: timeValue(comment.at), comment })),
+    ...acts.map((act) => ({ at: timeValue(act.at), act })),
+  ];
+  return entries.sort((left, right) => (left.at === right.at ? 0 : right.at - left.at));
+}
+
+// descendants flattens a comment's whole subtree into the one level of
+// indentation the thread has, newest first.
+function descendants(comment: Comment): Comment[] {
+  const out: Comment[] = [];
+  function walk(list: Comment[]) {
+    for (const reply of list) {
+      out.push(reply);
+      walk(reply.replies ?? []);
+    }
+  }
+  walk(comment.replies ?? []);
+  return out.sort((left, right) => {
+    const [first, second] = [timeValue(left.at), timeValue(right.at)];
+    return first === second ? 0 : second - first;
+  });
+}
+
+// operatorIDs is who "you" is, as the payload itself says it.
+//
+// The client never holds the operator's own identity: §4.12 resolves the
+// author server-side and the write routes refuse an author field, which is
+// what stops a caller from recording under another name. So a ruling reads as
+// "by you" only when the same thread carries an operator-authored line under
+// that id, and carries the recorded id otherwise — on a deployment with two
+// operators, guessing would attribute one man's decision to the other.
+function operatorIDs(comments: Comment[]): Set<string> {
+  const ids = new Set<string>();
+  function walk(list: Comment[]) {
+    for (const comment of list) {
+      if (comment.author.kind === "operator" && comment.author.id) ids.add(comment.author.id);
+      walk(comment.replies ?? []);
+    }
+  }
+  walk(comments);
+  return ids;
+}
+
+// timeValue orders a thread by its own clock, treating a time this build
+// cannot read as the oldest thing in the list rather than dropping the line:
+// an unparseable timestamp is a reason to sort a comment last, never a reason
+// to hide what somebody said.
+function timeValue(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }

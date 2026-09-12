@@ -216,7 +216,11 @@ test.skipIf(!chrome)("a ruling is confirmed before it is recorded, and it is app
     // The ballot is gone: the reader has already decided, and the bar takes
     // the decision rather than presenting the options as a form to fill in.
     radios: document.querySelectorAll("input[type='radio']").length,
-    fields: document.querySelectorAll("textarea").length,
+    // Every field on the page that is not the thread's comment box. §8.7's box
+    // is the operator's own words about the record and belongs to nothing
+    // being confirmed; the ruling's note is what must not exist yet.
+    fields: Array.from(document.querySelectorAll("textarea"))
+      .filter((field) => !field.closest(".record-comment-form")).length,
   }));
   expect(bar.dispositions).toContain("accept");
   expect(bar.dispositions).toContain("defer");
@@ -387,7 +391,7 @@ test.skipIf(!chrome)("a record that carries no review decision offers no ruling"
   // §6.7 makes an observation evidence rather than a review subject, and
   // internal/review refuses a disposition about one. The control is absent
   // rather than present and refused — but the reader's own position is not a
-  // ruling, so that half of the bar stays.
+  // ruling, so his vote stays.
   await open("r/obs_claim-no-verify");
   await visible("The claim");
   const bar = await page.evaluate(() => ({
@@ -397,7 +401,9 @@ test.skipIf(!chrome)("a record that carries no review decision offers no ruling"
     ),
   }));
   expect(bar.rulings).toBe(0);
-  expect(bar.stances).toEqual(["agree", "disagree", "unsure"]);
+  // Two arrows and no third button: §8.7 makes unsure what pressing a lit
+  // arrow again records, so the withdrawal is a gesture rather than a control.
+  expect(bar.stances).toEqual(["agree", "disagree"]);
 
   // And a record that does carry one has it, so the absence above is about
   // this record rather than about the page having lost the control.

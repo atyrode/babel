@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import RenderBoundary from "../boundary";
 import { errorMessage } from "../format";
-import { RecordHeading, RecordPeels } from "../record";
-import { getRecord, type RecordPeel } from "../recordapi";
+import { RecordHeading, RecordPeels, RecordThread } from "../record";
+import { getRecord, type OperatorReception, type RecordPeel } from "../recordapi";
 
 // One record, at whatever depth the reader wants it.
 //
@@ -27,10 +27,20 @@ export default function RecordPage() {
   const id = routeID ?? "";
   const [record, setRecord] = useState<RecordPeel | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // What the operator's last act did, announced rather than drawn: a stance
-  // button that changes appearance says nothing to a screen reader, and the
+  // What the operator's last act did, announced rather than drawn: a vote that
+  // changes an arrow's appearance says nothing to a screen reader, and the
   // ruling it sits beside is permanent.
   const [announcement, setAnnouncement] = useState("");
+  // The stance the store confirmed on this page's own vote, held until a read
+  // carries it. It lives here because two parts of the page need it: the
+  // arrows in the post header, which he pressed, and depth 4, which is where
+  // his position is read beside Babel's.
+  const [recorded, setRecorded] = useState<OperatorReception | undefined>(undefined);
+  // How many rulings this page has recorded. A ruling appends to the thread,
+  // so bumping this is how the thread learns to read itself again.
+  const [ruled, setRuled] = useState(0);
+  // The arrows themselves, so the page's `a`/`d`/`u` press the real control.
+  const vote = useRef<HTMLDivElement | null>(null);
 
   const load = useCallback(() => {
     let live = true;
@@ -49,6 +59,10 @@ export default function RecordPage() {
 
   useEffect(() => {
     setRecord(null);
+    // The confirmed stance belongs to the record it was recorded on, so
+    // following a link to another one starts from that record's own reception
+    // rather than from the last vote the reader cast.
+    setRecorded(undefined);
     return load();
   }, [load]);
 
@@ -79,7 +93,15 @@ export default function RecordPage() {
 
   return (
     <section className="page">
-      <RecordHeading record={record} />
+      <RecordHeading
+        record={record}
+        recorded={recorded}
+        voteRef={vote}
+        onVoted={(stance) => {
+          setRecorded(stance);
+          setAnnouncement(`Your vote is recorded: ${stance.stance}. It decides nothing.`);
+        }}
+      />
 
       {/* The terms the record is being shown on, when they are not the usual
           ones — a record resolved through the shared catalog while the catalog
@@ -100,8 +122,11 @@ export default function RecordPage() {
       <RenderBoundary key={id}>
         <RecordPeels
           record={record}
+          recorded={recorded}
+          voteRef={vote}
           onActed={(message) => {
             setAnnouncement(message);
+            setRuled((current) => current + 1);
             // The record is re-read because an act changed it: a ruling moves
             // the standing and appends to the history, and a page still
             // showing the old standing beside the button that changed it is
@@ -109,6 +134,9 @@ export default function RecordPage() {
             load();
           }}
         />
+        {/* The conversation, under the five depths and reachable as #comments:
+            §8.7 puts the thread under the post rather than beside it. */}
+        <RecordThread id={id} reload={ruled} onPosted={setAnnouncement} />
       </RenderBoundary>
     </section>
   );

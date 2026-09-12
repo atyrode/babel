@@ -12,6 +12,7 @@ import type {
   VersionInfo,
 } from "../src/api";
 
+import { commentsResponse } from "./comments";
 import { evaluationResponse } from "./evaluation";
 import { OVERVIEW_ROWS, overviewPhaseB, phasebResponse } from "./phaseb";
 import { recordResponse } from "./record";
@@ -762,6 +763,7 @@ const server = Bun.serve({
     // id from swallowing one of them.
     const record = await recordResponse(request, url);
     if (record) return record;
+    const comments = await commentsResponse(request, url); if (comments) return comments;
     // The control room's own path space, in its own file: thirty-one runs in
     // flight and a conductor configuration are a body of state of their own.
     const watch = await watchResponse(request, url);

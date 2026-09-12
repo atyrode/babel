@@ -85,6 +85,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   twelve topics assembled from the operator's own store in 456 ms, against a
   surface that previously answered "what does every record stand at" one
   query per record (SPEC §8.7, #237).
+- **A record is a post, and a post has a conversation.** The arrows are the
+  vote: agree is up, disagree is down, pressing the lit one again records
+  unsure, and the score beside them is support minus oppose across Babel's
+  reviewers and the operator together — one number, with the breakdown one
+  hover away, because a person's vote is never summed into what reads as a
+  model's observation. A record with no votes at all shows an em dash rather
+  than a nought. Under the five depths, `#comments` is the thread: reviewer
+  contributions, refinements, answers, reconsiderations and the operator's own
+  reasons, newest first, replies nested one level, with the rulings —
+  accepted, rejected, deferred, duplicate, reopened — in their chronological
+  place as the attributed acts they are rather than as opinions. The box
+  records a reason and changes no vote (SPEC §8.7, #235).
 
 ### Changed
 

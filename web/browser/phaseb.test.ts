@@ -377,11 +377,12 @@ test.skipIf(!chrome)("a record peels to five depths without leaving the page", a
   expect(citation).toMatch(/^#\/sessions\/.+\?event=\d+$/u);
 
   // The fifth depth exists as soon as there is a reception to hold, and the
-  // operator's own stance is one: this record has no reviewers, so stating a
-  // stance is what brings depth 4 into being — which is the case a reader is
-  // most likely to meet, and the one where an interface can most easily lose
-  // the act it just took.
-  await page.click(".rule-bar button[data-stance='agree']");
+  // operator's own stance is one: this record has no reviewers, so voting is
+  // what brings depth 4 into being — which is the case a reader is most likely
+  // to meet, and the one where an interface can most easily lose the act it
+  // just took. The vote is the arrow in the post header (§8.7), which is the
+  // same control the feed row carries.
+  await page.click(".record-post .vote-up");
   await page.waitForFunction(
     () => Array.from(document.querySelectorAll("details.peel > summary"))
       .some((summary) => (summary.textContent ?? "").startsWith("The reception")),
@@ -396,15 +397,33 @@ test.skipIf(!chrome)("a record peels to five depths without leaving the page", a
   expect(five[4]).toBe("The machinery");
 
   // No identifier above depth 5, with every depth but the machinery open.
+  //
+  // The scope is the depths, which is what §8.6's rule is about. The post
+  // header and the thread are §8.7's surfaces and name the run that wrote
+  // what they show — "a run is the author of what it wrote: its name on a
+  // post or a vote reaches its run page" — so they are removed here and
+  // asserted where they belong: the header's author link below, and the
+  // thread's in its own suite.
   await openPeel("The reception");
   const above = await page.evaluate(() => {
     const clone = document.querySelector("main")?.cloneNode(true) as HTMLElement;
     const machinery = Array.from(clone.querySelectorAll("details.peel")).find((peel) =>
       (peel.querySelector("summary")?.textContent ?? "").startsWith("The machinery"));
     machinery?.remove();
+    clone.querySelector(".record-post")?.remove();
+    clone.querySelector(".record-thread")?.remove();
     return clone.innerText;
   });
   expect(above).not.toMatch(/\b(?:hyp|obs|fnd|pro|run|rev|rcp)[_-][0-9a-z]{4,}/u);
+
+  // The post names its author, and the name is a link to that run's page
+  // rather than an identifier a reader has to carry somewhere himself.
+  const author = await page.evaluate(() => {
+    const link = document.querySelector<HTMLAnchorElement>(".record-post .record-post-run");
+    return { text: link?.textContent ?? "", href: link?.getAttribute("href") ?? "" };
+  });
+  expect(author.text).toBe("run_challenge-08");
+  expect(author.href).toBe("#/watch/runs/run_challenge-08");
 
   // And depth 5 is where they all are.
   const machinery = await openPeel("The machinery");
@@ -466,46 +485,70 @@ test.skipIf(!chrome)("counter-evidence renders where the claim is", async () => 
 
 // The operator's own voice, at the point of reading: cheap, attributed,
 // reversible, and deciding nothing. The last part is what the interface has to
-// say out loud, because the control sits beside the one that does decide.
+// say out loud, because the control sits on the same page as the one that does
+// decide.
 //
-// What it must also do is show him the act. His stance lands at depth four,
-// which is folded, so a record Babel has no reviewers for used to acknowledge
-// an agreement with nothing but a pressed button — and a projection a second
-// behind the write took even that back on the next read.
-test.skipIf(!chrome)("an operator's stance records, reverses, and keeps what it replaced", async () => {
+// §8.7 makes that control the arrows: agree is up, disagree is down, and a lit
+// arrow pressed again records unsure, which is the honest name for a withdrawn
+// vote. What the page must also do is show him the act. His stance is read at
+// depth four, which is folded, so the acknowledgement has to be where he
+// pressed: the arrow lights, the score moves, and the folded depth's own
+// summary carries the position.
+test.skipIf(!chrome)("an operator's vote records, withdraws, and keeps what it replaced", async () => {
   await open("r/pro_stdin-credential");
-  await page.waitForSelector(".rule-bar button[data-stance]", { timeout: 15_000 });
+  await page.waitForSelector(".record-post .vote-up", { timeout: 15_000 });
   // The sentence beside the control, in whatever case the shell sets it in:
-  // what §4.12 requires here is that the page says a reception decides
-  // nothing, not that it says it in small capitals.
+  // what §4.12 requires here is that the page says a vote decides nothing, not
+  // that it says it in small capitals.
   await page.waitForFunction(
-    () => /your take · decides nothing/iu.test(document.body.innerText),
+    () => /your vote · decides nothing/iu.test(document.body.innerText),
     { timeout: 15_000 },
   );
 
-  const click = (stance: string) => page.evaluate((value: string) => {
-    document.querySelector<HTMLButtonElement>(`[data-stance="${value}"]`)?.click();
+  // A record nobody has voted on has no score, not a score of nought: §8.5
+  // refuses evaluation data rendered as zero opposition.
+  const unvoted = await page.evaluate(() =>
+    document.querySelector(".record-post .vote-score")?.textContent);
+  expect(unvoted).toBe("—");
+
+  const press = (stance: string) => page.evaluate((value: string) => {
+    document.querySelector<HTMLButtonElement>(`.record-post [data-stance="${value}"]`)?.click();
   }, stance);
 
-  await click("agree");
+  await press("agree");
   await page.waitForFunction(
-    () => document.querySelector("[data-stance='agree']")?.getAttribute("aria-pressed") === "true",
+    () => document.querySelector(".record-post [data-stance='agree']")
+      ?.getAttribute("aria-pressed") === "true",
     { timeout: 15_000 },
   );
+  // One voter, one vote: his agreement is the whole score of a record Babel
+  // has not reviewed, and the breakdown keeps the two voices apart.
+  const voted = await page.evaluate(() => ({
+    score: document.querySelector(".record-post .vote-score")?.textContent,
+    breakdown: document.querySelector(".record-post .vote-up")?.getAttribute("title"),
+  }));
+  expect(voted.score).toBe("1");
+  expect(voted.breakdown).toContain("you: agree");
+  expect(voted.breakdown).toMatch(/Babel: (?:no votes yet|\d+ support)/u);
 
-  // The act is on screen without being looked for: the depth it landed in
-  // opens itself, and its summary carries the stance for a reader who folds
-  // it again.
-  await visible("You: agree");
-  const summary = await peelTitles();
-  expect(summary.some((title) => title.includes("you: agree"))).toBe(true);
-  await visible("A reception is attributed, reversible and decides nothing");
-
-  // Reversing it appends: §4.12 is append-only, so the earlier stance stays
-  // readable rather than being replaced by the later one.
-  await click("unsure");
+  // The act is on screen without being looked for: the depth it lands in
+  // carries the stance in its own summary, for a reader who never opens it.
   await page.waitForFunction(
-    () => document.querySelector("[data-stance='unsure']")?.getAttribute("aria-pressed") === "true",
+    () => Array.from(document.querySelectorAll("details.peel > summary"))
+      .some((summary) => (summary.textContent ?? "").includes("you: agree")),
+    { timeout: 15_000 },
+  );
+  const shown = await openPeel("The reception");
+  expect(shown).toContain("You: agree");
+  expect(shown).toContain("A reception is attributed, reversible and decides nothing");
+
+  // Pressing the lit arrow again withdraws the vote rather than repeating it,
+  // and §4.12 is append-only, so the earlier stance stays readable rather than
+  // being replaced by the later one.
+  await press("agree");
+  await page.waitForFunction(
+    () => document.querySelector(".record-post [data-stance='agree']")
+      ?.getAttribute("aria-pressed") === "false",
     { timeout: 15_000 },
   );
   await open("r/pro_stdin-credential");
@@ -640,11 +683,11 @@ test.skipIf(!chrome)("keyboard navigation reaches every control", async () => {
     { timeout: 15_000 },
   );
 
-  // The record page: every depth is a focusable disclosure, and the rule bar —
-  // which carries both of the operator's voices, the cheap stance and the
-  // permanent ruling — is reachable in full without a pointer.
+  // The record page: every depth is a focusable disclosure, and both of the
+  // operator's voices — the vote in the post header and the permanent ruling
+  // in the rule bar — are reachable in full without a pointer.
   await open("r/pro_criteria-template");
-  await page.waitForSelector(".rule-bar button[data-stance]", { timeout: 15_000 });
+  await page.waitForSelector(".record-post .vote-up", { timeout: 15_000 });
   // Whichever depths this record has — a record holds only the ones it has
   // something for — every one of them must be openable without a pointer.
   const depths = await peelTitles();
@@ -656,20 +699,27 @@ test.skipIf(!chrome)("keyboard navigation reaches every control", async () => {
       `${depth} is not reachable by keyboard`,
     ).toBe(true);
   }
-  for (const stance of ["agree", "disagree", "unsure"]) {
-    expect(reached, `the ${stance} control is outside the tab order`).toContain(`BAR:stance=${stance}`);
+  // Two arrows and the score between them: §8.7's third stance is what
+  // pressing a lit arrow again records, so there is no third control to
+  // reach, and the score is focusable because the breakdown it carries has to
+  // be readable without a pointer too.
+  for (const stance of ["agree", "disagree"]) {
+    expect(reached, `the ${stance} arrow is outside the tab order`).toContain(`VOTE:${stance}`);
   }
+  expect(reached, "the score's breakdown is unreachable by keyboard").toContain("VOTE:score");
   for (const ruling of ["accept", "reject", "defer", "duplicate", "reopen"]) {
     expect(reached, `the ${ruling} control is outside the tab order`).toContain(`BAR:ruling=${ruling}`);
   }
 
   // Pressing a ruling by keyboard opens the confirmation, and what it asks for
   // is reachable the same way: a ruling that could be started without a
-  // pointer and not finished would be worse than one that could not be started.
+  // pointer and not finished would be worse than one that could not be
+  // started. The walk wraps the whole ring, which the thread's own box, the
+  // arrows and every comment's author link made longer than it was.
   await page.focus("[data-ruling=defer]");
   await page.keyboard.press("Enter");
   await page.waitForSelector(".record-confirm textarea", { timeout: 15_000 });
-  const confirming = await tabThrough(30);
+  const confirming = await tabThrough(120);
   expect(confirming).toContain("TEXTAREA");
   expect(confirming.some((entry) => entry.startsWith("SUBMIT"))).toBe(true);
 
@@ -700,6 +750,10 @@ async function tabThrough(steps: number): Promise<string[]> {
       if (!active) return "";
       const stance = active.getAttribute("data-stance");
       const ruling = active.getAttribute("data-ruling");
+      if (active.closest(".vote")) {
+        if (stance) return `VOTE:${stance}`;
+        if (active.classList.contains("vote-score")) return "VOTE:score";
+      }
       if (active.closest(".rule-bar")) {
         if (stance) return `BAR:stance=${stance}`;
         if (ruling) return `BAR:ruling=${ruling}`;

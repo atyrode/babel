@@ -159,6 +159,59 @@ function cites(refs: EvidenceRef[] | undefined, kind: string): Array<Record<stri
   return (refs ?? []).map((ref) => cite(ref, kind));
 }
 
+// Where a record came from, by the session it cites first.
+//
+// The real handler resolves the origin out of the sessions catalog: the first
+// conversation a record cites that this deployment holds, with that session's
+// own title, workspace, date and cost. The mock states the same three
+// conversations ./serve.ts serves, keyed by the selector the citations carry,
+// because the origin is what the record page's topic chip is filed under —
+// §8.7 names a topic by the last element of the workspace — and a preview
+// with no origin would preview a page with no topics.
+//
+// `cost_usd` and `turns` are null for the session whose harness recorded no
+// usage, which is the absence the strip has to render as an absence.
+const ORIGINS: Record<string, Record<string, unknown>> = {
+  "codex/synthetic-alpha": {
+    session_id: "codex/synthetic-alpha",
+    session_title: "Design a resilient import pipeline",
+    workspace: "/home/demo/projects/atlas",
+    at: "2026-08-28T10:42:00Z",
+    cost_usd: 4.182,
+    turns: 96,
+    href: "#/sessions/codex%2Fsynthetic-alpha",
+  },
+  "claude-code/synthetic-bravo": {
+    session_id: "claude-code/synthetic-bravo",
+    session_title: "Trace a cache invalidation regression",
+    workspace: "/home/demo/projects/kepler",
+    at: "2026-08-27T18:05:00Z",
+    cost_usd: 0.42,
+    turns: 11,
+    href: "#/sessions/claude-code%2Fsynthetic-bravo",
+  },
+  "omp/synthetic-charlie": {
+    session_id: "omp/synthetic-charlie",
+    session_title: "",
+    workspace: "/home/demo/scratch",
+    at: "2026-08-22T08:30:00Z",
+    cost_usd: null,
+    turns: null,
+    href: "#/sessions/omp%2Fsynthetic-charlie",
+  },
+};
+
+// originOf takes the first citation whose session this deployment holds, in
+// the order the record cites them: a record whose every citation is on another
+// machine has no origin rather than a guessed one.
+function originOf(refs: Array<EvidenceRef | undefined>): Record<string, unknown> | undefined {
+  for (const ref of refs) {
+    const origin = ref?.selector ? ORIGINS[ref.selector] : undefined;
+    if (origin) return origin;
+  }
+  return undefined;
+}
+
 // The operator's stance, in memory. `current` is what he says now and
 // `earlier` is what he used to say, newest first: a reception is appended like
 // every other operator record, so changing his mind leaves the earlier
@@ -299,6 +352,7 @@ function peel(id: string): Record<string, unknown> | null {
       ...(payload.scope?.length ? { scope: payload.scope.join(", ") } : {}),
     };
     const evidence = cites(payload.counter_evidence, "counter-evidence");
+    const origin = originOf(payload.counter_evidence ?? []);
     return {
       id,
       kind,
@@ -309,6 +363,7 @@ function peel(id: string): Record<string, unknown> | null {
       // A finding proposes nothing, so it has no problem and no outcome: the
       // remedy is a separate proposal with its own standing.
       ...(Object.keys(substance).length > 0 ? { case: substance } : {}),
+      ...(origin ? { origin } : {}),
       ...(evidence.length > 0 ? { evidence } : {}),
       ...(receptionBlock(id) ? { reception: receptionBlock(id) } : {}),
       machinery: machineryBlock({
@@ -340,10 +395,12 @@ function peel(id: string): Record<string, unknown> | null {
       ...(payload.prerequisites?.length ? { prerequisites: payload.prerequisites } : {}),
       ...(payload.targets?.length ? { targets: payload.targets } : {}),
     };
+    const cited = [...(payload.supporting ?? []), ...(payload.conflicting ?? [])];
     const evidence = [
       ...cites(payload.supporting, "supporting"),
       ...cites(payload.conflicting, "conflicting"),
     ];
+    const origin = originOf(cited);
     return {
       id,
       kind,
@@ -352,6 +409,7 @@ function peel(id: string): Record<string, unknown> | null {
       ...(standing ? { standing } : {}),
       ...(action ? { action } : {}),
       case: substance,
+      ...(origin ? { origin } : {}),
       ...(evidence.length > 0 ? { evidence } : {}),
       ...(receptionBlock(id) ? { reception: receptionBlock(id) } : {}),
       machinery: machineryBlock({
@@ -367,16 +425,19 @@ function peel(id: string): Record<string, unknown> | null {
   const observation = observationOf(id);
   if (!observation) return null;
   const payload = observation.payload;
+  const cited = [...(payload.evidence ?? []), ...(payload.counter_evidence ?? [])];
   const evidence = [
     ...cites(payload.evidence, "evidence"),
     ...cites(payload.counter_evidence, "counter-evidence"),
   ];
+  const origin = originOf(cited);
   return {
     id,
     kind,
     title: payload.claim,
     claim: payload.claim,
     case: { impact: payload.impact, classification: payload.category },
+    ...(origin ? { origin } : {}),
     ...(evidence.length > 0 ? { evidence } : {}),
     machinery: machineryBlock({
       id,
