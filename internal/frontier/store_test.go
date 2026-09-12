@@ -1210,6 +1210,15 @@ func TestPlaintextColumnsMatchAllowlist(t *testing.T) {
 			"id", "proposal_id", "alternative_id", "run_id", "recorded_at",
 		},
 		"frontier_triage_cluster": {"advice_id", "proposal_id", "position"},
+		// A filing: which record, which topic, who filed it, whether the
+		// filing was a guess, whether it is a withdrawal, and which row it
+		// replaced. Every one is an identifier or a lifecycle bit; the
+		// rationale and the withdrawal reason are prose about the corpus and
+		// stay in the payload (SPEC.md §4.13, §9).
+		"frontier_filing": {
+			"id", "record_kind", "record_id", "entity_id", "author", "author_id",
+			"heuristic", "withdrawn", "supersedes_id", "schema_version", "created_at",
+		},
 	}
 	// Join tables are pure relationship IDs and carry no payload at all.
 	payloadFree := map[string]bool{
@@ -1334,6 +1343,16 @@ func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("advise the remedy: %v", err)
 	}
+	// A filing fills the last table: what the candidate is about (§4.13).
+	if _, err := store.File(ctx, FilingInput{
+		Record:    Ref{Type: EntityHypothesis, ID: hypothesis.ID},
+		EntityID:  "ent_manifold",
+		Rationale: "the evidence is a session in this repository",
+		Author:    FilingOperator,
+		AuthorID:  "alex",
+	}); err != nil {
+		t.Fatalf("file the candidate under a topic: %v", err)
+	}
 
 	// set is the mutation a future caller might plausibly write, and where
 	// selects the row it would aim at. The delete and the row count reuse
@@ -1359,6 +1378,7 @@ func TestEveryFrontierTableRefusesUpdateAndDelete(t *testing.T) {
 		"frontier_duplicate_warning":   {`payload_json = '{}'`, `hypothesis_id = ?`, []any{warned.ID}},
 		"frontier_triage_advice":       {`payload_json = '{}'`, `proposal_id = ?`, []any{remedy.ID}},
 		"frontier_triage_cluster":      {`position = 7`, `proposal_id = ?`, []any{proposal.ID}},
+		"frontier_filing":              {`entity_id = 'ent_forged'`, `record_id = ?`, []any{hypothesis.ID}},
 	}
 
 	tables := frontierTables(t, store)

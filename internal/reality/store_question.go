@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/atyrode/babel/internal/frontier"
 )
 
 // Ask records a Reality Question.
@@ -781,6 +783,8 @@ func validateAction(kind ActionKind, payload ActionPayload) error {
 		"hypothesis":  payload.Hypothesis != nil,
 		"follow_up":   payload.FollowUp != nil,
 		"request":     payload.Request != nil,
+		"entity":      payload.Entity != nil,
+		"filings":     len(payload.Filings) > 0,
 	}
 	expected := map[ActionKind]string{
 		ActionAssertFact:           "fact",
@@ -789,6 +793,8 @@ func validateAction(kind ActionKind, payload ActionPayload) error {
 		ActionMergeEntities:        "merge",
 		ActionSplitEntity:          "split",
 		ActionChangeFocus:          "focus_rules",
+		ActionCreateEntity:         "entity",
+		ActionFileRecords:          "filings",
 		ActionCreateHypothesis:     "hypothesis",
 		ActionAskFollowUp:          "follow_up",
 		ActionRequestInvestigation: "request",
@@ -822,6 +828,16 @@ func validateAction(kind ActionKind, payload ActionPayload) error {
 	case ActionDisputeFact:
 		if len(payload.DisputeFactIDs) < 2 {
 			return fmt.Errorf("%w: a dispute-fact action needs at least two facts", ErrInvalidValue)
+		}
+	case ActionCreateEntity:
+		if err := payload.Entity.validate(); err != nil {
+			return err
+		}
+	case ActionFileRecords:
+		for _, filing := range payload.Filings {
+			if err := filing.validate(); err != nil {
+				return err
+			}
 		}
 	case ActionChangeFocus:
 		if err := payload.FocusRules.validate(); err != nil {
@@ -1029,6 +1045,27 @@ func planState(ctx context.Context, q querier, planID string) (PlanState, error)
 // or an accepted plan that changed nothing, and both are worse than the
 // operation not having happened.
 func (s *Store) AcceptPlan(ctx context.Context, in AcceptanceInput) (Acceptance, Application, error) {
+	return s.AcceptPlanWith(ctx, in, nil)
+}
+
+// AcceptPlanWith accepts a plan that may also file records under a topic.
+//
+// It is AcceptPlan with the one thing AcceptPlan cannot have: a Filer. A
+// filing is an edge in internal/frontier, which is a separate component
+// reaching the same durable.db file through its own connection, so it cannot
+// be written from inside this transaction — the write lock this transaction
+// holds is the file's, and the frontier's insert would wait for the busy
+// timeout and then fail. Sharing one transaction would mean handing this
+// package's *sql.Tx across a component boundary, which the codebase has
+// refused twice for good reasons (HypothesisSink, RecordPlan).
+//
+// So the ledger's half commits first — the entity, the facts, the acceptance
+// and the question's disposition, atomically as §4.8 requires — and the
+// filings follow. A filing that fails leaves the acceptance standing and its
+// records unfiled, and the error says so: §4.13 makes unfiled an honest state
+// and the triage backlog, while edges pointing at an entity no acceptance
+// created would be a claim nobody made.
+func (s *Store) AcceptPlanWith(ctx context.Context, in AcceptanceInput, filer Filer) (Acceptance, Application, error) {
 	if in.PlanID == "" {
 		return Acceptance{}, Application{}, fmt.Errorf("%w: acceptance names no plan", ErrInvalidValue)
 	}
@@ -1042,9 +1079,11 @@ func (s *Store) AcceptPlan(ctx context.Context, in AcceptanceInput) (Acceptance,
 		acceptance  Acceptance
 		application Application
 		pub         publication
+		plan        Plan
 	)
 	err := s.transact(ctx, func(tx *sql.Tx) error {
-		plan, err := readPlan(ctx, tx, in.PlanID)
+		read, err := readPlan(ctx, tx, in.PlanID)
+		plan = read
 		if err != nil {
 			return err
 		}
@@ -1139,7 +1178,42 @@ func (s *Store) AcceptPlan(ctx context.Context, in AcceptanceInput) (Acceptance,
 	if err := s.commit(ctx, pub); err != nil {
 		return Acceptance{}, Application{}, err
 	}
+	filings, err := fileRecords(ctx, filer, planFilings(plan, application.EntityIDs, in.Actor))
+	application.Filings = filings
+	if err != nil {
+		return acceptance, application, fmt.Errorf(
+			"reality: plan %s accepted; its records stay unfiled: %w", in.PlanID, err)
+	}
 	return acceptance, application, nil
+}
+
+// planFilings states an accepted plan's file-records actions as filings.
+//
+// A filing with no entity belongs to the subject the same acceptance created,
+// which is what a topic-shaped plan says: the topic does not exist when the
+// plan is written, so no action in it can name the topic. A plan that files
+// into nothing it created and names no entity is malformed, and fileRecords
+// reports it as the refusal it is rather than filing somewhere plausible.
+func planFilings(plan Plan, created []string, actor string) []FilingDraft {
+	var out []FilingDraft
+	for _, action := range plan.Actions {
+		if action.Kind != ActionFileRecords {
+			continue
+		}
+		for _, draft := range action.Payload.Filings {
+			if draft.EntityID == "" && len(created) > 0 {
+				draft.EntityID = created[0]
+			}
+			if draft.Author == "" {
+				// The operator accepted the plan, so an unattributed
+				// filing in it is his act, exactly as the facts beside
+				// it are.
+				draft.Author, draft.AuthorID = frontier.FilingOperator, actor
+			}
+			out = append(out, draft)
+		}
+	}
+	return out
 }
 
 // applyAction performs one authoritative action under the accepting operator's
@@ -1234,6 +1308,24 @@ func (s *Store) applyAction(ctx context.Context, tx *sql.Tx, action Action,
 		// whichever landed first.
 		application.FocusVersions = append(application.FocusVersions, rules.Version)
 		return fmt.Sprintf("focus-ruleset-%d", rules.Version), nil
+	case ActionCreateEntity:
+		entity, _, facts, err := s.applyEntityDraft(ctx, tx, *action.Payload.Entity,
+			authority, contextID, set)
+		if err != nil {
+			return "", err
+		}
+		application.EntityIDs = append(application.EntityIDs, entity.ID)
+		for _, fact := range facts {
+			application.FactIDs = append(application.FactIDs, fact.ID)
+		}
+		return entity.ID, nil
+	case ActionFileRecords:
+		// Nothing durable happens here. The filings are another
+		// component's rows and are written after this transaction
+		// commits; the action is marked applied because the acceptance
+		// that authorizes them is what this transaction records, and
+		// AcceptPlanWith reports a filing that then failed.
+		return "", nil
 	}
 	return "", fmt.Errorf("%w: action kind %q does not require acceptance", ErrInvalidValue, action.Kind)
 }

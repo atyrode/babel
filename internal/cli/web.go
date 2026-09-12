@@ -276,6 +276,27 @@ func (a *app) buildWebServer(rf repoFlags, operator string, port int) (*web.Serv
 	opts.Complaints = services.complaints()
 	opts.Receipts = services.receipts()
 
+	// §4.13's topics: the frontier's filings, the ledger's plans for the
+	// topic proposals Babel has published, and the operator's stance toward
+	// a topic. Each half wires on its own terms — a build with a frontier
+	// but no ledger still files records and proposes nothing — and the
+	// frontier is handed the ledger after both are open, because it opened
+	// first and needs it only to drop a retired topic's filings out of the
+	// unfiled count.
+	if services.analysis != nil {
+		opts.Filings = services.analysis.frontier
+	}
+	if services.reality != nil {
+		opts.Topics = services.reality
+		topics := web.LedgerTopics{Ledger: services.reality}
+		if services.analysis != nil {
+			topics.Filer = services.analysis.frontier
+			services.analysis.frontier.UseEntities(services.reality)
+		}
+		opts.TopicPlans = topics
+		opts.Stance = topics
+	}
+
 	// The Watch surface's control room (Contract W). The launcher starts this
 	// machine's own binary with the CLI's own flags and refusals, so a
 	// browser-started run is a typed run; internal/cli/launch.go states why
@@ -740,19 +761,22 @@ func webSessionRows(rows []sessionRow) []web.SessionRow {
 // session".
 func webSessionRow(row sessionRow) web.SessionRow {
 	return web.SessionRow{
-		Harness:           row.Harness,
-		SourceID:          row.SourceID,
-		Selector:          row.Selector,
-		Size:              row.Size,
-		Modified:          row.Modified,
-		Title:             row.Title,
-		TitleProvenance:   row.TitleProvenance,
-		Workspace:         row.Workspace,
-		ContinuationGrade: row.Continuous,
-		CostUSD:           row.CostUSD,
-		TotalTokens:       row.TotalTokens,
-		Turns:             row.Turns,
-		ToolErrors:        row.ToolErrors,
+		Harness:            row.Harness,
+		SourceID:           row.SourceID,
+		Selector:           row.Selector,
+		Size:               row.Size,
+		Modified:           row.Modified,
+		Title:              row.Title,
+		TitleProvenance:    row.TitleProvenance,
+		Workspace:          row.Workspace,
+		RepositoryIdentity: row.RepositoryIdentity,
+		RepositoryRemote:   row.RepositoryRemote,
+		RepositoryReason:   row.RepositoryReason,
+		ContinuationGrade:  row.Continuous,
+		CostUSD:            row.CostUSD,
+		TotalTokens:        row.TotalTokens,
+		Turns:              row.Turns,
+		ToolErrors:         row.ToolErrors,
 	}
 }
 

@@ -6,6 +6,11 @@
   },
   "recipes": [
     {
+      "id": "babel-files-its-output",
+      "version": 2,
+      "digest": "sha256:f5f37d2eee027577055f989b48c478623f7b3733e94782ed161b20abae03f70e"
+    },
+    {
       "id": "babel-improves-babel",
       "version": 2,
       "digest": "sha256:1a110fa3ec544b6a54ff2c39c24d618e31ccd555390655b1bb204e43f278d8f6"

@@ -313,15 +313,20 @@ type verifyResult struct {
 }
 
 type sessionRow struct {
-	Harness    string  `json:"harness"`
-	SourceID   string  `json:"source_id"`
-	Selector   string  `json:"selector"`
-	Size       int64   `json:"size"`
-	Modified   *string `json:"modified"`
-	Title      *string `json:"title"`
-	TitleProv  *string `json:"title_provenance"`
-	Workspace  *string `json:"workspace"`
-	Continuous bool    `json:"continuation_grade"`
+	Harness   string  `json:"harness"`
+	SourceID  string  `json:"source_id"`
+	Selector  string  `json:"selector"`
+	Size      int64   `json:"size"`
+	Modified  *string `json:"modified"`
+	Title     *string `json:"title"`
+	TitleProv *string `json:"title_provenance"`
+	Workspace *string `json:"workspace"`
+	// The repository a workspace resolved to (§4.13 stage 1): identity, the
+	// normalized remote, and the reason both are absent when they are.
+	RepositoryIdentity *string `json:"repository_identity"`
+	RepositoryRemote   *string `json:"repository_remote"`
+	RepositoryReason   *string `json:"repository_reason"`
+	Continuous         bool    `json:"continuation_grade"`
 	// The usage summary the adapter recomputed from the transcript. This
 	// suite decodes with DisallowUnknownFields, so an unmirrored field fails
 	// here rather than reaching an operator as a dropped value.

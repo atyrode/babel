@@ -47,6 +47,47 @@ func sampleEdge() RecordEdge {
 	}
 }
 
+// TestAnAboutEdgeReachesTheLedger is migrations/0015's whole subject: a record
+// can say what it is about, and what it is about is not another record.
+//
+// Two things are checked because 0008 constrained both. The kind has to pass a
+// CHECK that was closed before this migration widened it, so an `about` edge
+// that reached PostgreSQL at all is the constraint change working. And the far
+// endpoint is a Reality Ledger entity rather than an analysis record, which
+// 0008's columns always allowed and nothing had yet used — the namespace is a
+// vocabulary value and the id is opaque, so the filing's shape travels while
+// its rationale stays sealed with the record.
+func TestAnAboutEdgeReachesTheLedger(t *testing.T) {
+	db := newInternalDB(t)
+	seedFleet(t, db)
+	store, ring := newMemStore(), newKeyring(t)
+	ctx := context.Background()
+
+	edge := RecordEdge{
+		Kind:     EdgeAbout,
+		FromKind: "hypothesis",
+		FromID:   "hyp_0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+		ToKind:   "reality_entity",
+		ToID:     "ent_1a2b3c4d5e6f70819293a4b5c6d7e8f9",
+	}
+	mustSync(t, db, store, ring, edgeClosure("run-about", "edge-about", edge, sentinel))
+
+	got, err := RecordEdges(ctx, db, EdgeFilter{DeploymentID: "d1", Kinds: []EdgeKind{EdgeAbout}})
+	if err != nil {
+		t.Fatalf("RecordEdges: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("read %d about edges, want 1", len(got))
+	}
+	if read := got[0]; read.To.Kind != "reality_entity" || read.To.ID != edge.ToID {
+		t.Fatalf("the filing points at %s, want the ledger entity %s", read.To, edge.ToID)
+	}
+	// The rationale is the note, and it is not here.
+	for _, hit := range scanSchemaForText(t, db, sentinel) {
+		t.Errorf("a filing's rationale reached PostgreSQL in %s", hit)
+	}
+}
+
 // The point of the whole table: a host holding only the catalog credential can
 // read what cites what, across every machine, and cannot read a word of why.
 func TestEdgePublishesItsShapeAndSealsItsNote(t *testing.T) {

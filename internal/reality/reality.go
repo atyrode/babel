@@ -117,6 +117,12 @@ var (
 	// ErrNotReversible reports an attempt to reverse something that is not
 	// a reversible resolution, or one that has already been reversed.
 	ErrNotReversible = errors.New("reality: resolution is not reversible")
+	// ErrTopicBound reports a topic proposal whose identity already binds a
+	// live entity. §4.13 has every topic be one the operator accepted, and
+	// proposing a second subject for a thing the ledger already names is
+	// the duplication its merge history exists to undo — so the ask is
+	// refused and the error names the entity that holds the identity.
+	ErrTopicBound = errors.New("reality: identity already binds an entity")
 )
 
 // Sensitivity grades how freely a record may be shown, in the vocabulary §9's

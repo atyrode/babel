@@ -309,11 +309,6 @@ export interface RecordPeel {
   machinery?: RecordMachinery;
 }
 
-export interface ReceptionResult {
-  stance: OperatorStance;
-  at: string;
-}
-
 // getRecord reads one record whole. The id names its kind — the server refuses
 // an id whose prefix it cannot open — so the client needs no kind parameter
 // and a link to a record is just its id.
@@ -321,24 +316,115 @@ export function getRecord(id: string): Promise<RecordPeel> {
   return request<RecordPeel>(`/api/record/${encodeURIComponent(id)}`);
 }
 
-// putReception records the operator's own stance on a record he has read.
+// The operator records no stance. §8.7: "Babel votes; the operator rules" —
+// his acts on a record are the rulings and the question he asks about it, so
+// the write that recorded a stance is gone from this client and from the
+// server. What he recorded before it went stays readable in the reception
+// block below, because §4.12 appends and nothing here deletes.
+
+// The conversation under the post, and the moderator's log beside it.
 //
-// It is an attributed operator reception and it decides nothing: the authority
-// to rule stays with the disposition events, and §4.12's boundary is not
-// widened by it. Posting the same record again replaces the operator's stance
-// with the later one, which is what makes the control on the page reversible.
+// §8.7: "a reviewer's contribution prose, a refinement, the operator's reason
+// in his own words, the answer to a question and the reason on a
+// reconsideration are all comments, threaded by what they relate to". They
+// are one endpoint rather than five because they are one thing to read: the
+// records they come out of are §4.12's and §4.7's business, and a reader
+// following a discussion should not have to know which store each line was
+// written into.
 //
-// The reason is sent only when the operator wrote one. An empty string would
-// be stored as a reason he gave, and "he said nothing" is a different fact
-// from "he said ''".
-export function putReception(
+// Rulings are not comments and do not arrive in the same list. Accept, reject,
+// defer, duplicate and reopen are the append-only authority of §4.7, so they
+// travel as `acts` — attributed and dated — and the renderer places them in
+// the thread as the acts they are. Merging them into `comments` would let a
+// decision read as an opinion.
+// A question the operator asked is a comment with its own kind. It is a
+// feedback record carrying the reason and a marker a later review of the
+// record can find, which is what makes "Babel's next review must answer it"
+// a property of the store rather than a promise in the interface.
+export type CommentKind =
+  | "contribution"
+  | "refinement"
+  | "reason"
+  | "answer"
+  | "reconsideration"
+  | "question";
+
+// Who wrote a line. `kind` is the §4.12 attribution boundary on the wire: a
+// run authored what it wrote and the operator authored what he wrote, and the
+// surface never renders one as the other. `href` reaches a run's own page and
+// is empty for the operator, who has no page.
+export interface CommentAuthor {
+  kind: "run" | "operator";
+  id: string;
+  href: string;
+}
+
+// One line of the conversation. `role` is the question a reviewer was asked,
+// empty for anyone who was not asked one; `related_id` is what this line
+// replies to, empty at the top of the thread. Both are empty strings rather
+// than omitted fields because this route sends a complete row — the peel's
+// absent-means-absent rule is about a record's own sections, and a comment
+// with no role is a comment whose role is nothing.
+export interface Comment {
+  id: string;
+  kind: CommentKind;
+  author: CommentAuthor;
+  role: string;
+  text: string;
+  at: string;
+  related_id: string;
+  replies?: Comment[];
+}
+
+// One ruling, as the thread shows it. `reason` is the note the ruling carried,
+// empty when it carried none.
+export interface Act {
+  id: string;
+  act: "accept" | "reject" | "defer" | "duplicate" | "reopen";
+  by: string;
+  at: string;
+  reason: string;
+}
+
+// `total` counts the comments, replies included, and never the acts: the
+// heading over the thread says how much conversation there is, and a ruling is
+// not part of the conversation.
+export interface CommentThread {
+  comments: Comment[];
+  acts: Act[];
+  total: number;
+}
+
+export interface CommentResult {
+  comment: Comment;
+}
+
+export function getComments(id: string): Promise<CommentThread> {
+  return request<CommentThread>(`/api/record/${encodeURIComponent(id)}/comments`);
+}
+
+// postComment records the operator's own words about a record he has read.
+//
+// It is a feedback record carrying a reason and no polarity: §8.7 gives the
+// operator "a box the operator writes into that records a feedback record
+// carrying a reason and no polarity", so writing here moves no score. Nothing
+// he writes does: the score is Babel's reviewers' and he has no vote.
+//
+// `kind` is what the request vocabulary calls it — a comment or a question —
+// and it is absent for a comment rather than sent as the default, because the
+// route reads an absent kind as a comment and a client that spelled the
+// default out would be the only place that knew it.
+//
+// The text is sent exactly as typed. The server escapes it and the surface
+// renders it inside a quoted frame, which is what keeps an operator's own
+// sentence from becoming markup.
+export function postComment(
   id: string,
-  stance: OperatorStance,
-  reason?: string,
-): Promise<ReceptionResult> {
-  const trimmed = reason?.trim();
-  return postJSON<ReceptionResult>(
-    `/api/record/${encodeURIComponent(id)}/reception`,
-    trimmed ? { stance, reason: trimmed } : { stance },
+  text: string,
+  kind: "comment" | "question" = "comment",
+): Promise<CommentResult> {
+  return postJSON<CommentResult>(
+    `/api/record/${encodeURIComponent(id)}/comments`,
+    kind === "question" ? { text, kind } : { text },
   );
 }

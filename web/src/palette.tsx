@@ -90,13 +90,13 @@ const KIND_LABEL: Record<string, string> = {
   question: "Open questions",
 };
 
-// The four questions the shell's nav asks, in its own words, so the palette and
-// the header cannot come to describe the same destination differently.
+// The destinations the shell's nav names, in its own words, so the palette
+// and the header cannot come to describe the same place differently. Search
+// is absent because it is this list: a row that opened the palette from
+// inside the palette is not a destination.
 const DESTINATIONS: { path: string; label: string; note: string }[] = [
-  { path: "/", label: "Decide", note: "what needs me" },
-  { path: "/read", label: "Read", note: "what Babel has found" },
+  { path: "/", label: "Home", note: "the feed — what needs you, then everything else" },
   { path: "/watch", label: "Watch", note: "what it is doing, and what it cost" },
-  { path: "/ask", label: "Ask", note: "what it knows, and what it needs from me" },
   { path: "/settings", label: "Settings", note: "the archive, the ceilings, and what Babel is" },
 ];
 

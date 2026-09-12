@@ -20,6 +20,7 @@ import (
 	"github.com/atyrode/babel/internal/config"
 	"github.com/atyrode/babel/internal/cookbook"
 	"github.com/atyrode/babel/internal/evaluation"
+	"github.com/atyrode/babel/internal/explore"
 	"github.com/atyrode/babel/internal/presence"
 	"github.com/atyrode/babel/internal/reality"
 	runstore "github.com/atyrode/babel/internal/run"
@@ -844,6 +845,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 	var (
 		evaluationShareCfg conductor.Evaluation
 		evaluationSvc      *evaluation.Service
+		evaluationTopics   explore.TopicService
 	)
 	if evaluateOneIn > 0 && settings.BabelTriagesTheQueue {
 		services, err := a.openEvaluation(ctx, state)
@@ -855,6 +857,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			&reviewsAdapter{service: services.service, diag: a.diagf},
 			conductorFocus(ledger), settings.evaluateCadence(), a.diagf)
 		evaluationSvc = services.service
+		evaluationTopics = topicService(topicFilingStores(state, services.reality, sf.rootList()))
 	}
 
 	loop, err := conductor.New(conductor.Config{
@@ -884,6 +887,7 @@ func (a *app) conductorRun(ctx context.Context, args []string) error {
 			synthesize: *synthesize,
 			presence:   announcer,
 			evaluation: evaluationSvc,
+			topics:     evaluationTopics,
 		},
 		Ledger:   conductor.NewReceiptLedger(state.runs),
 		Journal:  journal,
@@ -1185,6 +1189,10 @@ type conductorRunner struct {
 	// one handle, shared by every review cycle, for presence's reason: a
 	// projection opened per cycle would be rebuilt per cycle.
 	evaluation *evaluation.Service
+	// topics is §4.13's filing surface, opened beside the evaluation
+	// service and nil for the same reason it is: an invocation that
+	// allocated no evaluation share files nothing.
+	topics explore.TopicService
 }
 
 // Run prepares the assignment's corpus slice and explores it.

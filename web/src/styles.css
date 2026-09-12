@@ -31,7 +31,7 @@
    ONE PALETTE, DECLARED ONCE.
 
    Every colour, type face, measure, space and duration used by this file and
-   by the component stylesheets beside it (record.css, decide.css, read.css,
+   by the component stylesheets beside it (record.css, feed.css, read.css,
    watch.css, sessions.css, ask.css, palette.css) comes from a token in
    `:root` below. A literal colour outside `:root` is a bug: it is a value
    nobody can retune, and the surface it belongs to drifts away from the rest
@@ -560,9 +560,11 @@ time {
   white-space: nowrap;
 }
 
-/* The key hints. A dialog rather than a page, because the answer to "what can
-   I press" is wanted where the reader already is. */
-.keyhints {
+/* The shell's dialogues. A dialog rather than a page, because the questions
+   they answer — "what can I press", "this is going badly" — are asked where
+   the reader already is. One overlay and one panel for both: the same meaning
+   gets the same shape, and the difference between them is what is inside. */
+.shell-dialog {
   position: fixed;
   z-index: 40;
   inset: 0;
@@ -573,7 +575,7 @@ time {
   backdrop-filter: blur(3px);
 }
 
-.keyhints-panel {
+.shell-dialog-panel {
   width: min(38rem, 100%);
   max-height: 80vh;
   overflow-y: auto;
@@ -584,7 +586,14 @@ time {
   box-shadow: var(--shadow-raised);
 }
 
-.keyhints-panel h2 {
+/* The capture box is wider than the key hints: it holds a textarea at one
+   measure and the listing of what has been told, and a table squeezed into
+   38rem is a table that scrolls sideways. */
+.shell-tell-panel {
+  width: min(52rem, 100%);
+}
+
+.shell-dialog-panel h2 {
   margin-bottom: var(--space-1);
 }
 

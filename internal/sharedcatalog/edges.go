@@ -41,15 +41,23 @@ const (
 	EdgeAddresses  EdgeKind = "addresses"
 	EdgeInspiredBy EdgeKind = "inspired_by"
 	EdgeDuplicates EdgeKind = "duplicates"
+	// EdgeAbout is what a record is about: the topic it is filed under
+	// (SPEC.md §4.13, migrations/0015). It is the one kind whose target
+	// leaves the analysis corpus - a topic is a Reality Ledger entity, so
+	// the edge runs from a record to a `reality_entity` - and the one whose
+	// endpoints a reader may see without being able to read what the filing
+	// says: both ids are opaque, and the rationale is sealed with the
+	// record.
+	EdgeAbout EdgeKind = "about"
 )
 
-// Valid reports whether k is one of the kinds migrations/0008 admits. It is
-// exported because the writer that stages an edge has to be able to ask before
-// the database answers with a constraint violation.
+// Valid reports whether k is one of the kinds migrations/0008 admits, as
+// widened by 0015. It is exported because the writer that stages an edge has
+// to be able to ask before the database answers with a constraint violation.
 func (k EdgeKind) Valid() bool {
 	switch k {
 	case EdgeEvidence, EdgeSupersedes, EdgeRefines,
-		EdgeAddresses, EdgeInspiredBy, EdgeDuplicates:
+		EdgeAddresses, EdgeInspiredBy, EdgeDuplicates, EdgeAbout:
 		return true
 	}
 	return false

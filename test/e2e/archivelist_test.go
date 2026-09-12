@@ -24,9 +24,14 @@ type archiveListRow struct {
 	// derived, so a reader can tell a fact from an inference. This suite
 	// decodes with DisallowUnknownFields, which is why an unmirrored field
 	// fails here rather than reaching an operator as a dropped value.
-	TitleProv  *string `json:"title_provenance"`
-	Workspace  *string `json:"workspace"`
-	Continuous *bool   `json:"continuation_grade"`
+	TitleProv *string `json:"title_provenance"`
+	Workspace *string `json:"workspace"`
+	// The repository a workspace resolved to (§4.13 stage 1): identity, the
+	// normalized remote, and the reason both are absent when they are.
+	RepositoryIdentity *string `json:"repository_identity"`
+	RepositoryRemote   *string `json:"repository_remote"`
+	RepositoryReason   *string `json:"repository_reason"`
+	Continuous         *bool   `json:"continuation_grade"`
 	// The usage summary, absent for a cross-host listing for the same reason
 	// the title is: nothing read the transcript.
 	CostUSD     *float64 `json:"cost_usd"`

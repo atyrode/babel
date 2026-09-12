@@ -179,6 +179,11 @@ func classifyService(err error) (int, string) {
 		return http.StatusBadRequest, "this record kind carries no review decision"
 	case errors.Is(err, review.ErrTerminalStatus):
 		return http.StatusConflict, "this record's review status accepts no further decision"
+	case errors.Is(err, frontier.ErrNotFiled):
+		// A filing that is not there cannot be withdrawn, and the record and
+		// the topic are both fine: it is the membership between them that
+		// does not exist, which is a conflict rather than a missing record.
+		return http.StatusConflict, "this record is not filed under that topic"
 	case errors.Is(err, review.ErrNoChange):
 		return http.StatusConflict, "this decision repeats the record's standing decision"
 	case errors.Is(err, reality.ErrAlreadyDecided):

@@ -75,13 +75,49 @@ const (
 	defaultMaxItemReviews = 6
 	// defaultLeaseSeconds is how long a claim survives a worker that stops
 	// answering. Fifteen minutes is longer than any single review invocation
-	// and short enough that a crashed worker's subject is drawable again
-	// within one cadence period.
+	// - the four reviews measured on 2026-09-12 took 386s, 461s, 556s and
+	// 630s end to end - and short enough that a crashed worker's subject is
+	// drawable again within one cadence period.
 	defaultLeaseSeconds = 900
 	// defaultBatchSize bounds one cycle's assignments, so a cadence tick can
 	// never turn the whole eligible set into concurrent work.
 	defaultBatchSize = 4
+	// leaseSecondsPerSubject and leaseFloorSeconds are the floor a lease has
+	// to clear for the batch it is granted against. Both are measured rather
+	// than chosen.
+	//
+	// This deployment lost four review runs on 2026-09-12 under a policy of
+	// lease 240s and batch 24. Measured from the live store - each
+	// evaluation_claim's created_at against the evaluation_settlement that
+	// recorded its failure - they ran 386s, 461s, 556s and 630s, a mean of
+	// 508s, which is 16s to 26s of wall clock per subject in the batch and a
+	// mean of 21s. Every one of them died at the same place: the claim
+	// expired during the corpus scan and scope fixing that precede the
+	// worker, and the review context was then refused as a lapsed lease. So
+	// twenty seconds per subject is that measurement rounded down to a number
+	// an operator can hold in their head, and five minutes is the floor under
+	// any batch size at all, because a batch of one still has to cover that
+	// same preparation.
+	//
+	// The floor stands beside renewal rather than instead of it. What carries
+	// a long review past its lease is Service.RenewClaim, ticked at a third
+	// of the lease while the review runs, in both modes since migration
+	// 0014; what the floor refuses is the policy that needs those renewals
+	// to have worked at all. A renewal is one more write that can be lost to
+	// a busy database or a worker that stalls, and a lease shorter than the
+	// preparation it has to cover would hand out claims that depend on the
+	// first tick landing before the grant lapses.
+	leaseSecondsPerSubject = 20
+	leaseFloorSeconds      = 300
 )
+
+// leaseFloor is the shortest lease a policy may grant for one batch size.
+func leaseFloor(batchSize int) int {
+	if floor := leaseSecondsPerSubject * batchSize; floor > leaseFloorSeconds {
+		return floor
+	}
+	return leaseFloorSeconds
+}
 
 // The default policy's shares and ceilings.
 const (
@@ -99,6 +135,15 @@ const (
 	// role, so a deployment that is busy arguing about its favourite
 	// proposal still notices the observation nobody has read.
 	DefaultDiscoveryShare = 0.10
+	// DefaultFilingShare is §4.13's own draw kind: the share of a cycle
+	// spent deciding what a record is about rather than what it is worth. A
+	// tenth, the same reservation protected discovery gets, and for the same
+	// reason — an unfiled record is invisible on a surface organized by
+	// topic, so a deployment that only ever reviewed would keep producing
+	// output nobody can find. It is not a protected share: an operator who
+	// files by hand from the topic page and wants nothing spent on it sets
+	// zero, and that is a legitimate policy rather than a broken one.
+	DefaultFilingShare = 0.10
 	// DefaultPerCycleCost and DefaultDailyCost are the authorized spend, in
 	// the same cost unit internal/conductor's budget accounting uses. They
 	// are deliberately small: an operator raising them is an explicit act,
@@ -127,6 +172,7 @@ func DefaultPolicy() Policy {
 		CoverageShare:    DefaultCoverageShare,
 		ExplorationShare: DefaultExplorationShare,
 		DiscoveryShare:   DefaultDiscoveryShare,
+		FilingShare:      DefaultFilingShare,
 		MaxItemReviews:   defaultMaxItemReviews,
 		PerCycleCost:     DefaultPerCycleCost,
 		DailyCost:        DefaultDailyCost,
@@ -149,6 +195,11 @@ func DefaultPolicy() Policy {
 //   - MaxItemReviews below InitialReviews makes a role permanently
 //     under-reviewed while the cap reports the item as finished.
 //   - A daily ceiling below one cycle's makes the per-cycle bound decorative.
+//   - A lease too short for the batch it is granted against hands out claims
+//     that expire before the work they authorize can start, which is the
+//     failure four of this deployment's review runs actually had: the claim
+//     lapsed during the preparation that precedes the worker, and the review
+//     context was then refused as a conflicting claim. See leaseFloor.
 func ValidatePolicy(p Policy) error {
 	if strings.TrimSpace(p.Version) == "" {
 		return fmt.Errorf("%w: policy has no version", ErrInvalid)
@@ -178,6 +229,7 @@ func ValidatePolicy(p Policy) error {
 		{"coverage share", p.CoverageShare, false},
 		{"exploration share", p.ExplorationShare, true},
 		{"discovery share", p.DiscoveryShare, true},
+		{"filing share", p.FilingShare, false},
 	} {
 		if share.value < 0 || share.value > 1 {
 			return fmt.Errorf("%w: %s %v is outside [0,1]", ErrInvalid, share.name, share.value)
@@ -187,7 +239,7 @@ func ValidatePolicy(p Policy) error {
 				ErrInvalid, share.name)
 		}
 	}
-	if total := p.CoverageShare + p.ExplorationShare + p.DiscoveryShare; total > 1 {
+	if total := p.CoverageShare + p.ExplorationShare + p.DiscoveryShare + p.FilingShare; total > 1 {
 		return fmt.Errorf("%w: reserved shares total %v and over-commit one cycle", ErrInvalid, total)
 	}
 	if p.MaxItemReviews < p.InitialReviews {
@@ -206,6 +258,28 @@ func ValidatePolicy(p Policy) error {
 	}
 	if p.BatchSize < 1 {
 		return fmt.Errorf("%w: batch size %d must be at least one", ErrInvalid, p.BatchSize)
+	}
+	return nil
+}
+
+// ValidateNewPolicy is ValidatePolicy plus the rule that only a policy being
+// installed has to satisfy: its lease must be able to cover its batch.
+//
+// It is separate because the floor arrived after policies had been stored
+// under it. A deployment whose current policy predates the floor keeps
+// drawing under it — renewal carries those reviews now — and is refused only
+// when it tries to install another policy that would need renewal to work
+// at all. Refusing the stored one at draw time would stop every review on
+// the deployment until the operator noticed, which is the outage the floor
+// exists to prevent.
+func ValidateNewPolicy(p Policy) error {
+	if err := ValidatePolicy(p); err != nil {
+		return err
+	}
+	if floor := leaseFloor(p.BatchSize); p.LeaseSeconds < floor {
+		return fmt.Errorf("%w: lease %ds cannot cover a batch of %d: a lease must allow at least "+
+			"%ds per assignment and never less than %ds, so this batch needs %ds",
+			ErrInvalid, p.LeaseSeconds, p.BatchSize, leaseSecondsPerSubject, leaseFloorSeconds, floor)
 	}
 	return nil
 }
@@ -284,6 +358,9 @@ func (p Policy) Invalidates(prev Policy) Invalidation {
 	}
 	if p.DiscoveryShare != prev.DiscoveryShare {
 		note("discovery share", true, false, false)
+	}
+	if p.FilingShare != prev.FilingShare {
+		note("filing share", true, false, false)
 	}
 	if p.MaxItemReviews != prev.MaxItemReviews {
 		note("max item reviews", true, true, true)

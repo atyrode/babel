@@ -74,6 +74,17 @@ const (
 	PublishedReviewAnswer               = PublishedKind(OutputReviewAnswer)
 	PublishedProposal                   = PublishedKind(EntityProposal)
 	PublishedLink         PublishedKind = "link"
+	// PublishedFiling is what a record is about (§4.13): the topic it was
+	// filed under, by whom, and whether the filing still holds.
+	//
+	// It publishes under the shared catalog's `link` kind rather than a kind
+	// of its own, on the terms internal/reference settled for the citation
+	// graph: migrations/0003 documents `link` as a typed assertion that one
+	// record relates to another, a filing is exactly that with a Reality
+	// Ledger entity at the far end, and a new kind would cost a migration to
+	// a closed CHECK for a record shape a reader can already discriminate by
+	// this field.
+	PublishedFiling PublishedKind = "filing"
 )
 
 // PublishedKinds lists every kind this package publishes, which a caller
@@ -81,7 +92,7 @@ const (
 func PublishedKinds() []PublishedKind {
 	return []PublishedKind{
 		PublishedHypothesis, PublishedObservation, PublishedFinding,
-		PublishedReviewAnswer, PublishedProposal, PublishedLink,
+		PublishedReviewAnswer, PublishedProposal, PublishedLink, PublishedFiling,
 	}
 }
 
@@ -141,8 +152,9 @@ type PublishedRecord struct {
 	// the order, it is a relationship id SPEC.md §9 admits, and the local row
 	// already carries it.
 	Ancestor string `json:"ancestor,omitempty"`
-	// Subject names the record a review answer answers about, and is the zero
-	// Ref for every other kind.
+	// Subject names the record a wire record is about: the one a review
+	// answer answers about, and the one a filing files (§4.13). It is the
+	// zero Ref for every other kind.
 	Subject Ref `json:"subject,omitzero"`
 	// Answer carries what a review answer's derivation needs beyond its
 	// payload, and is nil for every other kind. Both of its fields are
@@ -160,6 +172,14 @@ type PublishedRecord struct {
 	// corpus and not what. §9 admits relationship ids in the clear, and they
 	// are sealed here anyway for the reason Answer's are.
 	Edge *PublishedEdge `json:"edge,omitempty"`
+	// Filing carries what a filing means beyond its rationale — the topic,
+	// the author, and whether the filing still holds — and is nil for every
+	// other kind.
+	//
+	// It is here for the reason Edge is: a filing's payload is the sentence
+	// explaining it, so a reader given only that sentence would know why
+	// somebody filed something and not what they filed it under.
+	Filing *PublishedTopicFiling `json:"filing,omitempty"`
 	// RestsOn names the records a proposal rests on, and is empty for every
 	// other kind (#114).
 	//
@@ -226,6 +246,30 @@ type PublishedEdge struct {
 	FromID string   `json:"from_id"`
 	ToID   string   `json:"to_id"`
 	Type   LinkType `json:"type"`
+}
+
+// PublishedTopicFiling carries one filing's structure: the topic, who filed
+// it, whether it was a guess, and whether it is a withdrawal (§4.13).
+//
+// The topic is a Reality Ledger entity id, and it is empty for the honest
+// answer that a record is about nothing in particular — which is a filing with
+// no target rather than an absent field, and travels as one.
+//
+// A withdrawal publishes exactly like a filing, because it is one: §4.13 makes
+// where a record was filed and why readable, so a fleet reader that saw only
+// the filings would hold a corpus in which nothing was ever unfiled. What it
+// does not have is a citation in the plaintext graph, since an edge cannot be
+// unasserted; the record is where the retraction lives.
+type PublishedTopicFiling struct {
+	EntityID  string       `json:"entity_id,omitempty"`
+	Author    FilingAuthor `json:"author"`
+	AuthorID  string       `json:"author_id,omitempty"`
+	Heuristic bool         `json:"heuristic,omitempty"`
+	Withdrawn bool         `json:"withdrawn,omitempty"`
+	// Supersedes is the filing this one replaced as the current answer,
+	// empty when there was none. It orders a record's filing history on a
+	// host that holds the rows without holding the clock that timed them.
+	Supersedes string `json:"supersedes,omitempty"`
 }
 
 // PublishedSubject is one record a proposal rests on: the finding it was
@@ -308,6 +352,25 @@ func (p PublishedRecord) validate() error {
 	}
 	if p.Kind == PublishedReviewAnswer && p.Subject.ID == "" {
 		return fmt.Errorf("%w: review answer %s names no subject", ErrInvalidValue, p.ID)
+	}
+	switch {
+	case p.Kind == PublishedFiling && p.Filing == nil:
+		return fmt.Errorf("%w: filing %s names no topic, author or state",
+			ErrInvalidValue, p.ID)
+	case p.Kind != PublishedFiling && p.Filing != nil:
+		return fmt.Errorf("%w: a %s record files nothing", ErrInvalidValue, p.Kind)
+	}
+	if p.Kind == PublishedFiling {
+		// The filed record is the subject, so a filing with none would be a
+		// topic membership for nothing. The author is checked because a
+		// filing nobody can attribute is one no reader can weigh: §4.13's
+		// whole point about heuristic filings is that they say so.
+		if p.Subject.ID == "" || !p.Subject.Type.valid() {
+			return fmt.Errorf("%w: filing %s names no record", ErrInvalidValue, p.ID)
+		}
+		if !p.Filing.Author.valid() {
+			return fmt.Errorf("%w: filing %s author %q", ErrInvalidValue, p.ID, p.Filing.Author)
+		}
 	}
 	switch {
 	case p.Kind == PublishedLink && p.Edge == nil:

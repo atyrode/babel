@@ -180,8 +180,15 @@ func newHarness(t *testing.T, opts ...Option) *harness {
 		t.Fatalf("open store: %v", err)
 	}
 	store.now = clock.now
-	if local, ok := store.coord.(*localCoordinator); ok {
-		local.now = clock.now
+	// The clock has to reach whichever authority was installed, including the
+	// local mirror a shared deployment keeps: WithCoordinator captured the
+	// real clock when the option ran, and a mirror still on it would refuse a
+	// lease this test's clock has not reached.
+	switch coord := store.coord.(type) {
+	case *localCoordinator:
+		coord.now = clock.now
+	case *mirrored:
+		coord.local.now = clock.now
 	}
 	t.Cleanup(func() { store.Close() })
 	return &harness{store: store, hook: hook, resolver: resolver, records: records, clock: clock}

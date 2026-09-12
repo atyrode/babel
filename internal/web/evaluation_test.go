@@ -38,6 +38,10 @@ type fakeEvaluation struct {
 	policy   evaluation.Policy
 	// assessmentDays is the reviews-per-day series the Watch surface reads.
 	assessmentDays []evaluation.AssessmentDay
+	// tallies and thread are §8.7's feed half: the deployment's reception
+	// grouped by subject, and one subject's conversation.
+	tallies map[evaluation.Subject]evaluation.Tally
+	thread  map[evaluation.Subject][]evaluation.ThreadRecord
 
 	// err, when set, is returned by every method, so the sentinel
 	// classification can be exercised through a real request.
@@ -85,6 +89,25 @@ func (f *fakeEvaluation) AssessmentDays(context.Context, time.Time) ([]evaluatio
 		return nil, f.err
 	}
 	return f.assessmentDays, nil
+}
+
+// Tallies and Thread are §8.7's feed half. The fake answers from fields a
+// test sets, on the same terms as the page above: what the feed and the
+// comment thread do with a reception is this package's business, and what a
+// reception *is* belongs to internal/evaluation.
+func (f *fakeEvaluation) Tallies(context.Context) (map[evaluation.Subject]evaluation.Tally, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.tallies, nil
+}
+
+func (f *fakeEvaluation) Thread(_ context.Context, s evaluation.Subject) ([]evaluation.ThreadRecord, error) {
+	f.lastSubject = s
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.thread[s], nil
 }
 
 func (f *fakeEvaluation) Policy(context.Context) (evaluation.Policy, error) {

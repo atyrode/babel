@@ -69,11 +69,18 @@ const (
 	// disagreement. It is a lane of its own so that a cycle's accounting can
 	// say how much was spent arguing rather than reviewing.
 	LaneChallenge = "challenge"
+	// LaneFiling is §4.13's own draw kind: the share spent deciding what an
+	// unfiled record is about. It is a lane rather than a role inside the
+	// weighted sample because it draws a different candidate set — records
+	// with no filing, which is a fact about the frontier and not about this
+	// package's coverage — and because a cycle's accounting has to be able
+	// to say how much went to naming rather than to judging.
+	LaneFiling = "filing"
 )
 
 // AllocationLanes lists the allocation lanes in a stable order.
 func AllocationLanes() []string {
-	return []string{LaneCoverage, LaneWeighted, LaneExploration, LaneDiscovery, LaneChallenge}
+	return []string{LaneCoverage, LaneWeighted, LaneExploration, LaneDiscovery, LaneChallenge, LaneFiling}
 }
 
 // ValidAllocationLane reports whether lane is an allocation lane.
@@ -140,6 +147,12 @@ type drawInput struct {
 	// is what the batch bounds.
 	ActiveClaims int
 	Now          time.Time
+	// Unfiled are the open records with no live non-heuristic filing
+	// (§4.13), oldest first, as the frontier reported them. They are the
+	// filing lane's candidate set and nothing else's: being unfiled is not a
+	// review obligation and never makes a record more or less worth
+	// reviewing.
+	Unfiled []Subject
 }
 
 // drawResult is one selection decision.
@@ -183,6 +196,11 @@ type candidate struct {
 	// — and its existence is why an empty backlog is not the same as
 	// nothing to sample.
 	Revisit bool
+	// Filing marks the filing lane's candidate: a record with no filing,
+	// drawn to be named rather than judged. Only LaneFiling draws one, so a
+	// backlog of unfiled records can never displace review work — nor be
+	// displaced by it, because the share is its own.
+	Filing bool
 }
 
 // selectDraw chooses the next assignment.
@@ -226,10 +244,14 @@ func selectDraw(in drawInput, runID string, seed uint64) (drawResult, error) {
 		return drawResult{StopReason: reason, Gaps: gaps},
 			fmt.Errorf("%w: %s", ErrNoWork, reason)
 	}
-	// A challenge is accounted to its own lane whichever reservation drew
-	// it, so a cycle's accounting can say how much went to arguing about
-	// disagreement rather than to reviewing.
-	if chosen.Role == RoleChallenge {
+	// A challenge and a filing are accounted to their own lane whichever
+	// reservation drew them, so a cycle's accounting can say how much went
+	// to arguing about disagreement, and how much to deciding what a record
+	// is about, rather than to reviewing.
+	switch {
+	case chosen.Filing:
+		lane = LaneFiling
+	case chosen.Role == RoleChallenge:
 		lane = LaneChallenge
 	}
 
@@ -331,9 +353,10 @@ func buildCandidates(in drawInput) ([]candidate, []string) {
 		role    string
 	}
 	var (
-		active   = make(map[roleKey]int)
-		ordinals = make(map[roleKey]int)
-		setbacks = make(map[roleKey]int)
+		active    = make(map[roleKey]int)
+		ordinals  = make(map[roleKey]int)
+		setbacks  = make(map[roleKey]int)
+		completed = make(map[roleKey]int)
 	)
 	for _, assignment := range in.Assignments {
 		key := roleKey{subject: assignment.Subject, role: assignment.Role}
@@ -343,6 +366,7 @@ func buildCandidates(in drawInput) ([]candidate, []string) {
 			switch attempt.State {
 			case AttemptCompleted:
 				settled = true
+				completed[key]++
 			case AttemptSkipped, AttemptFailed:
 				settled = true
 				setbacks[key]++
@@ -351,6 +375,16 @@ func buildCandidates(in drawInput) ([]candidate, []string) {
 		if !settled && assignment.ExpiresAt.After(in.Now) {
 			active[key]++
 		}
+	}
+
+	// The filing backlog is the frontier's answer, not this projection's, so
+	// it is indexed rather than derived: a record is a filing candidate
+	// because no live non-heuristic filing points at it, which is a fact
+	// about the `about` edges and has nothing to do with how well reviewed
+	// it is.
+	unfiled := make(map[Subject]bool, len(in.Unfiled))
+	for _, subject := range in.Unfiled {
+		unfiled[subject] = true
 	}
 
 	var (
@@ -369,6 +403,52 @@ func buildCandidates(in drawInput) ([]candidate, []string) {
 			gaps = append(gaps, fmt.Sprintf("%s %s: recorded policy withholds subject-specific work (%s)",
 				subject.Kind, subject.ID, item.Artifact.Context.Allowance))
 			continue
+		}
+		if unfiled[subject] {
+			unfiled[subject] = false
+			key := roleKey{subject: subject, role: RoleFiling}
+			// Filing is decided before the per-revision review cap
+			// below, and deliberately outside it: the cap bounds how
+			// much judgement one revision may collect, and where a
+			// record belongs is not a judgement about it. A
+			// well-reviewed record that nobody has filed is still
+			// invisible on a surface organized by topic.
+			switch {
+			case !WorkRoleApplies(subject.Kind, RoleFiling):
+				gaps = append(gaps, fmt.Sprintf("%s %s: unfiled, and a %s carries no topic",
+					subject.Kind, subject.ID, subject.Kind))
+			case active[key] > 0:
+				gaps = append(gaps, fmt.Sprintf("%s %s: filing already claimed by a live worker",
+					subject.Kind, subject.ID))
+			case completed[key] > 0:
+				// A filing run that filed the record or recorded
+				// no-topic took it out of the backlog, so a
+				// completed filing on a record still listed here
+				// is the third outcome: a topic question waiting
+				// on the operator. Drawing it again would pay to
+				// raise the question the ledger already holds.
+				gaps = append(gaps, fmt.Sprintf(
+					"%s %s: a filing pass already ran; the record stays unfiled until the "+
+						"topic it proposed is accepted", subject.Kind, subject.ID))
+			case setbacks[key] >= maxSkipAttempts:
+				gaps = append(gaps, fmt.Sprintf(
+					"%s %s: %d filing skips or failures; bounded attention spent and reported "+
+						"as a gap", subject.Kind, subject.ID, setbacks[key]))
+			default:
+				out = append(out, candidate{
+					Item:  item,
+					Role:  RoleFiling,
+					State: CoverageUnreviewed,
+					// The record's own creation time: the
+					// filing backlog is cleared oldest
+					// first, so the output that has been
+					// unfindable longest is named first.
+					DueAt:   item.Artifact.CreatedAt,
+					Weight:  1,
+					Ordinal: ordinals[key] + 1,
+					Filing:  true,
+				})
+			}
 		}
 		if item.Assessments >= policy.MaxItemReviews {
 			gaps = append(gaps, fmt.Sprintf("%s %s: per-revision cap of %d reviews reached",
@@ -443,6 +523,24 @@ func buildCandidates(in drawInput) ([]candidate, []string) {
 				Revisit:   revisit,
 			})
 		}
+	}
+	// Two answers the filing share owes an operator who asks why it did not
+	// spend. A record the frontier reports as unfiled but the reviewable
+	// inventory does not hold cannot be served a filing context at all, and
+	// an empty backlog is the good outcome rather than a stuck one — both
+	// are named, because "nothing was drawn" and "nothing needed drawing"
+	// are the two states a scheduler must never confuse.
+	for _, subject := range in.Unfiled {
+		if unfiled[subject] {
+			unfiled[subject] = false
+			gaps = append(gaps, fmt.Sprintf(
+				"%s %s: unfiled, and not in the reviewable inventory, so no filing context can be served",
+				subject.Kind, subject.ID))
+		}
+	}
+	if policy.FilingShare > 0 && len(in.Unfiled) == 0 {
+		gaps = append(gaps, "filing: every open record carries a filing, so the filing share has "+
+			"nothing to draw")
 	}
 	sortCandidates(out)
 	sort.Strings(gaps)
@@ -547,7 +645,11 @@ func weigh(item *projected, coverage RoleCoverage, policy Policy, now time.Time)
 // through rather than refusing is correct — an empty coverage lane means every
 // initial review is done, which is a reason to spend the share on weighted work
 // and not a reason to idle — and the order is fixed so a replay lands the same
-// way.
+// way. The filing lane is last in every review order and the review lanes are
+// last in its own, so the two backlogs cover for each other only when one of
+// them is genuinely empty: a deployment with unfiled records and no due review
+// spends on naming rather than idling, and one with a full review backlog does
+// not lose the filing share to it.
 func sample(candidates []candidate, policy Policy, seed uint64) (string, *candidate) {
 	rng := rand.New(rand.NewPCG(seed, seed^seedStream))
 	roll := rng.Float64()
@@ -555,15 +657,18 @@ func sample(candidates []candidate, policy Policy, seed uint64) (string, *candid
 	coverageEdge := policy.CoverageShare
 	discoveryEdge := coverageEdge + policy.DiscoveryShare
 	explorationEdge := discoveryEdge + policy.ExplorationShare
+	filingEdge := explorationEdge + policy.FilingShare
 
-	order := []string{LaneWeighted, LaneCoverage, LaneDiscovery, LaneExploration}
+	order := []string{LaneWeighted, LaneCoverage, LaneDiscovery, LaneExploration, LaneFiling}
 	switch {
 	case roll < coverageEdge:
-		order = []string{LaneCoverage, LaneDiscovery, LaneWeighted, LaneExploration}
+		order = []string{LaneCoverage, LaneDiscovery, LaneWeighted, LaneExploration, LaneFiling}
 	case roll < discoveryEdge:
-		order = []string{LaneDiscovery, LaneCoverage, LaneWeighted, LaneExploration}
+		order = []string{LaneDiscovery, LaneCoverage, LaneWeighted, LaneExploration, LaneFiling}
 	case roll < explorationEdge:
-		order = []string{LaneExploration, LaneWeighted, LaneCoverage, LaneDiscovery}
+		order = []string{LaneExploration, LaneWeighted, LaneCoverage, LaneDiscovery, LaneFiling}
+	case roll < filingEdge:
+		order = []string{LaneFiling, LaneWeighted, LaneCoverage, LaneDiscovery, LaneExploration}
 	}
 	for _, lane := range order {
 		if chosen := pick(candidates, lane, rng); chosen != nil {
@@ -585,15 +690,22 @@ const seedStream = 0x9e3779b97f4a7c15
 //
 // Coverage and discovery are deterministic: they draw the oldest-due and the
 // oldest untouched respectively, because a reservation whose target was chosen
-// at random would not reliably clear the backlog it exists to clear. Exploration
-// is uniform. Weighted is a cumulative-weight sample, which is the only lane
-// where a higher weight means a higher probability rather than a guarantee.
+// at random would not reliably clear the backlog it exists to clear. Filing is
+// deterministic for the same reason and reads the same way: oldest unfiled
+// first. Exploration is uniform. Weighted is a cumulative-weight sample, which
+// is the only lane where a higher weight means a higher probability rather than
+// a guarantee.
+//
+// Every lane but filing skips a filing candidate, and filing draws nothing
+// else. That is the whole separation between the two backlogs: a record drawn
+// to be named is not a review, so it must never arrive at a reviewer, and a
+// record drawn to be reviewed must never arrive at the filing recipe.
 func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 	switch lane {
 	case LaneCoverage:
 		var best *candidate
 		for i := range candidates {
-			if candidates[i].Revisit || !candidates[i].Initial {
+			if candidates[i].Filing || candidates[i].Revisit || !candidates[i].Initial {
 				continue
 			}
 			if best == nil || candidates[i].DueAt.Before(best.DueAt) {
@@ -604,7 +716,18 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 	case LaneDiscovery:
 		var best *candidate
 		for i := range candidates {
-			if candidates[i].Revisit || !candidates[i].Untouched {
+			if candidates[i].Filing || candidates[i].Revisit || !candidates[i].Untouched {
+				continue
+			}
+			if best == nil || candidates[i].DueAt.Before(best.DueAt) {
+				best = &candidates[i]
+			}
+		}
+		return best
+	case LaneFiling:
+		var best *candidate
+		for i := range candidates {
+			if !candidates[i].Filing {
 				continue
 			}
 			if best == nil || candidates[i].DueAt.Before(best.DueAt) {
@@ -617,17 +740,33 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 		// over everything eligible: an exploration share spent by weight
 		// would be the weighted lane under another name, and the point of
 		// the share is that something nothing recommends still gets seen.
-		if len(candidates) == 0 {
+		eligible := 0
+		for i := range candidates {
+			if !candidates[i].Filing {
+				eligible++
+			}
+		}
+		if eligible == 0 {
 			return nil
 		}
-		return &candidates[rng.IntN(len(candidates))]
+		nth := rng.IntN(eligible)
+		for i := range candidates {
+			if candidates[i].Filing {
+				continue
+			}
+			if nth == 0 {
+				return &candidates[i]
+			}
+			nth--
+		}
+		return nil
 	case LaneWeighted:
 		// Outstanding obligations only. A revisit is not backlog, so
 		// admitting it here would let well-reviewed open ideas compete
 		// with due work for the paid share.
 		total := 0.0
 		for i := range candidates {
-			if candidates[i].Revisit {
+			if candidates[i].Filing || candidates[i].Revisit {
 				continue
 			}
 			total += candidates[i].Weight
@@ -637,7 +776,7 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 		}
 		target := rng.Float64() * total
 		for i := range candidates {
-			if candidates[i].Revisit {
+			if candidates[i].Filing || candidates[i].Revisit {
 				continue
 			}
 			target -= candidates[i].Weight
@@ -646,7 +785,7 @@ func pick(candidates []candidate, lane string, rng *rand.Rand) *candidate {
 			}
 		}
 		for i := len(candidates) - 1; i >= 0; i-- {
-			if !candidates[i].Revisit {
+			if !candidates[i].Filing && !candidates[i].Revisit {
 				return &candidates[i]
 			}
 		}

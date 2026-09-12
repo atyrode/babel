@@ -271,3 +271,34 @@ func stagedRefinement(request RefinementRequest, reviewer string, payload []byte
 		Payload:   payload,
 	})
 }
+
+// stagedFiling carries what a record is about (§4.13).
+//
+// The filed record travels as Subject and the topic in Filing, for the reason
+// stagedLink carries endpoints: neither is in the payload locally — both are
+// columns of frontier_filing, and the payload holds the rationale — so
+// restating them keeps the wire form a faithful copy of the row.
+//
+// A filing has no revision chain of its own even though it supersedes: the
+// chain a re-filing belongs to is the record's filing history, which is
+// ordered by Supersedes inside Filing rather than by RootID. So it is its own
+// root, like a link.
+func stagedFiling(record Filing, payload []byte) (babelsync.Record, error) {
+	return staged(record.ID, sharedcatalog.KindLink, PublishedRecord{
+		Schema:    RecordSchema,
+		Kind:      PublishedFiling,
+		ID:        record.ID,
+		RootID:    record.ID,
+		Subject:   record.Record,
+		CreatedAt: record.CreatedAt,
+		Filing: &PublishedTopicFiling{
+			EntityID:   record.EntityID,
+			Author:     record.Author,
+			AuthorID:   record.AuthorID,
+			Heuristic:  record.Heuristic,
+			Withdrawn:  record.Withdrawn,
+			Supersedes: record.SupersedesID,
+		},
+		Payload: payload,
+	})
+}

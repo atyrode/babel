@@ -1,6 +1,7 @@
 package evaluation
 
 import (
+	"context"
 	"errors"
 	"math/rand/v2"
 	"slices"
@@ -407,6 +408,7 @@ func TestReservedCoverageDrawsOldestAndReplaysFromSeed(t *testing.T) {
 	in.Policy.CoverageShare = 0.9
 	in.Policy.ExplorationShare = 0.05
 	in.Policy.DiscoveryShare = 0.05
+	in.Policy.FilingShare = 0
 
 	var drew Assignment
 	for seed := uint64(1); seed < 64; seed++ {
@@ -450,6 +452,7 @@ func TestAssignmentIdentityIsIndependentOfRun(t *testing.T) {
 	policy.CoverageShare = 0.9
 	policy.ExplorationShare = 0.05
 	policy.DiscoveryShare = 0.05
+	policy.FilingShare = 0
 	items := []projected{{
 		Artifact: hypothesisArtifact("h9", now.Add(-48*time.Hour)),
 		Roles:    []RoleCoverage{{Role: RoleReception, State: CoverageUnreviewed}},
@@ -838,6 +841,62 @@ func TestPolicyValidationRefusesUnhonourableSettings(t *testing.T) {
 	}
 	if DefaultPolicy().Enabled {
 		t.Fatal("the default policy must not authorize work before an operator does")
+	}
+}
+
+// The lease floor is measured rather than chosen, and the number it refuses is
+// the number this deployment actually ran: lease 240s against batch 24. Its
+// four review runs took 386s, 461s, 556s and 630s - 16s to 26s per subject in
+// the batch - so a lease that allows under 20s per assignment, or under five
+// minutes at all, is refused with the floor named.
+//
+// It is refused when installed and nowhere else: a deployment that stored
+// such a policy before the floor existed keeps drawing under it, because
+// renewal now carries those reviews, and stopping every review until the
+// operator noticed would be the outage the floor is there to prevent.
+func TestPolicyRefusesALeaseThatCannotCoverItsBatch(t *testing.T) {
+	lost := DefaultPolicy()
+	lost.LeaseSeconds, lost.BatchSize = 240, 24
+	err := ValidateNewPolicy(lost)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("the policy that lost four runs = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "480") {
+		t.Fatalf("the refusal must name the 480s floor a batch of 24 needs: %v", err)
+	}
+	// An operator cannot record it either: the refusal is at the write, so a
+	// policy nothing can honour never becomes a durable instruction.
+	h := newHarness(t)
+	if _, err := h.store.Operator(context.Background(), OperatorInput{
+		Kind: KindPolicy, Operator: "alex", Policy: &lost,
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("recording the policy = %v, want ErrInvalid", err)
+	}
+	// Already stored, it still draws: the floor is not a reason to refuse
+	// the deployment its own current policy.
+	if err := ValidatePolicy(lost); err != nil {
+		t.Fatalf("a stored policy under the floor must still validate for a draw: %v", err)
+	}
+
+	// The floor scales with the batch and never drops below five minutes,
+	// because a batch of one still has to cover one review's preparation.
+	small := DefaultPolicy()
+	small.BatchSize, small.LeaseSeconds = 1, leaseFloorSeconds-1
+	if err := ValidateNewPolicy(small); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a %ds lease for one assignment = %v, want ErrInvalid", small.LeaseSeconds, err)
+	}
+	small.LeaseSeconds = leaseFloorSeconds
+	if err := ValidateNewPolicy(small); err != nil {
+		t.Fatalf("a lease exactly at the floor: %v", err)
+	}
+	// The shipped default clears its own floor, which is what stops the
+	// default from being the policy this test refuses.
+	if floor := leaseFloor(DefaultPolicy().BatchSize); defaultLeaseSeconds < floor {
+		t.Fatalf("the default lease %ds is under the %ds its batch of %d needs",
+			defaultLeaseSeconds, floor, DefaultPolicy().BatchSize)
+	}
+	if err := ValidatePolicy(DefaultPolicy()); err != nil {
+		t.Fatalf("the shipped default must be valid: %v", err)
 	}
 }
 

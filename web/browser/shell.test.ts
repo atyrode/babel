@@ -1,28 +1,31 @@
-// Browser acceptance for the navigation shell and Settings (issue #235),
-// driven against the synthetic mock so no Go server, archive, or network is
-// needed (SPEC.md §10's fixture rule).
+// Browser acceptance for the navigation shell and Settings (issue #235,
+// §8.7), driven against the synthetic mock so no Go server, archive, or
+// network is needed (SPEC.md §10's fixture rule).
 //
 // This file replaces the dashboard gate. The dashboard it defended was six
 // panels summarizing five other pages and is gone; what survived is here.
 //
 // What only a browser can prove is covered:
 //
-// That the primary row is four questions and a drawer, and that none of the
-// five entries names a record kind or a place Babel keeps bytes. Eleven
-// concept-named entries were the first of #234's four structural faults: the
-// reader had to know the data model before he could pick one.
+// That the primary row is a handful of destinations, that the first of them is
+// home, and that none of them names a record kind or a place Babel keeps
+// bytes. Eleven concept-named entries were the first of #234's four structural
+// faults: the reader had to know the data model before he could pick one. The
+// row's exact membership is read off the page rather than written down here —
+// it has changed twice while this file stood, and a list of words in a test is
+// a second place to change it without the property it defends moving at all.
 //
 // That every path this build no longer serves redirects instead of 404ing. A
 // navigation redesign that broke an operator's bookmarks, an issue's links and
 // a terminal's printed URLs would read as data loss, and the redirect table is
 // long enough that a dropped entry is easy to miss and invisible until someone
-// follows an old link.
+// follows an old link. It is enumerated here once, against App.tsx's routes.
 //
 // That every page of the surface fits. #234 measured /sessions at 15,311px and
 // /review at 5,563px; the rule that came out of it is that a page states one
-// thing and no page exceeds about three screens without pagination. Sessions
-// and the record page are measured with the four destinations, because the
-// rule is about pages and not about nav entries.
+// thing and no page exceeds about three screens without pagination. The feed,
+// a topic, a record with its thread, Watch, Settings and Sessions are all
+// measured, because the rule is about pages and not about nav entries.
 //
 // That the orientation text and the review policy are still reachable now that
 // they are sections of Settings rather than destinations — including that the
@@ -37,12 +40,12 @@ import { resolveChrome } from "./chrome";
 
 const chrome = resolveChrome({
   gate: "Navigation shell and Settings gate",
-  covers: "issue #235's four-entry navigation, its redirects, and the Settings sections, in a browser",
+  covers: "§8.7's navigation row, its redirects, and the Settings sections, in a browser",
   unverified: [
-    "that the primary row is Decide, Read, Watch, Ask and Settings, and names no record kind",
+    "that the primary row is a handful of destinations led by home, and that none of them names a record kind or a store",
     "that every path the cutover removed redirects to its successor rather than 404ing",
-    "that Decide, Read, Watch, Ask, Settings, a record and Sessions each fit about three screens and overflow no viewport",
-    "that the orientation text is reachable under Settings and still reads no API",
+    "that the feed, a topic, Watch, Settings, a record with its thread and Sessions each fit about three screens and overflow no viewport",
+    "that the orientation text is reachable under Settings, reads no API, and links only to pages this build serves",
     "that the review policy states what is running and that saving it starts nothing",
   ],
 });
@@ -151,7 +154,7 @@ afterAll(async () => {
   mock?.process.kill();
 });
 
-test.skipIf(!chrome)("the primary row is four questions and a drawer", async () => {
+test.skipIf(!chrome)("the primary row is a few destinations, led by home", async () => {
   await open("");
   const entries = await page.evaluate(() =>
     Array.from(document.querySelectorAll("nav[aria-label='Primary navigation'] a")).map((link) => ({
@@ -162,9 +165,18 @@ test.skipIf(!chrome)("the primary row is four questions and a drawer", async () 
       title: link.getAttribute("title") ?? "",
     })),
   );
-  expect(entries.map((entry) => entry.label)).toEqual(["Decide", "Read", "Watch", "Ask", "Settings"]);
-  expect(entries.map((entry) => entry.href)).toEqual(["#/", "#/read", "#/watch", "#/ask", "#/settings"]);
-  for (const entry of entries) expect(entry.title.length).toBeGreaterThan(0);
+  // #234's fault was eleven entries, not four or five: what has to hold is
+  // that the row stays short, that it starts at home, and that every entry is
+  // a top-level route with a sentence saying what it answers. Which
+  // destinations those are is the design's business and is read off the page.
+  expect(entries.length).toBeGreaterThan(1);
+  expect(entries.length).toBeLessThanOrEqual(5);
+  expect(entries[0].href).toBe("#/");
+  for (const entry of entries) {
+    expect(`${entry.href}:${entry.label.length > 0}`).toBe(`${entry.href}:true`);
+    expect(`${entry.href}:${entry.title.length > 0}`).toBe(`${entry.href}:true`);
+    expect(entry.href).toMatch(/^#\/[a-z-]*$/u);
+  }
 
   // #234's first fault, stated as a test: no entry names a record kind or a
   // store. A reader who does not know Babel's data model must still be able to
@@ -185,19 +197,40 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
   // is what this build answers with. A redirect that lands on the catch-all
   // would show "#/" here and fail, which is the failure that matters: it reads
   // to the operator as the record having been deleted.
+  // /queue, /review and /evaluation/coverage are here now: the mod queue was
+  // a destination until §8.7 made it the feed's own filter, and each of those
+  // three meant "what needs me", which is what the front page arrives
+  // showing.
   const moved: Array<[string, string]> = [
+    ["queue", "#/"],
     ["review", "#/"],
-    ["review/proposal/pro_bare-vote", "#/r/pro_bare-vote"],
-    ["findings", "#/read?kind=finding"],
+    ["evaluation/coverage", "#/"],
+    // The per-record rows below name pro_criteria-template, which is the
+    // proposal this fixture actually holds. pro_bare-vote stood here until
+    // the cutover moved the record peel's fixture into mock/phaseb.ts and
+    // left that id only in the evaluation fixture, where no /api/record/{id}
+    // answers for it — so every row pointing at it was asserting a redirect
+    // onto a page that reads "This record could not be read."
+    ["review/proposal/pro_criteria-template", "#/r/pro_criteria-template"],
+    // /read was a destination and is now the feed. The kind it filtered by is
+    // the one thing that bookmark carried which the feed still answers, so it
+    // survives as a chip; everything else that URL could say belonged to the
+    // page this section replaces.
+    ["read", "#/"],
+    ["read?kind=finding", "#/?kind=finding"],
+    ["read/backlog", "#/"],
+    // A per-kind bookmark meant every record of that kind, so it lands with
+    // the operator's own filter off: arriving under "needs me" would answer a
+    // narrower question than the link asked.
+    ["findings", "#/?kind=finding&needs=all"],
     ["findings/fnd_conflicting-evidence", "#/r/fnd_conflicting-evidence"],
-    ["proposals", "#/read?kind=proposal"],
-    ["proposals/pro_bare-vote", "#/r/pro_bare-vote"],
-    ["hypotheses", "#/read?kind=hypothesis"],
+    ["proposals", "#/?kind=proposal&needs=all"],
+    ["proposals/pro_criteria-template", "#/r/pro_criteria-template"],
+    ["hypotheses", "#/?kind=hypothesis&needs=all"],
     ["hypotheses/hyp_unverified-closures", "#/r/hyp_unverified-closures"],
-    ["evaluation", "#/read"],
-    ["evaluation/coverage", "#/read?coverage=unreviewed"],
+    ["evaluation", "#/?needs=all"],
     ["evaluation/policy", "#/settings?section=policy"],
-    ["evaluation/proposal/pro_bare-vote", "#/r/pro_bare-vote"],
+    ["evaluation/proposal/pro_criteria-template", "#/r/pro_criteria-template"],
     ["explore", "#/watch"],
     // The fleet page was about machines, and the machine is no longer a
     // dimension of the reading path: the bookmark lands on Watch rather than
@@ -205,7 +238,10 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
     ["fleet", "#/watch"],
     ["archive", "#/settings?section=archive"],
     ["help", "#/settings?section=help"],
-    ["reality", "#/ask"],
+    // The ledger's inbox is the feed filtered to the questions Babel asks, so
+    // /reality lands there rather than on a page of its own; the ledger's
+    // subjects and beliefs keep their pages under /ask.
+    ["reality", "#/?kind=question"],
     ["reality/questions", "#/ask/questions"],
     ["reality/entities/ent_atlas", "#/ask/entities/ent_atlas"],
     ["reality/facts", "#/ask/facts"],
@@ -218,9 +254,6 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
   for (const [from, to] of moved) {
     await page.goto(`${mock?.base}/#/${from}`, { waitUntil: "networkidle2" });
     const hash = await landed(to);
-    // startsWith rather than equality: Read pins the ranked set's snapshot into
-    // the query on its first answer, which is its own contract and not this
-    // one's business.
     expect(`${from} -> ${hash}`).toBe(`${from} -> ${hash.startsWith(to) ? hash : to}`);
   }
 });
@@ -228,10 +261,38 @@ test.skipIf(!chrome)("every path the cutover removed redirects rather than 404s"
 test.skipIf(!chrome)("a record opens by identity, whatever kind it is", async () => {
   // One record is one page. The kind used to be in the route, which is how the
   // same proposal came to have four of them.
-  for (const id of ["hyp_unverified-closures", "fnd_conflicting-evidence", "pro_bare-vote"]) {
+  //
+  // Landing is not opening, so both are read. This test asserted the hash
+  // alone and named pro_bare-vote, an id no fixture serves since the peel's
+  // state moved to mock/phaseb.ts: it passed while the page it measured was
+  // the error state, which is exactly the failure a route-by-identity test
+  // exists to catch. What the record page renders when it has a record is its
+  // post header and its depths, and what it renders when it has none is the
+  // server's own sentence — so the claim has to be on screen and that sentence
+  // must not be.
+  for (const id of ["hyp_unverified-closures", "fnd_conflicting-evidence", "pro_criteria-template"]) {
     await page.goto(`${mock?.base}/#/r/${id}`, { waitUntil: "networkidle2" });
     const hash = await landed(`#/r/${id}`);
     expect(hash).toBe(`#/r/${id}`);
+    // The wait is on the page having settled either way — the claim, or the
+    // sentence that says why there is none — so a record this deployment
+    // cannot open is reported as the state it rendered rather than as a
+    // selector timeout with nothing in it a reader can act on.
+    await page.waitForFunction(
+      () => document.querySelector(".record-post .record-claim") !== null
+        || document.querySelector(".state-note.error-state") !== null,
+      { timeout: 15_000 },
+    );
+    const opened = await page.evaluate(() => ({
+      claim: (document.querySelector(".record-post .record-claim") as HTMLElement | null)
+        ?.innerText.trim() ?? "",
+      unreadable: (document.querySelector(".state-note.error-state") as HTMLElement | null)
+        ?.innerText.trim() ?? "",
+      depths: document.querySelectorAll("details.peel").length,
+    }));
+    expect(`${id}: ${opened.unreadable || "read"}`).toBe(`${id}: read`);
+    expect(`${id}: claim ${opened.claim.length > 0}, depths ${opened.depths > 0}`)
+      .toBe(`${id}: claim true, depths true`);
   }
 });
 
@@ -246,22 +307,42 @@ test.skipIf(!chrome)("no page of the reading surface overflows a viewport, and n
   // text, read once and reached deliberately, which is the one kind of page
   // the rule does not govern.
   const CEILING = WIDE.height * 3.2;
-  // Every destination the row offers, the record page every listing leads to,
-  // and Sessions — which has no nav entry and is the page the rule was written
-  // about.
-  const surface = ["", "read", "watch", "ask", "settings", "r/pro_criteria-template", "sessions"];
+  // Every destination the row offers; the feed narrowed to one topic, which is
+  // the same page with a rail selection and is where a long list of rows would
+  // show first; the record page a feed row opens, whose thread is part of the
+  // page now (§8.7) and is measured with it; and Sessions, which has no nav
+  // entry and is the page the rule was written about.
+  const surface = [
+    "",
+    "t/atlas",
+    "watch",
+    "settings",
+    "r/pro_criteria-template",
+    "sessions",
+  ];
   for (const viewport of [WIDE, NARROW]) {
     await page.setViewport(viewport);
     for (const route of surface) {
       await open(route);
       await rendered();
+      // A record's conversation is read on the record, so the measurement
+      // waits for the thread to have answered rather than for the claim
+      // above it: a page measured before its comments arrive is a page
+      // measured without the part most likely to run long.
+      if (route.startsWith("r/")) {
+        await page.waitForFunction(
+          () => document.querySelector(".record-thread ol.record-thread-list") !== null
+            || (document.querySelector(".record-thread")?.textContent ?? "").includes("No comments yet"),
+          { timeout: 15_000 },
+        );
+      }
       const size = await page.evaluate(() => ({
         document: document.documentElement.scrollWidth,
         body: document.body.scrollWidth,
         inner: window.innerWidth,
         height: document.documentElement.scrollHeight,
       }));
-      const name = `${route || "decide"}@${viewport.width}`;
+      const name = `${route || "home"}@${viewport.width}`;
       expect(`${name}:${size.document <= size.inner + 1}`).toBe(`${name}:true`);
       expect(size.body).toBeLessThanOrEqual(size.inner + 1);
       if (viewport === WIDE) {
@@ -272,83 +353,17 @@ test.skipIf(!chrome)("no page of the reading surface overflows a viewport, and n
   await page.setViewport(WIDE);
 });
 
-// The operator's first complaint about the landing page was its order: the
-// capture box and an empty Complaints panel sat above the queue, which started
-// at y=1117. What has to hold is that the queue is the first thing under the
-// header, that every row is a real link, and that every row says why it is
-// next — the one fact a reader cannot reconstruct from the claim.
-test.skipIf(!chrome)("Decide leads with the queue, and every row says why it is next", async () => {
-  await open("");
-  await page.waitForSelector(".decide-row", { timeout: 15_000 });
-  const state = await page.evaluate(() => {
-    const queue = document.querySelector(".decide-queue") as HTMLElement;
-    const capture = document.querySelector(".decide-tell") as HTMLElement | null;
-    return {
-      queueTop: queue.getBoundingClientRect().top + window.scrollY,
-      captureTop: capture ? capture.getBoundingClientRect().top + window.scrollY : null,
-      figures: Array.from(document.querySelectorAll(".decide-stat")).map((item) => ({
-        value: item.querySelector(".stat-value")?.textContent ?? "",
-        note: item.querySelector(".stat-note")?.textContent ?? "",
-      })),
-      rows: Array.from(document.querySelectorAll(".decide-row")).map((row) => ({
-        why: row.querySelector(".decide-why")?.textContent ?? "",
-        href: row.querySelector("a")?.getAttribute("href") ?? "",
-      })),
-    };
-  });
-  // The queue is above the fold of a 900px viewport, and capture is below it.
-  expect(state.queueTop).toBeLessThan(600);
-  expect(state.captureTop).toBeGreaterThan(state.queueTop);
-  expect(state.figures.length).toBeGreaterThanOrEqual(3);
-  for (const figure of state.figures) {
-    expect(figure.value.length).toBeGreaterThan(0);
-    // A sentence saying what the figure is about, not a label repeating it.
-    expect(figure.note.length).toBeGreaterThan(20);
-  }
-  expect(state.rows.length).toBeGreaterThan(0);
-  for (const row of state.rows) {
-    expect(row.why.length).toBeGreaterThan(0);
-    expect(row.href).toMatch(/^#\/(r|ask)\//u);
-  }
-});
-
-// Read's controls were five dropdowns, which is a database query form: the
-// first thing the operator wanted was a Proposals chip. Every facet the four
-// listings offered still has to be reachable — kind and standing as chips, the
-// ordering as a menu that names its basis, coverage and role behind a fold —
-// and no facet may be a select.
-test.skipIf(!chrome)("Read is one list whose facets are chips, not a query form", async () => {
-  await open("read");
-  await page.waitForSelector(".read-row", { timeout: 15_000 });
-  const state = await page.evaluate(() => ({
-    selects: document.querySelectorAll("select").length,
-    kindChips: Array.from(document.querySelectorAll("[data-chip^='kind-']")).map(
-      (chip) => chip.getAttribute("data-chip") ?? "",
-    ),
-    laneChips: document.querySelectorAll("[data-chip^='lane-']").length,
-    orders: document.querySelectorAll("[data-order]").length,
-    folded: Array.from(document.querySelectorAll(".read-more-body [aria-pressed]")).length,
-    rows: Array.from(document.querySelectorAll(".read-row")).map((row) => ({
-      href: row.querySelector("a")?.getAttribute("href") ?? "",
-    })),
-    paged: document.querySelector(".pager") !== null,
-  }));
-  expect(state.selects).toBe(0);
-  // Proposals first, because that is what the operator reached for.
-  expect(state.kindChips[0]).toBe("kind-proposal");
-  expect(state.kindChips.length).toBeGreaterThan(3);
-  expect(state.laneChips).toBeGreaterThan(3);
-  expect(state.orders).toBeGreaterThan(3);
-  // Coverage and review role survive the move behind the fold.
-  expect(state.folded).toBeGreaterThan(8);
-  expect(state.rows.length).toBeGreaterThan(0);
-  for (const row of state.rows) {
-    expect(row.href).toMatch(/^#\/r\//u);
-  }
-  // Server-side paging survives: the fixture holds more than one page and the
-  // page does not fetch them all.
-  expect(state.paged).toBe(true);
-});
+// Two tests stood here and neither is re-pinned, because both measured a page
+// this section replaced rather than a guarantee that moved:
+//
+//   - "Decide leads with the queue, and every row says why it is next" was
+//     about the landing page's order, and the landing page is the feed. The
+//     queue of things awaiting a ruling is being folded into the rows of that
+//     feed, so there is no second listing left to lead with anything.
+//   - "Read is one list whose facets are chips, not a query form" was about
+//     the ranked listing, which is the feed's own sort bar and chips now. What
+//     it defended — a facet is a chip and never a select — belongs with those
+//     controls rather than with a page this build no longer routes.
 
 test.skipIf(!chrome)("the orientation text is a Settings section and reads no API", async () => {
   await open("settings?section=help");
@@ -383,11 +398,26 @@ test.skipIf(!chrome)("the orientation text is a Settings section and reads no AP
   expect(state.commands).toContain("babel review decide");
   expect(state.badges).toContain("rejected");
   expect(state.badges).toContain("refine-requested");
-  // Every destination the guide names is a route this build serves. A guide
+  // Every destination the guide names is a page this build serves. A guide
   // that pointed at a page the redesign removed would be the one document an
-  // operator trusts sending him nowhere.
-  for (const href of state.links) {
-    expect(href).toMatch(/^#\/(|read|watch|ask|sessions|settings)(\?[a-z=&_-]+)?$/u);
+  // operator trusts sending him nowhere — so each link is followed rather than
+  // matched against a list of routes written down here, which would have to be
+  // rewritten every time the surface moves and would say nothing about whether
+  // the link works.
+  const links = [...new Set(state.links.filter((href): href is string => Boolean(href)))];
+  expect(links.length).toBeGreaterThan(3);
+  for (const href of links) {
+    await page.goto(`${mock?.base}/${href}`, { waitUntil: "networkidle2" });
+    await rendered();
+    const arrived = await page.evaluate(() => ({
+      hash: window.location.hash,
+      failed: document.querySelector("main .error-state") !== null,
+    }));
+    // A path this build does not serve falls through App.tsx's catch-all to
+    // the feed, so a link that has gone stale arrives somewhere other than
+    // where it pointed.
+    expect(`${href} -> ${arrived.hash}`).toBe(`${href} -> ${arrived.hash.startsWith(href) ? arrived.hash : href}`);
+    expect(`${href}:${arrived.failed}`).toBe(`${href}:false`);
   }
 
   // The orientation text is a page, not a request: the section itself reads

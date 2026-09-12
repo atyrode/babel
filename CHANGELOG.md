@@ -40,14 +40,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   words. §4.12's boundary does not move: a person still cannot author an
   assessment. The ruling — accept, reject, defer, duplicate, reopen — is a
   rule bar with a one-sentence confirm instead of a five-radio ballot.
-- **Navigation names decisions.** Decide (what needs me), Read (what has
-  Babel found), Watch (what is it doing and what did it cost), Ask (what
-  does it know and need from me) and Settings replace eleven destinations
-  named after record kinds and storage concepts. Every old path redirects.
-  Decide leads with the queue, tiered so a proposal outranks a finding
-  outranks a candidate at equal urgency, with *why it is next* on every row
-  and *since you last looked* in its header. Read is one list with chips,
-  not four pages with selects.
+- **The front page is a feed.** Home lists every record Babel has produced —
+  hypothesis, observation, finding, proposal and the questions it asks — as
+  one line with its arrows, score, kind, topics, author run, age and comment
+  count, under one sort bar: hot, new, top and controversial over an hour,
+  day, week, month, year or all time, and rising. Kind is a chip over the
+  list, never a page; the state lives in the URL so a view is a link. A
+  topic is a community — today a repository, named by the workspace of the
+  sessions a record's evidence cites and inherited down the lineage, so a
+  proposal sits in the topic of the observation behind it — with its own
+  page at `/t/<name>` and a rail of topics with counts beside the feed.
+  Navigation is Home, Mod queue (what awaits a ruling), Watch and Settings;
+  Read and Ask are the feed with a filter, and every old path redirects. The
+  queue keeps its tiering — a proposal outranks a finding outranks a
+  candidate at equal urgency — with *why it is next* on every row. Asked for
+  in one sentence by the operator on 2026-09-12 and answered by SPEC §8.7.
 - **Keyboard triage.** `j`/`k` move, `Enter` opens, `a`/`d`/`u` record a
   stance without leaving the list, `r` opens the rule bar, `1`–`5` toggle a
   record's depths, `?` shows the keys, and `⌘K` opens a palette that finds
@@ -68,6 +75,167 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 - **Ask shows reasons, not ids.** A question's rank is explained factor by
   factor, its subject is named, and a subject is one append-only timeline of
   what Babel recorded about it with the candidates that were scoped to it.
+- **The deployment ranks itself.** `GET /api/feed` serves every record Babel
+  has produced — hypothesis, observation, finding, proposal and the questions
+  it asks — as one line of claim with its topics, its score and its comment
+  count, over one sort bar: hot, new, top and controversial over an hour to
+  all time, and rising. The formulas are Reddit's, stated and unit-tested in
+  `internal/web/feed.go`, and they rank the whole eligible set before paging
+  it (§8.5). A record's topics are the workspaces of the sessions its
+  evidence cites, propagated through the development path, so a proposal
+  inherits the community of the observation behind it; `GET /api/topics`
+  counts them and says how many records this deployment could not place.
+  `GET`/`POST /api/record/{id}/comments` is the conversation under a post —
+  reviewer prose, refinements, the operator's own words, a question's answers
+  — threaded by what it relates to, with §4.7's rulings beside it as the
+  attributed acts they are rather than as opinions. Proof: 6,018 posts and
+  twelve topics assembled from the operator's own store in 456 ms, against a
+  surface that previously answered "what does every record stand at" one
+  query per record (SPEC §8.7, #237).
+- **A record is a post, and a post has a conversation.** The arrows are the
+  vote: agree is up, disagree is down, pressing the lit one again records
+  unsure, and the score beside them is support minus oppose across Babel's
+  reviewers and the operator together — one number, with the breakdown one
+  hover away, because a person's vote is never summed into what reads as a
+  model's observation. A record with no votes at all shows an em dash rather
+  than a nought. Under the five depths, `#comments` is the thread: reviewer
+  contributions, refinements, answers, reconsiderations and the operator's own
+  reasons, newest first, replies nested one level, with the rulings —
+  accepted, rejected, deferred, duplicate, reopened — in their chronological
+  place as the attributed acts they are rather than as opinions. The box
+  records a reason and changes no vote (SPEC §8.7, #235).
+- **A topic is a repository, not a folder.** The scan observes each session
+  workspace's git identity once — the common directory every worktree of a
+  repository shares, plus the origin normalized to `host/owner/repo` — and
+  the feed's topics are bound to that instead of to the last element of a
+  path. A session's workspace is where work happened; what it was about is
+  the repository, and the difference was visible on the operator's own
+  machine: of 96 sessions, a topic called `tmp` collected 32 that shared
+  nothing but a scratch directory, and one project read as three communities
+  because two of its worktrees were named `witty-sage-crab` and
+  `bold-gold-koala`. Both are gone: the worktrees are `manifold` and the
+  scratch sessions are unfiled, each carrying the reason it could not be
+  filed — not a git repository, workspace absent on this host, git
+  unavailable. `GET /api/topics` states each topic's binding and labels every
+  filing `heuristic`, because these come from repository identity alone and
+  §4.13's triage recipe has yet to revisit them. The observation is
+  read-only, runs once per distinct workspace per scan, and never writes to
+  a checkout (SPEC §4.13).
+- **Babel proposes a topic; the operator creates it.** A topic question is
+  the Reality Ledger's answer to a name a run cannot resolve (SPEC §4.8,
+  §4.13): it names the entity it would create — kind, binding, aliases, why
+  — the records it would file under it, and the entities it weighed and
+  rejected, and it waits in the Reality Inbox with every other question.
+  Accepting one mints the subject with its typed names and its binding facts
+  under the accepting operator's authority and files the records the
+  proposal named; declining one keeps the reason verbatim and suppresses the
+  same proposal until more sessions stand behind it than there were when he
+  refused. Two proposals of one repository are one question, because a topic
+  question is keyed by the identity it proposes rather than by its wording,
+  and an identity that already binds a live entity is refused with that
+  entity named. `babel topics seed` raises one per repository identity this
+  host observed and is idempotent by construction — bound, already
+  proposed, or declined with nothing new to say — and `babel topics` lists
+  what the operator accepted beside what is still waiting. Interest is not a
+  preference knob: *working on it*, *keep an eye*, *not now* and *excluded*
+  are §4.8's lifecycle and analysis-policy facts, each an attributed act
+  whose reason is kept verbatim and whose predecessor is superseded rather
+  than edited, so a paused project is paused everywhere Babel looks;
+  retiring a topic is a lifecycle fact too, and nothing is deleted.
+- **Filing is a link, and a topic is an entity.** A record's membership in a
+  topic is now an append-only filing in the frontier — record to Reality
+  Ledger entity, carrying its rationale and its author — published as an
+  `about` edge whose kind and endpoints travel in the clear while the reason
+  stays sealed with the record (migrations/0015). Re-filing supersedes,
+  unfiling withdraws with a reason, and both rows survive, so where a record
+  was filed and why is readable rather than inferred. `GET /api/topics` is
+  three lists in one answer: the topics the operator accepted, ordered by his
+  own stance — working, watching, nothing said, not now, excluded — with what
+  each is bound to and how much is filed under it; the topics Babel has
+  proposed and nobody has answered; and the count of records nothing has
+  filed. A post's topics in `/api/feed` are the entities it is filed under and
+  `?topic=` takes either a name or an id, so a repository name Babel derived
+  is a proposal rather than a community until somebody accepts it — which,
+  until an entity exists, makes every post unfiled, and saying so is the
+  point. `POST /api/record/{id}/file` and `/unfile` are the operator's own two
+  acts, and a name the ledger does not hold is a 404 that says so: filing does
+  not create an entity (SPEC §4.13).
+- **Not interested is a signal, not a deletion.** A topic's page states what
+  the operator thinks of it — *working on it*, *keep an eye*, *not now*,
+  *excluded* — and each is §4.8's lifecycle and analysis-policy facts,
+  attributed to him, with the reason kept verbatim and the revision it
+  replaced still readable; a topic that names two things is split, two that
+  name one are merged, and one that should never have existed is retired,
+  each an append-only §4.8 resolution with a required reason and nothing
+  deleted. The consequence is where it has to be: the review lane now reads
+  the topics a record is *filed* under, not only the names its producing run
+  happened to write down, so pausing a project moves the draws off its
+  records even when nothing in their wording spells its name, and excluding
+  one leaves them as reported gaps rather than making them disappear
+  (`POST /api/topics/{id}/interest`, `/retire`, `/api/topics/merge`,
+  `/api/topics/split`; SPEC §4.13, §4.8, §4.12).
+- **Babel files its own output.** A new off-by-default meta recipe,
+  `babel-files-its-output`, runs under the evaluation policy as its own draw
+  kind beside coverage, exploration and discovery: a tenth of a cycle
+  (`filing_share`, refusable to zero) goes to records the frontier reports as
+  unfiled, oldest first, and each pass files the record under a topic the
+  ledger already names, proposes one the operator decides on, or records that
+  it is about nothing in particular with the reason. A name no entity answers
+  to is not a failure and not a new entity: it becomes a topic question, which
+  is §4.8's rule that only the operator creates identity, enforced in the one
+  place a run would otherwise be tempted to break it. The pass reads what the
+  ledger already holds — every live topic with its aliases and binding, the
+  repositories the cited sessions were in, and the reasons earlier topics were
+  retired and earlier proposals declined — so Babel gets better at naming
+  topics from its own history rather than from an unparsed memory prompt. Its
+  receipts are ordinary receipts and name which of the three answers it
+  reached; a filing is not a review, so it consumes no review cap and clears
+  no coverage obligation (SPEC §4.13, §4.12).
+- **Everything about a topic goes through Babel.** A new topic, a split, a
+  merge and a retirement are one output kind: a *topic proposal* a run
+  publishes through the ordinary chain, reviewed by Babel's reviewers, scored
+  and commented on in the feed like every other proposal, and applied by the
+  ruling the operator gives it — accept creates, splits, merges or retires
+  and files the records the plan named; reject keeps his reason verbatim and
+  suppresses the same proposal until more evidence stands behind it than
+  there was when he refused. The plan hangs off the proposal record it
+  explains (`reality_topic_plan`, one per proposal, immutable) and applies
+  through §4.8's own acts, so a split's new part carries the identity and the
+  binding the run proposed and the records that belong to it move with it,
+  while a plan whose topic was merged away or retired since it was published
+  is refused with the state named rather than applied against a subject that
+  no longer speaks for itself. The surfaces that let a topic be changed by
+  hand are gone: `POST /api/topics/{id}/retire`, `/api/topics/merge`,
+  `/api/topics/split`, `/api/topics/accept`, `/api/topics/decline` and
+  `babel topics seed` no longer exist, and the topic question kind with them,
+  because a topic changed by hand is a change Babel did not see, cannot
+  explain and cannot learn from. What the repository scan produces is
+  evidence handed to the filing run — the identities this host observes and
+  the ledger does not name — never a proposal it minted. Interest is the one
+  direct act left (`POST /api/topics/{id}/interest`), because a stance is a
+  fact about the operator rather than something Babel proposed. Observations
+  leave the feed with the same reading: they are the evidence a finding
+  consolidates, so `?kind=observation` is refused by name and the front page
+  lists hypotheses, findings, proposals and questions (SPEC §4.13, §4.8,
+  §8.7).
+- **A topic change is a proposal Babel makes.** The filing pass no longer
+  raises a topic *question* and nothing mints a topic from a heuristic: a new
+  topic, a split, a merge and a retirement are one output kind with an
+  `operation`, produced by a run through Babel's ordinary chain — a claim, the
+  evidence under it, the consolidation, and a proposal titled "New topic:
+  manifold" or "Split t/manifold: …" that the operator rules on the way he
+  rules on every other proposal, with the ledger plan his acceptance applies
+  hanging off it. The pass is shown two new kinds of material and they are
+  deliberately not the same thing as the entities that exist: the repository
+  identities this host observed that nothing names, with the sessions and
+  checkouts behind them, are *evidence* for a `create` — and only when the
+  record under review is about one of them — and the operator's own asks
+  (`babel tell "topic t/manifold: …"`) are answered rather than obeyed, with
+  the proposal they call for or with a reasoned no that lands as a reply on
+  what he said. A target or an ask the pass was not shown is refused as a
+  malformed result rather than turned into a new topic, which is §4.8's rule
+  that only the operator creates identity, held at the one seam a typo could
+  otherwise cross (SPEC §4.13).
 
 ### Changed
 
@@ -90,6 +258,18 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   Host tabs, host chips and host sorts are gone from Watch and Sessions; a
   host appears only under Settings › Archive, where a snapshot is a backup
   of a machine.
+- **A review that takes longer than its lease keeps its claim.** A lease bounds
+  how long an unanswered worker holds an assignment, not how long the work may
+  take, and the two were conflated: the claim lapsed while the model was still
+  reading, and the result was then refused at the end for a takeover that had
+  never happened. Measured on 2026-09-12: four reviews ran 386s, 461s, 556s and
+  630s under a 240s lease, every one of them was refused its own claim, and the
+  deployment recorded no reviewer vote at all. A worker that is still working
+  now says so, renewing at a third of its lease for as long as the review runs,
+  and the shared catalog admits the renewal it used to refuse — under
+  `migrations/0014` a live claim may move its own expiry forward and nothing
+  else, so an expired assignment is still taken over under a new fence rather
+  than resurrected, and a renewal charges nothing further against the day.
 
 ## [0.2.6] - 2026-09-12
 

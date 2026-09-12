@@ -479,6 +479,100 @@ func TestUsageColumnsRoundTripAndKeepAbsenceAbsent(t *testing.T) {
 	}
 }
 
+// TestRepositoryColumnsRoundTripAndKeepTheReasonWithTheAbsence is §4.13's
+// binding surviving the cache, and §3's rule surviving with it.
+//
+// The feed derives its topics from these columns, so a value that does not
+// round-trip is a repository whose records go unfiled on every page load but
+// the first. The pairing that matters is the identity against the reason: a
+// session with no repository must read back with the reason it was given,
+// because "unfiled because /tmp is not a checkout" and "unfiled because
+// nothing looked" are different answers and only the surface can tell the
+// operator which one he is reading.
+func TestRepositoryColumnsRoundTripAndKeepTheReasonWithTheAbsence(t *testing.T) {
+	cache, refs := testCache(t, 2)
+	inRepo, inScratch := refs[0], refs[1]
+	identity := "/home/alex/manifold/.git"
+	remote := "github.com/atyrode/manifold"
+	reason := "not a git repository"
+
+	rows, err := cache.Refresh(context.Background(), ompScope, refs, func(ref Ref) (Row, bool) {
+		row := testRow(ref, []byte(`{"ok":true}`))
+		if ref.Selector == inRepo.Selector {
+			row.RepositoryIdentity, row.RepositoryRemote = &identity, &remote
+		} else {
+			row.RepositoryReason = &reason
+		}
+		return row, true
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySelector := map[string]Row{}
+	for _, row := range rows {
+		bySelector[row.Selector] = row
+	}
+
+	filed := bySelector[inRepo.Selector]
+	if filed.RepositoryIdentity == nil || *filed.RepositoryIdentity != identity {
+		t.Errorf("identity read back as %v, want %q", filed.RepositoryIdentity, identity)
+	}
+	if filed.RepositoryRemote == nil || *filed.RepositoryRemote != remote {
+		t.Errorf("remote read back as %v, want %q", filed.RepositoryRemote, remote)
+	}
+	if filed.RepositoryReason != nil {
+		t.Errorf("an observed repository read back with a reason: %q", *filed.RepositoryReason)
+	}
+	unfiled := bySelector[inScratch.Selector]
+	if unfiled.RepositoryIdentity != nil || unfiled.RepositoryRemote != nil {
+		t.Errorf("a session with no repository read back with one: %+v", unfiled)
+	}
+	if unfiled.RepositoryReason == nil || *unfiled.RepositoryReason != reason {
+		t.Errorf("reason read back as %v, want %q", unfiled.RepositoryReason, reason)
+	}
+
+	// And it survives the read path a page actually takes, which describes
+	// nothing because nothing changed.
+	reread, err := cache.Refresh(context.Background(), ompScope, []Ref{inRepo},
+		func(Ref) (Row, bool) { t.Fatal("an unchanged session was described again"); return Row{}, false }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reread) != 1 || reread[0].RepositoryIdentity == nil || *reread[0].RepositoryIdentity != identity {
+		t.Errorf("the cached repository did not survive: %+v", reread)
+	}
+}
+
+// TestAPreRepositoryCatalogIsRebuilt is why the schema version moved. A
+// catalog written before the repository columns holds no observation at all,
+// and reading that absence as "no session belongs to a repository" would file
+// the whole corpus as unfiled until every session happened to change.
+func TestAPreRepositoryCatalogIsRebuilt(t *testing.T) {
+	cache, dir, refs := testCacheDir(t, 1)
+	if _, err := cache.Refresh(context.Background(), ompScope, refs,
+		func(ref Ref) (Row, bool) { return testRow(ref, []byte(`{"ok":true}`)), true }, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.db.Exec(`UPDATE meta SET v = '4' WHERE k = 'schema_version'`); err != nil {
+		t.Fatal(err)
+	}
+	cache.Close()
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen a catalog written by the previous schema: %v", err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+	rows, err := reopened.Refresh(context.Background(), nil, nil,
+		func(Ref) (Row, bool) { return Row{}, false }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("the old catalog survived with %d rows, want a clean rebuild", len(rows))
+	}
+}
+
 var ompScope = []string{"omp"}
 
 func testCache(t *testing.T, count int) (*Cache, []Ref) {

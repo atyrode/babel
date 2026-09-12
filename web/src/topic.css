@@ -1,0 +1,183 @@
+/* One topic (§4.13).
+   ---------------------------------------------------------------------------
+   The page is the feed with a header, so this file is the header and nothing
+   else: the rows, the rail and the controls under it are feed.css's, and the
+   containers here are styles.css's `.surface`, `.peel`, `.rule-bar` and
+   `.page-heading`. Nothing declares a literal colour and nothing restates a
+   rule the shell already has.
+
+   The header is dense on purpose. It carries the name, what the topic is, how
+   much is in it, what it is bound to, where the operator stands and the fold
+   that asks Babel to change its identity — and it sits above fifteen feed
+   rows, so every one of those is a line rather than a block. The measured
+   budget is §8.6's: the page must stay inside three screens at 1440x900, and
+   the header's share of that is about a fifth of it. */
+
+.topic-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+/* The heading inside the header carries no margin of its own: the flex gap
+   above is the rhythm, and two of them stacked left the name floating. */
+.topic-header .page-heading {
+  margin-bottom: 0;
+}
+
+/* What kind of thing this is, and what it is bound to, on one line. The badge
+   is the kind; the binding is muted because it is evidence about the topic
+   rather than the topic. */
+.topic-header .topic-flair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.topic-header .topic-binding {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  /* The identity and the checkouts are in the title, so the line says it can
+     be asked. */
+  cursor: help;
+}
+
+/* A sentence the page owes the reader: no such topic, nothing filed under it
+   yet, the topics could not be read. It is prose rather than a state-note
+   box, because it is one line of an otherwise fine page. */
+.topic-header .topic-honest {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--ink-muted);
+  font-size: 0.86rem;
+}
+
+/* The stance: the bar, the four words under it, the reason box when one is
+   open, and what is recorded. */
+.topic-header .topic-interest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-1);
+}
+
+.topic-header .topic-interest-label {
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* The reason box takes the whole row under the bar: it is one line of input
+   and a pair of buttons, and putting it beside the bar would push the bar off
+   a narrow column. */
+.topic-header .topic-reason {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.topic-header .topic-reason label {
+  flex: 1 1 22rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.topic-header .topic-reason-acts {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* What is recorded, and by whom. One line, quiet, and never a badge: a stance
+   is a fact with provenance rather than a status. */
+.topic-header .topic-stance {
+  flex: 1 0 100%;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.topic-header .topic-stance .quote {
+  color: var(--ink);
+}
+
+/* The identity fold. It is the machinery-style depth of this page: the acts
+   that change what the topic *is* are here rather than in the reading path,
+   because they are rare, consequential and none of them is what the reader
+   came for. */
+.topic-header .topic-identity {
+  margin-top: var(--space-1);
+}
+
+.topic-header .topic-identity .peel-body > p {
+  max-width: 68ch;
+}
+
+.topic-header .topic-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.topic-header .topic-ask label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.topic-header .topic-ask label:last-of-type {
+  flex: 1 1 24rem;
+}
+
+.topic-header .topic-ask textarea,
+.topic-header .topic-ask select {
+  min-width: 12rem;
+}
+
+/* What has already been asked, newest first. Each is a link to the wording
+   itself, because the operator's own words are the record and this is a
+   summary of them. */
+.topic-header .topic-asks {
+  margin: var(--space-3) 0 var(--space-2);
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 0.82rem;
+}
+
+.topic-header .topic-asks li {
+  color: var(--ink-muted);
+}
+
+/* Narrow: the figures drop under the name — the heading already stacks — and
+   the bar keeps its own line so no segment is cut off. */
+@media (max-width: 40rem) {
+  .topic-header .topic-interest {
+    align-items: flex-start;
+  }
+
+  .topic-header .topic-interest .rule-bar {
+    width: 100%;
+  }
+
+  .topic-header .topic-ask label {
+    flex: 1 1 100%;
+  }
+}

@@ -213,6 +213,38 @@ func (c *evaluationCatalogCoordinator) Validate(ctx context.Context, id, runID s
 	return evaluationCoordinationError(sharedcatalog.ValidateEvaluationClaim(ctx, db, c.cfg.DeploymentID, id, runID, fence))
 }
 
+// Renew extends this run's lease on an assignment fleet-wide.
+//
+// migrations/0014 is what makes it possible: 0013 had fixed a lease at its
+// grant, so every review that ran longer than the grant lost a claim it had
+// never stopped holding and had its result refused for a conflict that had not
+// happened. The catalog now admits one more transition - a live claim moving
+// its own expiry forward - and this is the call that asks for it.
+//
+// The window asked for is a full policy lease from now, not what is left of
+// the old one, because a renewal is the holder restating that it is still
+// working. The catalog measures liveness with its own clock and refuses an
+// expiry that does not move forward, so a host whose clock lags the catalog's
+// by more than a renewal interval is told its renewal failed rather than left
+// believing in one it never got.
+func (c *evaluationCatalogCoordinator) Renew(ctx context.Context, id, runID string, fence int64,
+	policy evaluation.Policy) (time.Time, error) {
+	if policy.LeaseSeconds <= 0 {
+		return time.Time{}, fmt.Errorf("%w: policy %s grants no lease duration, so a claim could never expire",
+			evaluation.ErrInvalid, policy.Version)
+	}
+	db, err := c.connection(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	until := time.Now().UTC().Add(time.Duration(policy.LeaseSeconds) * time.Second)
+	extended, err := sharedcatalog.RenewEvaluationClaim(ctx, db, c.cfg.DeploymentID, id, runID, fence, until)
+	if err != nil {
+		return time.Time{}, evaluationCoordinationError(err)
+	}
+	return extended, nil
+}
+
 func (c *evaluationCatalogCoordinator) Finish(ctx context.Context, id, runID string, fence int64, cost float64) error {
 	db, err := c.connection(ctx)
 	if err != nil {

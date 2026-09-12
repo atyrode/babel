@@ -12,10 +12,12 @@ import type {
   VersionInfo,
 } from "../src/api";
 
+import { commentsResponse } from "./comments";
 import { evaluationResponse } from "./evaluation";
 import { OVERVIEW_ROWS, overviewPhaseB, phasebResponse } from "./phaseb";
 import { recordResponse } from "./record";
 import { watchResponse } from "./watch";
+import { feedResponse } from "./feed";
 
 const distRoot = resolve(import.meta.dir, "..", "dist");
 const port = Number(Bun.env.PORT ?? 4174);
@@ -739,6 +741,7 @@ const server = Bun.serve({
   port,
   async fetch(request) {
     const url = new URL(request.url);
+    const feed = await feedResponse(request, url); if (feed) return feed;
     // A simulated unwired service is refused before any handler runs, because
     // a launch that could not open the store has no fixture state to serve
     // from either — answering from one and refusing from the other would
@@ -760,6 +763,7 @@ const server = Bun.serve({
     // id from swallowing one of them.
     const record = await recordResponse(request, url);
     if (record) return record;
+    const comments = await commentsResponse(request, url); if (comments) return comments;
     // The control room's own path space, in its own file: thirty-one runs in
     // flight and a conductor configuration are a body of state of their own.
     const watch = await watchResponse(request, url);

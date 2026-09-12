@@ -26,14 +26,17 @@ import (
 // internal/evaluation, and it deliberately holds no opinion about what an
 // evaluation says: a claim is authority and money, never a judgement.
 //
-// ClaimEvaluation admits work within the deployment allowance. Both admission
-// and completion check schema compatibility before writing.
+// ClaimEvaluation admits work within the deployment allowance. Admission,
+// renewal and completion all check schema compatibility before writing.
 // ValidateEvaluationClaim asks whether a worker may still act - it is the
-// stricter test, and it refuses an expired lease. FinishEvaluationClaim records
-// what was spent, and its authority test is takeover rather than expiry: money
-// that was already spent must be recorded even if the lease lapsed while the
-// model was working, because the only alternative is a fleet that understates
-// its own spending. A worker whose claim was taken over is refused by both.
+// stricter test, and it refuses an expired lease. RenewEvaluationClaim carries
+// a worker that is still working past the window it was granted, and refuses
+// on Validate's terms: a lease is how long an unanswered worker keeps its
+// claim, not how long the work may take. FinishEvaluationClaim records what
+// was spent, and its authority test is takeover rather than expiry: money that
+// was already spent must be recorded even if the lease lapsed while the model
+// was working, because the only alternative is a fleet that understates its
+// own spending. A worker whose claim was taken over is refused by all three.
 
 // EvaluationDayLayout renders the UTC day an evaluation claim is charged to.
 // It is exported because EvaluationClaim.Day is a string and a caller that
@@ -472,19 +475,7 @@ func finishRefusal(ctx context.Context, db *sql.Tx, deploymentID, id, runID stri
 		 WHERE deployment_id = $1 AND claim_id = $2 AND fence = $3`,
 		deploymentID, id, fence).Scan(&owner, &finished, &observed, &reserved)
 	if errors.Is(err, sql.ErrNoRows) {
-		var latest sql.NullInt64
-		if err := db.QueryRowContext(ctx,
-			`SELECT max(fence) FROM evaluation_claims WHERE deployment_id = $1 AND claim_id = $2`,
-			deploymentID, id).Scan(&latest); err != nil {
-			return fmt.Errorf("finish evaluation claim %s: %w", id, err)
-		}
-		if !latest.Valid {
-			return fmt.Errorf("%w: deployment %s holds no assignment %s",
-				ErrEvaluationNotFound, deploymentID, id)
-		}
-		return fmt.Errorf(
-			"%w: assignment %s has no attempt at fence %d; it is at %d",
-			ErrEvaluationConflict, id, fence, latest.Int64)
+		return missingAttempt(ctx, db, deploymentID, id, fence)
 	}
 	if err != nil {
 		return fmt.Errorf("finish evaluation claim %s: %w", id, err)
@@ -508,6 +499,146 @@ func finishRefusal(ctx context.Context, db *sql.Tx, deploymentID, id, runID stri
 	return fmt.Errorf(
 		"%w: assignment %s was taken over after fence %d; its reservation stays charged as unobserved spend and this worker's result is not the fleet's",
 		ErrEvaluationConflict, id, fence)
+}
+
+// RenewEvaluationClaim extends a live claim's lease to until, and reports the
+// expiry the catalog stored.
+//
+// It is the operation migrations/0013 did not have and 0014 added, and that
+// file carries the reason: a lease bounds how long an unanswered worker keeps
+// its claim, not how long the work may take, so a lease fixed at its grant
+// refused every review that ran longer than the grant. A worker that is still
+// working says so by renewing, which is what distinguishes it from the crashed
+// worker expiry exists to release.
+//
+// Its refusals are ValidateEvaluationClaim's rather than
+// FinishEvaluationClaim's, and the asymmetry is the same one stated there,
+// read the other way. A finish from a lapsed holder is recorded because that
+// money was really spent; a renewal is permission to keep acting, so a lapsed
+// claim is refused rather than resurrected - the next claimer may hold it
+// already, and two live opinions on one assignment is what the fence exists to
+// prevent. A takeover is refused for the same reason, and a finished attempt
+// has no lease left to extend.
+//
+// An until that does not move the stored expiry forward is ErrEvaluationInvalid
+// rather than a quiet no-op. A worker told its lease was extended when it was
+// not would keep working against an authority the fleet has already let go,
+// which is the failure this call exists to prevent rather than one to report
+// as success; a caller whose clock lags the catalog's by more than its renewal
+// interval is therefore told so.
+//
+// Nothing is charged. An attempt carries its whole reservation until it
+// reports - live, renewed, expired or abandoned - so a longer lease spends no
+// more of the day than the grant did, which is what makes extending one safe
+// for the accounting the rest of this file protects.
+func RenewEvaluationClaim(ctx context.Context, db *sql.DB, deploymentID, id, runID string, fence int64, until time.Time) (time.Time, error) {
+	if err := validateClaimRef(deploymentID, id, runID, fence); err != nil {
+		return time.Time{}, err
+	}
+	if err := EnsureCompatible(ctx, db); err != nil {
+		return time.Time{}, err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("renew evaluation claim: %w", err)
+	}
+	defer tx.Rollback()
+	if err := lockEvaluationDeployment(ctx, tx, deploymentID); err != nil {
+		return time.Time{}, err
+	}
+
+	// The liveness test subsumes the takeover test that Finish has to state
+	// separately: a fence is only appended to an assignment whose previous
+	// attempt had already expired, and admission takes the same deployment
+	// lock this transaction holds, so an attempt with a live lease is the
+	// current authority by construction.
+	var extended time.Time
+	err = tx.QueryRowContext(ctx, `
+		UPDATE evaluation_claims c
+		   SET expires_at = $5::timestamptz
+		 WHERE c.deployment_id = $1 AND c.claim_id = $2
+		   AND c.run_id = $3 AND c.fence = $4
+		   AND c.state = 'claimed'
+		   AND c.expires_at > `+serverNow+`
+		   AND c.expires_at < $5::timestamptz
+		RETURNING c.expires_at`,
+		deploymentID, id, runID, fence, until.UTC()).Scan(&extended)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return time.Time{}, renewalRefusal(ctx, tx, deploymentID, id, runID, fence, until)
+	case err != nil:
+		return time.Time{}, fmt.Errorf("renew evaluation claim %s: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, fmt.Errorf("renew evaluation claim %s: %w", id, err)
+	}
+	return extended, nil
+}
+
+// renewalRefusal explains a renewal that moved no lease.
+//
+// Like finishRefusal it only chooses which answer to report, and the four it
+// can reach are the four the statement above tests: another run holds this
+// fence, the attempt is finished, the lease has lapsed, or the caller offered
+// an expiry that is not later than the one already stored.
+func renewalRefusal(ctx context.Context, tx *sql.Tx, deploymentID, id, runID string, fence int64, until time.Time) error {
+	var (
+		owner    string
+		finished bool
+		expires  time.Time
+		live     bool
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT run_id, state = 'finished', expires_at, expires_at > `+serverNow+`
+		  FROM evaluation_claims
+		 WHERE deployment_id = $1 AND claim_id = $2 AND fence = $3`,
+		deploymentID, id, fence).Scan(&owner, &finished, &expires, &live)
+	if errors.Is(err, sql.ErrNoRows) {
+		return missingAttempt(ctx, tx, deploymentID, id, fence)
+	}
+	if err != nil {
+		return fmt.Errorf("renew evaluation claim %s: %w", id, err)
+	}
+	switch {
+	case owner != runID:
+		return fmt.Errorf("%w: assignment %s at fence %d belongs to run %s, not %s",
+			ErrEvaluationConflict, id, fence, owner, runID)
+	case finished:
+		return fmt.Errorf(
+			"%w: assignment %s at fence %d is finished, so there is no lease left to extend",
+			ErrEvaluationConflict, id, fence)
+	case !live:
+		// ValidateEvaluationClaim's refusal, in the wording a renewal can be
+		// precise about: it read the expiry it declined to move.
+		return fmt.Errorf("%w: the lease on assignment %s expired at %s",
+			ErrEvaluationConflict, id, expires.UTC().Format(time.RFC3339))
+	}
+	return fmt.Errorf(
+		"%w: the lease on assignment %s runs to %s and this renewal offered %s; a renewal moves an expiry forward, and reporting one that did not move as an extension would leave a worker acting on an authority it is about to lose",
+		ErrEvaluationInvalid, id,
+		expires.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339))
+}
+
+// missingAttempt explains a (claim, fence) pair the deployment does not hold.
+//
+// The two answers are deliberately different errors: an assignment nobody ever
+// claimed is a caller naming something that does not exist, while an
+// assignment at another fence is this caller having lost an authority it did
+// hold, and a worker can only respond correctly to one of them.
+func missingAttempt(ctx context.Context, tx *sql.Tx, deploymentID, id string, fence int64) error {
+	var latest sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT max(fence) FROM evaluation_claims WHERE deployment_id = $1 AND claim_id = $2`,
+		deploymentID, id).Scan(&latest); err != nil {
+		return fmt.Errorf("read evaluation claim %s: %w", id, err)
+	}
+	if !latest.Valid {
+		return fmt.Errorf("%w: deployment %s holds no assignment %s",
+			ErrEvaluationNotFound, deploymentID, id)
+	}
+	return fmt.Errorf(
+		"%w: assignment %s has no attempt at fence %d; it is at %d",
+		ErrEvaluationConflict, id, fence, latest.Int64)
 }
 
 // Serializing admission and completion on the deployment also covers midnight

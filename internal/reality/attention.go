@@ -135,6 +135,19 @@ type AdmitRequest struct {
 	// operator in charge of which spellings mean which entity — and a name
 	// nothing answers to names no subject and withholds nothing.
 	Names []string
+	// EntityIDs are subjects the caller already holds by identity rather
+	// than by word. §4.13's filings are the case this exists for: a record
+	// filed under a topic names the entity itself, so there is no spelling
+	// to resolve and nothing for an alias to be ambiguous about, and the
+	// operator's stance toward that topic has to reach the work exactly as
+	// a name resolved from a label does.
+	//
+	// They are canonicalized through the merge history and are otherwise
+	// treated identically to a resolved name: an id the ledger does not
+	// hold counts as unresolved rather than failing the consultation,
+	// because a caller holding a stale identifier is the same gap as a
+	// word nothing answers to.
+	EntityIDs []string
 	// Work is what the caller is about to spend. There is no default: a
 	// caller that did not say what it was about to do cannot be told
 	// whether it may.
@@ -172,13 +185,16 @@ type Admission struct {
 	// version is installed, which is a different statement from version
 	// zero deciding and is why it is reported rather than assumed.
 	Policy int
-	// Subjects are the canonical entities the names resolved to, sorted.
+	// Subjects are the canonical entities the request resolved to — from
+	// its names and from the ids it already held — sorted.
 	Subjects []string
 	// Unresolved and Ambiguous count the names that named no entity and
-	// the names that named several. They are counts and not the names
-	// themselves because an alias value is a path or an operator's own
-	// vocabulary, which §9 keeps out of anything that gets logged — the
-	// same reason ResolveAlias leaves the value out of its errors.
+	// the names that named several; Unresolved also counts an EntityIDs
+	// entry the ledger does not hold, which is the same gap arriving by a
+	// different route. They are counts and not the values themselves
+	// because an alias value is a path or an operator's own vocabulary,
+	// which §9 keeps out of anything that gets logged — the same reason
+	// ResolveAlias leaves the value out of its errors.
 	//
 	// An ambiguous name decides nothing. §4.8 makes alias resolution a
 	// Question precisely because two entities can answer to one term, and
@@ -320,6 +336,23 @@ func (a *Attention) Admit(ctx context.Context, in AdmitRequest) (Admission, erro
 		}
 		if !slices.Contains(out.Subjects, id) {
 			out.Subjects = append(out.Subjects, id)
+		}
+	}
+	// The subjects named by identity join the same list, so everything
+	// below — the most restrictive decision, the contested flag, the
+	// snapshot a refusal freezes — reads one set of subjects and cannot
+	// treat a topic as a second kind of context.
+	for _, id := range sortedUnique(in.EntityIDs) {
+		canonical, err := resolve(ctx, a.store.db, id)
+		switch {
+		case errors.Is(err, ErrUnknownRecord):
+			out.Unresolved++
+			continue
+		case err != nil:
+			return Admission{}, err
+		}
+		if !slices.Contains(out.Subjects, canonical) {
+			out.Subjects = append(out.Subjects, canonical)
 		}
 	}
 	slices.Sort(out.Subjects)

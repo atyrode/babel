@@ -45,6 +45,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -53,12 +54,13 @@ import (
 	"github.com/atyrode/babel/internal/event"
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
+	"github.com/atyrode/babel/internal/reality"
 	"github.com/atyrode/babel/internal/reference"
 	"github.com/atyrode/babel/internal/sharedcatalog"
 	"github.com/atyrode/babel/internal/transcript"
 )
 
-// recordPathPrefix is where the peel and the operator's reception live.
+// recordPathPrefix is where the peel and the conversation under it live.
 //
 // It is the second path-parameter route on this surface after
 // proposalPathPrefix, and unlike that one it is resolved from routeAPI's
@@ -71,9 +73,6 @@ import (
 // file can say which.
 const recordPathPrefix = "/api/record/"
 
-// receptionPathSuffix is the operator's voice on the record he is reading.
-const receptionPathSuffix = "/reception"
-
 // routeRecord dispatches the two id-bearing record routes, reporting whether
 // the path was one of them.
 func (s *Server) routeRecord(w http.ResponseWriter, r *http.Request) bool {
@@ -81,9 +80,38 @@ func (s *Server) routeRecord(w http.ResponseWriter, r *http.Request) bool {
 	if !found || rest == "" {
 		return false
 	}
-	if id, isReception := strings.CutSuffix(rest, receptionPathSuffix); isReception {
+	// The conversation under the record (§8.7). It answers two methods,
+	// which is deliberate and is the same judgement /api/evaluation/policy
+	// makes: it is one resource rather than two, the box an operator types
+	// into is rendered from the read, and the write answers with a comment
+	// of exactly the shape the read serves. A second path would let one
+	// thread's read and write disagree about their own shape the first
+	// time either changed.
+	if id, isComments := strings.CutSuffix(rest, commentsPathSuffix); isComments {
+		switch r.Method {
+		case http.MethodGet:
+			s.handleRecordComments(w, r, id)
+		case http.MethodPost:
+			s.handlePostComment(w, r, id)
+		default:
+			s.writeError(w, http.StatusBadRequest, "unsupported method")
+		}
+		return true
+	}
+	// What the record is about (§4.13). Two paths rather than one resource
+	// because they are two acts with two bodies — a filing names a topic and
+	// says why, a withdrawal names a topic and says why not — and §4.13's
+	// append-only rule means neither is the other's undo: both append, and a
+	// single toggling route would hide which one the operator performed.
+	if id, isFile := strings.CutSuffix(rest, filePathSuffix); isFile {
 		if s.requireMethod(w, r, http.MethodPost) {
-			s.handleRecordReception(w, r, id)
+			s.handleFileRecord(w, r, id)
+		}
+		return true
+	}
+	if id, isUnfile := strings.CutSuffix(rest, unfilePathSuffix); isUnfile {
+		if s.requireMethod(w, r, http.MethodPost) {
+			s.handleUnfileRecord(w, r, id)
 		}
 		return true
 	}
@@ -1940,104 +1968,25 @@ func receiptCost(assignment evaluation.Assignment, attempt evaluation.Attempt) s
 	}
 }
 
-// receptionRequest is POST /api/record/{id}/reception's body: the operator's
-// position, and optionally why.
-//
-// The stance is a closed vocabulary and the reason is free text, which is the
-// same split §4.12 draws everywhere else: a position a reader would have to
-// infer from prose is a position each reader infers differently, and a reason
-// Babel classified would no longer be the operator's own words.
-type receptionRequest struct {
-	Stance string `json:"stance"`
-	Reason string `json:"reason"`
-}
-
-// receptionResult confirms what was recorded and when.
-//
-// It echoes the stored record's stance rather than the request's, so an act
-// the service refused or rewrote cannot be reported back as the one that was
-// sent.
-type receptionResult struct {
-	Stance string `json:"stance"`
-	At     string `json:"at"`
-}
-
-// handleRecordReception records the operator's own reception of a record
-// (#235 §3).
-//
-// It is an operator-authored feedback record and nothing else. §4.12's
-// authority boundary does not move to make room for it: OperatorKinds still
-// excludes an assessment, so this write cannot mint what reads as a model's
-// observation, and it sets no disposition — agreeing is not accepting, and the
-// accept/reject/defer vocabulary stays behind internal/review's confirmation.
-//
-// Recording a second stance is a second record. §4.12 is append-only, so a
-// changed mind leaves both readable in order, which is why the peel's
-// reception carries a history beside the current position.
-func (s *Server) handleRecordReception(w http.ResponseWriter, r *http.Request, id string) {
-	if !s.requireService(w, s.opts.Evaluation != nil, evaluationServiceName) {
-		return
-	}
-	kind, known := kindOfRecordID(id)
-	if !known {
-		s.writeError(w, http.StatusBadRequest,
-			"that identifier names no record kind this surface can open")
-		return
-	}
-	by, ok := s.requireOperator(w)
-	if !ok {
-		return
-	}
-	var request receptionRequest
-	if !s.decodeBody(w, r, &request) {
-		return
-	}
-	// The stance is passed through unchecked, on handleEvaluationOperator's
-	// terms: internal/evaluation owns the vocabulary and refuses a value
-	// outside it, and a second gate here is a second place for the two to
-	// come to disagree about what an operator may say.
-	record, refresh, err := s.opts.Evaluation.OperatorDeferred(r.Context(), evaluation.OperatorInput{
-		Subject:  evaluation.Subject{Kind: string(kind), ID: id},
-		Kind:     evaluation.KindFeedback,
-		Operator: by.ID(),
-		Reason:   request.Reason,
-		Stance:   request.Stance,
-	})
-	if err != nil {
-		s.serviceError(w, r, err)
-		return
-	}
-	// The refresh is started before the response and waited on only briefly.
-	// A reader who agrees and then reloads must see his own stance, and a
-	// reader whose machine is busy must not wait on bookkeeping to find out
-	// that it was recorded; those are both true of a refresh that gets a
-	// short head start and then stops being his problem.
-	s.refreshReception(record.Subject, refresh)
-	s.writeJSON(w, http.StatusOK, receptionResult{
-		Stance: record.Stance,
-		At:     timeText(record.CreatedAt),
-	})
-}
-
-// refreshReception brings the evaluation projection up to date with a stance
-// that has already been recorded, and gives the response a deadline rather
-// than the work.
+// refreshEvaluation brings the evaluation projection up to date with an
+// operator write that has already been recorded, and gives the response a
+// deadline rather than the work.
 //
 // The two halves of the write are separated because only one of them is the
-// act. The durable record is the operator's position the instant its
+// act. The durable record is what the operator said the instant its
 // transaction commits; the projection is a rebuildable cache, and refreshing
 // it reads this instance's evaluation records, assignments, attempts, the
 // subject's artifact and the effective policy in order to replace one row —
-// six of the six and a half seconds an upvote took on the live catalog, spent
-// after the thing the operator asked for was already true.
+// six of the six and a half seconds an operator write took on the live
+// catalog, spent after the thing he asked for was already true.
 //
 // So the refresh runs on its own goroutine, under a context of its own, and
 // the handler waits for it for as long as an instant lasts. That ordering is
-// what keeps both properties: a reload right after clicking shows the stance,
-// because on an idle machine the refresh finishes in tens of milliseconds and
-// the response waits for it; and a machine with three lanes writing does not
-// make the operator watch a projection catch up, because the wait expires and
-// the work continues without him.
+// what keeps both properties: a reload right after commenting shows the
+// comment, because on an idle machine the refresh finishes in tens of
+// milliseconds and the response waits for it; and a machine with three lanes
+// writing does not make the operator watch a projection catch up, because the
+// wait expires and the work continues without him.
 //
 // The work is never cancelled by the wait expiring. A refresh abandoned
 // halfway is the one outcome worse than a refresh that is late, so the
@@ -2048,9 +1997,9 @@ func (s *Server) handleRecordReception(w http.ResponseWriter, r *http.Request, i
 //
 // A failure is logged and nothing else. The projection is rebuilt from the
 // durable records on the launch's own schedule, so what a failed refresh costs
-// is a listing that lags until then — never the stance, which is already
+// is a listing that lags until then — never what he said, which is already
 // durable, and never the request, which is answered either way.
-func (s *Server) refreshReception(subject evaluation.Subject, refresh func(context.Context) error) {
+func (s *Server) refreshEvaluation(subject evaluation.Subject, refresh func(context.Context) error) {
 	if refresh == nil {
 		return
 	}
@@ -2058,27 +2007,244 @@ func (s *Server) refreshReception(subject evaluation.Subject, refresh func(conte
 	go func() {
 		defer close(done)
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()),
-			receptionRefreshTimeout)
+			evaluationRefreshTimeout)
 		defer cancel()
 		if err := refresh(ctx); err != nil {
-			s.logf("reception of %s %s recorded; evaluation projection not refreshed",
+			s.logf("an operator write about %s %s is recorded; evaluation projection not refreshed",
 				subject.Kind, subject.ID)
 		}
 	}()
 	select {
 	case <-done:
-	case <-time.After(receptionRefreshBudget):
+	case <-time.After(evaluationRefreshBudget):
 	}
 }
 
-// receptionRefreshBudget is how long a click waits for the projection to catch
-// up with it. It is the width of an instant rather than a service level: past
-// it the operator is watching a progress indicator for work he did not ask
-// for, and the work is no more correct for being waited on.
-const receptionRefreshBudget = 150 * time.Millisecond
+// evaluationRefreshBudget is how long a click waits for the projection to
+// catch up with it. It is the width of an instant rather than a service level:
+// past it the operator is watching a progress indicator for work he did not
+// ask for, and the work is no more correct for being waited on.
+const evaluationRefreshBudget = 150 * time.Millisecond
 
-// receptionRefreshTimeout bounds the refresh itself. It is long because by
+// evaluationRefreshTimeout bounds the refresh itself. It is long because by
 // then the refresh is not in anybody's way, and finite so that a store which
 // has stopped answering does not accumulate goroutines for the life of the
 // launch.
-const receptionRefreshTimeout = time.Minute
+const evaluationRefreshTimeout = time.Minute
+
+// The two acts that say what a record is about (SPEC.md §4.13).
+const (
+	filePathSuffix   = "/file"
+	unfilePathSuffix = "/unfile"
+)
+
+// filingServiceName is what a build with no frontier filing surface says it
+// lacks.
+const filingServiceName = "the record filing surface"
+
+// fileRequest is POST /api/record/{id}/file: which topic, and why this record
+// belongs to it.
+//
+// Entity takes a name or an entity id, because both are what a reader has: the
+// sidebar carries ids and the operator's own vocabulary is names, and §4.8's
+// alias resolution is exactly the machinery that turns the second into the
+// first. A name the ledger does not know is refused rather than created —
+// entities are created by an attributed operator act on the subject surface,
+// never as a side effect of filing something under a word.
+type fileRequest struct {
+	Entity    string `json:"entity"`
+	Rationale string `json:"rationale"`
+}
+
+// unfileRequest is POST /api/record/{id}/unfile: which topic, and why it does
+// not belong there. The reason is required for §4.13's reason — the filing is
+// not deleted, it is withdrawn, and a withdrawal nobody explained is a hole in
+// the history rather than a correction to it.
+type unfileRequest struct {
+	Entity string `json:"entity"`
+	Reason string `json:"reason"`
+}
+
+// filingResult confirms what was recorded.
+type filingResult struct {
+	Filing filingView `json:"filing"`
+}
+
+// filingView is one filing as this surface renders it.
+//
+// The topic travels as both an id and a name because the two are for different
+// readers: a client follows the id, and a person reads the name. Heuristic and
+// Withdrawn are here because §4.13 makes both load-bearing — a seeded filing
+// is one the triage recipe still owes a judgement on, and a withdrawal is a
+// row rather than an absence.
+type filingView struct {
+	ID             string `json:"id"`
+	Record         string `json:"record"`
+	RecordKind     string `json:"record_kind"`
+	Topic          string `json:"topic"`
+	TopicName      string `json:"topic_name,omitempty"`
+	Rationale      string `json:"rationale"`
+	Author         string `json:"author"`
+	AuthorID       string `json:"author_id,omitempty"`
+	Heuristic      bool   `json:"heuristic"`
+	Withdrawn      bool   `json:"withdrawn"`
+	WithdrawReason string `json:"withdraw_reason,omitempty"`
+	CreatedAt      string `json:"created_at"`
+}
+
+// handleFileRecord records that this record is about a topic, in the
+// operator's own words.
+//
+// It is never heuristic: this is a person saying so, which is exactly the
+// filing §4.13's triage recipe leaves alone. The rationale is required for the
+// same reason it is required in the store — a filing is a claim about the
+// corpus, and one with no reason is a claim nobody can weigh.
+func (s *Server) handleFileRecord(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.requireService(w, s.opts.Filings != nil, filingServiceName) {
+		return
+	}
+	record, ok := s.pathRecordRef(w, id)
+	if !ok {
+		return
+	}
+	by, ok := s.requireOperator(w)
+	if !ok {
+		return
+	}
+	var request fileRequest
+	if !s.decodeBody(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.Rationale) == "" {
+		s.writeError(w, http.StatusBadRequest,
+			"filing a record under a topic says why it belongs there; this one says nothing")
+		return
+	}
+	entityID, name, ok := s.resolveTopic(w, r, request.Entity)
+	if !ok {
+		return
+	}
+	filing, err := s.opts.Filings.File(r.Context(), frontier.FilingInput{
+		Record:    record,
+		EntityID:  entityID,
+		Rationale: request.Rationale,
+		Author:    frontier.FilingOperator,
+		AuthorID:  by.ID(),
+	})
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	s.invalidateFeed()
+	s.writeJSON(w, http.StatusCreated, filingResult{Filing: renderFiling(filing, name)})
+}
+
+// handleUnfileRecord withdraws a filing with the operator's reason kept
+// verbatim.
+func (s *Server) handleUnfileRecord(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.requireService(w, s.opts.Filings != nil, filingServiceName) {
+		return
+	}
+	record, ok := s.pathRecordRef(w, id)
+	if !ok {
+		return
+	}
+	by, ok := s.requireOperator(w)
+	if !ok {
+		return
+	}
+	var request unfileRequest
+	if !s.decodeBody(w, r, &request) {
+		return
+	}
+	if strings.TrimSpace(request.Reason) == "" {
+		s.writeError(w, http.StatusBadRequest,
+			"unfiling a record keeps the reason verbatim; this one gives none")
+		return
+	}
+	entityID, name, ok := s.resolveTopic(w, r, request.Entity)
+	if !ok {
+		return
+	}
+	filing, err := s.opts.Filings.Unfile(r.Context(), record, entityID,
+		frontier.FilingOperator, by.ID(), request.Reason)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return
+	}
+	s.invalidateFeed()
+	s.writeJSON(w, http.StatusOK, filingResult{Filing: renderFiling(filing, name)})
+}
+
+// pathRecordRef resolves the record a filing route names from its path,
+// refusing an identifier that names no record kind this surface can open. It
+// is the path-shaped counterpart of requireRecordRef, which reads the ?type=
+// and ?id= pair the record listings use.
+func (s *Server) pathRecordRef(w http.ResponseWriter, id string) (frontier.Ref, bool) {
+	kind, known := kindOfRecordID(id)
+	if !known {
+		s.writeError(w, http.StatusBadRequest,
+			"that identifier names no record kind this surface can open")
+		return frontier.Ref{}, false
+	}
+	return frontier.Ref{Type: kind, ID: id}, true
+}
+
+// resolveTopic turns what the request called the topic into the entity it
+// names, and reports the display name beside it.
+//
+// An entity id is answered by the ledger directly and anything else through
+// §4.8's alias resolution, which is the same resolution a run's structured
+// result goes through. An unknown name is a 404 that says the name, because
+// the operator has to know which word failed — and it is a refusal rather than
+// a creation, which is §4.8's rule that only an attributed operator act on the
+// subject surface brings an entity into being.
+func (s *Server) resolveTopic(w http.ResponseWriter, r *http.Request, value string) (string, string, bool) {
+	name := strings.TrimSpace(value)
+	if name == "" {
+		s.writeError(w, http.StatusBadRequest, "a filing names the topic it files under")
+		return "", "", false
+	}
+	if !s.requireService(w, s.opts.Reality != nil, "the reality ledger") {
+		return "", "", false
+	}
+	ctx := r.Context()
+	if entity, err := s.opts.Reality.Entity(ctx, name); err == nil {
+		return entity.ID, entity.Payload.DisplayName, true
+	}
+	if s.opts.Subjects != nil {
+		switch resolved, err := s.opts.Subjects.Resolve(ctx, name); {
+		case err == nil:
+			entity, err := s.opts.Reality.Entity(ctx, resolved)
+			if err != nil {
+				s.serviceError(w, r, err)
+				return "", "", false
+			}
+			return entity.ID, entity.Payload.DisplayName, true
+		case errors.Is(err, reality.ErrAmbiguousAlias):
+			s.serviceError(w, r, err)
+			return "", "", false
+		}
+	}
+	s.writeError(w, http.StatusNotFound, "no topic in this ledger answers to "+strconv.Quote(name)+
+		"; a topic is an entity somebody created, and filing does not create one")
+	return "", "", false
+}
+
+// renderFiling projects one stored filing onto the wire.
+func renderFiling(filing frontier.Filing, topicName string) filingView {
+	return filingView{
+		ID:             filing.ID,
+		Record:         filing.Record.ID,
+		RecordKind:     string(filing.Record.Type),
+		Topic:          filing.EntityID,
+		TopicName:      topicName,
+		Rationale:      filing.Rationale,
+		Author:         string(filing.Author),
+		AuthorID:       filing.AuthorID,
+		Heuristic:      filing.Heuristic,
+		Withdrawn:      filing.Withdrawn,
+		WithdrawReason: filing.WithdrawReason,
+		CreatedAt:      timeText(filing.CreatedAt),
+	}
+}

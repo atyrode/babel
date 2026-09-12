@@ -771,6 +771,26 @@ export interface DecideResult {
     disposition: Disposition;
     recorded_at: string;
   };
+  // What the ruling did to the ledger, present only when this proposal
+  // carried a topic plan (§4.13). A topic change is an ordinary proposal, so
+  // accepting one is an ordinary ruling that also applies the plan — and the
+  // two can part company: `error` with `applied: false` means the ruling
+  // stands and the ledger act did not land, which the surface must say rather
+  // than report the ruling as having done what it did not.
+  topic?: TopicPlanOutcome;
+}
+
+export interface TopicPlanOutcome {
+  proposal_id: string;
+  operation: string;
+  applied: boolean;
+  declined: boolean;
+  // The entity the acceptance created or resolved, absent when nothing was
+  // created.
+  entity_id?: string;
+  // How many records the act filed under it.
+  filed?: number;
+  error?: string;
 }
 
 export interface ReviewContext {

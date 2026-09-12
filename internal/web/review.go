@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/atyrode/babel/internal/fleet"
 	"github.com/atyrode/babel/internal/frontier"
@@ -248,9 +249,39 @@ type decideRequest struct {
 	Note          string  `json:"note"`
 }
 
+// decideResult is what a ruling answers with: where the record stands
+// afterwards, the event that moved it, and — for a proposal carrying a topic
+// plan — what the ruling did to the ledger.
 type decideResult struct {
 	Status string           `json:"status"`
 	Event  dispositionEvent `json:"event"`
+	// Topic is present only when the record ruled on carried §4.13's plan.
+	// It is a pointer because "this proposal was not about the ledger's
+	// naming" is the ordinary case and must not read as a topic act that
+	// did nothing.
+	Topic *topicRuling `json:"topic,omitempty"`
+}
+
+// topicRuling is what a ruling on a topic proposal did (§4.13).
+//
+// Applied and Declined are stated rather than inferred from the disposition,
+// because the ruling and the ledger act are two writes and the second can
+// fail after the first: a response carrying Applied=false and an Error is
+// exactly the state an operator has to see, and one that only echoed his
+// click would tell him a topic exists when it does not.
+type topicRuling struct {
+	ProposalID string `json:"proposal_id"`
+	Operation  string `json:"operation"`
+	Applied    bool   `json:"applied"`
+	Declined   bool   `json:"declined"`
+	// EntityID is the topic a create or a split produced, and Filed how
+	// many records moved with it.
+	EntityID string `json:"entity_id,omitempty"`
+	Filed    int    `json:"filed"`
+	// Error is why the ledger act did not land, in the ledger's own words.
+	// The ruling stands either way: it is an append-only disposition that
+	// was recorded before this was attempted.
+	Error string `json:"error,omitempty"`
 }
 
 type dispositionEvent struct {
@@ -260,7 +291,8 @@ type dispositionEvent struct {
 	RecordedAt  string `json:"recorded_at"`
 }
 
-// handleReviewDecide appends one §4.7 disposition.
+// handleReviewDecide appends one §4.7 disposition, and applies §4.13's topic
+// plan when the record ruled on carries one.
 //
 // The handler resolves three things and then gets out of the way: the subject
 // reference, the operator identity, and the disposition as the caller wrote it.
@@ -270,6 +302,12 @@ type dispositionEvent struct {
 // appends anything. The vocabulary is not filtered here either: an unknown
 // disposition reaches the service and is refused by name, so there is exactly
 // one place that decides what a decision may be.
+//
+// The topic half is here rather than on a route of its own, and that is
+// §4.13's second reading rather than a convenience: a topic change is an
+// ordinary published proposal, the operator's ruling on it is the same ruling
+// he gives any other proposal, and accepting it is what applies it. A second
+// route would be the button the section refuses.
 func (s *Server) handleReviewDecide(w http.ResponseWriter, r *http.Request) {
 	if !s.requireService(w, s.opts.Review != nil && s.opts.Frontier != nil, "the review service") {
 		return
@@ -292,6 +330,15 @@ func (s *Server) handleReviewDecide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subject := frontier.Ref{Type: kind, ID: request.Subject.ID}
+	// The plan is read before the ruling is recorded so that a rejection
+	// with no note is refused while the record is still undecided: §4.13
+	// keeps a declined plan's reason verbatim, and a disposition appended
+	// first would leave the record rejected and the plan open with no way
+	// to answer it.
+	plan, planned, ok := s.topicPlanFor(w, r, subject, request)
+	if !ok {
+		return
+	}
 	event, err := s.opts.Review.Decide(r.Context(), review.Decision{
 		Subject:       subject,
 		Disposition:   frontier.Disposition(request.Disposition),
@@ -312,7 +359,7 @@ func (s *Server) handleReviewDecide(w http.ResponseWriter, r *http.Request) {
 		s.serviceError(w, r, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, decideResult{
+	result := decideResult{
 		Status: string(status),
 		Event: dispositionEvent{
 			ID:          event.ID,
@@ -320,7 +367,84 @@ func (s *Server) handleReviewDecide(w http.ResponseWriter, r *http.Request) {
 			Disposition: string(event.Disposition),
 			RecordedAt:  timeText(event.RecordedAt),
 		},
-	})
+	}
+	if planned {
+		result.Topic = s.ruleTopicPlan(r, plan, frontier.Disposition(request.Disposition),
+			by.ID(), request.Note)
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+// topicPlanFor reads the plan the ruled-on record carries, and refuses the
+// ruling the plan could not survive.
+//
+// The one refusal is a rejection with no note. §4.13 keeps a declined plan's
+// reason verbatim as the evidence the triage recipe reads before proposing
+// again, and a ruling this surface accepted and could not record a reason for
+// would be a refusal that teaches Babel nothing.
+func (s *Server) topicPlanFor(w http.ResponseWriter, r *http.Request, subject frontier.Ref,
+	request decideRequest) (TopicPlanView, bool, bool) {
+	if s.opts.TopicPlans == nil || subject.Type != frontier.EntityProposal {
+		return TopicPlanView{}, false, true
+	}
+	plan, planned, err := s.opts.TopicPlans.TopicPlan(r.Context(), subject.ID)
+	if err != nil {
+		s.serviceError(w, r, err)
+		return TopicPlanView{}, false, false
+	}
+	if !planned {
+		return TopicPlanView{}, false, true
+	}
+	if frontier.Disposition(request.Disposition) == frontier.DispositionReject &&
+		strings.TrimSpace(request.Note) == "" {
+		s.writeError(w, http.StatusBadRequest,
+			"rejecting a topic proposal keeps the reason verbatim, and suppresses the same "+
+				"proposal until something materially new turns up; this one gives none")
+		return TopicPlanView{}, false, false
+	}
+	return plan, true, true
+}
+
+// ruleTopicPlan applies or declines the plan the operator has just ruled on,
+// and reports what happened.
+//
+// A failure is reported rather than returned as the request's error, and that
+// is the honest direction: the disposition is already appended and §4.7 does
+// not un-append one, so a 500 here would tell the operator his ruling failed
+// when it is durable. Every other disposition — defer, duplicate, refine,
+// reopen — leaves the plan open, which is what a deferral means.
+func (s *Server) ruleTopicPlan(r *http.Request, plan TopicPlanView,
+	disposition frontier.Disposition, operator, note string) *topicRuling {
+	out := &topicRuling{ProposalID: plan.ProposalID, Operation: plan.Operation}
+	switch disposition {
+	case frontier.DispositionAccept:
+		outcome, err := s.opts.TopicPlans.ApplyTopicPlan(r.Context(), plan.ProposalID, operator)
+		out.EntityID, out.Filed = outcome.EntityID, outcome.Filed
+		if outcome.Operation != "" {
+			out.Operation = outcome.Operation
+		}
+		if err != nil {
+			s.logf("POST %s: the topic plan on %s was not applied: %v",
+				r.URL.Path, plan.ProposalID, err)
+			out.Error = err.Error()
+			return out
+		}
+		out.Applied = true
+		// The entity and the filings the application created are
+		// invisible to the built index, so the page the operator lands
+		// on would show the topic he just accepted with nothing in it.
+		s.invalidateFeed()
+	case frontier.DispositionReject:
+		if err := s.opts.TopicPlans.DeclineTopicPlan(r.Context(), plan.ProposalID,
+			operator, note); err != nil {
+			s.logf("POST %s: the topic plan on %s was not declined: %v",
+				r.URL.Path, plan.ProposalID, err)
+			out.Error = err.Error()
+			return out
+		}
+		out.Declined = true
+	}
+	return out
 }
 
 type contextRequest struct {

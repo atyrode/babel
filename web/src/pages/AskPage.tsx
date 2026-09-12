@@ -21,11 +21,17 @@ import "../ask.css";
 // caps, because it is the word the CLI prints and the spec uses, and a reader
 // moving between the two surfaces has to be able to join them up.
 //
-// Focus is no longer in this row. What Babel may spend on a subject is a
-// ceiling the operator sets once and revises rarely, not something he comes
-// here to read, so it sits with the other ceilings under Settings.
+// The inbox is no longer in this row. §8.7 makes every question Babel asks a
+// post on the front page, so "what it needs" is the feed filtered to
+// questions and a tab here that redirected to it would be a destination that
+// leaves the section the reader is standing in. What stays is the ledger
+// itself: what it has asked, who and what it knows about, and what it
+// believes — reached from the questions and records that cite them.
+//
+// Focus is not here either. What Babel may spend on a subject is a ceiling
+// the operator sets once and revises rarely, so it sits with the other
+// ceilings under Settings.
 const destinations: { to: string; end?: boolean; question: string; noun: string }[] = [
-  { to: "/ask", end: true, question: "What it needs", noun: "Questions" },
   { to: "/ask/questions", question: "What you said", noun: "Asked" },
   { to: "/ask/entities", question: "Who and what", noun: "Subjects" },
   { to: "/ask/facts", question: "What it believes", noun: "Beliefs" },

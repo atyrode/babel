@@ -305,9 +305,15 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			name:     "frontier",
 			surface:  reflect.TypeOf((*FrontierReader)(nil)).Elem(),
 			concrete: reflect.TypeOf((*frontier.Store)(nil)),
-			permitted: []string{"Finding", "Head", "Hypotheses", "Hypothesis", "LinksFrom", "LinksTo",
-				"Observation", "ObservationsFor", "OutputsOfRun", "Proposal", "Proposals",
-				"ProposalsAddressing", "RecordDays", "ReviewStatus", "Revisions", "StatusHistory",
+			// Observations, Findings and ReviewStandings are §8.7's feed
+			// reads: the two enumerations the front page needs and the one
+			// bulk derivation of where every record stands. All three are
+			// reads, and widening this list by a read is what the list is
+			// for — it is the writes it exists to keep out.
+			permitted: []string{"Finding", "Findings", "Head", "Hypotheses", "Hypothesis",
+				"LinksFrom", "LinksTo", "Observation", "Observations", "ObservationsFor",
+				"OutputsOfRun", "Proposal", "Proposals", "ProposalsAddressing", "RecordDays",
+				"ReviewStandings", "ReviewStatus", "Revisions", "StatusHistory",
 				"TriageAdvice", "TriageAdvised"},
 			// Every frontier write, including its own Decide and the
 			// revive transition #87 added: one disposition log exists and
@@ -327,7 +333,38 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 			// permitted above; writing it belongs to a run.
 			forbidden: []string{"CreateHypothesis", "CreateObservation", "CreateFinding", "CreateProposal",
 				"CreateCandidateProposal", "Decide", "RejectAndRefine", "SetStatus", "Link",
-				"DeferFrontier", "Revive", "Triage", "Close"},
+				"DeferFrontier", "Revive", "Triage", "Close",
+				// §4.13's filings. A record's topics are a read this
+				// surface performs on every front page, and saying what
+				// a record is about is a write: it belongs to
+				// FilingService below, which is the type the two routes
+				// hold, so a page that only reads records cannot file
+				// one.
+				"File", "Unfile", "NoTopic"},
+		},
+		{
+			name:     "filings",
+			surface:  reflect.TypeOf((*FilingService)(nil)).Elem(),
+			concrete: reflect.TypeOf((*frontier.Store)(nil)),
+			// §4.13's five acts: file, unfile, record that a record is
+			// about nothing in particular, and the two reads the topics
+			// page and the feed are assembled from. The writes are here
+			// rather than behind a service because a filing has no
+			// service in front of it and needs none — the rules it has to
+			// satisfy are the store's own, enforced in the store — and
+			// because none of them asserts anything about reality: filing
+			// a record under an entity leaves the ledger believing exactly
+			// what it believed before.
+			permitted: []string{"File", "FiledUnder", "FilingsOf", "NoTopic", "Unfile"},
+			// The backlog read is the one filing operation a browser must
+			// not hold. It is a scan of every record the deployment has
+			// ever written against every live filing, answered for the
+			// evaluation lane once per draw; a page that could ask for it
+			// would put that scan behind a click. EntitiesFiled is the
+			// same read one record at a time and is the lane's too — the
+			// feed reaches the same fact through FiledUnder, which is one
+			// query per topic rather than one per post.
+			forbidden: []string{"Unfiled", "EntitiesFiled", "Close"},
 		},
 		{
 			name:      "frontier reviver",
@@ -383,6 +420,34 @@ func TestTheWebSurfaceHoldsNoWriteThatBypassesAService(t *testing.T) {
 				"RegisterTrustedSource", "CreateEntity", "AddAlias", "AddRelationship",
 				"RetractAlias", "RetractRelationship", "Ask", "RecordPlan", "RejectPlan",
 				"SetQuestionState", "BeginInterpretation", "ExpireStale", "CaptureSnapshot", "Close"},
+		},
+		{
+			name:      "topics",
+			surface:   reflect.TypeOf((*TopicLedger)(nil)).Elem(),
+			concrete:  reflect.TypeOf((*reality.Store)(nil)),
+			permitted: []string{"Entity", "EntityInterest", "Resolve", "SetInterest"},
+			// §4.13's one direct act on a topic, and the row is where
+			// the narrowing is recorded. MergeEntities, SplitEntity
+			// and RetireEntity used to be permitted here and are
+			// forbidden now: everything about a topic goes through
+			// Babel, so those three are applied by a ruling on a
+			// published proposal and by no surface at all. SetInterest
+			// does write facts, and what makes it safe is that it is
+			// not AssertFact: it writes one of two predicates with the
+			// closed vocabulary §4.13 spells, and takes no predicate,
+			// value or authority from a request.
+			//
+			// Ask, RecordPlan and AcceptPlan are forbidden because a
+			// topic page that could raise or accept a plan would be
+			// minting identity from the surface that is supposed to be
+			// looking at it. ApplyTopicPlan and DeclineTopicPlan are
+			// forbidden here for the same reason and reached through
+			// TopicPlanService, which the ruling route holds.
+			forbidden: []string{"AssertFact", "SupersedeFact", "CreateEntity", "AddAlias",
+				"ImportFacts", "PutFocusRules", "RegisterTrustedSource", "Ask", "RecordPlan",
+				"AcceptPlan", "RejectPlan", "MergeEntities", "SplitEntity", "RetireEntity",
+				"UndoResolution", "DisputeFacts", "ProposeTopic", "ApplyTopicPlan",
+				"DeclineTopicPlan", "Close"},
 		},
 		{
 			name:     "focus policy",

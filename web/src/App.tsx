@@ -19,13 +19,11 @@ import {
 } from "./api";
 import AskPage from "./pages/AskPage";
 import ComplaintPage from "./pages/ComplaintPage";
-import DecidePage from "./pages/DecidePage";
-import ReadPage from "./pages/ReadPage";
+import FeedPage, { TopicsIndex } from "./pages/FeedPage";
 import RealityEntitiesPage from "./pages/RealityEntitiesPage";
 import RealityEntityPage from "./pages/RealityEntityPage";
 import RealityFactPage from "./pages/RealityFactPage";
 import RealityFactsPage from "./pages/RealityFactsPage";
-import RealityPage from "./pages/RealityPage";
 import RealityQuestionPage from "./pages/RealityQuestionPage";
 import RealityQuestionsPage from "./pages/RealityQuestionsPage";
 import RecordPage from "./pages/RecordPage";
@@ -33,10 +31,18 @@ import RunPage from "./pages/RunPage";
 import SessionPage from "./pages/SessionPage";
 import SessionsPage from "./pages/SessionsPage";
 import SettingsPage from "./pages/SettingsPage";
+import TopicPage from "./pages/TopicPage";
 import WatchPage from "./pages/WatchPage";
 import Palette from "./palette";
 import RenderBoundary from "./boundary";
-import { KeyHints, LiveIndicator, ShellControls, ShellFooter, useDensity } from "./shell";
+import {
+  KeyHints,
+  LiveIndicator,
+  ShellControls,
+  ShellFooter,
+  TellBabel,
+  useDensity,
+} from "./shell";
 
 const LOCK_PROMPT =
   "Lock and stop the server?\n\nThe session is revoked immediately and this " +
@@ -49,6 +55,19 @@ const LOCK_PROMPT =
 function RecordRedirect() {
   const { id } = useParams();
   return <Navigate to={`/r/${encodeURIComponent(id ?? "")}`} replace />;
+}
+
+// The reading path is one feed now (§8.7), so /read is neither a destination
+// nor a filtered listing of its own: the kind it filtered by is a chip on the
+// front page, and it is the one thing a /read bookmark carried that the feed
+// still answers. The rest of what that URL could say — a standing, a coverage
+// facet, a review role — belonged to a page this section replaces, and a
+// redirect that invented a feed parameter for it would be a filter nobody can
+// see.
+function ReadRedirect() {
+  const { search } = useLocation();
+  const kind = new URLSearchParams(search).get("kind") ?? "";
+  return <Navigate to={kind ? `/?kind=${encodeURIComponent(kind)}` : "/"} replace />;
 }
 
 // The Reality Ledger kept its shape and lost its name: the operator asks Babel
@@ -78,6 +97,11 @@ function App() {
   const [stopping, setStopping] = useState(false);
   const [stopped, setStopped] = useState(false);
   const [hintsOpen, setHintsOpen] = useState(false);
+  // #115's capture box, over whatever page he is on. It is the shell's state
+  // rather than a route because it is not a destination: the complaint forms
+  // while he is reading something else, and navigating away from that to
+  // write it down is how a complaint goes unwritten.
+  const [tellOpen, setTellOpen] = useState(false);
   const { density, setDensity } = useDensity();
 
   // Arriving 900px into a record because the previous page was scrolled there
@@ -203,10 +227,9 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        {/* The wordmark is the way back to Decide, which is where a launched
-            session lands and the only page that claims the operator's
-            attention. It carries no nav entry of its own. */}
-        <Link className="brand-block" to="/" title="What needs me?">
+        {/* The wordmark is the way home, and home is the feed. It carries no
+            nav entry of its own because Home is the first one. */}
+        <Link className="brand-block" to="/" title="The feed">
           <span className="brand-mark" aria-hidden="true">B</span>
           <div>
             <div className="brand">Babel</div>
@@ -216,50 +239,47 @@ function App() {
           </div>
         </Link>
         <div className="topbar-actions">
-          {/* Four questions, in the order an operator asks them, and nothing
-              in the row is the name of a record kind or of a place Babel
-              keeps bytes. The row used to hold eleven entries — Findings,
-              Proposals, Hypotheses, Reality, Focus, Evaluation, Review,
-              Sessions, Explore, ?, Lock & stop — which required knowing the
-              data model before you could pick one (#234).
+          {/* Three destinations, and the fourth — search — is the palette
+              rather than a word in the row (§8.7). Nothing here is the name
+              of a record kind or of a place Babel keeps bytes: the kinds are
+              chips on the feed, which is where a distinction the reader
+              applies belongs.
 
-              Sessions is deliberately absent. Nobody opens Babel to browse
-              transcripts; a transcript is where a citation lands, so it stays
-              routed and is reached from the evidence that cites it.
+              The mod queue was a destination until this wave, and it was the
+              feed twice: the same records, ordered by what needs the operator,
+              with their own controls. It is the feed's own "needs me" filter
+              and its `next` ordering now — one list, which is what §8.7 asks
+              for, and the rulings are on the rows.
+
+              Read and Ask were destinations until the front page became the
+              feed. Reading by filter is the feed's own sort bar and chips,
+              the questions Babel asks are posts in it, and the ledger's
+              subjects and beliefs are reached from the records that cite
+              them — so two rows of navigation became none, and no capability
+              moved out of reach.
+
+              Sessions is deliberately absent for the same reason it always
+              was. Nobody opens Babel to browse transcripts; a transcript is
+              where a citation lands.
 
               Settings is last and is a container rather than a question: the
               archive, what evaluation may spend, what Babel may spend on a
-              subject, and the orientation text. None of them is something the
-              operator comes here to read. */}
+              subject, and the orientation text. */}
           <nav aria-label="Primary navigation">
             <NavLink
               end
               to="/"
               className={({ isActive }) => isActive ? "active" : undefined}
-              title="What needs me?"
+              title="Everything Babel has produced — what needs you first"
             >
-              Decide
-            </NavLink>
-            <NavLink
-              to="/read"
-              className={({ isActive }) => isActive ? "active" : undefined}
-              title="What has Babel found?"
-            >
-              Read
+              Home
             </NavLink>
             <NavLink
               to="/watch"
               className={({ isActive }) => isActive ? "active" : undefined}
-              title="What is it doing, and what did it cost?"
+              title="What it is doing, and what it cost"
             >
               Watch
-            </NavLink>
-            <NavLink
-              to="/ask"
-              className={({ isActive }) => isActive ? "active" : undefined}
-              title="What does it know, and what does it need from me?"
-            >
-              Ask
             </NavLink>
             <NavLink
               to="/settings"
@@ -275,15 +295,16 @@ function App() {
               one row, what is running and what can be pressed on the next.
 
               The live mark renders only while something is running, so the
-              cluster is one control shorter on a quiet deployment; search,
-              density and the key hints fold into a single … menu below 640px,
-              which ShellControls decides. */}
+              cluster is one control shorter on a quiet deployment; Tell Babel,
+              search, density and the key hints fold into a single … menu below
+              640px, which ShellControls decides. */}
           <div className="shell-instruments">
             <LiveIndicator />
             <ShellControls
               density={density}
               setDensity={setDensity}
               onKeyHints={() => setHintsOpen(true)}
+              onTell={() => setTellOpen(true)}
             />
             {/* The stop control lives in the shell rather than on a page
                 because it ends the whole session, not one page's work, and it
@@ -317,8 +338,18 @@ function App() {
             fault instead of stranding the reader on it. */}
         <RenderBoundary key={location.pathname}>
         <Routes>
-          <Route path="/" element={<DecidePage />} />
-          <Route path="/read" element={<ReadPage />} />
+          {/* Home is the feed, and a topic is the same feed narrowed to one
+              community under its own header: where the operator's interest in
+              it is stated and where he asks Babel to change its identity
+              (§4.13). /t is the directory behind the rail's twelve. */}
+          <Route path="/" element={<FeedPage />} />
+          <Route path="/t" element={<TopicsIndex />} />
+          <Route path="/t/:topic" element={<TopicPage />} />
+          {/* The mod queue is the feed, arriving as it always did: what needs
+              the operator, in §8.5's order. It kept nothing of its own — the
+              figures it counted are the feed's own total under the filter, and
+              the controls it carried are on the rows. */}
+          <Route path="/queue" element={<Navigate to="/" replace />} />
           <Route path="/watch" element={<WatchPage />} />
           {/* One run, whole: what it searched, what it fetched, what it
               declined and what it cost. It hangs under Watch because a run is
@@ -330,7 +361,11 @@ function App() {
               record, which is where a reader most needs to know what else
               the ledger holds (§8.4). */}
           <Route path="/ask" element={<AskPage />}>
-            <Route index element={<RealityPage />} />
+            {/* The questions Babel is asking are posts, so the inbox that
+                used to sit here is the feed filtered to them. The ledger's
+                own destinations below stay: they are reached from the
+                records and the questions that cite them. */}
+            <Route index element={<Navigate to="/?kind=question" replace />} />
             <Route path="questions" element={<RealityQuestionsPage />} />
             <Route path="questions/:id" element={<RealityQuestionPage />} />
             <Route path="entities" element={<RealityEntitiesPage />} />
@@ -353,16 +388,28 @@ function App() {
               outlive a navigation redesign, and a 404 would make the redesign
               look like data loss. Every one of them replaces its history
               entry, so Back leaves the old surface rather than bouncing. */}
+          {/* The review queue is the feed as it arrives: needs-me, in next
+              order, which is exactly what this path meant. */}
           <Route path="/review" element={<Navigate to="/" replace />} />
           <Route path="/review/:type/:id" element={<RecordRedirect />} />
-          <Route path="/findings" element={<Navigate to="/read?kind=finding" replace />} />
+          {/* /read is the feed, and the kind it was filtering by is the chip
+              it becomes. The splat catches the sections that page grew. */}
+          <Route path="/read" element={<ReadRedirect />} />
+          <Route path="/read/*" element={<ReadRedirect />} />
+          {/* A per-kind bookmark meant every record of that kind, so each
+              lands on the feed with the filter off: arriving under "needs me"
+              would answer a narrower question than the link asked. */}
+          <Route path="/findings" element={<Navigate to="/?kind=finding&needs=all" replace />} />
           <Route path="/findings/:id" element={<RecordRedirect />} />
-          <Route path="/proposals" element={<Navigate to="/read?kind=proposal" replace />} />
+          <Route path="/proposals" element={<Navigate to="/?kind=proposal&needs=all" replace />} />
           <Route path="/proposals/:id" element={<RecordRedirect />} />
-          <Route path="/hypotheses" element={<Navigate to="/read?kind=hypothesis" replace />} />
+          <Route
+            path="/hypotheses"
+            element={<Navigate to="/?kind=hypothesis&needs=all" replace />}
+          />
           <Route path="/hypotheses/:id" element={<RecordRedirect />} />
-          <Route path="/evaluation" element={<Navigate to="/read" replace />} />
-          <Route path="/evaluation/coverage" element={<Navigate to="/read?coverage=unreviewed" replace />} />
+          <Route path="/evaluation" element={<Navigate to="/?needs=all" replace />} />
+          <Route path="/evaluation/coverage" element={<Navigate to="/" replace />} />
           <Route path="/evaluation/policy" element={<SettingsRedirect section="policy" />} />
           {/* Ranked below the two named paths above, so "coverage" is never
               read as a record kind. */}
@@ -394,6 +441,10 @@ function App() {
           record whose name you remember and whose page you do not. */}
       <Palette />
       {hintsOpen && <KeyHints onClose={() => setHintsOpen(false)} />}
+      {/* #115's box, from every page. It is mounted here beside the palette
+          and the key hints because all three are the shell's, not any page's:
+          the reader asks for them where he is. */}
+      {tellOpen && <TellBabel onClose={() => setTellOpen(false)} />}
     </div>
   );
 }

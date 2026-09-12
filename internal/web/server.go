@@ -49,6 +49,12 @@ type Server struct {
 	connMu   sync.Mutex
 	unserved map[net.Conn]struct{}
 	draining bool
+	// feed is §8.7's front page projection and the lock that makes one
+	// rebuild serve every reader waiting on it. It is a value on the
+	// Server rather than a package variable because two servers in one
+	// process must not share a deployment's front page; internal/web/
+	// feed.go states what it holds and how long it serves.
+	feed feedCache
 }
 
 // New mints the launch nonce and binds a loopback listener. Port zero asks the
@@ -696,6 +702,23 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleEvaluationOperator(w, r)
+	// Issue #237's front page (§8.7). Two reads and no third: the feed is a
+	// projection over records this table already serves, so there is
+	// nothing here that writes and nothing that could. The score it shows
+	// is Babel's reviewers' own and is written by the runs that cast it;
+	// the operator's acts on a row are the rulings above and the box under
+	// the post, which is /api/record/{id}/comments and is resolved by
+	// routeRecord.
+	case "/api/feed":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleFeed(w, r)
+	case "/api/topics":
+		if !s.requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		s.handleTopics(w, r)
 	case "/api/search":
 		if !s.requireMethod(w, r, http.MethodGet) {
 			return
@@ -707,9 +730,9 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		s.handleLock(w)
 	default:
-		// Issue #235's record peel and the operator's reception. They carry
-		// their selector in the path and are resolved here rather than
-		// before the switch, because six whole paths above already name
+		// Issue #235's record peel and the conversation under it. They
+		// carry their selector in the path and are resolved here rather
+		// than before the switch, because six whole paths above already name
 		// actions on a record: a prefix cut ahead of them would have to
 		// restate this table in order not to swallow /api/record/revisions.
 		// Reaching the default means every named path has been tried, so
@@ -718,6 +741,13 @@ func (s *Server) routeAPI(w http.ResponseWriter, r *http.Request) {
 		// surface's routes are resolved the same way and for the same
 		// reason: one of them carries a run id in its path.
 		if s.routeWatch(w, r) {
+			return
+		}
+		// §4.13's one direct act on a topic, resolved here for the same
+		// reason: it carries an entity id in the path, and the bare
+		// /api/topics listing above is an exact match that a prefix cut
+		// ahead of the switch would have swallowed.
+		if s.routeTopics(w, r) {
 			return
 		}
 		if s.routeRecord(w, r) {

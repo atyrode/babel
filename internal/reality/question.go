@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/atyrode/babel/internal/frontier"
 )
 
 // QuestionState is §4.8's question state machine, in full.
@@ -126,7 +128,11 @@ func (s QuestionState) live() bool {
 // for different reasons are different questions.
 type QuestionKind string
 
-// The §4.8 question kinds.
+// The question kinds, which are §4.8's seven. §4.13's topic proposal is not
+// among them: a topic change is an ordinary published proposal record the
+// operator rules on (operator direction 2026-09-12, second reading), so there
+// is no question kind whose subject does not exist yet and every question
+// here is about entities the ledger already holds.
 const (
 	KindAcquireContext  QuestionKind = "acquire-context"
 	KindRefreshStale    QuestionKind = "refresh-stale"
@@ -486,7 +492,7 @@ func (o AnswerOutcome) suppressesRepeats() bool {
 // finding → proposal (§4.2, §4.6, decision 13) however it is composed.
 type ActionKind string
 
-// The §4.8 plan actions.
+// The plan actions: §4.8's eleven, and the two §4.13 needs to accept a topic.
 const (
 	ActionAssertFact           ActionKind = "assert-fact"
 	ActionSupersedeFact        ActionKind = "supersede-fact"
@@ -499,6 +505,19 @@ const (
 	ActionRequestRefinement    ActionKind = "request-refinement"
 	ActionAskFollowUp          ActionKind = "ask-follow-up"
 	ActionNone                 ActionKind = "no-action"
+	// ActionCreateEntity mints the subject a proposal named, with its
+	// aliases and the facts that bind it to something real. It does not
+	// weaken §4.8's rule that only the operator creates an entity — it is
+	// the mechanism of it, exactly as split-entity already is: the identity
+	// appears on one explicit acceptance, under the accepting operator's
+	// authority, and a plan that is never accepted creates nothing.
+	ActionCreateEntity ActionKind = "create-entity"
+	// ActionFileRecords files records under a topic (§4.13). The filings
+	// are the frontier's rows rather than this package's, so applying one
+	// needs an injected Filer and happens after the ledger's transaction
+	// commits; AcceptPlanWith says why that ordering is the only one
+	// available.
+	ActionFileRecords ActionKind = "file-records"
 )
 
 // ActionKinds lists the vocabulary in a stable order, so a UI or a test can
@@ -507,6 +526,7 @@ func ActionKinds() []ActionKind {
 	return []ActionKind{
 		ActionAssertFact, ActionSupersedeFact, ActionDisputeFact,
 		ActionMergeEntities, ActionSplitEntity, ActionChangeFocus,
+		ActionCreateEntity, ActionFileRecords,
 		ActionCreateHypothesis, ActionRequestInvestigation,
 		ActionRequestRefinement, ActionAskFollowUp, ActionNone,
 	}
@@ -531,7 +551,8 @@ func (k ActionKind) valid() bool {
 func (k ActionKind) RequiresAcceptance() bool {
 	switch k {
 	case ActionAssertFact, ActionSupersedeFact, ActionDisputeFact,
-		ActionMergeEntities, ActionSplitEntity, ActionChangeFocus:
+		ActionMergeEntities, ActionSplitEntity, ActionChangeFocus,
+		ActionCreateEntity, ActionFileRecords:
 		return true
 	}
 	return false
@@ -596,6 +617,12 @@ type ActionPayload struct {
 	FollowUp *QuestionInput `json:"follow_up,omitempty"`
 	// Request is the investigation or refinement request.
 	Request *RequestDraft `json:"request,omitempty"`
+	// Entity is the subject create-entity would mint.
+	Entity *EntityDraft `json:"entity,omitempty"`
+	// Filings are the records file-records would file, and the topic they
+	// would be filed under. An empty EntityID means the entity this plan
+	// creates, which is what a topic proposal says.
+	Filings []FilingDraft `json:"filings,omitempty"`
 }
 
 // HypothesisDraft is a candidate hypothesis an interpretation produced. It is
@@ -737,6 +764,15 @@ type Application struct {
 	FactIDs       []string
 	DisputeIDs    []string
 	ResolutionIDs []string
+	// EntityIDs are the subjects a create-entity action minted. §4.8 makes
+	// the accepting operator the author of them, exactly as it does of the
+	// facts beside them.
+	EntityIDs []string
+	// Filings are the record-to-topic links a file-records action produced.
+	// They are filed after the ledger's transaction commits, because they
+	// are another component's rows; AcceptPlanWith says why that ordering
+	// is the only one available.
+	Filings []frontier.Filing
 	// FocusVersions are the focus rule set versions the acceptance
 	// installed.
 	FocusVersions []int

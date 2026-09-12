@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { decideReview } from "./api";
+import {
+  getTopics,
+  INTEREST_LABEL,
+  OPERATION_LABEL,
+  UNFILED,
+  type InterestState,
+  type TopicProposal,
+  type TopicRow,
+  type TopicsResponse,
+} from "./feedapi";
+import { errorMessage } from "./format";
 import { openPalette } from "./palette";
+import { SteeringSection } from "./steering";
 
 // The chrome's own instruments, kept out of App.tsx so that file stays a
 // router: what is running, how dense the interface is, and what the reader can
@@ -223,21 +236,389 @@ function useNarrowHeader(): boolean {
   return narrow;
 }
 
-// ShellControls is the three instruments between the live mark and the stop:
-// search, density, keys. Nothing about them changes with the viewport except
-// how many buttons they occupy — on a phone the header had five controls and
-// the navigation on three rows, which pushed the page's own title off the
-// screen, so below NARROW_HEADER the three fold into one … menu and the two
-// controls that must never be a click away — what is running, and how to stop
-// it — stay where they are.
+// The width at which the topics stand beside the feed rather than folded
+// above it. It is the same number as feed.css's rail query and as the
+// stylesheet's own one-row header breakpoint: the page decides whether the
+// rail is mounted at all, because a list rendered twice and hidden once is
+// two lists to every reader who is not looking at pixels.
+const WIDE_RAIL = "(min-width: 1024px)";
+
+export function useWideViewport(): boolean {
+  const [wide, setWide] = useState(() => window.matchMedia(WIDE_RAIL).matches);
+  useEffect(() => {
+    const query = window.matchMedia(WIDE_RAIL);
+    setWide(query.matches);
+    function onChange(event: MediaQueryListEvent) {
+      setWide(event.matches);
+    }
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return wide;
+}
+
+// How many topics the rail names before it stops. Twelve is what stands
+// beside a feed without becoming the page's second list; the rest are one
+// link away, and the link says so rather than the list trailing off.
+const RAIL_TOPICS = 12;
+
+// The topics, with their counts. §8.7's sixth destination that is not a page:
+// the same list is the rail on a wide viewport and the fold above the feed on
+// a narrow one, so it lives here with the shell's other instruments rather
+// than inside the page that happens to mount it.
+//
+// What orders it is the operator's attention rather than the corpus's size
+// (§4.13): what he is working on, what he is keeping an eye on, what he has
+// said nothing about — then, folded, what he has parked and what he excluded,
+// because *not interested is a signal, not a deletion* and a stance that
+// hid the topic would be a deletion with extra steps.
+//
+// A topic is a name, a count and a stance. Nothing here prints a path: a
+// binding's identity may be a checkout directory, and §4.13 is explicit that
+// a locator is evidence about a topic and never the topic — so the identity
+// travels in the row's title and nowhere else.
+//
+// Below the accepted topics is what Babel has proposed and nobody has ruled
+// on. Those rows are shortcuts to an ordinary proposal record: accepting one
+// is the same review decision the record page makes, because the operator
+// ruled that everything about a topic goes through Babel's own chain.
+
+// The three stances that read flat, in order, with the words the section
+// carries. The other two are folded below them.
+const RAIL_GROUPS: Array<{ state: string; label: string }> = [
+  { state: "working", label: "Working on it" },
+  { state: "watching", label: "Keep an eye" },
+  { state: "", label: "Nothing said" },
+];
+
+// What one row of a proposal says it would do, from the proposal's own
+// fields. The operation is the server's word and an unknown one is rendered as
+// itself: a plan this build has no sentence for must still be readable and
+// rulable, because the ruling is on the proposal rather than on the sentence.
+function proposalLine(proposal: TopicProposal): string {
+  const subject = proposal.name || proposal.targets?.[0]?.name || "";
+  const into = proposal.targets?.[1]?.name ?? "";
+  switch (proposal.operation) {
+    case "create":
+      return `New topic t/${subject}`;
+    case "merge":
+      return into ? `Merge t/${subject} into t/${into}` : `Merge t/${subject}`;
+    case "split":
+      return `Split t/${subject}`;
+    case "retire":
+      return `Retire t/${subject}`;
+    default:
+      return `${OPERATION_LABEL[proposal.operation] ?? proposal.operation} t/${subject}`;
+  }
+}
+
+export function TopicList({ current }: { current: string }) {
+  const [answer, setAnswer] = useState<TopicsResponse | null>(null);
+  const [failed, setFailed] = useState(false);
+  // What this browser ruled on a proposal, in place of the acts, until the
+  // next read: a permanent act that left the row looking exactly as it did is
+  // an act the operator performs twice.
+  const [ruled, setRuled] = useState<Record<string, string>>({});
+  // Which proposal's reason box is open. Declining keeps the reason verbatim
+  // and the ruling refuses one without it, so the box is where the reason is
+  // written rather than a prompt the server has to reject first.
+  const [declining, setDeclining] = useState<string>("");
+  const [reason, setReason] = useState("");
+  const [working, setWorking] = useState("");
+  const [failure, setFailure] = useState<string>("");
+  // Bumped by every act, so the read below runs again and the row lands in
+  // the list the act moved it into.
+  const [acted, setActed] = useState(0);
+
+  // Re-read when the reader moves, after every act, and once a minute while
+  // he stays: the feed index behind these counts rebuilds every sixty seconds
+  // and the session catalog can still be scanning when the page first opens,
+  // so a rail read once at mount would show a day-one deployment under a full
+  // feed.
+  useEffect(() => {
+    let live = true;
+    const read = () => {
+      getTopics()
+        .then((next) => {
+          if (live) {
+            setAnswer(next);
+            setFailed(false);
+          }
+        })
+        .catch(() => {
+          if (live && answer === null) setFailed(true);
+        });
+    };
+    read();
+    const timer = window.setInterval(read, 60_000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [acted, current]);
+
+  // One ruling, on the proposal's own record, through the route the record
+  // page uses. Nothing here writes to the ledger directly: the row is a
+  // shortcut to a decision, and what the decision then does to the ledger is
+  // the answer's own account of it.
+  async function rule(proposal: TopicProposal, disposition: "accept" | "reject", note: string) {
+    setWorking(proposal.proposal_id);
+    setFailure("");
+    try {
+      const result = await decideReview({
+        subject: { type: "proposal", id: proposal.proposal_id },
+        disposition,
+        note: note || undefined,
+      });
+      const outcome = result.topic;
+      const said = disposition === "accept" ? "Accepted" : "Declined";
+      // The ruling and the ledger act are two facts and can part company. A
+      // ruling that stands over an act that did not land is exactly what the
+      // operator has to be told, because the proposal is gone and the topic
+      // is not there.
+      const ledger = outcome?.error
+        ? ` · the ruling stands, the ledger act did not: ${outcome.error}`
+        : outcome?.applied
+          ? ` · ${outcome.filed ?? 0} filed`
+          : "";
+      setRuled((current_) => ({ ...current_, [proposal.proposal_id]: `${said}${ledger}` }));
+      setDeclining("");
+      setReason("");
+      setActed((count) => count + 1);
+    } catch (reason_) {
+      setFailure(errorMessage(reason_));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  // A rail that could not be read says so in one line and takes no more room
+  // than that: the feed beside it is fine, and a failed decoration must not
+  // read as a failed page.
+  if (failed) return <p className="topic-note">The topics could not be read.</p>;
+  if (!answer) return <p className="topic-note">Reading the topics…</p>;
+
+  const topics = answer.topics ?? [];
+  const proposed = (answer.proposed ?? []).filter((row) => !(row.proposal_id in ruled));
+  const flat = topics.filter((topic) => !PARKED.includes(topic.interest.state));
+  const shown = flat.slice(0, RAIL_TOPICS);
+  const row = (topic: TopicRow) => (
+    <li key={topic.id || topic.name}>
+      <Link
+        to={`/t/${encodeURIComponent(topic.name)}`}
+        aria-current={current === topic.name ? "page" : undefined}
+        title={topicTitle(topic)}
+      >
+        <span>t/{topic.name}</span>
+        <span className="topic-count">{topic.posts.toLocaleString()}</span>
+      </Link>
+    </li>
+  );
+
+  return (
+    <>
+      <ul className="topic-list">
+        <li>
+          <Link to="/" aria-current={current === "" ? "page" : undefined}>
+            All posts
+          </Link>
+        </li>
+      </ul>
+      {RAIL_GROUPS.map(({ state, label }) => {
+        const group = shown.filter((topic) => interestOf(topic) === state);
+        if (group.length === 0) return null;
+        return (
+          <section className="topic-group" key={label || "unset"}>
+            <p className="topic-group-label">{label}</p>
+            <ul className="topic-list">{group.map(row)}</ul>
+          </section>
+        );
+      })}
+      {/* Parked and excluded, folded with their counts. They are here rather
+          than gone because §4.13 keeps them: the topic, its filings and its
+          history all survive a stance, and a reader has to be able to find
+          the thing he parked. */}
+      {PARKED.map((state) => {
+        const group = topics.filter((topic) => topic.interest.state === state);
+        if (group.length === 0) return null;
+        return (
+          <details className="peel topic-fold" key={state}>
+            <summary>
+              {state === "not-now" ? "Not now" : "Excluded"}
+              <span className="peel-count">{group.length.toLocaleString()}</span>
+            </summary>
+            <div className="peel-body">
+              <ul className="topic-list">{group.map(row)}</ul>
+            </div>
+          </details>
+        );
+      })}
+      {/* The posts nothing has filed. They are in the feed rather than hidden
+          (§8.7) and this is the filter that selects exactly them — the triage
+          backlog, not a bin; a deployment with none says nothing. */}
+      {answer.unfiled > 0 && (
+        <ul className="topic-list">
+          <li>
+            <Link
+              to={`/?topic=${UNFILED}&needs=all`}
+              aria-current={current === UNFILED ? "page" : undefined}
+              title="Posts nothing has said what they are about. Unfiled is the triage backlog, not a bin."
+            >
+              <span>no topic</span>
+              <span className="topic-count">{answer.unfiled.toLocaleString()}</span>
+            </Link>
+          </li>
+        </ul>
+      )}
+      {flat.length > RAIL_TOPICS && (
+        <Link className="topic-all" to="/t">
+          all {topics.length.toLocaleString()} topics →
+        </Link>
+      )}
+
+      {(proposed.length > 0 || Object.keys(ruled).length > 0) && (
+        <section className="topic-group topic-proposed">
+          <p className="topic-group-label">Babel proposes</p>
+          <ul className="topic-list">
+            {proposed.map((proposal) => (
+              <li key={proposal.proposal_id} className="topic-proposal">
+                <Link
+                  to={`/r/${encodeURIComponent(proposal.proposal_id)}`}
+                  title={proposal.title}
+                  data-proposal={proposal.proposal_id}
+                >
+                  <span>{proposalLine(proposal)}</span>
+                  <span className="topic-count">{proposal.posts.toLocaleString()}</span>
+                </Link>
+                <p className="topic-why">
+                  {proposal.why}
+                  {proposal.run_id && <> · by {proposal.run_id}</>}
+                </p>
+                {declining === proposal.proposal_id ? (
+                  <form
+                    className="topic-reason"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void rule(proposal, "reject", reason.trim());
+                    }}
+                  >
+                    <label>
+                      Why this is not a topic (kept verbatim)
+                      <input
+                        value={reason}
+                        onChange={(event) => setReason(event.target.value)}
+                        // The ruling refuses a decline with no reason, so the
+                        // control says so rather than letting the server say
+                        // it.
+                        required
+                        autoFocus
+                      />
+                    </label>
+                    <div className="topic-reason-acts">
+                      <button type="submit" disabled={working === proposal.proposal_id}>
+                        Decline
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeclining("");
+                          setReason("");
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="topic-acts">
+                    <button
+                      type="button"
+                      data-topic-act="accept"
+                      disabled={working === proposal.proposal_id}
+                      title="Rule accept on this proposal. Babel performs the change and files what it named."
+                      onClick={() => void rule(proposal, "accept", "")}
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      data-topic-act="decline"
+                      onClick={() => {
+                        setDeclining(proposal.proposal_id);
+                        setReason("");
+                      }}
+                    >
+                      Decline
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+            {Object.entries(ruled).map(([id, said]) => (
+              <li key={id} className="topic-ruled" data-topic-ruled={id}>
+                {said}
+              </li>
+            ))}
+          </ul>
+          {failure && (
+            <p className="inline-error" role="alert">
+              {failure}
+            </p>
+          )}
+        </section>
+      )}
+    </>
+  );
+}
+
+// The two stances that fold. They are the ones the operator has said he is
+// not spending attention on, and folding is what keeps the rail about what he
+// is.
+const PARKED = ["not-now", "excluded"];
+
+// Which flat group a topic belongs in. A stance this build has no word for
+// reads as nothing said rather than as a refusal, which is the same
+// distinction §4.12 draws about feedback: silence is not opposition.
+function interestOf(topic: TopicRow): string {
+  const state = topic.interest.state;
+  return state === "working" || state === "watching" ? state : "";
+}
+
+// What the row says when the pointer rests on it: how much is filed, how much
+// of it is waiting, and what the name is bound to. The binding is here rather
+// than in the row because it can be a path, and a path is a locator rather
+// than a topic (§4.13).
+function topicTitle(topic: TopicRow): string {
+  const facts = [`${topic.posts.toLocaleString()} posts`];
+  if (topic.awaiting > 0) facts.push(`${topic.awaiting.toLocaleString()} waiting on you`);
+  if (topic.binding) facts.push(`${topic.binding.kind}: ${topic.binding.identity}`);
+  if (topic.interest.state) facts.push(INTEREST_LABEL[topic.interest.state as InterestState] ?? topic.interest.state);
+  return facts.join(" · ");
+}
+
+// ShellControls is the instruments between the live mark and the stop: the
+// box the operator tells Babel what is going badly into, search, density and
+// keys. Nothing about them changes with the viewport except how many buttons
+// they occupy — on a phone the header had five controls and the navigation on
+// three rows, which pushed the page's own title off the screen, so below
+// NARROW_HEADER they fold into one … menu and the two controls that must
+// never be a click away — what is running, and how to stop it — stay where
+// they are.
+//
+// Tell Babel is here rather than on a page because of where it used to be:
+// folded at the foot of the queue, which meant the operator could only
+// complain from the one surface he complained about. #115's box is reachable
+// from everywhere now, and it is the same box and the same write.
 export function ShellControls({
   density,
   setDensity,
   onKeyHints,
+  onTell,
 }: {
   density: Density;
   setDensity: (density: Density) => void;
   onKeyHints: () => void;
+  onTell: () => void;
 }) {
   const narrow = useNarrowHeader();
   const [open, setOpen] = useState(false);
@@ -269,6 +650,17 @@ export function ShellControls({
   if (!narrow) {
     return (
       <>
+        {/* First of the instruments, because it is the one the operator
+            reaches for while reading something else: what is going badly is
+            said where it is noticed. */}
+        <button
+          type="button"
+          className="shell-toggle shell-tell"
+          onClick={onTell}
+          title="Say what is going badly. It opens nothing and assigns nothing."
+        >
+          Tell Babel
+        </button>
         {/* The search control says "Search" rather than wearing a magnifier
             glyph: U+2315 is missing from most Linux font stacks and renders
             as a tofu box, and a control the operator cannot name is a control
@@ -315,13 +707,25 @@ export function ShellControls({
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
         aria-haspopup="menu"
-        title="Search, density and keyboard shortcuts"
+        title="Tell Babel, search, density and keyboard shortcuts"
         aria-label="More controls"
       >
         <span aria-hidden="true">…</span>
       </button>
       {open && (
         <div className="surface shell-menu" role="menu" aria-label="More controls">
+          <button
+            type="button"
+            role="menuitem"
+            className="shell-menu-tell"
+            onClick={() => {
+              setOpen(false);
+              onTell();
+            }}
+          >
+            <span>Tell Babel</span>
+            <span className="shell-menu-meta">what is going badly</span>
+          </button>
           <button
             type="button"
             role="menuitem"
@@ -383,19 +787,22 @@ const KEY_HINTS: { group: string; keys: { press: string[]; does: string }[] }[] 
     ],
   },
   {
-    group: "Decide and Read",
+    group: "The feed",
     keys: [
-      { press: ["j", "k"], does: "Move down and up the list" },
-      { press: ["Enter"], does: "Open the focused record" },
-      { press: ["a", "d", "u"], does: "Agree, disagree or unsure on the focused record" },
-      { press: ["r"], does: "Open the rule bar for the focused record" },
+      { press: ["j", "k"], does: "Move down and up the posts" },
+      { press: ["Enter"], does: "Open the focused post" },
+      { press: ["y", "n", "d"], does: "Accept, reject or defer the focused post — each confirmed first" },
+      { press: ["f"], does: "Send the focused post back to Babel for refinement" },
+      { press: ["q"], does: "Ask Babel a question about the focused post" },
     ],
   },
   {
-    group: "A record",
+    group: "A post",
     keys: [
-      { press: ["a", "d", "u"], does: "Agree, disagree or unsure" },
-      { press: ["r"], does: "Open the rule bar" },
+      { press: ["y", "n", "d"], does: "Accept, reject or defer — each confirmed first" },
+      { press: ["f"], does: "Send it back for refinement" },
+      { press: ["q"], does: "Ask Babel about it" },
+      { press: ["r"], does: "Move to the acts, and choose there" },
       { press: ["1", "…", "5"], does: "Open or close a depth" },
     ],
   },
@@ -406,13 +813,13 @@ const KEY_HINTS: { group: string; keys: { press: string[]; does: string }[] }[] 
 export function KeyHints({ onClose }: { onClose: () => void }) {
   return (
     <div
-      className="keyhints"
+      className="shell-dialog"
       role="dialog"
       aria-modal="true"
       aria-label="Keyboard shortcuts"
       onClick={onClose}
     >
-      <div className="surface keyhints-panel" onClick={(event) => event.stopPropagation()}>
+      <div className="surface shell-dialog-panel" onClick={(event) => event.stopPropagation()}>
         <h2>Keys</h2>
         <p className="muted">
           Every list and every record can be worked without the mouse. Keys are ignored while
@@ -440,6 +847,97 @@ export function KeyHints({ onClose }: { onClose: () => void }) {
         <button type="button" className="keyhints-close" onClick={onClose}>
           Close
         </button>
+      </div>
+    </div>
+  );
+}
+
+// What the dialog's focus may move between while it is open. It is the
+// browser's own idea of a focusable control, minus the ones a modal must not
+// hand the keyboard to.
+const FOCUSABLE =
+  "a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex='-1'])";
+
+// TellBabel is #115's capture box, over whatever page the operator is on.
+//
+// It used to be a peel at the foot of the mod queue, which put the one control
+// for "this is going badly" on the one surface it was most often about. §8.7
+// leaves the box exactly as it was — the same component, the same write, the
+// same refusal to acquire a status — and moves where it is reached from: the
+// header, which is every page.
+//
+// The keyboard cannot leave it while it is open, and Escape closes it. A modal
+// a tab press walks out of behind is a modal a keyboard reader loses, and the
+// box has a textarea in it: the one dialogue on this surface somebody types
+// into.
+export function TellBabel({ onClose }: { onClose: () => void }) {
+  const panel = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    panel.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const targets = [...(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])];
+      if (targets.length === 0) return;
+      const first = targets[0];
+      const last = targets[targets.length - 1];
+      const active = document.activeElement;
+      // Only the two ends are steered. Everything between them is the
+      // browser's own order, which is the order a reader expects.
+      if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && (active === first || !panel.current?.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      }
+    }
+
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      // The control that opened the dialogue gets the keyboard back, so
+      // closing it leaves the reader where he was.
+      opener?.focus();
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="shell-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Tell Babel what is going badly"
+      onClick={onClose}
+    >
+      <div
+        className="surface shell-dialog-panel shell-tell-panel"
+        ref={panel}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Steering pressure</p>
+            <h2>Tell Babel</h2>
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Close"
+            title="Close (Esc)"
+          >
+            ×
+          </button>
+        </div>
+        <SteeringSection />
       </div>
     </div>
   );

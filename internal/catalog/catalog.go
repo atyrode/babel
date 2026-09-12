@@ -24,7 +24,13 @@ import (
 // addition safe: a cache written by a binary that never extracted usage would
 // otherwise be read as a corpus that genuinely cost nothing, and one clean
 // rebuild recovers the numbers from files this machine already holds.
-const schemaVersion = "4"
+//
+// Version 5 added the repository columns (SPEC.md §4.13). A catalog written
+// before them holds no observation at all, and a surface that read that
+// absence as "no session belongs to a repository" would file the whole corpus
+// as unfiled; the rebuild observes every workspace once from checkouts this
+// machine already holds.
+const schemaVersion = "5"
 
 // Ref is the inexpensive identity returned by adapter discovery. Refresh stats
 // PrimaryPath to decide whether the cached description is still current.
@@ -51,11 +57,27 @@ type Row struct {
 	// Title is. It is cached rather than recomputed because the publish path
 	// reads it on every push and a reader on another machine must not have
 	// to assume; nil there means unknown, never "recorded".
-	TitleProvenance   *string
-	Workspace         *string
-	CreatedAt         *string
-	ModifiedAt        *string
-	ContinuationGrade bool
+	TitleProvenance *string
+	Workspace       *string
+	CreatedAt       *string
+	ModifiedAt      *string
+	// RepositoryIdentity, RepositoryRemote and RepositoryReason are the
+	// repository the session's workspace belongs to, as observed during the
+	// scan (adapter.Repository). The workspace says where the work happened;
+	// this says what it was about, which is the distinction SPEC.md §4.13
+	// draws between a locator and a topic — every worktree of one repository
+	// shares one identity, and a directory under /tmp has none.
+	//
+	// They are cached for the same reason the usage columns are: the
+	// observation runs two subprocesses against a checkout, and re-deriving
+	// it per page would make reading the feed scale with the corpus rather
+	// than with what changed. RepositoryReason is set exactly when
+	// RepositoryIdentity is nil and says why nothing was observed, so an
+	// unfiled session is explained rather than merely empty (§3).
+	RepositoryIdentity *string
+	RepositoryRemote   *string
+	RepositoryReason   *string
+	ContinuationGrade  bool
 	// ArtifactCount, BlobCount, and UnresolvedBlobCount are the session's
 	// closure as the adapter observed it. They are cached because shared-catalog
 	// publication needs them on every push, and re-describing an unchanged
@@ -226,6 +248,9 @@ CREATE TABLE IF NOT EXISTS sessions(
 	workspace TEXT,
 	created_at TEXT,
 	modified_at TEXT,
+	repository_identity TEXT,
+	repository_remote TEXT,
+	repository_reason TEXT,
 	continuation_grade INTEGER,
 	artifact_count INTEGER,
 	blob_count INTEGER,
@@ -258,7 +283,8 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`
 	// table into a schema error, which Open handles with the same clean rebuild.
 	rows, err := c.db.Query(`SELECT selector, harness, source_id, primary_path,
 		primary_size, primary_mtime_unixnano, title, title_provenance, workspace,
-		created_at, modified_at, continuation_grade, artifact_count, blob_count,
+		created_at, modified_at, repository_identity, repository_remote,
+		repository_reason, continuation_grade, artifact_count, blob_count,
 		unresolved_blob_count, cost_usd, total_tokens, turns, tool_errors,
 		row_json FROM sessions LIMIT 0`)
 	if err != nil {
@@ -321,6 +347,60 @@ func (c *Cache) SessionIdentities(ctx context.Context) ([]SessionIdentity, error
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read session identities: %w", err)
+	}
+	return out, nil
+}
+
+// Repositories reports the repository each named session's workspace belongs
+// to, preferring the remote, and omits a session whose repository this host
+// never observed.
+//
+// It is a lookup where SessionIdentities is a scan, and the difference is the
+// question. A caller here already knows which sessions it cares about — the
+// ones a record cited — and wants the one thing §4.13 says is observable about
+// a topic without a model: the repository the work was in. Returning the whole
+// corpus for that would pull every cached row through a caller that needs a
+// handful.
+//
+// The remote is preferred over the common directory for the reason
+// adapter.Repository states: a remote survives the same repository being
+// cloned to another path on another machine, while the common directory is the
+// identity this host can always observe. A session with neither is absent from
+// the result rather than present with an empty string — §3's rule that an
+// unobserved value is explained by its absence and never synthesized.
+func (c *Cache) Repositories(ctx context.Context, sourceIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(sourceIDs))
+	if len(sourceIDs) == 0 {
+		return out, nil
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT COALESCE(source_id, ''), COALESCE(repository_remote, ''), COALESCE(repository_identity, '')
+		FROM sessions`)
+	if err != nil {
+		return nil, fmt.Errorf("read session repositories: %w", err)
+	}
+	defer rows.Close()
+	wanted := make(map[string]struct{}, len(sourceIDs))
+	for _, id := range sourceIDs {
+		wanted[id] = struct{}{}
+	}
+	for rows.Next() {
+		var sourceID, remote, identity string
+		if err := rows.Scan(&sourceID, &remote, &identity); err != nil {
+			return nil, fmt.Errorf("scan session repository: %w", err)
+		}
+		if _, ok := wanted[sourceID]; !ok {
+			continue
+		}
+		switch {
+		case remote != "":
+			out[sourceID] = remote
+		case identity != "":
+			out[sourceID] = identity
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read session repositories: %w", err)
 	}
 	return out, nil
 }
@@ -531,10 +611,11 @@ func upsert(ctx context.Context, tx *sql.Tx, row Row) error {
 	const query = `INSERT INTO sessions(
 		selector, harness, source_id, primary_path, primary_size,
 		primary_mtime_unixnano, title, title_provenance, workspace, created_at,
-		modified_at, continuation_grade, artifact_count, blob_count,
+		modified_at, repository_identity, repository_remote, repository_reason,
+		continuation_grade, artifact_count, blob_count,
 		unresolved_blob_count, cost_usd, total_tokens, turns, tool_errors,
 		row_json
-	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(selector) DO UPDATE SET
 		harness=excluded.harness, source_id=excluded.source_id,
 		primary_path=excluded.primary_path, primary_size=excluded.primary_size,
@@ -542,6 +623,9 @@ func upsert(ctx context.Context, tx *sql.Tx, row Row) error {
 		title=excluded.title, title_provenance=excluded.title_provenance,
 		workspace=excluded.workspace,
 		created_at=excluded.created_at, modified_at=excluded.modified_at,
+		repository_identity=excluded.repository_identity,
+		repository_remote=excluded.repository_remote,
+		repository_reason=excluded.repository_reason,
 		continuation_grade=excluded.continuation_grade,
 		artifact_count=excluded.artifact_count, blob_count=excluded.blob_count,
 		unresolved_blob_count=excluded.unresolved_blob_count,
@@ -555,7 +639,8 @@ func upsert(ctx context.Context, tx *sql.Tx, row Row) error {
 	_, err := tx.ExecContext(ctx, query, row.Selector, row.Harness, row.SourceID,
 		row.PrimaryPath, row.PrimarySize, row.PrimaryMtimeUnixNano, nullable(row.Title),
 		nullable(row.TitleProvenance), nullable(row.Workspace), nullable(row.CreatedAt),
-		nullable(row.ModifiedAt), grade,
+		nullable(row.ModifiedAt), nullable(row.RepositoryIdentity),
+		nullable(row.RepositoryRemote), nullable(row.RepositoryReason), grade,
 		row.ArtifactCount, row.BlobCount, row.UnresolvedBlobCount,
 		nullableFloat(row.CostUSD), nullableInt(row.TotalTokens),
 		nullableInt(row.Turns), nullableInt(row.ToolErrors),
@@ -592,7 +677,8 @@ func nullableInt(value *int64) any {
 func (c *Cache) readRows(ctx context.Context) ([]Row, error) {
 	const query = `SELECT selector, harness, source_id, primary_path, primary_size,
 		primary_mtime_unixnano, title, title_provenance, workspace, created_at,
-		modified_at, continuation_grade, artifact_count, blob_count,
+		modified_at, repository_identity, repository_remote, repository_reason,
+		continuation_grade, artifact_count, blob_count,
 		unresolved_blob_count, cost_usd, total_tokens, turns, tool_errors,
 		row_json FROM sessions ORDER BY selector`
 	rows, err := c.db.QueryContext(ctx, query)
@@ -605,13 +691,15 @@ func (c *Cache) readRows(ctx context.Context) ([]Row, error) {
 	for rows.Next() {
 		var row Row
 		var title, provenance, workspace, createdAt, modifiedAt sql.NullString
+		var repoIdentity, repoRemote, repoReason sql.NullString
 		var cost sql.NullFloat64
 		var totalTokens, turns, toolErrors sql.NullInt64
 		var grade int
 		var rowJSON string
 		if err := rows.Scan(&row.Selector, &row.Harness, &row.SourceID, &row.PrimaryPath,
 			&row.PrimarySize, &row.PrimaryMtimeUnixNano, &title, &provenance, &workspace,
-			&createdAt, &modifiedAt, &grade, &row.ArtifactCount, &row.BlobCount,
+			&createdAt, &modifiedAt, &repoIdentity, &repoRemote, &repoReason,
+			&grade, &row.ArtifactCount, &row.BlobCount,
 			&row.UnresolvedBlobCount, &cost, &totalTokens, &turns, &toolErrors,
 			&rowJSON); err != nil {
 			return nil, err
@@ -621,6 +709,9 @@ func (c *Cache) readRows(ctx context.Context) ([]Row, error) {
 		row.Workspace = stringPtr(workspace)
 		row.CreatedAt = stringPtr(createdAt)
 		row.ModifiedAt = stringPtr(modifiedAt)
+		row.RepositoryIdentity = stringPtr(repoIdentity)
+		row.RepositoryRemote = stringPtr(repoRemote)
+		row.RepositoryReason = stringPtr(repoReason)
 		row.ContinuationGrade = grade != 0
 		row.CostUSD = floatPtr(cost)
 		row.TotalTokens = intPtr(totalTokens)

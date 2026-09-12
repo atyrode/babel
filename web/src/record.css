@@ -425,6 +425,323 @@
   gap: var(--space-1);
 }
 
+/* Babel's score, in the column the arrows had.
+ *
+ * It is a figure and not a control: the operator does not vote (§8.7), so
+ * there is nothing here to press. `cursor: help` is the one gesture it
+ * answers — what the number is made of, by role, in the title — and the em
+ * dash that stands where no reviewer has assessed the record is dimmed so it
+ * reads as an absence rather than as a value. */
+.record-score {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  cursor: help;
+}
+
+/* The post. §8.7 makes a record a post, and a post is a score beside a claim:
+ * the score takes a column of its own on the left, the identity and the
+ * sentence take the rest, and the one line of facts closes it. */
+.record-post {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.record-post-vote {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: center;
+  padding-top: var(--space-1);
+}
+
+/* Whose number this is, under the number. Bounded to the width of the column
+ * so the post's own sentence keeps the measure, and centred because the
+ * figure is. */
+.record-post-vote .record-post-note {
+  max-width: 4.4rem;
+  text-align: center;
+  line-height: 1.35;
+}
+
+.record-post-body {
+  min-width: 0;
+}
+
+/* Where it is filed, who wrote it, how old it is: one line and at most three
+ * facts, which is §8.6's density contract for a row and for the post it
+ * opens into. */
+.record-post-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin: var(--space-3) 0 0;
+  color: var(--ink-faint);
+  font-size: 0.78rem;
+}
+
+/* A topic is a community, so its chip is the shell's chip — one container
+ * vocabulary for the whole surface — with the two properties an anchor needs
+ * that a button does not.
+ *
+ * The chip carries two controls now: the name, which opens the topic, and the
+ * × that withdraws the filing. So the chip is the container and the name is
+ * the link inside it, which is why the anchor's own rules are stated below
+ * rather than on the chip. */
+.record-topic {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 1.6rem;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  text-decoration: none;
+}
+
+.record-topic:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.record-topic > a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.record-topic > a:hover {
+  color: var(--accent);
+}
+
+/* Withdrawing the filing. It is the one destructive-looking control on the
+ * header and it is deliberately small and quiet: the act it starts is a
+ * withdrawal with a reason, not a deletion, and it opens a box rather than
+ * doing anything. */
+.record-unfile {
+  min-width: 1rem;
+  min-height: 1rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.record-unfile:hover {
+  color: var(--bad-ink);
+}
+
+/* The filing desk: the fold that files this record under a topic, and the box
+ * that withdraws a filing. Both are the record's own controls, so their rules
+ * are here beside the ruling's for the reason stated at the top of this file
+ * — one control, one set of rules, whichever surface mounts it. The forms
+ * borrow the confirmation's shape because they are the same gesture: a few
+ * words, and one button that records. */
+.record-filing {
+  margin-top: var(--space-3);
+  max-width: var(--measure);
+}
+
+/* The fold's own handle. It is not a depth — the depths are `.peel` and the
+ * keyboard walks those — so it is set as what it is: a small control at the
+ * foot of the header. */
+.record-filing > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+  color: var(--ink-muted);
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.record-filing > summary:hover {
+  color: var(--accent);
+}
+
+.record-filing-body {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 0;
+}
+
+.record-filing-body > p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.record-filing form {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.record-filing label {
+  display: grid;
+  gap: var(--space-1);
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+}
+
+.record-filing-open {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  max-width: var(--measure);
+  border: 1px solid var(--accent-line, var(--rule));
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+.record-filing-open label {
+  display: grid;
+  gap: var(--space-1);
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+}
+
+.record-filing-acts {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* What the last act recorded, in place of nothing: a filing that left the
+ * page looking the same is a filing the operator repeats. */
+.record-filing-said {
+  margin: 0;
+  color: var(--good);
+  font-size: 0.8rem;
+}
+
+/* A run's name is an identifier, and it is here because §8.7 makes a run the
+ * author of what it wrote. It is set as what it is — mono, quiet — so it
+ * cannot be mistaken for the record's own words. */
+.record-post-run {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+
+/* The thread, under the five depths.
+ *
+ * It is the record's conversation and not a sixth depth: a reader never opens
+ * it, he arrives at it, so it is a section of its own with the box he writes
+ * into at the top and the newest line under it. */
+.record-thread {
+  margin-top: var(--space-5);
+}
+
+.record-thread > h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 1.05rem;
+}
+
+.record-comment-form textarea {
+  width: 100%;
+  max-width: var(--measure);
+  padding: var(--space-2);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  background: var(--bg-sunken);
+  font-family: inherit;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.record-comment-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  margin-top: var(--space-2);
+}
+
+/* The one-line question, in the confirmation's own frame: an input rather
+ * than a textarea because a question to Babel is a sentence, and a box three
+ * rows deep invites a brief. */
+.record-ask input {
+  width: 100%;
+  max-width: var(--measure);
+}
+
+.record-thread-list,
+.record-replies {
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.record-comment + .record-comment,
+.record-comment + .record-ruling,
+.record-ruling + .record-comment,
+.record-ruling + .record-ruling {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--rule);
+}
+
+/* Who said it, in what capacity, when. Quiet and small: the line a reader is
+ * here for is the one underneath it. */
+.record-comment-by {
+  margin: 0 0 var(--space-1);
+  color: var(--ink-faint);
+  font-size: 0.76rem;
+}
+
+.record-comment-who {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+/* The comment itself keeps the shell's quoted register — one vocabulary for
+ * every piece of prose somebody else wrote — and only closes the gap the
+ * standalone `.quote` leaves above itself, because here the line above it is
+ * its own attribution rather than a heading. The two-class selector is what
+ * makes that win against `.quote`'s own margin. */
+.record-comment .record-comment-text {
+  margin: var(--space-1) 0 0;
+}
+
+/* An answer sits under what it answers, one level in, behind a rule. One
+ * level and no more: a thread that indents every reply walks off the page. */
+.record-replies {
+  margin-top: var(--space-3);
+  padding-left: var(--space-4);
+  border-left: 1px solid var(--rule-strong);
+}
+
+/* A ruling is not a comment and does not look like one: one line, marked by
+ * the accent rule down its left, because it is the only thing in this list
+ * that decided anything. */
+.record-ruling > p {
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--accent-line);
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+}
+
+.record-ruling strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
 @media (max-width: 40rem) {
   .record-acts-split {
     display: none;
@@ -434,4 +751,50 @@
     font-size: 1.08rem;
     padding-left: var(--space-3);
   }
+}
+
+/* The case's fields: one column, a question over an answer, no box. The
+ * answer keeps the record's own voice through the left rule. Scoped to the
+ * peel body because that is where the generic paragraph and heading rhythm
+ * is declared, and these have to win it. */
+.peel-body .record-field {
+  margin: 0;
+}
+.peel-body .record-field + .record-field {
+  margin-top: var(--space-3);
+}
+.peel-body .record-field > h3.eyebrow {
+  margin: 0 0 0.2rem;
+}
+.peel-body .record-field > p,
+.peel-body .record-field-list {
+  margin: 0;
+  padding: 0.1rem 0 0.1rem var(--space-3);
+  border-left: 2px solid var(--rule-strong);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.peel-body .record-field-list {
+  list-style: none;
+}
+.peel-body .record-field-list > li + li {
+  margin-top: 0.2rem;
+}
+.peel-body .record-field-facts {
+  margin: 0;
+  padding: 0.1rem 0 0.1rem var(--space-3);
+  border-left: 2px solid var(--rule-strong);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+}
+.peel-body .record-field-facts > span > b {
+  font-weight: 400;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-right: 0.4rem;
 }

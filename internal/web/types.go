@@ -231,6 +231,41 @@ type Options struct {
 	// construction: a *cookbook.Set exposes lookups and nothing that
 	// changes an asset.
 	Cookbook *cookbook.Set
+	// Filings, TopicPlans and Stance are §4.13's three halves of what a
+	// record is about: the frontier's filings, the ledger's plans for the
+	// topic proposals Babel has published, and the operator's recorded
+	// stance toward a topic that exists.
+	//
+	// They are three fields rather than one for the reason Focus and
+	// Subjects are separate from Reality: they carry different authorities
+	// over different stores. Filing a record asserts nothing about reality
+	// and can be done by anybody who can read the record; applying a topic
+	// plan creates, merges, splits or retires an entity, which §4.8
+	// reserves to an attributed operator act; recording a stance asserts a
+	// fact about the world. A build can wire any of the three without the
+	// others, and the topics page degrades field by field rather than
+	// disappearing: no filings means every post is unfiled, no plans means
+	// the page proposes nothing, and no stance reader means the topics
+	// render with their interest unset.
+	Filings    FilingService
+	TopicPlans TopicPlanService
+	Stance     TopicStanceReader
+	// Topics is §4.13's topic surface over the Reality Ledger: the
+	// operator's stance toward a topic.
+	//
+	// It is its own field beside Reality, Focus and Subjects for the
+	// reason those three are separate from each other: it holds a
+	// different authority. Reality reaches the ledger's authoritative
+	// writes only through a plan the operator accepted, because a model
+	// proposed their content; this one carries the one act §4.13 leaves
+	// direct — the operator saying what he thinks of a topic he is looking
+	// at, where nothing was proposed by anything and the person clicking is
+	// the authority §4.8 requires.
+	//
+	// Nil is a state rather than a fault, on Complaints' terms: a build
+	// whose ledger did not open keeps every page it already served, and
+	// the interest route reports that this session holds no ledger.
+	Topics TopicLedger
 }
 
 // ReviewService is the §4.7 review surface the web API may reach, satisfied by
@@ -296,6 +331,23 @@ type EvaluationService interface {
 	// answers on the write and runs the refresh after the response.
 	OperatorDeferred(context.Context, evaluation.OperatorInput) (
 		evaluation.Record, func(context.Context) error, error)
+	// Tallies and Thread are §8.7's feed half: the deployment's reception
+	// grouped by subject in one read, and one subject's conversation in
+	// commit order.
+	//
+	// They are reads like the four above and they are here rather than
+	// assembled from them because the front page asks a question the
+	// per-subject reads cannot answer affordably: what does every record
+	// stand at, right now. Detail answers it one subject at a time, which
+	// is one query per row over a corpus of thousands.
+	//
+	// Thread reads the durable records rather than the projection on
+	// purpose. The projection is a snapshot of the evaluable inventory,
+	// and a record it has not yet swept still has a conversation under it;
+	// a thread that disappeared until the next sweep would let the cache
+	// decide what was said.
+	Tallies(context.Context) (map[evaluation.Subject]evaluation.Tally, error)
+	Thread(context.Context, evaluation.Subject) ([]evaluation.ThreadRecord, error)
 }
 
 // FrontierReader is the read-only subset of *frontier.Store the API renders
@@ -378,6 +430,27 @@ type FrontierReader interface {
 	// consolidated and the remedy proposed beside it, and they are the same
 	// pass's work rather than four unrelated rows.
 	OutputsOfRun(context.Context, string) ([]frontier.RunOutput, error)
+	// Observations, Findings and ReviewStandings are §8.7's feed half:
+	// every record the deployment has produced, and where each of them
+	// stands, read as a corpus rather than one row at a time.
+	//
+	// The two enumerations exist because the front page is every kind at
+	// once and only two of the four could be listed. Findings were read
+	// through internal/review's queue, which answers about enrolled
+	// records and therefore could not see one nobody had enrolled;
+	// observations could be reached only through the candidate they
+	// develop, so assembling the corpus meant walking the frontier
+	// candidate by candidate.
+	//
+	// ReviewStandings is the same widening applied to the derivation: a
+	// standing per record is one query per row, and the disposition log it
+	// consults holds tens of rows against a corpus of thousands. It
+	// derives nothing new — both it and ReviewStatus map their ruling
+	// through one rule — so the feed's standing and the record page's
+	// cannot disagree.
+	Observations(context.Context, frontier.ListFilter) ([]frontier.Observation, int, error)
+	Findings(context.Context, frontier.ListFilter) ([]frontier.Finding, int, error)
+	ReviewStandings(context.Context) (map[frontier.Ref]frontier.ReviewStanding, error)
 }
 
 // FrontierReviver is the one frontier write this surface may perform, and it
@@ -675,6 +748,7 @@ var (
 	_ FrontierReader       = (*frontier.Store)(nil)
 	_ FrontierReviver      = (*frontier.Store)(nil)
 	_ RealityService       = (*reality.Store)(nil)
+	_ TopicLedger          = (*reality.Store)(nil)
 	_ FocusPolicyService   = (*reality.FocusPolicy)(nil)
 	_ SubjectNamingService = (*reality.SubjectNaming)(nil)
 	_ DispositionService   = (*disposition.Store)(nil)
@@ -720,9 +794,24 @@ type SessionRow struct {
 	// has to reach a human: three different kinds of claim render as the same
 	// short line of text, and a reader who cannot tell them apart is being
 	// shown Babel's arithmetic as if the harness had recorded it.
-	TitleProvenance   *string `json:"title_provenance"`
-	Workspace         *string `json:"workspace"`
-	ContinuationGrade *bool   `json:"continuation_grade"`
+	TitleProvenance *string `json:"title_provenance"`
+	Workspace       *string `json:"workspace"`
+	// RepositoryIdentity, RepositoryRemote and RepositoryReason are the
+	// repository the workspace belongs to, as this host observed it during
+	// the scan. They are what the feed's topics are derived from: a
+	// workspace path says where the work happened, and SPEC.md §4.13 is
+	// explicit that this is not what a record is about — two worktrees of
+	// one repository are one topic, and a directory under /tmp is none.
+	//
+	// RepositoryIdentity is the absolute git common directory, which every
+	// worktree of a repository shares; RepositoryRemote is the origin as
+	// host/owner/repo, absent when the checkout has no origin;
+	// RepositoryReason is present exactly when the identity is absent and
+	// says why nothing was observed.
+	RepositoryIdentity *string `json:"repository_identity"`
+	RepositoryRemote   *string `json:"repository_remote"`
+	RepositoryReason   *string `json:"repository_reason"`
+	ContinuationGrade  *bool   `json:"continuation_grade"`
 	// CostUSD, TotalTokens, Turns and ToolErrors are what the harness itself
 	// recorded about the model work in this session, summed by the adapter
 	// over the raw transcript. The CLI's listing has carried them since the
@@ -1007,4 +1096,181 @@ type TranscriptReaderFunc func(string, string, int, int) (int, []transcript.Even
 
 func (f TranscriptReaderFunc) Events(path, harness string, offset, limit int) (int, []transcript.Event, error) {
 	return f(path, harness, offset, limit)
+}
+
+// FilingService is §4.13's filing surface: what a record is about, as the
+// frontier stores it. It is satisfied by *frontier.Store.
+//
+// Both halves are here, unlike FrontierReader and FrontierReviver, because
+// unlike a disposition a filing has no service in front of it and needs none:
+// the rules a filing has to satisfy — the record exists, the rationale is
+// stated, the author is named, a re-filing supersedes — are the store's own
+// and are enforced there. What this type bounds is the authority, and the
+// authority a browser has over filings is exactly these five acts: file,
+// unfile, record that a record is about nothing in particular, and read.
+//
+// Unfiled is deliberately absent. It is the evaluation lane's backlog read,
+// answered over the whole corpus, and a page that could ask for it would be a
+// page that could scan the deployment on a click.
+type FilingService interface {
+	File(context.Context, frontier.FilingInput) (frontier.Filing, error)
+	Unfile(ctx context.Context, record frontier.Ref, entityID string,
+		author frontier.FilingAuthor, authorID, reason string) (frontier.Filing, error)
+	NoTopic(ctx context.Context, record frontier.Ref, author frontier.FilingAuthor,
+		authorID, reason string) (frontier.Filing, error)
+	FilingsOf(context.Context, frontier.Ref) ([]frontier.Filing, error)
+	FiledUnder(ctx context.Context, entityID string) ([]frontier.Ref, error)
+}
+
+// TopicPlanView is one topic proposal's plan as the topics rail renders it:
+// which of §4.13's four acts accepting the published proposal would perform,
+// on what, and why.
+//
+// It is this package's own shape rather than the ledger's, and the reason is
+// the boundary rather than convenience. A plan is not an entity: until the
+// operator rules on the proposal carrying it there is no subject, no fact and
+// no filing, so rendering it through the entity types would mean rendering
+// something that does not exist. Stating the fields a page shows keeps the
+// ledger free to hold whatever a plan needs, and keeps this surface unable to
+// show anything else.
+type TopicPlanView struct {
+	// ProposalID is the frontier proposal record the operator rules on.
+	// Everything the rail does with a plan — the link, the accept, the
+	// decline — is addressed to it.
+	ProposalID string
+	// Operation is one of create, split, merge and retire.
+	Operation string
+	// Targets are the topics the operation acts on, with the names a
+	// reader recognizes them by.
+	Targets []TopicTargetView
+	// Name and Kind describe the topic a create or a split would produce,
+	// and are empty for a merge and a retirement.
+	Name string
+	Kind string
+	// Records are the frontier record ids the plan would file, which is
+	// what a page counts to say how much the ruling would move.
+	Records []string
+	// Why is the plan's own sentence — "32 sessions in 3 checkouts cite
+	// it" — rather than this surface's paraphrase of it, and RunID is the
+	// run that wrote the proposal.
+	Why   string
+	RunID string
+}
+
+// TopicTargetView is one topic a plan acts on: the id the ledger holds it
+// under and the name the operator reads.
+type TopicTargetView struct {
+	ID   string
+	Name string
+}
+
+// TopicPlanOutcome is what applying a plan did, as the ruling's answer
+// reports it.
+type TopicPlanOutcome struct {
+	Operation string
+	// EntityID is the topic a create or a split produced, empty for a
+	// merge and a retirement.
+	EntityID string
+	// Filed counts the records the application moved, which is the half
+	// that can fail after the ledger's own half committed.
+	Filed int
+}
+
+// TopicPlanService is §4.13's plan half: what accepting a published topic
+// proposal would do to the ledger, and the two things the operator's ruling
+// on that proposal performs.
+//
+// The four methods are the whole authority: a browser can read the open
+// plans, ask whether one proposal carries a plan, apply one — which creates,
+// splits, merges or retires and files the records it named, in one act — and
+// decline one with a reason. It cannot create an entity directly, which is
+// §4.8's rule and the reason this is not a widening of SubjectNamingService;
+// and it cannot be reached except through a ruling, which is §4.13's second
+// reading and the reason there is no route of its own.
+//
+// It is satisfied by an adapter over the ledger rather than by the store
+// itself, because applying a plan commits into two stores at once: the
+// ledger's entity or resolution and the frontier's filings. The adapter is
+// where those are joined, and this surface names only the act.
+type TopicPlanService interface {
+	OpenTopicPlans(context.Context) ([]TopicPlanView, error)
+	// TopicPlan reports the plan one proposal carries, and false for a
+	// proposal that carries none — which is most of them.
+	TopicPlan(ctx context.Context, proposalID string) (TopicPlanView, bool, error)
+	// ApplyTopicPlan performs the plan and files the records it named. A
+	// filing that failed after the ledger's half committed is reported as
+	// an error beside a populated outcome, because the act did happen.
+	ApplyTopicPlan(ctx context.Context, proposalID, operator string) (TopicPlanOutcome, error)
+	DeclineTopicPlan(ctx context.Context, proposalID, operator, reason string) error
+}
+
+// TopicInterestView is the operator's recorded stance toward one topic, as the
+// topics page shows it: working on it, keeping an eye, not now, excluded, or
+// nothing said (§4.13).
+//
+// The empty state is a real answer and the page renders it as one — a topic
+// nobody has taken a position on is not the same as one deliberately parked —
+// which is why this is four strings rather than a bool and a reason.
+type TopicInterestView struct {
+	State  string
+	Reason string
+	At     string
+	By     string
+}
+
+// TopicStanceReader reads the operator's stance toward one topic.
+//
+// It is read-only and separate from the routes that record a stance, on
+// Focus's terms: the topics listing needs to show what the operator said, and
+// the authority to say something new belongs to the route that asks for a
+// reason.
+type TopicStanceReader interface {
+	TopicInterest(ctx context.Context, entityID string) (TopicInterestView, error)
+}
+
+// TopicStanceFunc adapts a function to TopicStanceReader, which is how the
+// ledger's own interest read is wired without this package importing its
+// types.
+type TopicStanceFunc func(context.Context, string) (TopicInterestView, error)
+
+func (f TopicStanceFunc) TopicInterest(ctx context.Context, entityID string) (TopicInterestView, error) {
+	return f(ctx, entityID)
+}
+
+// TopicLedger is §4.13's one direct act over the Reality Ledger, satisfied by
+// *reality.Store.
+//
+// A topic is a Reality entity and nothing else, and §4.13's second reading
+// leaves exactly one act on it that is the operator's own: interest. *Not
+// interested is a signal, not a deletion*, and a stance is something he says
+// about a topic he is looking at rather than something Babel proposes — which
+// is the attributed operator action §4.8 takes as authority itself, the same
+// judgement FocusPolicyService makes about an operator stating what his
+// machines are worth spending on.
+//
+// Merging, splitting and retiring are absent, and their absence is the
+// section's last paragraph rather than an omission: everything about a topic
+// goes through Babel, so those three are applied by a ruling on a published
+// topic proposal (TopicPlanService) and by nothing else. No surface offers a
+// button that changes a topic directly, because a topic changed by hand is a
+// change Babel did not see.
+//
+// SetInterest does assert facts, and the vocabulary is what makes that safe
+// rather than a promise a handler keeps. §4.13 records a stance as §4.8's
+// lifecycle and analysis-policy facts, so it writes exactly those two
+// predicates and only the values the four stances spell; there is no method
+// here that takes a predicate, a value or an authority from a request, which
+// is why AssertFact stays forbidden on every surface in this file including
+// this one.
+//
+// The three reads are the write's own preconditions, on FocusPolicyService's
+// terms. Entity is how a refusal names the topic it is refusing about,
+// EntityInterest is what the page was showing before the click and what it
+// shows after, and Resolve follows the merge history so a stance stated about
+// a folded identity lands on the entity that now speaks for it.
+type TopicLedger interface {
+	Entity(ctx context.Context, id string) (reality.Entity, error)
+	EntityInterest(ctx context.Context, entityID string) (reality.Interest, error)
+	Resolve(ctx context.Context, id string) (string, error)
+	SetInterest(ctx context.Context, entityID, operator, state, reason string) error
 }
