@@ -2,19 +2,22 @@
   "name": "babel-manifold-plugins",
   "private": true,
   "type": "module",
-  "description": "Babel's manifold plugins: atyrode.babel (baseline) and atyrode.babel.sessions, packed as isolated bundles.",
+  "description": "Babel as a manifold plugin family: atyrode.babel (server half, the store) with atyrode.babel.feed and atyrode.babel.watch as its panels, packed as one bundle each.",
   "scripts": {
+    "postinstall": "./link-externals.sh",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "pack": "./pack.sh",
-    "verify": "bun ../../manifold/packages/plugin-kit/src/verify.ts dist/*.manifold-plugin.json",
-    "dev": "bun ../../manifold/packages/plugin-kit/src/dev.ts ."
+    "verify": "bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/verify.ts\" dist/*.manifold-plugin.json",
+    "dev": "./pack.sh --machine && bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/dev.ts\" ."
   },
   "dependencies": {
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "20.14.5",
     "@types/bun": "1.4.0",
+    "happy-dom": "20.14.5",
     "typescript": "5.9.3"
   }
 }

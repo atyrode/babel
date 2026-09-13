@@ -1,11 +1,11 @@
-import { defineWebPlugin } from "@manifold/plugin-kit/web";
-import { BASELINE_ID } from "./contract.ts";
+import { BABEL_PLUGIN_ID } from "./contract.ts";
 
 /*
-  BABEL'S BASELINE, web half. It contributes no panel: the baseline owns the doors and the
-  record, and the panels that call them are sub-plugins (`atyrode.babel.sessions`). The half
-  exists so the bundle's `entry.web` is served and the worker answers `ready` with no panels,
-  which is exactly what the manifest declares.
- */
+  THE BASELINE, web half. It paints nothing: what the operator reads is `atyrode.babel.feed`
+  (Home, a record, a topic) and `atyrode.babel.watch` (what runs), each a view over this
+  plugin's doors, so this module registers an id and no channel. The bundle names both halves
+  (`entry: { server: true, web: "web.js" }`) because a baseline surface, if one is ever wanted,
+  belongs here rather than in a sub-plugin.
+*/
 
-defineWebPlugin({ id: BASELINE_ID, panels: {} });
+export default { id: BABEL_PLUGIN_ID, panels: {} };

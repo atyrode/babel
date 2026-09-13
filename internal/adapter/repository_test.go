@@ -254,10 +254,15 @@ func gitFixture(t *testing.T, origin string) string {
 }
 
 // runGitFixture runs one git command in a hermetic environment: the
-// operator's own configuration must not decide what the fixture looks like.
+// operator's own configuration must not decide what the fixture looks like,
+// and git must not spawn background maintenance after the commit, because its
+// `.git/objects/maintenance.lock` appears and vanishes on its own clock and
+// the observation test snapshots the checkout before and after (seen on the
+// CI runner as the lock existing before and gone after).
 func runGitFixture(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "fetch.writeCommitGraph=false")
+	cmd.Args = append(cmd.Args, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_CONFIG_GLOBAL=/dev/null",

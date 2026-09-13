@@ -1,0 +1,26 @@
+{
+  "id": "atyrode.babel.feed",
+  "version": "0.3.0",
+  "title": "Babel",
+  "description": "What the operator reads: Home, the one list of every record Babel produced, ranked by what needs him, hot, new, top, controversial or rising; a record peeled through five depths; a topic with its filings, its interest and Babel's proposals about it. Every act on the page is one of the baseline's doors.",
+  "capabilities": [],
+  "dependencies": {
+    "atyrode.babel": {
+      "type": "required",
+      "reason": "the panels read and rule through babel's doors and its store"
+    }
+  },
+  "contributes": {
+    "panels": [
+      { "id": "home", "title": "Babel" },
+      { "id": "record", "title": "Record" },
+      { "id": "topic", "title": "Topic" }
+    ],
+    "seats": [{ "panel": "home", "order": 100, "ratio": 2 }]
+  },
+  "entry": { "web": "web.js", "styles": true },
+  "links": {
+    "repository": "https://github.com/atyrode/babel",
+    "changelog": "https://github.com/atyrode/babel/blob/main/CHANGELOG.md"
+  }
+}

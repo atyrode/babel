@@ -1,0 +1,263 @@
+/*
+  What a run runs under, and what a hardened context can actually ask for.
+
+  Two things are worth pinning here and nothing else is. First, that the plan is DERIVED: the
+  engine's path comes from the machine block's own runtime tools, the job's limits come from the
+  operation's own declaration, and the per-run ceiling comes from the policy in force — so a
+  manifest or a policy that changes changes the run, and a plan that disagreed with either would
+  be a second set of numbers nobody edited. Second, that the slice is a NARROWING and not a
+  translation: all eight job verbs cross the boundary now (#534), the schedule verbs among them,
+  and the one slice a hook is served none of refuses with the reason it has none.
+*/
+
+import { expect, test } from "bun:test";
+import { PluginManifestSchema, type PluginManifest } from "@manifold/protocol";
+import type { GuestCtx, GuestHookJobs } from "@manifold/plugin-kit/server";
+import { OPERATIONS } from "../contract.ts";
+import { PolicySchema } from "../store/coordinator.ts";
+import type { JobLaunch } from "./conductor.ts";
+import {
+  DEFAULT_LIMITS,
+  ENABLE_WITHOUT_JOBS,
+  ENGINE_BINARY,
+  HOOK_WITHOUT_MACHINES,
+  jobsSlice,
+  machinesSlice,
+  operationLimits,
+  perRunUsd,
+  runPlan,
+  unaskable,
+  unauthorized,
+} from "./plan.ts";
+import manifestJson from "../manifest.json";
+
+const HASH = "a".repeat(64);
+const ARTIFACT = {
+  url: "https://example.invalid/babel-machine.tar.gz",
+  sha256: HASH,
+  format: "tar.gz",
+  entry: ["machine.js"],
+  entrySha256: HASH,
+  maxBytes: 4_000_000,
+  maxExpandedBytes: 8_000_000,
+  maxMembers: 64,
+};
+
+function operation(runtimeTools: readonly string[], timeoutMs: number): Record<string, unknown> {
+  return {
+    argv: [{ literal: "/job/artifact" }],
+    input: { input: { type: "string", required: true, maxLength: 65536 } },
+    inputFiles: { input: { input: "input" } },
+    runtimeTools: [...runtimeTools],
+    executable: { runtimeTool: "bun" },
+    locations: [{ locationId: "outputs", access: "write" }],
+    outputs: ["outputs"],
+    network: "none",
+    limits: { timeoutMs, memoryBytes: 1_073_741_824, processes: 32, outputBytes: 1_048_576 },
+    stdin: false,
+  };
+}
+
+function manifestWith(operations: Record<string, unknown>): PluginManifest {
+  return PluginManifestSchema.parse({
+    ...manifestJson,
+    machine: {
+      artifacts: { "linux-x64": ARTIFACT },
+      tools: { bun: { "linux-x64": ARTIFACT }, code: { "linux-x64": ARTIFACT } },
+      operations,
+      locations: {
+        outputs: {
+          anchor: "state",
+          managed: true,
+          kind: "directory",
+          components: ["outputs"],
+          revision: "1",
+        },
+      },
+    },
+  });
+}
+
+const MANIFEST = manifestWith({
+  [OPERATIONS.scan]: operation(["bun"], 600_000),
+  [OPERATIONS.explore]: operation(["bun", "code"], 3_600_000),
+  [OPERATIONS.evaluate]: operation(["bun", "code"], 3_600_000),
+});
+
+const POLICY = PolicySchema.parse({ enabled: true, perCycleCost: 0.25, batchSize: 4, dailyCost: 2 });
+
+const RECIPE = { id: "reception-vote", version: 1, title: "Reception", body: "Does it hold?" };
+
+test("the plan drives the engine the machine block binds, under the operation's own limits", () => {
+  const plan = runPlan({ manifest: MANIFEST, policy: POLICY, operationId: OPERATIONS.evaluate });
+
+  expect(plan.engine).toEqual({ binary: ENGINE_BINARY, args: [] });
+  expect(ENGINE_BINARY).toBe("/runtime/bin/code");
+  expect(plan.limits.timeoutMs).toBe(3_600_000);
+  // The beat is a cheaper operation and its own declaration is what bounds it, not the review's.
+  expect(operationLimits(MANIFEST.machine ?? null, OPERATIONS.scan).timeoutMs).toBe(600_000);
+  // A job's limits are compared key by key against the operation's, so an operation this
+  // manifest does not declare falls back to what a refused request would have been judged by.
+  expect(operationLimits(MANIFEST.machine ?? null, OPERATIONS.archive)).toEqual(DEFAULT_LIMITS);
+  expect(plan.requireContainment).toBe(true);
+});
+
+test("an operation that drives Code without requiring it is a manifest this refuses to run", () => {
+  const wrong = manifestWith({
+    [OPERATIONS.scan]: operation(["bun"], 600_000),
+    [OPERATIONS.evaluate]: operation(["bun"], 3_600_000),
+  });
+  expect(() => runPlan({ manifest: wrong, policy: POLICY })).toThrow(/does not require the code/);
+});
+
+test("one run may spend one claim's reservation, which is the policy's own arithmetic", () => {
+  expect(perRunUsd(POLICY)).toBe(0.0625);
+  const plan = runPlan({ manifest: MANIFEST, policy: POLICY });
+  expect(plan.caps.perRunUsd).toBe(0.0625);
+  // A policy that batches one reserves the whole cycle for it.
+  expect(perRunUsd(PolicySchema.parse({ perCycleCost: 0.25, batchSize: 1 }))).toBe(0.25);
+});
+
+test("a role whose recipe the cookbook does not hold is left with none, and is never dispatched", () => {
+  const plan = runPlan({
+    manifest: MANIFEST,
+    policy: POLICY,
+    cookbook: { [RECIPE.id]: RECIPE },
+    roles: { reception: RECIPE.id, challenge: "a-recipe-nobody-wrote" },
+  });
+  expect(plan.recipes["reception"]).toEqual(RECIPE);
+  expect(Object.hasOwn(plan.recipes, "challenge")).toBe(false);
+});
+
+test("every verb the boundary serves passes straight through, arrays and all", async () => {
+  const calls: unknown[] = [];
+  /** The outputs array the host was handed, to prove it is a copy rather than the loop's own. */
+  let handed: readonly unknown[] = [];
+  const host = {
+    describe: async (args: unknown) => {
+      calls.push(args);
+      return await Promise.resolve({ connected: true, installation: null });
+    },
+    execute: async (args: unknown) => {
+      calls.push(args);
+      return await Promise.resolve({ jobId: "j1", machineId: "m", operationId: "scan", state: "queued", result: null });
+    },
+    cancel: async (node: unknown) => {
+      calls.push(node);
+      await Promise.resolve();
+    },
+    schedule: async (args: { outputs: readonly unknown[] }) => {
+      handed = args.outputs;
+      calls.push(args);
+      return await Promise.resolve({});
+    },
+    schedules: async () =>
+      await Promise.resolve([
+        {
+          scheduleId: "atyrode.babel.conductor",
+          revision: "pol_1",
+          machineId: "m",
+          pluginId: "atyrode.babel",
+          operationId: OPERATIONS.scan,
+          installationRevision: "rev-7",
+          artifactSha256: "a".repeat(64),
+          firstNominalAt: 10,
+          intervalMs: 900_000,
+          deadlineMs: 900_000,
+          expiresAt: 2_000_000,
+          offlinePolicy: "coalesce-one",
+        },
+      ]),
+    disableSchedule: async (args: unknown) => {
+      calls.push(args);
+      return await Promise.resolve({});
+    },
+  } as unknown as GuestHookJobs;
+  const jobs = jobsSlice(host);
+
+  const launch: JobLaunch = {
+    jobId: "j1",
+    machineId: "m",
+    operationId: OPERATIONS.scan,
+    input: { input: "{}" },
+    outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }],
+  };
+  const timing = {
+    scheduleId: "atyrode.babel.conductor",
+    revision: "pol_1",
+    firstNominalAt: 10,
+    intervalMs: 900_000,
+    deadlineMs: 900_000,
+    expiresAt: 2_000_000,
+    offlinePolicy: "coalesce-one",
+  } as const;
+  await jobs.execute(launch);
+  await jobs.cancel({ kind: "job", machineId: "m", operationId: OPERATIONS.scan, jobId: "j1" });
+  await jobs.schedule({ ...launch, ...timing });
+  await jobs.disableSchedule({ scheduleId: timing.scheduleId, revision: "pol_1" });
+
+  // The request the host is handed owns its arrays; the loop's is frozen and stays that way.
+  expect(calls[0]).toEqual({ ...launch, outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }] });
+  expect(calls[1]).toEqual({ kind: "job", machineId: "m", operationId: OPERATIONS.scan, jobId: "j1" });
+  // A cadence is one request plus its timing, and the copy is made for it too: a beat this
+  // plugin registers for itself is what closed the hole the loop used to record a refusal for.
+  expect(calls[2]).toEqual({ ...launch, ...timing, outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }] });
+  expect(handed[0]).not.toBe(launch.outputs[0]);
+  expect(calls[3]).toEqual({ scheduleId: timing.scheduleId, revision: "pol_1" });
+
+  // What the host lists is a schedule row with the plugin id and the pinned artifact still on
+  // it: more than the loop reads, and read as the loop's own shape without a translation.
+  const listed = await jobs.schedules();
+  expect(listed).toMatchObject([
+    { scheduleId: "atyrode.babel.conductor", revision: "pol_1", machineId: "m", intervalMs: 900_000 },
+  ]);
+});
+
+test("a hook served no job authority refuses every verb with the reason it has none", () => {
+  const jobs = unauthorized(ENABLE_WITHOUT_JOBS);
+  expect(() => jobs.describe({ machineId: "m", pluginId: "atyrode.babel" })).toThrow(/no job slice/);
+  expect(() => jobs.schedules()).toThrow(/no job slice/);
+  expect(() => jobs.schedule({} as never)).toThrow(/no job slice/);
+});
+
+test("what a folder is is asked in the shape the host that served the slice takes", async () => {
+  const fact = {
+    path: "/home/alex/babel",
+    identity: "/home/alex/babel/.git",
+    remote: "github.com/atyrode/babel",
+    reason: "repository",
+    observedAt: 1_757_000_000_000,
+  };
+
+  // A HARDENED half is served the kit's handle: one query object, because that is what crosses
+  // the ipc frame.
+  const queries: unknown[] = [];
+  const hardened = machinesSlice({
+    repository: async (query: unknown) => {
+      queries.push(query);
+      return await Promise.resolve({ ok: true, fact });
+    },
+  } as unknown as GuestCtx["machines"]);
+  expect(await hardened.repository("m", "/home/alex/babel")).toMatchObject({ ok: true, fact });
+  expect(queries).toEqual([{ machineId: "m", path: "/home/alex/babel" }]);
+
+  // A bundle the host IMPORTED — the default for an installed server half — is handed the
+  // machine gateway's own admission, which takes the machine and the path as two arguments.
+  // Handing that one a query object would ask about a machine called "[object Object]".
+  const positional: unknown[] = [];
+  const inRealm = machinesSlice({
+    repository: (machineId: string, path: string) => {
+      positional.push([machineId, path]);
+      return { ok: true, fact };
+    },
+  } as unknown as GuestCtx["machines"]);
+  expect(await inRealm.repository("m", "/home/alex/babel")).toMatchObject({ ok: true, fact });
+  expect(positional).toEqual([["m", "/home/alex/babel"]]);
+
+  // A hook's context carries no machines member at all, and the refusal says so rather than
+  // answering with a fact nobody observed.
+  expect(await unaskable(HOOK_WITHOUT_MACHINES).repository("m", "/home/alex/babel")).toEqual({
+    ok: false,
+    reason: HOOK_WITHOUT_MACHINES,
+  });
+});

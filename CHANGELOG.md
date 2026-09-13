@@ -11,6 +11,82 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Babel becomes a manifold plugin family.** `plugins/atyrode.babel` is the
+  baseline — one SQLite store of its own (manifold ADR 0034), the doors over it
+  and the five event kinds it originates — with `atyrode.babel.feed` (Home, the
+  peeled record, a topic) and `atyrode.babel.watch` (what runs) as its panels,
+  in-realm React on `@manifold/ui`. The vocabulary is spelled once in
+  `contract.ts` and the twenty-three append-only tables once in
+  `store/schema.ts`; the shape is created whole by the plugin's own enable hook
+  and a purge is the file. `bun run check`, `bun test`, `bun run pack` and
+  `bun run verify` gate it against a real engine spawned from the pinned
+  manifold checkout, in CI through manifold's reusable `plugins.yml`. Decision
+  91, `docs/manifold-plan.md` P0, #241.
+- **The plugin does what the Go product did, minus the machine.** The crossing:
+  `tools/import.ts` carries every record, edge, status event, disposition,
+  filing, assessment, claim, policy, entity, alias, fact, question, plan, run
+  and session out of `durable.db` and the catalog into the plugin's store with
+  ids kept and one `imports` row per table, idempotently (90,718 rows from the
+  operator's own store, twice, identical). The read model: the feed index, the
+  six sorts with their tie-breaks, needs=me, the five-depth peel, the thread,
+  topics from live filings, pulse, runs and the policy - nine reading doors.
+  The acts: rule, comment, answer, interest, file, unfile, tell and setPolicy,
+  every one an append; a ruling on a topic or backlog proposal applies its plan
+  or declines it with the note as the reason. The coordinator: lanes, the
+  weighted draw, claims with fences and takeover, the day's spend against the
+  ceilings, the measured lease floor. The machine half: `scan`, `archive`,
+  `prepare`, `explore` and `evaluate` as one bundled `machine.js`, run by `bun`
+  beside `code`, `git` and `restic` - every one a runtime tool the machine's
+  owner binds with its closure, never an artifact the manifest pins, because a
+  job sandbox has no libc and none of them ships a static build the artifact
+  vocabulary could carry; the omp RPC client with a fake engine that breaks the
+  wire twenty-six ways. The loop: the hub draws under the policy,
+  requests jobs on the machine that holds the cited sessions, ingests
+  finished outputs into the store and settles the claim at the receipt's
+  cost, woken by `onJobSettled` (atyrode/manifold#510) and by the `pulse`,
+  `runs` and `launch` doors; Watch's presets become `launch`, a governed door
+  admitted at the operation node under the operator's consent, with a dry
+  preview of the profile, model, cost and ceilings before the button. Proof:
+  453 tests on a real plugin database; the bundles installed on
+  `preview.manifold.tyrode.dev` (manifold `main` be79ed46) with the operator's
+  own 90,719 rows crossed through the plugin's `importLedger` door, the feed
+  answering 2,984 ranked records there; before that, the same on a local hub
+  with a ruling recorded through the panel; and one real `scan` job
+  launched from Watch, admitted, executed under bubblewrap on this machine,
+  settled and ingested - exit 0 in 3.7 s, its receipt a `runs` row, 98
+  sessions catalogued (job_131f45e8). Known gaps, each an issue: the beat
+  cannot self-register from a hardened half (atyrode/manifold#513, #514),
+  recipe bodies do not cross a job input yet (#252), and a job sees only its
+  declared locations, so no session carries a repository yet (#254). #242-#246.
+- **`archive` is declared, and its repository password is a service binding
+  rather than a secret in a manifest.** The operation restic-backs-up this
+  machine's session roots — one snapshot per root, tagged `babel`, attributed to
+  the machine's own identity — and writes back the fact the catalog cannot learn
+  any other way: which snapshot holds each session, and when. Neither thing that
+  held it back was the code. restic ships its whole Linux distribution as bare
+  bzip2, which `MachineArtifactSchema` has no format for, so it is bound as a
+  runtime tool with its closure and nothing is pinned; and an operation's
+  `environment` is fixed reviewed values in committed code, which is where
+  neither a password nor one deployment's `s3:` locator belongs, so the
+  repository, its password and the object-store credential that locator requires
+  arrive together as ONE storage document from ONE service the operator installs
+  per machine, `atyrode.babel.restic`. The engine materializes that binding as
+  the loopback URL of the job's own service proxy and a capability minted for
+  that job alone (`packages/protocol/src/jobs.ts:112-131`, manifold @
+  a407d06f); the operation asks `GET /storage` once with it, and the password
+  reaches restic in the child's environment and nowhere else — never argv, never
+  this process's environment, never a receipt. The bearer is not the password:
+  it is thirty-two random bytes per job, "a fresh job capability, never an
+  upstream credential" (`packages/agent/src/job-service-proxy.ts:26-27`, same
+  revision), so the secret stays behind the operator's policy and only the
+  capability crosses into the sandbox. Proof: 443 tests, thirteen of them the
+  operation against a real temporary restic 0.19.1 repository through a real
+  loopback service — a snapshot per root, a second backup finding its parent, a
+  changed session recatalogued, a refused route, a half-installed object-store
+  credential, a password that does not open the repository, and a machine with
+  no roots that is skipped without asking the service at all — with `pack` and
+  `verify` installing the bundle, operation and all, on a real engine. Operator
+  decision 2026-09-12 on #244; atyrode/manifold#515 closed with it.
 - **One record, peeled.** A finding, proposal, hypothesis or observation is
   one page at `/r/<id>`, opened at its claim and expanding in place through
   five depths: the claim, the case, the evidence, the reception, the
@@ -254,6 +330,24 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   deleted: every settled candidate keeps its record, its observations and its
   history, and gains one appended status event saying which record now speaks
   for it (SPEC §4.13).
+- **The catalog comes from a job, not a command.** The plugin's machine half
+  ships its first operation: `scan` walks this machine's session roots and
+  writes one `sessions` row per session as a job output the hub ingests —
+  source identity, the harness's own recorded title with its provenance, the
+  workspace, the modified time, the bytes and their `sha256:` digest, and for
+  OMP the spend the transcript itself recorded. The repository identity is
+  observed once per workspace from `git rev-parse --git-common-dir` with
+  `GIT_OPTIONAL_LOCKS=0` and a one-second bound, so a checkout and every
+  linked worktree of it file under one project, a normalized `origin`
+  (`host/owner/repo`) names it across machines, and a workspace that is not a
+  repository carries the reason instead of a guess. The three source adapters
+  (omp, codex, claude) are ported to TypeScript with their identities
+  unchanged, so imported provenance still matches what a scan finds; Codex's
+  offline title derivation comes with them. Proof: `bun test
+  plugins/atyrode.babel/machine` (47 tests), and one read-only run over the
+  operator's own `~/.omp` catalogued 98 sessions, 1.04 GB, in 8.6 s — 58 of
+  them filed under 7 repositories, 35 in directories that are not
+  repositories and say so (plan §4, #244).
 
 ### Changed
 

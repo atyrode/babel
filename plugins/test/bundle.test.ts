@@ -1,170 +1,133 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import {
-  PLUGIN_BUNDLE_SERVER_FILE,
-  PluginBundleSchema,
-  type IsolateChildFrame,
-  type IsolateHostFrame,
-  type PluginBundle,
-} from "@manifold/protocol";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { BASELINE_ID, LIST_RUNS_DOOR, RUN_DOOR, SESSIONS_ID } from "../atyrode.babel/contract.ts";
+import { dirname, join } from "node:path";
+import { beforeAll, expect, test } from "bun:test";
+import { PluginBundleSchema, type PluginBundle } from "@manifold/protocol";
+import {
+  BABEL_PLUGIN_ID,
+  FEED_PLUGIN_ID,
+  JOB_OUTPUT_FILES,
+  OPERATIONS,
+  WATCH_PLUGIN_ID,
+} from "../atyrode.babel/contract.ts";
 
 /*
-  The deliverable is the ARTIFACT, so this packs both plugins the way `pack.sh` does — the
-  kit's `pack` CLI from the sibling checkout, one process per bundle — and runs the baseline's
-  `server.js` exactly as the engine's loader will: `Bun.spawn(["bun", "--smol", file], { ipc,
-  serialization: "json" })`, driven with the supervisor's frames. The web members are imported
-  once, which proves they load; a Worker's `ready` is a browser fact the kit's own tests own.
- */
+  ONE BUNDLE PER MANIFEST, cut by `pack` — the artifact the release ships and
+  `engine.plugins.install` takes by hash. What this proves that `check` cannot: every half a
+  manifest NAMES exists and builds (a `web.js` whose entry does not compile, a `styles: true`
+  with no sheet beside it, and a sheet the manifest never declared are all pack failures), the
+  shared floor is rewritten rather than inlined — a bundle carrying its own React would render
+  against a second copy of the shell's — and `SHA256SUMS` is over the artifacts' exact bytes,
+  which is the pin the install door demands.
 
-const root = new URL("../", import.meta.url).pathname;
-const PACK = new URL("../../../manifold/packages/plugin-kit/src/pack.ts", import.meta.url).pathname;
-let out = "";
-let baseline: PluginBundle;
-let sessions: PluginBundle;
+  `pack.sh` is spawned rather than `packPlugin` imported: the kit's packer runs nested
+  `Bun.build`s, which the test runtime's own loader does not survive, and the command CI runs is
+  the thing worth proving anyway.
+*/
 
-async function pack(dir: string, id: string): Promise<PluginBundle> {
-  const file = `${out}/${id}.manifold-plugin.json`;
-  const proc = Bun.spawn(["bun", PACK, dir, "--out", file], { stdout: "pipe", stderr: "pipe" });
-  const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-  if (code !== 0) throw new Error(`pack ${dir} exited ${String(code)}: ${stderr}`);
-  return PluginBundleSchema.parse(await Bun.file(file).json());
-}
+const plugins = dirname(import.meta.dir);
+const dist = join(plugins, "dist");
+const expected: readonly string[] = [BABEL_PLUGIN_ID, FEED_PLUGIN_ID, WATCH_PLUGIN_ID];
+
+const bundles: Record<string, PluginBundle> = {};
+let sums: readonly string[] = [];
 
 beforeAll(async () => {
-  out = mkdtempSync(`${tmpdir()}/babel-plugins-`);
-  [baseline, sessions] = await Promise.all([
-    pack(`${root}atyrode.babel`, BASELINE_ID),
-    pack(`${root}atyrode.babel/sessions`, SESSIONS_ID),
-  ]);
+  const packed = Bun.spawn(["./pack.sh"], { cwd: plugins, stdout: "pipe", stderr: "pipe" });
+  const [code, stderr] = await Promise.all([packed.exited, new Response(packed.stderr).text()]);
+  expect(`${String(code)} ${stderr}`).toBe("0 ");
+  for (const id of expected) {
+    const file = join(dist, `${id}.manifold-plugin.json`);
+    bundles[id] = PluginBundleSchema.parse(await Bun.file(file).json());
+  }
+  sums = (await Bun.file(join(dist, "SHA256SUMS")).text()).trimEnd().split("\n");
+}, 300_000);
+
+test("the family packs, one bundle per manifest, and nothing else lands in dist", async () => {
+  const written = [...new Bun.Glob("*.manifold-plugin.json").scanSync({ cwd: dist })].sort();
+  expect(written).toEqual([...expected].map((id) => `${id}.manifold-plugin.json`).sort());
+  for (const id of expected) expect(bundles[id]?.manifest.id).toBe(id);
 });
 
-afterAll(() => {
-  rmSync(out, { recursive: true, force: true });
-});
-
-async function member(bundle: PluginBundle, name: string): Promise<string> {
-  const encoded = bundle.files[name];
-  if (encoded === undefined) throw new Error(`no member ${name}`);
-  const file = `${out}/${bundle.manifest.id}-${name}`;
-  await Bun.write(file, Buffer.from(encoded, "base64"));
-  return file;
-}
-
-describe("the artifacts", () => {
-  test("carry the manifests' entries and exactly the members they name", () => {
-    expect(baseline.manifest.id).toBe(BASELINE_ID);
-    expect(Object.keys(baseline.files).sort()).toEqual([PLUGIN_BUNDLE_SERVER_FILE, "web.js"]);
-    expect(sessions.manifest.id).toBe(SESSIONS_ID);
-    expect(Object.keys(sessions.files)).toEqual(["web.js"]);
-    expect(sessions.manifest.dependencies?.[BASELINE_ID]?.type).toBe("required");
-  });
-
-  test("both web members load as modules", async () => {
-    // Dynamic on purpose: the module is a file this test just wrote from the packed artifact.
-    await import(await member(baseline, "web.js"));
-    await import(await member(sessions, "web.js"));
-  });
-});
-
-interface Child {
-  send(frame: IsolateHostFrame): void;
-  next(): Promise<IsolateChildFrame>;
-  exited(): Promise<number>;
-}
-
-function spawn(file: string): Child {
-  const queue: IsolateChildFrame[] = [];
-  const waiting: ((frame: IsolateChildFrame) => void)[] = [];
-  const proc = Bun.spawn(["bun", "--smol", file], {
-    serialization: "json",
-    stdio: ["ignore", "inherit", "inherit"],
-    ipc: (message: IsolateChildFrame) => {
-      const waiter = waiting.shift();
-      if (waiter === undefined) queue.push(message);
-      else waiter(message);
-    },
-  });
-  return {
-    send: (frame) => proc.send(frame),
-    next: () => {
-      const queued = queue.shift();
-      if (queued !== undefined) return Promise.resolve(queued);
-      const { promise, resolve } = Promise.withResolvers<IsolateChildFrame>();
-      waiting.push(resolve);
-      return promise;
-    },
-    exited: () => proc.exited,
+test("each bundle carries exactly the members its manifest names", () => {
+  const members: Record<string, string[]> = {
+    [BABEL_PLUGIN_ID]: ["machine.js", "server.js", "web.js"],
+    [FEED_PLUGIN_ID]: ["styles.css", "web.js"],
+    [WATCH_PLUGIN_ID]: ["styles.css", "web.js"],
   };
-}
+  for (const id of expected) {
+    expect(Object.keys(bundles[id]?.files ?? {}).sort()).toEqual(members[id] ?? []);
+  }
+});
 
-const ctx = {
-  traceId: 1,
-  principal: { id: "p1", kind: "human", name: "Ada", color: "#e03131" },
-  caps: ["terminals:spawn", "containers:read"],
-  isRoot: false,
-  containerScope: null,
-  now: Date.UTC(2026, 8, 5, 22, 0, 0),
-} as const;
+test("the machine half travels inside the baseline's bundle, under the hash its manifest pins", () => {
+  // What `pack.sh` built is what the machine will run: the engine takes the bundled member,
+  // hashes it against the artifact declaration and refuses the installation on any difference
+  // (manifold packages/server/src/plugin-installs.ts). Both platforms name the same member, so
+  // one set of bytes is delivered for either machine.
+  const machine = bundles[BABEL_PLUGIN_ID]?.manifest.machine;
+  const bytes = Buffer.from(bundles[BABEL_PLUGIN_ID]?.files["machine.js"] ?? "", "base64");
+  expect(bytes.byteLength).toBeGreaterThan(0);
+  const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+  const artifacts = Object.values(machine?.artifacts ?? {});
+  expect(artifacts.length).toBe(2);
+  for (const artifact of artifacts) {
+    expect(artifact.bundleFile).toBe("machine.js");
+    expect(artifact.sha256).toBe(sha256);
+    expect(artifact.entrySha256).toBe(sha256);
+    expect(bytes.byteLength).toBeLessThanOrEqual(artifact.maxBytes);
+  }
+});
 
-describe("the packed server half, spawned as the loader spawns it", () => {
-  test("loads, refuses a report outside the map, records a run, shuts down", async () => {
-    const child = spawn(await member(baseline, PLUGIN_BUNDLE_SERVER_FILE));
-    child.send({ t: "load", pluginId: BASELINE_ID, manifest: baseline.manifest, dir: out });
-    const loaded = await child.next();
-    expect(loaded.t).toBe("loaded");
-    if (loaded.t !== "loaded") return;
-    expect(loaded.actions.map((action) => action.name)).toEqual([RUN_DOOR, LIST_RUNS_DOOR]);
+test("the packed machine half runs the argv its manifest declares", async () => {
+  // The member is only the machine half if it behaves as one. This is the guest invocation with
+  // the three guest paths swapped for temporary ones — the artifact bound at /job/artifact, the
+  // input document materialized at /inputs/input, the sealed lease at /outputs/outputs — so a
+  // bundle that carried another build, an argv naming an operation the dispatcher does not
+  // know, or a `--input` the half reads differently fails here rather than on a machine.
+  const machine = bundles[BABEL_PLUGIN_ID]?.manifest.machine;
+  const work = mkdtempSync(join(tmpdir(), "babel-bundle-"));
+  const artifact = join(work, "artifact");
+  const input = join(work, "input");
+  const outputs = join(work, "outputs");
+  const roots = join(work, "roots");
+  await Bun.write(artifact, Buffer.from(bundles[BABEL_PLUGIN_ID]?.files["machine.js"] ?? "", "base64"));
+  await Bun.write(input, JSON.stringify({ machineId: "bundle-test", roots: [roots] }));
+  const argv = (machine?.operations[OPERATIONS.scan]?.argv ?? []).map((slot) => {
+    const literal = "literal" in slot ? slot.literal : "";
+    return literal === "/job/artifact"
+      ? artifact
+      : literal === "/inputs/input"
+        ? input
+        : literal === "/outputs/outputs"
+          ? outputs
+          : literal;
+  });
+  const run = Bun.spawnSync(["bun", ...argv], { cwd: work, stdout: "pipe", stderr: "pipe" });
+  expect(`${String(run.exitCode)} ${run.stderr.toString()}`).toBe("0 ");
+  const receipt = (await Bun.file(join(outputs, JOB_OUTPUT_FILES.receipt)).json()) as {
+    kind: string;
+    machineId: string;
+    closure: string;
+  };
+  // The receipt records the WORD the binary was invoked with, not the namespaced id the hub
+  // addressed the operation by: the receipt is the machine half's own account of what it ran.
+  expect(receipt).toMatchObject({ kind: "scan", machineId: "bundle-test", closure: "completed" });
+});
 
-    child.send({
-      t: "dispatch",
-      id: "d1",
-      action: "run",
-      args: { machineId: "m-dev", report: "archive-verify" },
-      ctx: { ...ctx, caps: [...ctx.caps] },
-    });
-    expect(await child.next()).toMatchObject({
-      t: "dispatched",
-      id: "d1",
-      outcome: { ok: false, rule: "invalid_args" },
-    });
+test("a web half is built against the shell's own floor, not its own copy", () => {
+  for (const id of expected) {
+    const builtAgainst = bundles[id]?.builtAgainst ?? {};
+    expect(builtAgainst["react"]).toBeDefined();
+    expect(builtAgainst["@manifold/ui"]).toBeDefined();
+  }
+});
 
-    child.send({
-      t: "dispatch",
-      id: "d2",
-      action: "run",
-      args: { machineId: "m-dev", report: "storage-status" },
-      ctx: { ...ctx, caps: [...ctx.caps] },
-    });
-    // JSON ipc drops `undefined`, and the reply schema demands `result`: a void call answers null.
-    const answers: Record<string, unknown> = {
-      "machines.isOnline": true,
-      newId: "run-1",
-      "storage.set": null,
-      "storage.keys": ["runs/2026-09-05T22:00:00.000Z-run-1"],
-    };
-    for (;;) {
-      const frame = await child.next();
-      if (frame.t === "dispatched") {
-        expect(frame).toMatchObject({
-          id: "d2",
-          outcome: {
-            ok: true,
-            result: {
-              runId: "run-1",
-              argv: ["babel", "storage", "status"],
-              recordedAt: "2026-09-05T22:00:00.000Z",
-            },
-          },
-        });
-        break;
-      }
-      if (frame.t !== "call") throw new Error(`unexpected ${frame.t}`);
-      child.send({ t: "reply", id: frame.id, ok: true, result: answers[frame.method] ?? null });
-    }
-
-    child.send({ t: "shutdown" });
-    expect(await child.exited()).toBe(0);
-  }, 20_000);
+test("SHA256SUMS pins the bytes that were written", async () => {
+  expect(sums.length).toBe(expected.length);
+  for (const line of sums) {
+    const [sha = "", name = ""] = line.split(/\s+/);
+    const bytes = await Bun.file(join(dist, name)).arrayBuffer();
+    expect(new Bun.CryptoHasher("sha256").update(bytes).digest("hex")).toBe(sha);
+  }
 });
