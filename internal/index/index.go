@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/atyrode/babel/internal/durable"
 	_ "modernc.org/sqlite"
@@ -89,6 +90,12 @@ func Open(dir string) (*Index, error) {
 	idx, err := open(path)
 	if err == nil {
 		return idx, nil
+	}
+	if isBusy(err) {
+		// Another process holds the index; that is contention, not
+		// corruption, and rebuilding here would delete the file out from
+		// under the writer that holds it.
+		return nil, err
 	}
 	removeDatabase(path)
 	idx, err = open(path)
@@ -237,7 +244,11 @@ func (x *Index) init() error {
 	if err := x.db.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
 		return fmt.Errorf("enable index WAL: %w", err)
 	}
-	if _, err := x.db.Exec(durable.BusyPragma); err != nil {
+	// Longer than the durable default: every evaluator indexes the sessions
+	// that appeared since its last draw, and a fan of them queues on this
+	// one write lock, each pass taking seconds. The wait has to cover the
+	// whole queue ahead, or the last in line fails a draw it never started.
+	if _, err := x.db.Exec(indexBusyPragma); err != nil {
 		return fmt.Errorf("set index busy timeout: %w", err)
 	}
 
@@ -282,6 +293,18 @@ func (x *Index) init() error {
 		return fmt.Errorf("validate frontier index schema: %w", err)
 	}
 	return rows.Close()
+}
+
+// indexBusyPragma is how long an index connection waits for the write lock:
+// one minute: long enough for a peer to finish one session, short enough that a
+// wedged holder costs a draw sixty seconds rather than a fan its whole window.
+const indexBusyPragma = "PRAGMA busy_timeout=60000"
+
+// isBusy reports a lock wait that ran out, which Open must not read as a
+// damaged file.
+func isBusy(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "SQLITE_BUSY")
 }
 
 func removeDatabase(path string) {

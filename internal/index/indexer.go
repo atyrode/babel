@@ -102,6 +102,20 @@ func (x *Index) IndexSession(ctx context.Context, s event.Stream) (Result, error
 		res.Events = prior.events
 		return res, nil
 	}
+	if found && time.Since(info.ModTime()) < liveSessionGrace {
+		// A session still being written is re-indexed only once it has
+		// been quiet. Its size and mtime move under every indexer that
+		// looks, so each draw would otherwise re-read and re-insert the
+		// whole file under the write lock - a 240 MB live session did
+		// exactly that to a fan of twelve reviews on 2026-09-13, serially,
+		// for the length of a usage window. The version already recorded
+		// stands until the file settles; a session never seen is indexed
+		// as it is, so a new one reaches the corpus on its first draw.
+		res.Skipped = true
+		res.Records = prior.records
+		res.Events = prior.events
+		return res, nil
+	}
 
 	file, err := os.Open(s.Path)
 	if err != nil {
@@ -122,9 +136,22 @@ func (x *Index) IndexSession(ctx context.Context, s event.Stream) (Result, error
 		res.Replaced = true
 	}
 
-	sessionID, err := insertSession(ctx, tx, s, info.Size(), mtime)
+	sessionID, inserted, err := insertSession(ctx, tx, s, info.Size(), mtime)
 	if err != nil {
 		return res, err
+	}
+	if !inserted {
+		// Another indexer on this store recorded the same path between our
+		// lookup and our write: several evaluators start at once and each
+		// discovers the same new session. Its rows are theirs to finish; ours
+		// are rolled back and the session is reported as skipped, the way an
+		// unchanged one is, rather than failing a draw that has not started.
+		res.Skipped = true
+		if prior, found, err := x.priorSession(ctx, s.Path); err == nil && found {
+			res.Records = prior.records
+			res.Events = prior.events
+		}
+		return res, nil
 	}
 
 	w, err := newWriter(ctx, tx, sessionID)
@@ -228,19 +255,34 @@ func deleteSession(ctx context.Context, tx *sql.Tx, sessionID int64) error {
 	return nil
 }
 
-func insertSession(ctx context.Context, tx *sql.Tx, s event.Stream, size, mtime int64) (int64, error) {
+// insertSession records the session row and reports whether this call made
+// it. A path already present is another indexer's row, committed between the
+// caller's lookup and this write; it is left alone and inserted reports false.
+// liveSessionGrace is how long a changed session must have been quiet before
+// it is re-indexed: long enough that a harness flushing a turn is not
+// mistaken for a finished file, short enough that a real session lands in the
+// corpus a few minutes after its last write.
+const liveSessionGrace = 2 * time.Minute
+
+func insertSession(ctx context.Context, tx *sql.Tx, s event.Stream, size, mtime int64) (id int64, inserted bool, err error) {
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO sessions(path, harness, adapter_schema, source_id, size, mtime_unixnano, records, events)
-		 VALUES(?, ?, ?, ?, ?, ?, 0, 0)`,
+		 VALUES(?, ?, ?, ?, ?, ?, 0, 0)
+		 ON CONFLICT(path) DO NOTHING`,
 		s.Path, s.Harness, s.AdapterSchema, s.SourceID, size, mtime)
 	if err != nil {
-		return 0, fmt.Errorf("record indexed session %s: %w", s.Path, err)
+		return 0, false, fmt.Errorf("record indexed session %s: %w", s.Path, err)
 	}
-	id, err := result.LastInsertId()
+	if n, err := result.RowsAffected(); err != nil {
+		return 0, false, fmt.Errorf("record indexed session %s: %w", s.Path, err)
+	} else if n == 0 {
+		return 0, false, nil
+	}
+	id, err = result.LastInsertId()
 	if err != nil {
-		return 0, fmt.Errorf("record indexed session %s: %w", s.Path, err)
+		return 0, false, fmt.Errorf("record indexed session %s: %w", s.Path, err)
 	}
-	return id, nil
+	return id, true, nil
 }
 
 // eventColumns are the event row's columns in insert order. The count drives

@@ -9,6 +9,23 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+### Fixed
+
+- **A fan of concurrent reviews no longer starves itself.** Ten `babel evaluate`
+  draws at once (2026-09-13) lost a third of their draws to two refusals and
+  then wedged entirely: two indexers discovering the same new session both
+  inserted it and the second died on `sessions.path`; every evidence-role
+  review was refused at submit because the review contract demands an
+  environment on criterion results while the store refused one without an
+  outcome; a draw that failed before its reviewer ran left a ghost claim for
+  the whole lease, and a fan of those filled the cycle batch; and a 240 MB
+  session still being written was re-indexed under the index write lock by
+  every draw, serially. The second indexer now stands down, an evidence check
+  may scope its results and counts as a statement, a preparation failure
+  gives its claim back as a skip, a changed session is re-indexed only once
+  it has been quiet for two minutes, and the index waits one minute for its
+  lock and never treats a lock as corruption. Regression tests cover each.
+
 ### Added
 
 - **Babel becomes a manifold plugin family.** `plugins/atyrode.babel` is the
