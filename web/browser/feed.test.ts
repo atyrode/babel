@@ -376,6 +376,17 @@ test.skipIf(!chrome)("the front page is one list, and a kind is a filter on it",
   await page.waitForFunction(() => !window.location.hash.includes("kind="), { timeout: 15_000 });
   await page.goBack();
   await page.waitForFunction(() => window.location.hash.includes("kind=finding"), { timeout: 15_000 });
+  // The hash is back before the list is: the rows already painted are the
+  // unfiltered ones until the refetch lands, so wait for the list to say
+  // findings and nothing else, the way the loop above does for each kind (#274).
+  await page.waitForFunction(
+    () => {
+      const rows = Array.from(document.querySelectorAll("ol.feed-list > li.feed-row"));
+      return rows.length > 0
+        && rows.every((row) => row.querySelector(".feed-kind")?.textContent === "Finding");
+    },
+    { timeout: 15_000 },
+  );
   const restored = await listed();
   expect(restored.length).toBeGreaterThan(0);
   for (const row of restored) expect(row.kind).toBe("Finding");
@@ -1120,9 +1131,15 @@ test.skipIf(!chrome)("the identity fold asks Babel rather than rewriting the led
   };
   page.on("request", watch);
   try {
-    // A merge names the other topic by name, from the topics that exist.
+    // A merge names the other topic by name, from the topics that exist. The
+    // select is on screen as soon as "merge" is picked, but its options arrive
+    // from the topics listing the fold fetched on mount — and open()'s
+    // networkidle2 tolerates exactly that fetch and the asks listing in
+    // flight, so on a slow runner the option is not there yet. Selecting a
+    // value the select does not hold leaves `into` empty, the submit button
+    // disabled, and the click below a no-op (#274).
     await page.select(".topic-ask select:first-of-type", "merge");
-    await page.waitForSelector("[data-ask='into']", { timeout: 15_000 });
+    await page.waitForSelector("[data-ask='into'] option[value='kepler']", { timeout: 15_000 });
     await page.select("[data-ask='into']", "kepler");
     const reason = `Both cover one import pipeline ${Date.now()}`;
     await page.type(".topic-ask textarea", reason);
