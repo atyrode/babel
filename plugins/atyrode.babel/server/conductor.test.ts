@@ -67,7 +67,7 @@ function openDatabase(): PluginDatabase {
       db.prepare(sql).all(...(bind(params) as never[])) as Row[],
     run: async (sql: string, params?: readonly SqlParam[]) => {
       const result = db.prepare(sql).run(...(bind(params) as never[]));
-      return { changes: result.changes, lastInsertRowid: BigInt(result.lastInsertRowid) };
+      return { changes: result.changes, lastInsertRowid: Number(result.lastInsertRowid) };
     },
     batch: async (statements: readonly SqlStatement[]) =>
       db.transaction(() =>

@@ -54,7 +54,7 @@ function store(): { db: GuestDatabase } {
         rowsOf(sql, params) as unknown as readonly Row[],
       run: async (sql: string, params?: readonly GuestSqlParam[]) => {
         const result = file.run(sql, ...((params ?? []) as never[]));
-        return { changes: result.changes, lastInsertRowid: BigInt(result.lastInsertRowid) };
+        return { changes: result.changes, lastInsertRowid: Number(result.lastInsertRowid) };
       },
       batch: async (statements: readonly GuestSqlStatement[]) => {
         file.run("BEGIN IMMEDIATE");
