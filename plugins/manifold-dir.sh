@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Prints the SDK checkout every script here builds against: atyrode/manifold at the revision in
-# MANIFOLD_REV (README.md). MANIFOLD_DIR names it outright; otherwise `../../manifold-db` (a
-# working tree that keeps the plugin-database branch beside this one) before `../../manifold`,
-# the layout manifold's reusable `plugins.yml` builds in CI. tsconfig.json resolves the same
-# two candidates in the same order, so a typecheck and a pack never read different kits.
+# MANIFOLD_REV (README.md). MANIFOLD_DIR names it outright; otherwise `../../manifold-db` (dev-01's
+# checkout of atyrode/manifold, detached at the pin) before `../../manifold`, the layout manifold's
+# reusable `plugins.yml` builds in CI. tsconfig.json resolves the same two candidates in the same
+# order, so a typecheck and a pack never read different kits.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 for candidate in "${MANIFOLD_DIR:-}" "$here/../../manifold-db" "$here/../../manifold"; do

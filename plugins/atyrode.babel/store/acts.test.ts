@@ -128,14 +128,14 @@ test("a ruling appends, and the row it wrote can never be edited or deleted", as
   const second = await rule(store, { id: "pro_00000001", ruling: "accept", note: "" }, OPERATOR);
   expect(second).toMatchObject({ standing: "accepted", seq: 2 });
 
-  const history = await rows<{ seq: number; disposition: string; note: string }>(
+  const history = await rows<{ seq: bigint; disposition: string; note: string }>(
     store,
     `SELECT seq, disposition, note FROM dispositions WHERE record_id = ? ORDER BY seq`,
     ["pro_00000001"],
   );
   expect(history).toEqual([
-    { seq: 1, disposition: "defer", note: "next week" },
-    { seq: 2, disposition: "accept", note: "" },
+    { seq: 1n, disposition: "defer", note: "next week" },
+    { seq: 2n, disposition: "accept", note: "" },
   ]);
 
   expect(store.db.run(`UPDATE dispositions SET note = 'rewritten' WHERE seq = 1`)).rejects.toThrow(
@@ -552,14 +552,14 @@ test("accepting a backlog supersession settles the candidate and links the one t
   const ruled = await rule(store, { id: "pro_00000060", ruling: "accept", note: "" }, OPERATOR);
   expect(ruled.plan).toMatchObject({ kind: "backlog", operation: "supersede", applied: true });
   expect(
-    await rows<{ seq: number; status: string; actor_kind: string; actor_id: string }>(
+    await rows<{ seq: bigint; status: string; actor_kind: string; actor_id: string }>(
       store,
       `SELECT seq, status, actor_kind, actor_id FROM status_events WHERE record_id = ? ORDER BY seq`,
       ["hyp_00000060"],
     ),
   ).toEqual([
-    { seq: 1, status: "deferred", actor_kind: "run", actor_id: "run_1" },
-    { seq: 2, status: "superseded", actor_kind: "operator", actor_id: OPERATOR },
+    { seq: 1n, status: "deferred", actor_kind: "run", actor_id: "run_1" },
+    { seq: 2n, status: "superseded", actor_kind: "operator", actor_id: OPERATOR },
   ]);
   expect(
     await rows<{ kind: string; from_id: string; to_id: string }>(
@@ -764,15 +764,15 @@ test("unfile withdraws and file supersedes the withdrawal, within one millisecon
   const refiled = await file(store, { id: "fnd_000000b0", entity: entityId, rationale: "it is, after all" }, OPERATOR);
   expect(refiled.supersedes).toBe(withdrawn.id);
 
-  const history = await rows<{ withdrawn: number; rationale: string; author_kind: string }>(
+  const history = await rows<{ withdrawn: bigint; rationale: string; author_kind: string }>(
     store,
     `SELECT withdrawn, rationale, author_kind FROM filings WHERE record_id = ? ORDER BY rowid`,
     ["fnd_000000b0"],
   );
   expect(history).toEqual([
-    { withdrawn: 0, rationale: "it is about babel", author_kind: "operator" },
-    { withdrawn: 1, rationale: "wrong topic", author_kind: "operator" },
-    { withdrawn: 0, rationale: "it is, after all", author_kind: "operator" },
+    { withdrawn: 0n, rationale: "it is about babel", author_kind: "operator" },
+    { withdrawn: 1n, rationale: "wrong topic", author_kind: "operator" },
+    { withdrawn: 0n, rationale: "it is, after all", author_kind: "operator" },
   ]);
   expect(store.db.run(`DELETE FROM filings WHERE record_id = 'fnd_000000b0'`)).rejects.toThrow(/never deleted/);
 });
@@ -815,15 +815,15 @@ test("a question comment carries question=1 and a plain one does not", async () 
   expect(said.question).toBe(false);
 
   expect(
-    await rows<{ id: string; question: number; reason: string; actor_id: string; stance: string | null }>(
+    await rows<{ id: string; question: bigint; reason: string; actor_id: string; stance: string | null }>(
       store,
       `SELECT id, question, reason, actor_id, stance FROM feedback WHERE record_id = ? ORDER BY recorded_at, id`,
       ["pro_000000d0"],
     ),
   ).toEqual(
     expect.arrayContaining([
-      { id: asked.id, question: 1, reason: "what would this cost per week?", actor_id: OPERATOR, stance: null },
-      { id: said.id, question: 0, reason: "reads well", actor_id: OPERATOR, stance: null },
+      { id: asked.id, question: 1n, reason: "what would this cost per week?", actor_id: OPERATOR, stance: null },
+      { id: said.id, question: 0n, reason: "reads well", actor_id: OPERATOR, stance: null },
     ]),
   );
   expect(comment(store, { id: "pro_000000d0", text: "   ", kind: "comment" }, OPERATOR)).rejects.toThrow(
@@ -851,12 +851,12 @@ test("an answer records the words and moves the question's state", async () => {
     ),
   ).toEqual([{ outcome: "answered", text: "the babel one", actor_id: OPERATOR }]);
   expect(
-    await rows<{ seq: number; state: string }>(
+    await rows<{ seq: bigint; state: string }>(
       store,
       `SELECT seq, state FROM question_events WHERE question_id = ? ORDER BY seq`,
       ["que_000000e0"],
     ),
-  ).toEqual([{ seq: 1, state: "answered-uninterpreted" }]);
+  ).toEqual([{ seq: 1n, state: "answered-uninterpreted" }]);
 
   // `answered-uninterpreted` has no edge to `declined`: the state machine refuses it.
   expect(answer(store, { id: "que_000000e0", outcome: "declined", text: "" }, OPERATOR)).rejects.toThrow(
@@ -896,13 +896,13 @@ test("steering threads by root and carries its target", async () => {
   expect(reply).toMatchObject({ rootId: first.id, seq: 2 });
 
   expect(
-    await rows<{ id: string; root_id: string; reply_to_id: string | null; seq: number; target_kind: string | null; target_id: string | null }>(
+    await rows<{ id: string; root_id: string; reply_to_id: string | null; seq: bigint; target_kind: string | null; target_id: string | null }>(
       store,
       `SELECT id, root_id, reply_to_id, seq, target_kind, target_id FROM steering ORDER BY seq`,
     ),
   ).toEqual([
-    { id: first.id, root_id: first.id, reply_to_id: null, seq: 1, target_kind: "entity", target_id: "ent_1" },
-    { id: reply.id, root_id: first.id, reply_to_id: first.id, seq: 2, target_kind: null, target_id: null },
+    { id: first.id, root_id: first.id, reply_to_id: null, seq: 1n, target_kind: "entity", target_id: "ent_1" },
+    { id: reply.id, root_id: first.id, reply_to_id: first.id, seq: 2n, target_kind: null, target_id: null },
   ]);
   expect(tell(store, { text: "nobody there", replyTo: "stg_ffffffff" }, OPERATOR)).rejects.toThrow(
     /no steering stg_ffffffff to reply to/,
@@ -1016,13 +1016,13 @@ test("importing a chunk is idempotent by primary key and keeps its own ledger", 
     { title: "another", created_at: "2026-03-01T09:00:01.000000000Z" },
   ]);
   expect(
-    await rows<{ source: string; table_name: string; rows: number }>(
+    await rows<{ source: string; table_name: string; rows: bigint }>(
       store,
       `SELECT source, table_name, rows FROM imports ORDER BY imported_at, id`,
     ),
   ).toEqual([
-    { source: "durable.db", table_name: "records", rows: 2 },
-    { source: "durable.db", table_name: "records", rows: 0 },
+    { source: "durable.db", table_name: "records", rows: 2n },
+    { source: "durable.db", table_name: "records", rows: 0n },
   ]);
 
   expect(importLedger(store, { source: "x", table: "records; DROP TABLE records", rows: rowsIn })).rejects.toThrow(

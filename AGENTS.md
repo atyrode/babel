@@ -182,17 +182,19 @@ may supply missing capability proof, but a local skip is not a pass.
   temporary files. Record a procedure as exercised only after execution, with host, date
   and observed output; otherwise mark it **OPERATOR STEP** with prerequisites and observable
   success. Historical output or pinned source is not current activation proof.
-- **Plugins are paused; Babel is standalone.** Nothing Babel does depends on a hub: its
-  interface is `babel web` (`SPEC.md` §8.4), its storage is PostgreSQL and restic, and its
-  compute is a command run on a machine. The sources under `plugins/` stay in the tree, but
-  the release no longer packs or installs them and the gate runs only on
-  `workflow_dispatch`. Do not resume this work, bump `plugins/MANIFOLD_REV`, or restore the
-  packing, preview or CI triggers without the operator asking for it: the integration was
-  scratched before Manifold had the primitives it needs, and a half-built bundle in the
-  release path made a green build report failure. When it does resume, the pin and the
-  `uses:` ref in `.github/workflows/manifold-plugins.yml` move together, the fixtures under
-  `plugins/test` come to that kit, and the triggers return in the same change;
-  `plugins/README.md` and `docs/manifold-transition.md` describe the layout.
+- **Plugins are the product under construction; the Go binary is frozen (#250).** Babel
+  becomes a Manifold plugin family (decision 91, `docs/manifold-plan.md`; trackers #240
+  #245 #246 #247, epic #268): behaviour changes land in `plugins/atyrode.babel`, and the
+  Go tree takes fixes only until the plugin reaches parity. The plugin gate
+  (`.github/workflows/manifold-plugins.yml`, one call of Manifold's reusable
+  `plugins.yml`) runs on every PR touching `plugins/`; the Plugin gate row above is its
+  local equivalent. `plugins/MANIFOLD_REV` pins the Manifold revision the plugin builds
+  against and follows Manifold `main`: moving it to a newer `main` revision is ordinary
+  work (operator direction 2026-09-13) done in its own PR, with the `uses:` ref moved to
+  the same revision, the sibling checkout (`plugins/README.md`, "The SDK is a sibling
+  checkout") moved with it and the gate green against it; pinning a branch, packing into
+  the release and installing on production remain the operator's calls
+  (`plugins/README.md`, "Where a change is proved").
 - **Release or deployment work:** read `.github/workflows/release.yml` for `v*` binary
   publication, and the runbook/transition record for current deployment ownership.
   Managed-machine packaging, scheduling and storage/key placement belong to dotfiles;
@@ -210,7 +212,7 @@ may supply missing capability proof, but a local skip is not a pass.
 - Use PRs into `main` with conventional-commit titles. Applicable local checks and current
   required CI remain readiness/merge prerequisites. `.github/workflows/ci.yml` runs `test`,
   `race`, `web` and `browser` on every PR and main push and supports manual main-CI dispatch.
-  Plugin CI is paused and runs only on `workflow_dispatch`.
+  The plugin gate `manifold-plugins.yml` runs on every PR touching `plugins/`.
 - Add one `## [Unreleased]` bullet in `CHANGELOG.md` per user-visible change, in the existing
   voice: what changed, why and what proves it.
 - Cite cross-repository facts with source `path:line` at a named revision, not from memory;

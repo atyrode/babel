@@ -40,9 +40,11 @@ afterEach(() => {
 });
 
 /** The engine's three verbs over a real file; `batch` is BEGIN IMMEDIATE … COMMIT, as ADR 0034
- *  specifies and as `openPluginDatabase` implements it. */
+ *  specifies and as `openPluginDatabase` implements it, and the file is opened with the options
+ *  the engine opens a plugin's with (`server/src/plugin-database.ts`) — `safeIntegers` above all,
+ *  which is what makes every INTEGER column answer as a BIGINT here as it does in the hub. */
 function store(): { db: GuestDatabase } {
-  const file = new Database(":memory:");
+  const file = new Database(":memory:", { strict: true, safeIntegers: true });
   open.push(file);
   for (const statement of SCHEMA_V1) file.run(statement);
   const rowsOf = (sql: string, params: readonly GuestSqlParam[] | undefined): GuestSqlRow[] =>
@@ -54,7 +56,7 @@ function store(): { db: GuestDatabase } {
         rowsOf(sql, params) as unknown as readonly Row[],
       run: async (sql: string, params?: readonly GuestSqlParam[]) => {
         const result = file.run(sql, ...((params ?? []) as never[]));
-        return { changes: result.changes, lastInsertRowid: Number(result.lastInsertRowid) };
+        return { changes: Number(result.changes), lastInsertRowid: BigInt(result.lastInsertRowid) };
       },
       batch: async (statements: readonly GuestSqlStatement[]) => {
         file.run("BEGIN IMMEDIATE");
@@ -874,7 +876,7 @@ test("a draw is a pure function of its seed and reserves nothing", async () => {
   expect(assignment.inputDigest).toBe(repeat.inputDigest);
 
   const rows = await db.query(`SELECT COUNT(*) AS claims FROM claims`);
-  expect(rows[0]?.["claims"]).toBe(0);
+  expect(rows[0]?.["claims"]).toBe(0n);
   expect((await coord.spend(NOW)).total).toBe(0);
 });
 
