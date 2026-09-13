@@ -311,7 +311,14 @@ func (r *evaluationRunner) Run(ctx context.Context, runID string, draw conductor
 	}
 	scoped, err := r.app.fixScope(ctx, r.state.runs, sessions, r.host, false)
 	if err != nil {
-		return conductor.Result{}, nil, err
+		// The claim was taken before any of this, so a preparation that
+		// fails must hand it back: a claim left to lapse holds one of the
+		// cycle's slots for the whole lease, and a fan of workers failing
+		// here fills the batch with ghosts that nobody is reviewing under.
+		// A skip is the honest record - nothing was judged - and it
+		// reconciles the reservation the way an operator-visible gap does.
+		return conductor.Result{}, nil, errors.Join(err,
+			r.giveBack(ctx, draw, "the review could not be prepared: "+err.Error()))
 	}
 	return r.carry(ctx, assignment, scoped, authority)
 }
@@ -325,7 +332,10 @@ func (r *evaluationRunner) carry(ctx context.Context, assignment evaluation.Assi
 	scoped scopedCorpus, authority runstore.Authority) (conductor.Result, *explore.ReviewRun, error) {
 	reviewer, release, err := r.reviewer(assignment.Role)
 	if err != nil {
-		return conductor.Result{}, nil, err
+		return conductor.Result{}, nil, errors.Join(err, r.giveBack(ctx, conductor.ReviewDraw{
+			AssignmentID: assignment.ID, RunID: assignment.RunID, Fence: assignment.Fence,
+			SubjectKind: assignment.Subject.Kind, SubjectID: assignment.Subject.ID, Role: assignment.Role,
+		}, "the reviewer could not be built: "+err.Error()))
 	}
 	defer release()
 	runID := assignment.RunID
