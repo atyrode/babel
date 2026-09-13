@@ -12,34 +12,24 @@ import { INITIAL_DRAFT, ageClause, elapsedClock, launchInput, unready, usd, usdR
 */
 
 test("each preset posts exactly its own knob", () => {
-  // `agentSessions` is on every one of them, and false: no preset of this panel studies Babel
-  // itself (#270 is the one that will), so what the contract defaults to is what is posted.
   expect(launchInput({ ...INITIAL_DRAFT, machineId: "m1", preset: "read-whats-new", sinceDays: 3 })).toEqual({
     machineId: "m1",
     preset: "read-whats-new",
     sinceDays: 3,
     recipes: [],
-    agentSessions: false,
   });
   expect(
     launchInput({ ...INITIAL_DRAFT, machineId: "m1", preset: "keep-going", minutes: 90, sinceDays: 3, draws: 9 }),
-  ).toEqual({ machineId: "m1", preset: "keep-going", minutes: 90, recipes: [], agentSessions: false });
+  ).toEqual({ machineId: "m1", preset: "keep-going", minutes: 90, recipes: [] });
   expect(launchInput({ ...INITIAL_DRAFT, machineId: "m1", preset: "review-backlog", draws: 9 })).toEqual({
     machineId: "m1",
     preset: "review-backlog",
     draws: 9,
     recipes: [],
-    agentSessions: false,
   });
   expect(
     launchInput({ ...INITIAL_DRAFT, machineId: "m1", preset: "explore-topic", entityId: "ent_0f1e2d3c" }),
-  ).toEqual({
-    machineId: "m1",
-    preset: "explore-topic",
-    entityId: "ent_0f1e2d3c",
-    recipes: [],
-    agentSessions: false,
-  });
+  ).toEqual({ machineId: "m1", preset: "explore-topic", entityId: "ent_0f1e2d3c", recipes: [] });
 });
 
 test("a preset that takes no recipes drops the selection rather than sending it", () => {

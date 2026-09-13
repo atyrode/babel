@@ -477,12 +477,13 @@ export const LaunchInputSchema = z.strictObject({
   /**
    * Whether the preparation may hold sessions of BABEL'S OWN runs (`sessions.kind` `agent`).
    *
-   * False by default: a preset reads the operator's work, and a corpus that quietly included
+   * Absent unless asked: a preset reads the operator's work, and a corpus that quietly included
    * Babel's own transcripts would have Babel reading itself by accident (#262). A preset whose
-   * subject IS Babel (#270) sets it. Sessions still being written are never selectable and
-   * have no flag — a preparation's identity is its selection's content.
+   * subject IS Babel (#270) sets it, and it is the only one that posts the knob — the panel's
+   * rule is that a preset posts exactly its own knobs. Sessions still being written are never
+   * selectable and have no flag: a preparation's identity is its selection's content.
    */
-  agentSessions: z.boolean().default(false),
+  agentSessions: z.boolean().optional(),
 });
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 
