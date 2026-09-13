@@ -75,6 +75,32 @@ export class ResultRefusal extends Error {
   }
 }
 
+/**
+ * A REFUSED SUBMISSION AS A RECEIPT CARRIES IT, and the same sentence read back.
+ *
+ * `evaluate` writes the refusal of the last submission into the receipt's `reason`, because an
+ * operator reading a failed run needs to know a `schema` refusal from a `support` one — they are
+ * different remedies. The hub then reads the code back off that sentence: a receipt whose reason
+ * names one of these is PROOF THE MODEL ANSWERED, since only a submission can be refused, so the
+ * conductor counts that run as spend rather than as a free failure (#265, post-mortem F16/F8).
+ *
+ * The two halves live here together so the format cannot drift apart: a writer that changed its
+ * separator and a reader that did not would silently turn every paid refusal back into a
+ * failure. The code is matched against the closed vocabulary above, which is what keeps an
+ * engine failure written in the same shape (`launch: the binary is absent`) from reading as one.
+ */
+export function refusalReason(refusal: ResultRefusal): string {
+  return `${refusal.refusal}: ${refusal.message}`;
+}
+
+export function refusalCode(reason: string): RefusalCode | null {
+  const at = reason.indexOf(":");
+  if (at <= 0) return null;
+  const head = reason.slice(0, at);
+  for (const code of Object.values(REFUSALS)) if (code === head) return code;
+  return null;
+}
+
 // ---------------------------------------------------------------------------- shared payloads
 
 /** Where cited bytes live. Path and digest identify them and prove they have not changed. */

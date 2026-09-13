@@ -48,6 +48,7 @@ import {
 import { buildReceipt } from "./engine/receipts.ts";
 import {
   parseReviewResult,
+  refusalReason,
   REVIEW_RESULT_SCHEMA,
   ResultRefusal,
   reviewJsonSchema,
@@ -370,12 +371,13 @@ async function runReview(
     if (outcome.closure === "failed" || outcome.result === null) {
       // A refused submission is a recipe to review, not a boundary that broke, so the reason
       // carries the refusal's own code — the one `REFUSALS` names and #265's park heuristic
-      // reads — and the sentence the model was given. The run still wrote a receipt with its
-      // cost, so `settle()` finishes the claim with what the refused review actually spent.
+      // reads back with `refusalCode` — and the sentence the model was given. The run still
+      // wrote a receipt with its cost, so `settle()` finishes the claim with what the refused
+      // review actually spent, and the loop counts it as spend rather than a free failure.
       const refused = refusals[refusals.length - 1];
       const reason =
         refused !== undefined
-          ? `${refused.refusal}: ${refused.message}`
+          ? refusalReason(refused)
           : outcome.failure !== null
             ? `${outcome.failure.code}: ${outcome.failure.message}`
             : "the review submitted no assessment";

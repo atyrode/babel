@@ -154,6 +154,8 @@ function report(over: Partial<TickReport> = {}): TickReport {
     refused: [],
     stop: null,
     gaps: [],
+    parked: null,
+    pulse: { tick: { gaps: {}, refusals: {} }, today: { gaps: {}, refusals: {} } },
     pending: 0,
     notes: [],
     ...over,

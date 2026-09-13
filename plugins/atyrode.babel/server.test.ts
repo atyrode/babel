@@ -109,6 +109,8 @@ let harness: TestStore;
 let jobs: Jobs;
 /** The host's clock, a fresh hour per dispatch: the module remembers when it last woke. */
 let clock = NOW;
+/** Every key the plugin has written, as the host would hold them: one store for the process. */
+const held: Record<string, string> = {};
 
 /**
  * One dispatch's context. `now` is the host's clock for that call, and it matters: the floor
@@ -132,7 +134,15 @@ function context(
       repository: async () =>
         await Promise.resolve({ ok: false, reason: "this test enrolls no machine" }),
     },
-    storage: { set: async () => await Promise.resolve() },
+    // The keys a call is served: the schema marker the enable writes, and the day's tally the
+    // loop keeps. One map for the process, because the plugin's keys outlive a dispatch.
+    storage: {
+      get: async (key: string) => await Promise.resolve(held[key] ?? null),
+      set: async (key: string, value: string) => {
+        held[key] = value;
+        await Promise.resolve();
+      },
+    },
     newId: async () => await Promise.resolve("000001"),
     now: () => now,
   } as unknown as GuestCtx;

@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   defineServerPlugin,
   type GuestDatabase,
+  type GuestStorage,
   type ServerHandler,
   type ServerPluginDef,
 } from "@manifold/plugin-kit/server";
@@ -13,6 +14,7 @@ import {
   conductor,
   type Conductor,
   type JobsSlice,
+  type KeysSlice,
   type MachinesSlice,
   type Recipe,
   type RunPlan,
@@ -72,16 +74,26 @@ const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
 const SENTINEL_TABLE = "records";
 
-const dispatched = new AsyncLocalStorage<GuestDatabase>();
-/** The handle the enable hook was given: what a lifecycle hook and a schedule read through. */
-let enabled: GuestDatabase | undefined;
+/**
+ * WHAT A CALL'S OWN CONTEXT SERVES THIS PLUGIN: its tables and its keys, for the length of it.
+ *
+ * Both are per-call for the same reason (a hardened row's handles are closed once the request
+ * has answered), so both are resolved through the same `AsyncLocalStorage` rather than captured
+ * for the process. In-realm the engine's handles are the same objects every time and the store
+ * and the loop below never notice the difference.
+ */
+type Bound = { readonly database: GuestDatabase; readonly storage: GuestStorage };
 
-function tables(): GuestDatabase {
-  const database = dispatched.getStore() ?? enabled;
-  if (database === undefined) {
+const dispatched = new AsyncLocalStorage<Bound>();
+/** What the enable hook was given: what a lifecycle hook and a schedule read through. */
+let enabled: Bound | undefined;
+
+function bound(): Bound {
+  const held = dispatched.getStore() ?? enabled;
+  if (held === undefined) {
     throw new Error(`${BABEL_PLUGIN_ID}: no database is bound to this call`);
   }
-  return database;
+  return held;
 }
 
 /**
@@ -94,9 +106,17 @@ const database: PluginDatabase = {
   query: async <Row extends SqlRow = SqlRow>(
     sql: string,
     params?: readonly SqlParam[],
-  ): Promise<readonly Row[]> => await tables().query<Row>(sql, params),
-  run: async (sql: string, params?: readonly SqlParam[]) => await tables().run(sql, params),
-  batch: async (statements: readonly SqlStatement[]) => await tables().batch(statements),
+  ): Promise<readonly Row[]> => await bound().database.query<Row>(sql, params),
+  run: async (sql: string, params?: readonly SqlParam[]) => await bound().database.run(sql, params),
+  batch: async (statements: readonly SqlStatement[]) => await bound().database.batch(statements),
+};
+
+/** The loop's view of this plugin's keys: where the day's tally of unspent cycles is kept. */
+const keys: KeysSlice = {
+  get: async (key: string): Promise<string | null> => await bound().storage.get(key),
+  set: async (key: string, value: string): Promise<void> => {
+    await bound().storage.set(key, value);
+  },
 };
 
 const store = openStore(database);
@@ -127,6 +147,7 @@ function loop(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conducto
     coordinator: coordinated,
     jobs,
     machines,
+    keys,
     plan,
     now: () => store.now(),
   });
@@ -196,9 +217,9 @@ const handlers: Record<string, ServerHandler> = {};
 for (const [name, handler] of Object.entries(doors.handlers)) {
   const wakes = Object.hasOwn(WAKES, name);
   handlers[name] = async (ctx, args) => {
-    const bound = ctx.database;
-    if (bound === undefined) return await handler(ctx, args);
-    return await dispatched.run(bound, async () => {
+    const served = ctx.database;
+    if (served === undefined) return await handler(ctx, args);
+    return await dispatched.run({ database: served, storage: ctx.storage }, async () => {
       const produced = await handler(ctx, args);
       const at = ctx.now();
       if (wakes && at - woke >= WAKE_FLOOR_MS) {
@@ -224,7 +245,7 @@ export const plugin: ServerPluginDef = {
       if (database === undefined) {
         throw new Error(`${BABEL_PLUGIN_ID}: its manifest declares a database and none was served`);
       }
-      enabled = database;
+      enabled = { database, storage: ctx.storage };
       const created = await database.query<{ n: number }>(
         "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
         [SENTINEL_TABLE],
@@ -262,7 +283,7 @@ export const plugin: ServerPluginDef = {
       */
       const installer = ctx.jobs;
       try {
-        await dispatched.run(database, async () => {
+        await dispatched.run({ database, storage: ctx.storage }, async () => {
           await cycle(
             installer === undefined ? unauthorized(ENABLE_WITHOUT_JOBS) : jobsSlice(installer),
             unaskable(HOOK_WITHOUT_MACHINES),
@@ -293,7 +314,7 @@ export const plugin: ServerPluginDef = {
       if (database === undefined) {
         throw new Error(`${BABEL_PLUGIN_ID}: a settled job was served without the plugin's tables`);
       }
-      await dispatched.run(database, async () => {
+      await dispatched.run({ database, storage: ctx.storage }, async () => {
         await cycle(jobsSlice(ctx.jobs), unaskable(HOOK_WITHOUT_MACHINES));
       });
     },

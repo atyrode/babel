@@ -454,6 +454,34 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   database and had been failing (`stop cancels the job, closes the run and
   releases what it reserved`; `a settled job of this plugin's ingests what
   finished`) (#259, post-mortem finding F3/G1/O5).
+
+- **Paid-but-refused work is spend, not a free failure, and a cycle says why it
+  drew nothing.** The conductor parks itself after three settlements in a row
+  that reached no model and produced nothing, and what counts as one of those is
+  the whole point: a review the model answered and the contract then refused
+  (`schema`, `support`, `empty`) is money the day's allowance already paid, so
+  it is spend, while a job that died before its first call and a claim abandoned
+  because its worker never came back are the free failures a park exists to
+  stop. The Go conductor counted the first as the second — at 10:36 on
+  2026-09-13 it stood parked after three failed cycles with evaluation ladder
+  6,022 never reviewed, a scripted fan bypassed it entirely, and the unreviewed
+  count grew from 6,024 to 6,038 while the window it existed to spend drained
+  (`docs/postmortem-2026-09-13-drain.md`, F16/F8/G9). The streak is read off the
+  claims ledger per policy version rather than counted in a process, because
+  every cycle is a fresh loop over the wake that caused it; an hour of quiet
+  lifts a park without an operator and a new policy clears it at once, and a
+  parked loop is the launch door's answer too, since there is one loop and one
+  park. Beside it the cycle report gains the two counts nothing answered before:
+  `gaps` by the coordinator's own reason (`batch`, `per-cycle`, `daily`,
+  `no-candidates`, `claimed`, and `disabled`, which the loop counts itself) and
+  `refusals` by the code `machine/engine/results.ts` names, each for the tick
+  and cumulatively for the UTC day. Proof: three refused-after-paid reviews
+  whose receipts report no cost at all leave the loop drawing and are reported
+  as `{schema: 3}`; three interrupted jobs park it, which then asks the
+  coordinator for nothing and draws again an hour later; a draw answered `batch`
+  reports `gaps.batch === 1` and names the reason, adds up over a day and starts
+  again at the boundary (#265, post-mortem finding F16/F11/G9).
+
 ## [0.2.6] - 2026-09-12
 
 ### Added
