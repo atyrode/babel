@@ -14,7 +14,7 @@ import {
 } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
-import type { Assignment, Coordinator } from "../store/coordinator.ts";
+import type { Assignment, Coordinator, Gap, Stop } from "../store/coordinator.ts";
 import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
@@ -25,6 +25,7 @@ import {
   type JobRunState,
   type JobsSlice,
   type JobState,
+  type KeysSlice,
   type MachineReadiness,
   type MachinesSlice,
   type RepositoryFact,
@@ -337,6 +338,27 @@ class Folders implements MachinesSlice {
   }
 }
 
+// ---------------------------------------------------------------------------- the plugin's keys
+
+/**
+ * `ctx.storage` as the host serves it, narrowed to the two verbs the loop uses: one map of
+ * values, and a refusal that stands for a host that will not serve the key at all.
+ */
+class Keys implements KeysSlice {
+  readonly held: Record<string, string> = {};
+  refusal: string | null = null;
+
+  get(key: string): string | null {
+    if (this.refusal !== null) throw new Error(this.refusal);
+    return this.held[key] ?? null;
+  }
+
+  set(key: string, value: string): void {
+    if (this.refusal !== null) throw new Error(this.refusal);
+    this.held[key] = value;
+  }
+}
+
 // ---------------------------------------------------------------------------- a fake coordinator
 
 const POLICY = {
@@ -382,8 +404,12 @@ class Draws {
   readonly abandoned: { id: string; fence: number; reason: string }[] = [];
   enabled = true;
   version = POLICY.version;
-  /** Assignments this coordinator still has to give; it answers a gap when they run out. */
+  /** Assignments this coordinator still has to give; it answers its {@link stop} when they run out. */
   pending: Record<string, unknown>[] = [];
+  /** Why it stops handing work out, in the coordinator's own closed vocabulary. */
+  stop: Stop = { reason: "no-candidates", detail: "nothing due" };
+  /** The candidates it declined on the way, which every draw carries whatever it answers. */
+  declined: Gap[] = [];
 
   constructor(private readonly db: PluginDatabase) {}
 
@@ -401,9 +427,9 @@ class Draws {
     expect(request.runId.startsWith("cyc_")).toBe(true);
     const next = this.pending.shift();
     if (next === undefined) {
-      return { outcome: "gap", gap: { reason: "no-candidates", detail: "nothing due" }, gaps: [] };
+      return { outcome: "gap", gap: this.stop, gaps: this.declined };
     }
-    return { outcome: "assignment", assignment: next, gaps: [] };
+    return { outcome: "assignment", assignment: next, gaps: this.declined };
   }
 
   async claim(request: {
@@ -688,6 +714,7 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -836,6 +863,7 @@ test("a job that died with no receipt abandons its claim at the reservation and 
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -888,6 +916,7 @@ test("a job the hub cancelled abandons its claim on the next tick", async () => 
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -935,6 +964,7 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1070,6 +1100,7 @@ test("the beat's own job is ingested although the hub never requested it", async
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1133,6 +1164,7 @@ test("a draw the hub cannot place is refused rather than claimed", async () => {
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1239,6 +1271,7 @@ test("a new policy version re-registers the beat instead of leaving two firing",
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1265,6 +1298,7 @@ test("an output the hub cannot read closes its run instead of being retried for 
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1306,6 +1340,7 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: folders,
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1413,6 +1448,7 @@ test("a posting the machine refuses abandons its claim in the same breath", asyn
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1456,6 +1492,7 @@ test("the reaper releases a grant whose job was never posted, once its lease has
     coordinator: draws as unknown as Coordinator,
     jobs: new Fleet(),
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1511,6 +1548,7 @@ test("a run closed by another path leaves no claim behind: the reaper takes it o
     coordinator: draws as unknown as Coordinator,
     jobs: new Fleet(),
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1555,6 +1593,7 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
     machines: new Folders(),
+    keys: new Keys(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1584,4 +1623,191 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   const third = await loop.tick();
   expect(third.settled).toEqual([]);
   expect(draws.abandoned).toHaveLength(1);
+});
+
+// ---------------------------------------------------------------------- the park and the pulse
+
+/** Three assignments of one record, so a cycle dispatches three jobs and takes three claims. */
+function three(): Record<string, unknown>[] {
+  return ["asg_p1", "asg_p2", "asg_p3"].map((id) => ({ ...ASSIGNMENT, id }));
+}
+
+/**
+ * What a review the model answered and the contract then refused seals: a receipt with the
+ * refusal's own code in its `reason`, and NO COST — the brokered lane meters at the owner
+ * (ADR 0038), so a receipt that reports nothing about money is not a receipt that reports no
+ * model. The refusal code is the evidence a model answered, and it is what keeps this run out
+ * of the park's streak.
+ */
+function refusedReview(runId: string): Record<string, unknown> {
+  return {
+    [JOB_OUTPUT_FILES.receipt]: {
+      runId,
+      kind: "evaluate",
+      machineId: "dev-01",
+      recipeId: "reception-vote",
+      role: "reception",
+      startedAt: new Date(clock).toISOString(),
+      finishedAt: new Date(clock).toISOString(),
+      closure: "failed",
+      reason: "schema: the reception result names a field the contract has not got",
+      costUsd: 0,
+      tokens: 0,
+      counts: {},
+    },
+  };
+}
+
+test("three reviews the model answered and the contract refused are spend, not a parked loop", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = three();
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const dispatching = await loop.tick();
+  expect(dispatching.requested).toHaveLength(3);
+
+  // Each one reached the model and had its submission refused. The machine exits cleanly: a
+  // refused submission is a recipe to review, not a boundary that broke.
+  clock += 60_000;
+  for (const job of dispatching.requested) fleet.finish(job.jobId, 0, refusedReview(job.runId));
+
+  const settling = await loop.tick();
+  expect(settling.settled.map((row) => [row.outcome, row.cost])).toEqual([
+    ["failed", 0],
+    ["failed", 0],
+    ["failed", 0],
+  ]);
+  // The loop is not parked and drew again: three refusals are three answers Babel paid for.
+  expect(settling.parked).toBe(null);
+  expect(settling.notes.some((note) => note.includes("parked"))).toBe(false);
+  expect(settling.stop?.reason).toBe("no-candidates");
+  // …and the pulse says what they were, by the code `results.ts` names.
+  expect(settling.pulse.tick.refusals).toEqual({ schema: 3 });
+  expect(settling.pulse.today.refusals).toEqual({ schema: 3 });
+
+  // A fourth cycle with nothing to draw still does not park: the window holds three refusals.
+  const after = await loop.tick();
+  expect(after.parked).toBe(null);
+  expect(after.pulse.tick.refusals).toEqual({});
+  expect(after.pulse.today.refusals).toEqual({ schema: 3 });
+  clock = started;
+});
+
+test("three jobs that never reached the model park the loop, and an hour of quiet lifts it", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = three();
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const dispatching = await loop.tick();
+  expect(dispatching.requested).toHaveLength(3);
+
+  // The three die where a broken machine kills them: mid-review, with no receipt, so nobody can
+  // say a model was ever asked anything. Each claim is abandoned at its reservation (#271).
+  clock += 60_000;
+  for (const job of dispatching.requested) fleet.kill(job.jobId, "interrupted");
+  draws.pending = [{ ...ASSIGNMENT, id: "asg_p4" }];
+  const asked = draws.draws;
+
+  const parking = await loop.tick();
+  expect(parking.settled.map((row) => [row.outcome, row.cost])).toEqual([
+    ["abandoned", 0.1],
+    ["abandoned", 0.1],
+    ["abandoned", 0.1],
+  ]);
+  expect(parking.parked?.barren).toBe(3);
+  expect(parking.parked?.reason).toContain("reached no model and produced nothing");
+  expect(parking.notes.some((note) => note.startsWith("the loop is parked:"))).toBe(true);
+  // A parked cycle asks the coordinator for nothing at all, so the fourth assignment is still
+  // waiting and no reservation was spent to learn the same thing a fourth time.
+  expect(draws.draws).toBe(asked);
+  expect(parking.requested).toEqual([]);
+  expect(parking.stop).toBe(null);
+
+  // An hour of quiet lifts it without an operator: a machine that has been fixed is tried again,
+  // and a machine that has not re-parks after three more.
+  clock += 61 * 60_000;
+  const resumed = await loop.tick();
+  expect(resumed.parked).toBe(null);
+  expect(resumed.requested.map((job) => job.jobId)).toEqual(["job_asg_p4"]);
+  clock = started;
+});
+
+test("the pulse counts why a draw returned nothing, by the coordinator's own reason", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const draws = new Draws(db);
+  draws.stop = { reason: "batch", detail: "the cycle batch of 4 assignments is already claimed" };
+  draws.declined = [
+    {
+      recordId: "hyp_00000001",
+      role: "reception",
+      reason: "claimed",
+      detail: "held by another worker until 14:08",
+    },
+  ];
+  const loop = conductor({
+    store: openStore(db),
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const first = await loop.tick();
+  expect(first.stop).toEqual({
+    reason: "batch",
+    detail: "the cycle batch of 4 assignments is already claimed",
+  });
+  expect(first.gaps).toEqual(draws.declined);
+  expect(first.pulse.tick.gaps).toEqual({ batch: 1, claimed: 1 });
+  expect(first.pulse.today.gaps).toEqual({ batch: 1, claimed: 1 });
+
+  // The day accumulates across the wakes that make the cycles, which is why it is kept in the
+  // plugin's keys rather than in the loop: every tick of a real day is a new conductor.
+  const second = await loop.tick();
+  expect(second.pulse.tick.gaps).toEqual({ batch: 1, claimed: 1 });
+  expect(second.pulse.today.gaps).toEqual({ batch: 2, claimed: 2 });
+
+  // …and it is a DAY: the tally starts again at the boundary the spend ledger is kept by.
+  clock += 24 * 60 * 60_000;
+  const tomorrow = await loop.tick();
+  expect(tomorrow.pulse.today.gaps).toEqual({ batch: 1, claimed: 1 });
+
+  // A disabled policy is a reason a cycle did not spend like any other, and the loop counts it
+  // itself: the cycle never gets far enough to be told so by the coordinator.
+  draws.enabled = false;
+  const off = await loop.tick();
+  expect(off.enabled).toBe(false);
+  expect(off.pulse.tick.gaps).toEqual({ disabled: 1 });
+  expect(off.pulse.today.gaps).toEqual({ batch: 1, claimed: 1, disabled: 1 });
+  clock = started;
 });

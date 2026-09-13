@@ -454,7 +454,11 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
           const report = await loop.tick();
           requested.push(...report.requested);
           if (report.requested.length === 0) {
+            // A PARKED LOOP IS ALSO THIS DOOR'S ANSWER. There is one loop and one park (F16:
+            // the Go tree let a scripted fan bypass a parked conductor), so an operator who
+            // presses the button hears the loop's own verdict first, in its own words.
             why =
+              report.parked?.reason ??
               report.refused[0]?.detail ??
               report.stop?.detail ??
               report.stop?.reason ??

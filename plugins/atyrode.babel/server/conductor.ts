@@ -11,7 +11,8 @@ import {
   type Receipt,
 } from "../contract.ts";
 import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
-import { refuseRow } from "../store/acts.ts";
+import { refuseRow, type RowRefusal } from "../store/acts.ts";
+import { refusalCode, type RefusalCode } from "../machine/engine/results.ts";
 import type { BabelStore } from "../store/store.ts";
 
 /*
@@ -206,6 +207,26 @@ export interface MachinesSlice {
   repository(machineId: string, path: string): Awaitable<RepositoryOutcome>;
 }
 
+// ---------------------------------------------------------------------------- the keys slice
+
+/**
+ * The two verbs of `ctx.storage` this loop uses (ADR 0034: `ctx.storage` is where a plugin keeps
+ * KEYS and the plugin database is where it keeps ROWS).
+ *
+ * The loop keeps exactly one key: the day's tally of the reasons it did not spend. It is a key
+ * rather than a table because it is one small value rewritten in place that nobody reads as a
+ * row — and it is kept outside this object because a cycle is a FRESH CONDUCTOR over the wake
+ * that caused it (`server.ts`: a settlement, a door, the enable), so a counter living in this
+ * closure would read zero for every tick of a real day.
+ *
+ * A key the host will not serve is a tally the report says nothing false about: the tick's own
+ * counts stand, the day's are the tick's, and a note says the day could not be read.
+ */
+export interface KeysSlice {
+  get(key: string): Awaitable<string | null>;
+  set(key: string, value: string): Awaitable<void>;
+}
+
 // ---------------------------------------------------------------------------- what a run needs
 
 export interface Recipe {
@@ -243,6 +264,8 @@ export interface ConductorDeps {
   readonly coordinator: Coordinator;
   readonly jobs: JobsSlice;
   readonly machines: MachinesSlice;
+  /** Where the day's tally is kept between wakes; see {@link KeysSlice}. */
+  readonly keys: KeysSlice;
   readonly plan: RunPlan;
   readonly now: () => number;
 }
@@ -290,6 +313,42 @@ export interface RefusedDraw {
   readonly detail: string;
 }
 
+/**
+ * WHY THE LOOP IS NOT DRAWING, when it is the loop's own verdict rather than the coordinator's.
+ *
+ * Three settlements in a row that reached no model and produced nothing is a lane that is
+ * broken rather than a deployment that is satisfied — a machine whose engine will not launch, a
+ * role with no recipe, a credential that has lapsed — and drawing a fourth spends another
+ * reservation to learn the same thing. {@link Park} is that verdict, with the sentence an
+ * operator acts on and the streak it was reached by.
+ */
+export interface Park {
+  /** How many settled claims in a row spent nothing and produced nothing. */
+  readonly barren: number;
+  readonly reason: string;
+}
+
+/**
+ * WHY A CYCLE DID NOT SPEND, counted rather than narrated (F11, G9).
+ *
+ * `gaps` counts the coordinator's own reason word for every draw that yielded no assignment:
+ * the {@link Stop} that ended the cycle (`disabled`, `batch`, `per-cycle`, `daily`,
+ * `no-candidates`, …) and every candidate {@link Gap} it declined on the way (`claimed`,
+ * `cooling`, `capped`, …). The two vocabularies are disjoint word sets, so one map by reason is
+ * unambiguous, and a surface that wants the records rather than the counts reads `gaps` on the
+ * report itself.
+ *
+ * `refusals` counts the submissions the review contract refused, by the code
+ * `machine/engine/results.ts` names — the receipt's own `reason` for a run that was paid for and
+ * refused at submit, and the store's verdict on a row it would not write. Those are not
+ * failures of the loop: they are money spent on an answer that did not stand, which is what the
+ * 2026-09-13 drain could not see (F8, F16).
+ */
+export interface CycleTally {
+  readonly gaps: Readonly<Record<string, number>>;
+  readonly refusals: Readonly<Record<string, number>>;
+}
+
 export interface TickReport {
   readonly at: number;
   /** The cycle's own run id: what this tick's draws and their claims are accounted to. */
@@ -301,9 +360,13 @@ export interface TickReport {
   readonly ingested: readonly IngestedRun[];
   readonly settled: readonly SettledClaim[];
   readonly refused: readonly RefusedDraw[];
-  /** Why drawing stopped; null only when the cycle never drew (a disabled policy). */
+  /** Why drawing stopped; null when the cycle never drew (a disabled policy, or a park). */
   readonly stop: Stop | null;
   readonly gaps: readonly Gap[];
+  /** The loop's own reason for drawing nothing, or null while it draws. */
+  readonly parked: Park | null;
+  /** The reasons this cycle did not spend, for the tick and cumulatively for the UTC day. */
+  readonly pulse: { readonly tick: CycleTally; readonly today: CycleTally };
   /** Jobs still in flight when the cycle ended. */
   readonly pending: number;
   readonly notes: readonly string[];
@@ -343,6 +406,29 @@ const TERMINAL_STATES: Record<string, true> = {
  * a live review for it would be worse than the ghost; two in a row is a worker that is gone.
  */
 const UNREPORTED_CYCLES = 2;
+
+/**
+ * THE PARK, in three numbers and the one rule that made 2026-09-13 worth a document.
+ *
+ * {@link PARK_AFTER} settlements in a row that reached no model and produced nothing park the
+ * loop. WHAT COUNTS AS ONE IS THE WHOLE POINT: a review the model answered and the contract
+ * then refused (`schema`, `support`, `empty`) is SPEND — the day's allowance went to it and the
+ * remedy is the recipe, not the loop — while a job that died before the first call, or a claim
+ * abandoned because its worker never came back, is the free failure a park exists to stop. The
+ * Go conductor counted the first as the second, parked after three of them, and the evaluation
+ * ladder sat unreviewed while the operator's window drained into nothing (F16, F8).
+ *
+ * {@link PARK_WINDOW_MS} is what lifts it without an operator: the streak is only a park while
+ * its newest settlement is recent, so an hour of quiet lets a fixed machine be tried again and
+ * a still-broken one re-parks after three more. A NEW POLICY VERSION clears it at once, because
+ * the streak is read per `policy_version` — the operator's act of changing the governance is
+ * also his way of saying "try again now".
+ */
+const PARK_AFTER = 3;
+const PARK_WINDOW_MS = 60 * 60 * 1000;
+
+/** Where the day's {@link CycleTally} is kept between wakes ({@link KeysSlice}). */
+const TALLY_KEY = "conductor:tally";
 
 /**
  * How many folders one tick asks the fleet about; the rest wait for the next tick. A machine
@@ -737,6 +823,13 @@ export interface IngestResult {
   readonly skipped: number;
   readonly receipt: Receipt | null;
   readonly notes: string[];
+  /**
+   * Every row the store would not write, with the producer's own refusal code. They are in the
+   * notes too, as sentences; these are the same verdicts as data, because the loop counts them
+   * by code and a surface groups them (#265), and reading a code back out of a sentence is how
+   * a tally starts lying.
+   */
+  readonly refusals: RowRefusal[];
 }
 
 export interface IngestTarget {
@@ -767,6 +860,7 @@ export async function ingestOutputs(
 ): Promise<IngestResult> {
   const files = new Map<string, unknown>();
   const notes: string[] = [];
+  const refusals: RowRefusal[] = [];
   for (const output of target.outputs) {
     const node: OutputRef = {
       kind: "output",
@@ -808,7 +902,10 @@ export async function ingestOutputs(
       // a producer and a store cannot disagree about one payload (#263, post-mortem F8). The
       // run's own closure and cost are the receipt's and settle the claim either way.
       const refused = shaped === null ? null : refuseRow(ingest.table, shaped);
-      if (refused !== null) notes.push(`${file}: ${refused.code}: ${refused.message}`);
+      if (refused !== null) {
+        notes.push(`${file}: ${refused.code}: ${refused.message}`);
+        refusals.push(refused);
+      }
       const statement = shaped === null || refused !== null ? null : rowStatement(ingest, shaped);
       if (statement === null) {
         skipped += 1;
@@ -836,7 +933,7 @@ export async function ingestOutputs(
     await store.db.batch(statements.slice(at, at + MAX_BATCH_STATEMENTS));
   }
   store.touch();
-  return { runId, rows, skipped, receipt, notes };
+  return { runId, rows, skipped, receipt, notes, refusals };
 }
 
 // ---------------------------------------------------------------------------- the loop
@@ -876,9 +973,54 @@ type SourceRow = {
   digest: string | null;
   snapshot: string | null;
 };
+/**
+ * One settled claim and what the job behind it is known to have done, for the park heuristic.
+ * The claim says how it closed; the run row says whether a model ever answered — its cost, its
+ * tokens, or a receipt reason that carries a refusal code, which only a submission can earn.
+ */
+type ClosedClaim = {
+  outcome: string | null;
+  finished_at: string;
+  cost: number | null;
+  tokens: number | null;
+  payload: string | null;
+};
+
+/** A tally under construction: one map per vocabulary, counted up as the cycle learns things. */
+type Counter = Map<string, number>;
+
+/** One more of whatever this is, whether the cycle has seen one before or not. */
+function count(counter: Counter, key: string): void {
+  counter.set(key, (counter.get(key) ?? 0) + 1);
+}
+
+/** The counted map as the report carries it, in reason order so two reports compare. */
+function tallied(counter: Counter): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const key of [...counter.keys()].sort()) out[key] = counter.get(key) ?? 0;
+  return out;
+}
+
+/**
+ * The refusal code a run's receipt carries, or null when no submission was refused.
+ *
+ * The receipt's `reason` is written by `machine/evaluate.ts` as `refusalReason` spells it, and
+ * read back here through the same module's `refusalCode`, which matches the closed vocabulary
+ * — so an engine failure written in the same shape (`launch: …`) is not counted as a refusal.
+ */
+function receiptRefusal(payload: string | null): RefusalCode | null {
+  if (payload === null) return null;
+  let reason: unknown;
+  try {
+    reason = (JSON.parse(payload) as Record<string, unknown>)["reason"];
+  } catch {
+    return null;
+  }
+  return typeof reason === "string" ? refusalCode(reason) : null;
+}
 
 export function conductor(deps: ConductorDeps): Conductor {
-  const { store, coordinator, jobs, machines, plan } = deps;
+  const { store, coordinator, jobs, machines, keys, plan } = deps;
   let cycle = 0;
   /**
    * How many cycles in a row the hub has failed to report a job the loop is waiting on, by job
@@ -1117,13 +1259,19 @@ export function conductor(deps: ConductorDeps): Conductor {
     };
   }
 
-  /** Ingests one finished job and settles whatever claim authorized it. */
+  /**
+   * Ingests one finished job, settles whatever claim authorized it, and counts what the
+   * contract refused: the store's verdict on every row it would not write, and the receipt's
+   * own reason when the model answered and the submission did not stand. A refusal is SPEND,
+   * so it is counted here — where the receipt is — and never inferred later from a failure.
+   */
   async function settle(
     at: number,
     target: IngestTarget,
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
+    refusals: Counter,
   ): Promise<void> {
     let result: IngestResult | null = null;
     try {
@@ -1151,7 +1299,12 @@ export function conductor(deps: ConductorDeps): Conductor {
       );
     }
     for (const note of result?.notes ?? []) notes.push(`${target.jobId}: ${note}`);
+    for (const refused of result?.refusals ?? []) count(refusals, refused.code);
     const receipt = result?.receipt ?? null;
+    // A receipt whose reason names a refusal code is a model that answered and a submission
+    // that did not stand: the code is the one `results.ts` names, and it is spend.
+    const refusedSubmission = receipt?.reason === undefined ? null : refusalCode(receipt.reason);
+    if (refusedSubmission !== null) count(refusals, refusedSubmission);
     ingested.push({
       runId: result?.runId ?? target.runId ?? `run_${target.jobId}`,
       jobId: target.jobId,
@@ -1227,6 +1380,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
+    refusals: Counter,
   ): Promise<number> {
     const pending = await store.db.query<PendingRun>(
       `SELECT id, job_id, machine_id, kind FROM runs
@@ -1273,6 +1427,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         ingested,
         settled,
         notes,
+        refusals,
       );
     }
 
@@ -1321,6 +1476,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           ingested,
           settled,
           notes,
+          refusals,
         );
       }
     }
@@ -1620,6 +1776,108 @@ export function conductor(deps: ConductorDeps): Conductor {
     });
   }
 
+  /**
+   * WHETHER THE LOOP IS PARKED, read off the spend ledger rather than counted in a process.
+   *
+   * The window is the last {@link PARK_AFTER} claims to close under the policy in force, and
+   * each one is judged by whether A MODEL EVER ANSWERED FOR IT:
+   *
+   *   - a claim that closed as `completed` produced the review it was drawn for. Not barren,
+   *     whatever it cost.
+   *   - a run that spent, or reported tokens, reached the model. Not barren.
+   *   - a receipt whose reason carries a refusal code reached the model and had its submission
+   *     refused: PAID WORK WITH NO RESULT, which is the recipe's problem and not the loop's.
+   *     Not barren, and this one sentence is the whole of #265.
+   *   - anything else — an `abandoned` claim whose job wrote no receipt, a job that failed
+   *     before its first call, a claim whose posting was refused and has no run at all — is
+   *     barren: the deployment paid a reservation and learned nothing.
+   *
+   * The claims table is the ledger for this because it is where a settlement is durable: the
+   * conductor is rebuilt for every wake, so anything the loop "remembers" has to be something
+   * the store can be asked. `finished_at` is written by `finish` and `abandon` in the store's
+   * fixed-width instant, so text order is time order and the newest rows come first.
+   */
+  async function parkState(policy: Policy, at: number): Promise<Park | null> {
+    const closed = await store.db.query<ClosedClaim>(
+      `SELECT c.outcome AS outcome, c.finished_at AS finished_at,
+              r.cost_usd AS cost, r.tokens AS tokens, r.payload AS payload
+         FROM claims c LEFT JOIN runs r ON r.job_id = c.job_id
+        WHERE c.finished_at IS NOT NULL AND c.policy_version = ?
+        ORDER BY c.finished_at DESC
+        LIMIT ?`,
+      [policy.version, PARK_AFTER],
+    );
+    if (closed.length < PARK_AFTER) return null;
+    for (const claim of closed) {
+      if (claim.outcome === "completed") return null;
+      if ((claim.cost ?? 0) > 0 || (claim.tokens ?? 0) > 0) return null;
+      if (receiptRefusal(claim.payload) !== null) return null;
+    }
+    // An unreadable instant is as old as it gets, as it is for a claim's grant in `reapClaims`:
+    // a streak nothing recent stands behind is not a park, and the next cycle draws.
+    const newest = Date.parse(closed[0]?.finished_at ?? "");
+    if (!Number.isFinite(newest) || newest <= at - PARK_WINDOW_MS) return null;
+    return {
+      barren: closed.length,
+      reason:
+        `the last ${String(closed.length)} reviews under policy ${policy.version} reached no ` +
+        `model and produced nothing, the most recent at ${closed[0]?.finished_at ?? ""}; the ` +
+        `loop draws nothing until one of them is answered, an hour has passed, or a new policy ` +
+        `is installed`,
+    };
+  }
+
+  /**
+   * The day's tally: this tick's counts added to the ones the day already had.
+   *
+   * One key, read and rewritten, because a cycle is a fresh conductor over the wake that caused
+   * it and a counter in this closure would report zero for every tick of a real day. A key the
+   * host refuses, or a value that is not this shape, is not a reason to report nothing: the
+   * tick's own counts stand as the day's and the note says the day could not be read.
+   */
+  async function rollUp(at: number, tick: CycleTally, notes: string[]): Promise<CycleTally> {
+    const day = new Date(at).toISOString().slice(0, 10);
+    const gaps = new Map(Object.entries(tick.gaps));
+    const refusals = new Map(Object.entries(tick.refusals));
+    let held: string | null = null;
+    try {
+      held = await keys.get(TALLY_KEY);
+    } catch (error) {
+      notes.push(`the day's tally cannot be read: ${message(error)}`);
+      return tick;
+    }
+    if (held !== null) {
+      let stored: unknown = null;
+      try {
+        stored = JSON.parse(held);
+      } catch {
+        notes.push("the day's tally was not readable and starts again from this cycle");
+      }
+      const kept = stored as Partial<{ day: string; gaps: unknown; refusals: unknown }> | null;
+      // Yesterday's tally is not this day's: the key is rewritten, never accumulated across the
+      // boundary the spend ledger itself is kept by.
+      if (kept !== null && typeof kept === "object" && kept.day === day) {
+        for (const [counter, source] of [
+          [gaps, kept.gaps],
+          [refusals, kept.refusals],
+        ] as const) {
+          if (typeof source !== "object" || source === null) continue;
+          for (const [reason, seen] of Object.entries(source as Record<string, unknown>)) {
+            if (typeof seen !== "number" || !Number.isFinite(seen)) continue;
+            counter.set(reason, (counter.get(reason) ?? 0) + seen);
+          }
+        }
+      }
+    }
+    const today = { gaps: tallied(gaps), refusals: tallied(refusals) };
+    try {
+      await keys.set(TALLY_KEY, JSON.stringify({ day, ...today }));
+    } catch (error) {
+      notes.push(`the day's tally cannot be kept: ${message(error)}`);
+    }
+    return today;
+  }
+
   return {
     async tick(): Promise<TickReport> {
       const at = deps.now();
@@ -1632,8 +1890,15 @@ export function conductor(deps: ConductorDeps): Conductor {
       const ingested: IngestedRun[] = [];
       const settled: SettledClaim[] = [];
       const refused: RefusedDraw[] = [];
+      const refusals: Counter = new Map();
+      const gapsByReason: Counter = new Map();
 
       if (!policy.enabled) {
+        // A disabled policy is the coordinator's own first stop reason, and the cycle never gets
+        // as far as being told it: the loop counts it, so "why did nothing happen today" is
+        // answered by the tally rather than by the absence of one.
+        count(gapsByReason, "disabled");
+        const tick = { gaps: tallied(gapsByReason), refusals: tallied(refusals) };
         return {
           at,
           cycleRunId,
@@ -1646,12 +1911,14 @@ export function conductor(deps: ConductorDeps): Conductor {
           refused,
           stop: null,
           gaps: [],
+          parked: null,
+          pulse: { tick, today: await rollUp(at, tick, notes) },
           pending: 0,
           notes,
         };
       }
 
-      const pending = await reconcileRuns(at, ingested, settled, notes);
+      const pending = await reconcileRuns(at, ingested, settled, notes, refusals);
       // …and the claims no settlement can reach are released before this cycle asks the
       // coordinator what may be drawn, so a batch held by dead workers is a batch of free slots
       // by the time it answers rather than one cycle later.
@@ -1660,14 +1927,23 @@ export function conductor(deps: ConductorDeps): Conductor {
       // asked here, after the rows exist and before this cycle spends anything.
       await identifyFolders(notes);
 
-      // Draw until the coordinator says stop. It owns the batch, the per-cycle and the daily
-      // bound; the loop's own bound is that a cycle never draws the same assignment twice, so a
-      // draw the hub cannot dispatch ends the cycle instead of spinning on it.
+      // WHETHER TO DRAW AT ALL is the loop's own question, asked after the settlements of this
+      // cycle are in the ledger — a review that was paid for and refused is in it too, and it is
+      // what keeps a refused recipe from reading as a broken lane.
+      const parked = await parkState(policy, at);
+      if (parked !== null) notes.push(`the loop is parked: ${parked.reason}`);
+
+      // Draw until the coordinator says stop — and not at all while the loop is parked, which
+      // asks it nothing rather than asking and declining, because the refusal would be the
+      // loop's own and would read in the pulse as a coordinator's. It owns the batch, the
+      // per-cycle and the daily bound; the loop's own bound is that a cycle never draws the
+      // same assignment twice, so a draw the hub cannot dispatch ends the cycle rather than
+      // spinning on it.
       const seen = new Map<string, MachineReadiness | null>();
       const drawn = new Set<string>();
       let stop: Stop | null = null;
       let gaps: readonly Gap[] = [];
-      for (;;) {
+      while (parked === null) {
         const draw = await coordinator.draw({ runId: cycleRunId, now: at });
         gaps = draw.gaps;
         if (draw.outcome === "gap") {
@@ -1685,6 +1961,13 @@ export function conductor(deps: ConductorDeps): Conductor {
         drawn.add(assignment.id);
         await dispatch(assignment, cycleRunId, at, seen, requested, refused);
       }
+      // The reasons this cycle did not spend, counted once: the stop that ended the drawing and
+      // the candidates the last draw declined. Only the LAST draw's gaps are counted, because
+      // the coordinator re-declines the same candidate on every draw of a cycle and a tally
+      // that added them up would report one held record as five.
+      if (stop !== null) count(gapsByReason, stop.reason);
+      for (const gap of gaps) count(gapsByReason, gap.reason);
+      const tick = { gaps: tallied(gapsByReason), refusals: tallied(refusals) };
 
       return {
         at,
@@ -1698,6 +1981,8 @@ export function conductor(deps: ConductorDeps): Conductor {
         refused,
         stop,
         gaps,
+        parked,
+        pulse: { tick, today: await rollUp(at, tick, notes) },
         pending: pending + requested.length,
         notes,
       };
