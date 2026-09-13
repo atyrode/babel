@@ -47,9 +47,11 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `runs` and `launch` doors; Watch's presets become `launch`, a governed door
   admitted at the operation node under the operator's consent, with a dry
   preview of the profile, model, cost and ceilings before the button. Proof:
-  443 tests on a real plugin database; the bundles installed on a hub built
-  from the converged SDK with the operator's own 90,718 rows imported, Home
-  read and a ruling recorded through the panel; and one real `scan` job
+  453 tests on a real plugin database; the bundles installed on
+  `preview.manifold.tyrode.dev` (manifold `main` be79ed46) with the operator's
+  own 90,719 rows crossed through the plugin's `importLedger` door, the feed
+  answering 2,984 ranked records there; before that, the same on a local hub
+  with a ruling recorded through the panel; and one real `scan` job
   launched from Watch, admitted, executed under bubblewrap on this machine,
   settled and ingested - exit 0 in 3.7 s, its receipt a `runs` row, 98
   sessions catalogued (job_131f45e8). Known gaps, each an issue: the beat
