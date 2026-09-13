@@ -8,9 +8,11 @@ name: manifold-plugins
 # plugins/package.json and uploads dist/ as the `manifold-plugins` artifact.
 #
 # The `uses:` ref below and plugins/MANIFOLD_REV are the same revision and are bumped together:
-# a ref ahead of the file would run a newer workflow against an older kit. be79ed46 is the
-# revision carrying the plugin database (manifold ADR 0034), which the store cannot start
-# without.
+# a ref ahead of the file would run a newer workflow against an older kit. 637cbb79 is Manifold
+# `main`, and it carries the four primitives the plugin is built on: the plugin database (ADR
+# 0034) with a failure-atomic lifecycle (atyrode/manifold#536), which the store cannot start
+# without; per-operation `concurrentJobs` admission (#551); the `job_progress` event (#552); and
+# metered brokered inference (ADR 0038, #554).
 #
 # Delivery is not here. Every change is proved on preview.manifold.tyrode.dev or a local
 # preview-equivalent hub, through `bun run dev -- --deliver` from dev-01; production
@@ -32,6 +34,6 @@ permissions:
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@be79ed4679d4a957472a5d5cfca45f4ec87a9ffd
+    uses: atyrode/manifold/.github/workflows/plugins.yml@637cbb79faf6d9616e2003bb3e9ec0490ede9d8e
     with:
       plugins-dir: plugins

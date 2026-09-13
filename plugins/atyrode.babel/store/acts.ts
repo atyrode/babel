@@ -460,11 +460,17 @@ async function factInForce(
   );
 }
 
+/**
+ * One filing row. `heuristic` and `withdrawn` are INTEGER columns and the engine opens this
+ * plugin's file with `safeIntegers`, so they answer as BIGINTs: `withdrawn === 1` is false for a
+ * withdrawn row, which is how a second withdrawal stopped being refused. They are carried in the
+ * shape the database hands them over and read through `Number()` at the two places that ask.
+ */
 interface FilingRow extends SqlRow {
   id: string;
   rationale: string;
-  heuristic: number;
-  withdrawn: number;
+  heuristic: number | bigint;
+  withdrawn: number | bigint;
 }
 
 /**
@@ -1334,7 +1340,7 @@ export async function unfile(store: ActsStore, args: UnfileArgs, operator: strin
   if (args.reason.trim() === "") throw new ActRefused("unfiling a record needs its reason");
   const entityId = args.entity === NO_TOPIC ? "" : await resolveEntity(store, args.entity);
   const current = await newestFiling(store, args.id, entityId);
-  if (current === null || current.withdrawn === 1) {
+  if (current === null || Number(current.withdrawn) === 1) {
     throw new ActRefused(
       `record ${args.id} is not filed under ${args.entity === NO_TOPIC ? NO_TOPIC : entityId}`,
     );
@@ -1348,7 +1354,7 @@ export async function unfile(store: ActsStore, args: UnfileArgs, operator: strin
     rationale: args.reason,
     authorKind: "operator",
     authorId: operator,
-    heuristic: current.heuristic === 1,
+    heuristic: Number(current.heuristic) === 1,
     withdrawn: true,
     supersedes: current.id,
     at,

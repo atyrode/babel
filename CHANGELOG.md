@@ -397,6 +397,30 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   the harness session running the drain itself. Ten preparations built while a
   session is appended between each now produce one identical selection digest,
   because the file none of them read is the one that was moving. #262.
+- **The plugin builds against Manifold `main`, and an INTEGER column is a
+  BIGINT.** `plugins/MANIFOLD_REV` and the gate's `uses:` ref move together to
+  `637cbb79`, Manifold `main`, which carries the plugin database's
+  failure-atomic lifecycle (atyrode/manifold#536), per-operation
+  `concurrentJobs` admission (#551) and the `job_progress` event (#552) — the
+  two primitives the drain epic asked Manifold for — and metered brokered
+  inference (ADR 0038, #554). Since #536 the engine opens a plugin's file with
+  `safeIntegers` (`packages/server/src/plugin-database.ts:163`), so every
+  INTEGER column and every `lastInsertRowid` answers as a BIGINT, and three
+  places read one as a number: `withdrawn === 1` was false for a withdrawn
+  filing, so a second `unfile` appended a second withdrawal instead of being
+  refused; a citation's `position` reached a job request as a value JSON
+  cannot carry, so a review of a record that cites a session could not be
+  posted at all; and the reaper's `COUNT(*) === 0` never matched, so a claim
+  whose job left no run row was never abandoned and held its batch slot to the
+  end of its lease. Each is coerced where it is read, the two fakes open their
+  file with the options the engine opens the real one with, and every
+  assertion about a stored row now says what the database returns — `2n`, not
+  `2`. Proof: the plugin gate against the pin — `check` clean, 485 tests,
+  `pack` and `verify` on a real engine spawned from the pinned checkout.
+  `AGENTS.md` stops saying plugin work is paused: the plugins are the product
+  under construction, moving the pin to a newer `main` is ordinary work in its
+  own PR, and the gate runs on every PR touching `plugins/` (operator
+  direction 2026-09-13, #268).
 
 ### Fixed
 

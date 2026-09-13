@@ -949,8 +949,9 @@ type OrphanClaim = {
   fence: Fence;
   job_id: string | null;
   granted_at: string;
-  runs: number;
-  open_runs: number;
+  /** Two `COUNT(*)` subqueries, so bigints from the engine's database, as {@link Fence} is. */
+  runs: number | bigint;
+  open_runs: number | bigint;
 };
 type MachineCount = { machineId: string; cited: number };
 type MachineRow = { machineId: string };
@@ -968,7 +969,8 @@ type RecordRow = {
 };
 type SourceRow = {
   selector: string;
-  position: number | null;
+  /** `edges.position`, an INTEGER column: a bigint here, and a job input has to be JSON. */
+  position: number | bigint | null;
   note: string | null;
   digest: string | null;
   snapshot: string | null;
@@ -1141,7 +1143,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         digest: row.digest ?? "",
         snapshot: row.snapshot ?? "",
         note: row.note ?? "",
-        position: row.position ?? 0,
+        position: Number(row.position ?? 0),
       })),
     };
   }
@@ -1532,11 +1534,11 @@ export function conductor(deps: ConductorDeps): Conductor {
           ? overdue
             ? `granted at ${orphan.granted_at} and never posted to a machine`
             : null
-          : orphan.runs === 0
+          : Number(orphan.runs) === 0
             ? overdue
               ? `job ${jobId} has no run row and the lease it was granted under has run out`
               : null
-            : orphan.open_runs === 0
+            : Number(orphan.open_runs) === 0
               ? `job ${jobId} is closed and its claim was left open`
               : silent >= UNREPORTED_CYCLES
                 ? `the hub has not been able to report job ${jobId} for ${String(silent)} cycles`

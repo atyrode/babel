@@ -238,13 +238,19 @@ git -C ../../manifold checkout "$(cat MANIFOLD_REV)"
 bun install --cwd ../../manifold --frozen-lockfile   # the kit resolves zod and the protocol from its workspace
 ```
 
-`MANIFOLD_REV` is currently `ea675d21`, which carries the plugin database (ADR 0034) — the
-primitive Babel cannot start without, and a branch rather than a release, which is why the
-checkout on dev-01 is named `manifold-db`. `tsconfig.json` therefore lists **two candidates** for
-every `@manifold/*` alias, `../../manifold-db` before `../../manifold`, and tsc and Bun take the
-first that exists; `pack.sh` resolves `../../manifold` and honours `MANIFOLD_DIR` for a tree that
-keeps the checkout elsewhere (an isolated worktree, a second branch). The pin and the workflow's
-`uses:` ref are one revision and are bumped together.
+`MANIFOLD_REV` follows Manifold `main` and currently names `637cbb79`, which carries the plugin
+database (ADR 0034) with its failure-atomic lifecycle (atyrode/manifold#536) — the primitive
+Babel cannot start without — per-operation `concurrentJobs` admission (#551), the `job_progress`
+event (#552) and metered brokered inference (ADR 0038, #554). The checkout on dev-01 is named
+`manifold-db` because the plugin database was a branch before it was `main`; it is now simply
+that clone of atyrode/manifold, detached at the pin, and `feat/brokered-inference`, the other
+branch it once carried, is merged into `main` and superseded by it. Nothing here pins a branch.
+`tsconfig.json` still lists **two candidates** for every `@manifold/*` alias, `../../manifold-db`
+before `../../manifold`, and tsc and Bun take the first that exists; `pack.sh` resolves
+`../../manifold` and honours `MANIFOLD_DIR` for a tree that keeps the checkout elsewhere (an
+isolated worktree, a second branch). The pin and the workflow's `uses:` ref are one revision and
+are bumped together; moving both to a newer `main` revision, with this checkout moved with them
+and the gate green against it, is ordinary work in its own PR (`AGENTS.md`).
 
 `bun install` here fetches only what typechecking and tests need: `zod` (pinned to the kit's own
 version, and the one thing inlined into every bundle), `typescript`, React with its types, and

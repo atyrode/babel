@@ -14,7 +14,7 @@ import {
 } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
-import type { Assignment, Coordinator, Gap, Stop } from "../store/coordinator.ts";
+import type { Assignment, Coordinator, Fence, Gap, Stop } from "../store/coordinator.ts";
 import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
@@ -54,9 +54,10 @@ afterEach(() => {
 function openDatabase(): PluginDatabase {
   const directory = mkdtempSync(join(tmpdir(), "babel-conductor-"));
   temporaries.push(directory);
-  const db = new Database(join(directory, "data.db"), { create: true, strict: true });
-  // The pragmas the engine opens a plugin's file with (`server/src/plugin-database.ts`), so the
-  // triggers, the STRICT tables and the foreign keys behave here exactly as they do in the hub.
+  const db = new Database(join(directory, "data.db"), { create: true, strict: true, safeIntegers: true });
+  // The options and pragmas the engine opens a plugin's file with (`server/src/plugin-database.ts`),
+  // so the triggers, the STRICT tables, the foreign keys and — `safeIntegers` — the BIGINT every
+  // INTEGER column answers with behave here exactly as they do in the hub.
   db.exec(`PRAGMA journal_mode = WAL`);
   db.exec(`PRAGMA trusted_schema = OFF`);
   db.exec(`PRAGMA foreign_keys = ON`);
@@ -68,7 +69,7 @@ function openDatabase(): PluginDatabase {
       db.prepare(sql).all(...(bind(params) as never[])) as Row[],
     run: async (sql: string, params?: readonly SqlParam[]) => {
       const result = db.prepare(sql).run(...(bind(params) as never[]));
-      return { changes: result.changes, lastInsertRowid: Number(result.lastInsertRowid) };
+      return { changes: Number(result.changes), lastInsertRowid: BigInt(result.lastInsertRowid) };
     },
     batch: async (statements: readonly SqlStatement[]) =>
       db.transaction(() =>
@@ -110,7 +111,11 @@ const TABLES = [
 async function snapshot(db: PluginDatabase): Promise<string> {
   const dump: Record<string, readonly SqlRow[]> = {};
   for (const table of TABLES) dump[table] = await db.query(`SELECT * FROM ${table}`);
-  return JSON.stringify(dump);
+  // An INTEGER column answers as a BIGINT, which JSON has no word for: it is rendered with the
+  // suffix it is written with, so a dump still compares byte for byte against the one before it.
+  return JSON.stringify(dump, (_key: string, value: unknown) =>
+    typeof value === "bigint" ? `${String(value)}n` : value,
+  );
 }
 
 // ---------------------------------------------------------------------------- a ustar archive
@@ -399,9 +404,9 @@ const ASSIGNMENT = {
 class Draws {
   draws = 0;
   readonly claimed: { assignmentId: string; runId: string; jobId: string | undefined }[] = [];
-  readonly finished: { id: string; runId: string; fence: number; cost: number; outcome: string }[] =
+  readonly finished: { id: string; runId: string; fence: Fence; cost: number; outcome: string }[] =
     [];
-  readonly abandoned: { id: string; fence: number; reason: string }[] = [];
+  readonly abandoned: { id: string; fence: Fence; reason: string }[] = [];
   enabled = true;
   version = POLICY.version;
   /** Assignments this coordinator still has to give; it answers its {@link stop} when they run out. */
@@ -482,7 +487,7 @@ class Draws {
   async finish(request: {
     id: string;
     runId: string;
-    fence: number;
+    fence: Fence;
     cost: number;
     outcome: string;
   }): Promise<Record<string, unknown>> {
@@ -496,7 +501,7 @@ class Draws {
 
   /** `coordinator.abandon`, doing what the real one does: closes the row and charges the
    *  reservation, because a job that died mid-review cannot say what it spent. */
-  async abandon(request: { id: string; fence: number; reason: string }): Promise<Record<string, unknown>> {
+  async abandon(request: { id: string; fence: Fence; reason: string }): Promise<Record<string, unknown>> {
     this.abandoned.push(request);
     const rows = await this.db.query<{ reserved_cost: number }>(
       `SELECT reserved_cost FROM claims WHERE id = ? AND fence = ? AND finished_at IS NULL`,
@@ -765,7 +770,7 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
   expect(document["sources"]).toMatchObject([{ selector: "omp/s1", snapshot: "snap-1" }]);
 
   const queued = await db.query(`SELECT closure, records FROM runs WHERE id = 'run_asg_a1b2'`);
-  expect(queued[0]).toEqual({ closure: null, records: 0 });
+  expect(queued[0]).toEqual({ closure: null, records: 0n });
 
   // The machine finishes and seals its files; the next cycle ingests them.
   fleet.finish("job_asg_a1b2", 0, outputs("run_asg_a1b2"));
@@ -803,7 +808,7 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
     ["plans", 1],
     ["steering", 1],
   ] as const) {
-    const rows = await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`);
+    const rows = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM ${table}`);
     expect(`${table}=${String(rows[0]?.n)}`).toBe(`${table}=${String(count)}`);
   }
 
@@ -819,8 +824,8 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
   expect(run[0]).toEqual({
     closure: "completed",
     cost_usd: 0.42,
-    tokens: 12345,
-    records: 1,
+    tokens: 12345n,
+    records: 1n,
     finished_at: "2026-09-12T09:05:00Z",
     job_id: "job_asg_a1b2",
   });
@@ -840,7 +845,7 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
     {
       id: "clm_asg_a1b2",
       runId: requesting.cycleRunId,
-      fence: 1,
+      fence: 1n,
       cost: 0.42,
       outcome: "completed",
     },
@@ -899,7 +904,7 @@ test("a job that died with no receipt abandons its claim at the reservation and 
   const claim = await db.query(
     `SELECT finished_at IS NOT NULL AS closed, outcome, actual_cost FROM claims WHERE id = 'clm_asg_a1b2'`,
   );
-  expect(claim[0]).toEqual({ closed: 1, outcome: "abandoned", actual_cost: 0.1 });
+  expect(claim[0]).toEqual({ closed: 1n, outcome: "abandoned", actual_cost: 0.1 });
   const run = await db.query(`SELECT closure, cost_usd FROM runs WHERE id = 'run_asg_a1b2'`);
   expect(run[0]).toEqual({ closure: "failed", cost_usd: null });
 });
@@ -940,14 +945,14 @@ test("a job the hub cancelled abandons its claim on the next tick", async () => 
   expect(draws.abandoned).toEqual([
     {
       id: "clm_asg_a1b2",
-      fence: 1,
+      fence: 1n,
       reason: "job job_asg_a1b2 closed as stopped and wrote no receipt",
     },
   ]);
   const claim = await db.query(
     `SELECT outcome, actual_cost, finished_at IS NOT NULL AS closed FROM claims WHERE id = 'clm_asg_a1b2'`,
   );
-  expect(claim[0]).toEqual({ outcome: "abandoned", actual_cost: 0.1, closed: 1 });
+  expect(claim[0]).toEqual({ outcome: "abandoned", actual_cost: 0.1, closed: 1n });
   // And the run is closed, so the next cycle has nothing left to reconcile.
   expect(report.pending).toBe(0);
 });
@@ -1143,8 +1148,8 @@ test("the beat's own job is ingested although the hub never requested it", async
       closure: "completed",
     },
   ]);
-  const sessions = await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM sessions`);
-  expect(sessions[0]?.n).toBe(2);
+  const sessions = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM sessions`);
+  expect(sessions[0]?.n).toBe(2n);
 
   // A second cycle sees the run is already recorded and does not ingest it again.
   const repeat = await loop.tick();
@@ -1255,10 +1260,10 @@ test("an output larger than one served chunk is read whole, and a row the table 
   expect(result.rows[JOB_OUTPUT_FILES.records]).toBe(600);
   expect(result.rows[JOB_OUTPUT_FILES.edges]).toBe(0);
   expect(result.skipped).toBe(2);
-  const counted = await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM records`);
-  expect(counted[0]?.n).toBe(601);
-  const edges = await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM edges WHERE id = 'edg_bad'`);
-  expect(edges[0]?.n).toBe(0);
+  const counted = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM records`);
+  expect(counted[0]?.n).toBe(601n);
+  const edges = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM edges WHERE id = 'edg_bad'`);
+  expect(edges[0]?.n).toBe(0n);
 });
 
 test("a new policy version re-registers the beat instead of leaving two firing", async () => {
@@ -1476,10 +1481,10 @@ test("a posting the machine refuses abandons its claim in the same breath", asyn
   const claim = await db.query(
     `SELECT outcome, actual_cost, finished_at IS NOT NULL AS closed FROM claims WHERE id = 'clm_asg_a1b2'`,
   );
-  expect(claim[0]).toEqual({ outcome: "abandoned", actual_cost: 0.1, closed: 1 });
+  expect(claim[0]).toEqual({ outcome: "abandoned", actual_cost: 0.1, closed: 1n });
   // No job was posted, so no run row was written for one.
-  const runs = await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM runs`);
-  expect(runs[0]?.n).toBe(0);
+  const runs = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM runs`);
+  expect(runs[0]?.n).toBe(0n);
 });
 
 test("the reaper releases a grant whose job was never posted, once its lease has run out", async () => {
@@ -1572,7 +1577,7 @@ test("a run closed by another path leaves no claim behind: the reaper takes it o
   const report = await loop.tick();
 
   expect(draws.abandoned).toEqual([
-    { id: "clm_stopped", fence: 1, reason: "job job_stopped is closed and its claim was left open" },
+    { id: "clm_stopped", fence: 1n, reason: "job job_stopped is closed and its claim was left open" },
   ]);
   const claim = await db.query(
     `SELECT outcome, actual_cost FROM claims WHERE id = 'clm_stopped'`,
@@ -1611,7 +1616,7 @@ test("a job the hub cannot report twice running loses its claim; once is a hiccu
   expect(draws.abandoned).toEqual([
     {
       id: "clm_asg_a1b2",
-      fence: 1,
+      fence: 1n,
       reason: "the hub has not been able to report job job_asg_a1b2 for 2 cycles",
     },
   ]);

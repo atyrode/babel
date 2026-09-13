@@ -176,10 +176,10 @@ test("a comment defaults to a comment and a question is marked as one", async ()
   })) as { question: boolean };
   expect(asked.question).toBe(true);
   expect(
-    await harness.store.db.query<{ question: number }>(
+    await harness.store.db.query<{ question: bigint }>(
       `SELECT question FROM feedback ORDER BY question`,
     ),
-  ).toEqual([{ question: 0 }, { question: 1 }]);
+  ).toEqual([{ question: 0n }, { question: 1n }]);
   expect(harness.emitted.map((emission) => emission.kind)).toEqual([
     EVENTS.recordWritten,
     EVENTS.recordWritten,

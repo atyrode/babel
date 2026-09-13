@@ -23,11 +23,11 @@
     "types": ["bun"],
     "baseUrl": ".",
     // The SDK is a sibling checkout (README.md). TWO candidates per alias, tried in order by
-    // tsc and by Bun: `../../manifold-db` is the checkout carrying the plugin database (ADR
-    // 0034) while that primitive is a branch rather than a release — on dev-01 it is the only
-    // one that has `packages/plugin/src/database.ts` — and `../../manifold` is the layout
-    // manifold's own reusable `plugins.yml` builds in CI (`caller/` beside `manifold/`, at
-    // MANIFOLD_REV) and the one `pack.sh` resolves. Neither machine repoints this file.
+    // tsc and by Bun: `../../manifold-db` is dev-01's checkout of atyrode/manifold, detached at
+    // MANIFOLD_REV and named for the branch the plugin database (ADR 0034) lived on before it
+    // was `main` — and `../../manifold` is the layout manifold's own reusable `plugins.yml`
+    // builds in CI (`caller/` beside `manifold/`, at MANIFOLD_REV) and the one `pack.sh`
+    // resolves. Neither machine repoints this file.
     "paths": {
       "@manifold/plugin-kit": [
         "../../manifold-db/packages/plugin-kit/src/index.ts",

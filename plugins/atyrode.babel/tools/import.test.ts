@@ -770,14 +770,14 @@ test("every planned row lands in its table, and a second import lands nothing mo
   const handle = store as PluginDatabaseAdmin;
   for (const plan of plans) {
     const row = await scalar(`SELECT count(*) AS n FROM ${plan.table}`);
-    expect([plan.table, row["n"]]).toEqual([plan.table, plan.rows.length]);
+    expect([plan.table, row["n"]]).toEqual([plan.table, BigInt(plan.rows.length)]);
   }
   // The store's triggers abort an UPDATE on a record, a ruling, a filing or an assessment, so a
   // re-import that tried to refresh a row rather than skip it would throw here rather than pass.
   await applyPlan(handle, plans, () => "2026-09-13T00:00:00Z");
   for (const plan of plans) {
     const row = await scalar(`SELECT count(*) AS n FROM ${plan.table}`);
-    expect([plan.table, row["n"]]).toEqual([plan.table, plan.rows.length]);
+    expect([plan.table, row["n"]]).toEqual([plan.table, BigInt(plan.rows.length)]);
   }
   const ledger = await handle.query(`SELECT table_name, rows FROM imports ORDER BY table_name`);
   expect(ledger.length).toBe(plans.length);
@@ -791,7 +791,7 @@ test("a record keeps its id, its chain and the title the Go tree derived", async
   expect(head["kind"]).toBe("hypothesis");
   expect(head["root_id"]).toBe("hyp_a");
   expect(head["supersedes_id"]).toBe("hyp_a");
-  expect(head["seq"]).toBe(2);
+  expect(head["seq"]).toBe(2n);
   expect(head["actor_kind"]).toBe("run");
   // 239 bytes of the statement, cut before the two-byte rune that straddles byte 240.
   expect(head["title"]).toBe(`${"a".repeat(239)}…`);
@@ -804,7 +804,7 @@ test("a record keeps its id, its chain and the title the Go tree derived", async
   const observation = await scalar(`SELECT * FROM records WHERE id = ?`, ["obs_a"]);
   expect(observation["parent_id"]).toBe("hyp_a");
   expect(observation["recipe_id"]).toBe("outcome-integrity");
-  expect(observation["recipe_version"]).toBe(3);
+  expect(observation["recipe_version"]).toBe(3n);
   expect(observation["title"]).toBe("The agent rewrote the assertion.");
 
   const proposal = await scalar(`SELECT title FROM records WHERE id = ?`, ["pro_a"]);
@@ -823,7 +823,8 @@ test("edges speak the rewrite's vocabulary and say each relation once", async ()
   const handle = store as PluginDatabaseAdmin;
   const kinds = await handle.query(`SELECT kind, count(*) AS n FROM edges GROUP BY kind ORDER BY kind`);
   expect(kinds.map((row) => [row["kind"], row["n"]])).toEqual([
-    ["addresses", 2], ["cites", 2], ["consolidates", 1], ["contradicts", 1], ["derived_from", 1], ["duplicates", 1],
+    ["addresses", 2n], ["cites", 2n], ["consolidates", 1n], ["contradicts", 1n], ["derived_from", 1n],
+    ["duplicates", 1n],
   ]);
   // reference_edge's `addresses` and frontier_proposal_hypothesis's row are the same relation; the
   // reference edge wins because it carries the real id and the note.
@@ -831,7 +832,7 @@ test("edges speak the rewrite's vocabulary and say each relation once", async ()
   expect(addressed["id"]).toBe("ref_4");
   expect(addressed["note"]).toBe("suggested change");
   const consolidates = await scalar(`SELECT * FROM edges WHERE kind = 'consolidates'`);
-  expect([consolidates["from_id"], consolidates["to_id"], consolidates["position"]]).toEqual(["fnd_a", "obs_a", 0]);
+  expect([consolidates["from_id"], consolidates["to_id"], consolidates["position"]]).toEqual(["fnd_a", "obs_a", 0n]);
 });
 
 test("a citation resolves to the session's selector, and keeps the digest when it cannot", async () => {
@@ -866,11 +867,11 @@ test("the operator's acts and Babel's votes arrive with their provenance", async
 
   const withdrawal = await scalar(`SELECT * FROM filings WHERE id = 'fil_2'`);
   expect([withdrawal["withdrawn"], withdrawal["supersedes_id"], withdrawal["author_kind"]])
-    .toEqual([1, "fil_1", "run"]);
+    .toEqual([1n, "fil_1", "run"]);
 
   const asked = await scalar(`SELECT * FROM feedback WHERE id = 'evr_2'`);
   expect([asked["stance"], asked["question"], asked["reason"]])
-    .toEqual(["disagree", 1, "ask Babel what it means"]);
+    .toEqual(["disagree", 1n, "ask Babel what it means"]);
 
   const vote = await scalar(`SELECT * FROM assessments WHERE id = 'evr_1'`);
   expect([vote["vote"], vote["role"], vote["revision_id"], vote["claim_id"], vote["lane"]])
@@ -885,7 +886,7 @@ test("the operator's acts and Babel's votes arrive with their provenance", async
 
   const status = await scalar(`SELECT * FROM status_events WHERE id = 'ste_2'`);
   expect([status["status"], status["seq"], status["actor_kind"], status["reason"]])
-    .toEqual(["promoted", 2, "run", "consolidated into a finding"]);
+    .toEqual(["promoted", 2n, "run", "consolidated into a finding"]);
 });
 
 test("a run is one row per run, from its newest receipt revision", async () => {
@@ -895,7 +896,7 @@ test("a run is one row per run, from its newest receipt revision", async () => {
 
   const explore = await scalar(`SELECT * FROM runs WHERE id = 'run-2'`);
   expect([explore["kind"], explore["closure"], explore["records"], explore["tokens"], explore["cost_usd"]])
-    .toEqual(["explore", "completed", 3, 2555525, 2.198]);
+    .toEqual(["explore", "completed", 3n, 2555525n, 2.198]);
   expect([explore["machine_id"], explore["recipe_id"], explore["profile"], explore["finished_at"]])
     .toEqual([HOST, "outcome-integrity", "code@2", "2026-09-02T10:00:00Z"]);
   expect(JSON.parse(String(explore["preparation"]))).toMatchObject({ id: "prep-1" });
