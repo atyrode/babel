@@ -175,14 +175,16 @@ async function claimRow(
   reserved: number,
   actual: number | null,
   grantedDaysAgo = 0,
+  jobId: string | null = null,
 ): Promise<void> {
   await db.run(
-    `INSERT INTO claims(id, record_id, role, lane, policy_version, run_id, fence, reserved_cost,
-       actual_cost, granted_at, expires_at, finished_at, outcome)
-     VALUES(?,?,'reception','weighted','1',?,1,?,?,?,?,?,?)`,
+    `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+       reserved_cost, actual_cost, granted_at, expires_at, finished_at, outcome)
+     VALUES(?,?,'reception','weighted','1',?,?,1,?,?,?,?,?,?)`,
     [
       id,
       "hyp_ffffffff",
+      jobId,
       runId,
       reserved,
       actual,
@@ -302,7 +304,8 @@ test("the budget refuses before any candidate is built", async () => {
 
   const batched = await deployment({ enabled: true, batchSize: 1 });
   await record(batched.db, "hyp_00000001", "hypothesis", 40);
-  await claimRow(batched.db, "asg_open", "cycle_1", 0.01, null);
+  // With a job behind it: a grant whose posting never landed is not a batch slot (#259).
+  await claimRow(batched.db, "asg_open", "cycle_1", 0.01, null, 0, "job_open");
   const held = await batched.coord.draw({ runId: "cycle_1", now: NOW });
   if (held.outcome !== "gap") throw new Error("the batch bound did not refuse");
   expect(held.gap.reason).toBe("batch");
@@ -657,6 +660,175 @@ test("a finish reconciles the reservation, reports an overrun, and accepts only 
   // The day is charged what was spent rather than what was reserved.
   const spend = await coord.spend(lapsed);
   expect(spend.total).toBeCloseTo(0.2, 10);
+});
+
+test("a fence read back out of the database settles the claim it names, bigint or not", async () => {
+  // Every caller reads the fence out of a query of its own — the loop's settlement, its reaper,
+  // the stop door — and the engine's database answers an INTEGER column with a BIGINT. Compared
+  // strictly against this store's number it refused the caller its own claim, and refused it
+  // silently: on 2026-09-13 that is a run that reads `stopped` with its batch slot still held.
+  const first = await oneAssignment();
+  const heldA = await first.coord.claim({
+    assignment: first.assignment,
+    runId: "run_a",
+    jobId: "job_a",
+    now: NOW,
+  });
+  if (heldA.outcome !== "granted") throw new Error(heldA.refusal.detail);
+  const finished = await first.coord.finish({
+    id: first.assignment.id,
+    runId: "run_a",
+    fence: 1n,
+    cost: 0,
+    outcome: "skipped",
+    now: NOW,
+  });
+  if (finished.outcome !== "finished") throw new Error(finished.refusal.detail);
+  expect(
+    (await first.db.query(`SELECT outcome FROM claims WHERE id = ?`, [first.assignment.id]))[0],
+  ).toEqual({ outcome: "skipped" });
+
+  const second = await oneAssignment();
+  const heldB = await second.coord.claim({
+    assignment: second.assignment,
+    runId: "run_b",
+    jobId: "job_b",
+    now: NOW,
+  });
+  if (heldB.outcome !== "granted") throw new Error(heldB.refusal.detail);
+  const abandoned = await second.coord.abandon({
+    id: second.assignment.id,
+    fence: 1n,
+    reason: "job_b was killed",
+    now: NOW,
+  });
+  expect(abandoned.outcome).toBe("abandoned");
+
+  // And a bigint that names another epoch is still refused: the coercion normalizes the shape,
+  // never the value.
+  const stale = await second.coord.abandon({
+    id: second.assignment.id,
+    fence: 2n,
+    reason: "a fence that is not this one",
+    now: NOW,
+  });
+  if (stale.outcome !== "refused") throw new Error("a fence that had moved was accepted");
+  expect(stale.refusal.reason).toBe("finished");
+});
+
+test("an abandoned claim is finished at what it reserved, and only its own live epoch is", async () => {
+  const { db, coord, assignment } = await oneAssignment();
+  const granted = await coord.claim({ assignment, runId: "run_a", jobId: "job_a", now: NOW });
+  if (granted.outcome !== "granted") throw new Error(granted.refusal.detail);
+
+  const abandoned = await coord.abandon({
+    id: assignment.id,
+    fence: 1,
+    reason: "the hub cancelled job_a",
+    now: NOW + 60_000,
+  });
+  expect(abandoned).toEqual({
+    outcome: "abandoned",
+    cost: granted.claim.reservedCost,
+    reason: "the hub cancelled job_a",
+  });
+
+  // The row is closed, and closed at the reservation: a job that died mid-review may have spent
+  // all of it and cannot say, so the day keeps the charge.
+  const row = await db.query<{ outcome: string; actual_cost: number; finished_at: string | null }>(
+    `SELECT outcome, actual_cost, finished_at FROM claims WHERE id = ?`,
+    [assignment.id],
+  );
+  expect(row[0]?.outcome).toBe("abandoned");
+  expect(row[0]?.actual_cost).toBeCloseTo(granted.claim.reservedCost, 10);
+  expect(row[0]?.finished_at).toBe(new Date(NOW + 60_000).toISOString());
+  expect((await coord.spend(NOW)).total).toBeCloseTo(granted.claim.reservedCost, 10);
+
+  // A second abandonment does not charge the day twice.
+  const again = await coord.abandon({ id: assignment.id, fence: 1, reason: "again", now: NOW });
+  if (again.outcome !== "refused") throw new Error("a finished claim was abandoned twice");
+  expect(again.refusal.reason).toBe("finished");
+  expect((await coord.spend(NOW)).total).toBeCloseTo(granted.claim.reservedCost, 10);
+
+  const missing = await coord.abandon({ id: "asg_nothing", fence: 1, reason: "reaped", now: NOW });
+  if (missing.outcome !== "refused") throw new Error("a claim that does not exist was abandoned");
+  expect(missing.refusal.reason).toBe("not-found");
+});
+
+test("abandoning a stale epoch never closes the claim its successor holds", async () => {
+  const { coord, assignment } = await oneAssignment();
+  const first = await coord.claim({ assignment, runId: "run_a", jobId: "job_a", now: NOW });
+  if (first.outcome !== "granted") throw new Error(first.refusal.detail);
+  const later = first.claim.expiresAt + 1000;
+  const second = await coord.claim({ assignment, runId: "run_b", jobId: "job_b", now: later });
+  if (second.outcome !== "granted") throw new Error(second.refusal.detail);
+  expect(second.claim.fence).toBe(2);
+
+  // The reaper catches up with the dead first job after the takeover: its epoch is gone, and
+  // closing the live successor in its name would abandon a review that is running.
+  const stale = await coord.abandon({
+    id: assignment.id,
+    fence: 1,
+    reason: "job_a was never reported again",
+    now: later + 1000,
+  });
+  if (stale.outcome !== "refused") throw new Error("a stale epoch closed the live claim");
+  expect(stale.refusal.reason).toBe("taken-over");
+  const held = await coord.renew({ id: assignment.id, runId: "run_b", fence: 2, now: later + 2000 });
+  expect(held.outcome).toBe("renewed");
+});
+
+test("a batch is held by claims with a job, and abandoning four dead ones admits the next draw", async () => {
+  const { db, coord } = await deployment({
+    enabled: true,
+    batchSize: 4,
+    perCycleCost: 0.4,
+    dailyCost: 5,
+  });
+  const id = await record(db, "hyp_00000001", "hypothesis", 40);
+  await filing(db, id, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+  for (let n = 1; n <= 4; n += 1) {
+    await claimRow(db, `asg_ghost${String(n)}`, "cycle_dead", 0.1, null, 0, `job_${String(n)}`);
+  }
+
+  // Four jobs the operator killed: their leases run to 14:15Z, and until #259 that is how long
+  // the deployment reviewed nothing.
+  const blocked = await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n });
+  if (blocked.outcome !== "gap") throw new Error("a full batch drew work");
+  expect(blocked.gap.reason).toBe("batch");
+
+  for (let n = 1; n <= 4; n += 1) {
+    const abandoned = await coord.abandon({
+      id: `asg_ghost${String(n)}`,
+      fence: 1,
+      reason: `job_${String(n)} was killed`,
+      now: NOW,
+    });
+    expect(abandoned.outcome).toBe("abandoned");
+  }
+
+  expect(drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n })).recordId).toBe(id);
+  // And what they reserved is still charged to the day, so a crash loop cannot spend it twice.
+  expect((await coord.spend(NOW)).total).toBeCloseTo(0.4, 10);
+});
+
+test("a grant whose job was never posted holds no batch slot", async () => {
+  const { db, coord } = await deployment({ enabled: true, batchSize: 1, perCycleCost: 0.4 });
+  const id = await record(db, "hyp_00000001", "hypothesis", 40);
+  await filing(db, id, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+
+  // `claim` reserves before the conductor posts the job, so a refused posting leaves this: a
+  // grant with no worker. It is the reaper's to release, and never a reason to refuse a draw.
+  await claimRow(db, "asg_unposted", "cycle_dead", 0.1, null, 0, null);
+  expect(drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n })).recordId).toBe(id);
+
+  // The same row with a job behind it is work in progress, and does hold the batch.
+  await claimRow(db, "asg_running", "cycle_dead", 0.1, null, 0, "job_running");
+  const blocked = await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n });
+  if (blocked.outcome !== "gap") throw new Error("a held batch drew work");
+  expect(blocked.gap.reason).toBe("batch");
 });
 
 test("the per-cycle ceiling bounds one cycle's whole day and the daily ceiling bounds the rest", async () => {

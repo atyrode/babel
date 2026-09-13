@@ -387,10 +387,22 @@ export type ClaimResult =
   | { readonly outcome: "granted"; readonly claim: Claim }
   | { readonly outcome: "refused"; readonly refusal: Refusal };
 
+/**
+ * A fence as its holder has it. Every caller of the three verbs below reads the fence out of a
+ * query of its own — the loop's settlement and its reaper, the stop door — and the engine's
+ * database answers an INTEGER column with a BIGINT, while this store's own `Claim.fence` is a
+ * number. Comparing the two with `!==` refuses the caller the claim it is holding, and refuses
+ * it SILENTLY, because to every one of those callers a refusal is nothing to do: the run reads
+ * `stopped` and the claim keeps its batch slot until the lease expires, which is exactly the
+ * ghost this coordinator exists to prevent. So the verbs take the fence in either shape and
+ * normalize it once, here, rather than asking fourteen call sites to remember.
+ */
+export type Fence = number | bigint;
+
 export interface RenewRequest {
   readonly id: string;
   readonly runId: string;
-  readonly fence: number;
+  readonly fence: Fence;
   readonly now?: number;
 }
 
@@ -405,7 +417,7 @@ export type Closure = (typeof CLOSURES)[number];
 export interface FinishRequest {
   readonly id: string;
   readonly runId: string;
-  readonly fence: number;
+  readonly fence: Fence;
   readonly cost: number;
   readonly outcome: Closure;
   readonly now?: number;
@@ -423,6 +435,24 @@ export type FinishResult =
     }
   | { readonly outcome: "refused"; readonly refusal: Refusal };
 
+/**
+ * What ends a claim whose worker is not coming back: a job the hub killed, a posting a machine
+ * refused, a grant whose job was never made. There is no cost to report — that is the point of
+ * it — so the reservation is what gets charged, and `reason` is the sentence the cycle's report
+ * carries. The row itself keeps only the outcome and the spend: the claims table is a ledger,
+ * and prose in a ledger column is prose nobody queries.
+ */
+export interface AbandonRequest {
+  readonly id: string;
+  readonly fence: Fence;
+  readonly reason: string;
+  readonly now?: number;
+}
+
+export type AbandonResult =
+  | { readonly outcome: "abandoned"; readonly cost: number; readonly reason: string }
+  | { readonly outcome: "refused"; readonly refusal: Refusal };
+
 /** What the day already owes: reported cost where a claim settled, the full reservation where it
  *  did not. An expired lease says nothing about what it spent, so releasing it as zero would let
  *  one abandoned attempt authorize a second for free. */
@@ -438,6 +468,7 @@ export interface Coordinator {
   claim(request: ClaimRequest): Promise<ClaimResult>;
   renew(request: RenewRequest): Promise<RenewResult>;
   finish(request: FinishRequest): Promise<FinishResult>;
+  abandon(request: AbandonRequest): Promise<AbandonResult>;
   spend(now?: number): Promise<Spend>;
 }
 
@@ -707,9 +738,19 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     return { day, total, byRun };
   }
 
+  /**
+   * How many batch slots are held right now. A claim is a slot only while a JOB stands behind
+   * it: a row whose `job_id` is NULL is a grant whose posting never landed (`claim` reserves
+   * before the conductor calls `jobs.execute`), and a grant with no worker is not work in
+   * progress. Counting it would let a refused posting hold a quarter of the cycle's batch for a
+   * whole lease — the ghost of F3, arriving through the one door the settle path cannot see.
+   * Releasing it is the conductor reaper's job (`server/conductor.ts`); refusing to count it is
+   * this one's.
+   */
   async function openClaims(moment: number): Promise<number> {
     const rows = await db.query(
-      `SELECT COUNT(*) AS open FROM claims WHERE finished_at IS NULL AND expires_at > ?`,
+      `SELECT COUNT(*) AS open FROM claims
+        WHERE finished_at IS NULL AND expires_at > ? AND job_id IS NOT NULL`,
       [iso(moment)],
     );
     return count(rows[0]?.["open"]);
@@ -1749,6 +1790,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
    */
   async function renew(request: RenewRequest): Promise<RenewResult> {
     const moment = request.now ?? now();
+    const fence = count(request.fence);
     const policy = (await policyInForce()).policy;
     if (policy.leaseSeconds <= 0) {
       return {
@@ -1775,12 +1817,12 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         },
       };
     }
-    if (held.runId !== request.runId || held.fence !== request.fence) {
+    if (held.runId !== request.runId || held.fence !== fence) {
       return {
         outcome: "refused",
         refusal: {
           reason: "taken-over",
-          detail: `assignment ${request.id} is held by run ${held.runId} at fence ${String(held.fence)}, not by ${request.runId} at fence ${String(request.fence)}`,
+          detail: `assignment ${request.id} is held by run ${held.runId} at fence ${String(held.fence)}, not by ${request.runId} at fence ${String(fence)}`,
         },
       };
     }
@@ -1800,7 +1842,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         sql: `UPDATE claims SET expires_at = ?
                WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
                RETURNING expires_at`,
-        params: [iso(extended), request.id, request.runId, request.fence],
+        params: [iso(extended), request.id, request.runId, fence],
       },
     ]);
     const row = rows[0]?.[0];
@@ -1828,6 +1870,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
    */
   async function finish(request: FinishRequest): Promise<FinishResult> {
     const moment = request.now ?? now();
+    const fence = count(request.fence);
     if (!Number.isFinite(request.cost) || request.cost < 0) {
       return {
         outcome: "refused",
@@ -1847,7 +1890,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     if (held.finishedAt !== null) {
       if (
         held.runId === request.runId &&
-        held.fence === request.fence &&
+        held.fence === fence &&
         held.actualCost === request.cost
       ) {
         return {
@@ -1865,12 +1908,12 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         },
       };
     }
-    if (held.runId !== request.runId || held.fence !== request.fence) {
+    if (held.runId !== request.runId || held.fence !== fence) {
       return {
         outcome: "refused",
         refusal: {
           reason: "taken-over",
-          detail: `assignment ${request.id} has been taken over by run ${held.runId} at fence ${String(held.fence)}, so the result from ${request.runId} at fence ${String(request.fence)} is refused`,
+          detail: `assignment ${request.id} has been taken over by run ${held.runId} at fence ${String(held.fence)}, so the result from ${request.runId} at fence ${String(fence)} is refused`,
         },
       };
     }
@@ -1879,7 +1922,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         sql: `UPDATE claims SET finished_at = ?, actual_cost = ?, outcome = ?
                WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
                RETURNING reserved_cost`,
-        params: [iso(moment), request.cost, request.outcome, request.id, request.runId, request.fence],
+        params: [iso(moment), request.cost, request.outcome, request.id, request.runId, fence],
       },
     ]);
     const row = rows[0]?.[0];
@@ -1901,12 +1944,81 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     };
   }
 
+  /**
+   * Ends a claim whose worker is not coming back.
+   *
+   * A finish reconciles a reservation against what a run reported; there is nothing to
+   * reconcile here, because the thing that would have reported is gone — killed, interrupted,
+   * refused by the machine, or never posted at all. So the reservation stands, charged in full
+   * exactly as the superseded epoch's row is: a job that died mid-review may well have spent
+   * every cent of it and cannot say, and releasing at zero would let a crash loop spend the
+   * day's allowance many times over.
+   *
+   * What this buys over simply letting the lease run out is the FINISH: an abandoned claim
+   * holds no batch slot and withholds no role, so the next cycle draws where the dead one stood
+   * instead of waiting out a lease that may be an hour long. That is the whole of #259.
+   *
+   * It takes no `runId`. A finish is the holder reporting its own result and must prove it is
+   * the holder; an abandonment is the deployment observing that nobody holds this any more, and
+   * the fence is what says which epoch is being observed. A fence that has moved is refused:
+   * the assignment belongs to a later holder, and closing this epoch would close theirs.
+   */
+  async function abandon(request: AbandonRequest): Promise<AbandonResult> {
+    const moment = request.now ?? now();
+    const fence = count(request.fence);
+    const held = await readClaim(request.id);
+    if (held === null) {
+      return {
+        outcome: "refused",
+        refusal: { reason: "not-found", detail: `no assignment ${request.id}` },
+      };
+    }
+    if (held.finishedAt !== null) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "finished",
+          detail: `assignment ${request.id} was finished by run ${held.runId} at fence ${String(held.fence)} as ${held.outcome ?? "nothing"}, so there is nothing left to abandon`,
+        },
+      };
+    }
+    if (held.fence !== fence) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "taken-over",
+          detail: `assignment ${request.id} is held by run ${held.runId} at fence ${String(held.fence)}, so the epoch at fence ${String(fence)} is not this claim`,
+        },
+      };
+    }
+    const rows = await db.batch([
+      {
+        sql: `UPDATE claims SET finished_at = ?, actual_cost = reserved_cost, outcome = 'abandoned'
+               WHERE id = ? AND fence = ? AND finished_at IS NULL
+               RETURNING reserved_cost`,
+        params: [iso(moment), request.id, fence],
+      },
+    ]);
+    const row = rows[0]?.[0];
+    if (row === undefined) {
+      return {
+        outcome: "refused",
+        refusal: {
+          reason: "taken-over",
+          detail: `assignment ${request.id} moved before the abandonment landed`,
+        },
+      };
+    }
+    return { outcome: "abandoned", cost: count(row["reserved_cost"]), reason: request.reason };
+  }
+
   return {
     policy: policyInForce,
     draw,
     claim,
     renew,
     finish,
+    abandon,
     spend: async (moment?: number) => spendOn(moment ?? now()),
   };
 }
