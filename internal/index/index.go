@@ -296,8 +296,9 @@ func (x *Index) init() error {
 }
 
 // indexBusyPragma is how long an index connection waits for the write lock:
-// ten minutes, sized for a fan of concurrent evaluators rather than one.
-const indexBusyPragma = "PRAGMA busy_timeout=600000"
+// one minute: long enough for a peer to finish one session, short enough that a
+// wedged holder costs a draw sixty seconds rather than a fan its whole window.
+const indexBusyPragma = "PRAGMA busy_timeout=60000"
 
 // isBusy reports a lock wait that ran out, which Open must not read as a
 // damaged file.

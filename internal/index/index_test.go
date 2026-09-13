@@ -418,9 +418,25 @@ func TestReindexSkipsUnchangedSessionAndReplacesChanged(t *testing.T) {
 	if err := os.WriteFile(target.Path, appended, 0o600); err != nil {
 		t.Fatalf("append to %s: %v", target.Path, err)
 	}
-	future := info.ModTime().Add(time.Second)
-	if err := os.Chtimes(target.Path, future, future); err != nil {
-		t.Fatalf("advance mtime of %s: %v", target.Path, err)
+	// A session whose change is still fresh is a session still being
+	// written: it is left as recorded until it has been quiet, so a fan of
+	// indexers does not re-read a live file under the write lock on every
+	// draw. "Changed and live" is the current clock; "changed and settled"
+	// is a change ten minutes old.
+	live := time.Now()
+	if err := os.Chtimes(target.Path, live, live); err != nil {
+		t.Fatalf("touch %s: %v", target.Path, err)
+	}
+	res, err = idx.IndexSession(ctx, target)
+	if err != nil {
+		t.Fatalf("reindex live: %v", err)
+	}
+	if !res.Skipped || res.Replaced {
+		t.Errorf("reindex of a still-live changed session = %+v, want deferred", res)
+	}
+	settled := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(target.Path, settled, settled); err != nil {
+		t.Fatalf("settle mtime of %s: %v", target.Path, err)
 	}
 
 	res, err = idx.IndexSession(ctx, target)

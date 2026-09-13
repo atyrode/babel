@@ -102,6 +102,20 @@ func (x *Index) IndexSession(ctx context.Context, s event.Stream) (Result, error
 		res.Events = prior.events
 		return res, nil
 	}
+	if found && time.Since(info.ModTime()) < liveSessionGrace {
+		// A session still being written is re-indexed only once it has
+		// been quiet. Its size and mtime move under every indexer that
+		// looks, so each draw would otherwise re-read and re-insert the
+		// whole file under the write lock - a 240 MB live session did
+		// exactly that to a fan of twelve reviews on 2026-09-13, serially,
+		// for the length of a usage window. The version already recorded
+		// stands until the file settles; a session never seen is indexed
+		// as it is, so a new one reaches the corpus on its first draw.
+		res.Skipped = true
+		res.Records = prior.records
+		res.Events = prior.events
+		return res, nil
+	}
 
 	file, err := os.Open(s.Path)
 	if err != nil {
@@ -244,6 +258,12 @@ func deleteSession(ctx context.Context, tx *sql.Tx, sessionID int64) error {
 // insertSession records the session row and reports whether this call made
 // it. A path already present is another indexer's row, committed between the
 // caller's lookup and this write; it is left alone and inserted reports false.
+// liveSessionGrace is how long a changed session must have been quiet before
+// it is re-indexed: long enough that a harness flushing a turn is not
+// mistaken for a finished file, short enough that a real session lands in the
+// corpus a few minutes after its last write.
+const liveSessionGrace = 2 * time.Minute
+
 func insertSession(ctx context.Context, tx *sql.Tx, s event.Stream, size, mtime int64) (id int64, inserted bool, err error) {
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO sessions(path, harness, adapter_schema, source_id, size, mtime_unixnano, records, events)
