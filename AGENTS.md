@@ -164,6 +164,9 @@ may supply missing capability proof, but a local skip is not a pass.
 
 - **Go:** require formatting/static/build and Go suites above; concurrency changes also
   require the race row.
+- **Drains and harvests:** read `docs/runbook.md` §11 and the open atyrode/babel issues labelled
+  `drain` before starting one; the pre-flight, the 90-second go/no-go and the reporting rules
+  there are mandatory, for an agent as for a person.
 - **Web:** require web setup/typecheck/build and actual rendered interaction. Run browser
   acceptance for affected browser behavior, especially bootstrap nonce, address-bar and
   history handling. Commit rebuilt `web/dist` with source changes: `web/embed.go` embeds

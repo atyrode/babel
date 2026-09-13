@@ -1148,6 +1148,104 @@ contract its assessments were formed under.
 
 ---
 
+## 11. Draining a usage window
+
+**Nothing in this section has been run on a real hub.** It was written after the 2026-09-13
+drain (`docs/postmortem-2026-09-13-drain.md`), which recorded 50 reviews in two hours and
+fourteen minutes and moved the target account's 7-day window by zero percent. Every procedure
+below is an **OPERATOR STEP** until a rehearsal on a real hub records host, date and observed
+output here; until the drain door ships there is no supported way to run one (see *Interim*).
+
+### 11.1 What a drain is
+
+A drain spends a chosen account's remaining usage window, before its reset, on Babel's own work.
+It is measured in the tokens and dollars the hub metered on that account (ADR 0038,
+`usage.inference` on every settled job), never in the provider's percentage, which lags by
+minutes and moves in whole points. The lane is **explore**: an exploration writes hypotheses,
+findings and proposals and is output-heavy, which is what a metered window charges for. It is
+never **evaluate**: a review reads a great deal and says one word (on 2026-09-13, 152.7 MB sent
+against 2.0 MB received across 21 sockets), so even a flawless review fan cannot move a window.
+A drain without a target and a deadline is not a drain; it is a loop.
+
+### 11.2 Pre-flight (T-24h, rehearsal)
+
+> **OPERATOR STEP — pre-flight (not executed).**
+> **Prerequisites:** a reachable hub with the Babel plugin installed, one enrolled machine whose
+> owner runs the inference service, and the account to drain named in advance. Each item has an
+> observable success; an item without it is a no-go.
+>
+> 1. `atyrode context show` reports the OMP auth broker `active`. On 2026-09-13 it was `failed`
+>    from 11:07 to 11:24 and every engine launched in that window died before its ready frame.
+> 2. The drain machine's owner has the `atyrode.babel.inference` policy installed with `prices`
+>    for the profile's model, and the operator has consented `services:invoke` at the current
+>    artifact revision. **Success:** Watch's launch preview shows the price and the ceiling, not
+>    "install the policy" (babel#256).
+> 3. The account the policy's `credential.ref` resolves to is the one to drain. Until a policy
+>    can hold several credentials, one policy is one account: a different account means a
+>    different machine or a policy edit by the owner, made before the day, never during it.
+> 4. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names
+>    a blocker for this machine is a no-go.
+> 5. A five-minute rehearsal: `drain.start` with `concurrent: 2`, `target.costMicros` equal to
+>    one review's price, `deadline` = now + 5 min. **Success:** two jobs reach the stage
+>    `at the model` within 90 s of launch and settle with `usage.inference.calls > 0`.
+
+### 11.3 Go / no-go (T-0)
+
+> **OPERATOR STEP — go / no-go (not executed).**
+> Start with the rehearsal's settings scaled to the planned concurrency. If no job reports the
+> stage `at the model` within **90 seconds** of the first launch, stop (`drain.stop`) and touch
+> nothing else until the reason has been read from the job journal. No sleeps, no restarts, no
+> policy edits while jobs are in flight. On 2026-09-13 no engine process existed for 75 minutes
+> and nobody looked until the operator asked.
+
+### 11.4 Watching
+
+The Watch drain panel shows, for the running drain: jobs live, jobs at the model, tokens per
+minute, cost so far against the target, ETA to the target against the deadline, and refusals by
+reason. Each number has one thing it must do: jobs at the model must be non-zero within 90 s;
+tokens per minute must be non-zero within the first inference call; cost so far must rise
+monotonically toward the target; ETA must stay before the deadline. **Tokens per minute flat for
+three minutes while jobs read "at the model" is a no-go: stop and read the journal.** A process
+count, a socket count, or a percentage read by a home-made script is not any of these numbers.
+
+### 11.5 Stopping
+
+> **OPERATOR STEP — stop (not executed).**
+> `drain.stop` cancels in-flight jobs through `jobs.cancel`; the coordinator releases their
+> claims when the hub settles them; the panel shows the final totals from `usage.inference`.
+> **Never `pkill` a job.** The hub owns the process, and a killed worker's claim holds its batch
+> slot for the whole lease: on 2026-09-13 five rounds of kills under a 5200 s lease left ~70
+> ghost claims on the top-ranked subjects and the last fan could not draw at all. The
+> 2026-09-10 README-helena burn notes said the same thing; it was violated five times anyway.
+
+### 11.6 Rules for whoever drives it (human or agent)
+
+Mandatory, and each one was broken on 2026-09-13.
+
+1. The asked-for thing is measured directly: tokens the hub metered on the named account. Never
+   an adjacent thing (process counts, TLS sockets, a percentage read by a home-made script).
+2. A claim of progress carries the number and its source.
+3. No command that blocks the driver for more than 15 s during a deadline.
+4. No restart without a stop that releases claims.
+5. No policy, lease or batch edit mid-drain.
+6. No feature work during a drain: route around it or stop.
+7. Every failure met is filed with the `drain` label before the session ends, and the next
+   drain's pre-flight reads them.
+
+### 11.7 Interim
+
+Until the drain door ships (the atyrode/babel drain epic, filed with the post-mortem), there is
+no supported way to drain: the Go product is frozen (babel#250) and its loop scripts
+(`~/.config/babel/review-*.sh`, `usage-window.py`, `evaluate-loop.sh`, `explore-fleet.sh`,
+`sync-loop.sh`) are retired with it. Two things the 2026-09-13 drain left behind on the Go
+deployment remain owed and are **OPERATOR STEPS** before any Go conductor run: the evaluation
+policy is `eval-policy-10` (batch 256, lease 5200 s, per-cycle 100 USD) and must go back to
+batch 4 / lease 900 s / per-cycle 25 through the browser's **Evaluation → Review policy** form;
+the analysis profile is rev 6 (victorballu, opus, xhigh, advisor sonnet) and is the operator's
+to keep or revert.
+
+---
+
 ## What remains operator-gated
 
 The dated historical observations above do not establish current fleet state.
