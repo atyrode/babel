@@ -383,6 +383,33 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   else, so an expired assignment is still taken over under a new fence rather
   than resurrected, and a renewal charges nothing further against the day.
 
+### Fixed
+
+- **One validator for a review submission, and a refused review is spend.** The
+  rule about scope — an outcome or a criterion result needs the setting it was
+  observed in and the time it was observed at, and a setting with no claim
+  about it scopes nothing — was stated twice in the plugin and told to only one
+  of the two roles that can break it: `machine/engine/results.ts` refused a
+  criterion result with no environment, the prompt said so to the outcome role
+  alone, and the store wrote whatever an `assessments` row carried. The Go tree
+  stated it three times and the three disagreed, which is how the drain of
+  2026-09-13 paid for evidence-role reviews and had them refused at submit: an
+  evidence check is exactly a criterion result with no outcome
+  (`docs/postmortem-2026-09-13-drain.md`, F8). `acceptReviewResult` is now the
+  one acceptance — the engine's per-role JSON Schema is generated from the same
+  field table, the prompt interpolates the single sentence of the rule, and
+  `store/acts.ts`'s `refuseRow` runs it over the payload of every assessment
+  the hub ingests, so a producer and the store cannot disagree about one
+  payload. A refused submission now carries its own refusal code into the
+  receipt — `schema`, `support` or `empty`, not one `result-schema` for all
+  three — beside what the run cost, so the loop finishes the claim with the
+  money the refused review actually spent. Proof: an evidence result with
+  `results` and an `environment` and no `outcome` is accepted by the validator,
+  written by a real run against the fake engine, and accepted by the store from
+  the row that run wrote; a contribution with an environment alone is refused
+  `schema` on both sides, under the same code; a refused submission's receipt
+  carries `schema:` and the engine's own $0.0123 (#263).
+
 ## [0.2.6] - 2026-09-12
 
 ### Added

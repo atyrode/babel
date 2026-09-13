@@ -22,7 +22,7 @@
 */
 
 import { TOOL_FETCH, TOOL_SEARCH, TOOL_SUBMIT, type HostTool } from "./client.ts";
-import type { Role, Stage } from "./results.ts";
+import { REVIEW_SCOPE_RULE, type Role, type Stage } from "./results.ts";
 
 // ---------------------------------------------------------------------------- versions
 
@@ -436,6 +436,8 @@ Record one entry in \`results\` per criterion you checked, naming the criterion
 id from the record above. Satisfied requires evidence: a criterion you believe
 holds but cannot cite is unsatisfied with your uncertainty recorded, not
 satisfied on your word. A criterion you did not check gets no entry.
+
+${REVIEW_SCOPE_RULE}
 `;
 
 const INSTRUCTIONS_REVIEW_OUTCOME = `
@@ -443,10 +445,7 @@ Set \`outcome\` only from evidence you cite: implemented, verified, partial,
 contradicted or unverifiable. Verified means every criterion you listed is
 satisfied and evidenced. Unverifiable is the honest answer when the checks that
 would settle it are ones you cannot make from here, and it is strictly better
-than a guess at verified; say in \`uncertainty\` what you could not check. Any
-outcome or criterion result also needs \`environment\`, the setting you
-observed, and \`as_of\`, when you observed it: a result with no stated scope
-reads as a claim about every setting at every time.
+than a guess at verified; say in \`uncertainty\` what you could not check.
 `;
 
 const INSTRUCTIONS_REVIEW_COMPARISON = `

@@ -30,7 +30,6 @@ import { z } from "zod";
 import { ROLES, type Receipt } from "../contract.ts";
 import { runEngineJob, type EngineOutcome } from "./engine/client.ts";
 import {
-  ENGINE_FAILURES,
   ProfileRefSchema,
   SANDBOXED_RUN,
   UNSANDBOXED,
@@ -326,6 +325,13 @@ async function runReview(
   if (input.caps.handshakeMs > 0) limits.handshakeMs = input.caps.handshakeMs;
 
   const directory = await mkdtemp(join(deps.workDir ?? tmpdir(), "babel-engine-"));
+  /**
+   * Every submission the role refused, newest last. The code matters as much as the message:
+   * `schema`, `support` and `empty` are what an operator acts on differently, and a receipt that
+   * called all three `result-schema` told him only that the model had said something wrong. The
+   * list is emptied by an accepted submission, so its last entry says why THIS run has no result.
+   */
+  const refusals: ResultRefusal[] = [];
   try {
     const outcome = await runEngineJob(
       {
@@ -338,9 +344,12 @@ async function runReview(
         accept: (payload) => {
           try {
             parseReviewResult(role, payload, self);
+            refusals.length = 0;
             return "";
           } catch (error) {
-            return error instanceof ResultRefusal ? error.message : String(error);
+            if (!(error instanceof ResultRefusal)) return String(error);
+            refusals.push(error);
+            return error.message;
           }
         },
       },
@@ -359,13 +368,14 @@ async function runReview(
       },
     );
     if (outcome.closure === "failed" || outcome.result === null) {
-      const refused = outcome.tools.filter((decision) => !decision.allowed && decision.tool.endsWith("submit_result"));
-      const last = refused[refused.length - 1];
-      // A refused submission is a recipe to review, not a boundary that broke, so it carries the
-      // result-schema code and the reason the model was given.
+      // A refused submission is a recipe to review, not a boundary that broke, so the reason
+      // carries the refusal's own code — the one `REFUSALS` names and #265's park heuristic
+      // reads — and the sentence the model was given. The run still wrote a receipt with its
+      // cost, so `settle()` finishes the claim with what the refused review actually spent.
+      const refused = refusals[refusals.length - 1];
       const reason =
-        last !== undefined
-          ? `${ENGINE_FAILURES.resultSchema}: ${last.reason}`
+        refused !== undefined
+          ? `${refused.refusal}: ${refused.message}`
           : outcome.failure !== null
             ? `${outcome.failure.code}: ${outcome.failure.message}`
             : "the review submitted no assessment";
@@ -423,24 +433,11 @@ function record(input: EvaluateInput, result: ReviewResult, role: Role, by: Auth
         vote: result.vote === "" ? null : result.vote,
         lane: assignment.lane,
         claimId: assignment.id,
+        // The accepted result verbatim, plus the assignment's own facts. Re-listing its fields
+        // here would be a second declaration of the review shape, and the row would drift from
+        // the contract the store accepts it under (#263).
         payload: {
-          vote: result.vote,
-          contributions: result.contributions,
-          outcome: result.outcome,
-          results: result.results,
-          environment: result.environment,
-          asOf: result.asOf,
-          uncertainty: result.uncertainty,
-          skip: result.skip,
-          filing: result.filing,
-          topic: result.topic,
-          noTopic: result.noTopic,
-          noChange: result.noChange,
-          consolidate: result.consolidate,
-          supersede: result.supersede,
-          retire: result.retire,
-          promote: result.promote,
-          keep: result.keep,
+          ...result,
           blinded: assignment.blinded,
           corrects: assignment.corrects,
           policyVersion: assignment.policyVersion,

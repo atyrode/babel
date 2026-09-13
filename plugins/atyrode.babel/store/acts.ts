@@ -1,6 +1,12 @@
 import { z } from "zod";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
-import { INTEREST_STATES, type Ruling } from "../contract.ts";
+import { INTEREST_STATES, RoleSchema, type Ruling } from "../contract.ts";
+import {
+  acceptReviewResult,
+  REFUSALS,
+  ResultRefusal,
+  type RefusalCode,
+} from "../machine/engine/results.ts";
 import { SCHEMA_V1 } from "./schema.ts";
 import {
   PolicySchema,
@@ -64,6 +70,54 @@ export class ActRefused extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ActRefused";
+  }
+}
+
+// ---------------------------------------------------------------------------- what a job wrote
+
+/** Why the store will not write a row a machine half produced. */
+export interface RowRefusal {
+  /** The producer's own refusal vocabulary (`schema`, `support`, `empty`, …). */
+  readonly code: RefusalCode;
+  readonly message: string;
+}
+
+/**
+ * The store's acceptance of one row a finished job wrote, or null when it accepts it.
+ *
+ * An `assessments` row carries a review submission, and the store validates it with THE SAME
+ * validator the engine's per-role JSON Schema is generated from (`machine/engine/results.ts`).
+ * That identity is the point: the Go tree stated the environment/outcome/criterion-results rule
+ * three times — in the review contract, in the store's acceptance and in what it counted as
+ * empty — and on 2026-09-13 an evidence review was paid for and then refused at submit because
+ * the three disagreed (docs/postmortem-2026-09-13-drain.md, F8). A payload the model's schema
+ * admits is a payload this accepts, under the same code, because it is one function.
+ *
+ * A refusal here is the row's, not the run's: the claim is settled from the receipt the machine
+ * wrote, which carries the closure and the cost whether the submission stood or not.
+ */
+export function refuseRow(table: string, row: Readonly<Record<string, unknown>>): RowRefusal | null {
+  if (table !== "assessments") return null;
+  const role = RoleSchema.safeParse(row["role"]);
+  if (!role.success) {
+    return {
+      code: REFUSALS.schema,
+      message: `${JSON.stringify(row["role"])} is not a review role this build knows`,
+    };
+  }
+  const payload = row["payload"];
+  let decoded: unknown;
+  try {
+    decoded = typeof payload === "string" ? JSON.parse(payload) : payload;
+  } catch {
+    return { code: REFUSALS.schema, message: "the assessment's payload is not JSON" };
+  }
+  try {
+    acceptReviewResult(role.data, decoded);
+    return null;
+  } catch (error) {
+    if (error instanceof ResultRefusal) return { code: error.refusal, message: error.message };
+    throw error;
   }
 }
 

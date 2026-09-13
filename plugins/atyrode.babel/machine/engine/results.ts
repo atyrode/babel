@@ -14,6 +14,15 @@
   fields it may not fill — a challenger is never offered a `consolidations` field it would be
   refused for filling — and because each schema is strict, a payload that carried one anyway is a
   refused submission with the reason, never a quietly dropped field.
+
+  BOTH HALVES VALIDATE FROM HERE. The machine half runs `parseReviewResult` over what the model
+  submitted; the store half runs `acceptReviewResult` over the normalized result an `assessments`
+  row carries, through `store/acts.ts`. They are one function over one field table, because the
+  Go tree's worst evaluation bug was three copies of one rule: the review contract required an
+  environment on criterion results, the store refused any environment without an outcome, and a
+  results-only assessment counted as empty — so an evidence review was paid for and then refused
+  at submit (docs/postmortem-2026-09-13-drain.md, F8). Nothing here touches a process, a file or
+  a database, which is what lets the hub's half import it.
 */
 
 import { z } from "zod";
@@ -423,6 +432,18 @@ export type Role = (typeof ROLES)[number];
 /** The observed-outcome vocabulary of §4.12's full lifecycle. */
 const OUTCOMES = ["implemented", "verified", "partial", "contradicted", "unverifiable"] as const;
 
+/**
+ * §4.12's scope rule, stated ONCE: the prompt tells the model this sentence, the refusal reads it
+ * back, and `acceptReviewResult` enforces it. A second wording of it — in the prompt, in the
+ * store, in the engine's schema — is a second rule, which is exactly what cost the drain of
+ * 2026-09-13 its evidence-role reviews.
+ */
+export const REVIEW_SCOPE_RULE =
+  "Any outcome or criterion result also needs `environment`, the setting observed, and `as_of`, " +
+  "when it was observed: a result with no stated scope reads as a claim about every setting at " +
+  "every time, and an environment or an as-of time with neither an outcome nor a criterion " +
+  "result beside it scopes nothing.";
+
 /** The contribution vocabulary: optional material beside a vote, or the whole of an assessment. */
 const CONTRIBUTION_KINDS = [
   "comment",
@@ -584,26 +605,36 @@ const ROLE_AUTHORITY: Record<Role, RoleAuthority> = {
   backlog: { vote: false, outcome: false, criteria: false, alternatives: false, filing: false, backlog: true },
 };
 
-/** One accepted review submission, normalized. Absence is a statement everywhere in it. */
-export interface ReviewResult {
-  vote: string;
-  contributions: Contribution[];
-  outcome: string;
-  results: CriterionResult[];
-  environment: string;
-  asOf: string;
-  uncertainty: string;
-  skip: string;
-  filing: FiledUnder | null;
-  topic: TopicProposal | null;
-  noTopic: { reason: string } | null;
-  noChange: NoChange | null;
-  consolidate: BacklogConsolidation | null;
-  supersede: { by: string; reason: string } | null;
-  retire: { reason: string } | null;
-  promote: Promotion | null;
-  keep: { reason: string } | null;
-}
+/**
+ * One accepted review submission, normalized: the shape an `assessments` row carries and the
+ * shape BOTH halves validate. Absence is a statement everywhere in it, so every field is present
+ * and every answer is either the thing or `null` — a reader never asks whether a role could have
+ * emitted one.
+ *
+ * It strips rather than refuses what it does not name, because the row's payload carries the
+ * assignment's own facts beside the result — the policy and context versions, the recipe, whether
+ * the review was taken blind — and those are the store's rather than the model's.
+ */
+const ReviewResultSchema = z.object({
+  vote: z.enum(["", ...VOTES]).default(""),
+  contributions: z.array(ContributionSchema).default([]),
+  outcome: z.enum(["", ...OUTCOMES]).default(""),
+  results: z.array(CriterionResultSchema).default([]),
+  environment: z.string().trim().default(""),
+  asOf: z.string().trim().default(""),
+  uncertainty: z.string().trim().default(""),
+  skip: z.string().trim().default(""),
+  filing: FiledUnderSchema.nullable().default(null),
+  topic: TopicProposalSchema.nullable().default(null),
+  noTopic: NoTopicSchema.nullable().default(null),
+  noChange: NoChangeSchema.nullable().default(null),
+  consolidate: BacklogConsolidationSchema.nullable().default(null),
+  supersede: SupersessionSchema.nullable().default(null),
+  retire: RetirementSchema.nullable().default(null),
+  promote: PromotionSchema.nullable().default(null),
+  keep: KeptSchema.nullable().default(null),
+});
+export type ReviewResult = z.infer<typeof ReviewResultSchema>;
 
 function reviewSchema(role: Role): z.ZodType {
   const authority = ROLE_AUTHORITY[role];
@@ -655,26 +686,35 @@ export function reviewJsonSchema(role: Role): unknown {
   return z.toJSONSchema(reviewSchemas[role], { io: "input", target: "draft-2020-12" });
 }
 
-/** The normalizer for a review submission, on the exploration result's terms. */
-const ReviewResultShape = z.looseObject({
-  vote: z.string().default(""),
-  contributions: z.array(ContributionSchema).default([]),
-  outcome: z.string().default(""),
-  results: z.array(CriterionResultSchema).default([]),
-  environment: z.string().default(""),
-  as_of: z.string().default(""),
-  uncertainty: z.string().default(""),
-  skip: z.string().default(""),
-  filing: FiledUnderSchema.nullish(),
-  topic: TopicProposalSchema.nullish(),
-  no_topic: NoTopicSchema.nullish(),
-  no_change: NoChangeSchema.nullish(),
-  consolidate: BacklogConsolidationSchema.nullish(),
-  supersede: SupersessionSchema.nullish(),
-  retire: RetirementSchema.nullish(),
-  promote: PromotionSchema.nullish(),
-  keep: KeptSchema.nullish(),
-});
+/**
+ * The submission's field names into the normalized ones, and the only place the two vocabularies
+ * meet: a submission is snake_case because that is what the generated JSON Schema offers a model,
+ * and the row is camelCase because that is what the store reads back. A field a role had no
+ * authority for is absent from `parsed`, and `ReviewResultSchema` reads that absence as the empty
+ * answer it is.
+ */
+function normalize(submitted: unknown): Record<string, unknown> {
+  const data = (submitted ?? {}) as Record<string, unknown>;
+  return {
+    vote: data["vote"],
+    contributions: data["contributions"],
+    outcome: data["outcome"],
+    results: data["results"],
+    environment: data["environment"],
+    asOf: data["as_of"],
+    uncertainty: data["uncertainty"],
+    skip: data["skip"],
+    filing: data["filing"],
+    topic: data["topic"],
+    noTopic: data["no_topic"],
+    noChange: data["no_change"],
+    consolidate: data["consolidate"],
+    supersede: data["supersede"],
+    retire: data["retire"],
+    promote: data["promote"],
+    keep: data["keep"],
+  };
+}
 
 /** What this run authored among the records it was handed: what the self-boost refusal reads. */
 export interface ReviewSelf {
@@ -685,12 +725,12 @@ export interface ReviewSelf {
 }
 
 /**
- * Decodes and validates one submission against the role's authority. It checks shape, vocabulary
- * and support, and nothing about whether the judgement is correct: Babel validates structure and
- * provenance, and a reception vote has no truth condition to check.
+ * Decodes one submission the model made and accepts it. The role's own schema runs first — it is
+ * the one the engine validated the call against, so a field outside the role's authority is
+ * refused here with the reason rather than dropped — and what it admits goes through the same
+ * acceptance the store runs.
  */
 export function parseReviewResult(role: Role, payload: unknown, self?: ReviewSelf): ReviewResult {
-  const authority = ROLE_AUTHORITY[role];
   const parsed = reviewSchemas[role].safeParse(payload);
   if (!parsed.success) {
     throw new ResultRefusal(
@@ -698,27 +738,30 @@ export function parseReviewResult(role: Role, payload: unknown, self?: ReviewSel
       `the ${role} result does not match its schema: ${issues(parsed.error)}`,
     );
   }
-  const shaped = ReviewResultShape.parse(parsed.data);
-  const result: ReviewResult = {
-    vote: shaped.vote,
-    contributions: shaped.contributions,
-    outcome: shaped.outcome,
-    results: shaped.results,
-    environment: shaped.environment.trim(),
-    asOf: shaped.as_of.trim(),
-    uncertainty: shaped.uncertainty.trim(),
-    skip: shaped.skip.trim(),
-    filing: shaped.filing ?? null,
-    topic: shaped.topic ?? null,
-    noTopic: shaped.no_topic ?? null,
-    noChange: shaped.no_change ?? null,
-    consolidate: shaped.consolidate ?? null,
-    supersede: shaped.supersede ?? null,
-    retire: shaped.retire ?? null,
-    promote: shaped.promote ?? null,
-    keep: shaped.keep ?? null,
-  };
+  return acceptReviewResult(role, normalize(parsed.data), self);
+}
 
+/**
+ * THE ONE ACCEPTANCE: shape, vocabulary, authority, support and emptiness over a normalized
+ * result, and nothing about whether the judgement is correct — Babel validates structure and
+ * provenance, and a reception vote has no truth condition to check.
+ *
+ * The machine half reaches it through `parseReviewResult` with what the model submitted; the
+ * store reaches it with the payload of an `assessments` row a machine half wrote. Both get the
+ * same verdict under the same refusal code, which is the whole of F8's remedy: the producer's
+ * contract and the store's acceptance cannot drift apart because there is one of them.
+ */
+export function acceptReviewResult(role: Role, payload: unknown, self?: ReviewSelf): ReviewResult {
+  const authority = ROLE_AUTHORITY[role];
+  const accepted = ReviewResultSchema.safeParse(payload);
+  if (!accepted.success) {
+    throw new ResultRefusal(
+      REFUSALS.schema,
+      `the ${role} result does not match its schema: ${issues(accepted.error)}`,
+    );
+  }
+  const result = accepted.data;
+  refuseBeyondAuthority(role, result);
   const filed = result.filing !== null || result.topic !== null || result.noTopic !== null || result.noChange !== null;
   const settled =
     result.consolidate !== null ||
@@ -789,10 +832,21 @@ export function parseReviewResult(role: Role, payload: unknown, self?: ReviewSel
   if (result.outcome !== "" && result.outcome !== "unverifiable" && reviewEvidence(result).length === 0) {
     throw new ResultRefusal(REFUSALS.support, `an observed outcome of ${result.outcome} needs evidence`);
   }
-  if ((result.outcome !== "" || result.results.length > 0) && (result.environment === "" || result.asOf === "")) {
+  const scoped = result.outcome !== "" || result.results.length > 0;
+  if (scoped && (result.environment === "" || result.asOf === "")) {
     throw new ResultRefusal(
       REFUSALS.support,
-      "criterion and outcome results need an explicit environment and as-of time",
+      `this result states an outcome or a criterion result with no environment or as-of time. ${REVIEW_SCOPE_RULE}`,
+    );
+  }
+  // The other direction, and F8's own bug: the Go store refused every environment that did not
+  // come with an outcome, so an evidence check that reported criterion results — which is what
+  // the role exists to do — was paid for and then refused. An environment belongs to a claim
+  // about a setting, and a criterion result is one.
+  if (!scoped && (result.environment !== "" || result.asOf !== "")) {
+    throw new ResultRefusal(
+      REFUSALS.schema,
+      `this result states an environment or an as-of time and neither an outcome nor a criterion result. ${REVIEW_SCOPE_RULE}`,
     );
   }
   if (result.outcome === "unverifiable" && result.uncertainty === "") {
@@ -819,6 +873,41 @@ export function parseReviewResult(role: Role, payload: unknown, self?: ReviewSel
     );
   }
   return result;
+}
+
+/**
+ * The role's authority, read off the same table `reviewSchema` prunes a role's fields from.
+ *
+ * The machine half never reaches a refusal here: a field the role has no authority for is not in
+ * the schema the engine validated the call against, so the submission was already refused. The
+ * STORE does reach it, because it accepts a normalized result a machine half wrote — and a
+ * producer that drifted from the contract is the one thing one validator exists to catch.
+ */
+function refuseBeyondAuthority(role: Role, result: ReviewResult): void {
+  const authority = ROLE_AUTHORITY[role];
+  const beyond: string[] = [];
+  if (!authority.vote && result.vote !== "") beyond.push("a vote");
+  if (!authority.outcome && result.outcome !== "") beyond.push("an observed outcome");
+  if (!authority.criteria && (result.results.length > 0 || result.environment !== "" || result.asOf !== "")) {
+    beyond.push("criterion results");
+  }
+  if ((authority.filing || authority.backlog) && result.contributions.length > 0) beyond.push("contributions");
+  if (!authority.filing && (result.filing !== null || result.topic !== null || result.noTopic !== null || result.noChange !== null)) {
+    beyond.push("a filing answer");
+  }
+  if (
+    !authority.backlog &&
+    (result.consolidate !== null ||
+      result.supersede !== null ||
+      result.retire !== null ||
+      result.promote !== null ||
+      result.keep !== null)
+  ) {
+    beyond.push("a backlog answer");
+  }
+  if (beyond.length > 0) {
+    throw new ResultRefusal(REFUSALS.schema, `the ${role} result does not match its schema: it states ${beyond.join(", ")}`);
+  }
 }
 
 /** Every citation a submission carries: what an observed outcome is checked for support against. */

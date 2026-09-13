@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { PluginDatabase, SqlRow } from "@manifold/plugin";
 import { openPluginDatabase } from "@manifold/server/plugin-database";
 import { BABEL_PLUGIN_ID } from "../contract.ts";
+import { parseReviewResult, ResultRefusal, type RefusalCode, type Role } from "../machine/engine/results.ts";
 import {
   ActRefused,
   DEFAULT_POLICY,
@@ -19,6 +20,7 @@ import {
   interest,
   leaseFloor,
   newId,
+  refuseRow,
   validateNewPolicy,
   rule,
   setPolicy,
@@ -1029,6 +1031,130 @@ test("importing a chunk is idempotent by primary key and keeps its own ledger", 
   expect(
     importLedger(store, { source: "x", table: "records", rows: [{ id: "hyp_x", nonsense: "1" }] }),
   ).rejects.toThrow(/has no column "nonsense"/);
+});
+
+// ---------------------------------------------------------------------------- what a job wrote
+
+/*
+  The store's acceptance of a review submission is the validator the engine's per-role JSON
+  Schema is generated from, and the cases below are the pair that proves it: what the producer
+  accepts the store writes, and what the producer refuses the store refuses under the SAME code.
+  The Go tree stated that rule three times and the three disagreed, so an evidence check — a
+  criterion result with an environment and no outcome — was paid for and refused at submit
+  (docs/postmortem-2026-09-13-drain.md, F8).
+*/
+
+const LOCATOR = { path: "omp/session-1.jsonl", line: 12, byte_offset: 480, digest: "sha256:abc" };
+const EVIDENCE = { locator: LOCATOR, note: "the transcript says the router retries twice" };
+
+/** One submission as the row carries it: the normalized result plus the assignment's own facts. */
+function stored(submission: Record<string, unknown>): string {
+  const { as_of: asOf, ...rest } = submission;
+  return JSON.stringify({
+    ...rest,
+    ...(asOf === undefined ? {} : { asOf }),
+    blinded: false,
+    corrects: "",
+    policyVersion: "pol_0003",
+    contextVersion: "ctx_0007",
+    recipe: { id: "evidence-check", version: 2 },
+  });
+}
+
+const CHECKED = {
+  results: [{ criterion_id: "crit_1", satisfied: true, evidence: [EVIDENCE] }],
+  environment: "dev-01",
+  as_of: "2026-09-12T10:00:00Z",
+};
+
+test("the store writes an evidence check: criterion results with an environment and no outcome", async () => {
+  const store = openStore();
+  await migrate(store);
+  await seedRecord(store, "hyp_00000001", "hypothesis", "the router drops a retry");
+
+  const row = {
+    id: "asm_00000001",
+    record_id: "hyp_00000001",
+    revision_id: "hyp_00000001",
+    run_id: "run_1",
+    role: "evidence",
+    vote: null,
+    lane: "coverage",
+    claim_id: "clm_0001",
+    payload: stored(CHECKED),
+    recorded_at: stamp(store.now()),
+  };
+  expect(refuseRow("assessments", row)).toBeNull();
+
+  await store.db.run(
+    `INSERT INTO assessments(id, record_id, revision_id, run_id, role, vote, lane, claim_id, payload, recorded_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?)`,
+    [
+      row.id, row.record_id, row.revision_id, row.run_id, row.role, row.vote, row.lane, row.claim_id,
+      row.payload, row.recorded_at,
+    ],
+  );
+  // A review with no vote is still a review: the criterion results are what it judged, and the
+  // scope it judged them in is in the row. `outcome` is not in the payload at all, which is the
+  // answer rather than a missing field — and the answer the store accepts.
+  const held = await rows<{ role: string; vote: string | null; outcome: string | null; environment: string; criteria: string }>(
+    store,
+    `SELECT role, vote, json_extract(payload, '$.outcome') AS outcome,
+            json_extract(payload, '$.environment') AS environment,
+            json_extract(payload, '$.results[0].criterion_id') AS criteria
+       FROM assessments WHERE id = ?`,
+    ["asm_00000001"],
+  );
+  expect(held).toEqual([{ role: "evidence", vote: null, outcome: null, environment: "dev-01", criteria: "crit_1" }]);
+});
+
+test("the store refuses what the engine's schema refuses, under the same code", () => {
+  const cases: { role: Role; submission: Record<string, unknown>; code: RefusalCode | null }[] = [
+    { role: "evidence", submission: CHECKED, code: null },
+    { role: "reception", submission: { vote: "support" }, code: null },
+    { role: "reception", submission: { skip: "the evidence is unreachable from here" }, code: null },
+    // F8 itself, the other way round: a setting with no claim about it scopes nothing.
+    {
+      role: "evidence",
+      submission: { contributions: [{ kind: "comment", text: "the criteria are not stated" }], environment: "dev-01" },
+      code: "schema",
+    },
+    // A criterion result with no setting is the claim about every setting at every time.
+    { role: "evidence", submission: { results: [{ criterion_id: "crit_1", satisfied: false }] }, code: "support" },
+    // A satisfied criterion nobody can check is the manufactured result §4.12 forbids.
+    {
+      role: "evidence",
+      submission: { results: [{ criterion_id: "crit_1", satisfied: true }], environment: "dev-01", as_of: "2026-09-12T10:00:00Z" },
+      code: "support",
+    },
+    { role: "reception", submission: {}, code: "empty" },
+    // The role's authority: the schema a reception review is prompted with has no `results`.
+    { role: "reception", submission: CHECKED, code: "schema" },
+    { role: "reception", submission: { vote: "approve" }, code: "schema" },
+  ];
+
+  for (const { role, submission, code } of cases) {
+    let produced: RefusalCode | null = null;
+    try {
+      parseReviewResult(role, submission);
+    } catch (error) {
+      if (!(error instanceof ResultRefusal)) throw error;
+      produced = error.refusal;
+    }
+    const refused = refuseRow("assessments", { role, payload: stored(submission) });
+    expect({ role, submission, code: produced }).toEqual({ role, submission, code });
+    expect({ role, submission, code: refused?.code ?? null }).toEqual({ role, submission, code });
+  }
+});
+
+test("the store refuses a row whose role this build never heard of, and reads a payload object or its JSON", () => {
+  const later = refuseRow("assessments", { role: "provenance", payload: stored({ vote: "support" }) });
+  expect(later?.code).toBe("schema");
+  expect(later?.message).toContain("not a review role");
+  expect(refuseRow("assessments", { role: "reception", payload: "{" })?.message).toContain("not JSON");
+  expect(refuseRow("assessments", { role: "reception", payload: { vote: "support" } })).toBeNull();
+  // Every other table is the store's own shape; only a submission has this contract.
+  expect(refuseRow("records", { id: "hyp_1", payload: "{}" })).toBeNull();
 });
 
 // ---------------------------------------------------------------------------- the shared shapes

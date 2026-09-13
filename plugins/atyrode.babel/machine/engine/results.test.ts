@@ -7,11 +7,13 @@
 
 import { expect, test } from "bun:test";
 import { ROLES } from "../../contract.ts";
+import { roleInstructions } from "./prompts.ts";
 import {
   exploreJsonSchema,
   parseExploreResult,
   parseReviewResult,
   REFUSALS,
+  REVIEW_SCOPE_RULE,
   ResultRefusal,
   reviewJsonSchema,
   type Role,
@@ -331,6 +333,50 @@ test("a skip is a recorded gap and cannot also state an assessment", () => {
   expect(refusal(() => parseReviewResult("reception", { skip: "cannot judge", vote: "oppose" })).message).toContain(
     "skip cannot also state",
   );
+});
+
+/*
+  F8, the drain of 2026-09-13's most expensive bug: the Go review contract required an environment
+  on criterion results, the Go store refused any environment without an OUTCOME, and a
+  results-only assessment counted as empty — so an evidence check, which is exactly a criterion
+  result with no outcome, was paid for and then refused at submit. One validator states the rule
+  once, in both directions.
+*/
+
+test("an evidence check states criterion results with an environment and no outcome", () => {
+  const checked = parseReviewResult("evidence", {
+    results: [{ criterion_id: "crit_1", satisfied: true, evidence: [EVIDENCE] }],
+    environment: "dev-01",
+    as_of: "2026-09-12T10:00:00Z",
+  });
+  expect(checked.outcome).toBe("");
+  expect(checked.results).toHaveLength(1);
+  expect(checked.environment).toBe("dev-01");
+  // It judged something: criterion results are an assessment, not an empty one.
+  expect(checked.vote).toBe("");
+});
+
+test("an environment with neither an outcome nor a criterion result scopes nothing", () => {
+  const alone = refusal(() =>
+    parseReviewResult("evidence", {
+      contributions: [{ kind: "comment", text: "the criteria are not stated on the record" }],
+      environment: "dev-01",
+      as_of: "2026-09-12T10:00:00Z",
+    }),
+  );
+  expect(alone.refusal).toBe(REFUSALS.schema);
+  expect(alone.message).toContain("neither an outcome nor a criterion result");
+});
+
+test("the scope rule has one wording: the prompt states it and the refusal reads it back", () => {
+  // The model is told the rule by the roles that can break it, and by no other.
+  expect(roleInstructions("evidence")).toContain(REVIEW_SCOPE_RULE);
+  expect(roleInstructions("outcome")).toContain(REVIEW_SCOPE_RULE);
+  expect(roleInstructions("reception")).not.toContain(REVIEW_SCOPE_RULE);
+  const unscoped = refusal(() =>
+    parseReviewResult("evidence", { results: [{ criterion_id: "crit_1", satisfied: false }] }),
+  );
+  expect(unscoped.message).toContain(REVIEW_SCOPE_RULE);
 });
 
 test("an observed outcome needs evidence, a scope, and an uncertainty when unverifiable", () => {
