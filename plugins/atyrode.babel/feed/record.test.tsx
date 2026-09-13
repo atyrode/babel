@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { forgetSelection, look } from "./api.ts";
 import { RecordPanel } from "./record.tsx";
-import { Denial, fakeHost, mount, peel, thread, topics, type Fake } from "./testing.tsx";
+import { Denial, fakeHost, mount, peel, pointAt, thread, topics, type Fake } from "./testing.tsx";
 
 /*
   THE RECORD PANEL: the peel, the filing desk and the thread.
@@ -39,13 +39,30 @@ describe("what it is looking at", () => {
     await view.unmount();
   });
 
-  test("follows the selection Home points at it", async () => {
+  test("a seat opened for nothing follows the selection Home points at it", async () => {
     const fake = hub();
     look({ recordId: "pro_0000000a" });
     const view = await mount(<RecordPanel host={fake.host} />);
     expect(fake.last("record")).toEqual({ id: "pro_0000000a" });
     expect(fake.last("thread")).toEqual({ id: "pro_0000000a" });
     expect(view.one(".babel-record-claim").textContent).toBe("Pin the engine profile before a run starts");
+    // It keeps following: a tile a principal placed by hand IS §8.7's peek pane, walked by
+    // Home's own `j`/`k`.
+    await pointAt({ recordId: "fnd_0000000b" });
+    expect(fake.last("record")).toEqual({ id: "fnd_0000000b" });
+    await view.unmount();
+  });
+
+  test("a seat opened FOR a record is pinned to it, whatever Home is looking at", async () => {
+    const fake = hub();
+    look({ recordId: "pro_0000000a" });
+    const view = await mount(<RecordPanel host={fake.host} arg={{ recordId: "fnd_0000000b" }} />);
+    expect(fake.last("record")).toEqual({ id: "fnd_0000000b" });
+    await pointAt({ recordId: "que_0000000c" });
+    // The store moved and this seat did not read again: two records are two tiles, each
+    // reading its own argument.
+    expect(fake.to("record")).toHaveLength(1);
+    expect(fake.last("record")).toEqual({ id: "fnd_0000000b" });
     await view.unmount();
   });
 

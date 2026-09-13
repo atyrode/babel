@@ -13,9 +13,18 @@ if (!GlobalRegistrator.isRegistered) {
 
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { HostServices } from "@manifold/plugin";
+import type { HostServices, OpenPanelOutcome, OpenPanelRequest } from "@manifold/plugin";
 import type { ActionOutcome } from "@manifold/protocol";
-import type { FeedPost, FeedResult, RecordPeel, ThreadResult, TopicResult, TopicsResult } from "./api.ts";
+import {
+  look,
+  type FeedPost,
+  type FeedResult,
+  type RecordPeel,
+  type Selection,
+  type ThreadResult,
+  type TopicResult,
+  type TopicsResult,
+} from "./api.ts";
 
 /*
   THE TEST HOST AND THE FIXTURES, in one module because all three test files need the same
@@ -35,6 +44,8 @@ export interface DoorCall {
 export interface Fake {
   readonly host: HostServices;
   readonly calls: DoorCall[];
+  /** Every seat the panels asked the host for, in order: `openPanel`'s own requests. */
+  readonly opened: OpenPanelRequest[];
   /** The args of the last call to one door, for an assertion about what was posted. */
   last(name: string): unknown;
   /** Every call to one door, for an assertion about how many reads a gesture cost. */
@@ -50,9 +61,18 @@ export interface Fake {
 /** A denial an answer may throw to make the door refuse instead of answering. */
 export class Denial extends Error {}
 
-export function fakeHost(answers: Record<string, (args: unknown) => unknown>): Fake {
+/**
+ * @param answers one per door, by its short name.
+ * @param opens what the host answers `openPanel` with — a tile by default, so a test that is
+ *   not about seats needs to say nothing, and a refusal is one line when it is.
+ */
+export function fakeHost(
+  answers: Record<string, (args: unknown) => unknown>,
+  opens: (request: OpenPanelRequest) => OpenPanelOutcome = () => ({ ok: true, tileId: "tile_seat", placed: true }),
+): Fake {
   const listeners = new Set<() => void>();
   const calls: DoorCall[] = [];
+  const opened: OpenPanelRequest[] = [];
   const client = {
     action: (name: string, args: unknown): Promise<ActionOutcome> => {
       calls.push({ name, args });
@@ -83,10 +103,15 @@ export function fakeHost(answers: Record<string, (args: unknown) => unknown>): F
     containerId: null,
     navigate: () => undefined,
     requestedRef: null,
+    openPanel: (request: OpenPanelRequest): OpenPanelOutcome => {
+      opened.push(request);
+      return opens(request);
+    },
   } as unknown as HostServices;
   return {
     host,
     calls,
+    opened,
     last: (name) => [...calls].reverse().find((call) => call.name === `atyrode.babel.${name}`)?.args,
     to: (name) => calls.filter((call) => call.name === `atyrode.babel.${name}`),
     announce: () => {
@@ -171,6 +196,14 @@ export async function mount(node: ReactElement): Promise<Mounted> {
       container.remove();
     },
   };
+}
+
+/**
+ * Points the panels at something from OUTSIDE a render, the way Home's key handler does, with
+ * the re-render that follows flushed before the caller asserts on it.
+ */
+export async function pointAt(at: Partial<Selection>): Promise<void> {
+  await act(async () => look(at));
 }
 
 // ---------------------------------------------------------------------------- fixtures

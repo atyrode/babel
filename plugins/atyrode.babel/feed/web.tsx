@@ -20,8 +20,9 @@ import { TopicPanel } from "./topic.tsx";
     record  the peel, the filing desk and the thread — §8.7's peek pane, tiled beside Home
     topic   a topic's header, the operator's stance, Ask Babel, and the feed narrowed to it
 
-  A panel takes no argument in this revision, so what the reader has opened lives in the
-  module the three of them share (api.ts's selection) rather than in a ref nobody can spell.
+  A panel is opened FOR something: the record and topic panels read the argument their own
+  leaf carries (`PanelProps.arg`, #533) and fall back to what Home is looking at — the module
+  the three of them share — when their seat was placed by hand and carries none.
 */
 
 export default {

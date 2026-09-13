@@ -3,7 +3,7 @@ import type { HostServices, PanelProps } from "@manifold/plugin";
 import { usePolledResource } from "@manifold/plugin/hooks";
 import { Cluster, Disclosure, ScrollRegion, Stack } from "@manifold/ui";
 import { ACTIONS, FEED_PLUGIN_ID, INTEREST_STATES } from "../contract.ts";
-import { BABEL_NODE, ask, refusal, since, useSelection, type FeedQuery, type TopicResult, type TopicRow } from "./api.ts";
+import { BABEL_NODE, ask, refusal, since, useShown, type FeedQuery, type TopicResult, type TopicRow } from "./api.ts";
 import { EMPTY_QUERY, FeedListing } from "./home.tsx";
 import { INTEREST_LABEL, INTEREST_MEANS, RAIL_POLL_MS } from "./rail.tsx";
 
@@ -22,7 +22,8 @@ import { INTEREST_LABEL, INTEREST_MEANS, RAIL_POLL_MS } from "./rail.tsx";
       a topic change is a judgement Babel has to make its case for.
 
   Nothing prints a path: a binding's identity can be the directory every worktree shares, and
-  a locator is evidence ABOUT a topic and never the topic.
+  a locator is evidence ABOUT a topic and never the topic. Which topic this is comes from the
+  seat's own argument when it was opened for one, and from Home's selection when it was not.
 */
 
 const ASKS: ReadonlyArray<{ readonly value: string; readonly label: string; readonly asks: string }> = [
@@ -31,18 +32,18 @@ const ASKS: ReadonlyArray<{ readonly value: string; readonly label: string; read
   { value: "merge", label: "Merge this topic into…", asks: "merge this" },
 ];
 
-export function TopicPanel({ host }: PanelProps): ReactElement {
-  const selection = useSelection();
+export function TopicPanel({ host, arg }: PanelProps): ReactElement {
+  const shown = useShown(arg, "topic");
   return (
     <ScrollRegion className={`plugin-${FEED_PLUGIN_ID.replaceAll(".", "_")}`} aria-label="Topic">
       <Stack className="babel-panel" gap="var(--babel-space-4)">
-        {selection.topic === "" ? (
+        {shown === "" ? (
           <div className="babel-state">
             <strong>No topic open</strong>
             <span>Press a topic in Home&apos;s rail, or on a row, and it is read here.</span>
           </div>
         ) : (
-          <TopicView host={host} topic={selection.topic} />
+          <TopicView host={host} topic={shown} />
         )}
       </Stack>
     </ScrollRegion>

@@ -6,7 +6,6 @@ import { ACTIONS } from "../contract.ts";
 import {
   BABEL_NODE,
   ask,
-  look,
   refusal,
   type PulseResult,
   type TopicProposal,
@@ -59,7 +58,15 @@ const RAIL_GROUPS: ReadonlyArray<{ readonly state: string; readonly label: strin
 /** How often the rail and the pulse re-read when no event has arrived. */
 export const RAIL_POLL_MS = 30_000;
 
-function TopicLink({ topic, current }: { topic: TopicRow; current: string }): ReactElement {
+function TopicLink({
+  topic,
+  current,
+  onOpen,
+}: {
+  topic: TopicRow;
+  current: string;
+  onOpen: (topicId: string) => void;
+}): ReactElement {
   const facts = [`${topic.posts.toLocaleString()} posts`];
   if (topic.binding !== null) facts.push(`${topic.binding.kind}: ${topic.binding.identity}`);
   if (topic.interest.state !== "") facts.push(INTEREST_LABEL[topic.interest.state] ?? topic.interest.state);
@@ -70,7 +77,7 @@ function TopicLink({ topic, current }: { topic: TopicRow; current: string }): Re
         data-topic={topic.id}
         aria-current={current === topic.id || current === topic.name ? "page" : undefined}
         title={facts.join(" · ")}
-        onClick={() => look({ topic: topic.id })}
+        onClick={() => onOpen(topic.id)}
       >
         <span>t/{topic.name}</span>
         <span className="babel-topic-count">{topic.posts.toLocaleString()}</span>
@@ -135,12 +142,14 @@ function Proposed({
 export function TopicRail({
   host,
   current,
+  onTopic,
   onUnfiled,
 }: {
   host: HostServices;
   /** The topic the panels are looking at, so the rail can mark its own row. */
   current: string;
-  /** Narrowing the list to what is filed under nothing is a feed filter, not a topic. */
+  /** Opening a topic is Home's gesture, and its refusal is Home's to say: see `openTopic`. */
+  onTopic: (topicId: string) => void;
   onUnfiled: () => void;
 }): ReactElement {
   const [failure, setFailure] = useState("");
@@ -183,7 +192,7 @@ export function TopicRail({
           {groups.length > 1 && <p className="babel-topic-group-label">{group.label}</p>}
           <ul className="babel-topic-list">
             {group.rows.map((topic) => (
-              <TopicLink key={topic.id} topic={topic} current={current} />
+              <TopicLink key={topic.id} topic={topic} current={current} onOpen={onTopic} />
             ))}
           </ul>
         </section>
@@ -206,7 +215,7 @@ export function TopicRail({
           >
             <ul className="babel-topic-list">
               {rows.map((topic) => (
-                <TopicLink key={topic.id} topic={topic} current={current} />
+                <TopicLink key={topic.id} topic={topic} current={current} onOpen={onTopic} />
               ))}
             </ul>
           </Disclosure>

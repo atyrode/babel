@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactElement } from "
 import type { HostServices } from "@manifold/plugin";
 import { Cluster, Stack } from "@manifold/ui";
 import { ACTIONS, type PostKind, type Ruling } from "../contract.ts";
-import { ask, look, refusal, since, type FeedPost } from "./api.ts";
+import { ask, refusal, since, type FeedPost } from "./api.ts";
 import { Votes } from "./votes.tsx";
 
 /*
@@ -535,6 +535,7 @@ export function FeedRow({
   now,
   onFocus,
   onOpen,
+  onTopic,
   onActed,
   register,
 }: {
@@ -550,6 +551,8 @@ export function FeedRow({
   now: number;
   onFocus: () => void;
   onOpen: () => void;
+  /** A topic on a row opens the topic panel for it, exactly as the rail's own row does. */
+  onTopic: (topicId: string) => void;
   onActed: ActedHandler;
   register: (element: HTMLLIElement | null) => void;
 }): ReactElement {
@@ -581,12 +584,12 @@ export function FeedRow({
             {KIND_LABELS[post.kind]}
           </span>
           {first !== undefined && (
-            <button type="button" className="babel-topic" onClick={() => look({ topic: first.id })}>
+            <button type="button" className="babel-topic" onClick={() => onTopic(first.id)}>
               t/{first.name}
             </button>
           )}
           {second !== undefined && (
-            <button type="button" className="babel-topic" onClick={() => look({ topic: second.id })}>
+            <button type="button" className="babel-topic" onClick={() => onTopic(second.id)}>
               t/{second.name}
             </button>
           )}

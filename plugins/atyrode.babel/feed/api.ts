@@ -1,12 +1,14 @@
 import { useSyncExternalStore } from "react";
-import type { HostServices } from "@manifold/plugin";
-import type { ManifoldRef } from "@manifold/protocol";
+import type { HostServices, OpenPanelRefusal } from "@manifold/plugin";
+import type { ManifoldRef, PanelArg } from "@manifold/protocol";
 import { z } from "zod";
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
+  FEED_PLUGIN_ID,
   FeedResultSchema,
   FeedQuerySchema,
+  PANELS,
   PulseResultSchema,
   RecordPeelSchema,
   RuleResultSchema,
@@ -28,12 +30,13 @@ import {
       with the schema its answer is parsed against, so a call site names a door and gets the
       contract's own type back; a denial is data on the wire and a thrown message here,
       because every call site in this plugin renders the sentence rather than the rule.
-    - THE SELECTION. A panel is a tile leaf addressed by `{kind: "panel", panelId}` and
-      `PanelProps` carries the host and nothing else — there is no argument to open a panel
-      WITH (protocol/src/layout.ts, packages/plugin/src/host.ts). But a plugin's web half is
-      one module in the page, so what Home is looking at is a fact the record and topic
-      panels can read directly: `look()` writes it, `useSelection()` reads it, and a record
-      panel tiled beside the list IS §8.7's peek pane, walked by the same `j`/`k`.
+    - THE SELECTION, and the seats beside it. A panel is a tile leaf and #533 gives a leaf an
+      ARGUMENT (protocol/src/layout.ts, packages/plugin/src/host.ts): `openRecord` and
+      `openTopic` ask the host for a seat of this plugin's own carrying one, and `useShown` is
+      how the panel in that seat reads it. A seat opened FOR something is pinned to it; a seat
+      a principal placed by hand carries none and follows what Home is looking at instead —
+      `look()` writes that, `useSelection()` reads it, and a record panel tiled beside the
+      list IS §8.7's peek pane, walked by the same `j`/`k`.
     - `since`, because five surfaces print the same ages out of the same ISO strings.
 */
 
@@ -152,6 +155,55 @@ function watchSelection(notify: () => void): () => void {
 
 export function useSelection(): Selection {
   return useSyncExternalStore(watchSelection, looking, looking);
+}
+
+// ---------------------------------------------------------------------------- the seats
+
+/** What the surface says when the tree had nowhere to put a panel — `no_tile`, in words. */
+export const NO_SEAT = "There is nowhere to open it: this view holds no tile of its own.";
+
+/**
+ * Asks the host for a seat of this plugin's own, carrying the argument the panel in it reads
+ * off `PanelProps.arg`. Answers the refusal when there was one, and null when the tile is
+ * there — `placed` is not this plugin's business: a second press on the same record is the
+ * same tile focused, which is the host's promise and not a state to mirror here.
+ */
+function seat(host: HostServices, panel: string, arg: PanelArg): OpenPanelRefusal | null {
+  const outcome = host.openPanel({ panelId: `${FEED_PLUGIN_ID}.${panel}`, arg });
+  return outcome.ok ? null : outcome.refused;
+}
+
+/**
+ * OPENS A RECORD: the selection points at it, and it gets a seat of its own pinned to it.
+ *
+ * Both halves, always, and that is not belt and braces. The seat this opens is pinned, so the
+ * tiles that FOLLOW Home — a record pane the principal placed by hand, the rail's own mark —
+ * are moved by the selection alone, and they must move whether the opening landed or was
+ * refused. A refusal therefore costs the reader nothing but the second tile.
+ */
+export function openRecord(host: HostServices, recordId: string): OpenPanelRefusal | null {
+  look({ recordId });
+  return seat(host, PANELS.record, { recordId });
+}
+
+/** OPENS A TOPIC: the same gesture, the other panel. */
+export function openTopic(host: HostServices, topic: string): OpenPanelRefusal | null {
+  look({ topic });
+  return seat(host, PANELS.topic, { topic });
+}
+
+/**
+ * WHAT THIS SEAT IS READING: its own leaf's argument when it was opened for something, and
+ * what Home is looking at when it was not. Read from the prop on every render rather than
+ * copied into state, because a leaf that changes is a prop that changes and not a remount.
+ *
+ * An argument naming nothing is no argument: a leaf carrying `{recordId: ""}` follows the
+ * selection like the hand-placed tile it is, rather than pinning itself to the empty state.
+ */
+export function useShown(arg: PanelArg | undefined, field: keyof Selection): string {
+  const selection = useSelection();
+  const pinned = arg?.[field];
+  return typeof pinned === "string" && pinned !== "" ? pinned : selection[field];
 }
 
 // ---------------------------------------------------------------------------- time

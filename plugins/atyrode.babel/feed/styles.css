@@ -622,7 +622,7 @@
   height: 0.95rem;
 }
 
-/* The way back from the last ruling: a receipt with one control on it, not a dialogue. */
+/* The note at the foot of the page: a receipt, with the way back on it when the act has one. */
 .plugin-atyrode_babel_feed .babel-toast {
   display: flex;
   align-items: center;

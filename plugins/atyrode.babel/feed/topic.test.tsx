@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { forgetSelection, look } from "./api.ts";
 import { TopicPanel } from "./topic.tsx";
-import { fakeHost, feed, mount, topic, type Fake } from "./testing.tsx";
+import { fakeHost, feed, mount, pointAt, topic, type Fake } from "./testing.tsx";
 
 /*
   THE TOPIC PANEL: the header, the stance, the asks — and under them the same feed, narrowed.
@@ -67,6 +67,16 @@ describe("the header", () => {
     const view = await mount(<TopicPanel host={fake.host} />);
     await view.settle();
     expect(view.text()).toContain("No topic in this hub answers to that name");
+    await view.unmount();
+  });
+
+  test("a seat opened FOR a topic is pinned to it, whatever Home is looking at", async () => {
+    const fake = hub();
+    look({ topic: "ent_0000beef" });
+    const view = await mount(<TopicPanel host={fake.host} arg={{ topic: "ent_0000cafe" }} />);
+    expect(fake.last("topic")).toEqual({ topic: "ent_0000cafe" });
+    await pointAt({ topic: "ent_0000beef" });
+    expect(fake.to("topic")).toHaveLength(1);
     await view.unmount();
   });
 });

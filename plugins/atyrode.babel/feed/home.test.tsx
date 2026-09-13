@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import type { OpenPanelOutcome, OpenPanelRequest } from "@manifold/plugin";
 import { resetPolledResources } from "@manifold/plugin/hooks";
 import { forgetSelection, looking } from "./api.ts";
 import { HomePanel } from "./home.tsx";
@@ -18,16 +19,22 @@ const PULSE = {
   reviewing: [],
 };
 
-function hub(overrides: Record<string, (args: unknown) => unknown> = {}): Fake {
-  return fakeHost({
-    feed: () => feed(),
-    topics: () => topics(),
-    pulse: () => PULSE,
-    rule: () => ({ id: "pro_0000000a", standing: "accepted", seq: 7, plan: null }),
-    comment: () => ({}),
-    answer: () => ({}),
-    ...overrides,
-  });
+function hub(
+  overrides: Record<string, (args: unknown) => unknown> = {},
+  opens?: (request: OpenPanelRequest) => OpenPanelOutcome,
+): Fake {
+  return fakeHost(
+    {
+      feed: () => feed(),
+      topics: () => topics(),
+      pulse: () => PULSE,
+      rule: () => ({ id: "pro_0000000a", standing: "accepted", seq: 7, plan: null }),
+      comment: () => ({}),
+      answer: () => ({}),
+      ...overrides,
+    },
+    opens,
+  );
 }
 
 beforeEach(() => {
@@ -330,19 +337,90 @@ describe("the peek", () => {
     await view.unmount();
   });
 
-  test("a claim under the pointer opens the same peek", async () => {
+  test("a claim under the pointer opens the same record, in a seat of its own", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
     await view.press('[data-open="fnd_0000000b"]');
     expect(looking().recordId).toBe("fnd_0000000b");
+    expect(fake.opened).toEqual([
+      { panelId: "atyrode.babel.feed.record", arg: { recordId: "fnd_0000000b" } },
+    ]);
     await view.unmount();
   });
 
-  test("a topic on a row points the topic panel at it", async () => {
+  test("a topic on a row opens it exactly as the rail's own row does", async () => {
     const fake = hub();
     const view = await mount(<HomePanel host={fake.host} />);
     await view.press('[data-post="pro_0000000a"] .babel-topic');
     expect(looking().topic).toBe("ent_0000beef");
+    expect(fake.opened).toEqual([
+      { panelId: "atyrode.babel.feed.topic", arg: { topic: "ent_0000beef" } },
+    ]);
+    await view.unmount();
+  });
+});
+
+/*
+  THE SEATS (#533). A gesture that OPENS something asks the host for a tile of this plugin's
+  own carrying what it was opened for, and points the selection at the same thing so the tiles
+  that carry no argument follow along. `j`/`k` only point: a seat per row the reader scrolled
+  past is a workspace nobody asked for.
+*/
+describe("the seats", () => {
+  test("↵ opens the record in a seat of its own, and `j`/`k` only point", async () => {
+    const fake = hub();
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.key("j");
+    await view.key("Enter");
+    expect(fake.opened).toEqual([
+      { panelId: "atyrode.babel.feed.record", arg: { recordId: "pro_0000000a" } },
+    ]);
+    expect(looking().recordId).toBe("pro_0000000a");
+    await view.key("j");
+    expect(looking().recordId).toBe("fnd_0000000b");
+    expect(fake.opened).toHaveLength(1);
+    await view.unmount();
+  });
+
+  test("a topic in the rail opens the topic panel for it", async () => {
+    const fake = hub();
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.press('[data-topic="ent_0000cafe"]');
+    expect(fake.opened).toEqual([
+      { panelId: "atyrode.babel.feed.topic", arg: { topic: "ent_0000cafe" } },
+    ]);
+    expect(looking().topic).toBe("ent_0000cafe");
+    await view.unmount();
+  });
+
+  test("a view holding no seat says so, and the selection moves anyway", async () => {
+    const fake = hub({}, () => ({ ok: false, refused: "no_tile" }));
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.key("j");
+    await view.key("Enter");
+    expect(view.one(".babel-toast").textContent).toContain("nowhere to open it");
+    // A refusal is not a ruling: there is nothing to take back, so no way back is offered.
+    expect(view.all(".babel-toast button")).toHaveLength(0);
+    expect(looking().recordId).toBe("pro_0000000a");
+    await view.unmount();
+  });
+
+  test("the rail's refusal lands in the same toast", async () => {
+    const fake = hub({}, () => ({ ok: false, refused: "no_tile" }));
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.press('[data-topic="ent_0000cafe"]');
+    expect(view.one(".babel-toast").textContent).toContain("nowhere to open it");
+    expect(looking().topic).toBe("ent_0000cafe");
+    await view.unmount();
+  });
+
+  test("a refusal that is not about a seat is silent, and the peek follows regardless", async () => {
+    const fake = hub({}, () => ({ ok: false, refused: "other_plugin" }));
+    const view = await mount(<HomePanel host={fake.host} />);
+    await view.key("j");
+    await view.key("Enter");
+    expect(view.all(".babel-toast")).toHaveLength(0);
+    expect(looking().recordId).toBe("pro_0000000a");
     await view.unmount();
   });
 });

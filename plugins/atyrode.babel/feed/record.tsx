@@ -7,7 +7,7 @@ import {
   BABEL_NODE,
   ask,
   refusal,
-  useSelection,
+  useShown,
   type RecordPeel,
   type ThreadResult,
   type TopicsResult,
@@ -19,11 +19,12 @@ import { Thread } from "./thread.tsx";
 /*
   THE RECORD PANEL — §8.7's peek pane, as a panel.
 
-  It draws whatever Home is looking at (`useSelection`): pressing ↵ on a row points the
-  selection at that record and this panel follows, `j`/`k` walk it, and a record panel
-  mounted with nothing selected says so rather than drawing an empty frame. A panel takes no
-  argument in this revision (a tile leaf's panel ref is `{kind, panelId}` and `PanelProps`
-  carries the host alone), so the plugin's own module is where "what is being read" lives.
+  IT DRAWS WHAT ITS OWN SEAT WAS OPENED FOR, and follows Home when it was opened for nothing.
+  A tile placed with `{recordId}` on its leaf (#533: `host.openPanel`, `PanelProps.arg`) is
+  PINNED to that record — two records are two tiles, each reading its own — while a tile the
+  principal arranged by hand carries no argument and reads the selection instead, which is
+  what makes it the peek pane: ↵ on a row points it, `j`/`k` walk it, and a panel with
+  neither says so rather than drawing an empty frame.
 
   ITS KEYS ARE ITS OWN. Home owns the window's keyboard because Home is the list; this panel
   binds `y n d f q` on its own subtree, so the two never rule on two different records from
@@ -33,18 +34,18 @@ import { Thread } from "./thread.tsx";
 /** How often the record and its thread re-read when no event has arrived. */
 const RECORD_POLL_MS = 20_000;
 
-export function RecordPanel({ host }: PanelProps): ReactElement {
-  const selection = useSelection();
+export function RecordPanel({ host, arg }: PanelProps): ReactElement {
+  const id = useShown(arg, "recordId");
   return (
     <ScrollRegion className={`plugin-${FEED_PLUGIN_ID.replaceAll(".", "_")}`} aria-label="Record">
       <Stack className="babel-panel" gap="var(--babel-space-4)">
-        {selection.recordId === "" ? (
+        {id === "" ? (
           <div className="babel-state">
             <strong>No record open</strong>
             <span>Press ↵ on a row in Home, or open one from its claim, and it is read here.</span>
           </div>
         ) : (
-          <RecordView host={host} id={selection.recordId} />
+          <RecordView host={host} id={id} />
         )}
       </Stack>
     </ScrollRegion>

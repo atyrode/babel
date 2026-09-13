@@ -5,8 +5,11 @@ import { Cluster, ScrollRegion, Sidebar, Stack } from "@manifold/ui";
 import { ACTIONS, FEED_PLUGIN_ID } from "../contract.ts";
 import {
   BABEL_NODE,
+  NO_SEAT,
   ask,
   look,
+  openRecord,
+  openTopic,
   refusal,
   useSelection,
   type FeedPost,
@@ -60,10 +63,25 @@ export const EMPTY_QUERY: FeedQuery = {
   offset: 0,
 };
 
-/** A ruling this reading recorded, and what it takes to undo it. */
-interface Ruled {
-  readonly id: string;
-  readonly done: string;
+/**
+ * A note at the foot of the list: what happened, and the way back when the act it announces
+ * has one. A ruling does; a panel that had nowhere to open does not.
+ */
+interface Note {
+  readonly said: string;
+  /** The record `reopen` appends to, or "" when the note announces no ruling. */
+  readonly reopens: string;
+}
+
+/** A note, and how long it stays: long enough to change your mind, short enough to go. */
+function useNote(): readonly [Note | null, (note: Note | null) => void] {
+  const [note, setNote] = useState<Note | null>(null);
+  useEffect(() => {
+    if (note === null) return undefined;
+    const timer = window.setTimeout(() => setNote(null), TOAST_MS);
+    return () => window.clearTimeout(timer);
+  }, [note]);
+  return [note, setNote];
 }
 
 /** A row on its way out: its post, and where it was standing when it left. */
@@ -89,11 +107,17 @@ export function FeedListing({
   query,
   onQuery,
   heading,
+  said,
 }: {
   host: HostServices;
   query: FeedQuery;
   onQuery: (next: FeedQuery) => void;
   heading?: ReactNode;
+  /**
+   * A note the surface AROUND the list pushed at it — Home's rail, when a topic had nowhere
+   * to open. One toast at the foot of the page, wherever the gesture came from.
+   */
+  said?: string;
 }): ReactElement {
   const selection = useSelection();
   const [pick, setPick] = useState<PickName | null>(null);
@@ -105,7 +129,7 @@ export function FeedListing({
   const [ticked, setTicked] = useState<readonly string[]>([]);
   const [leaving, setLeaving] = useState<readonly Leaving[]>([]);
   const [counted, setCounted] = useState(false);
-  const [toast, setToast] = useState<Ruled | null>(null);
+  const [toast, setToast] = useNote();
   const [ruledToday, setRuledToday] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const rows = useRef(new Map<string, HTMLLIElement>());
@@ -172,12 +196,6 @@ export function FeedListing({
     };
   }, [answer, asked]);
 
-  useEffect(() => {
-    if (toast === null) return undefined;
-    const timer = window.setTimeout(() => setToast(null), TOAST_MS);
-    return () => window.clearTimeout(timer);
-  }, [toast]);
-
   // The ring is a real DOM focus, so the region scrolls the row into view and a screen reader
   // follows it. It is never taken back from a control inside the row that already holds it.
   const focused = focus >= 0 ? posts[focus] : undefined;
@@ -188,6 +206,16 @@ export function FeedListing({
     if (element === undefined || element.contains(document.activeElement)) return;
     element.focus();
   }, [focusedId]);
+
+  /** Opens a record: a seat of its own, and the selection points at it either way. */
+  function openRecordHere(id: string): void {
+    if (openRecord(host, id) === "no_tile") setToast({ said: NO_SEAT, reopens: "" });
+  }
+
+  /** Opens a topic: the same gesture from a row's chip as from the rail. */
+  function openTopicHere(id: string): void {
+    if (openTopic(host, id) === "no_tile") setToast({ said: NO_SEAT, reopens: "" });
+  }
 
   /** What a row's act did, and what the list does about it. */
   function recorded(post: FeedPost, act: RuleAct | "answer", done: string, message: string): void {
@@ -201,7 +229,7 @@ export function FeedListing({
     }
     if (act === "accept" || act === "reject") {
       setRuledToday((count) => count + 1);
-      setToast({ id: post.id, done });
+      setToast({ said: done, reopens: post.id });
       if (query.needs === "me") {
         const index = posts.findIndex((row) => row.id === post.id);
         setLeaving([{ post, index: index < 0 ? 0 : index }]);
@@ -220,10 +248,10 @@ export function FeedListing({
   }
 
   /** The way back from a ruling, which is a ruling: the log is append-only, so reopen appends. */
-  async function reopen(entry: Ruled): Promise<void> {
+  async function reopen(entry: Note): Promise<void> {
     setToast(null);
     try {
-      await ask(host, ACTIONS.rule, { id: entry.id, ruling: "reopen", note: "reopened from the feed" });
+      await ask(host, ACTIONS.rule, { id: entry.reopens, ruling: "reopen", note: "reopened from the feed" });
       setAnnouncement("Reopened. It is waiting on you again.");
       setRuledToday((count) => Math.max(0, count - 1));
       feed.refresh();
@@ -260,7 +288,8 @@ export function FeedListing({
           event.key === "j" ? Math.min(posts.length - 1, focus + 1) : focus <= 0 ? 0 : focus - 1;
         setFocus(next);
         // The peek walks with the list once it is open, which is what makes `j`/`k` a way of
-        // reading rather than a way of aiming.
+        // reading rather than a way of aiming. It POINTS and never opens: a seat per row the
+        // reader scrolled past is a workspace nobody asked for.
         const post = posts[next];
         if (post !== undefined && selection.recordId !== "") look({ recordId: post.id });
         return;
@@ -271,7 +300,7 @@ export function FeedListing({
           event.target instanceof HTMLElement && event.target.closest("a, button, summary") !== null;
         if (inControl) return;
         event.preventDefault();
-        look({ recordId: focused.id });
+        openRecordHere(focused.id);
         return;
       }
       // `a` answers, and the rulings press the row's own control rather than posting: a
@@ -300,6 +329,9 @@ export function FeedListing({
     shown.splice(Math.min(gone.index, shown.length), 0, gone.post);
   }
   const filtered = query.kinds.length > 0 || query.needs === "me" || (query.topic ?? "") !== "";
+  // ONE toast at the foot of the page, whatever raised it: a ruling this list recorded, or a
+  // note the surface around it pushed in. A refusal carries no way back, so it offers none.
+  const note = toast ?? (said === undefined || said === "" ? null : { said, reopens: "" });
 
   return (
     <Stack className="babel-listing" gap="var(--babel-space-3)">
@@ -399,7 +431,8 @@ export function FeedListing({
               leaving={leaving.some((row) => row.post.id === post.id)}
               now={now}
               onFocus={() => setFocus(index)}
-              onOpen={() => look({ recordId: post.id })}
+              onOpen={() => openRecordHere(post.id)}
+              onTopic={openTopicHere}
               onActed={(act, done, message) => recorded(post, act, done, message)}
               register={(element) => {
                 if (element === null) rows.current.delete(post.id);
@@ -422,12 +455,14 @@ export function FeedListing({
       {total !== null && shown.length > 0 && shown.length >= total && total > PAGE && (
         <p className="babel-note">That is all {total.toLocaleString()} of them.</p>
       )}
-      {toast !== null && (
+      {note !== null && (
         <div className="babel-toast" role="status">
-          <span>{toast.done}</span>
-          <button type="button" onClick={() => void reopen(toast)}>
-            reopen
-          </button>
+          <span>{note.said}</span>
+          {note.reopens !== "" && (
+            <button type="button" onClick={() => void reopen(note)}>
+              reopen
+            </button>
+          )}
         </div>
       )}
     </Stack>
@@ -436,16 +471,20 @@ export function FeedListing({
 
 export function HomePanel({ host }: PanelProps): ReactElement {
   const [query, setQuery] = useState<FeedQuery>(EMPTY_QUERY);
+  const [railNote, setRailNote] = useNote();
   const selection = useSelection();
   return (
     <ScrollRegion className={`plugin-${FEED_PLUGIN_ID.replaceAll(".", "_")}`} aria-label="Babel">
       <Stack className="babel-panel" gap="var(--babel-space-4)">
         <Pulse host={host} />
         <Sidebar side="end" sideWidth="15rem" contentMin="60%" gap="var(--babel-space-6)">
-          <FeedListing host={host} query={query} onQuery={setQuery} />
+          <FeedListing host={host} query={query} onQuery={setQuery} said={railNote?.said ?? ""} />
           <TopicRail
             host={host}
             current={selection.topic}
+            onTopic={(topic) =>
+              setRailNote(openTopic(host, topic) === "no_tile" ? { said: NO_SEAT, reopens: "" } : null)
+            }
             onUnfiled={() => setQuery({ ...query, topic: "unfiled", needs: "all", sort: "new", offset: 0 })}
           />
         </Sidebar>
