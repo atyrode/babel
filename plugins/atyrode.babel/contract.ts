@@ -474,6 +474,16 @@ export const LaunchInputSchema = z.strictObject({
   minutes: z.number().int().min(5).max(24 * 60).optional(),
   /** Cookbook recipe ids to run; empty runs the enabled default set. */
   recipes: z.array(bounded(80)).max(16).default([]),
+  /**
+   * Whether the preparation may hold sessions of BABEL'S OWN runs (`sessions.kind` `agent`).
+   *
+   * Absent unless asked: a preset reads the operator's work, and a corpus that quietly included
+   * Babel's own transcripts would have Babel reading itself by accident (#262). A preset whose
+   * subject IS Babel (#270) sets it, and it is the only one that posts the knob — the panel's
+   * rule is that a preset posts exactly its own knobs. Sessions still being written are never
+   * selectable and have no flag: a preparation's identity is its selection's content.
+   */
+  agentSessions: z.boolean().optional(),
 });
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 

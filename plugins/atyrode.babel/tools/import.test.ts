@@ -846,6 +846,19 @@ test("a citation resolves to the session's selector, and keeps the digest when i
   expect(notes.some((note) => note.includes("keep the raw 64-hex shared-catalog session uid"))).toBe(true);
 });
 
+test("the Go catalog's fourth harness is Babel's own, and crosses as an agent session", async () => {
+  const handle = store as PluginDatabaseAdmin;
+  const rows = await handle.query(`SELECT selector, kind, live FROM sessions ORDER BY selector`);
+  // `internal/adapter/babelself` wrote the `babel` harness: those rows are Babel's own analysis
+  // transcripts, so a preparation does not read them by accident (#262). `live` is 0 for every
+  // imported row because the import observed no file — it read a catalog.
+  expect(rows.map((row) => [row["selector"], row["kind"]])).toEqual([
+    ["babel/run-2/explore", "agent"],
+    ["omp/-code/alpha", "operator"],
+  ]);
+  expect(rows.map((row) => Number(row["live"]))).toEqual([0, 0]);
+});
+
 test("the operator's acts and Babel's votes arrive with their provenance", async () => {
   const ruling = await scalar(`SELECT * FROM dispositions WHERE record_id = 'pro_a'`);
   expect([ruling["disposition"], ruling["actor_id"], ruling["note"]])

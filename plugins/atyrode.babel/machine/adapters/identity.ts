@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 /*
   THE HARNESS SOURCE-ADAPTER PORT, ported from internal/adapter (SPEC.md §3).
@@ -61,6 +62,13 @@ export interface SessionFacts {
   size: number;
   contentDigest: string;
   usage: SessionUsage | null;
+  /**
+   * The Babel run whose own transcript this session is, when the harness's own session header
+   * names one; null for every session a person had. Babel writes its analysis logs in OMP's
+   * record language, so the OMP adapter is the one that can read the `runId` field out of the
+   * `{"type":"session"}` header — the other two harnesses write formats Babel never writes.
+   */
+  babelRunId: string | null;
   /** field → why this adapter could not observe it. */
   absent: Record<string, string>;
 }
@@ -159,4 +167,51 @@ export function walkablePath(path: string): boolean {
 export function homeDir(): string {
   const declared = process.env["HOME"]?.trim() ?? "";
   return declared !== "" ? declared : homedir().trim();
+}
+
+/**
+ * How recently a session's primary log must have been written to count as STILL BEING WRITTEN.
+ *
+ * Two minutes is the Go product's own `liveSessionGrace` (b3d57c8, filed as #236 and met again
+ * on 2026-09-13: a 240 MB Code session the operator had open, re-read by every one of twelve
+ * concurrent draws, its mtime moving the whole time). It is a grace and not a lock: a harness
+ * that appends every second is excluded for as long as it does so, and the same file two
+ * minutes after the operator closed his terminal is an ordinary settled session.
+ */
+export const LIVE_GRACE_MS = 120_000;
+
+/**
+ * Babel's own analysis-session root, `<data dir>/babel/analysis` — where a run's transcript is
+ * written, one directory per run and one "*.babel.jsonl" per supervised job inside it.
+ *
+ * The rule is the data directory's own: XDG_DATA_HOME when set, else ~/.local/share, read per
+ * call for the reason `homeDir` is (a job's child is given its own environment).
+ */
+export function babelAnalysisRoot(): string {
+  const declared = process.env["XDG_DATA_HOME"]?.trim() ?? "";
+  const base = declared !== "" ? declared : join(homeDir(), ".local", "share");
+  return join(base, "babel", "analysis");
+}
+
+/** The extension a Babel run's own transcript is named with; part of the identity, not decor. */
+const BABEL_SESSION_EXT = ".babel.jsonl";
+
+/**
+ * Whether this primary log is one of BABEL'S OWN runs, by layout alone.
+ *
+ * Two tests, because either alone is reachable without the other. Under the analysis root a log
+ * is Babel's whatever it is called; and the compound extension identifies one anywhere, which
+ * matters because a run's transcript that has been moved, restored out of a snapshot or scanned
+ * under a root the operator named explicitly is the same session — and because OMP's own layout
+ * is this one ("*.jsonl" a directory below a root), so a plain extension under an explicit root
+ * would let the OMP adapter claim Babel's transcripts as OMP's.
+ *
+ * It is a PATH rule: it costs no read, so `prepare` can honour it before digesting 240 MB. What
+ * a path cannot say — that a session some other harness wrote belongs to a Babel run — is the
+ * harness's own metadata to say, and `SessionFacts.babelRunId` is where an adapter says it.
+ */
+export function babelOwnLog(path: string): boolean {
+  if (path.endsWith(BABEL_SESSION_EXT)) return true;
+  const root = babelAnalysisRoot();
+  return path.startsWith(root.endsWith("/") ? root : `${root}/`);
 }

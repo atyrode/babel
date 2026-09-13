@@ -27,7 +27,7 @@ import {
   unauthorized,
 } from "./server/plan.ts";
 import { coordinator, type Policy } from "./store/coordinator.ts";
-import { SCHEMA_V1 } from "./store/schema.ts";
+import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
 import { openStore } from "./store/store.ts";
 import manifestJson from "./manifest.json";
 
@@ -46,9 +46,11 @@ import manifestJson from "./manifest.json";
     object every time and the store below it never notices the difference.
   - THE TABLES ARE MADE IN `onEnable`, not by a migration. `planDataMigration` answers `ok` for
     a plugin whose stored data version is null — a fresh install — so a migration chain never
-    runs on a first enable; the chain exists for a MAJOR bump over data that already exists.
-    `2026-09-12-store-v1` is therefore the name of the shape this enable creates, recorded as a
-    key so the next one is a real migration with a predecessor to read.
+    runs on a first enable; the chain exists for a MAJOR bump over data that already exists. The
+    name of the shape this enable leaves is recorded as a key so the next one has a predecessor
+    to read. An ADDITIVE shape — a column with a default, a MINOR version, which `planDataMigration`
+    passes both ways and runs nothing for — is applied here too, by column name: `SCHEMA_ADDITIONS`
+    is what a store an earlier enable created is missing, and a fresh one already has.
 
   THE LOOP HAS NO CLOCK. A plugin may not poll as an alternate scheduler (`docs/PLUGINS.md`),
   and a server half has no timer of its own, so `conductor.tick()` is called by something that
@@ -59,8 +61,12 @@ import manifestJson from "./manifest.json";
   wake it twice.
 */
 
-/** The name of the shape `SCHEMA_V1` creates; `STORE_DATA_VERSION` is the version it reaches. */
-const STORE_MIGRATION = "2026-09-12-store-v1";
+/**
+ * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column
+ * `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
+ * `2026-09-12-store-v1` — recorded under the same key by the first enable — is its predecessor.
+ */
+const STORE_MIGRATION = "2026-09-13-store-v1-sessions-live-kind";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -227,6 +233,19 @@ export const plugin: ServerPluginDef = {
       // bound of 256, which is the reason the schema may stay one list.
       if (Number(created[0]?.n ?? 0) === 0) {
         await database.batch(SCHEMA_V1.map((sql) => ({ sql })));
+      } else {
+        // A store an earlier shape created reaches this one by the columns it is missing and
+        // nothing else. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the column is asked for by
+        // name first: this runs on every enable and must do nothing on all but one of them.
+        const pending: SqlStatement[] = [];
+        for (const addition of SCHEMA_ADDITIONS) {
+          const held = await database.query<{ n: number }>(
+            "SELECT count(*) AS n FROM pragma_table_info(?) WHERE name = ?",
+            [addition.table, addition.column],
+          );
+          if (Number(held[0]?.n ?? 0) === 0) pending.push({ sql: addition.sql });
+        }
+        if (pending.length > 0) await database.batch(pending);
       }
       await ctx.storage.set(SCHEMA_KEY, STORE_MIGRATION);
       /*

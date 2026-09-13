@@ -170,6 +170,15 @@ type SessionRow = {
   seen_at: string;
 };
 
+/** What one preset's window offered: the scope, its size, and what it was not allowed to read. */
+interface Selected {
+  readonly rows: readonly SessionRow[];
+  /** Every catalogued session the window held, selectable or not. */
+  readonly held: number;
+  /** How many of those are live or Babel's own, and so were never candidates (#262). */
+  readonly excluded: number;
+}
+
 export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[] {
   /**
    * What actually ran on this machine, most recently: the profile block the newest receipt
@@ -234,34 +243,60 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     return { readiness: described };
   }
 
-  /** The sessions one explore is prepared over, newest first, and how many there were. */
-  async function selection(
-    input: LaunchInput,
-  ): Promise<{ rows: readonly SessionRow[]; available: number }> {
+  /**
+   * The sessions one explore is prepared over, newest first, how many the window held, and how
+   * many of those a preparation may not read.
+   *
+   * WHAT IT NEVER SELECTS (#262). A row `scan` marked `live` is a log that was still being
+   * appended when it was catalogued: its digest is already stale and a run reading it would
+   * report "changed since the preparation was fixed", which is what every explore of
+   * 2026-09-13 reported. That one is unconditional — a moving file is not a scope. A row
+   * marked `kind = 'agent'` is one of Babel's own runs' transcripts, catalogued and archived
+   * like every other session (#177) and left out of a preset that reads the operator's work;
+   * `agentSessions` is how a preset that studies Babel itself (#270) asks for them.
+   *
+   * `held` is what the window CONTAINED, exclusions included, so `excluded` is a number the
+   * run row and the refusal can both state: "there is nothing here" and "there is nothing here
+   * a run may read" are different facts, and the day this issue comes from was two hours of
+   * reading an adjacent number as the one that was asked for.
+   *
+   * One WHERE, two predicates: the preset decides what the window IS, and the exclusion applies
+   * to whichever window that is. Two queries that spelled the same join differently would be
+   * two chances for the count and the selection to disagree.
+   */
+  async function selection(input: LaunchInput): Promise<Selected> {
     const limit = MAX_SELECTION;
-    if (input.preset === "explore-topic") {
-      const entityId = input.entityId ?? "";
-      const rows = await store.db.query<SessionRow>(
-        `SELECT DISTINCT s.selector AS selector, s.harness AS harness, s.source_id AS source_id,
-                s.content_digest AS content_digest, s.snapshot_id AS snapshot_id, s.seen_at AS seen_at
-           FROM filings f
-           JOIN edges e ON e.from_id = f.record_id AND e.kind = 'cites' AND e.to_kind = 'session'
-           JOIN sessions s ON s.selector = e.to_id
-          WHERE f.entity_id = ? AND f.withdrawn = 0 AND s.host = ?
-          ORDER BY s.seen_at DESC, s.selector
-          LIMIT ?`,
-        [entityId, input.machineId, limit + 1],
-      );
-      return { rows: rows.slice(0, limit), available: rows.length };
-    }
-    const since = new Date(deps.now() - (input.sinceDays ?? 1) * DAY_MS).toISOString();
+    const cited =
+      `FROM filings f
+         JOIN edges e ON e.from_id = f.record_id AND e.kind = 'cites' AND e.to_kind = 'session'
+         JOIN sessions s ON s.selector = e.to_id
+        WHERE f.entity_id = ? AND f.withdrawn = 0 AND s.host = ?`;
+    const recent = `FROM sessions s WHERE s.host = ? AND s.seen_at >= ?`;
+    const topic = input.preset === "explore-topic";
+    const scope = topic ? cited : recent;
+    const params: readonly string[] = topic
+      ? [input.entityId ?? "", input.machineId]
+      : [input.machineId, new Date(deps.now() - (input.sinceDays ?? 1) * DAY_MS).toISOString()];
+    const selectable = `AND s.live = 0${input.agentSessions ? "" : " AND s.kind = 'operator'"}`;
+
     const rows = await store.db.query<SessionRow>(
-      `SELECT selector, harness, source_id, content_digest, snapshot_id, seen_at
-         FROM sessions WHERE host = ? AND seen_at >= ?
-        ORDER BY seen_at DESC, selector LIMIT ?`,
-      [input.machineId, since, limit + 1],
+      `SELECT DISTINCT s.selector AS selector, s.harness AS harness, s.source_id AS source_id,
+              s.content_digest AS content_digest, s.snapshot_id AS snapshot_id, s.seen_at AS seen_at
+         ${scope} ${selectable}
+        ORDER BY s.seen_at DESC, s.selector
+        LIMIT ?`,
+      [...params, limit + 1],
     );
-    return { rows: rows.slice(0, limit), available: rows.length };
+    const counted = await store.db.query<{ held: number; selectable: number }>(
+      `SELECT count(DISTINCT s.selector) AS held,
+              count(DISTINCT CASE WHEN s.live = 0${input.agentSessions ? "" : " AND s.kind = 'operator'"}
+                                  THEN s.selector END) AS selectable
+         ${scope}`,
+      [...params],
+    );
+    const held = Number(counted[0]?.held ?? 0);
+    const allowed = Number(counted[0]?.selectable ?? 0);
+    return { rows: rows.slice(0, limit), held, excluded: Math.max(0, held - allowed) };
   }
 
   /**
@@ -493,11 +528,19 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       }
       const prepared = await selection(input);
       if (prepared.rows.length === 0) {
+        // A window can hold sessions and offer none: a log still being written, or one of
+        // Babel's own runs', is catalogued and not a candidate (#262). Which of the two it is
+        // decides what the operator does next, so the refusal says it.
+        const left =
+          prepared.excluded === 0
+            ? ""
+            : ` (${String(prepared.excluded)} of ${String(prepared.held)} catalogued there are ` +
+              `still being written or Babel's own runs', which a preparation does not read)`;
         return {
           refused:
             input.preset === "explore-topic"
-              ? `no session on ${input.machineId} is cited by anything filed under ${input.entityId ?? ""}`
-              : `${input.machineId} has catalogued no session in the last ${String(input.sinceDays ?? 1)} days`,
+              ? `no session on ${input.machineId} is cited by anything filed under ${input.entityId ?? ""}${left}`
+              : `${input.machineId} has catalogued no session in the last ${String(input.sinceDays ?? 1)} days${left}`,
         };
       }
       const built = document({
@@ -547,7 +590,8 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
           preparation: {
             preset: input.preset,
             selected: prepared.rows.length,
-            available: prepared.available,
+            available: prepared.held,
+            excluded: prepared.excluded,
             ...(input.preset === "explore-topic"
               ? { entityId: input.entityId ?? "" }
               : { sinceDays: input.sinceDays ?? 1 }),

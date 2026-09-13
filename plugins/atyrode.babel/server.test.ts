@@ -325,3 +325,42 @@ test("an enable whose installer is gone is served no jobs, and still does the st
   expect(jobs.statuses).toBe(0);
   expect(await closure()).toBeNull();
 });
+
+test("enabling a store made before the catalog's two columns adds them and keeps its rows", async () => {
+  const { db } = harness;
+  // A store exactly as the first shape (`2026-09-12-store-v1`) left it: the tables are there,
+  // and `sessions` has neither column. `planDataMigration` runs no chain for a MINOR version,
+  // so if the enable did not add them here nothing ever would — and every session row a `scan`
+  // wrote would name a column the table has not got.
+  await db.run(`ALTER TABLE sessions DROP COLUMN live`);
+  await db.run(`ALTER TABLE sessions DROP COLUMN kind`);
+  await insert(db, "sessions", {
+    selector: "omp/older", host: MACHINE, harness: "omp", source_id: "older",
+    title: "catalogued before the columns existed", seen_at: stamp(NOW - HOUR),
+  });
+
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+
+  // The row it already held is the operator's own and settled, which is what a default says.
+  const older = await db.query<{ live: number; kind: string }>(
+    `SELECT live, kind FROM sessions WHERE selector = 'omp/older'`,
+  );
+  expect(older[0]?.kind).toBe("operator");
+  expect(Number(older[0]?.live)).toBe(0);
+
+  // And a row in the shape `scan` writes now lands, which is the whole point of the column.
+  await insert(db, "sessions", {
+    selector: "omp/run-7/explore", host: MACHINE, harness: "omp", source_id: "run-7/explore",
+    title: "babel explore pass", live: 1, kind: "agent", seen_at: stamp(NOW),
+  });
+
+  // A second enable is the ordinary case — it runs on every one — and must do nothing.
+  await plugin.lifecycle?.onEnable?.(context(db as unknown as GuestDatabase, jobs) as never);
+  const kinds = await db.query<{ selector: string; kind: string }>(
+    `SELECT selector, kind FROM sessions ORDER BY selector`,
+  );
+  expect(kinds.map((row) => [row.selector, row.kind])).toEqual([
+    ["omp/older", "operator"],
+    ["omp/run-7/explore", "agent"],
+  ]);
+});

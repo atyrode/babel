@@ -44,6 +44,13 @@ interface Header {
   title: string;
   cwd: string;
   createdAt: string;
+  /**
+   * The Babel run this log is the transcript of, when the session record names one. Babel's own
+   * analysis logs are written in this record language — a `{"type":"title"}` record, then a
+   * `{"type":"session"}` header carrying `runId` and `job` — so this is the one adapter that
+   * can tell a run's transcript from a person's session by what the file itself says.
+   */
+  runId: string;
   done: boolean;
 }
 
@@ -118,7 +125,7 @@ export const omp: Adapter = {
 
   async describe(ref) {
     const info = await stat(ref.primaryPath);
-    const header: Header = { title: "", cwd: "", createdAt: "", done: false };
+    const header: Header = { title: "", cwd: "", createdAt: "", runId: "", done: false };
     const totals: UsageTotals = {
       assistantTurns: 0,
       turnsWithUsage: 0,
@@ -163,6 +170,7 @@ export const omp: Adapter = {
       size: stream.size,
       contentDigest: stream.digest,
       usage,
+      babelRunId: header.runId === "" ? null : header.runId,
       absent,
     } satisfies SessionFacts;
   },
@@ -195,6 +203,7 @@ function readHeader(record: string, header: Header, totals: UsageTotals): void {
         header.title = fields["title"];
       }
       if (typeof fields["cwd"] === "string") header.cwd = fields["cwd"];
+      if (typeof fields["runId"] === "string") header.runId = fields["runId"];
       const timestamp = fields["timestamp"];
       if (typeof timestamp === "string") {
         const at = new Date(timestamp);

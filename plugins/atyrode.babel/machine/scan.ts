@@ -5,6 +5,8 @@ import type { OutputSink } from "./output.ts";
 import {
   ADAPTERS,
   HARNESSES,
+  LIVE_GRACE_MS,
+  babelOwnLog,
   type Adapter,
   type Harness,
   type SessionFacts,
@@ -26,6 +28,14 @@ import { repositoryObserver } from "./repository.ts";
   nulls for them would erase an archive's answer on the next beat. And the reasons an adapter
   could not observe a field have no column: they are the scan's own evidence, so they are
   counted into the receipt instead of being flattened into the row.
+
+  TWO THINGS THE ROWS DO CARRY, for whoever builds a selection out of them (#262). `live` says
+  this log was written in the last `LIVE_GRACE_MS` and its bytes are therefore still moving;
+  `kind` says whether the conversation was the operator's or one of Babel's own runs'. Both are
+  observations and not exclusions: a live session and a Babel run's transcript are scanned,
+  catalogued and archived like every other (#177). What honours them is `prepare` and the
+  presets' inline selection, where including a file that changes under the run reading it is
+  what produced "changed since the preparation was fixed" on every explore of 2026-09-13.
 */
 
 export const ScanInputSchema = z.strictObject({
@@ -62,6 +72,11 @@ export interface SessionCatalogRow {
   repository_reason: string | null;
   modified_at: string | null;
   size: number;
+  /** 1 when this log was written inside `LIVE_GRACE_MS` of being described; the column is an
+   *  integer because the store is STRICT and SQLite has no boolean. */
+  live: number;
+  /** Whose conversation it was: the operator's, or one of Babel's own runs'. */
+  kind: "operator" | "agent";
   cost_usd: number | null;
   total_tokens: number | null;
   turns: number | null;
@@ -76,6 +91,28 @@ export interface SessionCatalogRow {
  * time pace; more would only queue on the same disk.
  */
 const DESCRIBE_CONCURRENCY = 4;
+
+/**
+ * Whether this session's bytes were still moving when it was described, and whose conversation
+ * it was.
+ *
+ * Liveness is measured against the instant of the DESCRIPTION rather than the scan's start: a
+ * scan of a thousand sessions takes minutes, and a file last written at the fifth minute of it
+ * is live whatever the first minute would have said. `modified_at` is the column the answer is
+ * derived from, so a row says nothing its own two fields contradict; a timestamp no adapter
+ * could observe is not live, because there is no evidence that it moved.
+ *
+ * A session is `agent` by the path rule (`babelOwnLog`) or by what its own header says
+ * (`babelRunId`), and either alone is enough: a transcript moved out of Babel's tree is still
+ * Babel's, and a run's log under a root the operator named explicitly is claimed by the OMP
+ * adapter, which reads the run id the header carries.
+ */
+function ownership(facts: SessionFacts, at: number): { live: number; kind: "operator" | "agent" } {
+  const written = facts.modifiedAt === null ? Number.NaN : Date.parse(facts.modifiedAt);
+  const live = Number.isNaN(written) || at - written >= LIVE_GRACE_MS ? 0 : 1;
+  const own = facts.babelRunId !== null || babelOwnLog(facts.ref.primaryPath);
+  return { live, kind: own ? "agent" : "operator" };
+}
 
 export async function scan(input: ScanInput, out: OutputSink): Promise<Receipt> {
   const startedAt = new Date().toISOString();
@@ -103,6 +140,8 @@ export async function scan(input: ScanInput, out: OutputSink): Promise<Receipt> 
     with_usage: 0,
     bytes: 0,
     skipped: 0,
+    live: 0,
+    agent: 0,
   };
   const identities = new Set<string>();
   const perHarness: Record<string, number> = {};
@@ -125,6 +164,7 @@ export async function scan(input: ScanInput, out: OutputSink): Promise<Receipt> 
         continue;
       }
       const repository = await repositories.observe(facts.workspace);
+      const held = ownership(facts, Date.now());
       rows.push({
         selector: ref.selector,
         host: input.machineId,
@@ -138,6 +178,8 @@ export async function scan(input: ScanInput, out: OutputSink): Promise<Receipt> 
         repository_reason: repository.reason,
         modified_at: facts.modifiedAt,
         size: facts.size,
+        live: held.live,
+        kind: held.kind,
         cost_usd: facts.usage?.costUsd ?? null,
         total_tokens: facts.usage?.totalTokens ?? null,
         turns: facts.usage?.turns ?? null,
@@ -147,6 +189,8 @@ export async function scan(input: ScanInput, out: OutputSink): Promise<Receipt> 
       });
       counts.sessions++;
       counts.bytes += facts.size;
+      if (held.live === 1) counts.live++;
+      if (held.kind === "agent") counts.agent++;
       perHarness[ref.harness] = (perHarness[ref.harness] ?? 0) + 1;
       if (facts.title !== null) counts.titled++;
       if (facts.workspace !== null) counts.with_workspace++;

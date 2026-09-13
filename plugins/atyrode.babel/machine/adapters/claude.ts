@@ -150,6 +150,9 @@ export const claude: Adapter = {
       size: stream.size,
       contentDigest: stream.digest,
       usage: null,
+      // Babel writes no Claude Code transcript, so no log here is one of its runs': the
+      // question is answered by the format, not by a field this reader could not find.
+      babelRunId: null,
       absent,
     } satisfies SessionFacts;
   },

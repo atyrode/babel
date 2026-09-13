@@ -237,6 +237,14 @@ function documentOf(launch: JobLaunch): Record<string, unknown> {
   return JSON.parse(text) as Record<string, unknown>;
 }
 
+/** What the run row records about the scope it was launched over. */
+async function preparationOf(db: TestStore["db"], runId: string): Promise<Record<string, unknown>> {
+  const rows = await db.query<{ preparation: string }>(`SELECT preparation FROM runs WHERE id = ?`, [runId]);
+  const text = rows[0]?.preparation;
+  if (typeof text !== "string") throw new Error(`no run row ${runId}`);
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
 beforeEach(async () => {
   harness = await openTestStore(NOW);
   fleet = new Fleet();
@@ -496,6 +504,55 @@ test("an explore over a window holding nothing says so rather than starting an e
     machineId: "m-other", preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id],
   });
   expect(none["refused"]).toContain("catalogued no session");
+});
+
+test("a preset reads the operator's work: a live session and Babel's own are not in the scope", async () => {
+  cookbook[RECIPE.id] = RECIPE;
+  const { db } = harness;
+  // Both catalogued inside the window, beside `omp/s1`: one still being appended when the scan
+  // saw it, one the transcript of a Babel run (#262).
+  await insert(db, "sessions", {
+    selector: "omp/moving", host: MACHINE, harness: "omp", source_id: "moving", title: "open now",
+    content_digest: "d3", live: 1, seen_at: stamp(NOW - HOUR),
+  });
+  await insert(db, "sessions", {
+    selector: "omp/run-7/explore", host: MACHINE, harness: "omp", source_id: "run-7/explore",
+    title: "babel explore pass", content_digest: "d4", kind: "agent", seen_at: stamp(NOW - HOUR),
+  });
+
+  await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id] });
+  expect(documentOf(fleet.executed[0]!)["preparation"]).toEqual({
+    id: "",
+    selection: [
+      { harness: "omp", sourceId: "s1", selector: "omp/s1", digest: "d1", snapshot: "snap-1" },
+    ],
+  });
+  // What the window HELD is still reported: three catalogued, two of them unreadable by a run.
+  expect(await preparationOf(db, "run_000001")).toMatchObject({ selected: 1, available: 3, excluded: 2 });
+
+  // Asked for on purpose (#270), Babel's own transcript is in the scope — and the live session
+  // is not, because a file whose bytes are still moving is not a scope at any preset's request.
+  await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id], agentSessions: true });
+  // Newest first, which is what puts the run's own transcript ahead of yesterday's session.
+  expect(documentOf(fleet.executed[1]!)["preparation"]).toEqual({
+    id: "",
+    selection: [
+      { harness: "omp", sourceId: "run-7/explore", selector: "omp/run-7/explore", digest: "d4", snapshot: "" },
+      { harness: "omp", sourceId: "s1", selector: "omp/s1", digest: "d1", snapshot: "snap-1" },
+    ],
+  });
+  expect(await preparationOf(db, "run_000002")).toMatchObject({ selected: 2, available: 3, excluded: 1 });
+});
+
+test("a window holding only sessions no run may read says that, not that it is empty", async () => {
+  cookbook[RECIPE.id] = RECIPE;
+  const { db } = harness;
+  await db.run(`UPDATE sessions SET live = 1 WHERE selector = 'omp/s1'`);
+
+  const refused = await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id] });
+  expect(refused["refused"]).toContain("catalogued no session in the last 1 days");
+  expect(refused["refused"]).toContain("1 of 1 catalogued there are still being written");
+  expect(fleet.executed).toEqual([]);
 });
 
 test("a machine that cannot run it refuses the launch and posts nothing", async () => {

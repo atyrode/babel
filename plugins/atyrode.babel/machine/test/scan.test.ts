@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -239,4 +239,72 @@ test("a machine with no sessions writes an empty catalog and a receipt", async (
   expect(rowsOf(written)).toEqual([]);
   expect(receipt.counts["sessions"]).toBe(0);
   await rm(empty, { recursive: true, force: true });
+});
+
+test("a session still being written is live; one written ten minutes ago is not", async () => {
+  const root = await mkdtemp(join(tmpdir(), "babel-scan-live-"));
+  await writeOmpSession(root, { project: "-checkout", stem: "moving", title: "Open now" });
+  const settled = await writeOmpSession(root, { project: "-checkout", stem: "settled", title: "Closed" });
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+  await utimes(settled, tenMinutesAgo, tenMinutesAgo);
+
+  const { sink, written } = memorySink();
+  const receipt = await scan(
+    ScanInputSchema.parse({ machineId: "dev-01", runId: "run_live", harnesses: ["omp"], roots: [root] }),
+    sink,
+  );
+  const rows = rowsOf(written);
+  const live = rows.find((row) => row.selector.endsWith("/moving"));
+  const old = rows.find((row) => row.selector.endsWith("/settled"));
+
+  expect(live?.live).toBe(1);
+  expect(old?.live).toBe(0);
+  // The column and the answer come from the same fact, so a row cannot contradict itself.
+  expect(Date.parse(String(live?.modified_at))).toBeGreaterThan(tenMinutesAgo.getTime());
+  expect(Date.parse(String(old?.modified_at))).toBeLessThanOrEqual(tenMinutesAgo.getTime() + 1000);
+  expect(receipt.counts["live"]).toBe(1);
+  await rm(root, { recursive: true, force: true });
+});
+
+test("a session one of Babel's own runs wrote is an agent session, by its tree or by its own header", async () => {
+  const data = await mkdtemp(join(tmpdir(), "babel-scan-own-"));
+  const analysis = join(data, "babel", "analysis");
+  const sessions = join(data, ".omp", "agent", "sessions");
+  // Under Babel's own analysis tree, named as anything: the path alone settles it.
+  await writeOmpSession(analysis, { project: "run-cyc-1", stem: "explore", title: "babel explore pass" });
+  // In the operator's own sessions tree, named as anything: the header settles it, because
+  // Babel writes its transcripts in OMP's record language and names the run in them.
+  await writeOmpSession(sessions, {
+    project: "-checkout",
+    stem: "a-run-elsewhere",
+    title: "babel review pass of run eval-7",
+    runId: "eval-7",
+  });
+  await writeOmpSession(sessions, { project: "-checkout", stem: "the-operators-own", title: "A person's work" });
+
+  const previous = process.env["XDG_DATA_HOME"];
+  process.env["XDG_DATA_HOME"] = data;
+  try {
+    const { sink, written } = memorySink();
+    const receipt = await scan(
+      ScanInputSchema.parse({
+        machineId: "dev-01",
+        runId: "run_own",
+        harnesses: ["omp"],
+        roots: [analysis, sessions],
+      }),
+      sink,
+    );
+    const kinds = Object.fromEntries(rowsOf(written).map((row) => [row.selector, row.kind]));
+    expect(kinds).toEqual({
+      "omp/run-cyc-1/explore": "agent",
+      "omp/-checkout/a-run-elsewhere": "agent",
+      "omp/-checkout/the-operators-own": "operator",
+    });
+    expect(receipt.counts["agent"]).toBe(2);
+  } finally {
+    if (previous === undefined) delete process.env["XDG_DATA_HOME"];
+    else process.env["XDG_DATA_HOME"] = previous;
+  }
+  await rm(data, { recursive: true, force: true });
 });

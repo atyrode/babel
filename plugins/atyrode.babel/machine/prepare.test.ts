@@ -4,10 +4,14 @@
   What is being pinned is a contract later phases lean on: `explore --preparation <id>` names a
   corpus, so the same corpus must be the same id however it was discovered or when, and a
   corpus that changed by one byte must not be.
+
+  Every fixture is written and then BACKDATED (`settle`), because a log written a moment ago is
+  one a preparation refuses to read at all (#262): the identity under test is a settled corpus's,
+  and a moving file has none. The exclusion itself is the subject of the last three tests.
 */
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Receipt } from "../contract.ts";
@@ -18,10 +22,19 @@ import {
   PrepareInputSchema,
   type PreparationEntry,
   digests,
+  modifiedAt,
   newPreparation,
   prepare,
   type PrepareDeps,
 } from "./prepare.ts";
+
+/** An hour ago: past `LIVE_GRACE_MS`, so this file is a settled session and not a moving one. */
+function settle(path: string, contents?: string): string {
+  if (contents !== undefined) writeFileSync(path, contents);
+  const at = new Date(Date.now() - 60 * 60 * 1000);
+  utimesSync(path, at, at);
+  return path;
+}
 
 const MACHINE = "test-machine-01";
 
@@ -59,11 +72,11 @@ function ref(harness: SessionRef["harness"], sourceId: string): SessionRef {
 }
 
 function deps(over: readonly SessionRef[] = sessions): PrepareDeps {
-  return { discover: async () => over, digests };
+  return { discover: async () => over, digests, modifiedAt };
 }
 
 async function run(
-  input: Partial<{ selectors: string[] }> = {},
+  input: Partial<{ selectors: string[]; agentSessions: boolean }> = {},
   over: readonly SessionRef[] = sessions,
 ): Promise<{ receipt: Receipt; rows: readonly Record<string, unknown>[] }> {
   const recorder = new Recorder();
@@ -83,9 +96,9 @@ beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "babel-prepare-"));
   mkdirSync(join(root, "omp"), { recursive: true });
   mkdirSync(join(root, "codex"), { recursive: true });
-  writeFileSync(join(root, "omp", "a1b2c3.jsonl"), '{"type":"user","text":"first"}\n');
-  writeFileSync(join(root, "omp", "d4e5f6.jsonl"), '{"type":"user","text":"second"}\n');
-  writeFileSync(join(root, "codex", "0192ab.jsonl"), '{"type":"message","text":"third"}\n');
+  settle(join(root, "omp", "a1b2c3.jsonl"), '{"type":"user","text":"first"}\n');
+  settle(join(root, "omp", "d4e5f6.jsonl"), '{"type":"user","text":"second"}\n');
+  settle(join(root, "codex", "0192ab.jsonl"), '{"type":"message","text":"third"}\n');
   sessions = [ref("omp", "a1b2c3"), ref("omp", "d4e5f6"), ref("codex", "0192ab")];
 });
 
@@ -217,13 +230,98 @@ test("re-preparing an unchanged corpus is the same scope; one changed session is
   expect(idOf(again.receipt)).toBe(idOf(first.receipt));
 
   const path = join(root, "omp", "d4e5f6.jsonl");
-  writeFileSync(path, '{"type":"user","text":"second"}\n{"type":"agent","text":"more"}\n');
+  settle(path, '{"type":"user","text":"second"}\n{"type":"agent","text":"more"}\n');
   const after = await run();
   expect(idOf(after.receipt)).not.toBe(idOf(first.receipt));
 
-  writeFileSync(path, '{"type":"user","text":"second"}\n');
+  settle(path, '{"type":"user","text":"second"}\n');
   const restored = await run();
   expect(idOf(restored.receipt)).toBe(idOf(first.receipt));
+});
+
+test("a session being appended to is left out, so the scope's id does not move with it", async () => {
+  // The 2026-09-13 failure, reproduced: one session appended between preparations while the
+  // rest of the corpus sits still. Ten preparations, one id — and the moving file in none of
+  // them, which is why there is one id rather than ten.
+  const moving = join(root, "omp", "still-writing.jsonl");
+  writeFileSync(moving, '{"type":"user","text":"0"}\n');
+  const over = [...sessions, ref("omp", "still-writing")];
+
+  const ids = new Set<string>();
+  for (let turn = 0; turn < 10; turn++) {
+    const { receipt } = await run({}, over);
+    ids.add(idOf(receipt));
+    expect(receipt.counts["live"]).toBe(1);
+    expect(receipt.counts["selected"]).toBe(3);
+    appendFileSync(moving, `{"type":"agent","text":"${String(turn)}"}\n`);
+  }
+
+  expect(ids.size).toBe(1);
+  expect([...ids][0]).toBe(idOf((await run()).receipt));
+  rmSync(moving);
+});
+
+test("a scope holds none of Babel's own run transcripts unless it asks for them", async () => {
+  const own = settle(join(root, "omp", "run-abc.babel.jsonl"), '{"type":"session","runId":"run-abc"}\n');
+  const over = [...sessions, ref("omp", "run-abc.babel")];
+
+  const ordinary = await run({}, over);
+  expect(ordinary.receipt.counts["agent"]).toBe(1);
+  expect(ordinary.receipt.counts["selected"]).toBe(3);
+  expect(ordinary.rows.map((row) => row["selector"])).not.toContain("omp/run-abc.babel");
+
+  // #270's preset, asking on purpose: the same corpus plus Babel's own.
+  const studied = await run({ agentSessions: true }, over);
+  expect(studied.receipt.counts["agent"]).toBe(0);
+  expect(studied.receipt.counts["selected"]).toBe(4);
+  expect(studied.rows.map((row) => row["selector"])).toContain("omp/run-abc.babel");
+  expect(idOf(studied.receipt)).not.toBe(idOf(ordinary.receipt));
+  rmSync(own);
+});
+
+test("a selector that names an excluded session is refused, never quietly dropped", async () => {
+  const moving = ref("omp", "still-writing");
+  writeFileSync(moving.primaryPath, '{"type":"user","text":"0"}\n');
+  const own = ref("omp", "run-abc.babel");
+  settle(own.primaryPath, '{"type":"session","runId":"run-abc"}\n');
+  const over = [...sessions, moving, own];
+
+  const live = await run({ selectors: ["omp/still-writing"] }, over);
+  expect(live.receipt.closure).toBe("failed");
+  expect(live.receipt.reason).toContain("omp/still-writing");
+  expect(live.receipt.reason).toContain("still being appended");
+  expect(live.receipt.preparation).toBeUndefined();
+  expect(live.rows).toEqual([]);
+
+  const babel = await run({ selectors: ["omp/run-abc.babel"] }, over);
+  expect(babel.receipt.closure).toBe("failed");
+  expect(babel.receipt.reason).toContain("Babel's own runs' transcripts");
+  expect(babel.receipt.preparation).toBeUndefined();
+
+  // Asked for on purpose, the same selector is a scope.
+  const asked = await run({ selectors: ["omp/run-abc.babel"], agentSessions: true }, over);
+  expect(asked.receipt.closure).toBe("completed");
+  expect(asked.receipt.counts["selected"]).toBe(1);
+
+  rmSync(moving.primaryPath);
+  rmSync(own.primaryPath);
+});
+
+test("a corpus of nothing but moving and own sessions is skipped, and says which", async () => {
+  const moving = ref("omp", "still-writing");
+  writeFileSync(moving.primaryPath, '{"type":"user","text":"0"}\n');
+  const own = ref("omp", "run-abc.babel");
+  settle(own.primaryPath, '{"type":"session","runId":"run-abc"}\n');
+
+  const { receipt, rows } = await run({}, [moving, own]);
+  expect(receipt.closure).toBe("skipped");
+  expect(receipt.reason).toContain("1 still being written");
+  expect(receipt.reason).toContain("1 Babel's own runs'");
+  expect(receipt.preparation).toBeUndefined();
+  expect(rows).toEqual([]);
+
+  rmSync(moving.primaryPath);
+  rmSync(own.primaryPath);
 });
 
 test("a selector is resolved by suffix, and an unmatched one refuses the scope", async () => {

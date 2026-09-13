@@ -64,8 +64,8 @@ const DISPATCH: Record<OperationWord, (raw: unknown, out: OutputSink) => Promise
     });
   },
   prepare: async (raw, out) => {
-    const { PrepareInputSchema, prepare, digests } = await import("./prepare.ts");
-    return prepare(PrepareInputSchema.parse(raw), out, { discover, digests });
+    const { PrepareInputSchema, prepare, digests, modifiedAt } = await import("./prepare.ts");
+    return prepare(PrepareInputSchema.parse(raw), out, { discover, digests, modifiedAt });
   },
   explore: async (raw, out) => {
     const { ExploreInputSchema, explore } = await import("./explore.ts");
