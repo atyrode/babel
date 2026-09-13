@@ -1,11 +1,14 @@
 package index
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/atyrode/babel/internal/event"
 )
 
 // TestBuildMatch pins the translation from a caller's expression to FTS5
@@ -202,5 +205,34 @@ func TestTruncateText(t *testing.T) {
 				t.Error("truncated text is not a prefix of its input")
 			}
 		})
+	}
+}
+
+// Several evaluators start at once and each discovers the same new session:
+// the second to write must find the first's row and stand down, not fail its
+// whole draw on sessions.path (2026-09-13, ten concurrent reviews).
+func TestInsertSessionStandsDownOnAPathAnotherIndexerRecorded(t *testing.T) {
+	idx, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer idx.Close()
+	ctx := context.Background()
+	stream := event.Stream{Path: "/sessions/one.jsonl", Harness: "omp", AdapterSchema: 1, SourceID: "src"}
+	tx, err := idx.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback()
+	first, inserted, err := insertSession(ctx, tx, stream, 10, 20)
+	if err != nil || !inserted || first == 0 {
+		t.Fatalf("first insert: id=%d inserted=%v err=%v", first, inserted, err)
+	}
+	second, inserted, err := insertSession(ctx, tx, stream, 10, 20)
+	if err != nil {
+		t.Fatalf("second insert of the same path failed instead of standing down: %v", err)
+	}
+	if inserted || second != 0 {
+		t.Fatalf("second insert claimed the row: id=%d inserted=%v", second, inserted)
 	}
 }
