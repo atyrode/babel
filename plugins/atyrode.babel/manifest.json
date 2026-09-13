@@ -55,24 +55,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "9dbde1ad2dc51aca90c187acea962d00e634305bccaabff27a0f0737402be444",
+        "sha256": "7f335f3f900f390911924ecaeb0601f5c9e6bb9af731c0c61a30beabe966934b",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "9dbde1ad2dc51aca90c187acea962d00e634305bccaabff27a0f0737402be444",
+        "entrySha256": "7f335f3f900f390911924ecaeb0601f5c9e6bb9af731c0c61a30beabe966934b",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "9dbde1ad2dc51aca90c187acea962d00e634305bccaabff27a0f0737402be444",
+        "sha256": "7f335f3f900f390911924ecaeb0601f5c9e6bb9af731c0c61a30beabe966934b",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "9dbde1ad2dc51aca90c187acea962d00e634305bccaabff27a0f0737402be444",
+        "entrySha256": "7f335f3f900f390911924ecaeb0601f5c9e6bb9af731c0c61a30beabe966934b",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -190,6 +190,111 @@
           "outputs"
         ],
         "network": "none",
+        "limits": {
+          "timeoutMs": 600000,
+          "memoryBytes": 1073741824,
+          "processes": 64,
+          "outputBytes": 67108864
+        },
+        "stdin": false
+      },
+      "atyrode.babel.archive": {
+        "argv": [
+          {
+            "literal": "/job/artifact"
+          },
+          {
+            "literal": "archive"
+          },
+          {
+            "literal": "--input"
+          },
+          {
+            "literal": "/inputs/input"
+          },
+          {
+            "literal": "--out"
+          },
+          {
+            "literal": "/outputs/outputs"
+          }
+        ],
+        "input": {
+          "input": {
+            "type": "string",
+            "required": true,
+            "maxLength": 65536
+          }
+        },
+        "inputFiles": {
+          "input": {
+            "input": "input"
+          },
+          "restic": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              {
+                "path": [
+                  "url"
+                ],
+                "serviceId": "atyrode.babel.restic",
+                "value": "url"
+              },
+              {
+                "path": [
+                  "bearer"
+                ],
+                "serviceId": "atyrode.babel.restic",
+                "value": "bearer"
+              }
+            ]
+          }
+        },
+        "services": [
+          {
+            "serviceId": "atyrode.babel.restic",
+            "revision": "1",
+            "operationIds": [
+              "storage"
+            ]
+          }
+        ],
+        "environment": {
+          "BABEL_RESTIC_CACHE_DIR": "/home/job/.cache/restic"
+        },
+        "runtimeTools": [
+          "bun",
+          "restic"
+        ],
+        "executable": {
+          "runtimeTool": "bun"
+        },
+        "locations": [
+          {
+            "locationId": "atyrode.babel.outputs",
+            "access": "write"
+          },
+          {
+            "locationId": "atyrode.babel.cache",
+            "access": "write"
+          },
+          {
+            "locationId": "atyrode.babel.omp",
+            "access": "read"
+          },
+          {
+            "locationId": "atyrode.babel.codex",
+            "access": "read"
+          },
+          {
+            "locationId": "atyrode.babel.claude",
+            "access": "read"
+          }
+        ],
+        "outputs": [
+          "outputs"
+        ],
+        "network": "host",
         "limits": {
           "timeoutMs": 600000,
           "memoryBytes": 1073741824,

@@ -9,9 +9,10 @@
   root's parent chain stable across that change, let one unreadable root fail without taking
   the others with it, and make restoring a single harness's sessions a restore of one snapshot.
 
-  The repository and its password come from the job's bindings (`RESTIC_ENV` in restic.ts) and
-  from nowhere else: this operation reads no credential file and creates no repository. A
-  repository is created once, by hand, for the deployment — silent creation would turn a
+  The repository and the secrets that open it come from the job's own service binding
+  (`RESTIC_SERVICE`, read through `resticConfig`) and from nowhere else: this operation reads
+  no credential file of the operator's, holds no environment secret, and creates no repository.
+  A repository is created once, by hand, for the deployment — silent creation would turn a
   mistyped locator into a second, empty archive that grows happily while the real one appears
   to stop, and two concurrent creations corrupt.
 */
@@ -20,7 +21,7 @@ import { z } from "zod";
 import type { Receipt } from "../contract.ts";
 import type { SessionRef } from "./adapters/index.ts";
 import type { OutputSink } from "./output.ts";
-import { BABEL_TAG, ResticError, openRepo, resticConfigFromEnv } from "./restic.ts";
+import { BABEL_TAG, ResticError, openRepo, resticConfig } from "./restic.ts";
 
 export const ArchiveInputSchema = z.strictObject({
   /** The run this job is. Empty mints one: a scheduled beat's input is fixed at registration,
@@ -33,12 +34,15 @@ export const ArchiveInputSchema = z.strictObject({
 });
 export type ArchiveInput = z.infer<typeof ArchiveInputSchema>;
 
-/** The machine facts this operation needs, which the adapters own (machine/adapters). */
+/** The machine facts and job bindings this operation needs; the adapters own the facts
+ *  (machine/adapters) and the dispatcher owns the binding (machine/main.ts). */
 export interface ArchiveDeps {
   /** Every adapter's backup root that exists on this host. */
   roots(): Promise<readonly string[]>;
   /** The session one archived path is the primary log of, or null when no adapter claims it. */
   claim(path: string): SessionRef | null;
+  /** Where the engine materialized the storage service binding for this job. */
+  credentialFile: string;
 }
 
 /**
@@ -126,20 +130,11 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
     rootsIncomplete: 0,
     unreadable: 0,
   };
-  let config;
-  try {
-    config = resticConfigFromEnv(process.env);
-  } catch (err) {
-    if (err instanceof ResticError) {
-      return { rows: [], tallies: counts, parented: null, closure: "failed", reason: err.message };
-    }
-    throw err;
-  }
-
   const roots = input.roots.length > 0 ? [...input.roots].sort() : [...(await deps.roots())];
   if (roots.length === 0) {
     // A machine that runs no harness yet is not a failure, and must not look like a
-    // successful backup either.
+    // successful backup either. Nothing is asked of the storage service for it: a machine with
+    // nothing to archive must not be able to fail on the operator's policy.
     return {
       rows: [],
       tallies: counts,
@@ -149,6 +144,16 @@ async function backUp(input: ArchiveInput, deps: ArchiveDeps): Promise<ArchiveWo
     };
   }
   counts.roots = roots.length;
+
+  let config;
+  try {
+    config = await resticConfig({ credentialFile: deps.credentialFile, env: process.env });
+  } catch (err) {
+    if (err instanceof ResticError) {
+      return { rows: [], tallies: counts, parented: null, closure: "failed", reason: describe(err) };
+    }
+    throw err;
+  }
 
   const repo = openRepo(config);
   try {

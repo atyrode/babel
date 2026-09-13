@@ -647,10 +647,11 @@ export type Receipt = z.infer<typeof ReceiptSchema>;
  * The runtime tools an operation may name, and nothing about where they come from: a Manifold
  * job sandbox carries no libc, so a tool must arrive WITH its closure, and only the machine's
  * owner can bind one (`execution.runtimeToolClosures`, manifold docs/SELF-HOST.md). `bun` runs
- * machine.js; `code` is the engine explore and evaluate drive. The manifest declares neither
- * as an artifact, so an operation runs exactly where its owner said it may.
+ * machine.js; `code` is the engine explore and evaluate drive; `git` reads repository identity
+ * for scan and prepare; `restic` owns the archive's repository format. The manifest declares
+ * none of them as an artifact, so an operation runs exactly where its owner said it may.
  */
-export const RUNTIME_TOOLS = ["bun", "code", "git"] as const;
+export const RUNTIME_TOOLS = ["bun", "code", "git", "restic"] as const;
 /** Where the owner binds a runtime tool inside the sandbox: `<RUNTIME_TOOL_BIN>/<alias>`. */
 export const RUNTIME_TOOL_BIN = "/runtime/bin";
 
@@ -666,3 +667,30 @@ export const OUTPUT_BINDING = "outputs";
 export const OUTPUT_LOCATION = `${BABEL_PLUGIN_ID}.outputs`;
 /** The operation's single input binding: one JSON document, as the machine half parses it. */
 export const INPUT_FIELD = "input";
+
+/**
+ * THE STORAGE SERVICE the `archive` operation is bound to (issue #244).
+ *
+ * An operation's `environment` is fixed reviewed values in a committed manifest, which is not
+ * where the repository password goes — and not where this deployment's repository locator can
+ * go either, since a manifest is code and the locator is provisioning. Both arrive through ONE
+ * service the operator installs, under this id: the engine materializes that binding's loopback
+ * endpoint and a capability minted for this job alone into `RESTIC_CREDENTIAL_FILE`, and the
+ * operation asks the service for the storage document. The locator and the object-store
+ * credential an `s3:` locator needs therefore arrive together, never in halves (SPEC decision
+ * 50), and no secret reaches argv, the environment, the job request or the hub's journal.
+ *
+ * `operationId` is the policy key the binding names and `path` is the route that policy
+ * declares; the manifest spells both and so does machine/restic.ts, which is why they are
+ * stated here once.
+ */
+export const RESTIC_SERVICE = {
+  serviceId: `${BABEL_PLUGIN_ID}.restic`,
+  revision: "1",
+  operationId: "storage",
+  path: "/storage",
+  /** The input file the binding is materialized into, as `{url, bearer}`. */
+  inputFile: "restic",
+} as const;
+/** Where the engine binds that file inside the sandbox: one job's own, read-only. */
+export const RESTIC_CREDENTIAL_FILE = `/inputs/${RESTIC_SERVICE.inputFile}`;

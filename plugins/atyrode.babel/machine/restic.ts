@@ -3,14 +3,23 @@
   session logs of every enrolled machine, deduplicated into one repository — and Babel never
   reimplements a repository format. This is a thin, contract-bearing shell over the binary:
 
-  - The repository password NEVER reaches argv and is never logged. It arrives in the child's
-    environment as RESTIC_PASSWORD, from the job's own binding (see `RESTIC_ENV`), so a
-    password cannot leak through a process listing and the plugin reads no credential file of
-    its own. The engine hands the job its bindings; nothing here consults the operator's disk.
+  - The repository and the secrets that open it arrive through the job's own SERVICE BINDING
+    (`RESTIC_SERVICE` in contract.ts) and from nowhere else. The engine materializes that
+    binding into `RESTIC_CREDENTIAL_FILE` as the loopback endpoint of this job's service proxy
+    plus a capability minted for this job alone, and this module asks the service once for the
+    storage document. Nothing here reads the operator's disk, and no ambient variable can
+    redirect an archive: an operation's `environment` is fixed reviewed values in a committed
+    manifest, which is neither where a password goes nor where a deployment's locator can go.
+  - The password NEVER reaches argv and is never logged. It reaches restic as RESTIC_PASSWORD
+    in the CHILD's environment only, so a process listing cannot carry it and nothing this
+    process spawns later inherits it.
   - Every child gets a MINIMAL environment: the repository coordinates, the object-store
     credential when the repository has one, and the three variables a subprocess legitimately
     needs (HOME, PATH, TMPDIR) when the parent has them. Behaviour therefore does not drift
     with whatever ambient RESTIC_* variables the machine's shell happens to carry.
+  - restic itself is taken from where the owner bound it (`RUNTIME_TOOL_BIN/restic`) first and
+    from PATH second — the same rule as git in machine/repository.ts, because inside a job
+    sandbox there is no PATH and outside one nothing is bound.
   - Nothing here deletes anything: no forget, no prune, no repair. Never-delete is policy.
 
   Snapshots are crash-consistent per file, not transactional across files: a backup taken
@@ -18,20 +27,59 @@
   that; the next snapshot supersedes it.
 */
 
-/** The job bindings this module reads. The engine provides them; the plugin reads no file. */
+import { z } from "zod";
+import { RESTIC_SERVICE, RUNTIME_TOOL_BIN } from "../contract.ts";
+
+/** The one binding this module reads from the environment, because it is the one that is
+ *  neither secret nor deployment-specific: where restic keeps its index cache. */
 export const RESTIC_ENV = {
-  /** The repository locator, restic's RESTIC_REPOSITORY. Required. */
-  repository: "BABEL_RESTIC_REPOSITORY",
-  /** The repository password. Required, secret, never argv, never a file the plugin reads. */
-  password: "BABEL_RESTIC_PASSWORD",
   /** restic's cache directory. Optional; absent lets restic use its own default under HOME. */
   cacheDir: "BABEL_RESTIC_CACHE_DIR",
-  /** The restic executable, when the job pins one. Optional; absent resolves `restic` on PATH. */
-  binary: "BABEL_RESTIC_BINARY",
-  /** An object-store repository's credential. restic offers no file reference for these. */
-  accessKeyId: "BABEL_RESTIC_ACCESS_KEY_ID",
-  secretAccessKey: "BABEL_RESTIC_SECRET_ACCESS_KEY",
 } as const;
+
+/**
+ * The endpoint the engine materialized for the operation's service binding. Both values belong
+ * to one job: the URL is a loopback listener the owner opened for it and the bearer a
+ * capability it minted for it, so neither is a credential of the operator's and neither
+ * outlives the run. A document that names anything but loopback is refused rather than
+ * followed — the only writer of this file is the engine.
+ */
+const ServiceEndpointSchema = z.strictObject({
+  url: z.string().regex(/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/),
+  bearer: z.string().regex(/^[A-Za-z0-9_-]{32,128}$/),
+});
+type ServiceEndpoint = z.infer<typeof ServiceEndpointSchema>;
+
+/**
+ * WHAT THE SERVICE ANSWERS WITH: the repository this deployment archives into and the secrets
+ * that open it, in ONE document. An object-store credential is refused in halves and required
+ * for an `s3:` locator (SPEC decision 50): a half-installed policy that failed at the first
+ * backup would be found at the worst possible moment, and a locator reviewed apart from its
+ * credential is two facts that can disagree.
+ */
+export const ResticStorageSchema = z
+  .strictObject({
+    repository: z.string().trim().min(1).max(4096),
+    password: z.string().min(1).max(16384),
+    accessKeyId: z.string().trim().max(4096).default(""),
+    secretAccessKey: z.string().max(4096).default(""),
+  })
+  .refine((storage) => (storage.accessKeyId === "") === (storage.secretAccessKey === ""), {
+    message: "an object-store credential is two values or none",
+  })
+  .refine(
+    (storage) => !storage.repository.startsWith("s3:") || storage.accessKeyId !== "",
+    { message: "an s3: repository needs an object-store credential" },
+  );
+export type ResticStorage = z.infer<typeof ResticStorageSchema>;
+
+/** How long the storage document may take to arrive. The service is a loopback listener the
+ *  owner opened for this job; a request still unanswered after this is a policy that is not
+ *  installed, not a slow one. */
+const STORAGE_TIMEOUT_MS = 15_000;
+
+/** A storage document is four short strings. Past this it is not one, whatever it is. */
+const MAX_STORAGE_BYTES = 64 << 10;
 
 /** The tag every snapshot Babel writes carries, which is what tells them from anything else
  *  sharing the repository. */
@@ -53,11 +101,11 @@ export interface ObjectStoreCredential {
   readonly secretAccessKey: string;
 }
 
-/** One repository and how to talk to it. */
+/** One repository and how to talk to it, as the storage document and the machine state it. */
 export interface ResticConfig {
   readonly repository: string;
   readonly password: string;
-  /** The executable, resolved through PATH on first use. */
+  /** The executable, already resolved: a bound tool or a PATH entry, never a bare name. */
   readonly binary: string;
   /** RESTIC_CACHE_DIR, or null to leave restic its own default. */
   readonly cacheDir: string | null;
@@ -67,18 +115,24 @@ export interface ResticConfig {
 /**
  * What went wrong, in the one shape callers match on.
  *
- * `kind` separates the three problems that need different remedies: a binding the job did not
- * provide, an executable that cannot be run (the repository was never contacted and nothing
- * was written), and a restic invocation that failed. `stderr` is a bounded tail of restic's
- * own diagnostics, rendered as one line — restic never prints the password, and its messages
- * carry the remedy, so they are surfaced rather than summarized.
+ * `kind` separates the four problems that need different remedies: a service binding the job
+ * did not carry, a bound service that would not answer with a storage document (the operator's
+ * policy), an executable that cannot be run, and a restic invocation that failed. The first
+ * three all mean the repository was never contacted and nothing was written. `stderr` is a
+ * bounded tail of restic's own diagnostics, rendered as one line — restic never prints the
+ * password, and its messages carry the remedy, so they are surfaced rather than summarized.
  */
 export class ResticError extends Error {
-  readonly kind: "binding" | "binary" | "exit";
+  readonly kind: "binding" | "service" | "binary" | "exit";
   readonly code: number;
   readonly stderr: string;
 
-  constructor(kind: "binding" | "binary" | "exit", message: string, code = -1, stderr = "") {
+  constructor(
+    kind: "binding" | "service" | "binary" | "exit",
+    message: string,
+    code = -1,
+    stderr = "",
+  ) {
     super(message);
     this.name = "ResticError";
     this.kind = kind;
@@ -158,32 +212,111 @@ export interface Repo {
 }
 
 /**
- * The config the job's bindings state, or a `binding` error naming the one that is missing.
+ * The config this job's service binding states, or the one error that says which half of the
+ * delivery is missing: the binding itself, the operator's policy behind it, or restic.
  *
- * The cache directory is the one value with a fallback, because restic needs somewhere to put
- * an index cache and a confined job may have no HOME: an explicit binding wins, a HOME leaves
- * restic its own default, and neither leaves a directory under TMPDIR.
+ * The cache directory is the one value that comes from the environment and the one with a
+ * fallback, because restic needs somewhere to put an index cache and a confined job may have
+ * no HOME: an explicit binding wins, a HOME leaves restic its own default, and neither leaves
+ * a directory under TMPDIR.
  */
-export function resticConfigFromEnv(env: Readonly<Record<string, string | undefined>>): ResticConfig {
-  const repository = env[RESTIC_ENV.repository]?.trim() ?? "";
-  if (repository === "") {
-    throw new ResticError("binding", `the job provided no ${RESTIC_ENV.repository}`);
-  }
-  const password = env[RESTIC_ENV.password] ?? "";
-  if (password === "") {
-    throw new ResticError("binding", `the job provided no ${RESTIC_ENV.password}`);
-  }
-  const accessKeyId = env[RESTIC_ENV.accessKeyId] ?? "";
-  const secretAccessKey = env[RESTIC_ENV.secretAccessKey] ?? "";
-  const bound = env[RESTIC_ENV.cacheDir]?.trim() ?? "";
-  const tmpdir = env["TMPDIR"]?.trim() ?? "/tmp";
+export async function resticConfig(options: {
+  readonly credentialFile: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+}): Promise<ResticConfig> {
+  const storage = await readStorage(await readEndpoint(options.credentialFile));
+  const bound = options.env[RESTIC_ENV.cacheDir]?.trim() ?? "";
+  const tmpdir = options.env["TMPDIR"]?.trim() ?? "/tmp";
   return {
-    repository,
-    password,
-    binary: env[RESTIC_ENV.binary]?.trim() || "restic",
-    cacheDir: bound !== "" ? bound : env["HOME"] ? null : `${tmpdir}/babel-restic`,
-    objectStore: accessKeyId !== "" ? { accessKeyId, secretAccessKey } : null,
+    repository: storage.repository,
+    password: storage.password,
+    binary: await resticBinary(),
+    cacheDir: bound !== "" ? bound : options.env["HOME"] ? null : `${tmpdir}/babel-restic`,
+    objectStore:
+      storage.accessKeyId === ""
+        ? null
+        : { accessKeyId: storage.accessKeyId, secretAccessKey: storage.secretAccessKey },
   };
+}
+
+/** The service binding as the engine wrote it, or a `binding` error: a job that reached this
+ *  operation without one was launched against a manifest that does not declare it. */
+async function readEndpoint(path: string): Promise<ServiceEndpoint> {
+  let document: unknown;
+  try {
+    document = await Bun.file(path).json();
+  } catch {
+    throw new ResticError(
+      "binding",
+      `the job bound no ${RESTIC_SERVICE.serviceId} service at ${path}`,
+    );
+  }
+  const parsed = ServiceEndpointSchema.safeParse(document);
+  if (!parsed.success) {
+    throw new ResticError("binding", `${path} is not a ${RESTIC_SERVICE.serviceId} binding`);
+  }
+  return parsed.data;
+}
+
+/**
+ * One request to the bound service for the storage document.
+ *
+ * Every failure is the operator's policy rather than the archive's: a service that does not
+ * answer, one that refuses the route, or one whose answer is not a storage document. The
+ * reason names the field that was wrong and never a value, because a receipt is durable and a
+ * value here is a secret.
+ */
+async function readStorage(endpoint: ServiceEndpoint): Promise<ResticStorage> {
+  const service = RESTIC_SERVICE.serviceId;
+  let response: Response;
+  try {
+    response = await fetch(`${endpoint.url}${RESTIC_SERVICE.path}`, {
+      headers: { authorization: `Bearer ${endpoint.bearer}` },
+      signal: AbortSignal.timeout(STORAGE_TIMEOUT_MS),
+      redirect: "error",
+    });
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new ResticError("service", `${service} did not answer ${RESTIC_SERVICE.path}: ${reason}`);
+  }
+  if (!response.ok) {
+    throw new ResticError(
+      "service",
+      `${service} refused ${RESTIC_SERVICE.path} (HTTP ${response.status})`,
+      response.status,
+    );
+  }
+  const body = await response.text();
+  if (body.length > MAX_STORAGE_BYTES) {
+    throw new ResticError("service", `${service} answered ${body.length} bytes, not a document`);
+  }
+  let document: unknown;
+  try {
+    document = JSON.parse(body);
+  } catch {
+    throw new ResticError("service", `${service} answered no JSON document`);
+  }
+  const parsed = ResticStorageSchema.safeParse(document);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "document"}: ${issue.message}`)
+      .join("; ");
+    throw new ResticError("service", `${service} answered no storage document (${issues})`);
+  }
+  return parsed.data;
+}
+
+/** restic where the owner bound it, and on PATH otherwise: inside a job the sandbox has no
+ *  PATH and the tool is at its bound path; outside one — a hand-run, the tests — nothing is
+ *  bound and PATH is the answer. The same rule as git in machine/repository.ts. */
+async function resticBinary(): Promise<string> {
+  const bound = `${RUNTIME_TOOL_BIN}/restic`;
+  if (await Bun.file(bound).exists()) return bound;
+  const found = Bun.which("restic");
+  if (found === null) {
+    throw new ResticError("binary", `restic is neither bound at ${bound} nor on PATH`);
+  }
+  return found;
 }
 
 export function openRepo(config: ResticConfig): Repo {
@@ -192,7 +325,6 @@ export function openRepo(config: ResticConfig): Repo {
 
 class ResticRepo implements Repo {
   readonly #config: ResticConfig;
-  #binPath: string | null = null;
 
   constructor(config: ResticConfig) {
     this.#config = config;
@@ -294,15 +426,20 @@ class ResticRepo implements Repo {
   }
 
   #spawn(args: readonly string[]): Bun.Subprocess<"ignore", "pipe", "pipe"> {
-    const env = this.#env();
-    if (this.#binPath === null) {
-      const resolved = Bun.which(this.#config.binary, { PATH: env["PATH"] ?? "" });
-      if (resolved === null) {
-        throw new ResticError("binary", `restic: ${this.#config.binary} is not on PATH`);
-      }
-      this.#binPath = resolved;
+    const binary = this.#config.binary;
+    try {
+      return Bun.spawn([binary, ...args], {
+        env: this.#env(),
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+    } catch (cause) {
+      // The repository was never contacted, so this is its own kind: a tool the owner bound
+      // to something that cannot be executed here is not a failed backup.
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      throw new ResticError("binary", `restic: ${binary} cannot be run: ${reason}`);
     }
-    return Bun.spawn([this.#binPath, ...args], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   }
 
   /** The child's whole environment: the repository's coordinates and nothing inherited. */

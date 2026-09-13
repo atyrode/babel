@@ -1,4 +1,9 @@
-import { OPERATIONS, type OperationWord, type Receipt } from "../contract.ts";
+import {
+  OPERATIONS,
+  RESTIC_CREDENTIAL_FILE,
+  type OperationWord,
+  type Receipt,
+} from "../contract.ts";
 import { type OutputSink, directorySink } from "./output.ts";
 import { claim, discover, existingRoots } from "./adapters/index.ts";
 
@@ -13,9 +18,10 @@ import { claim, discover, existingRoots } from "./adapters/index.ts";
     babel-machine <operation> --input <file> --out <directory>
 
   A job supplies both paths through its bindings; the environment variables are the same two
-  values for a hand-run on a machine. The operation name is argv's first non-flag word, which
-  is what makes the file work identically under `bun machine/main.ts scan …` (where argv[1] is
-  this script) and as a compiled binary (where argv[1] is already the operation).
+  values for a hand-run on a machine, as `BABEL_RESTIC_BINDING` is for the one operation that
+  also reads a materialized service binding. The operation name is argv's first non-flag word,
+  which is what makes the file work identically under `bun machine/main.ts scan …` (where
+  argv[1] is this script) and as a compiled binary (where argv[1] is already the operation).
 
   Every operation module is imported on demand. That is not laziness: five operations mean five
   dependency trees — restic, the engine client, the store's shapes — and a scan that ran on a
@@ -49,7 +55,13 @@ const DISPATCH: Record<OperationWord, (raw: unknown, out: OutputSink) => Promise
   },
   archive: async (raw, out) => {
     const { ArchiveInputSchema, archive } = await import("./archive.ts");
-    return archive(ArchiveInputSchema.parse(raw), out, { roots: existingRoots, claim });
+    return archive(ArchiveInputSchema.parse(raw), out, {
+      roots: existingRoots,
+      claim,
+      // Where the engine put the service binding, or where a hand-run says it is. A path is
+      // not a credential: the secret is behind the service, never in this variable.
+      credentialFile: process.env["BABEL_RESTIC_BINDING"]?.trim() || RESTIC_CREDENTIAL_FILE,
+    });
   },
   prepare: async (raw, out) => {
     const { PrepareInputSchema, prepare, digests } = await import("./prepare.ts");

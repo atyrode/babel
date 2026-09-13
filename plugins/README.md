@@ -48,7 +48,7 @@ manifest and served as `ctx.database`. Three consequences worth knowing before r
   purge deletes `data.db` with its `-wal` and `-shm`. `bun run verify` asserts both halves of
   that: the file exists once the doors have answered, and is gone after the purge.
 
-## The machine half: one bundled file, two runtime tools the machine provides
+## The machine half: one bundled file, four runtime tools the machine provides
 
 A run is a **job on an enrolled machine** (manifold `docs/PLUGINS.md` §8), and the baseline's
 manifest carries the `machine` block that says what may run there. `atyrode.babel/machine/` is
@@ -68,26 +68,30 @@ because the inner loop re-packs on every save. The committed manifest carries th
 so a change to the machine half shows up as a moved hash in the diff; `test/bundle.test.ts` runs
 the packed member through the argv the manifest declares and checks the receipt it leaves.
 
-The operations are `scan`, `prepare`, `explore` and `evaluate`. Each takes ONE input document —
-a JSON string in the job request, which the engine materializes as a file at `/inputs/input`, so
-`--input` is a path and never 64 KiB of argv — and writes every file it produced flat into the
-sealed output lease at `/outputs/outputs`, which the hub reads back with `ctx.jobs.outputs`. The
-lease is cut from a **managed** location: the alternative, an ordinary anchor, must already exist
-on the machine for `write` and refuses a second job for `create`. `scan` and `prepare` run with
-`network: "none"`; `explore` and `evaluate` reach the host because they launch the engine.
+The operations are `scan`, `archive`, `prepare`, `explore` and `evaluate`. Each takes ONE input
+document — a JSON string in the job request, which the engine materializes as a file at
+`/inputs/input`, so `--input` is a path and never 64 KiB of argv — and writes every file it
+produced flat into the sealed output lease at `/outputs/outputs`, which the hub reads back with
+`ctx.jobs.outputs`. The lease is cut from a **managed** location: the alternative, an ordinary
+anchor, must already exist on the machine for `write` and refuses a second job for `create`.
+`scan` and `prepare` run with `network: "none"`; `explore` and `evaluate` reach the host because
+they launch the engine, and `archive` because it reaches the repository and its storage service.
 
-Two tools are **runtime tools the machine's owner provides, not artifacts this manifest pins**:
-`bun`, the executable every operation runs, and `code`, the engine `explore` and `evaluate`
-launch. A Manifold job sandbox is built from `/proc`, `/dev`, the job's own directories and the
-declared binds and nothing else — no `/lib64`, no libc — and manifold's own rule is that "a
-dynamically linked executable without its loader cannot run in the empty sandbox"
+Four tools are **runtime tools the machine's owner provides, not artifacts this manifest pins**:
+`bun`, the executable every operation runs; `code`, the engine `explore` and `evaluate` launch;
+`git`, which reads repository identity for `scan` and `prepare`; and `restic`, which owns the
+archive's repository format. A Manifold job sandbox is built from `/proc`, `/dev`, the job's own
+directories and the declared binds and nothing else — no `/lib64`, no libc — and manifold's own
+rule is that "a dynamically linked executable without its loader cannot run in the empty sandbox"
 (`docs/SELF-HOST.md`). Neither bun nor code ships a static build (the musl bun is dynamic
 against `ld-musl` too), so a pinned artifact could be downloaded and verified and still die at
 `execvp` — which is exactly what happened on the first real job. The owner's
 `execution.runtimeToolClosures` binds a tool WITH its exact closure at Nix build time, per
 machine, under the alias the operation names; the manifest therefore declares
-`runtimeTools: ["bun"]` / `["bun", "code"]` and no `tools` block, so a declared artifact can never
-shadow the owner's binding. For the operator's fleet that is one dotfiles module:
+`runtimeTools: ["bun"]` / `["bun", "code"]` / `["bun", "restic"]` and no `tools` block, so a
+declared artifact can never shadow the owner's binding. Each tool is resolved at
+`/runtime/bin/<alias>` first and on PATH second, so the same code runs in a job and in a test.
+For the operator's fleet that is one dotfiles module:
 
 ```nix
 services.manifold.execution = {
@@ -95,25 +99,120 @@ services.manifold.execution = {
   runtimeToolClosures.bun = [ pkgs.bun ];
   runtimeTools.code = [{ source = "${code}/bin/code"; target = "/runtime/bin/code"; kind = "file"; }];
   runtimeToolClosures.code = [ code ];
+  runtimeTools.git = [{ source = "${pkgs.git}/bin/git"; target = "/runtime/bin/git"; kind = "file"; }];
+  runtimeToolClosures.git = [ pkgs.git ];
+  runtimeTools.restic = [{ source = "${pkgs.restic}/bin/restic"; target = "/runtime/bin/restic"; kind = "file"; }];
+  runtimeToolClosures.restic = [ pkgs.restic ];
 };
 ```
 
-**`archive` is not declared, and `restic` is not pinned.** Upstream's whole Linux distribution is
-bare bzip2 — `restic_0.19.1_linux_amd64.bz2` (10,107,515 bytes) and
-`restic_0.19.1_linux_arm64.bz2` (9,044,264 bytes), with no tar or zip of either — while
-`MachineArtifactSchema` takes `raw`, `zip` or `tar.gz` and nothing else. The second thing missing
-is a way to hand the operation its repository password: `machine/restic.ts` reads it from
-`BABEL_RESTIC_PASSWORD`, and an operation's `environment` is fixed reviewed values in the
-manifest, which is not where a secret goes. `machine/archive.ts` and `machine/restic.ts` are
-written and tested; the operation returns when manifold admits a `.bz2` artifact (or a `tar.gz` of
-that binary is hosted where the operator will trust it) AND a job can be given a credential — not
-before, because a pin nobody obtained by download is not a pin, and a password in a manifest is
-not a password.
+**`archive` is declared, and `restic` is a closure like the others.** restic is half of why the
+operation waited: upstream's whole Linux distribution is bare bzip2 —
+`restic_0.19.1_linux_amd64.bz2` (10,107,515 bytes) and `restic_0.19.1_linux_arm64.bz2`
+(9,044,264 bytes), with no tar or zip of either — while `MachineArtifactSchema` takes `raw`,
+`zip` or `tar.gz` and nothing else. A tool the owner binds needs no artifact format at all,
+which is the whole point of the mechanism above: the manifest names the alias `restic` and pins
+nothing, and a machine whose module does not bind it simply cannot run the operation.
 
-`git` is the third runtime tool, for `scan` and `prepare`: repository identity is `git rev-parse
---git-common-dir` in the session's workspace. Bound the same way, it runs - and today still answers
-nothing, because a job sees only its declared locations and the workspaces a session names are host
-paths outside them (#254 records the decision this needs).
+The other half was the repository and the secrets that open it, and neither belongs in the
+manifest: `environment` is fixed reviewed values in committed code, which is not where a
+password goes and not where one deployment's `s3:` locator belongs either. Both arrive through
+ONE service the operator installs, `atyrode.babel.restic`:
+
+- the operation declares `services: [{ serviceId: "atyrode.babel.restic", revision: "1",
+  operationIds: ["storage"] }]` and a second input file whose literal is `{"url":"","bearer":""}`
+  with `jsonValues` filling `url` and `bearer` from that binding;
+- the engine opens a loopback proxy for the job, mints a capability for that job alone, writes
+  both into `/inputs/restic`, and refuses to open it at all unless the operation is
+  `network: "host"` (`service_proxy_requires_host_network`);
+- `machine/restic.ts` reads that file, asks `GET /storage` once with the capability, and takes
+  the storage document — `{repository, password, accessKeyId?, secretAccessKey?}` — from the
+  answer. The object-store pair is required for an `s3:` locator and refused in halves
+  (`SPEC.md` decision 50), so a half-installed policy fails as itself rather than as an
+  unexplained restic exit. The password then reaches restic as `RESTIC_PASSWORD` in the CHILD's
+  environment and nowhere else: never argv, never this process's environment, never a receipt.
+
+The one value the manifest does fix is `BABEL_RESTIC_CACHE_DIR=/home/job/.cache/restic`, inside
+the managed cache location the operation may write — without an index cache every backup
+re-reads every byte it already archived, and a confined job has nowhere else to put one.
+
+**The bearer is not the password.** `inputFiles[*].jsonValues[*].value` takes `url` or `bearer`,
+and the bearer is 32 random bytes the owner mints per job for its own proxy
+(`packages/agent/src/job-service-proxy.ts`: "Fresh job capability, never an upstream
+credential"); the protocol can materialize a capability into a job's file and has no way to
+materialize an owner-held secret *value* into one. So the capability is what the job is given
+and the document behind it is what carries the secret — which is also why the policy's upstream
+is the operator's own store rather than anything Babel ships or generates (decision 51: Babel
+never creates or emits a credential, and stays vault-agnostic).
+
+Installing it is one owner call per machine, `engine.services.configureConfiguration`
+(`expectedRevision` is what `readConfiguration` last reported, `null` for a machine with no
+configuration yet):
+
+```json
+{
+  "machineId": "<machine>",
+  "expectedRevision": null,
+  "policies": [
+    {
+      "serviceId": "atyrode.babel.restic",
+      "revision": "1",
+      "origin": "https://<the operator's store>",
+      "allowLoopbackHttp": false,
+      "maxConcurrent": 2,
+      "credential": { "ref": "babel-restic", "header": "Authorization", "prefix": "Bearer " },
+      "operations": {
+        "storage": {
+          "kind": "http-proxy",
+          "method": "GET",
+          "path": "/storage",
+          "request": { "kind": "none" },
+          "response": {
+            "kind": "stream",
+            "disclosure": "full",
+            "contentTypes": ["application/json"],
+            "headers": []
+          },
+          "timeoutMs": 5000,
+          "maxRequestBytes": 1024,
+          "maxResponseBytes": 4096
+        }
+      }
+    }
+  ]
+}
+```
+
+The `credential.ref` is the store's own token, held by the owner and attached to the upstream
+request by it; the job never sees it, and it is a machine-side declaration like any other:
+
+```nix
+services.manifold.execution.serviceCredentials.babel-restic = {
+  source = "/run/credentials/babel-restic-token";
+  origins = [ "https://<the operator's store>" ];
+};
+```
+
+A store that needs no token of its own drops both blocks. The same binding also works unchanged
+against an **instance service** configured once for the fleet (`engine.services.configureInstance`
+with `policy.runtime.scope = "instance"`), because a job names a serviceId and the operations it
+may call, never where the answer comes from.
+
+Two things then have to name the service by hand, both at install rather than at launch:
+`engine.jobs.install` carries `resourceBindings.services["atyrode.babel.restic"]`, the
+fingerprint `engine.jobs.describe` reports for the installed policy (a binding whose digest no
+longer matches is `service_binding_mismatch`, which is the point: a policy the operator changed
+is a new installation, not a silent upgrade); and the governed consent `archive` needs is
+`services:invoke` at
+`manifold://machine/<machine>/service/atyrode.babel.restic/operation/storage` beside the
+`network:host` every host-network operation needs at
+`manifold://machine/<machine>/operation/atyrode.babel.archive`. Neither is a manifest
+capability: both are governed, so they are consented per node against the exact artifact
+revision (`packages/protocol/src/capabilities.ts:92-103`).
+
+`git` runs the same way and today still answers nothing, because a job sees only its declared
+locations and the workspaces a session names are host paths outside them (#254 records the
+decision this needs).
 
 Two more things an enrolled machine's operator must arrange, because a manifest cannot: the
 `home` anchor needs `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` to **exist** (a job whose
