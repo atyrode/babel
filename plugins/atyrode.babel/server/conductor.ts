@@ -273,10 +273,14 @@ export interface IngestedRun {
 
 export interface SettledClaim {
   readonly claimId: string;
-  readonly outcome: "completed" | "failed" | "skipped";
+  /** `abandoned` is a claim released without a result: nobody is coming back to report one. */
+  readonly outcome: "completed" | "failed" | "skipped" | "abandoned";
   readonly cost: number;
   readonly overrun: boolean;
   readonly refused: string | null;
+  /** Why it was abandoned, in the cycle's own words; null for a claim a receipt settled. The
+   *  claims row holds the outcome and the spend, and this holds the sentence. */
+  readonly reason: string | null;
 }
 
 export interface RefusedDraw {
@@ -333,6 +337,12 @@ const TERMINAL_STATES: Record<string, true> = {
   cancelled: true,
   refused: true,
 };
+/**
+ * How many cycles in a row the hub must fail to report a job before the reaper treats its claim
+ * as dead. One silent poll is a hiccup — a machine reconnecting, a hub restarting — and killing
+ * a live review for it would be worse than the ghost; two in a row is a worker that is gone.
+ */
+const UNREPORTED_CYCLES = 2;
 
 /**
  * How many folders one tick asks the fleet about; the rest wait for the next tick. A machine
@@ -369,6 +379,8 @@ const SESSION_COLUMNS = [
   "repository_remote",
   "repository_reason",
   "modified_at",
+  "live",
+  "kind",
   "size",
   "cost_usd",
   "total_tokens",
@@ -831,6 +843,15 @@ export async function ingestOutputs(
 
 type PendingRun = { id: string; job_id: string; machine_id: string; kind: string };
 type OpenClaim = { id: string; run_id: string; fence: number; reserved_cost: number };
+/** One open claim and what the runs table knows about the job behind it, for the reaper. */
+type OrphanClaim = {
+  id: string;
+  fence: number;
+  job_id: string | null;
+  granted_at: string;
+  runs: number;
+  open_runs: number;
+};
 type MachineCount = { machineId: string; cited: number };
 type MachineRow = { machineId: string };
 type Existing = { id: string };
@@ -856,6 +877,12 @@ type SourceRow = {
 export function conductor(deps: ConductorDeps): Conductor {
   const { store, coordinator, jobs, machines, plan } = deps;
   let cycle = 0;
+  /**
+   * How many cycles in a row the hub has failed to report a job the loop is waiting on, by job
+   * id. It lives across ticks because "twice running" is the whole predicate; it is a Map
+   * because its keys are job ids that come and go, and `reconcileRuns` prunes it every cycle.
+   */
+  const unreadable = new Map<string, number>();
 
   /** Machines are described once per tick: the answer is the same for every draw in it. */
   async function readiness(
@@ -1067,6 +1094,26 @@ export function conductor(deps: ConductorDeps): Conductor {
     return "registered";
   }
 
+  /**
+   * One claim released because the job behind it is gone, as the cycle's own report row.
+   *
+   * Every path that discovers a dead job comes through here — a settlement with no receipt, a
+   * posting the machine refused, the reaper — so "a claim dies with its job" is one sentence of
+   * accounting written once. A refusal is reported rather than thrown: the claim moved on under
+   * a later fence, which is somebody else's live work and not this cycle's to close.
+   */
+  async function release(claim: { id: string; fence: number }, reason: string): Promise<SettledClaim> {
+    const abandoned = await coordinator.abandon({ id: claim.id, fence: claim.fence, reason });
+    return {
+      claimId: claim.id,
+      outcome: "abandoned",
+      cost: abandoned.outcome === "abandoned" ? abandoned.cost : 0,
+      overrun: false,
+      refused: abandoned.outcome === "abandoned" ? null : abandoned.refusal.reason,
+      reason,
+    };
+  }
+
   /** Ingests one finished job and settles whatever claim authorized it. */
   async function settle(
     at: number,
@@ -1111,12 +1158,23 @@ export function conductor(deps: ConductorDeps): Conductor {
       skipped: result?.skipped ?? 0,
     });
 
-    // What a review cost is what the run recorded; a job that wrote no receipt spent nothing,
-    // and its claim is released rather than held by a worker that is not coming back.
+    // WHAT A CLAIM IS WORTH WHEN ITS JOB IS OVER, in two cases that look alike and are not.
+    //
+    // A job that ran to the end and exited cleanly told us what it spent, receipt or no
+    // receipt: nothing, if it wrote none. Its claim is FINISHED at that cost, and a cycle that
+    // produced nothing costs the deployment nothing.
+    //
+    // A job that was killed, interrupted, refused or failed mid-flight told us nothing at all.
+    // It may have spent every cent of its reservation at the model before it died, and there is
+    // no receipt to ask. Its claim is ABANDONED — released, because the worker is not coming
+    // back and its batch slot belongs to the next draw; and charged at the reservation, because
+    // releasing a crash at zero is how a crash loop spends the day's allowance many times over
+    // (F3, and the 86-minute ghosts of 2026-09-13).
     const open = await store.db.query<OpenClaim>(
       `SELECT id, run_id, fence, reserved_cost FROM claims WHERE job_id = ? AND finished_at IS NULL`,
       [target.jobId],
     );
+    const died = receipt === null && target.closure !== "completed";
     const outcome =
       receipt?.closure === "completed"
         ? "completed"
@@ -1125,6 +1183,12 @@ export function conductor(deps: ConductorDeps): Conductor {
           : "failed";
     const cost = receipt?.costUsd ?? 0;
     for (const claim of open) {
+      if (died) {
+        settled.push(
+          await release(claim, `job ${target.jobId} closed as ${target.closure} and wrote no receipt`),
+        );
+        continue;
+      }
       const finished = await coordinator.finish({
         id: claim.id,
         runId: claim.run_id,
@@ -1140,8 +1204,16 @@ export function conductor(deps: ConductorDeps): Conductor {
               cost: finished.cost,
               overrun: finished.overrun,
               refused: null,
+              reason: null,
             }
-          : { claimId: claim.id, outcome, cost, overrun: false, refused: finished.refusal.reason },
+          : {
+              claimId: claim.id,
+              outcome,
+              cost,
+              overrun: false,
+              refused: finished.refusal.reason,
+              reason: null,
+            },
       );
     }
   }
@@ -1159,6 +1231,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         ORDER BY started_at`,
     );
     let inFlight = 0;
+    const answered = new Set<string>();
     for (const run of pending) {
       let state: JobRunState | null = null;
       try {
@@ -1171,7 +1244,16 @@ export function conductor(deps: ConductorDeps): Conductor {
       } catch (error) {
         notes.push(`job ${run.job_id} cannot be read: ${message(error)}`);
       }
-      if (state === null || TERMINAL_STATES[state.state] !== true) {
+      // A status the hub cannot answer — it threw, or it does not know this job — leaves the run
+      // in flight for this cycle and is remembered: a machine that vanished would otherwise keep
+      // its claims "running" for ever, and the reaper below counts the cycles.
+      if (state === null) {
+        unreadable.set(run.job_id, (unreadable.get(run.job_id) ?? 0) + 1);
+        inFlight += 1;
+        continue;
+      }
+      answered.add(run.job_id);
+      if (TERMINAL_STATES[state.state] !== true) {
         inFlight += 1;
         continue;
       }
@@ -1189,6 +1271,13 @@ export function conductor(deps: ConductorDeps): Conductor {
         settled,
         notes,
       );
+    }
+
+    // The count is CONSECUTIVE cycles of silence: a job that answered this time, and a job that
+    // is no longer waited on at all, start again from nothing.
+    const polled = new Set(pending.map((run) => run.job_id));
+    for (const jobId of unreadable.keys()) {
+      if (answered.has(jobId) || !polled.has(jobId)) unreadable.delete(jobId);
     }
 
     for (const machineId of await knownMachines()) {
@@ -1233,6 +1322,70 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
     }
     return inFlight;
+  }
+
+  /**
+   * THE CLAIMS NO SETTLEMENT WILL EVER REACH, released once per cycle.
+   *
+   * `settle` closes the claim of a job the hub reported terminal, which covers every job that
+   * has a run row the loop is waiting on. Three kinds of claim fall outside that, and on
+   * 2026-09-13 they were what held the top-ranked subjects for 86 minutes each:
+   *
+   *   - a claim with NO JOB. `claim` reserves before `jobs.execute` is called, so a posting the
+   *     machine refused, or a cycle that died between the two, leaves a grant nothing will ever
+   *     match `WHERE job_id = ?`. `dispatch` releases the ones it sees; this releases the ones
+   *     nobody saw, once the lease it was granted under has run out.
+   *   - a claim whose JOB HAS NO OPEN RUN ROW: the run was closed by another path (an operator
+   *     stop, an ingestion that could not write its claim) or never written at all. Nothing
+   *     polls it, so nothing would ever settle it.
+   *   - a claim whose job the HUB CANNOT REPORT, two cycles running. One silent poll is a
+   *     hiccup; two is a machine that is not coming back, and `reconcileRuns` would otherwise
+   *     count its jobs in flight for ever.
+   *
+   * One function and one query, because a second place that decides what a dead claim is would
+   * be a second answer to it. The query asks the claims table what it is holding and the runs
+   * table what stands behind each row; the counts are subqueries rather than a join so that a
+   * job with two run rows is one answer rather than two.
+   */
+  async function reapClaims(
+    at: number,
+    leaseSeconds: number,
+    settled: SettledClaim[],
+    notes: string[],
+  ): Promise<void> {
+    const orphans = await store.db.query<OrphanClaim>(
+      `SELECT c.id, c.fence, c.job_id, c.granted_at,
+              (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id) AS runs,
+              (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id AND r.closure IS NULL) AS open_runs
+         FROM claims c
+        WHERE c.finished_at IS NULL
+        ORDER BY c.granted_at`,
+    );
+    const stale = at - Math.max(leaseSeconds, 0) * 1000;
+    for (const orphan of orphans) {
+      const granted = Date.parse(orphan.granted_at);
+      // An unparseable grant time is as old as it gets: it can never become fresh.
+      const overdue = !Number.isFinite(granted) || granted <= stale;
+      const jobId = orphan.job_id;
+      const silent = jobId === null ? 0 : (unreadable.get(jobId) ?? 0);
+      const reason =
+        jobId === null
+          ? overdue
+            ? `granted at ${orphan.granted_at} and never posted to a machine`
+            : null
+          : orphan.runs === 0
+            ? overdue
+              ? `job ${jobId} has no run row and the lease it was granted under has run out`
+              : null
+            : orphan.open_runs === 0
+              ? `job ${jobId} is closed and its claim was left open`
+              : silent >= UNREPORTED_CYCLES
+                ? `the hub has not been able to report job ${jobId} for ${String(silent)} cycles`
+                : null;
+      if (reason === null) continue;
+      settled.push(await release(orphan, reason));
+      notes.push(`claim ${orphan.id} abandoned: ${reason}`);
+    }
   }
 
   /**
@@ -1387,8 +1540,15 @@ export function conductor(deps: ConductorDeps): Conductor {
       requireContainment: plan.requireContainment,
     };
     const installation = host.readiness.installation;
+    // THE CLAIM IS TAKEN BEFORE THE JOB EXISTS, so a posting that does not land leaves a grant
+    // with no worker behind it. It is abandoned here, in the same breath: the reaper would get
+    // it eventually, but "eventually" is one whole lease — an hour on 2026-09-13 — during which
+    // a quarter of the cycle's batch belongs to a job that was never started. A refusal is
+    // final in both shapes the slice has: a throw, and a state the machine already closed.
+    let posted: JobRunState | null = null;
+    let refusal: string | null = null;
     try {
-      await jobs.execute({
+      posted = await jobs.execute({
         jobId,
         machineId: host.machineId,
         operationId,
@@ -1403,21 +1563,21 @@ export function conductor(deps: ConductorDeps): Conductor {
             }),
       });
     } catch (error) {
-      const finished = await coordinator.finish({
-        id: claim.id,
-        runId: cycleRunId,
-        fence: claim.fence,
-        cost: 0,
-        outcome: "skipped",
-      });
+      refusal = message(error);
+    }
+    if (refusal === null && posted !== null && posted.state === "refused") {
+      refusal = posted.result?.reason ?? `${host.machineId} refused ${jobId}`;
+    }
+    if (refusal !== null) {
+      const abandoned = await release(claim, `the job was never posted: ${refusal}`);
       refused.push({
         assignmentId: assignment.id,
         recordId: assignment.recordId,
         reason: "refused-job",
         detail:
-          finished.outcome === "refused"
-            ? `${message(error)}; the claim also refused ${finished.refusal.reason}`
-            : message(error),
+          abandoned.refused === null
+            ? refusal
+            : `${refusal}; the claim also refused ${abandoned.refused}`,
       });
       return;
     }
@@ -1489,6 +1649,10 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
 
       const pending = await reconcileRuns(at, ingested, settled, notes);
+      // …and the claims no settlement can reach are released before this cycle asks the
+      // coordinator what may be drawn, so a batch held by dead workers is a batch of free slots
+      // by the time it answers rather than one cycle later.
+      await reapClaims(at, policy.leaseSeconds, settled, notes);
       // What a scan just catalogued is folders; what they ARE is the host's to say, and it is
       // asked here, after the rows exist and before this cycle spends anything.
       await identifyFolders(notes);

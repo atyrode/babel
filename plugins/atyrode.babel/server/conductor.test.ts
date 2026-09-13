@@ -67,7 +67,7 @@ function openDatabase(): PluginDatabase {
       db.prepare(sql).all(...(bind(params) as never[])) as Row[],
     run: async (sql: string, params?: readonly SqlParam[]) => {
       const result = db.prepare(sql).run(...(bind(params) as never[]));
-      return { changes: result.changes, lastInsertRowid: Number(result.lastInsertRowid) };
+      return { changes: result.changes, lastInsertRowid: BigInt(result.lastInsertRowid) };
     },
     batch: async (statements: readonly SqlStatement[]) =>
       db.transaction(() =>
@@ -158,6 +158,10 @@ class Fleet implements JobsSlice {
   readonly beats = new Set<string>();
   ready = true;
   connected = true;
+  /** What `execute` refuses every posting with, as the hub does when a machine will not take it. */
+  refusal: string | null = null;
+  /** Jobs the hub can no longer report at all: a machine that vanished mid-review. */
+  readonly silent = new Set<string>();
 
   describe(args: { machineId: string; pluginId: string }): MachineReadiness {
     expect(args.pluginId).toBe(BABEL_PLUGIN_ID);
@@ -177,6 +181,7 @@ class Fleet implements JobsSlice {
   }
 
   execute(args: JobLaunch): JobRunState {
+    if (this.refusal !== null) throw new Error(this.refusal);
     this.launched.push(args);
     this.jobs.set(args.jobId, {
       state: "started",
@@ -191,6 +196,7 @@ class Fleet implements JobsSlice {
   status(node: { jobId: string }): JobRunState {
     const job = this.jobs.get(node.jobId);
     if (job === undefined) throw new Error(`unknown job ${node.jobId}`);
+    if (this.silent.has(node.jobId)) throw new Error(`the machine holding ${node.jobId} is gone`);
     const outputs: JobOutput[] =
       job.archive === null
         ? []
@@ -269,6 +275,15 @@ class Fleet implements JobsSlice {
     job.state = "exited";
     job.exitCode = exitCode;
     job.archive = files === null ? null : tar(files);
+  }
+
+  /** A job the hub ended without the machine finishing it: a cancel, or an agent that died. */
+  kill(jobId: string, state: "cancelled" | "interrupted"): void {
+    const job = this.jobs.get(jobId);
+    if (job === undefined) throw new Error(`unknown job ${jobId}`);
+    job.state = state;
+    job.exitCode = null;
+    job.archive = null;
   }
 
   /** A job that sealed something the hub cannot read as an archive. */
@@ -364,6 +379,7 @@ class Draws {
   readonly claimed: { assignmentId: string; runId: string; jobId: string | undefined }[] = [];
   readonly finished: { id: string; runId: string; fence: number; cost: number; outcome: string }[] =
     [];
+  readonly abandoned: { id: string; fence: number; reason: string }[] = [];
   enabled = true;
   version = POLICY.version;
   /** Assignments this coordinator still has to give; it answers a gap when they run out. */
@@ -450,6 +466,26 @@ class Draws {
       [new Date(clock).toISOString(), request.cost, request.outcome, request.id, request.fence],
     );
     return { outcome: "finished", cost: request.cost, reserved: 0.1, overrun: false };
+  }
+
+  /** `coordinator.abandon`, doing what the real one does: closes the row and charges the
+   *  reservation, because a job that died mid-review cannot say what it spent. */
+  async abandon(request: { id: string; fence: number; reason: string }): Promise<Record<string, unknown>> {
+    this.abandoned.push(request);
+    const rows = await this.db.query<{ reserved_cost: number }>(
+      `SELECT reserved_cost FROM claims WHERE id = ? AND fence = ? AND finished_at IS NULL`,
+      [request.id, request.fence],
+    );
+    const reserved = rows[0]?.reserved_cost;
+    if (reserved === undefined) {
+      return { outcome: "refused", refusal: { reason: "finished", detail: "nothing to abandon" } };
+    }
+    await this.db.run(
+      `UPDATE claims SET finished_at = ?, actual_cost = reserved_cost, outcome = 'abandoned'
+        WHERE id = ? AND fence = ?`,
+      [new Date(clock).toISOString(), request.id, request.fence],
+    );
+    return { outcome: "abandoned", cost: reserved, reason: request.reason };
   }
 
   async renew(): Promise<Record<string, unknown>> {
@@ -764,7 +800,14 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
 
   // The claim settles at what the receipt says the run cost, not at what the draw reserved.
   expect(ingesting.settled).toEqual([
-    { claimId: "clm_asg_a1b2", outcome: "completed", cost: 0.42, overrun: false, refused: null },
+    {
+      claimId: "clm_asg_a1b2",
+      outcome: "completed",
+      cost: 0.42,
+      overrun: false,
+      refused: null,
+      reason: null,
+    },
   ]);
   expect(draws.finished).toEqual([
     {
@@ -781,7 +824,7 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
   expect(claim[0]).toEqual({ actual_cost: 0.42, outcome: "completed" });
 });
 
-test("a failed job settles its claim as failed and closes its run", async () => {
+test("a job that died with no receipt abandons its claim at the reservation and closes its run", async () => {
   const db = openDatabase();
   await seed(db);
   const store = openStore(db);
@@ -811,15 +854,73 @@ test("a failed job settles its claim as failed and closes its run", async () => 
       skipped: 0,
     },
   ]);
+  // A job that fell over said nothing about what it spent before it did: the claim is released
+  // so the batch slot goes back, and charged at what it reserved so a crash loop cannot spend
+  // the day's allowance many times over.
   expect(report.settled).toEqual([
-    { claimId: "clm_asg_a1b2", outcome: "failed", cost: 0, overrun: false, refused: null },
+    {
+      claimId: "clm_asg_a1b2",
+      outcome: "abandoned",
+      cost: 0.1,
+      overrun: false,
+      refused: null,
+      reason: "job job_asg_a1b2 closed as failed and wrote no receipt",
+    },
   ]);
+  expect(draws.finished).toEqual([]);
   const claim = await db.query(
-    `SELECT finished_at IS NOT NULL AS closed, outcome FROM claims WHERE id = 'clm_asg_a1b2'`,
+    `SELECT finished_at IS NOT NULL AS closed, outcome, actual_cost FROM claims WHERE id = 'clm_asg_a1b2'`,
   );
-  expect(claim[0]).toEqual({ closed: 1, outcome: "failed" });
+  expect(claim[0]).toEqual({ closed: 1, outcome: "abandoned", actual_cost: 0.1 });
   const run = await db.query(`SELECT closure, cost_usd FROM runs WHERE id = 'run_asg_a1b2'`);
   expect(run[0]).toEqual({ closure: "failed", cost_usd: null });
+});
+
+test("a job the hub cancelled abandons its claim on the next tick", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  await loop.tick();
+  // The operator stops a running review — or the machine's agent dies and the hub interrupts
+  // it. Either way nothing was sealed and nobody will report what it cost.
+  fleet.kill("job_asg_a1b2", "cancelled");
+  const report = await loop.tick();
+
+  expect(report.settled).toEqual([
+    {
+      claimId: "clm_asg_a1b2",
+      outcome: "abandoned",
+      cost: 0.1,
+      overrun: false,
+      refused: null,
+      reason: "job job_asg_a1b2 closed as stopped and wrote no receipt",
+    },
+  ]);
+  expect(draws.abandoned).toEqual([
+    {
+      id: "clm_asg_a1b2",
+      fence: 1,
+      reason: "job job_asg_a1b2 closed as stopped and wrote no receipt",
+    },
+  ]);
+  const claim = await db.query(
+    `SELECT outcome, actual_cost, finished_at IS NOT NULL AS closed FROM claims WHERE id = 'clm_asg_a1b2'`,
+  );
+  expect(claim[0]).toEqual({ outcome: "abandoned", actual_cost: 0.1, closed: 1 });
+  // And the run is closed, so the next cycle has nothing left to reconcile.
+  expect(report.pending).toBe(0);
 });
 
 test("an enabled policy registers the beat at its cadence; a disabled one makes the tick a no-op", async () => {
@@ -1175,9 +1276,17 @@ test("an output the hub cannot read closes its run instead of being retried for 
   expect(report.notes[0]).toContain("outputs were refused");
   const run = await db.query(`SELECT closure FROM runs WHERE id = 'run_asg_a1b2'`);
   expect(run[0]).toEqual({ closure: "failed" });
-  // The claim is released at zero rather than held by a run whose output is unreadable.
+  // The job exited cleanly, so it told us what it spent — nothing — and its claim is finished
+  // at zero rather than charged for a review nobody can read.
   expect(report.settled).toEqual([
-    { claimId: "clm_asg_a1b2", outcome: "failed", cost: 0, overrun: false, refused: null },
+    {
+      claimId: "clm_asg_a1b2",
+      outcome: "failed",
+      cost: 0,
+      overrun: false,
+      refused: null,
+      reason: null,
+    },
   ]);
   // And the next cycle has nothing left to reconcile.
   const next = await loop.tick();
@@ -1289,4 +1398,148 @@ test("what a scan catalogued as folders is asked of the host, once per folder", 
   folders.asked.length = 0;
   await loop.tick();
   expect(folders.asked).toEqual([]);
+});
+
+test("a posting the machine refuses abandons its claim in the same breath", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  fleet.refusal = "dev-01 has no room for another job";
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const report = await loop.tick();
+
+  // The claim was taken before the job existed, so the refusal has to give it back here: the
+  // reaper would, but a whole lease later, with the slot held by a job that never ran.
+  expect(report.refused).toEqual([
+    {
+      assignmentId: "asg_a1b2",
+      recordId: "hyp_00000001",
+      reason: "refused-job",
+      detail: "dev-01 has no room for another job",
+    },
+  ]);
+  expect(draws.abandoned).toEqual([
+    {
+      id: "clm_asg_a1b2",
+      fence: 1,
+      reason: "the job was never posted: dev-01 has no room for another job",
+    },
+  ]);
+  expect(draws.finished).toEqual([]);
+  const claim = await db.query(
+    `SELECT outcome, actual_cost, finished_at IS NOT NULL AS closed FROM claims WHERE id = 'clm_asg_a1b2'`,
+  );
+  expect(claim[0]).toEqual({ outcome: "abandoned", actual_cost: 0.1, closed: 1 });
+  // No job was posted, so no run row was written for one.
+  const runs = await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM runs`);
+  expect(runs[0]?.n).toBe(0);
+});
+
+test("the reaper releases a grant whose job was never posted, once its lease has run out", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  // A grant nothing will ever match `WHERE job_id = ?`: the cycle that took it died between the
+  // claim and the posting. One inside its lease, one past it.
+  await db.run(
+    `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                        reserved_cost, granted_at, expires_at)
+     VALUES ('clm_stale', 'hyp_00000001', 'reception', 'coverage', 'pol_1', NULL, 'cyc_dead', 1,
+             0.1, ?, ?)`,
+    [new Date(clock - 20 * 60_000).toISOString(), new Date(clock - 5 * 60_000).toISOString()],
+  );
+  await db.run(
+    `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                        reserved_cost, granted_at, expires_at)
+     VALUES ('clm_fresh', 'hyp_00000001', 'evidence', 'coverage', 'pol_1', NULL, 'cyc_now', 1,
+             0.1, ?, ?)`,
+    [new Date(clock - 60_000).toISOString(), new Date(clock + 840_000).toISOString()],
+  );
+
+  const report = await loop.tick();
+
+  expect(draws.abandoned.map((row) => row.id)).toEqual(["clm_stale"]);
+  expect(report.settled).toEqual([
+    {
+      claimId: "clm_stale",
+      outcome: "abandoned",
+      cost: 0.1,
+      overrun: false,
+      refused: null,
+      reason: `granted at ${new Date(clock - 20 * 60_000).toISOString()} and never posted to a machine`,
+    },
+  ]);
+  expect(report.notes.some((note) => note.startsWith("claim clm_stale abandoned:"))).toBe(true);
+  const rows = await db.query<{ id: string; outcome: string | null; actual_cost: number | null }>(
+    `SELECT id, outcome, actual_cost FROM claims ORDER BY id`,
+  );
+  expect(rows).toEqual([
+    // A grant still inside its lease is a cycle that may yet post its job.
+    { id: "clm_fresh", outcome: null, actual_cost: null },
+    { id: "clm_stale", outcome: "abandoned", actual_cost: 0.1 },
+  ]);
+});
+
+test("a job the hub cannot report twice running loses its claim; once is a hiccup", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  await loop.tick();
+  // The machine holding the review falls off the fleet: the hub cannot answer for its job at
+  // all, so no settlement will ever reach the claim.
+  fleet.silent.add("job_asg_a1b2");
+
+  const first = await loop.tick();
+  expect(draws.abandoned).toEqual([]);
+  expect(first.pending).toBe(1);
+
+  const second = await loop.tick();
+  expect(draws.abandoned).toEqual([
+    {
+      id: "clm_asg_a1b2",
+      fence: 1,
+      reason: "the hub has not been able to report job job_asg_a1b2 for 2 cycles",
+    },
+  ]);
+  expect(second.settled.map((row) => [row.claimId, row.outcome, row.cost])).toEqual([
+    ["clm_asg_a1b2", "abandoned", 0.1],
+  ]);
+
+  // And once released it is released once: the next cycles say nothing more about it.
+  const third = await loop.tick();
+  expect(third.settled).toEqual([]);
+  expect(draws.abandoned).toHaveLength(1);
 });

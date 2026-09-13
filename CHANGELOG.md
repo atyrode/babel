@@ -410,6 +410,25 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `schema` on both sides, under the same code; a refused submission's receipt
   carries `schema:` and the engine's own $0.0123 (#263).
 
+- **A claim dies with its job.** A review's claim held its batch slot until its
+  lease expired even when the job behind it was gone, so a worker killed by
+  hand kept the deployment from drawing the record it had been holding: on
+  2026-09-13 about seventy such ghosts, under leases the operator had raised to
+  5,200s, answered every draw of a two-hour drain with "held by another worker
+  until 14:08" and the window it existed to spend was lost. The plugin
+  coordinator now has `abandon`, which finishes a claim as `abandoned` and
+  charges what it reserved — a job that died mid-review cannot say what it
+  spent, and releasing it at zero would let a crash loop spend the day's
+  allowance many times over — and the conductor calls it wherever a job ends
+  without a result: a settlement that read no receipt on a job the hub did not
+  report as a clean exit, a posting the machine refused (the claim is taken
+  before `jobs.execute` is called, so a refusal used to leave a grant with no
+  worker at all), and a reaper on every cycle for grants never posted, jobs
+  with no open run row, and jobs the hub cannot report twice running. A claim
+  with no job is no longer counted as a batch slot at all. Proof: 37 tests
+  across the coordinator and the loop, among them four killed jobs whose claims
+  are abandoned and whose batch admits the next draw on the following tick
+  (#259, post-mortem finding F3/G1/O5).
 ## [0.2.6] - 2026-09-12
 
 ### Added
