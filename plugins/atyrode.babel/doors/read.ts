@@ -63,6 +63,18 @@ const READ_CAPS = ["containers:read"] as const;
   ceiling, so a cycle behind a five-second poll cannot dispatch: only `launch`, which declares it
   at the node its arguments name, and `onJobSettled`, which carries the credential the job ran
   under, can ask a machine to run anything.
+
+  AND THE ONE MACHINE QUESTION A CYCLE ASKS OUTSIDE A JOB IS NOT IN THIS LIST EITHER — not
+  because it is unwanted, but because `machines:read` cannot be delegated. A cycle behind these
+  doors asks `engine.machines.repository` what a folder a scan catalogued is (#535), and
+  `NATIVE_DELEGATE_CAPS` (protocol/src/plugin.ts) — the closed set `ActionDelegatesSchema`
+  admits — holds the job, location, operation, service and network capabilities and not that
+  one: an action naming it is refused at assembly as "invalid delegated capabilities". Nor is it
+  a cap, because the caller reading his pulse is not the one asking a machine anything. So it is
+  declared where it is true, in the MANIFEST's capabilities, which is the ceiling an operator
+  consents to at install; the host serves `ctx.machines` to a dispatch unattenuated
+  (`plugin-host.ts` hands the admission through, `serveCtxCall` forwards `machines.repository`),
+  and a hook is served none at all.
 */
 const WAKING_DELEGATES = ["jobs:read"] as const;
 

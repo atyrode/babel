@@ -9,8 +9,23 @@ import { PluginManifestSchema } from "@manifold/protocol";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
 import { ACTIONS, BABEL_PLUGIN_ID, OPERATIONS, type OperationName } from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
-import { conductor, type Conductor, type JobsSlice, type Recipe, type RunPlan } from "./server/conductor.ts";
-import { ENABLE_WITHOUT_JOBS, jobsSlice, runPlan, unauthorized } from "./server/plan.ts";
+import {
+  conductor,
+  type Conductor,
+  type JobsSlice,
+  type MachinesSlice,
+  type Recipe,
+  type RunPlan,
+} from "./server/conductor.ts";
+import {
+  ENABLE_WITHOUT_JOBS,
+  HOOK_WITHOUT_MACHINES,
+  jobsSlice,
+  machinesSlice,
+  runPlan,
+  unaskable,
+  unauthorized,
+} from "./server/plan.ts";
 import { coordinator, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_V1 } from "./store/schema.ts";
 import { openStore } from "./store/store.ts";
@@ -100,21 +115,29 @@ function planFor(policy: Policy, operationId: OperationName): RunPlan {
   return runPlan({ manifest, policy, cookbook: COOKBOOK, roles: ROLE_RECIPES, operationId });
 }
 
-function loop(jobs: JobsSlice, plan: RunPlan): Conductor {
-  return conductor({ store, coordinator: coordinated, jobs, plan, now: () => store.now() });
+function loop(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conductor {
+  return conductor({
+    store,
+    coordinator: coordinated,
+    jobs,
+    machines,
+    plan,
+    now: () => store.now(),
+  });
 }
 
 /**
- * ONE CYCLE, over the job authority the caller brought.
+ * ONE CYCLE, over the authority the caller brought: a job slice to reach machines through, and
+ * the one machine question the loop asks outside a job (what a catalogued folder is, #535).
  *
  * The loop has no clock of its own — a plugin may not poll as an alternate scheduler — so a
  * cycle happens when something has already woken this half: a door the operator knocked on, or
  * one of this plugin's own jobs settling. Every step of it is idempotent, which is what makes
  * that safe: two cycles in the same second do the work of one.
  */
-async function cycle(jobs: JobsSlice): Promise<void> {
+async function cycle(jobs: JobsSlice, machines: MachinesSlice): Promise<void> {
   const policy = (await coordinated.policy()).policy;
-  await loop(jobs, planFor(policy, OPERATIONS.evaluate)).tick();
+  await loop(jobs, machines, planFor(policy, OPERATIONS.evaluate)).tick();
 }
 
 /**
@@ -146,6 +169,7 @@ const doors = babelDoors(store, {
   coordinator: coordinated,
   cookbook: COOKBOOK,
   jobs: (ctx) => jobsSlice(ctx.jobs),
+  machines: (ctx) => machinesSlice(ctx.machines),
   plan: planFor,
   cycle: loop,
   now: () => store.now(),
@@ -174,7 +198,7 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
       if (wakes && at - woke >= WAKE_FLOOR_MS) {
         woke = at;
         try {
-          await cycle(jobsSlice(ctx.jobs));
+          await cycle(jobsSlice(ctx.jobs), machinesSlice(ctx.machines));
         } catch (error) {
           console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
         }
@@ -205,13 +229,25 @@ export const plugin: ServerPluginDef = {
         await database.batch(SCHEMA_V1.map((sql) => ({ sql })));
       }
       await ctx.storage.set(SCHEMA_KEY, STORE_MIGRATION);
-      // An enabled policy registers its beat and picks up whatever finished while this half was
-      // off. The hook's context carries NO job slice — `GuestLifecycleCtx` has storage and the
-      // database and nothing else — so the cycle runs against a slice that refuses every verb
-      // and records the refusal: what it can still do is the store's own half of the work.
+      /*
+        AN ENABLED POLICY REGISTERS ITS BEAT HERE (#534). The hook's context carries the job
+        slice its installer's credential was restored for — every job verb but the live
+        subscription, the three schedule verbs among them — so the cadence an enable owns is
+        registered by the enable, rather than waiting for the first dispatch or the first
+        settlement to notice there is none. A hook whose installer has been revoked is served
+        none, and then the cycle runs against a slice that refuses every verb and records the
+        refusal: what it can still do is the store's own half of the work.
+
+        No hook is served a MACHINES slice either way — `machines.repository` is a dispatch's to
+        ask — so the folders this cycle would have identified are left for a cycle a door wakes.
+      */
+      const installer = ctx.jobs;
       try {
         await dispatched.run(database, async () => {
-          await cycle(unauthorized(ENABLE_WITHOUT_JOBS));
+          await cycle(
+            installer === undefined ? unauthorized(ENABLE_WITHOUT_JOBS) : jobsSlice(installer),
+            unaskable(HOOK_WITHOUT_MACHINES),
+          );
         });
       } catch (error) {
         console.warn(`${BABEL_PLUGIN_ID}: the cycle at enable failed: ${message(error)}`);
@@ -239,7 +275,7 @@ export const plugin: ServerPluginDef = {
         throw new Error(`${BABEL_PLUGIN_ID}: a settled job was served without the plugin's tables`);
       }
       await dispatched.run(database, async () => {
-        await cycle(jobsSlice(ctx.jobs));
+        await cycle(jobsSlice(ctx.jobs), unaskable(HOOK_WITHOUT_MACHINES));
       });
     },
   },

@@ -5,13 +5,14 @@
   engine's path comes from the machine block's own runtime tools, the job's limits come from the
   operation's own declaration, and the per-run ceiling comes from the policy in force — so a
   manifest or a policy that changes changes the run, and a plan that disagreed with either would
-  be a second set of numbers nobody edited. Second, that the slice says what the boundary cannot
-  do rather than pretending: the three schedule verbs refuse by name.
+  be a second set of numbers nobody edited. Second, that the slice is a NARROWING and not a
+  translation: all eight job verbs cross the boundary now (#534), the schedule verbs among them,
+  and the one slice a hook is served none of refuses with the reason it has none.
 */
 
 import { expect, test } from "bun:test";
 import { PluginManifestSchema, type PluginManifest } from "@manifold/protocol";
-import type { GuestSettledJobs } from "@manifold/plugin-kit/server";
+import type { GuestCtx, GuestHookJobs } from "@manifold/plugin-kit/server";
 import { OPERATIONS } from "../contract.ts";
 import { PolicySchema } from "../store/coordinator.ts";
 import type { JobLaunch } from "./conductor.ts";
@@ -19,11 +20,13 @@ import {
   DEFAULT_LIMITS,
   ENABLE_WITHOUT_JOBS,
   ENGINE_BINARY,
-  SCHEDULE_UNAVAILABLE,
+  HOOK_WITHOUT_MACHINES,
   jobsSlice,
+  machinesSlice,
   operationLimits,
   perRunUsd,
   runPlan,
+  unaskable,
   unauthorized,
 } from "./plan.ts";
 import manifestJson from "../manifest.json";
@@ -126,8 +129,10 @@ test("a role whose recipe the cookbook does not hold is left with none, and is n
   expect(Object.hasOwn(plan.recipes, "challenge")).toBe(false);
 });
 
-test("the boundary's verbs pass through, and the three it does not serve refuse by name", async () => {
+test("every verb the boundary serves passes straight through, arrays and all", async () => {
   const calls: unknown[] = [];
+  /** The outputs array the host was handed, to prove it is a copy rather than the loop's own. */
+  let handed: readonly unknown[] = [];
   const host = {
     describe: async (args: unknown) => {
       calls.push(args);
@@ -141,7 +146,33 @@ test("the boundary's verbs pass through, and the three it does not serve refuse 
       calls.push(node);
       await Promise.resolve();
     },
-  } as unknown as GuestSettledJobs;
+    schedule: async (args: { outputs: readonly unknown[] }) => {
+      handed = args.outputs;
+      calls.push(args);
+      return await Promise.resolve({});
+    },
+    schedules: async () =>
+      await Promise.resolve([
+        {
+          scheduleId: "atyrode.babel.conductor",
+          revision: "pol_1",
+          machineId: "m",
+          pluginId: "atyrode.babel",
+          operationId: OPERATIONS.scan,
+          installationRevision: "rev-7",
+          artifactSha256: "a".repeat(64),
+          firstNominalAt: 10,
+          intervalMs: 900_000,
+          deadlineMs: 900_000,
+          expiresAt: 2_000_000,
+          offlinePolicy: "coalesce-one",
+        },
+      ]),
+    disableSchedule: async (args: unknown) => {
+      calls.push(args);
+      return await Promise.resolve({});
+    },
+  } as unknown as GuestHookJobs;
   const jobs = jobsSlice(host);
 
   const launch: JobLaunch = {
@@ -151,22 +182,82 @@ test("the boundary's verbs pass through, and the three it does not serve refuse 
     input: { input: "{}" },
     outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }],
   };
+  const timing = {
+    scheduleId: "atyrode.babel.conductor",
+    revision: "pol_1",
+    firstNominalAt: 10,
+    intervalMs: 900_000,
+    deadlineMs: 900_000,
+    expiresAt: 2_000_000,
+    offlinePolicy: "coalesce-one",
+  } as const;
   await jobs.execute(launch);
   await jobs.cancel({ kind: "job", machineId: "m", operationId: OPERATIONS.scan, jobId: "j1" });
+  await jobs.schedule({ ...launch, ...timing });
+  await jobs.disableSchedule({ scheduleId: timing.scheduleId, revision: "pol_1" });
 
   // The request the host is handed owns its arrays; the loop's is frozen and stays that way.
   expect(calls[0]).toEqual({ ...launch, outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }] });
   expect(calls[1]).toEqual({ kind: "job", machineId: "m", operationId: OPERATIONS.scan, jobId: "j1" });
+  // A cadence is one request plus its timing, and the copy is made for it too: a beat this
+  // plugin registers for itself is what closed the hole the loop used to record a refusal for.
+  expect(calls[2]).toEqual({ ...launch, ...timing, outputs: [{ name: "outputs", locationId: "outputs", components: ["j1"] }] });
+  expect(handed[0]).not.toBe(launch.outputs[0]);
+  expect(calls[3]).toEqual({ scheduleId: timing.scheduleId, revision: "pol_1" });
 
-  expect(await jobs.schedules()).toEqual([]);
-  expect(() => jobs.schedule({ ...launch, scheduleId: "s", revision: "1", firstNominalAt: 0, intervalMs: 1, deadlineMs: 1, expiresAt: 2, offlinePolicy: "skip" })).toThrow(
-    SCHEDULE_UNAVAILABLE,
-  );
-  expect(() => jobs.disableSchedule({ scheduleId: "s", revision: "1" })).toThrow(SCHEDULE_UNAVAILABLE);
+  // What the host lists is a schedule row with the plugin id and the pinned artifact still on
+  // it: more than the loop reads, and read as the loop's own shape without a translation.
+  const listed = await jobs.schedules();
+  expect(listed).toMatchObject([
+    { scheduleId: "atyrode.babel.conductor", revision: "pol_1", machineId: "m", intervalMs: 900_000 },
+  ]);
 });
 
-test("a context with no job authority refuses every verb with the reason it has none", () => {
+test("a hook served no job authority refuses every verb with the reason it has none", () => {
   const jobs = unauthorized(ENABLE_WITHOUT_JOBS);
   expect(() => jobs.describe({ machineId: "m", pluginId: "atyrode.babel" })).toThrow(/no job slice/);
   expect(() => jobs.schedules()).toThrow(/no job slice/);
+  expect(() => jobs.schedule({} as never)).toThrow(/no job slice/);
+});
+
+test("what a folder is is asked in the shape the host that served the slice takes", async () => {
+  const fact = {
+    path: "/home/alex/babel",
+    identity: "/home/alex/babel/.git",
+    remote: "github.com/atyrode/babel",
+    reason: "repository",
+    observedAt: 1_757_000_000_000,
+  };
+
+  // A HARDENED half is served the kit's handle: one query object, because that is what crosses
+  // the ipc frame.
+  const queries: unknown[] = [];
+  const hardened = machinesSlice({
+    repository: async (query: unknown) => {
+      queries.push(query);
+      return await Promise.resolve({ ok: true, fact });
+    },
+  } as unknown as GuestCtx["machines"]);
+  expect(await hardened.repository("m", "/home/alex/babel")).toMatchObject({ ok: true, fact });
+  expect(queries).toEqual([{ machineId: "m", path: "/home/alex/babel" }]);
+
+  // A bundle the host IMPORTED — the default for an installed server half — is handed the
+  // machine gateway's own admission, which takes the machine and the path as two arguments.
+  // Handing that one a query object would ask about a machine called "[object Object]".
+  const positional: unknown[] = [];
+  const inRealm = machinesSlice({
+    repository: (machineId: string, path: string) => {
+      positional.push([machineId, path]);
+      return { ok: true, fact };
+    },
+  } as unknown as GuestCtx["machines"]);
+  expect(await inRealm.repository("m", "/home/alex/babel")).toMatchObject({ ok: true, fact });
+  expect(positional).toEqual([["m", "/home/alex/babel"]]);
+
+  // A hook's context carries no machines member at all, and the refusal says so rather than
+  // answering with a fact nobody observed.
+  expect(await unaskable(HOOK_WITHOUT_MACHINES).repository("m", "/home/alex/babel")).toEqual({
+    ok: false,
+    reason: HOOK_WITHOUT_MACHINES,
+  });
 });

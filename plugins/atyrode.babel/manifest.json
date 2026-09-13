@@ -6,6 +6,7 @@
   "capabilities": [
     "containers:read",
     "containers:write",
+    "machines:read",
     "machines:run",
     "jobs:read",
     "jobs:input",

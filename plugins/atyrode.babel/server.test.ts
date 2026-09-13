@@ -16,7 +16,7 @@
 */
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import type { GuestCtx, GuestDatabase, GuestSettledJobs } from "@manifold/plugin-kit/server";
+import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-kit/server";
 import type { SettledJob } from "@manifold/protocol";
 import { ACTIONS, BABEL_PLUGIN_ID, OPERATIONS } from "./contract.ts";
 import { plugin } from "./server.ts";
@@ -32,6 +32,8 @@ class Jobs {
   described = 0;
   statuses = 0;
   listed = 0;
+  /** The cadences this fake has been asked to register, newest last. */
+  readonly scheduled: { scheduleId: string; revision: string; machineId: string }[] = [];
 
   describe(): unknown {
     this.described += 1;
@@ -75,6 +77,32 @@ class Jobs {
   cancel(): void {
     throw new Error("this test cancels nothing");
   }
+
+  /*
+    The three verbs #534 serves a hardened half. The loop reads the list, finds no cadence of
+    its own, and registers one — which is what an enable under the installer's credential is
+    for, and what this fake makes observable.
+  */
+  schedules(): unknown {
+    return [...this.scheduled];
+  }
+
+  schedule(args: { scheduleId: string; revision: string; machineId: string }): unknown {
+    this.scheduled.push({
+      scheduleId: args.scheduleId,
+      revision: args.revision,
+      machineId: args.machineId,
+    });
+    return {};
+  }
+
+  disableSchedule(args: { scheduleId: string; revision: string }): unknown {
+    const at = this.scheduled.findIndex(
+      (row) => row.scheduleId === args.scheduleId && row.revision === args.revision,
+    );
+    if (at >= 0) this.scheduled.splice(at, 1);
+    return {};
+  }
 }
 
 let harness: TestStore;
@@ -97,7 +125,13 @@ function context(
     pluginId: BABEL_PLUGIN_ID,
     principal: { id: "operator" },
     database,
-    jobs: slice as unknown as GuestSettledJobs,
+    jobs: slice as unknown as GuestHookJobs,
+    // Only a DISPATCH is served one (`serveCtxCall`), and this plugin asks it one question:
+    // what a folder a scan catalogued is. Nothing here catalogues one, so nothing asks.
+    machines: {
+      repository: async () =>
+        await Promise.resolve({ ok: false, reason: "this test enrolls no machine" }),
+    },
     storage: { set: async () => await Promise.resolve() },
     newId: async () => await Promise.resolve("000001"),
     now: () => now,
@@ -172,10 +206,11 @@ test("a settled job of this plugin's ingests what finished, through its own hand
   );
 
   // The cycle read the job back, closed the run and released what the claim reserved — and it
-  // did all of that AFTER the beat it cannot register refused it: the hardened slice has no
-  // schedule verb, so the cycle described a machine, was refused, noted it and carried on.
+  // registered the beat on the way, because the hook's slice serves the schedule verbs the
+  // settled job's own credential carries (#534).
   expect(jobs.described).toBeGreaterThan(0);
   expect(jobs.statuses).toBe(1);
+  expect(jobs.scheduled).toMatchObject([{ scheduleId: `${BABEL_PLUGIN_ID}.conductor` }]);
   expect(await closure()).toBe("completed");
   const claim = await harness.db.query<{ outcome: string; actual_cost: number }>(
     `SELECT outcome, actual_cost FROM claims WHERE id = 'asg_live'`,
@@ -258,15 +293,35 @@ test("a cycle that stumbles never fails the door it followed", async () => {
   expect(await closure()).toBeNull();
 });
 
-test("enabling runs a cycle with no job authority at all, and still answers", async () => {
+test("enabling registers the beat with the slice the installer's credential restored", async () => {
   await pending();
 
   await plugin.lifecycle?.onEnable?.(
     context(harness.db as unknown as GuestDatabase, jobs) as never,
   );
 
-  // `GuestLifecycleCtx` carries no jobs, so nothing was asked of a machine and the run the hub
-  // is waiting on is still waiting: what the cycle could do without one, it did.
+  // An enabled policy owns a cadence, and #534 is what lets the enable itself register it
+  // rather than waiting for a dispatch or a settlement to notice there is none. The rest of
+  // the cycle ran under the same authority: the run the hub was waiting on is closed.
+  expect(jobs.scheduled).toMatchObject([
+    { scheduleId: `${BABEL_PLUGIN_ID}.conductor`, revision: "p1", machineId: MACHINE },
+  ]);
+  expect(jobs.statuses).toBe(1);
+  expect(await closure()).toBe("completed");
+});
+
+test("an enable whose installer is gone is served no jobs, and still does the store's half", async () => {
+  await pending();
+  const ctx = context(harness.db as unknown as GuestDatabase, jobs);
+  // `GuestLifecycleCtx.jobs` is absent exactly when the host could not restore the installer's
+  // credential, and the hook is handed the context without it rather than a refusing handle.
+  const orphaned = { ...ctx, jobs: undefined };
+
+  await plugin.lifecycle?.onEnable?.(orphaned as never);
+
+  // Nothing was asked of a machine — no beat, no job read back — and the run the hub is
+  // waiting on is still waiting: what the cycle could do without a slice, it did.
+  expect(jobs.scheduled).toEqual([]);
   expect(jobs.statuses).toBe(0);
   expect(await closure()).toBeNull();
 });

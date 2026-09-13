@@ -21,6 +21,7 @@ import type {
   JobLaunch,
   JobsSlice,
   MachineReadiness,
+  MachinesSlice,
   Recipe,
   RunPlan,
 } from "../server/conductor.ts";
@@ -82,7 +83,12 @@ import { defineDoor, type Door } from "./door.ts";
 /** Governed, at the operation node the request names; see the block above. */
 const LAUNCH_CAPS = ["machines:run"] as const;
 const LAUNCH_REQUIREMENTS = [{ cap: "machines:run" as const, target: ["operation"] }];
-/** The native ceiling the launched job inherits: reading it back, and its declared locations. */
+/**
+ * The native ceiling the launched job inherits: reading it back, and its declared locations.
+ * `machines:read` is NOT here and cannot be: `NATIVE_DELEGATE_CAPS` does not admit it (see
+ * `doors/read.ts`), so the credential a drawn job carries into `onJobSettled` does not carry it
+ * either — and a settled hook is served no machines slice to spend it through in any case.
+ */
 const LAUNCH_DELEGATES = ["jobs:read", "locations:read", "locations:write"] as const;
 
 /** Stopping is governed at the JOB node, which the run row carries and the panel posts. */
@@ -145,10 +151,12 @@ export interface LaunchDeps {
   readonly cookbook: Readonly<Record<string, Recipe>>;
   /** This dispatch's own job authority, narrowed to the verbs this plugin uses. */
   jobs(ctx: GuestCtx): BabelJobs;
+  /** The one machine question a cycle asks outside a job: what a catalogued folder is (#535). */
+  machines(ctx: GuestCtx): MachinesSlice;
   /** What a run of this operation runs under, given the policy in force. */
   plan(policy: Policy, operationId: OperationName): RunPlan;
-  /** One cycle of the loop over this dispatch's slice: the same conductor the plugin wires. */
-  cycle(jobs: JobsSlice, plan: RunPlan): Conductor;
+  /** One cycle of the loop over this dispatch's slices: the same conductor the plugin wires. */
+  cycle(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conductor;
   now(): number;
 }
 
@@ -404,7 +412,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         // The coordinator decides what is reviewed and the conductor claims and dispatches it;
         // this only says how many cycles the operator asked for. A cycle that draws nothing
         // ends the loop rather than spinning: the second cycle would draw the same nothing.
-        const loop = deps.cycle(jobs, plan);
+        const loop = deps.cycle(jobs, deps.machines(ctx), plan);
         const requested: { runId: string; jobId: string; machineId: string }[] = [];
         let why = "";
         for (let cycle = 0; cycle < Math.min(input.draws ?? 1, MAX_CYCLES); cycle += 1) {

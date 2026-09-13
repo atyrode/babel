@@ -1,3 +1,4 @@
+import { MACHINE_REPOSITORY_REASONS } from "@manifold/protocol";
 import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import {
   BABEL_PLUGIN_ID,
@@ -175,6 +176,35 @@ export interface JobsSlice {
   disableSchedule(args: { scheduleId: string; revision: string }): Awaitable<unknown>;
 }
 
+// ---------------------------------------------------------------------------- the machines slice
+
+/**
+ * `MachineRepositoryFact`, restated so the loop compiles against the slice rather than the
+ * host. `identity` is the resolved git common directory — one per repository, however many
+ * worktrees view it — `remote` is `origin` normalized to `host/owner/repo`, both null unless
+ * `reason` is `repository`, and `observedAt` is the AGENT's clock at the probe.
+ */
+export interface RepositoryFact {
+  readonly path: string;
+  readonly identity: string | null;
+  readonly remote: string | null;
+  readonly reason: string;
+  readonly observedAt: number;
+}
+
+/** The fact, or the hub's word that nobody could be asked — which is never a fact about a disk. */
+export type RepositoryOutcome =
+  | { readonly ok: true; readonly fact: RepositoryFact }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * The one verb of `ctx.machines` this loop uses: `engine.machines.repository` (#535), asked of
+ * the agent standing on the host rather than of the sandbox a scan ran in.
+ */
+export interface MachinesSlice {
+  repository(machineId: string, path: string): Awaitable<RepositoryOutcome>;
+}
+
 // ---------------------------------------------------------------------------- what a run needs
 
 export interface Recipe {
@@ -211,6 +241,7 @@ export interface ConductorDeps {
   readonly store: BabelStore;
   readonly coordinator: Coordinator;
   readonly jobs: JobsSlice;
+  readonly machines: MachinesSlice;
   readonly plan: RunPlan;
   readonly now: () => number;
 }
@@ -301,6 +332,15 @@ const TERMINAL_STATES: Record<string, true> = {
   cancelled: true,
   refused: true,
 };
+
+/**
+ * How many folders one tick asks the fleet about; the rest wait for the next tick. A machine
+ * holds tens of workspaces and a first scan of a new fleet may present hundreds at once, and a
+ * cycle is something a dispatch is waiting behind: 64 probes is a bounded second of it.
+ */
+const WORKSPACES_PER_TICK = 64;
+/** One `?` per word of the hub's closed reason vocabulary, for the marker predicate below. */
+const HUB_REASON_HOLES = MACHINE_REPOSITORY_REASONS.map(() => "?").join(", ");
 
 // ---------------------------------------------------------------------------- ingestion tables
 
@@ -789,6 +829,8 @@ type OpenClaim = { id: string; run_id: string; fence: number; reserved_cost: num
 type MachineCount = { machineId: string; cited: number };
 type MachineRow = { machineId: string };
 type Existing = { id: string };
+/** One folder of one machine that no hub-side answer has been written for yet. */
+type UnidentifiedFolder = { machineId: string; workspace: string };
 type RecordRow = {
   id: string;
   kind: string;
@@ -807,7 +849,7 @@ type SourceRow = {
 };
 
 export function conductor(deps: ConductorDeps): Conductor {
-  const { store, coordinator, jobs, plan } = deps;
+  const { store, coordinator, jobs, machines, plan } = deps;
   let cycle = 0;
 
   /** Machines are described once per tick: the answer is the same for every draw in it. */
@@ -1188,6 +1230,72 @@ export function conductor(deps: ConductorDeps): Conductor {
     return inFlight;
   }
 
+  /**
+   * WHAT THE FOLDERS A SCAN CATALOGUED ARE, asked of the host rather than of the sandbox.
+   *
+   * A scan observes its sessions' workspaces from INSIDE the job, where the operator's
+   * checkouts are not mounted: the rows it ships carry its own prose reason ("workspace absent
+   * on this host") for folders that are ordinary repositories on the machine itself.
+   * `engine.machines.repository` asks the agent standing on that host instead (#535), and its
+   * answer is one word of a CLOSED vocabulary — which is also the marker that says who answered.
+   * A row whose `repository_reason` is one of those words has been asked; every other row —
+   * null because the scan found a repository, prose because the scan could not, empty because
+   * the import carried none — has not, and is what this asks about.
+   *
+   * ONE QUESTION PER FOLDER, never per session: a machine holds tens of workspaces and
+   * thousands of sessions, so the rows of one workspace are written by one answer. At most
+   * {@link WORKSPACES_PER_TICK} of them per tick, because a cycle is something a dispatch is
+   * waiting behind — the rest are asked on the next one, in the same order.
+   *
+   * A MACHINE THAT CANNOT ANSWER IS DROPPED FOR THE REST OF THE TICK rather than asked once per
+   * folder. `ok: false` is offline, too old a transport, or silence — facts about the MACHINE,
+   * not about the path — so the second question would buy the same refusal and another note.
+   * Its rows are left exactly as they were, which is what makes the next tick ask again.
+   */
+  async function identifyFolders(notes: string[]): Promise<void> {
+    const unidentified = await store.db.query<UnidentifiedFolder>(
+      `SELECT DISTINCT host AS machineId, workspace FROM sessions
+        WHERE host <> '' AND workspace LIKE '/%'
+          AND (repository_reason IS NULL OR repository_reason NOT IN (${HUB_REASON_HOLES}))
+        ORDER BY host, workspace
+        LIMIT ?`,
+      [...MACHINE_REPOSITORY_REASONS, WORKSPACES_PER_TICK],
+    );
+    const silent = new Set<string>();
+    let identified = 0;
+    for (const folder of unidentified) {
+      if (silent.has(folder.machineId)) continue;
+      let outcome: RepositoryOutcome;
+      try {
+        outcome = await machines.repository(folder.machineId, folder.workspace);
+      } catch (error) {
+        silent.add(folder.machineId);
+        notes.push(`${folder.machineId} cannot be asked what a folder is: ${message(error)}`);
+        continue;
+      }
+      if (!outcome.ok) {
+        silent.add(folder.machineId);
+        notes.push(
+          `${folder.machineId} could not say what ${folder.workspace} is: ${outcome.reason}`,
+        );
+        continue;
+      }
+      await store.db.run(
+        `UPDATE sessions SET repository_identity = ?, repository_remote = ?, repository_reason = ?
+          WHERE host = ? AND workspace = ?`,
+        [
+          outcome.fact.identity,
+          outcome.fact.remote,
+          outcome.fact.reason,
+          folder.machineId,
+          folder.workspace,
+        ],
+      );
+      identified += 1;
+    }
+    if (identified > 0) store.touch();
+  }
+
   /** One drawn review, turned into a claimed job on a machine — or a refusal that says why. */
   async function dispatch(
     assignment: Assignment,
@@ -1376,6 +1484,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
 
       const pending = await reconcileRuns(at, ingested, settled, notes);
+      // What a scan just catalogued is folders; what they ARE is the host's to say, and it is
+      // asked here, after the rows exist and before this cycle spends anything.
+      await identifyFolders(notes);
 
       // Draw until the coordinator says stop. It owns the batch, the per-cycle and the daily
       // bound; the loop's own bound is that a cycle never draws the same assignment twice, so a

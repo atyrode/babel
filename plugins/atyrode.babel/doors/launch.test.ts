@@ -267,6 +267,11 @@ beforeEach(async () => {
       return cookbook;
     },
     jobs: () => fleet,
+    // The drawn presets run cycles of the loop, and a cycle asks what the folders a scan
+    // catalogued are. These sessions record no workspace, so it is never asked.
+    machines: () => ({
+      repository: () => ({ ok: false, reason: "this test enrolls no machine" }),
+    }),
     plan: () => PLAN,
     cycle: () => cycle,
     now: () => store.now(),

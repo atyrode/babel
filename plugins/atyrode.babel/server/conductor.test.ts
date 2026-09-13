@@ -26,6 +26,9 @@ import {
   type JobsSlice,
   type JobState,
   type MachineReadiness,
+  type MachinesSlice,
+  type RepositoryFact,
+  type RepositoryOutcome,
   type RunPlan,
   type ScheduleRow,
   type ScheduleTiming,
@@ -287,6 +290,35 @@ class Fleet implements JobsSlice {
       archive: tar(files),
     });
     this.beats.add(jobId);
+  }
+}
+
+// ---------------------------------------------------------------------------- a fake host
+
+/**
+ * What the agent standing on a host answers about one folder (#535). `facts` is what the disk
+ * holds, by path; a folder it does not name is a folder that exists and is not a checkout,
+ * which is the ordinary answer rather than an error. `refusal` is the hub saying nobody could
+ * be asked at all — offline, too old a transport, silence — and is never a fact.
+ */
+class Folders implements MachinesSlice {
+  readonly asked: string[] = [];
+  facts: Record<string, RepositoryFact> = {};
+  refusal: string | null = null;
+
+  repository(machineId: string, path: string): RepositoryOutcome {
+    this.asked.push(`${machineId}:${path}`);
+    if (this.refusal !== null) return { ok: false, reason: this.refusal };
+    return {
+      ok: true,
+      fact: this.facts[path] ?? {
+        path,
+        identity: null,
+        remote: null,
+        reason: "not_a_repository",
+        observedAt: clock,
+      },
+    };
   }
 }
 
@@ -616,6 +648,7 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
     store,
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
+    machines: new Folders(),
     plan: PLAN,
     now: () => clock,
   });
@@ -756,6 +789,7 @@ test("a failed job settles its claim as failed and closes its run", async () => 
     store,
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
+    machines: new Folders(),
     plan: PLAN,
     now: () => clock,
   });
@@ -796,6 +830,7 @@ test("an enabled policy registers the beat at its cadence; a disabled one makes 
     store,
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
+    machines: new Folders(),
     plan: PLAN,
     now: () => clock,
   });
@@ -891,6 +926,7 @@ test("the beat's own job is ingested although the hub never requested it", async
     store,
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
+    machines: new Folders(),
     plan: PLAN,
     now: () => clock,
   });
@@ -953,6 +989,7 @@ test("a draw the hub cannot place is refused rather than claimed", async () => {
     store,
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
+    machines: new Folders(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1058,6 +1095,7 @@ test("a new policy version re-registers the beat instead of leaving two firing",
     store: openStore(db),
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
+    machines: new Folders(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1083,6 +1121,7 @@ test("an output the hub cannot read closes its run instead of being retried for 
     store,
     coordinator: draws as unknown as Coordinator,
     jobs: fleet,
+    machines: new Folders(),
     plan: PLAN,
     now: () => clock,
   });
@@ -1102,4 +1141,110 @@ test("an output the hub cannot read closes its run instead of being retried for 
   const next = await loop.tick();
   expect(next.ingested).toEqual([]);
   expect(next.notes).toEqual([]);
+});
+
+test("what a scan catalogued as folders is asked of the host, once per folder", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const folders = new Folders();
+  const draws = new Draws(db);
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: folders,
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  // A beat's catalogue of dev-01: two sessions of one checkout, one of a folder that is not a
+  // repository, and one whose "workspace" is Claude's lossy project-directory name rather than
+  // a path. The scan ran inside a job where none of the three were mounted, so every row it
+  // shipped carries the sandbox's own prose instead of an identity.
+  const catalogued = (selector: string, workspace: string): Record<string, unknown> => ({
+    selector,
+    host: "dev-01",
+    harness: "omp",
+    source_id: selector,
+    workspace,
+    repository_identity: null,
+    repository_remote: null,
+    repository_reason: "workspace absent on this host",
+    seen_at: "2026-09-12T09:00:00Z",
+  });
+  fleet.beat("scan-1", "dev-01", {
+    [JOB_OUTPUT_FILES.sessions]: [
+      catalogued("omp/a", "/home/alex/babel"),
+      catalogued("omp/b", "/home/alex/babel"),
+      catalogued("omp/c", "/home/alex/notes"),
+      catalogued("claude/d", "-home-alex-babel"),
+    ],
+  });
+  folders.facts["/home/alex/babel"] = {
+    path: "/home/alex/babel",
+    identity: "/home/alex/babel/.git",
+    remote: "github.com/atyrode/babel",
+    reason: "repository",
+    observedAt: clock,
+  };
+
+  const catalogue = async (): Promise<readonly SqlRow[]> =>
+    await db.query(
+      `SELECT selector, repository_identity AS identity, repository_remote AS remote,
+              repository_reason AS reason
+         FROM sessions WHERE workspace IS NOT NULL ORDER BY selector`,
+    );
+  const asWritten = [
+    { selector: "claude/d", identity: null, remote: null, reason: "workspace absent on this host" },
+    { selector: "omp/a", identity: null, remote: null, reason: "workspace absent on this host" },
+    { selector: "omp/b", identity: null, remote: null, reason: "workspace absent on this host" },
+    { selector: "omp/c", identity: null, remote: null, reason: "workspace absent on this host" },
+  ];
+
+  // A HOST THAT CANNOT BE ASKED is asked ONCE, not once per folder — offline is a fact about
+  // the machine — and the rows it would have answered for are left exactly as the scan wrote
+  // them rather than stamped with a refusal.
+  folders.refusal = "dev-01 is not connected";
+  const refused = await loop.tick();
+  expect(refused.ingested).toMatchObject([{ jobId: "scan-1" }]);
+  expect(folders.asked).toEqual(["dev-01:/home/alex/babel"]);
+  expect(refused.notes).toEqual([
+    "dev-01 could not say what /home/alex/babel is: dev-01 is not connected",
+  ]);
+  expect(await catalogue()).toEqual(asWritten);
+
+  // The next tick asks again, because a refusal wrote nothing that says the folder was asked
+  // about. One question per DISTINCT folder answers every session standing in it, and the
+  // project-directory name is never asked about at all: it is not a path.
+  folders.refusal = null;
+  folders.asked.length = 0;
+  const identified = await loop.tick();
+
+  expect(identified.ingested).toEqual([]);
+  expect(identified.notes).toEqual([]);
+  expect(folders.asked).toEqual(["dev-01:/home/alex/babel", "dev-01:/home/alex/notes"]);
+  expect(await catalogue()).toEqual([
+    { selector: "claude/d", identity: null, remote: null, reason: "workspace absent on this host" },
+    {
+      selector: "omp/a",
+      identity: "/home/alex/babel/.git",
+      remote: "github.com/atyrode/babel",
+      reason: "repository",
+    },
+    {
+      selector: "omp/b",
+      identity: "/home/alex/babel/.git",
+      remote: "github.com/atyrode/babel",
+      reason: "repository",
+    },
+    // A folder that is no checkout is a FACT about it, and the reason is what records it.
+    { selector: "omp/c", identity: null, remote: null, reason: "not_a_repository" },
+  ]);
+
+  // And a folder the host has answered for is not asked about again on every tick after.
+  folders.asked.length = 0;
+  await loop.tick();
+  expect(folders.asked).toEqual([]);
 });

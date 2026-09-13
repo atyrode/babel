@@ -1,5 +1,5 @@
 import type { MachineHalf, PluginManifest } from "@manifold/protocol";
-import type { GuestSettledJobs } from "@manifold/plugin-kit/server";
+import type { GuestCtx, GuestHookJobs } from "@manifold/plugin-kit/server";
 import { BABEL_PLUGIN_ID, OPERATIONS, type OperationName } from "../contract.ts";
 import type { Policy } from "../store/coordinator.ts";
 import type {
@@ -10,10 +10,13 @@ import type {
   JobRunState,
   JobsSlice,
   MachineReadiness,
+  MachinesSlice,
   OutputRef,
   Recipe,
+  RepositoryOutcome,
   RunPlan,
   ScheduleRow,
+  ScheduleTiming,
 } from "./conductor.ts";
 
 /*
@@ -175,29 +178,6 @@ export function runPlan(request: PlanRequest): RunPlan {
 // ---------------------------------------------------------------------------- the jobs slice
 
 /**
- * WHAT A HARDENED CONTEXT CANNOT DO, stated once.
- *
- * The loop's slice has eight verbs; `ctx.jobs` across the isolate boundary serves five of them
- * and the three schedule verbs do not exist there at all. `ISOLATE_CTX_METHODS`
- * (packages/protocol/src/isolate.ts) lists `jobs.describe`, `execute`, `status`, `listRuns`,
- * `input`, `cancel`, `output`, `outputs`, `journal`, `follow`, `ack` and `unfollow` — and no
- * `jobs.schedule`, `jobs.schedules` or `jobs.disableSchedule` — while `GuestJobs`
- * (packages/plugin-kit/src/server.ts) declares members for exactly that list. In-realm
- * `PluginJobContext` has all three (packages/plugin/src/runtime.ts) and `docs/PLUGINS.md`
- * calls the hardened handles "their asynchronous bridge counterparts", so the absence is a
- * hole in the bridge rather than a decision about plugins.
- *
- * So a hardened half registers no schedule, and this says so rather than pretending:
- * `schedules()` answers the truth — this plugin has no schedule the host will admit to — and
- * `schedule`/`disableSchedule` refuse by name. The loop records that refusal as a note and
- * carries on ingesting and drawing, because a beat it cannot register is one wake it does not
- * get, not a reason to stop doing the work a dispatch woke it for.
- */
-export const SCHEDULE_UNAVAILABLE =
-  "jobs.schedule does not cross the isolate boundary: ISOLATE_CTX_METHODS serves no schedule verb, " +
-  "so a hardened server half cannot register its beat";
-
-/**
  * The loop's eight verbs and the one only the operator's own stop needs. `cancel` is not the
  * loop's business — a cycle never stops a job it started — so it is here rather than in
  * `JobsSlice`, and a fake that drives the loop does not have to implement it.
@@ -207,25 +187,41 @@ export interface BabelJobs extends JobsSlice {
 }
 
 /**
- * `ctx.jobs`, narrowed to the verbs this plugin uses. Everything the boundary serves is passed
- * straight through — the protocol's own shapes already satisfy the loop's, which is why this is
- * a narrowing and not a translation.
+ * The host's request owns its arrays; the loop's are readonly. One copy per job keeps both
+ * honest rather than casting the promise away, and both verbs that send a request want it.
  */
-export function jobsSlice(jobs: GuestSettledJobs): BabelJobs {
+function owned(outputs: JobLaunch["outputs"]): {
+  name: string;
+  locationId: string;
+  components: string[];
+}[] {
+  return outputs.map((output) => ({
+    name: output.name,
+    locationId: output.locationId,
+    components: [...output.components],
+  }));
+}
+
+/**
+ * `ctx.jobs`, narrowed to the verbs this plugin uses.
+ *
+ * ALL EIGHT CROSS THE BOUNDARY (#534). `ISOLATE_CTX_METHODS` serves `jobs.schedule`,
+ * `jobs.schedules` and `jobs.disableSchedule` alongside the five a dispatch always had, and
+ * `GuestHookJobs` — every job verb but the live subscription — declares them, so a hardened
+ * server half registers its OWN beat instead of recording that it cannot. The hole this file
+ * used to state is closed, and with it the sentence the loop carried a refusal in.
+ *
+ * Everything is passed straight through: the protocol's own shapes already satisfy the loop's,
+ * which is why this is a narrowing and not a translation. `schedules()` answers
+ * `PublicJobSchedule` rows, which are `ScheduleRow`s carrying the plugin id and the pinned
+ * artifact as well — more than the loop reads, never less.
+ */
+export function jobsSlice(jobs: GuestHookJobs): BabelJobs {
   return {
     describe: async (args): Promise<MachineReadiness> =>
       await jobs.describe({ machineId: args.machineId, pluginId: args.pluginId }),
-    // The host's request type owns its arrays; the loop's is readonly. One copy per job keeps
-    // both honest rather than casting the promise away.
     execute: async (args: JobLaunch): Promise<JobRunState> =>
-      await jobs.execute({
-        ...args,
-        outputs: args.outputs.map((output) => ({
-          name: output.name,
-          locationId: output.locationId,
-          components: [...output.components],
-        })),
-      }),
+      await jobs.execute({ ...args, outputs: owned(args.outputs) }),
     status: async (node: JobRef): Promise<JobRunState> => await jobs.status(node),
     listRuns: async (args) => await jobs.listRuns(args),
     output: async (args: { node: OutputRef; offset: number; maxBytes: number }) =>
@@ -233,30 +229,28 @@ export function jobsSlice(jobs: GuestSettledJobs): BabelJobs {
     cancel: async (node: JobRef): Promise<void> => {
       await jobs.cancel(node);
     },
-    schedules: (): readonly ScheduleRow[] => [],
-    schedule: () => {
-      throw new Error(SCHEDULE_UNAVAILABLE);
-    },
-    disableSchedule: () => {
-      throw new Error(SCHEDULE_UNAVAILABLE);
-    },
+    schedule: async (args: JobLaunch & ScheduleTiming): Promise<unknown> =>
+      await jobs.schedule({ ...args, outputs: owned(args.outputs) }),
+    schedules: async (): Promise<readonly ScheduleRow[]> => await jobs.schedules(),
+    disableSchedule: async (args: { scheduleId: string; revision: string }): Promise<unknown> =>
+      await jobs.disableSchedule(args),
   };
 }
 
 /**
- * WHAT AN ENABLE HOOK HAS INSTEAD OF JOBS.
+ * WHAT A HOOK WHOSE INSTALLER IS GONE HAS INSTEAD OF JOBS.
  *
- * `GuestLifecycleCtx` carries a plugin's storage, its tables and `emit`, and no job slice at
- * all — in-realm `LifecycleCtx` carries none either, and `onJobSettled` is the only hook whose
- * context is widened with one (`JobSettledCtx`). So the cycle an enable runs has no machine it
- * may reach, and this is what it reaches through: every verb refuses with the same sentence,
- * which the loop records as a note and works around. It does the store's half — reconciling
- * what the policy says, and reporting the machines it cannot ask — and asks nothing of a host
- * that has not offered.
+ * `GuestLifecycleCtx.jobs` is present exactly when the `hook` frame said the host serves it —
+ * the installer's credential restored (#514, #534) — so an enable that owns a cadence registers
+ * it there, and one whose installer has been revoked sees `undefined` rather than a handle
+ * whose every call refuses. This is what the cycle reaches through in that second case: every
+ * verb refuses with the same sentence, which the loop records as a note and works around. It
+ * does the store's half — reconciling what the policy says, and reporting the machines it
+ * cannot ask — and asks nothing of a host that has not offered.
  */
 export const ENABLE_WITHOUT_JOBS =
-  "the enable hook is served no job slice: GuestLifecycleCtx carries storage and the database, " +
-  "and only onJobSettled is widened with jobs";
+  "this hook is served no job slice: GuestLifecycleCtx carries jobs only while the installer's " +
+  "credential can be restored, and this one's could not";
 
 export function unauthorized(reason: string): BabelJobs {
   const refuse = (): never => {
@@ -273,4 +267,67 @@ export function unauthorized(reason: string): BabelJobs {
     schedule: refuse,
     disableSchedule: refuse,
   };
+}
+
+// ---------------------------------------------------------------------------- the machines slice
+
+/**
+ * What the in-realm host hands a bundle it imported: the machine gateway's own admission, whose
+ * verb takes the machine and the path as two arguments (`MachineAdmission` in
+ * `server/src/plugin-host.ts`).
+ */
+interface PositionalMachines {
+  repository(machineId: string, path: string): Awaitable<RepositoryOutcome>;
+}
+
+/**
+ * `ctx.machines`, narrowed to the one verb this plugin asks: what one folder on one enrolled
+ * machine IS (#535). The answer is the host's own — an `ok: false` is the hub saying nobody
+ * could be asked, never a fact about a disk — so this is a narrowing and not a translation.
+ *
+ * TWO HOSTS SERVE THAT VERB WITH TWO SIGNATURES, and a half that runs under both has to bridge
+ * them. A HARDENED half is served the kit's handle, which takes the query as ONE OBJECT because
+ * that is what crosses the ipc frame (`GuestCtx.machines.repository(query)`). A bundle the host
+ * imported into its own realm — the DEFAULT for an installed server half (`plugin-host.ts`
+ * `loadBundle`: a plain module import, and only the installer's consent selects a child) — is
+ * handed the machine gateway's admission straight, and its verb is `(machineId, path)`.
+ *
+ * The declared arity is the difference and is what selects here, because the alternative is
+ * silent: calling the gateway with a query object hands it an object where a machine id goes,
+ * and every folder on every machine answers "not connected" for ever. A wrong answer nobody can
+ * see is worse than either signature.
+ */
+export function machinesSlice(machines: GuestCtx["machines"]): MachinesSlice {
+  if (machines.repository.length >= 2) {
+    // The in-realm admission, which this module cannot name in its types: the kit types
+    // `ctx.machines` as the hardened handle, and the host serves its own class to an import.
+    const positional = machines as unknown as PositionalMachines;
+    return {
+      repository: async (machineId: string, path: string): Promise<RepositoryOutcome> =>
+        await positional.repository(machineId, path),
+    };
+  }
+  return {
+    repository: async (machineId: string, path: string): Promise<RepositoryOutcome> =>
+      await machines.repository({ machineId, path }),
+  };
+}
+
+/**
+ * WHAT A HOOK HAS INSTEAD OF MACHINES.
+ *
+ * A hook's context is not a dispatch's: `GuestLifecycleCtx` carries storage, the database, the
+ * job slice its installer's credential restored — and no machines member at all. The isolate
+ * proxy says the same thing from the other side (`serveCtxCall`: a `hook` or `settled` frame
+ * serves `jobs.*` and answers `slice_unavailable` to everything else), so a cycle a settlement
+ * woke cannot ask what a folder is. It reaches through this instead, which answers the one
+ * refusal the outcome type already has a place for — the loop notes it once per machine and
+ * asks again on the next cycle a dispatch wakes.
+ */
+export const HOOK_WITHOUT_MACHINES =
+  "a lifecycle hook is served no machines slice: GuestLifecycleCtx carries storage, the " +
+  "database and the installer's jobs, and machines.repository is a dispatch's to ask";
+
+export function unaskable(reason: string): MachinesSlice {
+  return { repository: (): RepositoryOutcome => ({ ok: false, reason }) };
 }
