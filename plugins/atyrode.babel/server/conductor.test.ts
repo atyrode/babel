@@ -555,7 +555,10 @@ function outputs(runId: string): Record<string, unknown> {
         vote: "support",
         lane: "coverage",
         claim_id: "clm_asg_a1b2",
-        payload: JSON.stringify({ because: "…" }),
+        // A real submission, because the store now accepts an assessment's payload under the
+        // same contract the engine was prompted with: a row whose column said `support` while
+        // its payload stated no vote at all is the producer/store drift #263 closes.
+        payload: JSON.stringify({ vote: "support", uncertainty: "the second criterion is untested" }),
         recorded_at: at,
       },
     ],
@@ -914,6 +917,45 @@ test("ingesting the same outputs twice changes nothing", async () => {
   expect(await snapshot(db)).toBe(after);
   // Rows arrived, so the feed index is told each time: the store rebuilds it, not the loop.
   expect(store.touched).toBe(2);
+});
+
+test("an assessment the review contract refuses is not written, and the run still settles with its cost", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  // A machine half that drifted from the contract: an environment scoping nothing, which is the
+  // rule the Go store and the Go review contract disagreed about (#263, post-mortem F8).
+  const files = outputs("run_drift");
+  const drifted = (files[JOB_OUTPUT_FILES.assessments] as Record<string, unknown>[])[0] ?? {};
+  files[JOB_OUTPUT_FILES.assessments] = [{ ...drifted, payload: JSON.stringify({ environment: "dev-01" }) }];
+  fleet.execute({
+    jobId: "job_drift",
+    machineId: "dev-01",
+    operationId: OPERATIONS.evaluate,
+    input: {},
+    outputs: [],
+  });
+  fleet.finish("job_drift", 0, files);
+
+  const result = await ingestOutputs(store, fleet, {
+    runId: "run_drift",
+    jobId: "job_drift",
+    machineId: "dev-01",
+    operationId: OPERATIONS.evaluate,
+    outputs: fleet.status({ jobId: "job_drift" }).result?.outputs ?? [],
+    closure: "completed",
+  });
+
+  expect(result.rows[JOB_OUTPUT_FILES.assessments]).toBe(0);
+  expect(result.skipped).toBe(1);
+  expect(result.notes.join(" | ")).toContain("schema:");
+  expect(await db.query(`SELECT id FROM assessments`, [])).toEqual([]);
+  // The row was refused; the RUN was not. Its receipt is what settles the claim, with the cost.
+  expect(result.receipt?.costUsd).toBe(0.42);
+  expect(await db.query(`SELECT cost_usd FROM runs WHERE id = 'run_drift'`, [])).toEqual([{ cost_usd: 0.42 }]);
+  // Everything else the job wrote still landed: one refused row is not a refused output.
+  expect(result.rows[JOB_OUTPUT_FILES.records]).toBe(1);
 });
 
 test("the beat's own job is ingested although the hub never requested it", async () => {

@@ -11,6 +11,7 @@ import {
   type Receipt,
 } from "../contract.ts";
 import type { Assignment, Coordinator, Gap, Policy, Stop } from "../store/coordinator.ts";
+import { refuseRow } from "../store/acts.ts";
 import type { BabelStore } from "../store/store.ts";
 
 /*
@@ -789,10 +790,14 @@ export async function ingestOutputs(
     }
     let written = 0;
     for (const row of document) {
-      const statement =
-        typeof row === "object" && row !== null && !Array.isArray(row)
-          ? rowStatement(ingest, row as Record<string, unknown>)
-          : null;
+      const shaped = typeof row === "object" && row !== null && !Array.isArray(row) ? (row as Record<string, unknown>) : null;
+      // What a machine half wrote is accepted under the contract it was prompted with: the
+      // submission validator the engine's schema is generated from is the one that runs here, so
+      // a producer and a store cannot disagree about one payload (#263, post-mortem F8). The
+      // run's own closure and cost are the receipt's and settle the claim either way.
+      const refused = shaped === null ? null : refuseRow(ingest.table, shaped);
+      if (refused !== null) notes.push(`${file}: ${refused.code}: ${refused.message}`);
+      const statement = shaped === null || refused !== null ? null : rowStatement(ingest, shaped);
       if (statement === null) {
         skipped += 1;
         continue;

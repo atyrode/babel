@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Receipt } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
+import { refuseRow } from "../store/acts.ts";
 import { evaluate, EvaluateInputSchema } from "./evaluate.ts";
 import type { Row } from "./engine/rows.ts";
 import type { OperationDeps } from "./explore.ts";
@@ -246,6 +247,62 @@ test("a submission outside the role's authority is a failed closure with the rea
 
   expect(receipt.closure).toBe("failed");
   expect(receipt.reason).toContain("does not match its schema");
+  expect(sink.rows("assessments")).toEqual([]);
+});
+
+/*
+  F8 end to end (#263, docs/postmortem-2026-09-13-drain.md): an evidence check reports criterion
+  results with the setting it observed and no outcome, the store accepts the row it wrote under
+  the same validator, and a refused submission is SPEND — a receipt with the refusal's own code
+  and what the run cost, which is what `settle()` finishes the claim with.
+*/
+
+const EVIDENCE_ASSIGNMENT = { role: "evidence", recordId: "hyp_0123456789abcdef", revisionId: "hyp_0123456789abcdef", kind: "hypothesis" };
+const CITED = {
+  locator: { path: "omp/session-1.jsonl", line: 12, byte_offset: 480, digest: "sha256:capture" },
+  note: "the log shows the retry landing",
+};
+
+test("an evidence check's criterion results reach the store with no outcome behind them", async () => {
+  const { sink, receipt } = await launch({
+    assignment: EVIDENCE_ASSIGNMENT,
+    result: {
+      results: [{ criterion_id: "crit_1", satisfied: true, evidence: [CITED] }],
+      environment: "dev-01",
+      as_of: "2026-09-12T10:00:00Z",
+    },
+  });
+
+  expect(receipt.closure).toBe("completed");
+  const assessment = sink.rows("assessments")[0];
+  expect(assessment?.role).toBe("evidence");
+  // No vote and no outcome, and still an assessment: this is the review the Go store called empty.
+  expect(assessment?.vote).toBeNull();
+  const payload = JSON.parse(String(assessment?.payload));
+  expect(payload.outcome).toBe("");
+  expect(payload.environment).toBe("dev-01");
+  expect(payload.results).toHaveLength(1);
+  // The row a real run wrote is a row the store accepts, because one validator rules on both.
+  expect(refuseRow("assessments", assessment as Record<string, unknown>)).toBeNull();
+});
+
+test("a refused submission is spend: the receipt carries the refusal's code and what it cost", async () => {
+  const { sink, receipt } = await launch({
+    assignment: EVIDENCE_ASSIGNMENT,
+    result: {
+      contributions: [{ kind: "comment", text: "the record states no criteria to check" }],
+      environment: "dev-01",
+      as_of: "2026-09-12T10:00:00Z",
+    },
+  });
+
+  expect(receipt.closure).toBe("failed");
+  // The code, not `result-schema`: `schema`, `support` and `empty` are acted on differently.
+  expect(receipt.reason?.startsWith("schema: ")).toBe(true);
+  expect(receipt.reason).toContain("neither an outcome nor a criterion result");
+  // What the refused review cost, from the engine's own accounting, is what settles the claim.
+  expect(receipt.costUsd).toBe(0.0123);
+  expect(receipt.tokens).toBe(1540);
   expect(sink.rows("assessments")).toEqual([]);
 });
 
