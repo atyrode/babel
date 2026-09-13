@@ -12,7 +12,7 @@
   environment value the test could have leaked into the child by accident.
 */
 
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, test as run_ } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,17 @@ import type { SessionRef } from "./adapters/index.ts";
 import type { OutputFile, OutputSink } from "./output.ts";
 import { ArchiveInputSchema, archive, type ArchiveDeps } from "./archive.ts";
 import { BABEL_TAG, RESTIC_ENV, openRepo, resticConfig } from "./restic.ts";
+
+/*
+  The suite drives a real restic against a temporary repository, so it needs the binary - and
+  the CI runner has none. Skipped, with the reason on every row, rather than failing: the Go
+  archive tests skip the same way (AGENTS.md: "Archive tests skip without restic"), and a
+  skipped row is reported as unverified, which is the truth of a machine without restic.
+*/
+const RESTIC_ON_PATH = Bun.which("restic") !== null;
+const test = RESTIC_ON_PATH ? run_ : run_.skip;
+/** The hooks run regardless of `test.skip`, so they are gated by the same fact. */
+const whenRestic = (body: () => Promise<void> | void) => (RESTIC_ON_PATH ? body : () => undefined);
 
 const MACHINE = "test-machine-01";
 const RESTIC_TIMEOUT = 120_000;
@@ -110,7 +121,7 @@ async function inspect() {
   return openRepo(await resticConfig({ credentialFile, env: process.env }));
 }
 
-beforeAll(async () => {
+beforeAll(whenRestic(async () => {
   home = mkdtempSync(join(tmpdir(), "babel-archive-"));
   repository = join(home, "repo");
   ompRoot = join(home, "roots", "omp");
@@ -150,7 +161,7 @@ beforeAll(async () => {
   // The repository is created by hand, once, for the deployment: the operation under test
   // never creates one, so the test plays the operator.
   expect(await (await inspect()).init()).toBe(true);
-}, RESTIC_TIMEOUT);
+}), RESTIC_TIMEOUT);
 
 afterAll(() => {
   service?.stop(true);
