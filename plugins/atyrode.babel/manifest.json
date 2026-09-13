@@ -56,24 +56,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "7f335f3f900f390911924ecaeb0601f5c9e6bb9af731c0c61a30beabe966934b",
+        "sha256": "c8d1cc8adcffb92abcbe87aacdb2d9ffd30c43554ed6c8a58bdc7c7987ca90d8",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "7f335f3f900f390911924ecaeb0601f5c9e6bb9af731c0c61a30beabe966934b",
+        "entrySha256": "c8d1cc8adcffb92abcbe87aacdb2d9ffd30c43554ed6c8a58bdc7c7987ca90d8",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "7f335f3f900f390911924ecaeb0601f5c9e6bb9af731c0c61a30beabe966934b",
+        "sha256": "c8d1cc8adcffb92abcbe87aacdb2d9ffd30c43554ed6c8a58bdc7c7987ca90d8",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "7f335f3f900f390911924ecaeb0601f5c9e6bb9af731c0c61a30beabe966934b",
+        "entrySha256": "c8d1cc8adcffb92abcbe87aacdb2d9ffd30c43554ed6c8a58bdc7c7987ca90d8",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -405,8 +405,38 @@
         "inputFiles": {
           "input": {
             "input": "input"
+          },
+          "inference": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              {
+                "path": [
+                  "url"
+                ],
+                "serviceId": "atyrode.babel.inference",
+                "value": "url"
+              },
+              {
+                "path": [
+                  "bearer"
+                ],
+                "serviceId": "atyrode.babel.inference",
+                "value": "bearer"
+              }
+            ]
           }
         },
+        "services": [
+          {
+            "serviceId": "atyrode.babel.inference",
+            "revision": "1",
+            "operationIds": [
+              "models",
+              "chat",
+              "responses"
+            ]
+          }
+        ],
         "runtimeTools": [
           "bun",
           "code"
@@ -479,8 +509,38 @@
         "inputFiles": {
           "input": {
             "input": "input"
+          },
+          "inference": {
+            "literal": "{\"url\":\"\",\"bearer\":\"\"}",
+            "jsonValues": [
+              {
+                "path": [
+                  "url"
+                ],
+                "serviceId": "atyrode.babel.inference",
+                "value": "url"
+              },
+              {
+                "path": [
+                  "bearer"
+                ],
+                "serviceId": "atyrode.babel.inference",
+                "value": "bearer"
+              }
+            ]
           }
         },
+        "services": [
+          {
+            "serviceId": "atyrode.babel.inference",
+            "revision": "1",
+            "operationIds": [
+              "models",
+              "chat",
+              "responses"
+            ]
+          }
+        ],
         "runtimeTools": [
           "bun",
           "code"

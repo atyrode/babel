@@ -1,9 +1,10 @@
 import type { MachineHalf, PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs } from "@manifold/plugin-kit/server";
-import { BABEL_PLUGIN_ID, OPERATIONS, type OperationName } from "../contract.ts";
+import { BABEL_PLUGIN_ID, OPERATIONS, type ModelPrice, type OperationName } from "../contract.ts";
 import type { Policy } from "../store/coordinator.ts";
 import type {
   Awaitable,
+  JobInferenceLimits,
   JobLaunch,
   JobLimits,
   JobRef,
@@ -147,6 +148,31 @@ export function perRunUsd(policy: Policy): number {
   return policy.batchSize <= 0 ? policy.perCycleCost : policy.perCycleCost / policy.batchSize;
 }
 
+/**
+ * THE OPERATOR'S CEILING, IN THE UNITS THE OWNER ENFORCES IT IN (ADR 0038).
+ *
+ * The policy states an allowance in dollars; `limits.inference.costMicros` is integer
+ * micro-dollars, and the machine owner refuses the call that would pass it. Rounding is up so a
+ * ceiling is never quietly tightened by a fraction of a micro-dollar, and a non-positive
+ * allowance yields NO ceiling rather than a zero one — a zero would refuse the first call, and
+ * "the operator set no ceiling" is a different statement from "the operator allowed nothing".
+ */
+export function inferenceCeiling(policy: Policy): JobInferenceLimits | null {
+  const allowance = perRunUsd(policy);
+  if (!Number.isFinite(allowance) || allowance <= 0) return null;
+  return { costMicros: Math.ceil(allowance * 1_000_000) };
+}
+
+/**
+ * WHICH OPERATIONS CARRY AN INFERENCE CEILING: the two that bind the inference service and
+ * drive a model. A ceiling on `scan` would be a bound on calls it cannot make, and the honest
+ * shape of that is no ceiling at all.
+ */
+const METERED_OPERATIONS: Record<string, true> = {
+  [OPERATIONS.explore]: true,
+  [OPERATIONS.evaluate]: true,
+};
+
 export function runPlan(request: PlanRequest): RunPlan {
   const machine = request.manifest.machine ?? null;
   const cookbook = request.cookbook ?? {};
@@ -158,6 +184,8 @@ export function runPlan(request: PlanRequest): RunPlan {
     // asking a model to perform a method that says nothing.
     if (recipe !== undefined) recipes[role] = recipe;
   }
+  const operationId = request.operationId ?? OPERATIONS.evaluate;
+  const ceiling = METERED_OPERATIONS[operationId] === true ? inferenceCeiling(request.policy) : null;
   return {
     engine: { binary: engineBinary(machine), args: [] },
     profile: { id: PROFILE.id, revision: PROFILE.revision },
@@ -171,7 +199,10 @@ export function runPlan(request: PlanRequest): RunPlan {
     // Every Babel run is contained. The operator relaxes it per run and never by default: an
     // engine that reports no sandbox is refused by the machine half, which is the check.
     requireContainment: true,
-    limits: operationLimits(machine, request.operationId ?? OPERATIONS.evaluate),
+    limits: {
+      ...operationLimits(machine, operationId),
+      ...(ceiling === null ? {} : { inference: ceiling }),
+    },
   };
 }
 
@@ -330,4 +361,59 @@ export const HOOK_WITHOUT_MACHINES =
 
 export function unaskable(reason: string): MachinesSlice {
   return { repository: (): RepositoryOutcome => ({ ok: false, reason }) };
+}
+
+// ---------------------------------------------------------------------------- the services slice
+
+/**
+ * ONE OWNER-INSTALLED SERVICE POLICY, narrowed to what a preview reads (ADR 0038): the prices
+ * the owner will meter a model call at. Everything else in a policy — the origin, the
+ * credential reference, the routes — is the owner's business and none of Babel's.
+ */
+export interface ServicePrices {
+  readonly default?: ModelPrice | undefined;
+  readonly models: Readonly<Record<string, ModelPrice>>;
+}
+
+/**
+ * WHAT THE MACHINE'S SERVICE CONFIGURATION SAYS ABOUT ONE SERVICE. Three answers, because an
+ * operator acts differently on each: the policy is installed (`policy`), the configuration was
+ * readable and the policy is not in it (`policy: null`), or nobody could be asked (`ok: false`).
+ * The third is NOT the second — `services.readConfiguration` is admitted only to a root caller
+ * holding `services:configure` at the machine, so an ordinary dispatch is refused it — and a
+ * preview that reported "not installed" because it was not allowed to look would be telling the
+ * operator to install a policy that is already there.
+ */
+export type ServicePolicyOutcome =
+  | { readonly ok: true; readonly policy: { readonly prices?: ServicePrices | undefined } | null }
+  | { readonly ok: false; readonly reason: string };
+
+/** The one service question this plugin asks: what the owner installed under an id. */
+export interface ServicesSlice {
+  policy(machineId: string, serviceId: string): Awaitable<ServicePolicyOutcome>;
+}
+
+/**
+ * `ctx.services`, narrowed to that question. The refusal is kept rather than thrown because it
+ * is an ordinary answer here: a dispatch under the operator's own credential is not entitled to
+ * read a machine's service configuration, and the preview says what it could not see instead of
+ * failing the door the operator opened to look at something else.
+ */
+export function servicesSlice(services: GuestCtx["services"]): ServicesSlice {
+  return {
+    policy: async (machineId: string, serviceId: string): Promise<ServicePolicyOutcome> => {
+      try {
+        const read = await services.readConfiguration({ machineId });
+        const found = read.configuration.policies.find((entry) => entry.serviceId === serviceId);
+        return { ok: true, policy: found === undefined ? null : { prices: found.prices } };
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  };
+}
+
+/** What a caller that cannot ask has instead; the same shape, and a reason instead of a fact. */
+export function unreadable(reason: string): ServicesSlice {
+  return { policy: (): ServicePolicyOutcome => ({ ok: false, reason }) };
 }

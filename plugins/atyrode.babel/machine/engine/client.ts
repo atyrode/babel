@@ -31,6 +31,7 @@ import {
   ENGINE_FAILURES,
   EngineFailure,
   launchEngine,
+  laneShortfall,
   metadataShortfall,
   readRuntimeReport,
   SANDBOXED_RUN,
@@ -701,6 +702,8 @@ async function admit(run: Run): Promise<void> {
   }
   const shortfall = containmentShortfall(report.containment, run.job.requirement ?? SANDBOXED_RUN);
   if (shortfall !== "") throw new EngineFailure(ENGINE_FAILURES.containment, shortfall);
+  const lane = laneShortfall(report, run.deps.launch.brokered !== undefined);
+  if (lane !== "") throw new EngineFailure(ENGINE_FAILURES.lane, lane);
   run.record("launch", `admitted under ${report.containment?.backend ?? "no backend"}`);
 }
 

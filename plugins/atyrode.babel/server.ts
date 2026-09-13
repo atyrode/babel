@@ -23,6 +23,7 @@ import {
   jobsSlice,
   machinesSlice,
   runPlan,
+  servicesSlice,
   unaskable,
   unauthorized,
 } from "./server/plan.ts";
@@ -170,6 +171,7 @@ const doors = babelDoors(store, {
   cookbook: COOKBOOK,
   jobs: (ctx) => jobsSlice(ctx.jobs),
   machines: (ctx) => machinesSlice(ctx.machines),
+  services: (ctx) => servicesSlice(ctx.services),
   plan: planFor,
   cycle: loop,
   now: () => store.now(),

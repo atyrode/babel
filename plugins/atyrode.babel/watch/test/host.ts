@@ -165,6 +165,14 @@ export function launchAnswer(overrides: Partial<LaunchAnswer> = {}): LaunchAnswe
       costPer1k: { input: 0.015, output: 0.075 },
     },
     ceiling: { perRunUsd: 2, perDayUsd: 20 },
+    inference: {
+      serviceId: "atyrode.babel.inference",
+      model: "claude-opus-4",
+      price: { inputPerMillion: 15_000, outputPerMillion: 75_000 },
+      ceilings: { costMicros: 2_000_000 },
+      unreadable: "",
+      note: "claude-opus-4 is priced at $0.0150 per million input tokens and $0.0750 per million output",
+    },
     ...overrides,
   };
 }

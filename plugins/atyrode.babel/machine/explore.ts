@@ -66,6 +66,7 @@ import {
   type Authorship,
   type Row,
 } from "./engine/rows.ts";
+import { brokeredEndpoint, InferenceBindingError } from "./inference.ts";
 import type { OutputSink } from "./output.ts";
 
 // ---------------------------------------------------------------------------- the input
@@ -99,8 +100,6 @@ const CapsSchema = z.strictObject({
   toolCalls: z.number().int().min(0).default(0),
   /** How long the whole run may take. Zero is the engine's own idle bound and nothing more. */
   minutes: z.number().int().min(0).max(24 * 60).default(0),
-  /** The ceiling the operator set. It is recorded and compared; the engine reports cost at the end. */
-  perRunUsd: z.number().min(0).default(0),
   idleMs: z.number().int().min(0).default(0),
   handshakeMs: z.number().int().min(0).default(0),
 });
@@ -122,7 +121,7 @@ export const ExploreInputSchema = z.strictObject({
   recipes: z.array(RecipeSchema).min(1),
   /** The stages to run, in order. A stage no selected recipe declares is skipped and recorded. */
   stages: z.array(z.enum(STAGES)).min(1).default(["explore"]),
-  caps: CapsSchema.default({ toolCalls: 0, minutes: 0, perRunUsd: 0, idleMs: 0, handshakeMs: 0 }),
+  caps: CapsSchema.default({ toolCalls: 0, minutes: 0, idleMs: 0, handshakeMs: 0 }),
   /** The refine-first context: prior records this run may refine rather than duplicate (#87). */
   related: z
     .strictObject({
@@ -161,6 +160,13 @@ export interface OperationDeps {
   now?: () => Date;
   /** Where the per-launch runtime-info sidecar directory is made; the system temp dir by default. */
   workDir?: string;
+  /**
+   * WHERE THIS JOB'S INFERENCE BINDING IS, as the owner materialized it (ADR 0038). The default
+   * is the path the manifest declares; `main.ts` lets a hand-run name another. A run whose file
+   * is missing or malformed is refused before any prompt: there is no second lane to a model,
+   * and a run that quietly found one would be the thing this record exists to prevent.
+   */
+  inferenceFile?: string;
 }
 
 // ---------------------------------------------------------------------------- the operation
@@ -200,8 +206,18 @@ export async function explore(input: ExploreInput, out: OutputSink, deps: Operat
 
   let closure: Receipt["closure"] = "completed";
   let reason = "";
+  // The lane to a model is checked ONCE, before any stage, because it is the same file for
+  // every stage and its absence is not a stage failing — it is this run having nowhere to go.
+  // Nothing of the file travels past here: `brokered` is the path, and the bearer stays unread.
+  let brokered = "";
   try {
-    for (const stage of input.stages) {
+    brokered = await brokeredEndpoint(deps.inferenceFile);
+  } catch (error) {
+    closure = "failed";
+    reason = error instanceof InferenceBindingError ? error.message : String(error);
+  }
+  try {
+    for (const stage of closure === "failed" ? [] : input.stages) {
       const recipes = input.recipes.filter((recipe) => recipe.stages.includes(stage));
       if (recipes.length === 0) {
         // A stage no selected recipe declares is not a failure of the run: it is a stage the
@@ -209,7 +225,7 @@ export async function explore(input: ExploreInput, out: OutputSink, deps: Operat
         counts[`skipped.${stage}`] = 1;
         continue;
       }
-      const outcome = await runStage({ input, stage, recipes, sources, runId, limits, deps, brief, controller });
+      const outcome = await runStage({ input, stage, recipes, sources, runId, limits, deps, brief, controller, brokered });
       jobs.push(outcome.job);
       if (outcome.result === null) {
         closure = controller.signal.aborted ? "stopped" : "failed";
@@ -253,11 +269,10 @@ export async function explore(input: ExploreInput, out: OutputSink, deps: Operat
   await out.write("statusEvents", statuses);
   await out.write("questions", questions);
 
-  const spent = jobs.reduce((total, job) => total + (job.usage?.costUsd ?? 0), 0);
-  if (input.caps.perRunUsd > 0 && spent > input.caps.perRunUsd) {
-    counts.ceilingExceeded = 1;
-    if (reason === "") reason = `the run spent ${spent.toFixed(4)} against a ceiling of ${input.caps.perRunUsd}`;
-  }
+  // NOTHING HERE CHECKS WHAT THE RUN SPENT. Under ADR 0038 the machine owner meters every model
+  // call against the job's `limits.inference` and refuses at the ceiling, so a second ceiling
+  // here — compared against a number the engine reported about itself — would be the interface
+  // disagreeing with the authority that actually enforced it.
   const receipt = buildReceipt({
     runId,
     kind: "explore",
@@ -309,6 +324,8 @@ async function runStage(args: {
   deps: OperationDeps;
   brief: { hypotheses: string[]; observations: string[]; objections: string[] };
   controller: AbortController;
+  /** The path of this job's inference binding, as `code engine --brokered` takes it. */
+  brokered: string;
 }): Promise<StageRun> {
   const { input, stage, recipes, sources, runId, deps } = args;
   const params: Record<string, string> = {
@@ -364,6 +381,7 @@ async function runStage(args: {
           args: input.engine.args,
           profile: input.profile,
           runtimeInfoPath: join(directory, "runtime.json"),
+          brokered: args.brokered,
           ...(input.engine.cwd === "" ? {} : { cwd: input.engine.cwd }),
         },
         limits: args.limits,

@@ -1,4 +1,5 @@
 import {
+  INFERENCE_ENDPOINT_FILE,
   OPERATIONS,
   RESTIC_CREDENTIAL_FILE,
   type OperationWord,
@@ -69,11 +70,17 @@ const DISPATCH: Record<OperationWord, (raw: unknown, out: OutputSink) => Promise
   },
   explore: async (raw, out) => {
     const { ExploreInputSchema, explore } = await import("./explore.ts");
-    return explore(ExploreInputSchema.parse(raw), out);
+    return explore(ExploreInputSchema.parse(raw), out, {
+      // Where the owner put this job's inference binding, or where a hand-run says it is. A path
+      // is not a credential: the bearer is behind the file and never reaches argv or this env.
+      inferenceFile: process.env["BABEL_INFERENCE_BINDING"]?.trim() || INFERENCE_ENDPOINT_FILE,
+    });
   },
   evaluate: async (raw, out) => {
     const { EvaluateInputSchema, evaluate } = await import("./evaluate.ts");
-    return evaluate(EvaluateInputSchema.parse(raw), out);
+    return evaluate(EvaluateInputSchema.parse(raw), out, {
+      inferenceFile: process.env["BABEL_INFERENCE_BINDING"]?.trim() || INFERENCE_ENDPOINT_FILE,
+    });
   },
 };
 

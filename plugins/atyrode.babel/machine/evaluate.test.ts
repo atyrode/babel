@@ -100,10 +100,14 @@ function expectRowShape(rows: readonly Row[], table: string): void {
   for (const row of rows) expect(Object.keys(row).sort()).toEqual(columns);
 }
 
+/** The inference binding the owner materializes for a job: loopback and a per-job capability. */
+const BINDING = { url: "http://127.0.0.1:4711", bearer: "b".repeat(40) };
+
 interface Launched {
   sink: MemorySink;
   receipt: Receipt;
   promptPath: string;
+  inferenceFile: string;
 }
 
 /** One `evaluate` run against the fixture. */
@@ -122,6 +126,8 @@ async function launch(options: {
   const promptPath = join(directory, "prompt.txt");
   const payloadPath = join(directory, "submission.json");
   await Bun.write(payloadPath, JSON.stringify(options.result));
+  const inferenceFile = join(directory, "inference");
+  await Bun.write(inferenceFile, JSON.stringify(BINDING));
 
   const input = EvaluateInputSchema.parse({
     runId: "run_evaluate_test",
@@ -139,11 +145,11 @@ async function launch(options: {
     ...(options.authored === undefined ? {} : { authored: options.authored }),
     recipe: RECIPE,
     sources: [{ kind: "session", selector: "omp/session-1", digest: "sha256:capture" }],
-    caps: { toolCalls: 4, minutes: 0, perRunUsd: 0, idleMs: 15_000, handshakeMs: 15_000 },
+    caps: { toolCalls: 4, minutes: 0, idleMs: 15_000, handshakeMs: 15_000 },
   });
   const sink = new MemorySink();
-  const receipt = await evaluate(input, sink, { workDir: directory, ...options.deps });
-  return { sink, receipt, promptPath };
+  const receipt = await evaluate(input, sink, { workDir: directory, inferenceFile, ...options.deps });
+  return { sink, receipt, promptPath, inferenceFile };
 }
 
 test("a reception review writes the assessment row the coordinator reconciles from", async () => {

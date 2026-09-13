@@ -3,6 +3,7 @@ import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   BABEL_PLUGIN_ID,
+  INFERENCE_SERVICE,
   INPUT_FIELD,
   LaunchInputSchema,
   LaunchRequestSchema,
@@ -12,7 +13,9 @@ import {
   PRESET_OPERATIONS,
   StopInputSchema,
   StopResultSchema,
+  type InferencePreview,
   type LaunchInput,
+  type ModelPrice,
   type OperationName,
 } from "../contract.ts";
 import type { Coordinator, Policy } from "../store/coordinator.ts";
@@ -25,7 +28,7 @@ import type {
   Recipe,
   RunPlan,
 } from "../server/conductor.ts";
-import { perRunUsd, type BabelJobs } from "../server/plan.ts";
+import { perRunUsd, type BabelJobs, type ServicesSlice } from "../server/plan.ts";
 import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
 
@@ -153,6 +156,8 @@ export interface LaunchDeps {
   jobs(ctx: GuestCtx): BabelJobs;
   /** The one machine question a cycle asks outside a job: what a catalogued folder is (#535). */
   machines(ctx: GuestCtx): MachinesSlice;
+  /** What the machine's owner installed under a service id: the prices a preview states. */
+  services(ctx: GuestCtx): ServicesSlice;
   /** What a run of this operation runs under, given the policy in force. */
   plan(policy: Policy, operationId: OperationName): RunPlan;
   /** One cycle of the loop over this dispatch's slices: the same conductor the plugin wires. */
@@ -323,25 +328,109 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     return { input: { [INPUT_FIELD]: text } };
   }
 
+  /**
+   * WHAT THE OWNER WILL METER THIS RUN AT (ADR 0038), in the three states an operator acts
+   * differently on. A run reaches a model only through the machine owner's proxy, so the price
+   * and the ceiling shown before the button are the owner's own numbers.
+   *
+   * A MISSING POLICY REFUSES and an UNREADABLE CONFIGURATION DOES NOT, and the difference is the
+   * whole point of the slice's third answer: `services.readConfiguration` is admitted only to a
+   * root caller holding `services:configure` at the machine, so an ordinary operator's dispatch
+   * is refused it — and a preview that read that refusal as "no policy" would tell him to
+   * install something that is already installed, and disable the button over it.
+   */
+  async function metering(
+    services: ServicesSlice,
+    machineId: string,
+    model: string,
+    ceiling: number,
+  ): Promise<{ inference: InferencePreview } | { refused: string }> {
+    const found = await services.policy(machineId, INFERENCE_SERVICE.serviceId);
+    const base = {
+      serviceId: INFERENCE_SERVICE.serviceId,
+      model,
+      ceilings: { costMicros: ceiling },
+    };
+    if (!found.ok) {
+      return {
+        inference: {
+          ...base,
+          price: null,
+          unreadable: found.reason,
+          note:
+            `this hub cannot read ${machineId}'s service configuration, so the price of a call ` +
+            `is unknown here; the owner's ${INFERENCE_SERVICE.serviceId} policy is what will ` +
+            `meter the run (${found.reason})`,
+        },
+      };
+    }
+    if (found.policy === null) {
+      return {
+        refused:
+          `${machineId} has no ${INFERENCE_SERVICE.serviceId} service installed, so a run there ` +
+          `has no lane to a model: its owner installs the policy (plugins/README.md) before ` +
+          `anything can be started`,
+      };
+    }
+    const prices = found.policy.prices;
+    const price: ModelPrice | null =
+      model === "" ? null : (prices?.models[model] ?? prices?.default ?? null);
+    return {
+      inference: {
+        ...base,
+        price,
+        unreadable: "",
+        note:
+          price !== null
+            ? `${model} is priced at ${describeRate(price)}` +
+              (ceiling > 0 ? `, under a ceiling of ${dollars(ceiling)} for this run` : "")
+            : model === ""
+              ? `${machineId} has run nothing yet, so the model this run will name — and its ` +
+                `price — are not known here until it starts`
+              : ceiling > 0
+                ? `${INFERENCE_SERVICE.serviceId} prices no model called ${model}, and this run ` +
+                  `carries a cost ceiling: its first call will be refused service_price_unknown`
+                : `${INFERENCE_SERVICE.serviceId} prices no model called ${model}, so this run ` +
+                  `will be metered at zero and no cost ceiling can be enforced`,
+      },
+    };
+  }
+
   /** What a preset on a machine would be, before it is anything: the answer both doors share. */
-  async function prospect(input: LaunchInput): Promise<{
-    plan: RunPlan;
-    policy: Policy;
-    version: string;
-    answer: Omit<z.infer<typeof LaunchResultSchema>, "runId" | "jobId">;
-  }> {
+  async function prospect(
+    ctx: GuestCtx,
+    input: LaunchInput,
+  ): Promise<
+    | {
+        plan: RunPlan;
+        policy: Policy;
+        version: string;
+        answer: Omit<z.infer<typeof LaunchResultSchema>, "runId" | "jobId">;
+      }
+    | { refused: string }
+  > {
     const preset = PRESET_PLANS[input.preset];
     const inForce = await deps.coordinator.policy();
     const policy = inForce.policy;
+    const plan = deps.plan(policy, preset.operationId);
+    const profile = await lastProfile(input.machineId);
+    const metered = await metering(
+      deps.services(ctx),
+      input.machineId,
+      profile?.model ?? "",
+      plan.limits.inference?.costMicros ?? 0,
+    );
+    if ("refused" in metered) return metered;
     return {
-      plan: deps.plan(policy, preset.operationId),
+      plan,
       policy,
       version: inForce.version,
       answer: {
         machineId: input.machineId,
         kind: preset.kind,
-        profile: await lastProfile(input.machineId),
+        profile,
         ceiling: { perRunUsd: perRunUsd(policy), perDayUsd: policy.dailyCost },
+        inference: metered.inference,
       },
     };
   }
@@ -354,9 +443,10 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       input: LaunchInputSchema,
       result: LaunchResultSchema,
     }),
-    async (_ctx, input) => {
-      const { answer } = await prospect(input);
-      return { runId: "", jobId: "", ...answer };
+    async (ctx, input) => {
+      const prospected = await prospect(ctx, input);
+      if ("refused" in prospected) return prospected;
+      return { runId: "", jobId: "", ...prospected.answer };
     },
   );
 
@@ -372,7 +462,9 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     }),
     async (ctx, input) => {
       const preset = PRESET_PLANS[input.preset];
-      const { plan, policy, version, answer } = await prospect(input);
+      const prospected = await prospect(ctx, input);
+      if ("refused" in prospected) return prospected;
+      const { plan, policy, version, answer } = prospected;
       // The host discharged `machines:run` at the node in the ARGUMENTS; this is the only place
       // that can say the node is the one this request is actually about. The engine re-checks
       // consent at the operation it is really asked to run, so a mismatch is never authority
@@ -517,10 +609,11 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         },
         recipes,
         stages: ["explore"],
+        // Transport and supervision bounds only: what the run may SPEND rides on the request as
+        // `limits.inference`, which the machine owner refuses at (ADR 0038).
         caps: {
           toolCalls: plan.caps.toolCalls,
           minutes: 0,
-          perRunUsd: plan.caps.perRunUsd,
           idleMs: plan.caps.idleMs,
           handshakeMs: plan.caps.handshakeMs,
         },
@@ -639,4 +732,25 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * A ceiling in micro-dollars, as an operator reads money. Four places because a run's whole
+ * allowance is often cents: "$0.25" is the number he set, "$0.2500" is the number the owner
+ * will compare against, and rounding the second to the first is how a ceiling silently moves.
+ */
+function dollars(micros: number): string {
+  return `$${(micros / 1_000_000).toFixed(4)}`;
+}
+
+/** One model's price as the policy states it: dollars per million tokens, in and out. */
+function describeRate(price: ModelPrice): string {
+  const cached =
+    price.cachedInputPerMillion === undefined
+      ? ""
+      : ` (${dollars(price.cachedInputPerMillion)} cached)`;
+  return (
+    `${dollars(price.inputPerMillion)} per million input tokens${cached} and ` +
+    `${dollars(price.outputPerMillion)} per million output`
+  );
 }

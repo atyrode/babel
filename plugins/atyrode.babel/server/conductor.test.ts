@@ -22,6 +22,7 @@ import {
   ingestOutputs,
   type JobLaunch,
   type JobOutput,
+  type InferenceUsage,
   type JobRunState,
   type JobsSlice,
   type JobState,
@@ -67,7 +68,7 @@ function openDatabase(): PluginDatabase {
       db.prepare(sql).all(...(bind(params) as never[])) as Row[],
     run: async (sql: string, params?: readonly SqlParam[]) => {
       const result = db.prepare(sql).run(...(bind(params) as never[]));
-      return { changes: result.changes, lastInsertRowid: Number(result.lastInsertRowid) };
+      return { changes: result.changes, lastInsertRowid: BigInt(result.lastInsertRowid) };
     },
     batch: async (statements: readonly SqlStatement[]) =>
       db.transaction(() =>
@@ -147,6 +148,8 @@ interface FakeJob {
   machineId: string;
   operationId: string;
   archive: Buffer | null;
+  /** What the machine owner metered for this job, as the hub settles it (ADR 0038). */
+  inference: InferenceUsage | null;
 }
 
 class Fleet implements JobsSlice {
@@ -184,6 +187,7 @@ class Fleet implements JobsSlice {
       machineId: args.machineId,
       operationId: args.operationId,
       archive: null,
+      inference: null,
     });
     return this.status({ jobId: args.jobId });
   }
@@ -210,7 +214,7 @@ class Fleet implements JobsSlice {
       result:
         job.state === "started" || job.state === "queued"
           ? null
-          : { state: job.state, exitCode: job.exitCode, reason: null, outputs },
+          : { state: job.state, exitCode: job.exitCode, reason: null, outputs, usage: { inference: job.inference ?? undefined } },
     };
   }
 
@@ -263,12 +267,18 @@ class Fleet implements JobsSlice {
   }
 
   /** A job the machine finished, with the files it sealed (none for a job that wrote nothing). */
-  finish(jobId: string, exitCode: number, files: Readonly<Record<string, unknown>> | null): void {
+  finish(
+    jobId: string,
+    exitCode: number,
+    files: Readonly<Record<string, unknown>> | null,
+    inference: InferenceUsage | null = null,
+  ): void {
     const job = this.jobs.get(jobId);
     if (job === undefined) throw new Error(`unknown job ${jobId}`);
     job.state = "exited";
     job.exitCode = exitCode;
     job.archive = files === null ? null : tar(files);
+    job.inference = inference;
   }
 
   /** A job that sealed something the hub cannot read as an archive. */
@@ -288,6 +298,7 @@ class Fleet implements JobsSlice {
       machineId,
       operationId: BEAT_OPERATION,
       archive: tar(files),
+      inference: null,
     });
     this.beats.add(jobId);
   }
@@ -628,8 +639,6 @@ function outputs(runId: string): Record<string, unknown> {
       startedAt: "2026-09-12T09:00:10Z",
       finishedAt: at,
       closure: "completed",
-      costUsd: 0.42,
-      tokens: 12345,
       counts: { records: 1, assessments: 1 },
     },
   };
@@ -701,8 +710,15 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
   const queued = await db.query(`SELECT closure, records FROM runs WHERE id = 'run_asg_a1b2'`);
   expect(queued[0]).toEqual({ closure: null, records: 0 });
 
-  // The machine finishes and seals its files; the next cycle ingests them.
-  fleet.finish("job_asg_a1b2", 0, outputs("run_asg_a1b2"));
+  // The machine finishes and seals its files; the owner reports what it metered, and the next
+  // cycle ingests both. $0.42 is the HUB's number: the receipt states no cost at all.
+  fleet.finish("job_asg_a1b2", 0, outputs("run_asg_a1b2"), {
+    calls: 3,
+    inputTokens: 10_000,
+    outputTokens: 2_345,
+    cachedInputTokens: 1_000,
+    costMicros: 420_000,
+  });
   const ingesting = await loop.tick();
   expect(ingesting.ingested).toEqual([
     {
@@ -753,13 +769,13 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
   expect(run[0]).toEqual({
     closure: "completed",
     cost_usd: 0.42,
-    tokens: 12345,
+    tokens: 12_345,
     records: 1,
     finished_at: "2026-09-12T09:05:00Z",
     job_id: "job_asg_a1b2",
   });
 
-  // The claim settles at what the receipt says the run cost, not at what the draw reserved.
+  // The claim settles at what the OWNER metered, not at what the draw reserved.
   expect(ingesting.settled).toEqual([
     { claimId: "clm_asg_a1b2", outcome: "completed", cost: 0.42, overrun: false, refused: null },
   ]);
@@ -902,6 +918,7 @@ test("ingesting the same outputs twice changes nothing", async () => {
     operationId: OPERATIONS.evaluate,
     outputs: fleet.status({ jobId: "job_twice" }).result?.outputs ?? [],
     closure: "completed",
+    inference: null,
   };
 
   const first = await ingestOutputs(store, fleet, target);
@@ -1076,6 +1093,7 @@ test("an output larger than one served chunk is read whole, and a row the table 
     operationId: OPERATIONS.explore,
     outputs: sealed,
     closure: "completed",
+    inference: null,
   });
   expect(result.rows[JOB_OUTPUT_FILES.records]).toBe(600);
   expect(result.rows[JOB_OUTPUT_FILES.edges]).toBe(0);

@@ -155,10 +155,17 @@ const RESULT = {
   ],
 };
 
+/**
+ * The inference binding the owner materializes for a job (ADR 0038). Loopback and a capability:
+ * the machine half checks its shape and hands `code engine` the PATH, never these values.
+ */
+const BINDING = { url: "http://127.0.0.1:4711", bearer: "b".repeat(40) };
+
 interface Launched {
   sink: MemorySink;
   receipt: Receipt;
   promptPath: string;
+  inferenceFile: string;
 }
 
 /** One `explore` run against the fixture. */
@@ -170,6 +177,8 @@ async function launch(
     stages?: ("explore" | "challenge" | "synthesize")[];
     recipes?: unknown[];
     deps?: OperationDeps;
+    /** What the owner materialized into the binding file; the real shape by default. */
+    binding?: unknown;
   } = {},
 ): Promise<Launched> {
   const directory = await mkdtemp(join(tmpdir(), "babel-explore-test-"));
@@ -177,6 +186,8 @@ async function launch(
   const promptPath = join(directory, "prompt.txt");
   const payloadPath = join(directory, "submission.json");
   await Bun.write(payloadPath, JSON.stringify(options.result ?? RESULT));
+  const inferenceFile = join(directory, "inference");
+  await Bun.write(inferenceFile, JSON.stringify(options.binding ?? BINDING));
 
   const input = ExploreInputSchema.parse({
     runId: options.runId ?? "run_explore_test",
@@ -189,11 +200,11 @@ async function launch(
     preparation: { id: "prep_0001", selection: [{ ...SESSION, digest: "sha256:capture" }] },
     recipes: options.recipes ?? [RECIPE],
     stages: options.stages ?? ["explore"],
-    caps: { toolCalls: 8, minutes: 0, perRunUsd: 0, idleMs: 15_000, handshakeMs: 15_000 },
+    caps: { toolCalls: 8, minutes: 0, idleMs: 15_000, handshakeMs: 15_000 },
   });
   const sink = new MemorySink();
-  const receipt = await explore(input, sink, { workDir: directory, ...options.deps });
-  return { sink, receipt, promptPath };
+  const receipt = await explore(input, sink, { workDir: directory, inferenceFile, ...options.deps });
+  return { sink, receipt, promptPath, inferenceFile };
 }
 
 test("a run writes every output file in the store's row shapes", async () => {
@@ -279,8 +290,41 @@ test("a run writes every output file in the store's row shapes", async () => {
   expect(receipt.counts["hypotheses"]).toBe(1);
   expect(receipt.counts["findings"]).toBe(1);
   expect(receipt.counts["questions"]).toBe(1);
-  expect(receipt.tokens).toBe(1540);
-  expect(receipt.costUsd).toBeCloseTo(0.0123, 6);
+  // The lane the run reached the model by is the receipt's, because only Code can say it; what
+  // the run SPENT is not here at all — that is the machine owner's meter, on the settled job.
+  expect(receipt.profile?.["lane"]).toBe("brokered");
+  expect(receipt).not.toHaveProperty("costUsd");
+  expect(receipt).not.toHaveProperty("tokens");
+});
+
+test("a run whose inference binding is missing is refused before any prompt", async () => {
+  // ADR 0038: the binding IS the lane to a model. A job launched without one has no other way
+  // to reach one and must not find one — so this fails with the binding named, rather than
+  // running on whatever credential happened to be lying around.
+  const { sink, receipt, promptPath } = await launch({
+    deps: { inferenceFile: "/nonexistent/inference" },
+  });
+
+  expect(receipt.closure).toBe("failed");
+  expect(receipt.reason).toContain("atyrode.babel.inference");
+  expect(await Bun.file(promptPath).exists()).toBe(false);
+  expect(sink.rows("records")).toEqual([]);
+});
+
+test("a binding that is not {url, bearer} is refused, and no value of it reaches a record", async () => {
+  // A document naming anything but the owner's loopback is refused rather than followed: the
+  // only writer of this file is the job runner, so anything else is a job that was tampered with.
+  const { sink, receipt, promptPath } = await launch({
+    binding: { url: "https://api.example.com", bearer: BINDING.bearer },
+  });
+
+  expect(receipt.closure).toBe("failed");
+  expect(receipt.reason).toContain("is not a atyrode.babel.inference binding");
+  // Nothing of a binding — good or bad — is ever quoted into a durable record.
+  expect(JSON.stringify(receipt)).not.toContain("bearer");
+  expect(JSON.stringify(receipt)).not.toContain(BINDING.bearer);
+  expect(await Bun.file(promptPath).exists()).toBe(false);
+  expect(sink.rows("records")).toEqual([]);
 });
 
 test("a refused containment stops before any prompt and the receipt carries the reason", async () => {

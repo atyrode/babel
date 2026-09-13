@@ -47,6 +47,10 @@ interface Flags {
   unknownFrame: boolean;
   extensionUI: boolean;
   noFinished: boolean;
+  /** The path `--brokered` named, or "" when Babel launched no brokered lane. */
+  brokered: string;
+  /** What the sidecar claims the lane was; empty means "derive it from --brokered". */
+  laneOverride: string;
   /** Stay alive after stdin closes, which is the one thing a supervised engine may not do. */
   ignoreEof: boolean;
 }
@@ -79,6 +83,8 @@ function parse(args: readonly string[]): Flags {
     unknownFrame: false,
     extensionUI: false,
     noFinished: false,
+    brokered: "",
+    laneOverride: "",
   };
   let index = 0;
   const value = (): string => {
@@ -162,6 +168,11 @@ function parse(args: readonly string[]): Flags {
       case "--fake-ignore-eof":
         flags.ignoreEof = true;
         break;
+      case "--fake-lane":
+        // Report a lane other than the one argv implies: a run that reached a model some way
+        // the job did not authorize, which admission refuses.
+        flags.laneOverride = value();
+        break;
       case "engine":
         break;
       case "--profile":
@@ -169,6 +180,9 @@ function parse(args: readonly string[]): Flags {
         break;
       case "--runtime-info":
         flags.runtimeInfo = value();
+        break;
+      case "--brokered":
+        flags.brokered = value();
         break;
       case "--describe":
         flags.describe = true;
@@ -217,6 +231,9 @@ function runtimeReport(finished: boolean): Record<string, unknown> {
     privacy: { disclosure: "local", redaction_required: false },
     cost: { currency: "USD", input_per_1k: 0.001, output_per_1k: 0.002, estimated_run: 0.05 },
     metadata,
+    // A real Code reports which lane resolved the model. `--brokered` is the job's own service
+    // binding; without it a hand-run of this fixture is a local endpoint.
+    lane: flags.laneOverride !== "" ? flags.laneOverride : flags.brokered !== "" ? "brokered" : "local",
     finished,
   };
   if (containment !== null) report["containment"] = containment;

@@ -1,14 +1,21 @@
 /*
-  THE RECEIPT: what a run was asked, what it read, what it produced and what it cost — the last
-  output file every operation writes (plan §4, SPEC.md §7). Ported from internal/explore/receipt.go
-  and internal/worker/receipt.go, reduced to `contract.ts`'s ReceiptSchema, which is the shape the
+  THE RECEIPT: what a run was asked, what it read and what it produced — the last output file
+  every operation writes (plan §4, SPEC.md §7). Ported from internal/explore/receipt.go and
+  internal/worker/receipt.go, reduced to `contract.ts`'s ReceiptSchema, which is the shape the
   hub ingests.
 
   The profile block is the point of it. Code's runtime report states the profile, the model, the
-  disclosure class and the cost per 1k BEFORE the first byte of the prompt is written, so the
-  receipt records what actually ran from the same source Watch states it from — not what a caller
-  asked for. A refused launch therefore still produces a receipt with a profile: the profile is
-  what a refused engine saw, and the reason it was refused is beside it.
+  disclosure class and the LANE it reached the model by BEFORE the first byte of the prompt is
+  written, so the receipt records what actually ran from the same source Watch states it from —
+  not what a caller asked for. A refused launch therefore still produces a receipt with a
+  profile: the profile is what a refused engine saw, and the reason it was refused is beside it.
+
+  WHAT A RECEIPT NO LONGER CARRIES IS MONEY. Under ADR 0038 a run reaches a model through the
+  machine owner's metered proxy, so what it spent is the owner's measurement of the provider's
+  own usage object and arrives on the settled job as `usage.inference`. A number the run
+  reported about itself would be a second answer to that question, and the wrong one to bill
+  against; the cost-per-1k the profile block carries stays, because it is a RATE the engine
+  resolved and not a claim about what was spent.
 
   What a receipt never carries is what a facility served. §9's asymmetry survives the rewrite for
   the reason it existed: the pipe carries content to the model because a model that cannot read a
@@ -46,16 +53,10 @@ export interface ReceiptInput {
  * the reason is still in hand.
  */
 export function buildReceipt(input: ReceiptInput): Receipt {
-  let costUsd: number | null = null;
-  let tokens: number | null = null;
   let submissions = 0;
   /** Per tool, how many calls were served and how many refused: the run's boundary, counted. */
   const tools: Record<string, number> = {};
   for (const job of input.jobs) {
-    if (job.usage !== null) {
-      costUsd = (costUsd ?? 0) + job.usage.costUsd;
-      tokens = (tokens ?? 0) + job.usage.totalTokens;
-    }
     for (const decision of job.tools) {
       const key = `${decision.tool}.${decision.allowed ? "served" : "refused"}`;
       tools[key] = (tools[key] ?? 0) + 1;
@@ -76,8 +77,6 @@ export function buildReceipt(input: ReceiptInput): Receipt {
     finishedAt: input.finishedAt.toISOString(),
     closure: input.closure,
     ...(reason === "" ? {} : { reason }),
-    ...(costUsd === null ? {} : { costUsd }),
-    ...(tokens === null ? {} : { tokens }),
     counts: { ...input.counts, ...tools, jobs: input.jobs.length, submissions },
   };
   return ReceiptSchema.parse(receipt);
@@ -113,6 +112,8 @@ function profileOf(jobs: readonly EngineOutcome[]): Record<string, unknown> | nu
     costPer1k: { input: report.cost?.input_per_1k ?? 0, output: report.cost?.output_per_1k ?? 0 },
     estimatedRun: report.cost?.estimated_run ?? 0,
     worker: `${report.worker.name}@${report.worker.version}`,
+    /** How Code reached the model. Empty from a build older than the brokered lane. */
+    lane: report.lane,
     containment: report.containment?.backend ?? "",
     escape: report.containment?.escape ?? "",
     ...(report.resources === null || report.resources === undefined ? {} : { resources: report.resources }),

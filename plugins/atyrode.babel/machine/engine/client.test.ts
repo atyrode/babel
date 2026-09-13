@@ -25,6 +25,7 @@ afterEach(async () => {
 async function run(
   fake: readonly string[],
   job: Partial<EngineJob> = {},
+  brokered?: string,
 ): Promise<{ outcome: EngineOutcome; promptPath: string }> {
   const directory = await mkdtemp(join(tmpdir(), "babel-client-test-"));
   directories.push(directory);
@@ -43,6 +44,7 @@ async function run(
         args: [FIXTURE, "--fake-prompt-out", promptPath, ...fake],
         profile: PROFILE,
         runtimeInfoPath: join(directory, "runtime.json"),
+        ...(brokered === undefined ? {} : { brokered }),
       },
       limits: { handshakeMs: 15_000, idleMs: 15_000, exitGraceMs: 5_000 },
     },
@@ -414,4 +416,53 @@ test("argv is the operator's arguments, then the subcommand, then Babel's flags"
     "--profile",
     "analysis@3",
   ]);
+});
+
+test("the brokered lane reaches argv as a path, and never as the bearer behind it", () => {
+  // ADR 0038: the job holds no model credential. What `code engine` is handed is the PATH of
+  // the file the machine owner materialized; the bearer inside it must never reach argv, which
+  // is world-readable on the machine and is exactly what this lane exists to keep clean.
+  const argv = engineArgv({
+    binary: "code",
+    profile: PROFILE,
+    runtimeInfoPath: "/tmp/runtime.json",
+    brokered: "/inputs/inference",
+  });
+  expect(argv).toEqual([
+    "engine",
+    "--profile",
+    "analysis@3",
+    "--runtime-info",
+    "/tmp/runtime.json",
+    "--brokered",
+    "/inputs/inference",
+  ]);
+
+  // A describe reaches no model, so it is given no lane to reach one by.
+  expect(
+    engineArgv(
+      { binary: "code", profile: PROFILE, runtimeInfoPath: "/tmp/r.json", brokered: "/inputs/inference" },
+      true,
+    ),
+  ).toEqual(["engine", "--describe", "--profile", "analysis@3"]);
+});
+
+test("a brokered launch that reports another lane is refused before any prompt", async () => {
+  // Babel passes `--brokered` exactly when the job holds the binding, so a Code that reports
+  // `local` resolved a credential of its own — a governed run holding something it must not.
+  const { outcome, promptPath } = await run(
+    ["--fake-lane", "local", "--fake-submit-json", "{}"],
+    {},
+    "/inputs/inference",
+  );
+
+  expect(outcome.closure).toBe("failed");
+  expect(outcome.failure?.code).toBe(ENGINE_FAILURES.lane);
+  expect(outcome.failure?.message).toContain("metered proxy");
+  expect(await Bun.file(promptPath).exists()).toBe(false);
+
+  // The same fixture on the lane it was launched with is admitted and prompted.
+  const admitted = await run(["--fake-submit-json", "{}"], {}, "/inputs/inference");
+  expect(admitted.outcome.closure).toBe("completed");
+  expect(admitted.outcome.runtime?.lane).toBe("brokered");
 });

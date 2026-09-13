@@ -21,6 +21,7 @@ import {
   ENABLE_WITHOUT_JOBS,
   ENGINE_BINARY,
   HOOK_WITHOUT_MACHINES,
+  inferenceCeiling,
   jobsSlice,
   machinesSlice,
   operationLimits,
@@ -116,6 +117,27 @@ test("one run may spend one claim's reservation, which is the policy's own arith
   expect(plan.caps.perRunUsd).toBe(0.0625);
   // A policy that batches one reserves the whole cycle for it.
   expect(perRunUsd(PolicySchema.parse({ perCycleCost: 0.25, batchSize: 1 }))).toBe(0.25);
+});
+
+test("the operator's dollar ceiling becomes the micro-dollars the machine owner enforces", () => {
+  // ADR 0038: a run reaches a model through the owner's metered proxy, which refuses the call
+  // that would pass `limits.inference.costMicros`. $0.0625 a run is 62,500 of them.
+  expect(inferenceCeiling(POLICY)).toEqual({ costMicros: 62_500 });
+  expect(runPlan({ manifest: MANIFEST, policy: POLICY, operationId: OPERATIONS.evaluate }).limits.inference).toEqual({
+    costMicros: 62_500,
+  });
+  // Rounding is UP: a ceiling quietly tightened by a fraction of a micro-dollar is a run that
+  // stops one call early and an operator who cannot see why.
+  expect(inferenceCeiling(PolicySchema.parse({ perCycleCost: 1, batchSize: 3 }))).toEqual({
+    costMicros: 333_334,
+  });
+  // No allowance is no ceiling, which is a different statement from a ceiling of nothing: a
+  // zero would refuse the first call of every run.
+  expect(inferenceCeiling(PolicySchema.parse({ perCycleCost: 0, batchSize: 1 }))).toBeNull();
+  // And an operation that binds no inference service carries no ceiling on calls it cannot make.
+  expect(
+    runPlan({ manifest: MANIFEST, policy: POLICY, operationId: OPERATIONS.scan }).limits.inference,
+  ).toBeUndefined();
 });
 
 test("a role whose recipe the cookbook does not hold is left with none, and is never dispatched", () => {

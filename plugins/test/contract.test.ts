@@ -4,6 +4,8 @@ import {
   BABEL_PLUGIN_ID,
   EVENTS,
   FEED_PLUGIN_ID,
+  INFERENCE_ENDPOINT_FILE,
+  INFERENCE_SERVICE,
   INPUT_FIELD,
   OPERATIONS,
   OUTPUT_BINDING,
@@ -231,11 +233,40 @@ describe("the machine half is declared as the machine half is built", () => {
       .filter((location) => location.access === "write")
       .map((location) => machine.locations[location.locationId]?.guestPath ?? "\0");
     expect(writable.some((guestPath) => cache.startsWith(`${guestPath}/`))).toBe(true);
-    // Archive is the only operation with either: nothing else reaches a service or carries a
-    // value the manifest fixed.
+    // Archive is the only operation carrying a value the manifest fixed, and the only one
+    // reaching a service that is not the inference lane below.
     for (const other of declared.filter((operation) => operation !== OPERATIONS.archive)) {
-      expect(machine.operations[other]!.services).toBeUndefined();
       expect(machine.operations[other]!.environment).toBeUndefined();
+    }
+    expect(machine.operations[OPERATIONS.scan]!.services).toBeUndefined();
+    expect(machine.operations[OPERATIONS.prepare]!.services).toBeUndefined();
+  });
+
+  test("the two operations that drive a model are bound to the inference service and nothing else", () => {
+    // ADR 0038: a job that drives a model never holds the model's credential. The binding is
+    // the whole lane — the owner materializes {url, bearer} of a loopback proxy it meters into
+    // one input file, and `code engine --brokered` reads that file. A `services` list that
+    // drifted from the machine half's `INFERENCE_SERVICE` is a job whose input file is never
+    // filled, so the run reaches a model by no lane at all.
+    for (const operationId of [OPERATIONS.explore, OPERATIONS.evaluate]) {
+      const op = machine.operations[operationId]!;
+      expect(op.services).toEqual([
+        {
+          serviceId: INFERENCE_SERVICE.serviceId,
+          revision: INFERENCE_SERVICE.revision,
+          operationIds: [...INFERENCE_SERVICE.operationIds],
+        },
+      ]);
+      const bound = op.inputFiles?.[INFERENCE_SERVICE.inputFile];
+      expect(bound?.literal).toBe('{"url":"","bearer":""}');
+      expect(bound?.jsonValues).toEqual([
+        { path: ["url"], serviceId: INFERENCE_SERVICE.serviceId, value: "url" },
+        { path: ["bearer"], serviceId: INFERENCE_SERVICE.serviceId, value: "bearer" },
+      ]);
+      // The materialized path the machine half opens is the one the manifest binds.
+      expect(INFERENCE_ENDPOINT_FILE).toBe(`/inputs/${INFERENCE_SERVICE.inputFile}`);
+      // The proxy is loopback HTTP, which the engine refuses to open without host network.
+      expect(op.network).toBe("host");
     }
   });
 

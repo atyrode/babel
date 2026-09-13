@@ -493,6 +493,38 @@ export type LaunchInput = z.infer<typeof LaunchInputSchema>;
  */
 export const LaunchRequestSchema = LaunchInputSchema.extend({ operation: OperationRefSchema });
 
+/**
+ * A model's price as the owner's policy states it: integer micro-dollars per million tokens.
+ * Restated here rather than imported because a machine half compiles without the hub's protocol
+ * package, and Watch reads this shape out of `launchPreview` rather than out of the policy.
+ */
+export const ModelPriceSchema = z.strictObject({
+  inputPerMillion: z.number().int().min(0),
+  outputPerMillion: z.number().int().min(0),
+  cachedInputPerMillion: z.number().int().min(0).optional(),
+});
+export type ModelPrice = z.infer<typeof ModelPriceSchema>;
+
+/**
+ * WHAT A RUN WILL BE METERED AT, as the preview states it before the button and the launch
+ * repeats after it. Three states an operator acts differently on, so each is its own field
+ * rather than one sentence: the policy is not readable from here (`unreadable`), the profile's
+ * model has no price (`price: null`), or it has one. `ceilings` is what the owner will enforce
+ * per call — the same numbers the job request carries as `limits.inference`.
+ */
+export const InferencePreviewSchema = z.strictObject({
+  serviceId: z.string(),
+  /** The model the machine's last completed run reported, or "" when it has run nothing. */
+  model: z.string(),
+  price: ModelPriceSchema.nullable(),
+  ceilings: z.strictObject({ costMicros: z.number().int().min(0) }),
+  /** Why the machine's service configuration could not be read, or "". Not an absent policy. */
+  unreadable: z.string(),
+  /** One sentence for the operator: what will be metered, and what will refuse the run. */
+  note: z.string(),
+});
+export type InferencePreview = z.infer<typeof InferencePreviewSchema>;
+
 export const LaunchResultSchema = z.strictObject({
   runId: z.string(),
   jobId: z.string(),
@@ -501,6 +533,12 @@ export const LaunchResultSchema = z.strictObject({
   /** What will run, from the machine's `code engine --describe`, before the first byte. */
   profile: z.strictObject({ id: z.string(), revision: z.number().int(), model: z.string(), disclosure: z.string(), costPer1k: z.strictObject({ input: z.number(), output: z.number() }) }).nullable(),
   ceiling: z.strictObject({ perRunUsd: z.number(), perDayUsd: z.number() }),
+  /**
+   * WHAT THE OWNER WILL METER AND ENFORCE. A run reaches a model through the machine owner's
+   * metered proxy (ADR 0038), so the price and the ceiling an operator is shown here are the
+   * owner's own numbers rather than the engine's estimate of itself.
+   */
+  inference: InferencePreviewSchema,
 });
 
 /**
@@ -622,7 +660,15 @@ export const JOB_OUTPUT_FILES = {
   receipt: "receipt.json",
 } as const;
 
-/** The receipt every run writes last (§7): what it was asked, read, produced and cost. */
+/**
+ * The receipt every run writes last (§7): what it was asked, what it read and what it produced.
+ *
+ * WHAT IT NO LONGER CARRIES IS MONEY. A run reaches a model through the machine owner's metered
+ * proxy (ADR 0038), so what it spent is the owner's measurement — `usage.inference` on the
+ * settled job, from the provider's own usage object — and never the engine's account of itself.
+ * The engine's report survives here as the `profile` block, which is the thing only it can say:
+ * which profile resolved, which model, which disclosure class, and which lane it ran on.
+ */
 export const ReceiptSchema = z.strictObject({
   runId: z.string(),
   kind: z.enum(["scan", "archive", "prepare", "explore", "evaluate"]),
@@ -635,8 +681,6 @@ export const ReceiptSchema = z.strictObject({
   finishedAt: z.string(),
   closure: z.enum(["completed", "failed", "stopped", "skipped"]),
   reason: z.string().optional(),
-  costUsd: z.number().optional(),
-  tokens: z.number().int().optional(),
   counts: z.record(z.string(), z.number().int()),
 });
 export type Receipt = z.infer<typeof ReceiptSchema>;
@@ -694,3 +738,29 @@ export const RESTIC_SERVICE = {
 } as const;
 /** Where the engine binds that file inside the sandbox: one job's own, read-only. */
 export const RESTIC_CREDENTIAL_FILE = `/inputs/${RESTIC_SERVICE.inputFile}`;
+
+/**
+ * THE INFERENCE SERVICE `explore` and `evaluate` are bound to (ADR 0038).
+ *
+ * A job that drives a model never holds the model's credential. The owner installs one
+ * `ServicePolicy` under this id whose origin is an OpenAI-compatible provider and whose
+ * credential is a reference only the owner resolves; the engine materializes the binding's
+ * loopback endpoint and a bearer minted for this job alone into `INFERENCE_ENDPOINT_FILE`, and
+ * `code engine --brokered` speaks to `${url}/v1` with that bearer. The provider credential is
+ * never in the job, so there is nothing in the sandbox to scrub, vend or leak.
+ *
+ * The three operations are the OpenAI-compatible surface the engine actually uses, and the two
+ * that cost money declare `meter: {kind:"openai-usage"}`, which is what turns a call into an
+ * `inference_call` journal event and a number in `usage.inference`. plugins/README.md carries
+ * the policy JSON the owner installs; nothing here installs it.
+ */
+export const INFERENCE_SERVICE = {
+  serviceId: `${BABEL_PLUGIN_ID}.inference`,
+  revision: "1",
+  /** Every operation the binding names, in the manifest's own order. */
+  operationIds: ["models", "chat", "responses"] as const,
+  /** The input file the binding is materialized into, as `{url, bearer}`. */
+  inputFile: "inference",
+} as const;
+/** Where the engine binds that file inside the sandbox: one job's own, read-only. */
+export const INFERENCE_ENDPOINT_FILE = `/inputs/${INFERENCE_SERVICE.inputFile}`;

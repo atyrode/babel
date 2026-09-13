@@ -85,6 +85,19 @@ export interface JobOutput {
   readonly files: number;
 }
 
+/**
+ * What the machine owner metered across one job's inference calls (ADR 0038): the provider's
+ * own usage object, summed, and the owner's price applied. It is the only account of what a run
+ * spent that Babel reads — the engine's own report is what resolved, never what was billed.
+ */
+export interface InferenceUsage {
+  readonly calls: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cachedInputTokens: number;
+  readonly costMicros: number;
+}
+
 export interface JobRunState {
   readonly jobId: string;
   readonly machineId: string;
@@ -95,6 +108,8 @@ export interface JobRunState {
     readonly exitCode: number | null;
     readonly reason: string | null;
     readonly outputs: readonly JobOutput[];
+    /** Present once the owner settled the job; `inference` only when it bound a metered service. */
+    readonly usage?: { readonly inference?: InferenceUsage | undefined } | null | undefined;
   } | null;
 }
 
@@ -112,11 +127,25 @@ export interface MachineReadiness {
   } | null;
 }
 
+/**
+ * What a job may spend through the metered service operations it bound, as the job request
+ * carries it and the machine owner enforces it per call. A request naming a cost ceiling whose
+ * model the owner's policy does not price is refused before the call (`service_price_unknown`),
+ * which is why the preview states the price beside the ceiling.
+ */
+export interface JobInferenceLimits {
+  readonly calls?: number | undefined;
+  readonly inputTokens?: number | undefined;
+  readonly outputTokens?: number | undefined;
+  readonly costMicros?: number | undefined;
+}
+
 export interface JobLimits {
   readonly timeoutMs: number;
   readonly memoryBytes: number;
   readonly processes: number;
   readonly outputBytes: number;
+  readonly inference?: JobInferenceLimits | undefined;
 }
 
 /** A job request as the loop makes one: the engine fills in authority, permit and digest. */
@@ -674,7 +703,14 @@ function rowStatement(ingest: TableIngest, row: Record<string, unknown>): SqlSta
   };
 }
 
-/** The run row a finished job leaves behind: the receipt as the machine wrote it, or its absence. */
+/**
+ * The run row a finished job leaves behind: the receipt as the machine wrote it, or its absence,
+ * and the MONEY FROM THE HUB rather than from the run. What a run spent is the owner's
+ * measurement of the provider's usage object (`usage.inference` on the settled job, ADR 0038);
+ * the receipt no longer states a cost at all, so there is one number and one authority for it.
+ * A job that bound no metered operation leaves both columns null, which is the honest shape of
+ * "nobody here priced this" rather than a free run.
+ */
 function runStatement(
   runId: string,
   target: IngestTarget,
@@ -701,8 +737,11 @@ function runStatement(
     started_at: receipt?.startedAt ?? "",
     finished_at: receipt?.finishedAt ?? "",
     closure,
-    cost_usd: receipt?.costUsd ?? null,
-    tokens: receipt?.tokens ?? null,
+    cost_usd: target.inference === null ? null : target.inference.costMicros / 1_000_000,
+    tokens:
+      target.inference === null
+        ? null
+        : target.inference.inputTokens + target.inference.outputTokens,
     records: produced,
     payload: JSON.stringify(receipt ?? { closure, reason: target.closure }),
   };
@@ -739,6 +778,11 @@ export interface IngestTarget {
   readonly outputs: readonly JobOutput[];
   /** What the engine says became of the job, for a run whose receipt never arrived. */
   readonly closure: string;
+  /**
+   * What the owner metered for this job, or null when it bound no metered service (and so
+   * spent nothing that anyone here can price). It is the hub's number, never the run's.
+   */
+  readonly inference: InferenceUsage | null;
 }
 
 /**
@@ -1097,17 +1141,22 @@ export function conductor(deps: ConductorDeps): Conductor {
     }
     for (const note of result?.notes ?? []) notes.push(`${target.jobId}: ${note}`);
     const receipt = result?.receipt ?? null;
+    // WHAT A RUN SPENT IS THE OWNER'S NUMBER. Under ADR 0038 the job never held a model
+    // credential: every call went through the machine owner's metered proxy, which read the
+    // provider's own usage object and priced it from the policy. A job that bound no metered
+    // operation has none, and spent nothing anyone here can price.
+    const cost = target.inference === null ? 0 : target.inference.costMicros / 1_000_000;
     ingested.push({
       runId: result?.runId ?? target.runId ?? `run_${target.jobId}`,
       jobId: target.jobId,
       closure: receipt?.closure ?? target.closure,
-      costUsd: receipt?.costUsd ?? 0,
+      costUsd: cost,
       rows: result?.rows ?? {},
       skipped: result?.skipped ?? 0,
     });
 
-    // What a review cost is what the run recorded; a job that wrote no receipt spent nothing,
-    // and its claim is released rather than held by a worker that is not coming back.
+    // The claim is released whatever happened: a job that wrote no receipt is not a worker that
+    // is coming back, and holding its reservation would spend the cycle's allowance on nothing.
     const open = await store.db.query<OpenClaim>(
       `SELECT id, run_id, fence, reserved_cost FROM claims WHERE job_id = ? AND finished_at IS NULL`,
       [target.jobId],
@@ -1118,7 +1167,6 @@ export function conductor(deps: ConductorDeps): Conductor {
         : receipt?.closure === "skipped"
           ? "skipped"
           : "failed";
-    const cost = receipt?.costUsd ?? 0;
     for (const claim of open) {
       const finished = await coordinator.finish({
         id: claim.id,
@@ -1179,6 +1227,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           operationId: run.kind,
           outputs: state.result?.outputs ?? [],
           closure: closureOf(state),
+          inference: state.result?.usage?.inference ?? null,
         },
         ingested,
         settled,
@@ -1220,6 +1269,7 @@ export function conductor(deps: ConductorDeps): Conductor {
             operationId: BEAT_OPERATION,
             outputs: job.result?.outputs ?? [],
             closure: closureOf(job),
+            inference: job.result?.usage?.inference ?? null,
           },
           ingested,
           settled,
@@ -1375,9 +1425,13 @@ export function conductor(deps: ConductorDeps): Conductor {
       target: projection.target,
       sources: projection.sources,
       recipe,
+      // The caps the machine half still enforces are transport and supervision bounds. What a
+      // review may SPEND is `limits.inference` on the request, which the machine owner refuses
+      // at — never a number the run compares against its own report (ADR 0038).
       caps: {
-        ...plan.caps,
-        perRunUsd: claim.reservedCost > 0 ? claim.reservedCost : plan.caps.perRunUsd,
+        toolCalls: plan.caps.toolCalls,
+        idleMs: plan.caps.idleMs,
+        handshakeMs: plan.caps.handshakeMs,
       },
       requireContainment: plan.requireContainment,
     };
@@ -1389,7 +1443,21 @@ export function conductor(deps: ConductorDeps): Conductor {
         operationId,
         input: { [INPUT_FIELD]: JSON.stringify(document) },
         outputs: [{ name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [jobId] }],
-        limits: plan.limits,
+        // WHAT THIS REVIEW MAY SPEND, in the units the machine owner enforces. The claim's own
+        // reservation is the number the coordinator will reconcile against, so it is the one
+        // the owner should refuse at; the plan's is the fallback for a draw that reserved none.
+        limits:
+          plan.limits.inference === undefined
+            ? plan.limits
+            : {
+                ...plan.limits,
+                inference: {
+                  ...plan.limits.inference,
+                  ...(claim.reservedCost > 0
+                    ? { costMicros: Math.ceil(claim.reservedCost * 1_000_000) }
+                    : {}),
+                },
+              },
         ...(installation === null
           ? {}
           : {

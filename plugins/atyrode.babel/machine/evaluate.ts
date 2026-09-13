@@ -69,6 +69,7 @@ import {
   type Row,
 } from "./engine/rows.ts";
 import type { OperationDeps } from "./explore.ts";
+import { brokeredEndpoint, InferenceBindingError } from "./inference.ts";
 import type { OutputSink } from "./output.ts";
 
 // ---------------------------------------------------------------------------- the input
@@ -104,7 +105,6 @@ export type Assignment = z.infer<typeof AssignmentSchema>;
 const CapsSchema = z.strictObject({
   toolCalls: z.number().int().min(0).default(0),
   minutes: z.number().int().min(0).max(24 * 60).default(0),
-  perRunUsd: z.number().min(0).default(0),
   idleMs: z.number().int().min(0).default(0),
   handshakeMs: z.number().int().min(0).default(0),
 });
@@ -137,7 +137,7 @@ export const EvaluateInputSchema = z.strictObject({
   sources: z
     .array(z.looseObject({ kind: z.string().default("session"), selector: bounded(500), digest: z.string().default("") }))
     .default([]),
-  caps: CapsSchema.default({ toolCalls: 0, minutes: 0, perRunUsd: 0, idleMs: 0, handshakeMs: 0 }),
+  caps: CapsSchema.default({ toolCalls: 0, minutes: 0, idleMs: 0, handshakeMs: 0 }),
   /** Records this run authored, so a review cannot endorse its own work (§4.12's independence). */
   authored: z
     .strictObject({ target: z.boolean().default(false), subjects: z.array(z.string()).default([]) })
@@ -177,18 +177,31 @@ export async function evaluate(input: EvaluateInput, out: OutputSink, deps: Oper
   const leak = input.assignment.blinded
     ? blindedLeak({ target: input.target, alternatives: input.alternatives, previous: input.previous })
     : "";
+  // The lane to a model is checked in the same breath and for the same reason: a review with no
+  // binding has nowhere to go, and there is no second lane it may quietly find. Nothing of the
+  // file travels past here — `brokered` is the path, and the bearer is never read out.
+  let brokered = "";
+  let laneRefusal = "";
+  try {
+    brokered = await brokeredEndpoint(deps.inferenceFile);
+  } catch (error) {
+    laneRefusal = error instanceof InferenceBindingError ? error.message : String(error);
+  }
   if (leak !== "") {
     closure = "failed";
     reason = `blinding: the read context of a blinded ${role} review would disclose ${leak}`;
   } else if (input.assignment.blinded && input.previous.length > 0) {
     closure = "failed";
     reason = `blinding: ${input.previous.length} prior evaluations were offered to a blinded ${role} review`;
+  } else if (laneRefusal !== "") {
+    closure = "failed";
+    reason = laneRefusal;
   } else {
     const controller = new AbortController();
     const deadline =
       input.caps.minutes === 0 ? undefined : setTimeout(() => controller.abort(), input.caps.minutes * 60_000);
     try {
-      const attempt = await runReview(input, runId, role, deps, controller);
+      const attempt = await runReview(input, runId, role, deps, controller, brokered);
       jobs.push(attempt.job);
       if (attempt.result === null) {
         closure = controller.signal.aborted ? "stopped" : "failed";
@@ -223,11 +236,9 @@ export async function evaluate(input: EvaluateInput, out: OutputSink, deps: Oper
   await out.write("plans", plans);
   await out.write("steeringReplies", replies);
 
-  const spent = jobs.reduce((total, job) => total + (job.usage?.costUsd ?? 0), 0);
-  if (input.caps.perRunUsd > 0 && spent > input.caps.perRunUsd) {
-    counts.ceilingExceeded = 1;
-    if (reason === "") reason = `the review spent ${spent.toFixed(4)} against a ceiling of ${input.caps.perRunUsd}`;
-  }
+  // NOTHING HERE CHECKS WHAT THE REVIEW SPENT: the machine owner meters every model call against
+  // the job's `limits.inference` and refuses at the ceiling (ADR 0038), and a second ceiling
+  // compared against the engine's own report would disagree with the one that enforced.
   const receipt = buildReceipt({
     runId,
     kind: "evaluate",
@@ -275,6 +286,8 @@ async function runReview(
   role: Role,
   deps: OperationDeps,
   controller: AbortController,
+  /** The path of this job's inference binding, as `code engine --brokered` takes it. */
+  brokered: string,
 ): Promise<ReviewAttempt> {
   const assignment = input.assignment;
   const params: Record<string, string> = {
@@ -350,6 +363,7 @@ async function runReview(
           args: input.engine.args,
           profile: input.profile,
           runtimeInfoPath: join(directory, "runtime.json"),
+          brokered,
           ...(input.engine.cwd === "" ? {} : { cwd: input.engine.cwd }),
         },
         limits,

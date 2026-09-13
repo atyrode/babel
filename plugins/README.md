@@ -219,6 +219,140 @@ Two more things an enrolled machine's operator must arrange, because a manifest 
 read location is missing fails to start; `mkdir -p` is the whole fix), and the `runtime` anchor
 must be a dedicated bounded tmpfs, since the named-output lease is cut from it.
 
+## Inference is a metered Instance Service
+
+A job that drives a model never holds the model's credential (ADR 0038). `explore` and
+`evaluate` bind ONE service the operator installs, `atyrode.babel.inference`, exactly the way
+`archive` binds `atyrode.babel.restic`:
+
+- the operation declares `services: [{ serviceId: "atyrode.babel.inference", revision: "1",
+  operationIds: ["models", "chat", "responses"] }]` and an `inputFiles.inference` whose
+  `jsonValues` splice the proxy's `url` and `bearer` into `/inputs/inference`;
+- the machine half checks that file's shape and hands `code engine` the PATH — `--brokered
+  /inputs/inference` — so the per-job bearer never enters argv, the environment or a log line,
+  and the provider credential never enters the sandbox at all;
+- Code's brokered lane speaks OpenAI-compatible HTTP to `${url}/v1` with that bearer, its egress
+  allows that loopback and nothing else, and its `code.runtime/1` sidecar reports
+  `"lane": "brokered"`. A launch that reports any other lane is refused before the prompt is
+  written, because inside a governed job the only other way to reach a model is a credential the
+  run should not have.
+
+The owner installs the policy the same way as the restic one above
+(`engine.services.configureConfiguration`, or `configureInstance` for the fleet). `origin` is the
+provider — or a local endpoint, or Code's own gateway; the job cannot tell — and `prices` are
+integer **micro-dollars per million tokens** ($3.00 is `3000000`):
+
+```json
+{
+  "revision": null,
+  "policies": [
+    {
+      "serviceId": "atyrode.babel.inference",
+      "revision": "1",
+      "origin": "https://<the provider's origin>",
+      "allowLoopbackHttp": false,
+      "credential": { "ref": "<credential ref>", "header": "Authorization", "prefix": "Bearer " },
+      "maxConcurrent": 4,
+      "prices": {
+        "models": {
+          "<model id>": {
+            "inputPerMillion": 3000000,
+            "outputPerMillion": 15000000,
+            "cachedInputPerMillion": 300000
+          }
+        }
+      },
+      "operations": {
+        "models": {
+          "kind": "http-proxy",
+          "method": "GET",
+          "path": "/v1/models",
+          "request": { "kind": "none" },
+          "response": {
+            "kind": "stream",
+            "disclosure": "full",
+            "contentTypes": ["application/json"],
+            "headers": []
+          },
+          "timeoutMs": 30000,
+          "maxRequestBytes": 1024,
+          "maxResponseBytes": 1048576
+        },
+        "chat": {
+          "kind": "http-proxy",
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "request": { "kind": "json", "disclosure": "full" },
+          "response": {
+            "kind": "stream",
+            "disclosure": "full",
+            "contentTypes": ["application/json", "text/event-stream"],
+            "headers": []
+          },
+          "meter": { "kind": "openai-usage" },
+          "timeoutMs": 300000,
+          "maxRequestBytes": 16777216,
+          "maxResponseBytes": 67108864
+        },
+        "responses": {
+          "kind": "http-proxy",
+          "method": "POST",
+          "path": "/v1/responses",
+          "request": { "kind": "json", "disclosure": "full" },
+          "response": {
+            "kind": "stream",
+            "disclosure": "full",
+            "contentTypes": ["application/json", "text/event-stream"],
+            "headers": []
+          },
+          "meter": { "kind": "openai-usage" },
+          "timeoutMs": 300000,
+          "maxRequestBytes": 16777216,
+          "maxResponseBytes": 67108864
+        }
+      }
+    }
+  ]
+}
+```
+
+`meter` is what makes a call cost something anybody can see: the owner's proxy reads the
+provider's own `usage` object (and `model`) off the JSON body or the final usage frame of an SSE
+stream — forcing `stream_options.include_usage` on a streaming request so that frame exists —
+and nothing else of the body. Each call becomes one `inference_call` event in the job's journal
+and a number in the settled job's `usage.inference`, which is where Babel's run row, its receipt
+page and the day's spend now come from. The engine's own account of what it cost is gone: it
+reports which profile, model, disclosure class and lane resolved, and nothing about money.
+
+The operator's per-run allowance rides on the job request as `limits.inference.costMicros`
+(`perCycleCost / batchSize`, rounded up to whole micro-dollars), and the owner refuses the call
+that would pass it — HTTP 429 `service_ceiling_exceeded`, never mid-stream. A run whose model
+the policy does not price is refused before its first call, HTTP 422 `service_price_unknown`,
+because a ceiling in money without a price is not a ceiling.
+
+The governed consent these two operations need is `services:invoke` at
+`manifold://machine/<machine>/service/atyrode.babel.inference/operation/{models,chat,responses}`,
+beside the `network:host` the loopback proxy requires at
+`manifold://machine/<machine>/operation/atyrode.babel.{explore,evaluate}`; and
+`engine.jobs.install` carries `resourceBindings.services["atyrode.babel.inference"]` exactly as
+it does for restic.
+
+**What Watch shows when the policy is missing.** `launchPreview` reads the machine's service
+configuration and answers the operator before the button in three states:
+
+- **not installed** — the preview refuses ("`atyrode.babel.inference` … no lane to a model") and
+  the button stays disabled; `launch` refuses with the same sentence, so nothing is started.
+- **installed, model unpriced** — the preview states the model with no price, and says the run
+  will be refused `service_price_unknown` when a cost ceiling is set (or metered at zero when it
+  is not).
+- **installed and priced** — the preview states the price per million tokens in and out, and the
+  ceiling the owner will enforce.
+
+A fourth answer is not a fourth state: `services.readConfiguration` is admitted only to a root
+caller holding `services:configure` at the machine, so an ordinary operator's dispatch is refused
+it. That is reported as *unread*, never as *absent* — telling somebody to install a policy that
+is already there, and disabling the button over it, is worse than saying nothing.
+
 ## The SDK is a sibling checkout, for now
 
 `@manifold/plugin-kit`, `@manifold/protocol`, `@manifold/plugin` and `@manifold/ui` are private

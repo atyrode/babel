@@ -32,7 +32,7 @@ import type {
   RunPlan,
   TickReport,
 } from "../server/conductor.ts";
-import type { BabelJobs } from "../server/plan.ts";
+import type { BabelJobs, ServicePolicyOutcome } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
@@ -54,13 +54,20 @@ const RECIPE: Recipe = {
 
 const LIMITS = { timeoutMs: 600_000, memoryBytes: 1_073_741_824, processes: 32, outputBytes: 1_048_576 };
 
+/** The model the machine's last completed run reported, and what the owner prices it at. */
+const MODEL = "claude-sonnet-4-5";
+const PRICE = { inputPerMillion: 3_000_000, outputPerMillion: 15_000_000 };
+
+/** What the operator's $0.0625 per run becomes on the request: integer micro-dollars. */
+const CEILING_MICROS = 62_500;
+
 const PLAN: RunPlan = {
   engine: { binary: "/runtime/bin/code", args: [] },
   profile: { id: "analysis", revision: 3 },
   caps: { perRunUsd: 0.0625, toolCalls: 40, idleMs: 120_000, handshakeMs: 30_000 },
   recipes: {},
   requireContainment: true,
-  limits: LIMITS,
+  limits: { ...LIMITS, inference: { costMicros: CEILING_MICROS } },
 };
 
 /** The machine, as the engine describes one that can run Babel. */
@@ -165,6 +172,8 @@ let fleet: Fleet;
 let cycle: Cycle;
 let cookbook: Record<string, Recipe>;
 let doors: readonly Door[];
+/** What `services.policy` answers; a test overrides it to reach the other two states. */
+let servicePolicy: ServicePolicyOutcome;
 let minted = 0;
 
 const ctx = {
@@ -243,6 +252,7 @@ beforeEach(async () => {
   cycle = new Cycle();
   cookbook = {};
   minted = 0;
+  servicePolicy = { ok: true, policy: { prices: { models: { [MODEL]: PRICE } } } };
   const { db, store } = harness;
   // An enabled policy, as `setPolicy` writes one: the document is the coordinator's own shape.
   await insert(db, "policies", {
@@ -272,7 +282,13 @@ beforeEach(async () => {
     machines: () => ({
       repository: () => ({ ok: false, reason: "this test enrolls no machine" }),
     }),
-    plan: () => PLAN,
+    // The preview asks what the machine's owner installed under the inference service id; a
+    // test that answers with no policy is testing the refusal, so the default is one that is.
+    services: () => ({ policy: () => servicePolicy }),
+    // `runPlan` attaches an inference ceiling only to the operations that bind the service;
+    // the beat is a `scan`, which reaches no model and carries no ceiling on one.
+    plan: (_policy, operationId) =>
+      operationId === OPERATIONS.scan ? { ...PLAN, limits: LIMITS } : PLAN,
     cycle: () => cycle,
     now: () => store.now(),
   };
@@ -369,6 +385,18 @@ test("a preview states what will run, and runs nothing", async () => {
     },
     // One claim's reservation is the per-cycle allowance over the batch; the day's is the day's.
     ceiling: { perRunUsd: 0.0625, perDayUsd: 2 },
+    // What the OWNER will meter the run at: the price its policy states for the model the last
+    // run reported, and the ceiling the request will carry as `limits.inference`.
+    inference: {
+      serviceId: "atyrode.babel.inference",
+      model: MODEL,
+      price: PRICE,
+      ceilings: { costMicros: CEILING_MICROS },
+      unreadable: "",
+      note:
+        `${MODEL} is priced at $3.0000 per million input tokens and $15.0000 per million ` +
+        `output, under a ceiling of $0.0625 for this run`,
+    },
   });
   expect(fleet.executed).toEqual([]);
   expect(fleet.described).toBe(0);
@@ -381,6 +409,72 @@ test("a preview of a deployment that has run nothing states no profile", async (
   });
   expect(answer["profile"]).toBeNull();
   expect(answer["kind"]).toBe("conductor");
+});
+
+/** The run row whose receipt records which model this machine last actually ran. */
+async function recordModel(model: string): Promise<void> {
+  await insert(harness.db, "runs", {
+    id: "run-old", kind: "explore", machine_id: MACHINE, job_id: "job-old",
+    started_at: stamp(NOW - 3 * HOUR), finished_at: stamp(NOW - 2 * HOUR), closure: "completed",
+    records: 2,
+    payload: JSON.stringify({
+      runId: "run-old",
+      closure: "completed",
+      profile: { id: "analysis", revision: 3, model, disclosure: "cloud" },
+    }),
+  });
+}
+
+test("a machine whose owner installed no inference policy is refused, and nothing is started", async () => {
+  // The owner's policy is the whole lane to a model (ADR 0038). Without it the job's binding is
+  // never filled, so there is nothing to preview and nothing to start: the button stays down.
+  servicePolicy = { ok: true, policy: null };
+  await recordModel(MODEL);
+
+  const preview = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1,
+  });
+  expect(preview["refused"]).toContain("atyrode.babel.inference");
+  expect(preview["refused"]).toContain("no lane to a model");
+
+  cookbook[RECIPE.id] = RECIPE;
+  const started = await start({ preset: "read-whats-new", sinceDays: 1, recipes: [RECIPE.id] });
+  expect(started["refused"]).toContain("atyrode.babel.inference");
+  expect(fleet.executed).toEqual([]);
+});
+
+test("an unpriced model under a cost ceiling is named as the refusal the owner will give", async () => {
+  // A ceiling in money is meaningless without a price, so the owner refuses the first call
+  // `service_price_unknown`. Saying it before the button is the difference between an operator
+  // who adds a price and one who watches a run die on its first token.
+  servicePolicy = { ok: true, policy: { prices: { models: { "some-other-model": PRICE } } } };
+  await recordModel("claude-opus-5");
+
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1,
+  });
+  const inference = answer["inference"] as Record<string, unknown>;
+  expect(inference["price"]).toBeNull();
+  expect(inference["model"]).toBe("claude-opus-5");
+  expect(inference["ceilings"]).toEqual({ costMicros: CEILING_MICROS });
+  expect(inference["note"]).toContain("service_price_unknown");
+});
+
+test("a configuration this hub may not read is said to be unread, not said to be absent", async () => {
+  // `services.readConfiguration` is admitted only to a root caller holding `services:configure`
+  // at the machine, so an operator's own dispatch is refused it. Reporting that as "no policy"
+  // would tell him to install one that is already there, and disable the button over it.
+  servicePolicy = { ok: false, reason: "service_unauthorized" };
+  await recordModel(MODEL);
+
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1,
+  });
+  expect(answer["refused"]).toBeUndefined();
+  const inference = answer["inference"] as Record<string, unknown>;
+  expect(inference["unreadable"]).toBe("service_unauthorized");
+  expect(inference["price"]).toBeNull();
+  expect(inference["note"]).toContain("cannot read");
 });
 
 test("keep going starts the beat, under the operator's own minutes, and records the run", async () => {
@@ -427,9 +521,14 @@ test("reading what is new carries the window's sessions and the recipe it was to
     profile: { id: "analysis", revision: 3 },
     recipes: [RECIPE],
     stages: ["explore"],
-    caps: { toolCalls: 40, minutes: 0, perRunUsd: 0.0625, idleMs: 120_000, handshakeMs: 30_000 },
+    caps: { toolCalls: 40, minutes: 0, idleMs: 120_000, handshakeMs: 30_000 },
     requireContainment: true,
   });
+  // THE OPERATOR'S DOLLAR CEILING, on the request rather than in the document: $0.0625 a run is
+  // 62,500 micro-dollars, and the machine owner refuses the call that would pass it. The
+  // document carries no money at all — a run does not police its own spending any more.
+  expect(launch.limits?.inference).toEqual({ costMicros: CEILING_MICROS });
+  expect(JSON.stringify(document)).not.toContain("perRunUsd");
   // The window is the window: the session last seen forty days ago is not in it.
   expect(document["preparation"]).toEqual({
     id: "",

@@ -31,7 +31,18 @@ export const RUNTIME_INFO_SCHEMA = "code.runtime/1";
 const ENGINE_SUBCOMMAND = "engine";
 const FLAG_PROFILE = "--profile";
 const FLAG_RUNTIME_INFO = "--runtime-info";
+const FLAG_BROKERED = "--brokered";
 const FLAG_DESCRIBE = "--describe";
+
+/**
+ * The lanes Code reports reaching a model by. `brokered` is the one a governed job may use: the
+ * endpoint and the bearer come from the job's own service binding and the machine owner meters
+ * every call. `local` is a keyless endpoint on the machine, `hosted` the auth broker — neither
+ * of which exists inside a Manifold job, which is why a brokered launch that reports one is a
+ * run that reached a model some other way and is refused rather than recorded.
+ */
+export const LANES = ["brokered", "local", "hosted"] as const;
+export const BROKERED_LANE = "brokered";
 
 /** One Code-owned analysis profile. Babel stores the reference and never what is behind it. */
 export const ProfileRefSchema = z.strictObject({
@@ -75,6 +86,11 @@ export const RuntimeReportSchema = z.looseObject({
     })
     .optional(),
   metadata: z.record(z.string(), z.string()).optional(),
+  /**
+   * HOW CODE REACHED THE MODEL (ADR 0038 §6). An older Code writes none, which decodes as "" and
+   * is refused for a brokered launch by `laneShortfall` rather than silently accepted.
+   */
+  lane: z.string().default(""),
   containment: ContainmentSchema.nullish(),
   /** Present only in the report Code rewrites after the engine exits; how a reader tells them apart. */
   finished: z.boolean().default(false),
@@ -98,6 +114,7 @@ const KNOWN_RUNTIME_FIELDS: Record<string, true> = {
   privacy: true,
   cost: true,
   metadata: true,
+  lane: true,
   containment: true,
   finished: true,
   exit_code: true,
@@ -121,6 +138,7 @@ export const ENGINE_FAILURES = {
   runtimeInfo: "runtime-info",
   profileMismatch: "profile-mismatch",
   containment: "containment",
+  lane: "lane",
   platform: "platform",
   secretDeclared: "secret-declared",
   malformedFrame: "malformed-frame",
@@ -233,6 +251,24 @@ export function metadataShortfall(metadata: Readonly<Record<string, string>> | u
   return "";
 }
 
+/**
+ * THE REFUSAL FOR A LAUNCH THAT REACHED A MODEL SOME OTHER WAY, or "" when it did not.
+ *
+ * Babel passes `--brokered <path>` exactly when the job holds the service binding, so a report
+ * that names any other lane is Code having resolved a credential of its own — which inside a
+ * governed job means the run held something it must not, and the answer is the same as for a
+ * missing sandbox: refuse before the prompt, and record the claim that was made.
+ */
+export function laneShortfall(report: RuntimeReport, brokered: boolean): string {
+  if (!brokered) return "";
+  if (report.lane === BROKERED_LANE) return "";
+  return (
+    `this run was launched on the brokered lane and Code reports ` +
+    `${report.lane === "" ? "no lane" : JSON.stringify(report.lane)}: a governed job reaches a ` +
+    `model only through the machine owner's metered proxy`
+  );
+}
+
 /** Decodes a runtime-info document, validating the schema identifier and the shape it promises. */
 export function decodeRuntimeReport(text: string): { report: RuntimeReport; unknown: string[] } {
   let raw: unknown;
@@ -317,6 +353,14 @@ export interface LaunchSpec {
   args?: readonly string[];
   profile: ProfileRef;
   runtimeInfoPath: string;
+  /**
+   * THE PATH of the job's inference binding, when this run has one (ADR 0038): a file holding
+   * `{url, bearer}` that Code reads for itself. A PATH and never the values, because argv is
+   * world-readable on the machine and a bearer in it would be the credential this whole lane
+   * exists to keep out of the job. A launch without it is refused by Code inside a governed
+   * job, which is the point: there is no other lane to fall back to.
+   */
+  brokered?: string;
   cwd?: string;
   /** Appended to the derived launch environment. It carries no credentials, as argv must not. */
   env?: Readonly<Record<string, string>>;
@@ -327,7 +371,10 @@ export function engineArgv(spec: LaunchSpec, describe = false): string[] {
   const argv = [...(spec.args ?? []), ENGINE_SUBCOMMAND];
   if (describe) argv.push(FLAG_DESCRIBE);
   argv.push(FLAG_PROFILE, `${spec.profile.id}@${spec.profile.revision}`);
-  if (!describe) argv.push(FLAG_RUNTIME_INFO, spec.runtimeInfoPath);
+  if (describe) return argv;
+  argv.push(FLAG_RUNTIME_INFO, spec.runtimeInfoPath);
+  // `--describe` resolves a profile and reaches no model, so it needs no lane; a run does.
+  if (spec.brokered !== undefined) argv.push(FLAG_BROKERED, spec.brokered);
   return argv;
 }
 
