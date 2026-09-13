@@ -1501,6 +1501,48 @@ test("the reaper releases a grant whose job was never posted, once its lease has
   ]);
 });
 
+test("a run closed by another path leaves no claim behind: the reaper takes it on the next tick", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  // The `stop` door closes the run itself and settles the claim in the same breath, and it
+  // reads a refusal as nothing to do. This is the backstop for every such path: a closed run
+  // is polled by nobody, so its claim would otherwise be held until the lease expired.
+  await db.run(
+    `INSERT INTO runs(id, kind, machine_id, job_id, started_at, finished_at, closure, records, payload)
+     VALUES ('run_stopped', ?, 'dev-01', 'job_stopped', ?, ?, 'stopped', 0, '{}')`,
+    [OPERATIONS.evaluate, new Date(clock - 600_000).toISOString(), new Date(clock).toISOString()],
+  );
+  await db.run(
+    `INSERT INTO claims(id, record_id, role, lane, policy_version, job_id, run_id, fence,
+                        reserved_cost, granted_at, expires_at)
+     VALUES ('clm_stopped', 'hyp_00000001', 'reception', 'coverage', 'pol_1', 'job_stopped',
+             'cyc_1', 1, 0.1, ?, ?)`,
+    [new Date(clock - 600_000).toISOString(), new Date(clock + 300_000).toISOString()],
+  );
+
+  const report = await loop.tick();
+
+  expect(draws.abandoned).toEqual([
+    { id: "clm_stopped", fence: 1, reason: "job job_stopped is closed and its claim was left open" },
+  ]);
+  const claim = await db.query(
+    `SELECT outcome, actual_cost FROM claims WHERE id = 'clm_stopped'`,
+  );
+  expect(claim[0]).toEqual({ outcome: "abandoned", actual_cost: 0.1 });
+  expect(report.notes.some((note) => note.includes("clm_stopped abandoned"))).toBe(true);
+});
+
 test("a job the hub cannot report twice running loses its claim; once is a hiccup", async () => {
   const db = openDatabase();
   await seed(db);

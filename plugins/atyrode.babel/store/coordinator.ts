@@ -387,10 +387,22 @@ export type ClaimResult =
   | { readonly outcome: "granted"; readonly claim: Claim }
   | { readonly outcome: "refused"; readonly refusal: Refusal };
 
+/**
+ * A fence as its holder has it. Every caller of the three verbs below reads the fence out of a
+ * query of its own — the loop's settlement and its reaper, the stop door — and the engine's
+ * database answers an INTEGER column with a BIGINT, while this store's own `Claim.fence` is a
+ * number. Comparing the two with `!==` refuses the caller the claim it is holding, and refuses
+ * it SILENTLY, because to every one of those callers a refusal is nothing to do: the run reads
+ * `stopped` and the claim keeps its batch slot until the lease expires, which is exactly the
+ * ghost this coordinator exists to prevent. So the verbs take the fence in either shape and
+ * normalize it once, here, rather than asking fourteen call sites to remember.
+ */
+export type Fence = number | bigint;
+
 export interface RenewRequest {
   readonly id: string;
   readonly runId: string;
-  readonly fence: number;
+  readonly fence: Fence;
   readonly now?: number;
 }
 
@@ -405,7 +417,7 @@ export type Closure = (typeof CLOSURES)[number];
 export interface FinishRequest {
   readonly id: string;
   readonly runId: string;
-  readonly fence: number;
+  readonly fence: Fence;
   readonly cost: number;
   readonly outcome: Closure;
   readonly now?: number;
@@ -432,7 +444,7 @@ export type FinishResult =
  */
 export interface AbandonRequest {
   readonly id: string;
-  readonly fence: number;
+  readonly fence: Fence;
   readonly reason: string;
   readonly now?: number;
 }
@@ -1778,6 +1790,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
    */
   async function renew(request: RenewRequest): Promise<RenewResult> {
     const moment = request.now ?? now();
+    const fence = count(request.fence);
     const policy = (await policyInForce()).policy;
     if (policy.leaseSeconds <= 0) {
       return {
@@ -1804,12 +1817,12 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         },
       };
     }
-    if (held.runId !== request.runId || held.fence !== request.fence) {
+    if (held.runId !== request.runId || held.fence !== fence) {
       return {
         outcome: "refused",
         refusal: {
           reason: "taken-over",
-          detail: `assignment ${request.id} is held by run ${held.runId} at fence ${String(held.fence)}, not by ${request.runId} at fence ${String(request.fence)}`,
+          detail: `assignment ${request.id} is held by run ${held.runId} at fence ${String(held.fence)}, not by ${request.runId} at fence ${String(fence)}`,
         },
       };
     }
@@ -1829,7 +1842,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         sql: `UPDATE claims SET expires_at = ?
                WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
                RETURNING expires_at`,
-        params: [iso(extended), request.id, request.runId, request.fence],
+        params: [iso(extended), request.id, request.runId, fence],
       },
     ]);
     const row = rows[0]?.[0];
@@ -1857,6 +1870,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
    */
   async function finish(request: FinishRequest): Promise<FinishResult> {
     const moment = request.now ?? now();
+    const fence = count(request.fence);
     if (!Number.isFinite(request.cost) || request.cost < 0) {
       return {
         outcome: "refused",
@@ -1876,7 +1890,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     if (held.finishedAt !== null) {
       if (
         held.runId === request.runId &&
-        held.fence === request.fence &&
+        held.fence === fence &&
         held.actualCost === request.cost
       ) {
         return {
@@ -1894,12 +1908,12 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         },
       };
     }
-    if (held.runId !== request.runId || held.fence !== request.fence) {
+    if (held.runId !== request.runId || held.fence !== fence) {
       return {
         outcome: "refused",
         refusal: {
           reason: "taken-over",
-          detail: `assignment ${request.id} has been taken over by run ${held.runId} at fence ${String(held.fence)}, so the result from ${request.runId} at fence ${String(request.fence)} is refused`,
+          detail: `assignment ${request.id} has been taken over by run ${held.runId} at fence ${String(held.fence)}, so the result from ${request.runId} at fence ${String(fence)} is refused`,
         },
       };
     }
@@ -1908,7 +1922,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         sql: `UPDATE claims SET finished_at = ?, actual_cost = ?, outcome = ?
                WHERE id = ? AND run_id = ? AND fence = ? AND finished_at IS NULL
                RETURNING reserved_cost`,
-        params: [iso(moment), request.cost, request.outcome, request.id, request.runId, request.fence],
+        params: [iso(moment), request.cost, request.outcome, request.id, request.runId, fence],
       },
     ]);
     const row = rows[0]?.[0];
@@ -1951,6 +1965,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
    */
   async function abandon(request: AbandonRequest): Promise<AbandonResult> {
     const moment = request.now ?? now();
+    const fence = count(request.fence);
     const held = await readClaim(request.id);
     if (held === null) {
       return {
@@ -1967,12 +1982,12 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         },
       };
     }
-    if (held.fence !== request.fence) {
+    if (held.fence !== fence) {
       return {
         outcome: "refused",
         refusal: {
           reason: "taken-over",
-          detail: `assignment ${request.id} is held by run ${held.runId} at fence ${String(held.fence)}, so the epoch at fence ${String(request.fence)} is not this claim`,
+          detail: `assignment ${request.id} is held by run ${held.runId} at fence ${String(held.fence)}, so the epoch at fence ${String(fence)} is not this claim`,
         },
       };
     }
@@ -1981,7 +1996,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
         sql: `UPDATE claims SET finished_at = ?, actual_cost = reserved_cost, outcome = 'abandoned'
                WHERE id = ? AND fence = ? AND finished_at IS NULL
                RETURNING reserved_cost`,
-        params: [iso(moment), request.id, request.fence],
+        params: [iso(moment), request.id, fence],
       },
     ]);
     const row = rows[0]?.[0];

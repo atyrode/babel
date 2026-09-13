@@ -425,10 +425,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   before `jobs.execute` is called, so a refusal used to leave a grant with no
   worker at all), and a reaper on every cycle for grants never posted, jobs
   with no open run row, and jobs the hub cannot report twice running. A claim
-  with no job is no longer counted as a batch slot at all. Proof: 37 tests
-  across the coordinator and the loop, among them four killed jobs whose claims
-  are abandoned and whose batch admits the next draw on the following tick
-  (#259, post-mortem finding F3/G1/O5).
+  with no job is no longer counted as a batch slot at all.
+
+  Underneath it, the reason no claim was being settled at all on a real hub: the
+  engine's database answers an INTEGER column with a BIGINT, every caller of
+  `finish` reads the fence out of a query of its own, and `1n !== 1` refused the
+  caller the claim it was holding — silently, because to all three of them a
+  refusal is nothing to do, so an operator's `stop` closed the run and left the
+  batch slot held. A fence is now taken in either shape and normalized once, in
+  the store that owns what a fence is. Proof: 66 tests, among them four killed
+  jobs whose claims are abandoned and whose batch admits the next draw on the
+  following tick, and the two settlement tests that ran against a real plugin
+  database and had been failing (`stop cancels the job, closes the run and
+  releases what it reserved`; `a settled job of this plugin's ingests what
+  finished`) (#259, post-mortem finding F3/G1/O5).
 ## [0.2.6] - 2026-09-12
 
 ### Added

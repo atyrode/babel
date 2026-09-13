@@ -10,7 +10,7 @@ import {
   ReceiptSchema,
   type Receipt,
 } from "../contract.ts";
-import type { Assignment, Coordinator, Gap, Policy, Stop } from "../store/coordinator.ts";
+import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
 import { refuseRow } from "../store/acts.ts";
 import type { BabelStore } from "../store/store.ts";
 
@@ -842,11 +842,14 @@ export async function ingestOutputs(
 // ---------------------------------------------------------------------------- the loop
 
 type PendingRun = { id: string; job_id: string; machine_id: string; kind: string };
-type OpenClaim = { id: string; run_id: string; fence: number; reserved_cost: number };
+/** A claim row as SQLite hands it back: `fence` is an INTEGER column and the engine's own
+ *  database answers those as bigints, so it is carried as the coordinator's {@link Fence} and
+ *  normalized there rather than compared against a number here. */
+type OpenClaim = { id: string; run_id: string; fence: Fence; reserved_cost: number };
 /** One open claim and what the runs table knows about the job behind it, for the reaper. */
 type OrphanClaim = {
   id: string;
-  fence: number;
+  fence: Fence;
   job_id: string | null;
   granted_at: string;
   runs: number;
@@ -1102,7 +1105,7 @@ export function conductor(deps: ConductorDeps): Conductor {
    * accounting written once. A refusal is reported rather than thrown: the claim moved on under
    * a later fence, which is somebody else's live work and not this cycle's to close.
    */
-  async function release(claim: { id: string; fence: number }, reason: string): Promise<SettledClaim> {
+  async function release(claim: { id: string; fence: Fence }, reason: string): Promise<SettledClaim> {
     const abandoned = await coordinator.abandon({ id: claim.id, fence: claim.fence, reason });
     return {
       claimId: claim.id,

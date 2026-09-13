@@ -662,6 +662,60 @@ test("a finish reconciles the reservation, reports an overrun, and accepts only 
   expect(spend.total).toBeCloseTo(0.2, 10);
 });
 
+test("a fence read back out of the database settles the claim it names, bigint or not", async () => {
+  // Every caller reads the fence out of a query of its own — the loop's settlement, its reaper,
+  // the stop door — and the engine's database answers an INTEGER column with a BIGINT. Compared
+  // strictly against this store's number it refused the caller its own claim, and refused it
+  // silently: on 2026-09-13 that is a run that reads `stopped` with its batch slot still held.
+  const first = await oneAssignment();
+  const heldA = await first.coord.claim({
+    assignment: first.assignment,
+    runId: "run_a",
+    jobId: "job_a",
+    now: NOW,
+  });
+  if (heldA.outcome !== "granted") throw new Error(heldA.refusal.detail);
+  const finished = await first.coord.finish({
+    id: first.assignment.id,
+    runId: "run_a",
+    fence: 1n,
+    cost: 0,
+    outcome: "skipped",
+    now: NOW,
+  });
+  if (finished.outcome !== "finished") throw new Error(finished.refusal.detail);
+  expect(
+    (await first.db.query(`SELECT outcome FROM claims WHERE id = ?`, [first.assignment.id]))[0],
+  ).toEqual({ outcome: "skipped" });
+
+  const second = await oneAssignment();
+  const heldB = await second.coord.claim({
+    assignment: second.assignment,
+    runId: "run_b",
+    jobId: "job_b",
+    now: NOW,
+  });
+  if (heldB.outcome !== "granted") throw new Error(heldB.refusal.detail);
+  const abandoned = await second.coord.abandon({
+    id: second.assignment.id,
+    fence: 1n,
+    reason: "job_b was killed",
+    now: NOW,
+  });
+  expect(abandoned.outcome).toBe("abandoned");
+
+  // And a bigint that names another epoch is still refused: the coercion normalizes the shape,
+  // never the value.
+  const stale = await second.coord.abandon({
+    id: second.assignment.id,
+    fence: 2n,
+    reason: "a fence that is not this one",
+    now: NOW,
+  });
+  if (stale.outcome !== "refused") throw new Error("a fence that had moved was accepted");
+  expect(stale.refusal.reason).toBe("finished");
+});
+
 test("an abandoned claim is finished at what it reserved, and only its own live epoch is", async () => {
   const { db, coord, assignment } = await oneAssignment();
   const granted = await coord.claim({ assignment, runId: "run_a", jobId: "job_a", now: NOW });
