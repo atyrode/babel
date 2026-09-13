@@ -1146,7 +1146,28 @@ test.skipIf(!chrome)("the identity fold asks Babel rather than rewriting the led
     await page.click(".topic-ask button[type='submit']");
     // The ask is listed under the form, in the operator's own words, with no
     // status attached to it: capture opens nothing and schedules nothing.
-    await page.waitForSelector(".topic-asks li", { timeout: 15_000 });
+    // When it is not, say what the page was doing instead of "timed out":
+    // which writes went out, whether the button was still disabled, what the
+    // fold showed, and any error it printed (#274 is this line failing on CI
+    // without any of that).
+    try {
+      await page.waitForSelector(".topic-asks li", { timeout: 15_000 });
+    } catch (cause) {
+      const seen = await page.evaluate(() => {
+        const button = document.querySelector(".topic-ask button[type='submit']") as HTMLButtonElement | null;
+        const into = document.querySelector("[data-ask='into']") as HTMLSelectElement | null;
+        const box = document.querySelector(".topic-ask textarea") as HTMLTextAreaElement | null;
+        return {
+          disabled: button?.disabled ?? null,
+          label: button?.textContent ?? null,
+          into: into?.value ?? null,
+          reason: box?.value.length ?? null,
+          asks: (document.querySelector(".topic-asks") as HTMLElement | null)?.innerText ?? null,
+          error: (document.querySelector(".topic-ask ~ .inline-error, .inline-error") as HTMLElement | null)?.innerText ?? null,
+        };
+      });
+      throw new Error(`no ask listed after submit: posts=${JSON.stringify(wrote)} page=${JSON.stringify(seen)}`, { cause });
+    }
     const listed_ = await page.$eval(".topic-asks", (list) => (list as HTMLElement).innerText);
     expect(listed_).toContain("You asked Babel to merge this into t/kepler");
     expect(wrote).toContain("/api/complaint/tell");
