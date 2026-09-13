@@ -22,7 +22,15 @@ export type {
   SessionUsage,
   TitleProvenance,
 } from "./identity.ts";
-export { HARNESSES, TITLE_PROVENANCES, sessionRef, validSourceId } from "./identity.ts";
+export {
+  HARNESSES,
+  LIVE_GRACE_MS,
+  TITLE_PROVENANCES,
+  babelAnalysisRoot,
+  babelOwnLog,
+  sessionRef,
+  validSourceId,
+} from "./identity.ts";
 export { claude } from "./claude.ts";
 export { codex } from "./codex.ts";
 export { omp } from "./omp.ts";

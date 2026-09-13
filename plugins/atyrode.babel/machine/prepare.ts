@@ -14,6 +14,15 @@
   corpus minted a second identity for the same scope — which contradicts the idempotence that
   same-scope-same-id is for. Here the id is a function of the selection alone.
 
+  WHAT A DEFAULT SCOPE LEAVES OUT, and why the id above depends on it (#262). A session whose
+  log was written in the last two minutes is still being appended: its bytes move under the run
+  reading them, so a scope holding one has no stable identity at all — on 2026-09-13 every
+  explore of the day reported "changed since the preparation was fixed", and the file doing it
+  was Babel's own operator transcript. And Babel's own run transcripts are left out because an
+  exploration's subject is the operator's work; a preset that studies Babel asks for them with
+  `agentSessions`. Both rules apply to "scope this machine"; a selector that NAMES an excluded
+  session is refused instead, because a scope that quietly shrank is worse than a refusal.
+
   Each entry carries both digests SPEC §7 requires of a selection: the CAPTURE digest over the
   primary log's bytes as they lie on disk, which is what a restore is checked against, and the
   SOURCE digest over the normalized record stream, which is what analysis reads. A harness that
@@ -30,7 +39,7 @@
 
 import { z } from "zod";
 import type { Receipt } from "../contract.ts";
-import type { SessionRef } from "./adapters/index.ts";
+import { LIVE_GRACE_MS, babelOwnLog, type SessionRef } from "./adapters/index.ts";
 import type { OutputSink } from "./output.ts";
 
 export const PrepareInputSchema = z.strictObject({
@@ -41,6 +50,19 @@ export const PrepareInputSchema = z.strictObject({
   /** `HARNESS/SOURCE-ID`, or any unambiguous suffix of one. Empty scopes every session this
    *  machine can see, which is what a scheduled preparation wants. */
   selectors: z.array(z.string().trim().min(1).max(400)).max(500).default([]),
+  /**
+   * Whether sessions of BABEL'S OWN runs may be in the scope (`kind` `agent`, scan.ts).
+   *
+   * False is the default because an exploration's subject is the operator's work, and a corpus
+   * that quietly included Babel's own transcripts would have Babel reading itself by accident —
+   * on 2026-09-13 that was a 35 MB harness log, still being appended, which invalidated every
+   * preparation of the day. A preset that studies Babel on purpose (#270) asks for them, and
+   * then this is what it asks with.
+   *
+   * There is no flag for a LIVE session, and there must not be: a preparation's identity is its
+   * selection's content, so a file whose bytes are still moving is not a scope at all.
+   */
+  agentSessions: z.boolean().default(false),
 });
 export type PrepareInput = z.infer<typeof PrepareInputSchema>;
 
@@ -55,6 +77,12 @@ export interface PrepareDeps {
   /** Every session this machine can see, under the adapters' own roots. */
   discover(): Promise<readonly SessionRef[]>;
   digests(ref: SessionRef): Promise<SessionDigests>;
+  /**
+   * When this session's primary log was last written, in epoch ms; 0 when nothing could be
+   * observed. It is asked BEFORE the digests on purpose — one `stat` against a whole read —
+   * because skipping a moving 240 MB log is the point.
+   */
+  modifiedAt(ref: SessionRef): Promise<number>;
 }
 
 /** The version of the preparation record's shape AND of the normalization behind its source
@@ -232,6 +260,17 @@ export async function digests(ref: SessionRef): Promise<SessionDigests> {
 }
 
 /**
+ * When a session's primary log was last written, in epoch ms; 0 when the file is gone or the
+ * filesystem answered nothing. A log that cannot be stat-ed is not treated as live: it is the
+ * digest pass that will fail over it, with the path in the refusal, and "unreadable" is a
+ * better answer than "still being written".
+ */
+export async function modifiedAt(ref: SessionRef): Promise<number> {
+  const at = Bun.file(ref.primaryPath).lastModified;
+  return await Promise.resolve(Number.isFinite(at) && at > 0 ? at : 0);
+}
+
+/**
  * One line of a primary log as the normalized stream states it.
  *
  * A record becomes canonical JSON, so a harness that reorders its keys or reflows its
@@ -263,7 +302,7 @@ export async function prepare(
 ): Promise<Receipt> {
   const startedAt = new Date().toISOString();
   const runId = input.runId === "" ? `run_${crypto.randomUUID()}` : input.runId;
-  const counts = { discovered: 0, selected: 0, bytes: 0 };
+  const counts = { discovered: 0, selected: 0, bytes: 0, live: 0, agent: 0 };
   const rows: PreparedSessionRow[] = [];
   let preparation: Preparation | null = null;
   let closure: Receipt["closure"] = "completed";
@@ -284,7 +323,25 @@ export async function prepare(
   } else {
     const seenAt = new Date().toISOString();
     const selection: PreparationEntry[] = [];
+    const named = input.selectors.length > 0;
+    const at = Date.now();
     for (const session of chosen.chosen) {
+      const left = await excluded(session, input, deps, at);
+      if (left !== null) {
+        if (named) {
+          // A selector that names an excluded session is refused for the reason an unmatched
+          // one is: what was asked for is not what would be prepared, and a scope that quietly
+          // shrank makes the next run's coverage a mystery. Nothing is excluded silently here;
+          // it is only when NO selector was given — "scope this machine" — that the two kinds
+          // below are skipped and counted.
+          closure = "failed";
+          reason = left.reason;
+          break;
+        }
+        if (left.kind === "live") counts.live++;
+        else counts.agent++;
+        continue;
+      }
       let measured;
       try {
         measured = await deps.digests(session);
@@ -313,7 +370,14 @@ export async function prepare(
         seen_at: seenAt,
       });
     }
-    if (closure === "completed") {
+    if (closure === "completed" && selection.length === 0) {
+      // Every session there was, excluded. It is `skipped` rather than failed for the same
+      // reason a machine holding none is: there is nothing wrong here, there is nothing to do.
+      closure = "skipped";
+      reason =
+        `no settled session of the operator's own on this machine to prepare: ` +
+        `${String(counts.live)} still being written, ${String(counts.agent)} Babel's own runs'`;
+    } else if (closure === "completed") {
       preparation = newPreparation(new Date().toISOString(), selection);
       counts.selected = selection.length;
     }
@@ -335,6 +399,47 @@ export async function prepare(
   };
   await out.receipt(receipt);
   return receipt;
+}
+
+/** Why a session is not in a default scope; null when it belongs in one. */
+type Exclusion = { readonly kind: "live" | "agent"; readonly reason: string } | null;
+
+/**
+ * Whether this session may be in a scope, and the sentence saying why not.
+ *
+ * The two rules are the ones #262 names, in the order that costs least: Babel's own transcripts
+ * are recognized from the path alone, and liveness costs one `stat` — so a 240 MB log that is
+ * still being appended is excluded without being read, which is the whole point of asking here
+ * rather than after the digests.
+ *
+ * A log written in the FUTURE is live. Clocks on one machine disagree by seconds, and a file
+ * whose mtime is ahead of this process is the last thing to treat as settled.
+ */
+async function excluded(
+  session: SessionRef,
+  input: PrepareInput,
+  deps: PrepareDeps,
+  at: number,
+): Promise<Exclusion> {
+  if (!input.agentSessions && babelOwnLog(session.primaryPath)) {
+    return {
+      kind: "agent",
+      reason:
+        `${session.selector} is one of Babel's own runs' transcripts, which a preparation of ` +
+        `the operator's work does not read`,
+    };
+  }
+  const written = await deps.modifiedAt(session);
+  if (written > 0 && at - written < LIVE_GRACE_MS) {
+    const seconds = Math.max(0, Math.round((at - written) / 1000));
+    return {
+      kind: "live",
+      reason:
+        `${session.selector} was written ${String(seconds)}s ago and is still being appended; ` +
+        `a preparation is its selection's content, so a moving file is not a scope`,
+    };
+  }
+  return null;
 }
 
 /**

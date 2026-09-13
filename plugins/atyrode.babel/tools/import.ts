@@ -219,6 +219,7 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
     const columns = [
       "selector", "host", "harness", "source_id", "title", "title_provenance", "workspace",
       "repository_identity", "repository_remote", "repository_reason", "modified_at", "size",
+      "kind",
       "cost_usd", "total_tokens", "turns", "tool_errors", "content_digest", "snapshot_id",
       "archived_at", "seen_at",
     ] as const;
@@ -235,6 +236,11 @@ function build(durable: Database, catalog: Database | null, options: ImportOptio
         blank(row["title"]), blank(row["title_provenance"]), blank(row["workspace"]),
         null, null, null,
         blank(row["modified_at"]), real(row["primary_size"]),
+        // The Go catalog's fourth harness IS Babel's own analysis sessions (internal/adapter/
+        // babelself): a row it wrote is an agent<->agent conversation, and the plugin's own
+        // adapters never produce that harness. `live` is not named at all — the import observed
+        // no file, and the column's default says exactly that.
+        harness === "babel" ? "agent" : "operator",
         real(row["cost_usd"]), real(row["total_tokens"]), real(row["turns"]), real(row["tool_errors"]),
         sessionDigest.get(key) ?? null, null, null, seenAt,
       ]);

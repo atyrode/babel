@@ -18,11 +18,18 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 0 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 1 } as const;
 
 /** Statements of the first migration, in order; each is one `run`. */
 export const SCHEMA_V1: readonly string[] = [
   // ---------------------------------------------------------------- the catalog
+  // `live` and `kind` are what a SELECTION honours (#262). A session whose log was written in
+  // the last two minutes is `live`: its bytes are still moving, so a preparation over it is a
+  // scope that changes under the run reading it — which is how every explore of 2026-09-13
+  // earned "changed since the preparation was fixed". `kind` separates the operator's own work
+  // from Babel's: a transcript one of Babel's runs wrote is `agent`, catalogued and archived
+  // like every other session (#177) and skipped by default where a preparation is built, so
+  // studying Babel itself is something a preset asks for rather than something it stumbles on.
   `CREATE TABLE sessions(
      selector TEXT PRIMARY KEY,
      host TEXT NOT NULL,
@@ -36,6 +43,8 @@ export const SCHEMA_V1: readonly string[] = [
      repository_reason TEXT,
      modified_at TEXT,
      size INTEGER,
+     live INTEGER NOT NULL DEFAULT 0 CHECK (live IN (0, 1)),
+     kind TEXT NOT NULL DEFAULT 'operator' CHECK (kind IN ('operator', 'agent')),
      cost_usd REAL,
      total_tokens INTEGER,
      turns INTEGER,
@@ -410,3 +419,36 @@ export const SCHEMA_V1: readonly string[] = [
      imported_at TEXT NOT NULL
    ) STRICT`,
 ];
+
+/**
+ * ONE ADDED COLUMN, TWICE: in `SCHEMA_V1` above for a store this enable creates, and here for a
+ * store an earlier enable already created.
+ *
+ * A MINOR data version passes both ways and runs no chain (`planDataMigration`), which is the
+ * right verdict for a column with a default — an older build reading this file sees rows it
+ * understands, and a newer one sees `0` and `operator` where nothing observed otherwise. So the
+ * additions are applied by the enable hook itself, by column name and only where the column is
+ * absent, and that is the pattern the next additive shape follows. A MAJOR bump over data that
+ * already exists is the other mechanism, and it is the engine's migration ledger, not this list.
+ */
+export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
+  {
+    table: "sessions",
+    column: "live",
+    sql: `ALTER TABLE sessions ADD COLUMN live INTEGER NOT NULL DEFAULT 0 CHECK (live IN (0, 1))`,
+  },
+  {
+    table: "sessions",
+    column: "kind",
+    sql:
+      `ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'operator' ` +
+      `CHECK (kind IN ('operator', 'agent'))`,
+  },
+];
+
+/** One column a later shape added to a table the first migration created. */
+export interface SchemaAddition {
+  readonly table: string;
+  readonly column: string;
+  readonly sql: string;
+}

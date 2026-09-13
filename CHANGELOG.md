@@ -382,6 +382,21 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `migrations/0014` a live claim may move its own expiry forward and nothing
   else, so an expired assignment is still taken over under a new fence rather
   than resurrected, and a renewal charges nothing further against the day.
+- **A preparation never reads a file that is still being written, nor Babel's
+  own transcripts by accident.** A session's catalog row now says two things it
+  could not before: `live`, when its log was written inside the last two
+  minutes, and `kind`, whether the conversation was the operator's or one of
+  Babel's own runs'. Both are observations — a live session and a run's
+  transcript are still scanned, catalogued and archived like every other — and
+  what honours them is every place a corpus is chosen: `prepare` and the Watch
+  presets' inline selection skip them, and a preset that studies Babel asks for
+  the agent ones with `agentSessions`. Measured on 2026-09-13: twelve
+  concurrent draws each re-read one 240 MB Code session the operator had open,
+  its mtime moving the whole time, and all six `babel explore` runs of that day
+  reported "changed since the preparation was fixed" over a 35 MB log that was
+  the harness session running the drain itself. Ten preparations built while a
+  session is appended between each now produce one identical selection digest,
+  because the file none of them read is the one that was moving. #262.
 
 ### Fixed
 

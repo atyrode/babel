@@ -198,6 +198,8 @@ export const codex: Adapter = {
       size: stream.size,
       contentDigest: stream.digest,
       usage: null,
+      // Babel writes no Codex rollout, so no log here is one of its runs' (see claude.ts).
+      babelRunId: null,
       absent,
     } satisfies SessionFacts;
   },

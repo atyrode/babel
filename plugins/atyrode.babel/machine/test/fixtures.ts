@@ -32,6 +32,12 @@ export interface OmpSpec {
   createdAt?: string;
   turns?: readonly OmpTurn[];
   toolErrors?: number;
+  /**
+   * The Babel run this log is the transcript of, written into the session record as Babel's own
+   * writer writes it (`internal/adapter/babelself/writer.go`: `runId` and `job` beside the id).
+   * Absent for a session a person had, which is every other fixture here.
+   */
+  runId?: string;
   /** Extra raw lines appended verbatim — a torn tail, a garbage record. */
   trailing?: readonly string[];
 }
@@ -49,6 +55,7 @@ export async function writeOmpSession(root: string, spec: OmpSpec): Promise<stri
     timestamp: spec.createdAt ?? "2026-09-01T00:00:00.000Z",
     ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
     ...(spec.sessionTitle === undefined ? {} : { title: spec.sessionTitle }),
+    ...(spec.runId === undefined ? {} : { runId: spec.runId, job: "explore" }),
   });
   for (const [index, turn] of (spec.turns ?? []).entries()) {
     records.push({
