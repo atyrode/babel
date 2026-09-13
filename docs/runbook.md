@@ -1163,18 +1163,20 @@ It is measured in the tokens and dollars the hub metered on that account (ADR 00
 `usage.inference` on every settled job), never in the provider's percentage, which lags by
 minutes and moves in whole points.
 
-What the window is spent on is a **budget allocation across Babel's duties** - review (voting,
-assessing, refining what exists), explore (new hypotheses, findings, proposals), consolidation,
-Babel improving Babel - in the same vocabulary the conductor's protected shares already use
-(`babel conductor configure --evaluate N`, `--consolidate`). The operator names the allocation
-when the drain starts; on 2026-09-13 it was "everything on reviews", and that is a sound
-allocation: reviews are the mass-produced unit of Babel's self-maintenance, duplicate
-assessments are reception data rather than waste, and a review can be as heavy as its profile
-makes it (thinking, advisor, turns, subagents). The 2026-09-13 drain failed not because reviews
-are the wrong thing to spend on but because each review re-prepared the whole corpus before its
-first model call (post-mortem F1, O1); the plugin's `evaluate` cannot do that. What must hold for
-any allocation: a run never re-prepares the corpus, the fan is sized to the measured cost of one
-run, and the controller is the same whatever the duty. A drain without a target and a deadline
+What the window is spent on is a **weighted list over Babel's activities** - the presets Watch
+already offers (`read-whats-new`, `explore-topic`, `review-backlog`, `file-and-tidy`, and a
+`babel-improves-babel` preset once it exists) - with three rules: weights are over metered
+cost, never run count; the controller schedules by deficit, so a preset with no eligible work
+yields its slot and reports a gap rather than idling; and the loop and the drain share one
+allocation model, the standing weights in the policy and a drain's override for its TTL. The
+operator names the allocation when the drain starts, or is asked (rule 8). On 2026-09-13 it was
+everything on `review-backlog`, and that is a sound allocation: reviews are the mass-produced
+unit of Babel's self-maintenance, duplicate assessments are reception data rather than waste,
+and a review can be as heavy as its profile makes it (thinking, advisor, turns, subagents). The
+2026-09-13 drain failed not because reviews are the wrong thing to spend on but because each
+review re-prepared the whole corpus before its first model call (post-mortem F1, O1); the
+plugin's `evaluate` cannot do that. What must hold for any allocation: a run never re-prepares
+the corpus, and the fan is sized to the measured cost of one run. A drain without a target and a deadline
 is not a drain; it is a loop.
 
 ### 11.2 Pre-flight (T-24h, rehearsal)
