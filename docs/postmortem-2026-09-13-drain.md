@@ -1,14 +1,21 @@
 # 2026-09-13: the drain that did not drain
 
-The operator asked, at 10:29Z on 2026-09-13, for one thing: use Babel review runs to drain the
-`victorballu@gmail.com` Anthropic account's remaining 7-day usage (84-86% used, resetting at
-13:00Z) so it would not be wasted at the reset. Two hours and fourteen minutes later the window
-had not moved a single percent: 50 assessments were recorded, the machine sat at load 42 on 12
-cores with swap full, four generations of ad-hoc loop scripts had been written, six Go fixes had
-been committed live, and the operator stopped everything. The subscription reset with ~14%
-unused. This document is for whoever runs the next drain, and for whoever builds the plugin's
-drain operation: it records what happened minute by minute, what the orchestrator did wrong,
-what the product did wrong, and which issue now owns each of those failures.
+The operator asked, at 10:29Z on 2026-09-13, for one thing: spend one Anthropic subscription's
+remaining 7-day usage (84-86% used, resetting at 13:00Z; the account is called *the drain
+account* here) on continuous Babel reviewing - as many reviews as the machine allows, duplicate
+compute welcome, because the tokens were going to be lost at the reset anyway. Two hours and
+fourteen minutes later the window had not moved a single percent: 50 assessments were recorded
+for 70 runs that reached the model, the machine sat at load 42 on 12 cores with swap full, four
+generations of ad-hoc loop scripts had been written, six Go fixes had been committed live, and
+the operator stopped everything. The subscription reset with ~14% unused. This document is for
+whoever runs the next drain, and for whoever builds the plugin's drain operation: it records what
+happened minute by minute, what the orchestrator did wrong, what the product did wrong, and
+which issue now owns each of those failures.
+
+One sentence of conclusion, because the orchestrator got it wrong on the day and repeated the
+wrong version to the operator: the window did not move because reviews were not being produced -
+each draw read ~12 GB and spent 4-8 CPU-minutes preparing before its first model call, and model
+processes existed for about 13 of the 134 minutes - not because reviews cannot drain a window.
 
 Two conventions. Ids in the tables below (`O1`-`O14`, `F1`-`F23`, `G1`-`G10`) are the finding ids
 that the index in *What changes* resolves to filed issues; `Part 1` and `3.0` in an evidence cell
@@ -23,10 +30,10 @@ All times UTC, 2026-09-13. "Fan" = a shell loop of N concurrent `babel evaluate`
 
 | Time | Event | Source |
 |---|---|---|
-| 10:29 | Operator asks: drain victorballu with review runs only, before the reset. | user message |
+| 10:29 | Operator asks: drain the drain account with review runs only, before the reset - continuous reviewing, as many as the machine allows. | user message |
 | 10:31-10:35 | Installed nix `babel` (build 2026-09-12) refuses the frontier: `frontier schema version 8 is newer than this build supports (7)`. Every store build present (09-10, 09-11, 09-12) refuses (5, 6, 7). A tree build `~/.local/bin/babel-main` from `main` @ c2f0a8e opens it. | bash output |
 | 10:36 | `babel conductor status`: parked after 3 consecutive failed cycles; evaluation ladder 6022 never reviewed; coverage "the last durable coverage check inspected a different input set than this projection was built from". | conductor status |
-| 10:38-10:42 | Profile was rev 3 (`worker-portalhub`, gpt-only, yesterday's burn). Ceremony driven over a pty (`babel analysis profile configure --worker worker-victorballu`; first attempt refused `--worker-arg babel` - the README's documented invocation is stale). Rev 4 minted: claude-only, smart, thinking high, fallback on, accounts panel: alex off / helena off / victorballu enabled. Usage panel read: 7d 84%, resets 2h22m; fable tier blocked. | pty logs |
+| 10:38-10:42 | Profile was rev 3 (yesterday's worker, gpt-only, yesterday's burn). Ceremony driven over a pty (`babel analysis profile configure --worker <the drain account's worker>`; first attempt refused `--worker-arg babel` - the README's documented invocation is stale). Rev 4 minted: claude-only, smart, thinking high, fallback on, accounts panel: three enrolled accounts, the drain account alone enabled. Usage panel read: 7d 84%, resets 2h22m; fable tier blocked. | pty logs |
 | 10:42-10:48 | Probe draw: `preparing 926/926`, reviewing at ~+3 min, recorded `evr_85c8994c…` (no judgement), published 6 records. Total 5m27s. The `preparing 1/926` wall was visible here and was not read as the bottleneck. | bg_26 |
 | 10:48 | Fan A: `review-loop.sh`, 10 draws, deadline 13:13Z. | hub start |
 | 10:49-11:02 | Fan A: "17 reviews" in 14 min by the loop's count - it counted every `rc=0` exit, including `drawn:false` (see 3.0: 50 assessments for the whole day) - alongside `rc=1` failures: `UNIQUE constraint failed: sessions.path`, `an observed environment belongs to an outcome claim`, `credential-shaped material is forbidden in the ledger`. | fan console; 3.0 |
@@ -75,10 +82,15 @@ unused.
 - Tokens **are** recorded by the Go worker: `worker.Receipt.Usage{InputTokens, OutputTokens,
   ReasoningTokens, CacheReadTokens, CacheWriteTokens}` from the RPC `get_session_stats`
   (`internal/worker/domain.go:329-334`, `rpc.go:383-388`, `receipt.go:96`), stored in the run
-  receipt's payload BLOB and surfaced nowhere - not on stderr, not in `babel evaluate --json`, not
-  in any CLI. My "tokens are not determinable" was a fourth false claim: they were in `durable.db`
-  the whole time. `unverified - confirm first`: whether `Usage` is populated on `code engine`
-  (v0.19) runs as it was on the retired `code babel` worker.
+  receipt's payload BLOB (`run_receipt.payload` -> `/worker/Usage`) and surfaced nowhere - not on
+  stderr, not in `babel evaluate --json`, not in any CLI. My "tokens are not determinable" was a
+  fourth false claim: they were in `durable.db` the whole time. Read after the fact, for
+  2026-09-13: **70 of 85 receipts carry usage; 25,253,771 tokens - 19,200,461 cache reads,
+  5,650,336 cache writes, 402,132 output, 842 uncached input; 335 messages, 388 tool calls;
+  $54.97 at API list price.** Per review: 3-5 messages, 3-6 tool calls, 2.4k-5.5k output tokens,
+  $0.50-0.77. Seventy runs paid at the model for fifty assessments: twenty (28%) spent and
+  recorded nothing (the refused submissions, F8). `Usage` **is** populated on `code engine`
+  (v0.19) runs; plan assumption A6 is verified.
 - The evaluation backlog **grew** during the drain: `unreviewed` 6024 (10:48) -> 6038 (12:45).
   The `coverage` note on every draw ("the last durable coverage check inspected a different input
   set than this projection was built from") is a standing degraded state nobody acts on.
@@ -112,7 +124,7 @@ of them impossible or harmless, not merely discouraged.
 
 | # | Failure | Evidence | What it cost |
 |---|---|---|---|
-| O1 | **Misread the goal.** "Drain usage with reviews" was taken literally as "run the review lane" instead of "spend N tokens by 13:00". The review lane is input-heavy/output-light (152 MB sent, 2 MB received) and metered mostly on output; it is the wrong lane to move a window, and no lane was ever sized against a burn rate. | Part 1 12:48-12:53 | The whole window. Even a flawless fan of reviews would not have drained 14% of a weekly window in two hours. |
+| O1 | **Blamed the lane instead of measuring the pipeline.** The operator asked for continuous reviewing - as many reviews as the machine allows, duplicate compute welcome, since the tokens were going to be lost anyway. That ask was sound: a review can be as expensive as its contract makes it (multi-turn, tested, advised) and can be mass-produced in parallel. I ran the lane without sizing it, and when the window did not move I concluded the lane was wrong ("input-heavy, output-light") instead of reading why runs never reached the model: engines existed for ~13 of 134 minutes; each draw read 12 GB and spent 4-8 CPU-minutes before its first call; 70 runs reached the model for 50 assessments and cost 25.3M tokens (19.2M cache reads, 5.7M cache writes, 402k output). The window did not move because reviews were not being produced, not because reviews cannot drain. One caveat to carry forward: 19.2M of the 25.3M tokens were cache reads, and how the subscription window weights cache reads is unknown to us - a heavier review (more output per run) may move it faster per run; measure, do not assume. | Part 1; 3.0; `run_receipt` usage | The whole window, and a wrong conclusion repeated to the operator. |
 | O2 | **No go/no-go check.** The 10:42 probe took 5m27s with `preparing 1/926…926/926` on stderr; I read that as fine. From 11:02 to 12:17 (75 minutes) no engine process existed and I did not check `pgrep code engine` until 12:04, when the operator asked. | bg_26; 12:04 | 75 minutes |
 | O3 | **Divided attention during the emergency.** Between 11:49 and 12:04 I merged and gated manifold#543, opened code#162 and babel#256/#257 while engines=0. | 11:49-12:04 | 15 minutes, and the operator's trust |
 | O4 | **Built features live instead of routing around.** Digest cache, description cache, salience export/merge, live-session grace - four new mechanisms written, tested and swapped in during the last 40 minutes, each restart killing every in-flight draw. | 12:22-12:41 | Every restart minted ghost claims (O5) and reset every cold preparation. |
@@ -124,7 +136,7 @@ of them impossible or harmless, not merely discouraged.
 | O10 | **Concurrency by guess.** 10 -> 24 -> 26 -> 36 draws on 12 cores with a 12-16 GB read per draw; load 42; swap full; the operator's machine laggy. No admission rule, no measurement of per-draw cost before scaling. | 12:22-12:38 | The box; the operator's session |
 | O11 | **No rescue lane ready.** When evaluate was broken, the only alternative (`babel explore`) was tried at 12:46, failed on `--preparation`, and ran against a stale preparation. A drain needs a one-command lane that is known to work, tested before the day. | 12:46 | 20 minutes at the end |
 | O12 | **Did not fix the environment first.** The auth broker was `failed`, the installed `babel` could not open the frontier, the profile pointed at the wrong account, the README's invocation was stale, one 40-minute draw from the first fan was still alive at 12:04. Each was discovered in the middle of something else. | 10:31-12:04 | Serial discovery |
-| O13 | **Did not read the open issues before starting.** The exact root cause of today was filed the day before: babel#236 (2026-09-12 02:27, "prepare: every run rescans the whole corpus scope, serially and per process" - load 41 on 12 cores, zero engines, an OOM that killed the operator's editor), babel#233 (concurrent draws converge on the same assignment), babel#231 ("the difference between a window spent and a window wasted"), babel#169 (2026-09-06, receipts carry no tokens - the README-victorballu follow-up, filed the same day). All open, unlabelled, unowned, unread at 10:29. The drain re-discovered each of them from scratch. | `gh issue list` | The whole window, again; and the operator's belief that nothing is ever filed - which is half right: filed, then never consulted, scheduled, or fixed before the next drain. |
+| O13 | **Did not read the open issues before starting.** The exact root cause of today was filed the day before: babel#236 (2026-09-12 02:27, "prepare: every run rescans the whole corpus scope, serially and per process" - load 41 on 12 cores, zero engines, an OOM that killed the operator's editor), babel#233 (concurrent draws converge on the same assignment), babel#231 ("the difference between a window spent and a window wasted"), babel#169 (2026-09-06, receipts carry no tokens - the the 2026-09-06 burn notes follow-up, filed the same day). All open, unlabelled, unowned, unread at 10:29. The drain re-discovered each of them from scratch. | `gh issue list` | The whole window, again; and the operator's belief that nothing is ever filed - which is half right: filed, then never consulted, scheduled, or fixed before the next drain. |
 | O14 | **Said "I will not kill and restart", then did.** 12:43 -> 12:44:55. | transcript | Trust |
 
 ## Root causes
@@ -161,7 +173,7 @@ what the plugin needs; **PROCESS** = a rule for how a drain is run, not code.
 
 | # | Finding | Evidence | Disposition |
 |---|---|---|---|
-| F17 | **No headless account pin.** Account selection is Code's dial UI state (`CODE_AUTH_ACCOUNT_STATE`) or one machine-wide broker credential; a fan pins an account through a wrapper script that exports the state file. The 2026-09-06 follow-up asked for `code babel --account-state PATH`. | C3; README-victorballu | **PRIMITIVE + code**: in the plugin world the credential is the owner's `atyrode.babel.inference` policy `credential.ref` - one per machine; draining account X = a policy naming X. Choosing among several enrolled accounts needs either a policy per account or a `credentialRef` selector on the job's service binding (manifold#549), and Code's gateway policy must be able to name the pool (code#164). |
+| F17 | **No headless account pin.** Account selection is Code's dial UI state (`CODE_AUTH_ACCOUNT_STATE`) or one machine-wide broker credential; a fan pins an account through a wrapper script that exports the state file. The 2026-09-06 follow-up asked for `code babel --account-state PATH`. | C3; the 2026-09-06 burn notes | **PRIMITIVE + code**: in the plugin world the credential is the owner's `atyrode.babel.inference` policy `credential.ref` - one per machine; draining account X = a policy naming X. Choosing among several enrolled accounts needs either a policy per account or a `credentialRef` selector on the job's service binding (manifold#549), and Code's gateway policy must be able to name the pool (code#164). |
 | F18 | **No headless usage read.** `omp --profile default usage --json` fails outside a Code-launched session (`OMP_AUTH_BROKER_ACCOUNT_POOL_FILE=/run/code/account-pool.json` missing); the broker's `/v1/usage` is reachable only through Code's in-process gateway. My `usage-window.py` sourced the wrapper's env by hand and misread one window. | C2; `/etc/profiles/per-user/alex/bin/code:33` | **code**: `omp usage` tolerates a missing pool file; Code's gateway policy exposes `usage` as a proxy operation so a plugin reads a window headlessly (code#165; code#105/#144). |
 | F19 | **`code.runtime/1` carries no tokens and no per-turn model**; `Cost` is the profile's estimate; the report is written exactly twice (start, end), so 36 sidecars give a binary liveness signal. | engine.go:366-425, 843-903; C4/C6 | **code**: per-turn usage + model + retries in the report, heartbeat writes (code#163). In the brokered lane the owner meters (manifold#543) so the plugin does not depend on code#163 for tokens - it depends on it for stage and retries. |
 | F20 | **The engine's omp session lives in a tmpfs HOME (`/run/code/home`) and is discarded** at exit by design; no transcript survives a run. code#121 and babel#177 exist. | sandbox.go:299-306; sandbox_linux.go:9-11; C5 | **code + plugin**: retained session as a declared job output (code#121; #261 reads it). |
@@ -192,15 +204,17 @@ Still present or missing:
 
 The Go product was designed for one governed loop at a small cadence (`perCycleCost 0.25`,
 `dailyCost 2.0`, a batch of 4 on an hourly beat) and was never load-tested under a fan, so each
-burn was the first load test of a new corpus size. Each burn's findings were filed (#169 on
-2026-09-06, #231, #233 and #236 on 2026-09-12) and were neither scheduled nor read before the
-next attempt, so every drain re-discovered them from scratch under a deadline. The drain itself
-was never a product operation, only a shell loop around a CLI whose exit codes and progress lines
-were not designed to be watched, so the loop could not tell "done" from "starved" from "broken"
-and neither could the person driving it. The system Babel is becoming, a Manifold plugin whose
-runs are governed jobs and whose model access is a metered service (ADR 0038), removes most of
-the product causes by construction, which is why the issues below target the plugin and not the
-Go tree.
+burn was the first load test of a new corpus size, and each found the same wall: a review that
+re-prepares the whole corpus cannot be mass-produced, however cheap its model call is. Each
+burn's findings were filed (#169 on 2026-09-06, #231, #233 and #236 on 2026-09-12) and were
+neither scheduled nor read before the next attempt, so every drain re-discovered them from
+scratch under a deadline. The drain itself was never a product operation, only a shell loop
+around a CLI whose exit codes and progress lines were not designed to be watched, so the loop
+could not tell "done" from "starved" from "broken" and neither could the person driving it -
+who then explained the failure as a lane choice rather than measuring it. The system Babel is
+becoming, a Manifold plugin whose runs are governed jobs and whose model access is a metered
+service (ADR 0038), removes the preparation wall by construction, which is why the issues below
+target the plugin and not the Go tree.
 
 ## What changes
 
@@ -219,6 +233,7 @@ Every finding above has an owner. New issues carry the labels `drain` and `postm
 | atyrode/babel | #265 | `conductor: paid-but-refused work is not a free failure - the park heuristic and the pulse show gaps by reason` | F16, F11, G9 |
 | atyrode/babel | #266 | `SPEC: review scope, the drain, the claim lifecycle and run observability - amendments for the P7 rewrite` | F1, F3, F12 |
 | atyrode/babel | #267 | `drain: a drain names the account it spends, and Watch shows it - one policy per account, or a credentialRef selector on the job` | F17, G6 |
+| atyrode/babel | #270 | `drain: every drain leaves a report Babel can analyse - tokens per duty and per account, machine load, refusals by code, assessments per token, and what the next drain should change` | O2, O7 (the observability half) |
 | atyrode/manifold | #547 | `jobs: per-operation concurrency admission - concurrentJobs on an operation's limits, refused at admission, counted per machine` | G3, O10 |
 | atyrode/manifold | #548 | `jobs: a job_progress event - stage, message, fraction - reported by the workload through the owner, journaled coalesced and followed live` | G5 |
 | atyrode/manifold | #549 | `services: a policy holds several named credentials and a job's service binding may select one (credentialRef)` | G6 |
@@ -232,7 +247,7 @@ Every finding above has an owner. New issues carry the labels `drain` and `postm
 | atyrode/dotfiles | #679 | `babel: one binary on PATH until the plugin replaces the package - retire the ~/.local/bin copies, bump the flake input on every babel release, and hold the archive timer during a drain` | F14, F22, F23 |
 | atyrode/babel | #233 | `plugin(coordinator): concurrent draws converge on the same assignment` (retitled; selection side) | F4, G2 |
 | atyrode/babel | #181 | publication timeouts; superseded by the hub store, closes with the Go product (#247) | F15 |
-| atyrode/babel | #177 with atyrode/code #121 | the retained session as a declared job output | F20 |
+| atyrode/babel | #177 with atyrode/code #121 | every Babel run archived like an operator session, two transcript kinds on the catalog row; the retained session as a declared job output | F20 |
 | atyrode/babel | #236 | the same failure at 10-36 draws; superseded by the plugin once #266 lands | F1 |
 | atyrode/babel | #250 | the Go product is frozen: F2, F7, F9 and F13 are absent in the plugin by construction (ADR 0034, `doors/launch.ts:237-278`); no Go fix follows | F2, F7, F9, F13 |
 | atyrode/babel | #231, #169, #152, #251, #176 | retargeted to #265; #261 and atyrode/code #163; atyrode/manifold #548; #258/#267; #259 | F16, F12, G5, F18, F3 |

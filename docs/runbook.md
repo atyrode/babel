@@ -1161,11 +1161,21 @@ output here; until the drain door ships there is no supported way to run one (se
 A drain spends a chosen account's remaining usage window, before its reset, on Babel's own work.
 It is measured in the tokens and dollars the hub metered on that account (ADR 0038,
 `usage.inference` on every settled job), never in the provider's percentage, which lags by
-minutes and moves in whole points. The lane is **explore**: an exploration writes hypotheses,
-findings and proposals and is output-heavy, which is what a metered window charges for. It is
-never **evaluate**: a review reads a great deal and says one word (on 2026-09-13, 152.7 MB sent
-against 2.0 MB received across 21 sockets), so even a flawless review fan cannot move a window.
-A drain without a target and a deadline is not a drain; it is a loop.
+minutes and moves in whole points.
+
+What the window is spent on is a **budget allocation across Babel's duties** - review (voting,
+assessing, refining what exists), explore (new hypotheses, findings, proposals), consolidation,
+Babel improving Babel - in the same vocabulary the conductor's protected shares already use
+(`babel conductor configure --evaluate N`, `--consolidate`). The operator names the allocation
+when the drain starts; on 2026-09-13 it was "everything on reviews", and that is a sound
+allocation: reviews are the mass-produced unit of Babel's self-maintenance, duplicate
+assessments are reception data rather than waste, and a review can be as heavy as its profile
+makes it (thinking, advisor, turns, subagents). The 2026-09-13 drain failed not because reviews
+are the wrong thing to spend on but because each review re-prepared the whole corpus before its
+first model call (post-mortem F1, O1); the plugin's `evaluate` cannot do that. What must hold for
+any allocation: a run never re-prepares the corpus, the fan is sized to the measured cost of one
+run, and the controller is the same whatever the duty. A drain without a target and a deadline
+is not a drain; it is a loop.
 
 ### 11.2 Pre-flight (T-24h, rehearsal)
 
@@ -1216,7 +1226,7 @@ count, a socket count, or a percentage read by a home-made script is not any of 
 > **Never `pkill` a job.** The hub owns the process, and a killed worker's claim holds its batch
 > slot for the whole lease: on 2026-09-13 five rounds of kills under a 5200 s lease left ~70
 > ghost claims on the top-ranked subjects and the last fan could not draw at all. The
-> 2026-09-10 README-helena burn notes said the same thing; it was violated five times anyway.
+> 2026-09-10 burn notes said the same thing; it was violated five times anyway.
 
 ### 11.6 Rules for whoever drives it (human or agent)
 
@@ -1231,6 +1241,9 @@ Mandatory, and each one was broken on 2026-09-13.
 6. No feature work during a drain: route around it or stop.
 7. Every failure met is filed with the `drain` label before the session ends, and the next
    drain's pre-flight reads them.
+8. The allocation across duties, the profile (model, thinking, advisor, subagents) and the
+   account are named by the operator or asked for before the drain starts. An agent running
+   Babel never chooses them silently; an operator running it by hand is asked by the door.
 
 ### 11.7 Interim
 
@@ -1241,7 +1254,7 @@ no supported way to drain: the Go product is frozen (babel#250) and its loop scr
 deployment remain owed and are **OPERATOR STEPS** before any Go conductor run: the evaluation
 policy is `eval-policy-10` (batch 256, lease 5200 s, per-cycle 100 USD) and must go back to
 batch 4 / lease 900 s / per-cycle 25 through the browser's **Evaluation → Review policy** form;
-the analysis profile is rev 6 (victorballu, opus, xhigh, advisor sonnet) and is the operator's
+the analysis profile is rev 6 (the drain account, opus, xhigh, advisor sonnet) and is the operator's
 to keep or revert.
 
 ---
