@@ -593,6 +593,23 @@ export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> 
   "keep-going": OPERATIONS.scan,
 };
 
+/**
+ * WHICH PRESETS REACH A MODEL, and therefore must name a session (#279).
+ *
+ * It sits beside {@link PRESET_OPERATIONS} for the same reason that table does: `launch`
+ * refuses a session-less request for every preset in it (`session_required`), and the panel
+ * hides its session picker for the one that reaches none. The beat asks a model nothing — it
+ * ticks the conductor, which claims and dispatches jobs of its own — so a request for it is not
+ * refused for lacking a session it would never spend.
+ */
+export const PRESET_REACHES_MODEL: Record<(typeof PRESETS)[number], boolean> = {
+  "read-whats-new": true,
+  "explore-topic": true,
+  "review-backlog": true,
+  "file-and-tidy": true,
+  "keep-going": false,
+};
+
 export const LaunchInputSchema = z.strictObject({
   machineId: bounded(120),
   preset: PresetSchema,

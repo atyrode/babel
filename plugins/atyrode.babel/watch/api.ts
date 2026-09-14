@@ -1,12 +1,16 @@
 import type { HostServices } from "@manifold/plugin";
 import { z } from "zod";
 import {
+  AccountRowSchema,
+  AccountsResultSchema,
   LaunchInputSchema,
   LaunchRequestSchema,
   LaunchResultSchema,
+  MODEL_REFERENCE,
   OPERATIONS,
   PRESETS,
   PRESET_OPERATIONS,
+  PRESET_REACHES_MODEL,
   PolicyResultSchema,
   PresetSchema,
   RecipeRowSchema,
@@ -14,12 +18,15 @@ import {
   RunProgressSchema,
   RunRowSchema,
   RunsResultSchema,
+  SessionChoiceSchema,
   StopInputSchema,
+  THINKING_LEVELS,
   TopicRowSchema,
   TopicsResultSchema,
   door,
   type ActionName,
   type LaunchInput,
+  type SessionChoice,
 } from "../contract.ts";
 
 /** The wire rows this panel renders; the contract spells the schemas and not the types. */
@@ -164,6 +171,39 @@ export const KNOB_BOUNDS: Record<Knob, { readonly min: number; readonly max: num
   topic: { min: 0, max: 0, step: 0 },
 };
 
+/**
+ * WHO ANSWERS THE RUN, as the picker holds it (#279).
+ *
+ * Five strings rather than the contract's `SessionChoice`, because a picker is a half-made
+ * choice for as long as the operator is making it: a model typed but no account yet is a state
+ * `SessionChoiceSchema` has no shape for, and a draft that could only hold valid sessions could
+ * not hold what the operator is looking at. {@link sessionChoice} is the one place the two meet.
+ *
+ * `provider`, `credentialId` and `identityKey` are copied off the chosen {@link AccountRow}
+ * rather than looked up on the way out: the same three fields are what the operator TYPES when
+ * the broker cannot be read, so the draft holds the choice itself and not a key into a list that
+ * may not exist. The scope is not among them — it names the observation a pool was frozen from
+ * and is the broker's to state, so {@link sessionChoice} takes it off the row.
+ */
+export interface SessionDraft {
+  /** `provider/model`, the reference omp routes by; prefilled from the machine's last run. */
+  readonly model: string;
+  /** One of `THINKING_LEVELS`, or "" for whatever the model does by default. */
+  readonly thinking: string;
+  readonly provider: string;
+  readonly credentialId: string;
+  /** The OAuth identity, or "" for an api-key credential, which has none. */
+  readonly identityKey: string;
+}
+
+export const INITIAL_SESSION: SessionDraft = {
+  model: "",
+  thinking: "",
+  provider: "",
+  credentialId: "",
+  identityKey: "",
+};
+
 export interface LaunchDraft {
   readonly preset: Preset;
   readonly machineId: string;
@@ -173,6 +213,8 @@ export interface LaunchDraft {
   readonly draws: number;
   readonly minutes: number;
   readonly recipes: readonly string[];
+  /** The model, the thinking level and the account; ignored by a preset that reaches no model. */
+  readonly session: SessionDraft;
 }
 
 export const INITIAL_DRAFT: LaunchDraft = {
@@ -183,6 +225,7 @@ export const INITIAL_DRAFT: LaunchDraft = {
   draws: 5,
   minutes: 60,
   recipes: [],
+  session: INITIAL_SESSION,
 };
 
 /**
@@ -193,8 +236,13 @@ export const INITIAL_DRAFT: LaunchDraft = {
  * argument the door has no business for, and `LaunchInputSchema` being strict means the hub
  * would refuse the whole launch for it. So the knobs are filtered here, once, by the same table
  * the card renders from.
+ *
+ * The SESSION is the same rule applied to the choice the picker makes (#279): it travels only
+ * for a preset that reaches a model — `PRESET_REACHES_MODEL`, the table `launch` refuses by —
+ * and it is absent rather than half-made while the operator is still choosing, because
+ * `launchPreview` is polled throughout that and must answer without one.
  */
-export function launchInput(draft: LaunchDraft): LaunchInput {
+export function launchInput(draft: LaunchDraft, session: SessionChoice | null = null): LaunchInput {
   const card = PRESET_CARDS[draft.preset];
   return LaunchInputSchema.parse({
     machineId: draft.machineId,
@@ -204,6 +252,7 @@ export function launchInput(draft: LaunchDraft): LaunchInput {
     ...(card.knob === "days" ? { sinceDays: draft.sinceDays } : {}),
     ...(card.knob === "draws" ? { draws: draft.draws } : {}),
     ...(card.knob === "minutes" ? { minutes: draft.minutes } : {}),
+    ...(session !== null && PRESET_REACHES_MODEL[draft.preset] ? { session } : {}),
   });
 }
 
@@ -216,8 +265,11 @@ export function launchInput(draft: LaunchDraft): LaunchInput {
  * operator picked and the operation his preset becomes, which is `PRESET_OPERATIONS`, the same
  * table the door plans from.
  */
-export function launchRequest(draft: LaunchDraft): z.infer<typeof LaunchRequestSchema> {
-  const input = launchInput(draft);
+export function launchRequest(
+  draft: LaunchDraft,
+  session: SessionChoice | null = null,
+): z.infer<typeof LaunchRequestSchema> {
+  const input = launchInput(draft, session);
   return LaunchRequestSchema.parse({
     ...input,
     operation: {
@@ -247,6 +299,125 @@ export function unready(draft: LaunchDraft): string {
   if (draft.machineId === "") return "Pick a machine to run on.";
   if (PRESET_CARDS[draft.preset].knob === "topic" && draft.entityId === "") return "Pick a topic to explore.";
   return "";
+}
+
+// ------------------------------------------------------------------ who answers the run (#279)
+
+/*
+  THE PICKER'S HALF OF THE SESSION.
+
+  Until #279 the model, the thinking level and the account were behind a Code profile reference
+  the machine resolved, so the panel had nothing to choose and nothing to show: the operator
+  read a model off the LAST run and hoped the next one would agree. Code's engine is gone, the
+  choice travels with the request, and `launch` refuses a preset that reaches a model and names
+  no session — which is exactly why the button must be able to say what is missing, in the
+  operator's own words, before he presses it.
+
+  Three things are chosen: an account out of what the machine's broker has observed (the
+  `accounts` door), the model reference omp routes by, and how hard it thinks. The FIRST is the
+  one that can be unavailable: the broker is another plugin's Instance Service, and a hub where
+  it is not installed — or a caller not admitted to read it — answers a reason rather than a
+  list. A picker that showed an empty select there would be a dead end; this one takes the three
+  fields typed, because an operator who knows his credential's row number must still be able to
+  spend it.
+*/
+
+export type AccountRow = z.infer<typeof AccountRowSchema>;
+export type AccountsResult = z.infer<typeof AccountsResultSchema>;
+
+/** No machine picked yet: no accounts, and no reason either — nobody has been asked. */
+export const NO_ACCOUNTS: AccountsResult = { accounts: [], unavailable: "" };
+
+/** What the thinking picker offers; the empty one is the level nobody chose (`THINKING_LEVELS`). */
+export const THINKING_CHOICES: readonly { readonly value: string; readonly label: string }[] = [
+  { value: "", label: "none — the model's own default" },
+  ...THINKING_LEVELS.map((level) => ({ value: level, label: level })),
+];
+
+/**
+ * The policy state as the one word beside the price, per `SESSION_POLICY_STATES`. A state this
+ * build does not know is shown as the word the door sent rather than translated into a guess,
+ * which is why the map is keyed loosely.
+ */
+export const SESSION_POLICY_LABEL: Record<string, string> = {
+  missing: "no policy",
+  unpriced: "unpriced",
+  priced: "priced",
+  unreadable: "policy unread",
+  /** The hub refused the owner's policy for a meter kind it does not know (manifold#570). */
+  unsupported: "hub too old",
+};
+
+/** One account as the picker offers it: who it is, whose provider, and whether it is spendable. */
+export function accountLabel(row: AccountRow): string {
+  const name =
+    row.identityKey !== "" ? row.identityKey : row.label !== "" ? row.label : `credential ${row.credentialId}`;
+  return `${name} · ${row.provider}${row.disabled ? " · blocked" : ""}`;
+}
+
+/** A session the door would take, or the named reason it is not one yet. */
+export type SessionPick =
+  | { readonly ok: true; readonly session: SessionChoice }
+  | { readonly ok: false; readonly reason: string };
+
+function incomplete(clause: string): SessionPick {
+  return { ok: false, reason: `session_incomplete: ${clause}` };
+}
+
+/**
+ * THE PICKER'S STATE AS THE CONTRACT'S SESSION, or why it is not one.
+ *
+ * The reason is what disables the button, so it is a clause an operator can act on and it is
+ * NAMED — `session_incomplete` is the panel's half of the door's `session_required`, and
+ * `account_blocked` is the one refusal the broker can hand us about a choice already made: an
+ * account marked blocked between the poll that offered it and the press would fail on the
+ * machine with `account_unavailable`, after the job was posted and a claim taken.
+ *
+ * The SCOPE is read off the offered row rather than held in the draft, because it names the
+ * broker observation the account was seen in and is the broker's statement, not the operator's
+ * choice. A TYPED account was seen in none, and carries a tag naming where it did come from:
+ * the gateway worker checks only that every slot of one pool agrees on its scope and compares
+ * it against no canonical value (`doors/inference.ts`), a pool Babel builds holds exactly one
+ * slot, so the tag is both admissible and honest — this panel, on this machine, rather than an
+ * observation that never happened.
+ */
+export function sessionChoice(draft: LaunchDraft, accounts: AccountsResult): SessionPick {
+  const session = draft.session;
+  const model = session.model.trim();
+  if (model === "") return incomplete("name the model this run asks for, as provider/model");
+  if (!MODEL_REFERENCE.test(model)) {
+    return incomplete(
+      `${model} is not a model reference — omp routes by provider/model, and a bare model id ` +
+        `misses the route and the price at once`,
+    );
+  }
+  if (session.provider === "" || session.credentialId === "") {
+    return incomplete("choose the account this run spends");
+  }
+  const row = accounts.accounts.find((entry) => entry.credentialId === session.credentialId);
+  if (row?.disabled === true) {
+    return {
+      ok: false,
+      reason: `account_blocked: the broker reports ${accountLabel(row)}, so this run would be refused on the machine`,
+    };
+  }
+  const parsed = SessionChoiceSchema.safeParse({
+    model,
+    ...(session.thinking === "" ? {} : { thinking: session.thinking }),
+    account: {
+      provider: session.provider,
+      scope: row?.scope ?? `atyrode.babel.watch/typed/${draft.machineId}`,
+      credentialId: session.credentialId,
+      identityKey: session.identityKey,
+    },
+  });
+  if (parsed.success) return { ok: true, session: parsed.data };
+  const issue = parsed.error.issues[0];
+  return incomplete(
+    issue === undefined
+      ? "this is not a session the contract accepts"
+      : `${issue.path.join(".")} ${issue.message.toLowerCase()}`,
+  );
 }
 
 // ---------------------------------------------------------------------------- figures and clocks

@@ -11,6 +11,7 @@ import {
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   PRESET_OPERATIONS,
+  PRESET_REACHES_MODEL,
   StopInputSchema,
   StopResultSchema,
   type LaunchInput,
@@ -148,12 +149,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const PREVIEW_WITHOUT_SERVICES =
   "this caller holds no services slice, so the machine's service configuration was never read";
 
-/**
- * WHICH PRESETS REACH A MODEL, and therefore need a session (#279). The beat is a `scan`: it
- * catalogues and spends nothing, so refusing it for want of a model would be refusing the one
- * lane that never needed one.
- */
-const NEEDS_SESSION: Record<Start, boolean> = { explore: true, draw: true, beat: false };
+/*
+  WHICH PRESETS REACH A MODEL, and therefore need a session (#279), is `PRESET_REACHES_MODEL` in
+  the contract rather than a table here: the panel hides its session picker by the same answer
+  this door refuses a session-less launch by, and two tables would be two answers.
+*/
 
 /** Babel's own launch profile, as the `runs` row records it and `lastProfile` reads it back. */
 const LaunchProfileSchema = z.object({
@@ -757,7 +757,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       }
       // A preset that reaches a model is refused here, before a machine is described, when the
       // request names no session: nothing about a model's availability changes the answer.
-      if (NEEDS_SESSION[preset.start]) {
+      if (PRESET_REACHES_MODEL[input.preset]) {
         const chosen = sessionFor(input, plan);
         if ("refused" in chosen) return chosen;
       }
