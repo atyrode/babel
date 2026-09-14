@@ -159,7 +159,6 @@ is looking at:
   "serviceId": "atyrode.babel.inference",
   "revision": "1",
   "runtime": {
-    "scope": "job",
     "pluginId": "atyrode.omp.gateway",
     "operationId": "atyrode.omp.gateway.serve",
     "installationRevision": "<the gateway installation on THIS machine>",
@@ -219,7 +218,10 @@ Four things in it are load-bearing and one is a default:
 - **`runtime`, not `origin`.** An origin policy points at a provider and needs a credential the
   owner holds; this one points at another plugin's machine operation, so there is no credential in
   the policy at all. The gateway resolves one from the machine's broker for the pool it was handed,
-  and the job gets a loopback url and a bearer minted for it alone.
+  and the job gets a loopback url and a bearer minted for it alone. It carries no `scope`, because
+  the candidates a hub offers carry none and job scope is the default: an INSTANCE-scoped
+  candidate is refused by name (`doors/inference.ts`), since an instance runtime may hold only
+  literal inputs and so could not carry the job's account pool at all.
 - **`input: {accountPool: {input: "accountPool"}}`** is how a run names the account it spends: the
   owner maps the CALLING job's `accountPool` input into the gateway's own, so the pool the launch
   posted is the pool that gateway resolves a credential for. manifold-omp installs its own `omp`
@@ -231,8 +233,10 @@ Four things in it are load-bearing and one is a default:
   declaration is `{serviceId, revision, operationIds}` (`ServiceBindingSchema`) and names no
   meter, so nothing about the kind is baked into the artifact an owner installs.
 
-  **Which hub revisions run what.** manifold#570 adds the kind and #572 lands it; on a hub that
-  predates it (`MANIFOLD_REV` 637cbb79 among them) the consequence is wider than the write:
+  **Which hub revisions run what.** manifold#570 adds the kind and #572 landed it; `MANIFOLD_REV`
+  0bc76660 carries it, so the SDK this tree typechecks, tests and packs against knows it and the
+  policy is handed to `configureConfiguration` with no cast. On a HUB older than that revision the
+  consequence is wider than the write:
 
   - `setupInference` is refused by the hub's own schema, by name, and `launchPreview` reports
     the session policy as `unsupported` with that sentence as its evidence (#284) rather than as
@@ -257,7 +261,11 @@ Four things in it are load-bearing and one is a default:
   tokens, and they are a default so that installing the service does not require retyping a price
   table. An operator on an enterprise rate, a batch discount or another provider edits the
   installed policy; a price change is a new policy revision he consents to, and `launchPreview`
-  states the price it FOUND on the machine, never the table in this repository.
+  states the price it FOUND on the machine, never the table in this repository. A REFRESH DOES NOT
+  TAKE IT BACK: `setupInference` exists for the runtime pins, so when a policy is already there it
+  carries the installed table through verbatim and rewrites the pins alone — reinstating these
+  defaults would reprice every run behind the owner's back and move the policy digest a deployment
+  is pinned at.
 
 The ceiling is the other half and it comes from the other side: the operator's per-run allowance
 leaves the hub as `limits.inference.costMicros` on the job request (`server/plan.ts`

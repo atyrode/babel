@@ -21,14 +21,16 @@ import type { BabelStore } from "../store/store.ts";
   for an operator to copy, retype and get wrong — which is what `doors/inference.ts` exists to
   make unnecessary.
 
-  WHY THE TYPES ARE LOCAL. `ServicePolicySchema` in the pinned SDK admits exactly one meter kind,
-  `openai-usage`, and omp's wire is pi-native (`modelId`, `context.messages`,
-  `usage.input`/`.output`/`.cacheRead`) — declaring OpenAI's kind over it would refuse every call
-  with `service_input_invalid` rather than silently mis-read one. manifold#570 adds
-  `pi-native-usage`; until the SDK pin moves, the shape is stated here and cast once, at the
-  `ctx.services.configureConfiguration` boundary, where a hub that does not yet know the kind
-  refuses the write by name and the door reports that refusal. Nothing is faked: the policy Babel
-  offers is the policy Babel will install the moment the hub accepts it.
+  WHY THE SHAPE IS STATED HERE. It is this plugin's document, not a schema's: a literal assembled
+  from one machine's pins, so the one thing a reader must be able to check by eye — that the meter
+  is declared on the call that SPENDS and on nothing else — is in the type. The kind is
+  `pi-native-usage` because omp's wire is pi-native (`modelId`, `context.messages`,
+  `usage.input`/`.output`/`.cacheRead`) and `openai-usage` over it would refuse every call with
+  `service_input_invalid` rather than silently mis-read one. `MANIFOLD_REV` 0bc76660 carries that
+  kind (manifold#570, landed as #572), so this document is assignable to the SDK's own
+  `ServicePolicy` and `doors/inference.ts` hands it to `configureConfiguration` WITH NO CAST: the
+  typecheck is the hub's own schema. A hub older than the pin is a different fact and refuses the
+  write by name, which the door records and `launchPreview` reports as `unsupported`.
 */
 
 /** `ServiceRuntime`, as the policy carries it: the candidate's pins plus the input mapping. */
@@ -50,7 +52,11 @@ export interface InferenceRuntime {
   readonly input: Readonly<Record<string, { readonly input: string }>>;
 }
 
-/** One proxied route of the policy, in `ServiceProxyOperationPolicy`'s own shape. */
+/**
+ * One proxied route of the policy, in `ServiceProxyOperationPolicy`'s own shape — and assignable
+ * to it, which is why `contentTypes` and `headers` are not `readonly` arrays: the SDK states them
+ * mutable and this document is handed to it unchanged.
+ */
 interface ProxyOperation {
   readonly kind: "http-proxy";
   readonly method: "GET" | "POST";
@@ -59,13 +65,25 @@ interface ProxyOperation {
   readonly response: {
     readonly kind: "stream";
     readonly disclosure: "full";
-    readonly contentTypes: readonly ("application/json" | "text/event-stream")[];
-    readonly headers: readonly never[];
+    readonly contentTypes: ("application/json" | "text/event-stream")[];
+    readonly headers: never[];
   };
-  readonly meter?: { readonly kind: string } | undefined;
+  readonly meter?: { readonly kind: typeof INFERENCE_SERVICE.meterKind } | undefined;
   readonly timeoutMs: number;
   readonly maxRequestBytes: number;
   readonly maxResponseBytes: number;
+}
+
+/**
+ * WHAT A CALL COSTS, as the policy carries it.
+ *
+ * `default` is never written by this side. It is in the shape because the OPERATOR may write one:
+ * the table is his to edit ({@link INFERENCE_PRICES}), so a refresh carries the INSTALLED table
+ * through verbatim — `default` and all — rather than reinstating the defaults below over it.
+ */
+export interface InferencePrices {
+  readonly models: Readonly<Record<string, ModelPrice>>;
+  readonly default?: ModelPrice | undefined;
 }
 
 export interface InferencePolicy {
@@ -74,7 +92,7 @@ export interface InferencePolicy {
   readonly runtime: InferenceRuntime;
   readonly maxConcurrent: number;
   readonly operations: Readonly<Record<string, ProxyOperation>>;
-  readonly prices: { readonly models: Readonly<Record<string, ModelPrice>> };
+  readonly prices: InferencePrices;
 }
 
 /**

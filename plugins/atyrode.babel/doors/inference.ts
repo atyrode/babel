@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { defineServerAction, type GuestCtx } from "@manifold/plugin-kit/server";
-import type {
-  InstanceServiceDescription,
-  ServiceConfigurationRead,
-  ServicePolicy,
-  ServiceReply,
+import {
+  canonicalJobJson,
+  type InstanceServiceDescription,
+  type ServiceConfigurationRead,
+  type ServicePolicy,
+  type ServiceReply,
 } from "@manifold/protocol";
 import {
   ACCOUNTS_SERVICE,
@@ -268,13 +269,34 @@ export function inferenceDoors(store: BabelStore, _deps: InferenceDeps): readonl
                 `serve a job-scoped service${named?.reason === null || named?.reason === undefined ? "" : `: ${named.reason}`}`,
         };
       }
-      const policy = buildInferencePolicy(inferenceRuntime(chosen.runtime));
-      const models = Object.keys(policy.prices.models);
       const existing = read.configuration.policies.find(
         (entry) => entry.serviceId === INFERENCE_SERVICE.serviceId,
       );
+      /*
+        THE PRICE TABLE IS THE OPERATOR'S, AND A REFRESH DOES NOT TAKE IT BACK (#284).
+
+        `INFERENCE_PRICES` is a DEFAULT, so that installing the service does not mean retyping a
+        table, and `plugins/README.md` tells the operator the installed one is his to edit — an
+        enterprise rate, a batch discount, a model this list does not name. A refresh exists for
+        the RUNTIME PINS (a reinstalled gateway, a new artifact sha), so it carries the installed
+        table through verbatim: reinstating the defaults over it would reprice every run behind
+        the owner's back, and it would move the policy digest that `resourceBindings.services`
+        pins at deployment — a re-review of Babel's whole machine half for a price nobody changed.
+      */
+      const built = buildInferencePolicy(inferenceRuntime(chosen.runtime));
+      const policy: InferencePolicy =
+        existing?.prices === undefined ? built : { ...built, prices: existing.prices };
+      const models = Object.keys(policy.prices.models);
+      /*
+        COMPARED CANONICALLY, because the hub does not answer the bytes it was handed (#284): a
+        policy read back is key-sorted (`canonicalJobJson` is the protocol's own digest encoding,
+        and the configuration revision is taken over it), so `JSON.stringify` against the
+        document this side assembles matched nothing after the first install — every refresh said
+        `refreshed`, wrote a configuration revision nobody needed, and every written revision is
+        another deployment re-review.
+      */
       const unchanged =
-        existing !== undefined && JSON.stringify(existing) === JSON.stringify(policy);
+        existing !== undefined && canonicalJobJson(existing) === canonicalJobJson(policy);
       if (!input.apply) {
         return {
           serviceId: INFERENCE_SERVICE.serviceId,
@@ -300,7 +322,11 @@ export function inferenceDoors(store: BabelStore, _deps: InferenceDeps): readonl
       // EVERY UNRELATED POLICY SURVIVES. The machine's configuration is one document holding
       // every service its owner installed — restic's, omp's gateway, Code's classifier — so this
       // replaces exactly the one entry under Babel's own service id and rewrites nothing else.
-      const policies = [
+      // It is `ServicePolicy[]` and not a cast: `MANIFOLD_REV` 0bc76660 carries the
+      // `pi-native-usage` meter kind (manifold#570, landed as #572), so the hub's own schema is
+      // what typechecks the document this side assembled. A HUB older than the pin is a
+      // different fact and refuses the write below, by name.
+      const policies: ServicePolicy[] = [
         ...read.configuration.policies.filter(
           (entry) => entry.serviceId !== INFERENCE_SERVICE.serviceId,
         ),
@@ -308,14 +334,10 @@ export function inferenceDoors(store: BabelStore, _deps: InferenceDeps): readonl
       ];
       let revision: string | null;
       try {
-        // THE ONE CAST IN THIS FILE, and the reason is in `server/inference.ts`: the pinned SDK's
-        // `ServicePolicy` admits only the `openai-usage` meter kind, and omp's wire needs
-        // `pi-native-usage` (manifold#570). A hub without that kind refuses the write here, by
-        // name, which is the honest state of a plugin ahead of its hub.
         const configured = await ctx.services.configureConfiguration({
           machineId: input.machineId,
           expectedRevision: input.expectedServiceRevision,
-          policies: policies as unknown as ServicePolicy[],
+          policies,
         });
         revision = configured.revision;
       } catch (error) {
