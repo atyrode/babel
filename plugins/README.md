@@ -238,10 +238,11 @@ git -C ../../manifold checkout "$(cat MANIFOLD_REV)"
 bun install --cwd ../../manifold --frozen-lockfile   # the kit resolves zod and the protocol from its workspace
 ```
 
-`MANIFOLD_REV` follows Manifold `main` and currently names `637cbb79`, which carries the plugin
+`MANIFOLD_REV` follows Manifold `main` and currently names `0bc76660`, which carries the plugin
 database (ADR 0034) with its failure-atomic lifecycle (atyrode/manifold#536) — the primitive
 Babel cannot start without — per-operation `concurrentJobs` admission (#551), the `job_progress`
-event (#552) and metered brokered inference (ADR 0038, #554). The checkout on dev-01 is named
+event (#552), metered brokered inference (ADR 0038, #554) and the `pi-native-usage` meter kind
+(#572) that omp's own gateway wire needs. The checkout on dev-01 is named
 `manifold-db` because the plugin database was a branch before it was `main`; it is now simply
 that clone of atyrode/manifold, detached at the pin, and `feat/brokered-inference`, the other
 branch it once carried, is merged into `main` and superseded by it. Nothing here pins a branch.
