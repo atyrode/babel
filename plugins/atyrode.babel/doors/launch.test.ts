@@ -22,6 +22,7 @@ import {
   OUTPUT_LOCATION,
   PRESET_OPERATIONS,
 } from "../contract.ts";
+import { ExploreInputSchema } from "../machine/explore.ts";
 import type {
   Conductor,
   JobLaunch,
@@ -455,6 +456,67 @@ test("a preview of the session the operator chose carries its price and its ceil
   });
 });
 
+test("a hub that refused Babel's meter kind is reported as unsupported, not as unconfigured", async () => {
+  // #284: on a hub predating manifold#572 `ServicePolicySchema` admits `openai-usage` alone, so
+  // `setupInference` cannot write the policy omp's wire needs and the configuration read shows
+  // the same absence as a machine nobody set up. Telling the operator to run `setupInference`
+  // would be telling him to repeat what the hub just refused — and on that hub the deployment
+  // review refuses Babel's whole machine half over the same missing policy, so the sentence he
+  // needs names the hub, not the machine.
+  servicePolicy = {
+    ok: true,
+    policy: null,
+    setup: {
+      state: "refused",
+      detail:
+        'invalid_value at policies.0.operations.stream.meter.kind: expected "openai-usage"',
+    },
+  };
+
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
+  });
+
+  expect(answer["session"]).toMatchObject({
+    policy: "unsupported",
+    priced: false,
+    setupRefusal:
+      'invalid_value at policies.0.operations.stream.meter.kind: expected "openai-usage"',
+  });
+  expect(String((answer["session"] as Record<string, unknown>)["note"])).toContain(
+    "does not know the pi-native-usage meter kind",
+  );
+});
+
+test("an absent policy refused for any other reason reports the hub's own sentence", async () => {
+  servicePolicy = {
+    ok: true,
+    policy: null,
+    setup: { state: "refused", detail: "service_configuration_conflict" },
+  };
+
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
+  });
+
+  // Still `missing` — the owner CAN act on it — but never silently: the refusal is the evidence.
+  expect(answer["session"]).toMatchObject({
+    policy: "missing",
+    setupRefusal: "service_configuration_conflict",
+  });
+});
+
+test("an absent policy nobody has tried to install still says setupInference installs one", async () => {
+  servicePolicy = { ok: true, policy: null };
+
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
+  });
+
+  expect(answer["session"]).toMatchObject({ policy: "missing" });
+  expect((answer["session"] as Record<string, unknown>)["setupRefusal"]).toBeUndefined();
+});
+
 test("a preview of a deployment that has run nothing states no profile", async () => {
   const answer = await dispatch(ACTIONS.launchPreview, {
     machineId: MACHINE, preset: "keep-going", minutes: 30,
@@ -521,6 +583,16 @@ test("reading what is new carries the window's sessions and the recipe it was to
   });
   // One job's whole input record is bounded at 64 KiB, and this one is inside it.
   expect(new TextEncoder().encode(JSON.stringify(launch.input)).byteLength).toBeLessThan(65_536);
+
+  // AND THE MACHINE HALF ACCEPTS THE DOCUMENT THIS DOOR WROTE, parsed by its own schema rather
+  // than compared to a fixture (#284). The blocker this holds: `session` is the operator's
+  // whole `SessionChoice` — provider, scope, credentialId, identityKey — and
+  // `machine/engine/launch.ts` `SessionRefSchema` is strict, so a narrower shape refused every
+  // explore `unrecognized_keys` in `machine/main.ts` before omp was ever launched. The
+  // hand-written session in the machine's own fixtures could not see it; this can only be
+  // wrong if the two halves genuinely disagree.
+  const received = ExploreInputSchema.parse(document);
+  expect(received.session).toEqual(SESSION);
 
   const run = await harness.store.run("run_000001");
   expect(run.run).toMatchObject({ recipe: RECIPE.id, kind: OPERATIONS.explore });

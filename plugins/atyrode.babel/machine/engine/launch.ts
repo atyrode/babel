@@ -46,16 +46,29 @@ import { OMP_HOME, OMP_INPUT_FILES, THINKING_LEVELS } from "../../contract.ts";
  * WHAT A RUN WAS ASKED TO BE, as the machine half receives it in the launch document: the model
  * reference omp routes by, the thinking level, and the account the owner will spend.
  *
- * It replaces `ProfileRefSchema`. A profile was a name Code resolved three things behind; these
- * ARE the three things, and the two that identify the account are the non-secret halves of the
- * pool the owner already holds — the job never sees `scope` or `credentialId`, which are the
- * gateway's business, so they are not here.
+ * IT IS THE DOOR'S `SessionChoice`, FIELD FOR FIELD, and that is the point. `doors/launch.ts`
+ * `startExplore` and `server/conductor.ts` put the operator's whole choice into the document
+ * (`contract.ts` `SessionChoiceSchema`: model, thinking, and an account of provider, scope,
+ * credentialId, identityKey). A narrower shape here is not a smaller promise, it is a REFUSAL:
+ * this is a strict object, so `machine/main.ts` `run()` answered every explore and evaluate
+ * `unrecognized_keys` on `session.account.scope` before omp was ever launched. One shape, one
+ * schema, and the launch document is parsed by the schema the door's own input was built from.
+ *
+ * `scope` and `credentialId` are NAMES the machine's broker resolves and never secrets — the
+ * pool the owner materializes into the gateway job carries both (`server/plan.ts`
+ * `sessionInputs`). They are OPTIONAL here rather than defaulted, which is the honest shape:
+ * the job has no use for them at all — `engineArgv` puts nothing about the session on argv, and
+ * the receipt projects the two identifying halves only (`receipts.ts` `profileOf`/`sessionOf`:
+ * provider and identityKey) — so a hand-run that holds neither is not asked to invent one, and
+ * a reader of this type is not told the machine half depends on something it never reads.
  */
 export const SessionRefSchema = z.strictObject({
   model: z.string().min(1).max(256),
   thinking: z.enum(THINKING_LEVELS).optional(),
   account: z.strictObject({
     provider: z.string().min(1).max(128),
+    scope: z.string().max(1024).optional(),
+    credentialId: z.string().max(64).optional(),
     identityKey: z.string().max(1024).default(""),
   }),
 });
@@ -316,9 +329,9 @@ const KNOWN_REPORT_FIELDS: Record<string, true> = {
  *
  * On 2026-09-13 every run of an hour failed as "the engine closed its stdout before a ready
  * frame, exit status -1" while the real reason — the account snapshot was unavailable because
- * the auth broker was down — was one line earlier on stderr and nowhere in any receipt. These
- * are the names that sentence is replaced by, and each is decided from something this process
- * observed: the engine's own stderr, the job's own home, or a counted number of retries.
+ * the auth broker was down — was nowhere in any receipt. These are the names that sentence is
+ * replaced by, and each is decided from something this process observed: what the engine said
+ * ON ITS PIPE, the job's own home, or a counted number of retry frames.
  */
 export const LAUNCH_FAILURES = {
   /** The engine could not reach the account broker behind the owner's proxy. */
@@ -331,37 +344,84 @@ export const LAUNCH_FAILURES = {
 export type LaunchFailureName = (typeof LAUNCH_FAILURES)[keyof typeof LAUNCH_FAILURES];
 
 /**
- * HOW MANY CONSECUTIVE PROVIDER REFUSALS A RUN SURVIVES before it ends `rate_limited` (K-5,
- * relocated to Babel's own code by #279 because this is the only place it was ever consumed).
+ * HOW MANY PROVIDER REFUSALS A RUN SURVIVES before it ends `rate_limited` (K-5, relocated to
+ * Babel's own code by #279 because this is the only place it was ever consumed).
  *
  * Five, because the failure this bounds is a window that has run out, and a window that has run
  * out does not refill inside one run: on 2026-09-13, 152.7 MB was sent and 2.0 MB received
  * across 21 sockets with no way to tell a retry from an answer. A run that ends by name after
  * five is a run whose receipt an operator can act on.
+ *
+ * WHAT IS COUNTED IS `auto_retry_start` FRAMES ON THE PIPE, not lines of logging. omp 18.1.14
+ * writes its diagnostics to `~/.omp/logs` and leaves stderr EMPTY (measured: two probe runs of
+ * the real binary against a 429-ing endpoint and against a dead gateway, 0 bytes of stderr
+ * both times), while announcing every refusal it is about to retry on stdout:
+ *
+ *   {"type":"auto_retry_start","attempt":1,"maxAttempts":10,"delayMs":30000,
+ *    "errorMessage":"rate limited by the probe"}
+ *   {"type":"auto_retry_end","attempt":1,"success":true,"retryErrors":[…]}
+ *
+ * A cap counted off stderr was therefore a cap that never fired.
  */
 export const MAX_RETRIES = 5;
 
 /**
- * The stderr lines that name a failure, in the order a reader should prefer them. They are
- * patterns over the engine's own diagnostics because that is where the cause appears: the
- * gateway answers a job `{"error":{"type":"gateway_unavailable"}}` and omp says so on stderr,
- * and a handshake that never happened has nothing else to offer.
+ * The failures the engine's OWN ERROR TEXT names, in the order a reader should prefer them.
+ *
+ * The text is whatever omp put in `auto_retry_start.errorMessage`, `auto_retry_end.finalError`
+ * or the `errorMessage` of a turn it ended with `stopReason:"error"` — the three places a
+ * provider or gateway refusal appears on the pipe. These are not guesses at its wording; they
+ * are the two sentences omp 18.1.14 was MEASURED to send (probe against the real binary, one
+ * fake gateway each):
+ *
+ * - the owner's proxy refusing the lane — `ProxyFailure(503, "service_unavailable")` in
+ *   manifold `packages/agent/src/job-service-proxy.ts`, which writes `{"error":<code>}` —
+ *   reaches the pipe as `auth-gateway 503: {"error":"service_unavailable"}`, retried;
+ * - no proxy listening at all reaches it as `Unable to connect. Is the computer able to access
+ *   the url?`, retried ten times and then `auto_retry_end{success:false,finalError:…}`.
+ *
+ * Both are the owner's metered lane being unavailable, which is one name an operator acts on:
+ * the gateway's own refusal codes are kept beside them because that is what the sentence
+ * carries when the proxy answers rather than when it is absent.
  */
-const STDERR_FAILURES: readonly { pattern: RegExp; name: LaunchFailureName }[] = [
-  { pattern: /gateway_unavailable|account_unavailable|account snapshot is unavailable/i, name: LAUNCH_FAILURES.brokerUnavailable },
-  { pattern: /\b429\b|rate.?limit/i, name: LAUNCH_FAILURES.rateLimited },
+const ENGINE_ERROR_FAILURES: readonly { pattern: RegExp; name: LaunchFailureName }[] = [
+  {
+    pattern:
+      /service_unavailable|gateway_unavailable|account_unavailable|account snapshot is unavailable|unable to connect|connection refused|econnrefused|bad gateway|\bauth-gateway\b.*\b50[0-9]\b|\b50[23]\b/i,
+    name: LAUNCH_FAILURES.brokerUnavailable,
+  },
+  { pattern: /\b429\b|rate.?limit|too many requests/i, name: LAUNCH_FAILURES.rateLimited },
 ];
 
 /**
- * The named failure the engine's diagnostics carry, or null. It is read only when a run produced
- * nothing: a run that answered is explained by its answer, and a 429 it recovered from is a
- * retry rather than a cause.
+ * The named failure the text the ENGINE ITSELF reported carries, or null when it names none.
+ *
+ * It is read only when a run produced nothing: a run that answered is explained by its answer,
+ * and a 429 it recovered from is a retry rather than a cause.
  */
-export function diagnoseFailure(stderr: string): { name: LaunchFailureName; reason: string } | null {
+export function diagnoseEngineError(text: string): { name: LaunchFailureName; reason: string } | null {
+  const said = text.trim();
+  if (said === "") return null;
+  for (const { pattern, name } of ENGINE_ERROR_FAILURES) {
+    if (pattern.test(said)) return { name, reason: said.slice(0, 512) };
+  }
+  return null;
+}
+
+/**
+ * THE LAST RESORT, and labelled as one: the same patterns over the engine's stderr tail.
+ *
+ * omp says nothing there, so this can only speak for an engine that never reached its pipe at
+ * all — a wrapper script, a sandbox refusal, `code engine`'s own diagnostics on 2026-09-13
+ * (`the account snapshot is unavailable, so the run would launch with no account policy`). Its
+ * reason is prefixed with `stderr:` so a receipt never presents a scraped log line as though
+ * the engine had reported it in protocol.
+ */
+export function diagnoseStderr(stderr: string): { name: LaunchFailureName; reason: string } | null {
   const lines = stderr.split("\n").filter((line) => line.trim() !== "");
-  for (const { pattern, name } of STDERR_FAILURES) {
+  for (const { pattern, name } of ENGINE_ERROR_FAILURES) {
     const line = lines.findLast((candidate) => pattern.test(candidate));
-    if (line !== undefined) return { name, reason: line.trim().slice(0, 512) };
+    if (line !== undefined) return { name, reason: `stderr: ${line.trim().slice(0, 504)}` };
   }
   return null;
 }

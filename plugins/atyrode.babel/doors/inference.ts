@@ -20,8 +20,10 @@ import {
   buildInferencePolicy,
   inferenceRuntime,
   INFERENCE_PRICES,
+  recordServiceSetup,
   type InferencePolicy,
 } from "../server/inference.ts";
+import type { BabelStore } from "../store/store.ts";
 import { defineDoor, type Door } from "./door.ts";
 
 /*
@@ -95,7 +97,7 @@ interface BrokerReference {
   readonly machineId: string;
 }
 
-export function inferenceDoors(_deps: InferenceDeps): readonly Door[] {
+export function inferenceDoors(store: BabelStore, _deps: InferenceDeps): readonly Door[] {
   /** The broker's reference, or the sentence naming why it cannot be read. */
   async function broker(ctx: GuestCtx): Promise<BrokerReference | { unavailable: string }> {
     let described: InstanceServiceDescription;
@@ -317,12 +319,23 @@ export function inferenceDoors(_deps: InferenceDeps): readonly Door[] {
         });
         revision = configured.revision;
       } catch (error) {
+        // WHAT THE HUB ANSWERED IS KEPT (#284), because the write left nothing behind and the
+        // launch preview cannot otherwise tell this machine from one nobody has set up. A hub
+        // that refused the meter kind is a hub older than this plugin, and the preview says so
+        // by name (`unsupported`) with this sentence as its evidence.
+        const refusal = message(error);
+        await recordServiceSetup(store, input.machineId, INFERENCE_SERVICE.serviceId, {
+          state: "refused",
+          detail: refusal,
+        });
         return {
-          refused:
-            `${input.machineId} refused the ${INFERENCE_SERVICE.serviceId} policy: ` +
-            message(error),
+          refused: `${input.machineId} refused the ${INFERENCE_SERVICE.serviceId} policy: ${refusal}`,
         };
       }
+      await recordServiceSetup(store, input.machineId, INFERENCE_SERVICE.serviceId, {
+        state: "installed",
+        detail: "",
+      });
       return {
         serviceId: INFERENCE_SERVICE.serviceId,
         revision,

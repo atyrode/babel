@@ -321,8 +321,10 @@ test("an engine that never becomes ready fails the handshake, and says what it s
 
 test("a handshake that dies with the broker down is named broker_unavailable (#277)", async () => {
   // The two hours of 2026-09-13 this closes: every run failed as "closed its stdout before a
-  // ready frame, exit status -1" while `account_unavailable` sat one line earlier on stderr and
-  // nowhere in any receipt. The cause is read off the engine's own diagnostics and named.
+  // ready frame, exit status -1" while `account_unavailable` sat one line earlier and nowhere in
+  // any receipt. This is the LAST-RESORT reading (#284): an engine that died before its pipe
+  // ever spoke said nothing on it, so its stderr tail is the only account of itself there is —
+  // and the reason says where it came from rather than passing a log line off as protocol.
   const { outcome } = await run([
     "--fake-die-before-ready",
     "--fake-stderr",
@@ -332,7 +334,81 @@ test("a handshake that dies with the broker down is named broker_unavailable (#2
   expect(outcome.failure?.code).toBe(ENGINE_FAILURES.handshake);
   expect(outcome.failure?.named).toBe(LAUNCH_FAILURES.brokerUnavailable);
   expect(outcome.finished?.failure).toBe(LAUNCH_FAILURES.brokerUnavailable);
-  expect(outcome.finished?.reason).toContain("account snapshot is unavailable");
+  expect(outcome.finished?.reason).toBe(
+    "stderr: engine: the account snapshot is unavailable, so the run would launch with no account policy",
+  );
+});
+
+test("provider refusals are counted off the pipe's auto_retry_start frames, not off stderr", async () => {
+  // WHAT omp ACTUALLY DOES (#284, measured against 18.1.14): it logs to `~/.omp/logs`, leaves
+  // stderr EMPTY, and announces every refusal it is about to retry on stdout as
+  // `auto_retry_start {attempt, maxAttempts, delayMs, errorMessage}`. A cap counted off stderr
+  // counted nothing, so the run of a window that had run out kept going in silence.
+  const { outcome } = await run([
+    "--fake-retries",
+    "3",
+    "--fake-retry-error",
+    "429 rate limited by the provider",
+    "--fake-submit-json",
+    '{"answer":"after three refusals"}',
+  ]);
+
+  expect(outcome.closure).toBe("completed");
+  expect(outcome.stderrTail).toBe("");
+  expect(outcome.finished?.retries).toBe(3);
+  // Recovered is not a cause: the run answered, so nothing is named.
+  expect(outcome.finished?.failure).toBe("");
+  expect(outcome.progress.some((entry) => entry.message.includes("retry 1 of 10"))).toBe(true);
+});
+
+test("past the retry cap the run ends rate_limited, on frames alone", async () => {
+  const { outcome } = await run(
+    ["--fake-retries", "4", "--fake-submit-json", '{"answer":"never reached"}'],
+    {},
+    { limits: { maxRetries: 2 } },
+  );
+
+  expect(outcome.closure).toBe("failed");
+  expect(outcome.failure?.code).toBe(ENGINE_FAILURES.rateLimited);
+  expect(outcome.failure?.named).toBe(LAUNCH_FAILURES.rateLimited);
+  expect(outcome.failure?.message).toContain("3 provider refusals, past the 2");
+  expect(outcome.finished?.failure).toBe(LAUNCH_FAILURES.rateLimited);
+  // The provider's own sentence, off the retry frame, is what the receipt carries.
+  expect(outcome.finished?.reason).toContain("429 rate limited by the provider");
+  expect(outcome.result).toBeNull();
+});
+
+test("a turn the gateway refused is named broker_unavailable off the pipe (#284)", async () => {
+  // The real shape of a dead gateway: omp neither fails nor closes its pipe and writes no
+  // stderr — it ends the turn with `stopReason:"error"` and the refusal in `errorMessage`, then
+  // `agent_end`. Read only as "0 submission(s), none accepted", that is #277 all over again.
+  const { outcome } = await run([
+    "--fake-turn-error",
+    "Unable to connect. Is the computer able to access the url?",
+    "--fake-no-submit",
+  ]);
+
+  expect(outcome.closure).toBe("failed");
+  expect(outcome.failure?.code).toBe(ENGINE_FAILURES.noResult);
+  expect(outcome.stderrTail).toBe("");
+  expect(outcome.finished?.failure).toBe(LAUNCH_FAILURES.brokerUnavailable);
+  expect(outcome.finished?.reason).toBe("Unable to connect. Is the computer able to access the url?");
+  expect(outcome.finished?.retries).toBe(0);
+});
+
+test("the owner's proxy refusing the lane is named from the sentence omp sends", async () => {
+  // THE SENTENCE IS MEASURED, not invented: manifold's owner proxy answers a job
+  // `ProxyFailure(503, "service_unavailable")` — `{"error":"service_unavailable"}` — and the
+  // real omp puts that on the pipe as `auth-gateway 503: {"error":"service_unavailable"}`.
+  // A run whose lane is gone must not be filed as a model that would not answer.
+  const { outcome } = await run([
+    "--fake-turn-error",
+    'auth-gateway 503: {"error":"service_unavailable"}',
+    "--fake-no-submit",
+  ]);
+
+  expect(outcome.finished?.failure).toBe(LAUNCH_FAILURES.brokerUnavailable);
+  expect(outcome.finished?.reason).toBe('auth-gateway 503: {"error":"service_unavailable"}');
 });
 
 test("an unknown frame is counted, not refused, and an extension dialog is cancelled", async () => {

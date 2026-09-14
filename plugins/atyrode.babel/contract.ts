@@ -533,20 +533,33 @@ export const SessionChoiceSchema = z.strictObject({
 export type SessionChoice = z.infer<typeof SessionChoiceSchema>;
 
 /**
- * THE THREE STATES AN OPERATOR ACTS DIFFERENTLY ON, plus the one that is not a state at all.
+ * THE FOUR STATES AN OPERATOR ACTS DIFFERENTLY ON, plus the one that is not a state at all.
  *
  * `missing`: the machine's owner has installed no `atyrode.babel.inference` policy, so there is
  * no lane to a model and the button does nothing but refuse. `unpriced`: the policy is there and
  * prices no such model, so a cost ceiling refuses the run `service_price_unknown` before its
  * first call. `priced`: the price and the ceiling are both facts and the preview states them.
  *
- * `unreadable` is the fourth answer and deliberately not a fourth state:
+ * `unsupported`: the owner DID try and THIS HUB refused the policy, because it does not know
+ * the `pi-native-usage` meter kind omp's wire needs (manifold#570, landing as #572). It is a
+ * fourth state and not a shade of `missing` because the act is different: nobody installs
+ * anything until the hub moves, and the same hub also refuses to deploy Babel's machine half at
+ * all (`service_definition_changed` over every operation's bindings, hub-side) — so the
+ * sentence an operator needs is "this hub is older than this plugin", not "install a policy".
+ *
+ * `unreadable` is the answer that is deliberately not a state:
  * `services.readConfiguration` is admitted only to a root caller holding `services:configure` at
  * the machine, so an ordinary operator's dispatch is refused the read. Telling him to install a
  * policy that is already installed, and disabling the button over it, is worse than saying
  * nothing — so it says what it could not see.
  */
-export const SESSION_POLICY_STATES = ["missing", "unpriced", "priced", "unreadable"] as const;
+export const SESSION_POLICY_STATES = [
+  "missing",
+  "unpriced",
+  "priced",
+  "unreadable",
+  "unsupported",
+] as const;
 export const SessionPolicyStateSchema = z.enum(SESSION_POLICY_STATES);
 
 /** What `launchPreview` answers about the session: the account, the model, the price, the ceiling. */
@@ -565,6 +578,13 @@ export const SessionPreviewSchema = z.strictObject({
   unreadable: z.string(),
   /** One sentence for the operator: what will be metered, and what will refuse the run. */
   note: z.string(),
+  /**
+   * WHAT THE HUB ANSWERED the last time an owner installed this policy on this machine,
+   * verbatim; absent when it never refused one. It is what turns `unsupported` from a claim
+   * into evidence: the sentence is the hub's, so an operator can tell a version gap from a
+   * refusal Babel misread.
+   */
+  setupRefusal: z.string().optional(),
 });
 export type SessionPreview = z.infer<typeof SessionPreviewSchema>;
 

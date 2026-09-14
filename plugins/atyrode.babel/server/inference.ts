@@ -2,6 +2,7 @@ import {
   INFERENCE_SERVICE,
   type ModelPrice,
 } from "../contract.ts";
+import type { BabelStore } from "../store/store.ts";
 
 /*
   THE POLICY THE OWNER INSTALLS FOR BABEL'S INFERENCE SERVICE (ADR 0038, #279).
@@ -214,3 +215,72 @@ export function inferenceRuntime(candidate: {
     input: { accountPool: { input: "accountPool" } },
   };
 }
+
+// ---------------------------------------------------------------- what the hub answered
+
+/**
+ * WHY THIS IS RECORDED AT ALL (#284). An absent `atyrode.babel.inference` policy has two
+ * meanings and an operator acts on them differently: nobody has installed one, or THIS HUB
+ * REFUSED the one Babel offers. A refused `configureConfiguration` leaves nothing behind — the
+ * configuration read shows the same absence either way — so the answer is kept here, by the
+ * only act that ever saw it, and the launch preview reads it back.
+ *
+ * It is a fact about a machine and a service, not an act on a record: one row, rewritten, and
+ * `detail` is the hub's own sentence rather than Babel's paraphrase of it.
+ */
+export interface ServiceSetup {
+  readonly state: "installed" | "refused";
+  readonly detail: string;
+}
+
+/** The bound on the hub's sentence: enough to name a cause, never a log to store. */
+const DETAIL_BYTES = 1024;
+
+export async function recordServiceSetup(
+  store: BabelStore,
+  machineId: string,
+  serviceId: string,
+  setup: ServiceSetup,
+): Promise<void> {
+  await store.db.run(
+    `INSERT INTO service_setup(machine_id, service_id, state, detail, observed_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(machine_id, service_id) DO UPDATE
+       SET state = excluded.state, detail = excluded.detail, observed_at = excluded.observed_at`,
+    [
+      machineId,
+      serviceId,
+      setup.state,
+      setup.detail.slice(0, DETAIL_BYTES),
+      new Date(store.now()).toISOString(),
+    ],
+  );
+}
+
+/** What the hub last answered about this service on this machine, or null when nobody asked. */
+export async function lastServiceSetup(
+  store: BabelStore,
+  machineId: string,
+  serviceId: string,
+): Promise<ServiceSetup | null> {
+  const rows = await store.db.query<{ state: string; detail: string }>(
+    `SELECT state, detail FROM service_setup WHERE machine_id = ? AND service_id = ?`,
+    [machineId, serviceId],
+  );
+  const row = rows[0];
+  if (row === undefined) return null;
+  return { state: row.state === "refused" ? "refused" : "installed", detail: row.detail };
+}
+
+/**
+ * WHAT MAKES A REFUSAL THE HUB BEING OLDER THAN THIS PLUGIN, rather than something the owner
+ * can fix by trying again.
+ *
+ * The one thing in Babel's policy a hub may not know is the METER KIND: `ServicePolicySchema`
+ * in the pinned SDK admits `openai-usage` alone and omp's wire needs `pi-native-usage`
+ * (manifold#570, landing as #572). A hub answers the write with its own schema's complaint,
+ * which names the path and the literal it expected — so these are the hub's words and not a
+ * guess: `meter`, and either kind's name. Anything else is an ordinary refusal the preview
+ * reports as itself rather than as a version gap.
+ */
+export const UNSUPPORTED_METER = /meter|pi-native-usage|openai-usage/i;

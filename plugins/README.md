@@ -227,8 +227,26 @@ Four things in it are load-bearing and one is a default:
 - **`meter` on `stream` only.** Listing models costs nothing; the streaming call is what spends,
   and `pi-native-usage` is the kind that reads omp's own wire (`usage.input`, `usage.output`,
   `usage.cacheRead`). `openai-usage` over this wire would refuse every call rather than silently
-  mis-read one (manifold#570 adds the kind; until the SDK pin moves, a hub that does not know it
-  refuses the write by name and `setupInference` reports that refusal).
+  mis-read one. The kind is POLICY CONTENT and appears in no manifest: a manifest's service
+  declaration is `{serviceId, revision, operationIds}` (`ServiceBindingSchema`) and names no
+  meter, so nothing about the kind is baked into the artifact an owner installs.
+
+  **Which hub revisions run what.** manifold#570 adds the kind and #572 lands it; on a hub that
+  predates it (`MANIFOLD_REV` 637cbb79 among them) the consequence is wider than the write:
+
+  - `setupInference` is refused by the hub's own schema, by name, and `launchPreview` reports
+    the session policy as `unsupported` with that sentence as its evidence (#284) rather than as
+    a machine nobody configured;
+  - the machine half cannot be DEPLOYED there at all. The deployment review asks for a policy
+    per service any operation binds — `servicePolicies` flattens
+    `Object.values(machine.operations).flatMap(op => op.services)`
+    (manifold `packages/server/src/job-service.ts`) — so the absent inference policy refuses the
+    whole target `service_definition_changed`, and `scan`, `prepare` and `archive` are collateral
+    even though they bind no model. Nothing in this plugin can narrow that: the requirement is
+    real for `explore` and `evaluate`, and the review's scope is the hub's.
+  - once deployed on a hub that DOES know the kind, admission is per operation
+    (`resourceRefusal` reads only that operation's bindings), so a machine whose gateway is down
+    still scans, prepares and archives while `explore` and `evaluate` are refused by name.
 - **`prices.models` keys are FULLY QUALIFIED** (`anthropic/claude-sonnet-5`, never
   `claude-sonnet-5`): the owner prices a call by the verbatim `modelId` the request body carried,
   and omp's gateway keys its model map by `<provider>/<id>`. A bare key prices nothing, and a model

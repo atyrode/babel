@@ -14,11 +14,13 @@ import { readDoors } from "./read.ts";
 
   Reading (`read.ts`), ruling (`acts.ts`), starting (`launch.ts`) and the model lane
   (`inference.ts`) are the four halves — a reader of the roster should meet the answers before
-  the acts, and the doors that spend money last. Only two need anything but the store: a launch
-  reaches the machines through the dispatch's own job authority, and an act that writes a bound
-  is judged against `concurrentJobs`, the ceiling this plugin's manifest declares for the
-  operations it launches. `inference.ts` needs neither — it reads and writes SERVICES, through
-  the dispatch's own service authority, and holds no store state at all.
+  the acts, and the doors that spend money last. A launch reaches the machines through the
+  dispatch's own job authority, and an act that writes a bound is judged against
+  `concurrentJobs`, the ceiling this plugin's manifest declares for the operations it launches.
+  `inference.ts` reads and writes SERVICES through the dispatch's own service authority and owns
+  no policy state of its own — it keeps ONE fact in the store: what the hub answered the last
+  time an owner installed a policy, which is what the launch preview reads to tell a hub that
+  refused Babel's meter kind from a machine nobody has set up (#284).
 */
 
 export interface BabelDoors {
@@ -33,7 +35,7 @@ export function babelDoors(store: BabelStore, deps: LaunchDeps, concurrentJobs: 
     ...readDoors(store),
     ...actDoors(store, concurrentJobs),
     ...launchDoors(store, deps),
-    ...inferenceDoors({ now: deps.now }),
+    ...inferenceDoors(store, { now: deps.now }),
   ];
   for (const door of doors) {
     const { name } = door.action;

@@ -25,6 +25,7 @@ import {
   type Recipe,
   type RunPlan,
 } from "./server/conductor.ts";
+import { lastServiceSetup } from "./server/inference.ts";
 import {
   ENABLE_WITHOUT_JOBS,
   HOOK_WITHOUT_MACHINES,
@@ -242,7 +243,13 @@ const doors = babelDoors(
     cookbook: COOKBOOK,
     jobs: (ctx) => jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
     machines: (ctx) => machinesSlice(ctx.machines),
-    services: (ctx) => servicesSlice(ctx.services),
+    // The preview's second reader (#284): when the machine holds no inference policy, what the
+    // hub answered the last time an owner tried to install one is what decides whether the
+    // sentence is "install one" or "this hub does not know the meter kind".
+    services: (ctx) =>
+      servicesSlice(ctx.services, (machineId, serviceId) =>
+        lastServiceSetup(store, machineId, serviceId),
+      ),
     plan: planFor,
     cycle: loop,
     now: () => store.now(),

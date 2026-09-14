@@ -13,6 +13,7 @@ import {
   OUTPUT_LOCATION,
   RUN_STAGES,
 } from "../contract.ts";
+import { EvaluateInputSchema } from "../machine/evaluate.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
 import type {
@@ -1280,6 +1281,24 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
   expect(document["target"]).toMatchObject({ id: "hyp_00000001", kind: "hypothesis" });
   expect(JSON.stringify(document["target"])).not.toContain("vote");
   expect(document["sources"]).toMatchObject([{ selector: "omp/s1", snapshot: "snap-1" }]);
+
+  // AND THE MACHINE HALF ACCEPTS IT, which is the only thing that makes the two halves one
+  // program (#284). The blocker this holds: `session` carries the operator's whole
+  // `SessionChoice` — provider, scope, credentialId, identityKey — and the machine's
+  // `SessionRefSchema` is strict, so a narrower shape there refused every draw
+  // `unrecognized_keys` before omp was launched. Parsed here from the document the CONDUCTOR
+  // actually wrote, never from a fixture beside it.
+  const received = EvaluateInputSchema.parse(document);
+  expect(received.session).toEqual({
+    model: "anthropic/claude-sonnet-5",
+    thinking: "high",
+    account: {
+      provider: "anthropic",
+      scope: "atyrode.omp.accounts.broker@7/m-dev-01",
+      credentialId: "3",
+      identityKey: "victorballu@gmail.com",
+    },
+  });
 
   const queued = await db.query(`SELECT closure, records FROM runs WHERE id = 'run_asg_a1b2'`);
   expect(queued[0]).toEqual({ closure: null, records: 0n });

@@ -38,8 +38,24 @@ interface Flags {
   noReady: boolean;
   /** Exit before the ready frame, which is #277's shape: an EOF with a cause on stderr. */
   dieBeforeReady: boolean;
-  /** Lines written to stderr before anything else; what `diagnoseFailure` reads. */
+  /**
+   * Lines written to stderr before anything else; what `diagnoseStderr` reads. A real omp writes
+   * NOTHING here (#284), so this stands for the engine that never reached its pipe at all.
+   */
   stderr: string[];
+  /**
+   * How many `auto_retry_start` frames the turn emits before it submits, each paired with the
+   * `auto_retry_end` that settles it. It is omp's own shape, read off the binary: a refusal it
+   * is about to retry, announced on the pipe with the provider's sentence.
+   */
+  retries: number;
+  /** What every retry frame reports as the provider's own words. */
+  retryError: string;
+  /**
+   * Ends the turn the way omp ends one the gateway refused: `message_end` with
+   * `stopReason:"error"` and this text, then `agent_end`, with no submission and no exit.
+   */
+  turnError: string;
   readyVersions: number[];
   /** A model that ANSWERS, announced with `model_changed`; it moves the run's model trail. */
   model: string;
@@ -68,6 +84,9 @@ function parse(args: readonly string[]): Flags {
     noReady: false,
     dieBeforeReady: false,
     stderr: [],
+    retries: 0,
+    retryError: "429 rate limited by the provider",
+    turnError: "",
     readyVersions: [1, 2],
     model: "",
     promptOut: "",
@@ -116,6 +135,15 @@ function parse(args: readonly string[]): Flags {
         break;
       case "--fake-stderr":
         flags.stderr.push(value());
+        break;
+      case "--fake-retries":
+        flags.retries = Number.parseInt(value(), 10);
+        break;
+      case "--fake-retry-error":
+        flags.retryError = value();
+        break;
+      case "--fake-turn-error":
+        flags.turnError = value();
         break;
       case "--fake-ready-versions":
         flags.readyVersions = value()
@@ -382,28 +410,54 @@ async function main(): Promise<void> {
       await emit({ type: "extension_ui_request", id: "ui-1", method: "confirm", message: "Continue?" });
       await nextCommand();
     }
-
-    const payloads = [...flags.submit];
-    if (flags.submitPath !== "") payloads.push(await Bun.file(flags.submitPath).text());
-    if (!flags.noSubmit) {
-      for (const payload of flags.submitTwice ? [...payloads, ...payloads] : payloads) {
-        hostIds += 1;
-        const callId = `toolu_${hostIds}`;
-        const id = `host_${hostIds}`;
-        await emit({ type: "tool_execution_start", toolCallId: callId, toolName: "babel_submit_result" });
-        await emit({
-          type: "host_tool_call",
-          id,
-          toolCallId: callId,
-          toolName: "babel_submit_result",
-          arguments: JSON.parse(expand(payload, params)),
-        });
-        if ((await nextCommand()) === null) break;
-        await emit({ type: "tool_execution_end", toolCallId: callId, toolName: "babel_submit_result" });
-      }
+    // EVERY PROVIDER REFUSAL omp WOULD ANNOUNCE, in omp's own shape: the refusal it is about to
+    // retry, then the settlement. A real one interleaves a failed turn between the two; what
+    // Babel counts is the `auto_retry_start`, so the pair is what this fixture owes.
+    for (let attempt = 1; attempt <= flags.retries; attempt += 1) {
+      await emit({
+        type: "message_end",
+        message: { role: "assistant", stopReason: "error", errorMessage: flags.retryError },
+      });
+      await emit({
+        type: "auto_retry_start",
+        attempt,
+        maxAttempts: 10,
+        delayMs: 25,
+        errorMessage: flags.retryError,
+      });
+      await emit({ type: "auto_retry_end", attempt, success: true });
     }
-    await emit({ type: "turn_end" });
-    await emit({ type: "agent_end", messages: [], isTerminal: true });
+    // THE TURN THE GATEWAY REFUSED. omp does not fail, does not close its pipe and says nothing
+    // on stderr: it ends the turn in error and leaves. There is no submission after this, which
+    // is what makes the run's only account of itself the frames it did send.
+    if (flags.turnError !== "") {
+      const message = { role: "assistant", stopReason: "error", errorMessage: flags.turnError };
+      await emit({ type: "message_end", message });
+      await emit({ type: "turn_end", message });
+      await emit({ type: "agent_end", messages: [], isTerminal: true });
+    } else {
+      const payloads = [...flags.submit];
+      if (flags.submitPath !== "") payloads.push(await Bun.file(flags.submitPath).text());
+      if (!flags.noSubmit) {
+        for (const payload of flags.submitTwice ? [...payloads, ...payloads] : payloads) {
+          hostIds += 1;
+          const callId = `toolu_${hostIds}`;
+          const id = `host_${hostIds}`;
+          await emit({ type: "tool_execution_start", toolCallId: callId, toolName: "babel_submit_result" });
+          await emit({
+            type: "host_tool_call",
+            id,
+            toolCallId: callId,
+            toolName: "babel_submit_result",
+            arguments: JSON.parse(expand(payload, params)),
+          });
+          if ((await nextCommand()) === null) break;
+          await emit({ type: "tool_execution_end", toolCallId: callId, toolName: "babel_submit_result" });
+        }
+      }
+      await emit({ type: "turn_end" });
+      await emit({ type: "agent_end", messages: [], isTerminal: true });
+    }
   }
 
   // After the turn Babel asks for stats and closes stdin.

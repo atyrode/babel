@@ -14,6 +14,7 @@ import {
   type SessionPreview,
 } from "../contract.ts";
 import { DEFAULT_POLICY, type Policy } from "../store/coordinator.ts";
+import { UNSUPPORTED_METER, type ServiceSetup } from "./inference.ts";
 import type {
   Awaitable,
   JobLaunch,
@@ -588,9 +589,17 @@ export interface ServicePrices {
  * holding `services:configure` at the machine — and a preview that reported "not installed"
  * because it was not allowed to look would be telling the operator to install a policy that is
  * already there.
+ *
+ * `setup` is what makes the SECOND answer two answers (#284). A policy the hub refused and a
+ * policy nobody installed read identically here, and the difference is the whole of what the
+ * operator does next, so the last thing the hub answered an owner is carried beside the read.
  */
 export type ServicePolicyOutcome =
-  | { readonly ok: true; readonly policy: { readonly prices?: ServicePrices | undefined } | null }
+  | {
+      readonly ok: true;
+      readonly policy: { readonly prices?: ServicePrices | undefined } | null;
+      readonly setup?: ServiceSetup | null | undefined;
+    }
   | { readonly ok: false; readonly reason: string };
 
 /** The one service question this plugin asks of a machine: what the owner installed under an id. */
@@ -598,19 +607,33 @@ export interface ServicesSlice {
   policy(machineId: string, serviceId: string): Awaitable<ServicePolicyOutcome>;
 }
 
+/** What the hub last answered an owner about one service here; see `server/inference.ts`. */
+export type SetupReader = (
+  machineId: string,
+  serviceId: string,
+) => Awaitable<ServiceSetup | null>;
+
 /**
  * `ctx.services`, narrowed to that question. The refusal is KEPT rather than thrown because it
  * is an ordinary answer here: a dispatch under the operator's own credential is not entitled to
  * read a machine's service configuration, and the preview says what it could not see instead of
  * failing the door the operator opened to look at something else.
+ *
+ * `setup` is read ONLY when the configuration was readable and holds no such policy: that is
+ * the one case where Babel's own record of the hub's answer changes what the preview says.
  */
-export function servicesSlice(services: GuestCtx["services"]): ServicesSlice {
+export function servicesSlice(services: GuestCtx["services"], setup?: SetupReader): ServicesSlice {
   return {
     policy: async (machineId: string, serviceId: string): Promise<ServicePolicyOutcome> => {
       try {
         const read = await services.readConfiguration({ machineId });
         const found = read.configuration.policies.find((entry) => entry.serviceId === serviceId);
-        return { ok: true, policy: found === undefined ? null : { prices: found.prices } };
+        if (found !== undefined) return { ok: true, policy: { prices: found.prices } };
+        return {
+          ok: true,
+          policy: null,
+          setup: setup === undefined ? null : await setup(machineId, serviceId),
+        };
       } catch (error) {
         return { ok: false, reason: error instanceof Error ? error.message : String(error) };
       }
@@ -661,17 +684,32 @@ export function sessionPreview(args: {
     };
   }
   if (args.outcome.policy === null) {
+    // THE HUB'S OWN ANSWER DECIDES WHICH SENTENCE THIS IS (#284). An absent policy the hub
+    // refused over the meter kind is a hub older than this plugin: nobody can install anything
+    // until its SDK carries `pi-native-usage` (manifold#570/#572), and the same hub refuses to
+    // deploy Babel's machine half at all, so "run setupInference" would be advice that cannot
+    // work. Any other refusal is reported as itself, with the hub's sentence beside it.
+    const refusal = args.outcome.setup?.state === "refused" ? args.outcome.setup.detail : "";
+    const unsupported = refusal !== "" && UNSUPPORTED_METER.test(refusal);
     return {
       serviceId: INFERENCE_SERVICE.serviceId,
       account,
       model,
       priced: false,
       ...ceiling,
-      policy: "missing",
+      policy: unsupported ? "unsupported" : "missing",
       unreadable: "",
-      note:
-        `no ${INFERENCE_SERVICE.serviceId} policy is installed on this machine, so a run has ` +
-        `no lane to a model; setupInference installs one`,
+      ...(refusal === "" ? {} : { setupRefusal: refusal }),
+      note: unsupported
+        ? `this hub refused the ${INFERENCE_SERVICE.serviceId} policy because it does not know ` +
+          `the ${INFERENCE_SERVICE.meterKind} meter kind (manifold#570), so no metered lane can ` +
+          `be installed here until the hub carries it; nothing an operator does on this machine ` +
+          `changes that`
+        : refusal === ""
+          ? `no ${INFERENCE_SERVICE.serviceId} policy is installed on this machine, so a run has ` +
+            `no lane to a model; setupInference installs one`
+          : `no ${INFERENCE_SERVICE.serviceId} policy is installed: the last attempt was refused ` +
+            `by this hub (${refusal.slice(0, 200)})`,
     };
   }
   const prices = args.outcome.policy.prices;
