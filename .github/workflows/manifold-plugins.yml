@@ -15,10 +15,11 @@ name: manifold-plugins
 # metered brokered inference (ADR 0038, #554).
 #
 # Delivery is not here. Every change is proved on preview.manifold.tyrode.dev or a local
-# preview-equivalent hub, through `bun run dev -- --deliver` from dev-01; production
-# (manifold.tyrode.dev) is installed by the operator, by hand, from the plugin manager. The
-# release path that hands a tagged bundle to the preview's receiver returns with the P7 cutover
-# (plugins/README.md, "Where a change is proved").
+# preview-equivalent hub: between releases through `bun run dev -- --deliver` from dev-01, and
+# on a `v*` tag through release.yml, which runs this same gate against the tagged revision and
+# hands the verified bundles to the preview's receiver. Production (manifold.tyrode.dev) is
+# installed by the operator, by hand, from the plugin manager (plugins/README.md, "Where a
+# change is proved").
 
 on:
   push:

@@ -192,15 +192,18 @@ may supply missing capability proof, but a local skip is not a pass.
   against and follows Manifold `main`: moving it to a newer `main` revision is ordinary
   work (operator direction 2026-09-13) done in its own PR, with the `uses:` ref moved to
   the same revision, the sibling checkout (`plugins/README.md`, "The SDK is a sibling
-  checkout") moved with it and the gate green against it; pinning a branch, packing into
-  the release and installing on production remain the operator's calls
-  (`plugins/README.md`, "Where a change is proved").
-- **Release or deployment work:** read `.github/workflows/release.yml` for `v*` binary
-  publication, and the runbook/transition record for current deployment ownership.
-  Managed-machine packaging, scheduling and storage/key placement belong to dotfiles;
-  source publication does not prove fleet activation. Only tag deployable revisions;
-  never move or delete a published tag, since proxied Go modules are immutable. A bad tag
-  stays and the next patch follows it.
+  checkout") moved with it and the gate green against it; pinning a branch and installing
+  on production remain the operator's calls (`plugins/README.md`, "Where a change is
+  proved").
+- **Release or deployment work:** read `.github/workflows/release.yml`: a `v*` tag publishes
+  the Go binary, runs the plugin gate against the tagged revision, attaches the verified
+  bundles to the release and hands them to the integrated preview's receiver, baseline
+  before parts (operator direction 2026-09-14: the preview is where a change is proved).
+  Production (`manifold.tyrode.dev`) is installed by the operator, by hand. Read the
+  runbook/transition record for current deployment ownership. Managed-machine packaging,
+  scheduling and storage/key placement belong to dotfiles; source publication does not
+  prove fleet activation. Only tag deployable revisions; never move or delete a published
+  tag, since proxied Go modules are immutable. A bad tag stays and the next patch follows it.
 - **Resuming the dated batch:** read `docs/handoff-2026-09-06.md` and its owning trackers
   only when resuming that work. Keep work/evidence/operator actions in their owning
   repository; external issues are actual Babel dependencies, not a cross-project backlog.

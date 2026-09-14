@@ -294,13 +294,13 @@ developer's machine — then runs `check`, `test`, `pack` and `verify` and uploa
 `manifold-plugins` artifact. It runs on every push to a `plugin/**` branch and on every pull
 request touching `plugins/`.
 
-Release delivery is not wired yet, and this file will not pretend it is: `release.yml` releases
-Babel's own binary and says in its own comment why the plugin jobs were removed. The shape to
-restore, when the cutover reaches P7, is `atyrode/code`'s: a `v*` tag attaches
-`dist/*.manifold-plugin.json` and their sums to the GitHub Release and hands each asset URL and
-sha to the preview hub's receiver, baseline before parts, so the preview installs the release by
-itself. Until then a preview gets a build through `bun run dev --deliver`, and the sha256 that
-counts is the one CI prints.
+Release delivery is `release.yml`: a `v*` tag runs the same reusable gate against the tagged
+revision, attaches `dist/*.manifold-plugin.json` and `manifold-plugins.SHA256SUMS` to the GitHub
+Release beside Babel's binary, and hands each asset URL and sha to the integrated preview's
+receiver (`plugin <url> <sha256>` over the forced-command key, the same verb a developer runs
+from dev-01), baseline before its parts, so the preview installs the release by itself. Between
+releases a preview gets a build through `bun run dev --deliver`, and the sha256 that counts is
+the one CI prints. A tag is permanent: a bad one stays and the next patch follows it.
 
 The sha256 is over an artifact's exact bytes, and Bun writes every bundled module's path as a
 comment, so a hash reproduces only from the layout above with the same Bun. The pins are what
