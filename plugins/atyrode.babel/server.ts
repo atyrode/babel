@@ -22,6 +22,7 @@ import {
 import {
   ENABLE_WITHOUT_JOBS,
   HOOK_WITHOUT_MACHINES,
+  jobCeiling,
   jobsSlice,
   machinesSlice,
   runPlan,
@@ -123,7 +124,15 @@ const keys: KeysSlice = {
 
 const store = openStore(database);
 const manifest = PluginManifestSchema.parse(manifestJson);
-const coordinated = coordinator(store, () => store.now());
+/**
+ * THE CEILING, READ ONCE, FROM THE MANIFEST THIS BUNDLE SHIPS. `limits.concurrentJobs` on
+ * explore and evaluate is what a machine will actually run at once, and the hub refuses the
+ * rest at `execute`; the coordinator governs inside it and the acts that write a bound refuse
+ * above it, so the hub-side governor and the machine-side ceiling are one number rather than
+ * two that drift (#281).
+ */
+const CONCURRENT_JOBS = jobCeiling(manifest);
+const coordinated = coordinator(store, () => store.now(), CONCURRENT_JOBS);
 
 /**
  * THE COOKBOOK THIS HUB HOLDS, and the recipe each review role performs.
@@ -194,15 +203,19 @@ const WAKES: Record<string, true> = {
 const WAKE_FLOOR_MS = 30_000;
 let woke = 0;
 
-const doors = babelDoors(store, {
-  coordinator: coordinated,
-  cookbook: COOKBOOK,
-  jobs: (ctx) => jobsSlice(ctx.jobs),
-  machines: (ctx) => machinesSlice(ctx.machines),
-  plan: planFor,
-  cycle: loop,
-  now: () => store.now(),
-});
+const doors = babelDoors(
+  store,
+  {
+    coordinator: coordinated,
+    cookbook: COOKBOOK,
+    jobs: (ctx) => jobsSlice(ctx.jobs),
+    machines: (ctx) => machinesSlice(ctx.machines),
+    plan: planFor,
+    cycle: loop,
+    now: () => store.now(),
+  },
+  CONCURRENT_JOBS,
+);
 
 /**
  * Every door, with the calling context's own database bound for the length of its handler, and

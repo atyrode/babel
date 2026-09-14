@@ -13,9 +13,9 @@ import { readDoors } from "./read.ts";
 
   Reading (`read.ts`), ruling (`acts.ts`) and starting (`launch.ts`) are the three halves — a
   reader of the roster should meet the nine answers before the nine acts, and the two doors that
-  spend money last. Only the last of them needs anything but the store: a launch reaches the
-  machines through the dispatch's own job authority, so `launchDoors` takes that as a dependency
-  and every other door keeps taking nothing.
+  spend money last. Only the last two need anything but the store: a launch reaches the machines
+  through the dispatch's own job authority, and an act that writes a bound is judged against
+  `concurrentJobs`, the ceiling this plugin's manifest declares for the operations it launches.
 */
 
 export interface BabelDoors {
@@ -23,12 +23,12 @@ export interface BabelDoors {
   readonly handlers: Readonly<Record<string, ServerHandler>>;
 }
 
-export function babelDoors(store: BabelStore, deps: LaunchDeps): BabelDoors {
+export function babelDoors(store: BabelStore, deps: LaunchDeps, concurrentJobs: number): BabelDoors {
   const actions: ServerActionDef[] = [];
   const handlers: Record<string, ServerHandler> = {};
   const doors: readonly Door[] = [
     ...readDoors(store),
-    ...actDoors(store),
+    ...actDoors(store, concurrentJobs),
     ...launchDoors(store, deps),
   ];
   for (const door of doors) {

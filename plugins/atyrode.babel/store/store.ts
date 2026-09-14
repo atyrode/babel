@@ -1279,7 +1279,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     ceilings: PolicyResult["ceilings"],
   ): Promise<BudgetOverlay | null> => {
     const row = await one(
-      `SELECT id, created_at, expires_at, batch_size, per_cycle_cost, daily_cost,
+      `SELECT id, created_at, expires_at, per_cycle_cost, daily_cost,
               concurrent_per_machine, reason
          FROM budgets WHERE cleared_at IS NULL AND expires_at > ?
         ORDER BY created_at DESC, id DESC LIMIT 1`,
@@ -1290,12 +1290,14 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       id: text(row["id"]),
       createdAt: instant(text(row["created_at"])),
       expiresAt: instant(text(row["expires_at"])),
-      batchSize: maybeNumber(row["batch_size"]),
       perCycleCost: maybeNumber(row["per_cycle_cost"]),
       dailyCost: maybeNumber(row["daily_cost"]),
       concurrentPerMachine: maybeNumber(row["concurrent_per_machine"]),
       reason: text(row["reason"]),
     };
+    // `ceilings.concurrent` IS `perMachineBound` of the stored policy — what it states, or the
+    // batch it was written with — so the "from" the strip shows is the figure admission
+    // compares against and never a second reading of the same row.
     const standing: Policy = {
       ...DEFAULT_POLICY,
       perCycleCost: ceilings.perRunUsd,

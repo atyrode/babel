@@ -197,8 +197,16 @@ export const DEFAULT_POLICY: Policy = PolicySchema.parse({});
  * reservation would silently come out of another's; a cap below the initial reviews leaves a
  * role permanently under-reviewed while reporting the record finished; a daily ceiling below
  * one cycle's makes the per-cycle bound decorative.
+ *
+ * `concurrentJobs` IS THE MANIFEST'S CEILING — `limits.concurrentJobs` on the explore and
+ * evaluate operations — and it is an input rather than a constant here because the manifest is
+ * where the hub reads it too: the ceiling belongs to the operation's author and never to a
+ * request (`packages/protocol/src/jobs.ts`). A per-machine bound above it is refused, because
+ * the hub refuses every posting past it at `execute` and a refused posting costs its
+ * reservation and produces no review. The coordinator is the governor; it may not govern above
+ * the number the machine half will actually run.
  */
-export function validatePolicy(policy: Policy): string | null {
+export function validatePolicy(policy: Policy, concurrentJobs: number): string | null {
   if (policy.version.trim() === "") return "a policy has no version";
   if (policy.cadenceSeconds <= 0) return `cadence ${String(policy.cadenceSeconds)}s must be positive`;
   if (policy.overdueSeconds <= 0) {
@@ -239,8 +247,17 @@ export function validatePolicy(policy: Policy): string | null {
   }
   if (policy.leaseSeconds <= 0) return `lease ${String(policy.leaseSeconds)}s must be positive`;
   if (policy.batchSize < 1) return `batch size ${String(policy.batchSize)} must be at least one`;
-  if (perMachineBound(policy) < 1) {
-    return `${String(perMachineBound(policy))} concurrent assignments per machine is below one`;
+  const bound = perMachineBound(policy);
+  if (bound < 1) {
+    return `${String(bound)} concurrent assignments per machine is below one`;
+  }
+  if (bound > concurrentJobs) {
+    return (
+      `${String(bound)} concurrent assignments per machine is above the ` +
+      `${String(concurrentJobs)} jobs a machine runs at once under this plugin's manifest: ` +
+      `the hub refuses the rest at execute, and a refused posting costs its reservation and ` +
+      `produces no review`
+    );
   }
   return null;
 }
@@ -253,8 +270,8 @@ export function validatePolicy(policy: Policy): string | null {
  * have worked at all. Refusing the stored one at draw time would stop every review here until
  * the operator noticed, which is the outage the floor exists to prevent.
  */
-export function validateNewPolicy(policy: Policy): string | null {
-  const refusal = validatePolicy(policy);
+export function validateNewPolicy(policy: Policy, concurrentJobs: number): string | null {
+  const refusal = validatePolicy(policy, concurrentJobs);
   if (refusal !== null) return refusal;
   // Whichever of the two bounds admits more assignments at once is the one the lease has to
   // cover: a machine holding `concurrentPerMachine` of them prepares them behind one lease
@@ -274,14 +291,21 @@ export function validateNewPolicy(policy: Policy): string | null {
 // ---------------------------------------------------------------------------- the budget overlay
 
 /**
- * THE FOUR NUMBERS AN OVERLAY MAY MOVE, and the reason it is only four: everything else the
+ * THE THREE NUMBERS AN OVERLAY MAY MOVE, and the reason it is only three: everything else the
  * policy carries is what a draw is REPLAYABLE against. A share decides which lane drew a
  * subject, a lease decides whose claim was live, a version is in the assignment id — change any
  * of those for two hours and the reviews taken in those two hours cannot be read against the
- * policy that took them. A ceiling and a batch are pure admission: they decide whether a draw
+ * policy that took them. A ceiling and a bound are pure admission: they decide whether a draw
  * happens, never what it is.
+ *
+ * THE BOUND IS THE ONE ADMISSION KNOB, AND `batchSize` IS NOT IT. Admission reads
+ * `perMachineBound`, so an overlay naming the batch beside a standing `concurrentPerMachine`
+ * moved a number nothing consults: the operator raised "the batch" for a drain, the panel
+ * reported it, and not one more draw was admitted — which is the failure #260 exists to
+ * remove, rebuilt one layer up. `applyBudget` mirrors the bound into `batchSize` so one review
+ * still reserves one bound's worth of the cycle's allowance.
  */
-export const BUDGET_FIELDS = ["batchSize", "perCycleCost", "dailyCost", "concurrentPerMachine"] as const;
+export const BUDGET_FIELDS = ["perCycleCost", "dailyCost", "concurrentPerMachine"] as const;
 export type BudgetField = (typeof BUDGET_FIELDS)[number];
 
 /**
@@ -298,7 +322,6 @@ export interface Budget {
   readonly id: string;
   readonly createdAt: number;
   readonly expiresAt: number;
-  readonly batchSize: number | null;
   readonly perCycleCost: number | null;
   readonly dailyCost: number | null;
   readonly concurrentPerMachine: number | null;
@@ -319,18 +342,22 @@ export interface BudgetChange {
  * flight, which is exactly the footgun the drain fired five times.
  */
 export function applyBudget(standing: Policy, overlay: Budget): Policy {
+  const bound = overlay.concurrentPerMachine;
   return {
     ...standing,
-    batchSize: overlay.batchSize ?? standing.batchSize,
     perCycleCost: overlay.perCycleCost ?? standing.perCycleCost,
     dailyCost: overlay.dailyCost ?? standing.dailyCost,
-    ...(overlay.concurrentPerMachine === null
-      ? {}
-      : { concurrentPerMachine: overlay.concurrentPerMachine }),
+    // The bound a drain names is both what one machine may hold and what one review reserves —
+    // `reservedCost` divides the cycle's allowance by the batch — so it moves both or neither.
+    ...(bound === null ? {} : { batchSize: bound, concurrentPerMachine: bound }),
   };
 }
 
-/** Every number the overlay actually moves, standing value beside overlaid one. */
+/**
+ * Every number the overlay actually moves, standing value beside overlaid one. The bound is read
+ * through `perMachineBound` on both sides, so the row a panel shows is the figure admission
+ * compares against rather than a second reading of the same policy.
+ */
 export function budgetChanges(standing: Policy, overlay: Budget): readonly BudgetChange[] {
   const overlaid = applyBudget(standing, overlay);
   const changes: BudgetChange[] = [];
@@ -347,18 +374,23 @@ export function budgetChanges(standing: Policy, overlay: Budget): readonly Budge
  * Refuses an overlay that cannot be honoured, by judging THE POLICY IT WOULD PRODUCE against
  * the rules a policy being installed satisfies — one set of rules, not a second copy that
  * could come to disagree with `validateNewPolicy`. The lease in that judgement is the standing
- * policy's, because an overlay may not move it: a drain that raises the batch to sixty-four
+ * policy's, because an overlay may not move it: a drain that raises the bound to sixty-four
  * under a fifteen-minute lease is refused here rather than discovered as expired claims, which
- * is F5 read forwards.
+ * is F5 read forwards. The manifest's ceiling is judged there too, so a drain cannot buy more
+ * concurrency than the machine half will run.
  */
-export function validateBudget(standing: Policy, overlay: Budget): string | null {
+export function validateBudget(
+  standing: Policy,
+  overlay: Budget,
+  concurrentJobs: number,
+): string | null {
   if (overlay.expiresAt <= overlay.createdAt) {
     return "an overlay whose expiry is not ahead of its creation is in force for no time at all";
   }
   if (budgetChanges(standing, overlay).length === 0) {
     return "an overlay that moves no number is not an overlay";
   }
-  return validateNewPolicy(applyBudget(standing, overlay));
+  return validateNewPolicy(applyBudget(standing, overlay), concurrentJobs);
 }
 
 export interface PolicyInForce {
@@ -817,7 +849,18 @@ class Stream {
 
 // ---------------------------------------------------------------------------- the coordinator
 
-export function coordinator(store: CoordinatorStore, now: () => number = Date.now): Coordinator {
+/**
+ * The governor over one store. `concurrentJobs` is the manifest's ceiling on this plugin's
+ * explore and evaluate operations (`server.ts` reads it off the manifest it already imports):
+ * the coordinator admits inside it and refuses a policy or an overlay that names a bound above
+ * it, so the number a machine will actually run and the number the hub-side governor admits are
+ * one number.
+ */
+export function coordinator(
+  store: CoordinatorStore,
+  now: () => number,
+  concurrentJobs: number,
+): Coordinator {
   const db = store.db;
 
   /**
@@ -827,7 +870,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
    */
   async function budgetInForce(moment: number): Promise<Budget | null> {
     const rows = await db.query(
-      `SELECT id, created_at, expires_at, batch_size, per_cycle_cost, daily_cost,
+      `SELECT id, created_at, expires_at, per_cycle_cost, daily_cost,
               concurrent_per_machine, reason
          FROM budgets
         WHERE cleared_at IS NULL AND expires_at > ?
@@ -840,7 +883,6 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
       id: text(row["id"]),
       createdAt: at(row["created_at"]),
       expiresAt: at(row["expires_at"]),
-      batchSize: maybeCount(row["batch_size"]),
       perCycleCost: maybeCount(row["per_cycle_cost"]),
       dailyCost: maybeCount(row["daily_cost"]),
       concurrentPerMachine: maybeCount(row["concurrent_per_machine"]),
@@ -963,6 +1005,14 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
    * machine's worth, so nothing about a single-machine deployment changes. The refusal names
    * the machines and what each holds: "the cycle batch is already claimed" was the sentence
    * the drain read seven hundred times without learning where.
+   *
+   * WHAT AN OFFLINE MACHINE HOLDS IS NOT THIS FLEET'S PROBLEM. The cap is the bound over the
+   * machines this cycle found online, so the claims counted against it are theirs plus the ones
+   * no run row places yet (a posting in flight, which could land on any of them). A host that
+   * drops off mid-drain holding two claims would otherwise freeze every machine still running
+   * until its lease ran out — up to eighty-six minutes under a drain-sized one — and the
+   * refusal would contradict itself, naming hosts holding nothing while claiming the fleet
+   * is full.
    */
   function admitSpend(
     policy: Policy,
@@ -982,8 +1032,15 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
       }
     } else {
       const cap = bound * machines.length;
+      // The claims this fleet answers for: what its own machines hold, plus the ones no run row
+      // places yet — a posting in flight could land on any of them, which is the conservative
+      // reading `openClaims` documents.
+      const placed = Object.values(open.byMachine).reduce((sum, held) => sum + held, 0);
+      const unbound = open.total - placed;
+      const online = machines.reduce((sum, id) => sum + (open.byMachine[id] ?? 0), 0);
+      const claimed = unbound + online;
       const free = machines.filter((machineId) => (open.byMachine[machineId] ?? 0) < bound);
-      if (free.length === 0 || open.total >= cap) {
+      if (free.length === 0 || claimed >= cap) {
         const held = machines
           .map((machineId) => `${machineId} holds ${String(open.byMachine[machineId] ?? 0)}`)
           .join(", ");
@@ -992,7 +1049,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
           detail:
             `${String(bound)} concurrent assignments per machine bounds this deployment at ` +
             `${String(cap)} across ${String(machines.length)} online machines, and ` +
-            `${String(open.total)} are claimed: ${held}`,
+            `${String(claimed)} are claimed: ${held}`,
         };
       }
     }
@@ -1736,7 +1793,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     const policy = inForce.policy;
     const standing = inForce.standing;
 
-    const refusal = validatePolicy(policy);
+    const refusal = validatePolicy(policy, concurrentJobs);
     if (refusal !== null) {
       return { outcome: "gap", gap: { reason: "invalid-policy", detail: refusal }, gaps: [] };
     }

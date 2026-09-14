@@ -28,28 +28,31 @@ export const STORE_DATA_VERSION = { major: 1, minor: 2 } as const;
  * A drain is a bounded exception, not a new standing policy: the `policies` row says what the
  * deployment does every day, and on 2026-09-13 the only way to draw more than four reviews at
  * once was to rewrite it five times, which minted a new assignment id for every subject in
- * flight (F5). So a row here names the four numbers a drain needs to move and the instant it
+ * flight (F5). So a row here names the three numbers a drain needs to move and the instant it
  * stops being true, and nothing else — never a share, never a lease, never a version, because
- * those are what a draw is replayable against.
+ * those are what a draw is replayable against. `concurrent_per_machine` is the ONE admission
+ * knob: it is what the coordinator bounds a machine by, and the batch it implies follows it
+ * (`applyBudget`), so there is no second column an operator could move and see nothing happen.
  *
  * Every number is nullable: an overlay carries what it changes and the standing policy answers
  * for the rest. One that changes nothing is refused by the CHECK rather than stored as a no-op
  * nobody can tell from a mistake. `cleared_at` is written once, from NULL, by an operator
- * ending the overlay early — which is why this table has no append-only trigger: the row is one
- * bounded exception with one end, and clearing it is that end rather than a new fact about it.
+ * ending the overlay early, and `cleared_reason` beside it says why they ended it — which is
+ * why this table has no append-only trigger: the row is one bounded exception with one end,
+ * and clearing it is that end rather than a new fact about it.
  */
 const BUDGETS_TABLE = `CREATE TABLE budgets(
      id TEXT PRIMARY KEY,
      created_at TEXT NOT NULL,
      expires_at TEXT NOT NULL,
-     batch_size INTEGER,
      per_cycle_cost REAL,
      daily_cost REAL,
      concurrent_per_machine INTEGER,
      reason TEXT NOT NULL,
      cleared_at TEXT,
-     CHECK (batch_size IS NOT NULL OR per_cycle_cost IS NOT NULL
-            OR daily_cost IS NOT NULL OR concurrent_per_machine IS NOT NULL)
+     cleared_reason TEXT,
+     CHECK (per_cycle_cost IS NOT NULL OR daily_cost IS NOT NULL
+            OR concurrent_per_machine IS NOT NULL)
    ) STRICT`;
 
 /** Statements of the first migration, in order; each is one `run`. */

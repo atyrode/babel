@@ -595,11 +595,11 @@ export const RecipeRowSchema = z.strictObject({
 /**
  * THE OVERLAY IN FORCE, as the ceilings panel shows it beside the standing numbers (#260): what
  * it moves, until when, and why. `changes` carries both values because the operator's question
- * is never "what is the batch" but "what did the drain change it from".
+ * is never "what may a machine hold" but "what did the drain change it from".
  *
- * The fields are the policy's own camelCase names — `batchSize`, `perCycleCost`, `dailyCost`,
- * `concurrentPerMachine` — so a reader of the panel and a reader of `setBudget` see one
- * vocabulary.
+ * The fields are the policy's own camelCase names — `perCycleCost`, `dailyCost` and
+ * `concurrentPerMachine`, the one admission knob — so a reader of the panel and a reader of
+ * `setBudget` see one vocabulary.
  */
 export const BudgetOverlaySchema = z.strictObject({
   id: z.string(),

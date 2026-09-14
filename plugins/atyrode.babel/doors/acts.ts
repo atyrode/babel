@@ -185,7 +185,13 @@ const importLedgerAction = defineServerAction({
   result: ImportedSchema,
 });
 
-export function actDoors(store: ActsStore): readonly Door[] {
+/**
+ * `concurrentJobs` is the manifest's ceiling, handed down from the wiring: the two acts that
+ * write a bound — installing a policy and overlaying one — refuse a per-machine bound above
+ * what the machine half will run, so the operator learns it at the door instead of paying for
+ * postings the hub refuses (#281).
+ */
+export function actDoors(store: ActsStore, concurrentJobs: number): readonly Door[] {
   return [
     defineDoor(ruleAction, async (ctx, args) =>
       await acted(async () => {
@@ -297,7 +303,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
 
     defineDoor(setPolicyAction, async (ctx, args) =>
       await acted(async () => {
-        const installed = await setPolicy(store, args.policy, args.reason, ctx.principal.id);
+        const installed = await setPolicy(store, args.policy, args.reason, ctx.principal.id, concurrentJobs);
         ctx.emit(OWN_NODE, EVENTS.recordWritten, { version: installed.version, seq: installed.seq });
         return installed;
       }),
@@ -305,7 +311,7 @@ export function actDoors(store: ActsStore): readonly Door[] {
 
     defineDoor(setBudgetAction, async (ctx, args) =>
       await acted(async () => {
-        const overlaid = await setBudget(store, args, ctx.principal.id);
+        const overlaid = await setBudget(store, args, ctx.principal.id, concurrentJobs);
         ctx.emit(OWN_NODE, EVENTS.recordWritten, {
           budgetId: overlaid.id,
           expiresAt: overlaid.expiresAt,

@@ -51,7 +51,7 @@ test("an overlay in force says what it moved, from what, and how much longer it 
       expiresAt: new Date(Date.now() + 42 * 60_000 + 1_000).toISOString(),
       reason: "draining victorballu before the 13:00Z reset",
       changes: [
-        { field: "batchSize", standing: 3, overlaid: 16 },
+        { field: "concurrentPerMachine", standing: 3, overlaid: 16 },
         { field: "dailyCost", standing: 20, overlaid: 40 },
       ],
     },
@@ -63,7 +63,7 @@ test("an overlay in force says what it moved, from what, and how much longer it 
     "Overlay for 42m",
   );
   expect([...strip.querySelectorAll(".plugin-atyrode_babel_watch__lane")].map((row) => row.textContent)).toEqual([
-    "Batch 3 → 16",
+    "At once, per machine 3 → 16",
     "Per day $20.00 → $40.00",
   ]);
   expect(strip.querySelector(".plugin-atyrode_babel_watch__muted")?.textContent).toBe(

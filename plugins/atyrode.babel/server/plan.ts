@@ -1,7 +1,7 @@
-import type { MachineHalf, PluginManifest } from "@manifold/protocol";
+import { jobLimits, type MachineHalf, type PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs } from "@manifold/plugin-kit/server";
 import { BABEL_PLUGIN_ID, OPERATIONS, type OperationName } from "../contract.ts";
-import type { Policy } from "../store/coordinator.ts";
+import { DEFAULT_POLICY, type Policy } from "../store/coordinator.ts";
 import type {
   Awaitable,
   JobLaunch,
@@ -95,15 +95,44 @@ export const DEFAULT_LIMITS: JobLimits = {
 // ---------------------------------------------------------------------------- the machine block
 
 /**
- * The declared limits of one operation. An operation the manifest does not declare cannot run
- * on any machine, so the fallback is never a launch that succeeds under invented bounds: it is
- * the number a refused request would have been compared against.
+ * The declared limits of one operation, as a REQUEST may carry them. An operation the manifest
+ * does not declare cannot run on any machine, so the fallback is never a launch that succeeds
+ * under invented bounds: it is the number a refused request would have been compared against.
+ *
+ * `jobLimits` drops the machine-only half — `concurrentJobs`, which bounds how many of this
+ * operation's jobs one host runs at once. That ceiling belongs to the manifest and never to a
+ * request (`packages/protocol/src/jobs.ts`), and `JobExecuteArgsSchema.limits` is strict: a
+ * plan that passed the declaration through verbatim would have every posting refused for an
+ * unrecognised key rather than run under it.
  */
 export function operationLimits(
   machine: MachineHalf | null,
   operationId: OperationName | string,
 ): JobLimits {
-  return machine?.operations[operationId]?.limits ?? DEFAULT_LIMITS;
+  const declared = machine?.operations[operationId]?.limits;
+  return declared === undefined ? DEFAULT_LIMITS : jobLimits(declared);
+}
+
+/**
+ * THE CEILING THE MACHINE HALF WILL ACTUALLY RUN: `limits.concurrentJobs` on the two operations
+ * this plugin launches. The hub enforces it at `execute` and refuses the rest
+ * `concurrency_limit` (`packages/server/src/job-service.ts`), so it is the hard bound the
+ * coordinator governs inside — a per-machine bound above it would admit draws whose postings
+ * the hub refuses, and a refused posting costs its reservation and produces no review.
+ *
+ * The LOWER of the two, because one number governs both lanes and a bound honoured by explore
+ * but not by evaluate is not a bound. A manifest that declares neither is one no operation runs
+ * from at all; the batch a policy is written with stands in, as `DEFAULT_LIMITS` does above.
+ */
+export function jobCeiling(manifest: PluginManifest): number {
+  const operations = manifest.machine?.operations;
+  let ceiling: number | null = null;
+  for (const operationId of [OPERATIONS.explore, OPERATIONS.evaluate]) {
+    const declared = operations?.[operationId]?.limits.concurrentJobs;
+    if (declared === undefined) continue;
+    ceiling = ceiling === null ? declared : Math.min(ceiling, declared);
+  }
+  return ceiling ?? DEFAULT_POLICY.batchSize;
 }
 
 /**
@@ -214,7 +243,10 @@ function owned(outputs: JobLaunch["outputs"]): {
  * Everything is passed straight through: the protocol's own shapes already satisfy the loop's,
  * which is why this is a narrowing and not a translation. `schedules()` answers
  * `PublicJobSchedule` rows, which are `ScheduleRow`s carrying the plugin id and the pinned
- * artifact as well — more than the loop reads, never less.
+ * artifact as well — more than the loop reads, never less. `execute` and `status` answer a
+ * whole `PublicJob`, whose `authority.decision.refusal` the kit's `GuestJobStatus` does not
+ * restate; `JobRunState` declares it optional and the loop reads it to name why a posting was
+ * refused.
  */
 export function jobsSlice(jobs: GuestHookJobs): BabelJobs {
   return {

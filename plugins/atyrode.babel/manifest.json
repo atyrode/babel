@@ -445,7 +445,7 @@
           "memoryBytes": 2147483648,
           "processes": 64,
           "outputBytes": 16777216,
-          "concurrentJobs": 4
+          "concurrentJobs": 16
         },
         "stdin": false
       },
@@ -508,7 +508,7 @@
           "memoryBytes": 2147483648,
           "processes": 64,
           "outputBytes": 16777216,
-          "concurrentJobs": 4
+          "concurrentJobs": 16
         },
         "stdin": false
       }

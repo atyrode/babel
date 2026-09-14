@@ -396,16 +396,22 @@ export type PolicySet = z.infer<typeof PolicySetSchema>;
  * point of the row is that nobody has to remember to unwind it. Every number is optional and
  * an overlay carries only what it moves; the reason is required, because "why is the batch
  * sixty-four today" is the question nobody could answer on 2026-09-13.
+ *
+ * There is no `batchSize`. Admission bounds a MACHINE (`perMachineBound`), so an overlay that
+ * named the batch beside a standing per-machine bound moved a number nothing reads: the
+ * operator would raise it for a drain, the panel would report the change, and no further draw
+ * would be admitted. `concurrentPerMachine` is the one knob, and the batch follows it.
  */
 export const SetBudgetInputSchema = z.strictObject({
   expiresAt: z.string().min(1).max(64),
-  batchSize: z.number().int().min(1).max(4096).optional(),
   perCycleCost: z.number().positive().max(1_000_000).optional(),
   dailyCost: z.number().positive().max(1_000_000).optional(),
   concurrentPerMachine: z.number().int().min(1).max(4096).optional(),
   reason: z.string().trim().min(1).max(2000),
 });
 
+/** Ending an overlay early is an act like setting one, so it carries its own reason and the
+ *  row keeps it: `cleared_reason` beside `cleared_at` says why a drain stopped. */
 export const ClearBudgetInputSchema = z.strictObject({
   id: z.string().min(1).max(200),
   reason: z.string().max(2000).default(""),
@@ -1468,9 +1474,10 @@ export async function setPolicy(
   policy: Policy,
   reason: string,
   operator: string,
+  concurrentJobs: number,
 ): Promise<PolicySet> {
   if (operator === "") throw new ActRefused("a policy has no operator");
-  const refusal = validateNewPolicy(policy);
+  const refusal = validateNewPolicy(policy, concurrentJobs);
   if (refusal !== null) throw new ActRefused(refusal);
   const held = await first<{ version: string }>(store, `SELECT version FROM policies WHERE version = ?`, [
     policy.version,
@@ -1510,6 +1517,7 @@ export async function setBudget(
   store: ActsStore,
   args: z.infer<typeof SetBudgetInputSchema>,
   operator: string,
+  concurrentJobs: number,
 ): Promise<BudgetSet> {
   if (operator === "") throw new ActRefused("an overlay has no operator");
   const expires = Date.parse(args.expiresAt);
@@ -1517,29 +1525,29 @@ export async function setBudget(
     throw new ActRefused(`${JSON.stringify(args.expiresAt)} is not an instant an overlay can expire at`);
   }
   const created = store.now();
-  const standing = (await coordinator({ db: store.db }, store.now).policy(created)).standing;
+  const standing = (
+    await coordinator({ db: store.db }, store.now, concurrentJobs).policy(created)
+  ).standing;
   const overlay: Budget = {
     id: newId("bdg"),
     createdAt: created,
     expiresAt: expires,
-    batchSize: args.batchSize ?? null,
     perCycleCost: args.perCycleCost ?? null,
     dailyCost: args.dailyCost ?? null,
     concurrentPerMachine: args.concurrentPerMachine ?? null,
     reason: args.reason,
   };
-  const refusal = validateBudget(standing, overlay);
+  const refusal = validateBudget(standing, overlay, concurrentJobs);
   if (refusal !== null) throw new ActRefused(refusal);
   const at = stamp(created);
   await store.db.run(
-    `INSERT INTO budgets(id, created_at, expires_at, batch_size, per_cycle_cost, daily_cost,
-                         concurrent_per_machine, reason, cleared_at)
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    `INSERT INTO budgets(id, created_at, expires_at, per_cycle_cost, daily_cost,
+                         concurrent_per_machine, reason, cleared_at, cleared_reason)
+     VALUES(?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
     [
       overlay.id,
       at,
       stamp(expires),
-      overlay.batchSize,
       overlay.perCycleCost,
       overlay.dailyCost,
       overlay.concurrentPerMachine,
@@ -1556,10 +1564,12 @@ export async function setBudget(
 }
 
 /**
- * Ends an overlay before its expiry. `cleared_at` is written once, from NULL — the guard is the
- * WHERE clause, so clearing twice refuses rather than rewriting when it ended — and an overlay
- * that has already expired is refused for the same reason a finished claim is: there is nothing
- * left to end.
+ * Ends an overlay before its expiry, with the reason it was ended. `cleared_at` is written
+ * once, from NULL — the guard is the WHERE clause, so clearing twice refuses rather than
+ * rewriting when it ended — and an overlay that has already expired is refused for the same
+ * reason a finished claim is: there is nothing left to end. The reason is written in the same
+ * statement: "the drain finished early" and "the box fell over" are different endings, and a
+ * field the door accepted and dropped would make them the same row.
  */
 export async function clearBudget(
   store: ActsStore,
@@ -1569,10 +1579,10 @@ export async function clearBudget(
   if (operator === "") throw new ActRefused("clearing an overlay has no operator");
   const at = stamp(store.now());
   const rows = await store.db.query<{ id: string }>(
-    `UPDATE budgets SET cleared_at = ?
+    `UPDATE budgets SET cleared_at = ?, cleared_reason = ?
       WHERE id = ? AND cleared_at IS NULL AND expires_at > ?
       RETURNING id`,
-    [at, args.id, at],
+    [at, args.reason, args.id, at],
   );
   const cleared = rows[0];
   if (cleared === undefined) {

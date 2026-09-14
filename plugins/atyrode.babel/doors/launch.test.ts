@@ -272,7 +272,7 @@ beforeEach(async () => {
     content_digest: "d2", seen_at: stamp(NOW - 40 * 24 * HOUR),
   });
   const deps: LaunchDeps = {
-    coordinator: coordinator(store, () => store.now()),
+    coordinator: coordinator(store, () => store.now(), 16),
     get cookbook() {
       return cookbook;
     },

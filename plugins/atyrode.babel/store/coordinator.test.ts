@@ -78,6 +78,10 @@ function store(): { db: GuestDatabase } {
 
 // ---------------------------------------------------------------------------- fixtures
 
+/** The manifest's `limits.concurrentJobs` for explore and evaluate, as `server.ts` reads it off
+ *  the real manifest: the ceiling no policy and no overlay may name a bound above. */
+const CONCURRENT_JOBS = 16;
+
 interface Seeded {
   readonly db: GuestDatabase;
   readonly coord: Coordinator;
@@ -85,7 +89,7 @@ interface Seeded {
 
 async function deployment(policy?: Partial<Policy>): Promise<Seeded> {
   const handle = store();
-  const coord = coordinator(handle, () => NOW);
+  const coord = coordinator(handle, () => NOW, CONCURRENT_JOBS);
   if (policy !== undefined) {
     const full: Policy = { ...DEFAULT_POLICY, enabled: true, ...policy };
     await handle.db.run(
@@ -255,16 +259,53 @@ test("the policy in force is the newest row, and a deployment with none is disab
 });
 
 test("the validator refuses the policies that would make something else lie", async () => {
-  expect(validatePolicy(DEFAULT_POLICY)).toBeNull();
-  expect(validatePolicy({ ...DEFAULT_POLICY, explorationShare: 0 })).toContain("protected");
-  expect(validatePolicy({ ...DEFAULT_POLICY, discoveryShare: 0 })).toContain("protected");
-  expect(validatePolicy({ ...DEFAULT_POLICY, coverageShare: 0.6, filingShare: 0.3 })).toContain(
+  const ceiling = CONCURRENT_JOBS;
+  expect(validatePolicy(DEFAULT_POLICY, ceiling)).toBeNull();
+  expect(validatePolicy({ ...DEFAULT_POLICY, explorationShare: 0 }, ceiling)).toContain("protected");
+  expect(validatePolicy({ ...DEFAULT_POLICY, discoveryShare: 0 }, ceiling)).toContain("protected");
+  expect(validatePolicy({ ...DEFAULT_POLICY, coverageShare: 0.6, filingShare: 0.3 }, ceiling)).toContain(
     "over-commit",
   );
-  expect(validatePolicy({ ...DEFAULT_POLICY, maxItemReviews: 1 })).toContain("below initial reviews");
-  expect(validatePolicy({ ...DEFAULT_POLICY, dailyCost: 0.1 })).toContain("below the per-cycle cost");
-  expect(validatePolicy({ ...DEFAULT_POLICY, coverageShare: 0 })).toBeNull();
-  expect(validatePolicy({ ...DEFAULT_POLICY, filingShare: 0, backlogShare: 0 })).toBeNull();
+  expect(validatePolicy({ ...DEFAULT_POLICY, maxItemReviews: 1 }, ceiling)).toContain("below initial reviews");
+  expect(validatePolicy({ ...DEFAULT_POLICY, dailyCost: 0.1 }, ceiling)).toContain("below the per-cycle cost");
+  expect(validatePolicy({ ...DEFAULT_POLICY, coverageShare: 0 }, ceiling)).toBeNull();
+  expect(validatePolicy({ ...DEFAULT_POLICY, filingShare: 0, backlogShare: 0 }, ceiling)).toBeNull();
+});
+
+test("a per-machine bound above the manifest's ceiling is refused, by the policy door and by the overlay's", () => {
+  // The hub refuses every posting past `limits.concurrentJobs` at `execute` (`concurrency_limit`)
+  // and the conductor releases the claim charged at its reservation — so a governor that admitted
+  // draws above the ceiling would spend the day's allowance on postings that never run. The
+  // refusal names the ceiling, because the remedy is either a smaller bound or a new manifest.
+  const ceiling = CONCURRENT_JOBS;
+  const above = validatePolicy({ ...DEFAULT_POLICY, concurrentPerMachine: ceiling + 1 }, ceiling);
+  expect(above).toContain("17 concurrent assignments per machine");
+  expect(above).toContain("16 jobs a machine runs at once");
+  expect(validatePolicy({ ...DEFAULT_POLICY, concurrentPerMachine: ceiling }, ceiling)).toBeNull();
+  // A policy that states no bound is bounded by the batch it was written with, and that is the
+  // number judged: the ceiling is on what one MACHINE holds, however the policy spells it.
+  expect(validatePolicy({ ...DEFAULT_POLICY, batchSize: ceiling + 1 }, ceiling)).toContain(
+    "17 concurrent assignments per machine",
+  );
+
+  // And the same rule at the overlay's door, through the one validator: #260's acceptance
+  // number (a drain naming eight) passes, and a drain that asks for more than the machine half
+  // will run is refused before a reservation is spent rather than after eight of them are.
+  const standing: Policy = { ...DEFAULT_POLICY, enabled: true, leaseSeconds: 900, batchSize: 4 };
+  const drain = {
+    id: "bdg_1",
+    createdAt: NOW,
+    expiresAt: NOW + 3_600_000,
+    perCycleCost: 2,
+    dailyCost: 4,
+    concurrentPerMachine: ceiling + 1,
+    reason: "draining victorballu",
+  };
+  const refused = validateBudget(standing, drain, ceiling);
+  expect(refused).toContain("17 concurrent assignments per machine");
+  expect(refused).toContain("16 jobs a machine runs at once");
+  expect(validateBudget(standing, { ...drain, concurrentPerMachine: ceiling }, ceiling)).toBeNull();
+  expect(validateBudget(standing, { ...drain, concurrentPerMachine: 8 }, ceiling)).toBeNull();
 });
 
 test("the lease floor refuses a new policy that would need renewal to work at all", () => {
@@ -273,12 +314,15 @@ test("the lease floor refuses a new policy that would need renewal to work at al
   expect(leaseFloor(4)).toBe(300);
   expect(leaseFloor(24)).toBe(480);
 
-  const lost: Policy = { ...DEFAULT_POLICY, leaseSeconds: 240, batchSize: 24 };
-  expect(validateNewPolicy(lost)).toContain("480s");
+  // The policy four runs were lost under, with a bound the manifest's ceiling allows: what the
+  // lease has to cover is the larger of the two, and twenty-four claims behind one lease is
+  // twenty-four whether they are spread over a fleet or held by one host.
+  const lost: Policy = { ...DEFAULT_POLICY, leaseSeconds: 240, batchSize: 24, concurrentPerMachine: 4 };
+  expect(validateNewPolicy(lost, CONCURRENT_JOBS)).toContain("480s");
   // …and the same policy already stored keeps drawing: refusing it at draw time would stop every
   // review on the deployment until the operator noticed.
-  expect(validatePolicy(lost)).toBeNull();
-  expect(validateNewPolicy(DEFAULT_POLICY)).toBeNull();
+  expect(validatePolicy(lost, CONCURRENT_JOBS)).toBeNull();
+  expect(validateNewPolicy(DEFAULT_POLICY, CONCURRENT_JOBS)).toBeNull();
 });
 
 // ---------------------------------------------------------------------------- the order of refusals
@@ -934,7 +978,6 @@ async function overlay(
   moves: {
     readonly expiresAt: number;
     readonly createdAt?: number;
-    readonly batchSize?: number;
     readonly perCycleCost?: number;
     readonly dailyCost?: number;
     readonly concurrentPerMachine?: number;
@@ -942,14 +985,13 @@ async function overlay(
   },
 ): Promise<void> {
   await db.run(
-    `INSERT INTO budgets(id, created_at, expires_at, batch_size, per_cycle_cost, daily_cost,
+    `INSERT INTO budgets(id, created_at, expires_at, per_cycle_cost, daily_cost,
                          concurrent_per_machine, reason, cleared_at)
-     VALUES(?,?,?,?,?,?,?,?,?)`,
+     VALUES(?,?,?,?,?,?,?,?)`,
     [
       id,
       new Date(moves.createdAt ?? NOW - 1000).toISOString(),
       new Date(moves.expiresAt).toISOString(),
-      moves.batchSize ?? null,
       moves.perCycleCost ?? null,
       moves.dailyCost ?? null,
       moves.concurrentPerMachine ?? null,
@@ -968,7 +1010,7 @@ async function runOn(db: GuestDatabase, jobId: string, machineId: string): Promi
   );
 }
 
-test("an overlay moves the batch and the ceilings while it lasts, and nothing when it has expired", async () => {
+test("an overlay moves the bound and the ceilings while it lasts, and nothing when it has expired", async () => {
   const { db, coord } = await deployment({ enabled: true, batchSize: 1, perCycleCost: 0.1, dailyCost: 0.2 });
   const id = await record(db, "hyp_00000001", "hypothesis", 40);
   await filing(db, id, "ent_0000000a");
@@ -979,13 +1021,21 @@ test("an overlay moves the batch and the ceilings while it lasts, and nothing wh
   if (standing.outcome !== "gap") throw new Error("a full batch drew work");
   expect(standing.gap.reason).toBe("batch");
 
-  await overlay(db, "bdg_drain", { expiresAt: NOW + 600_000, batchSize: 4, perCycleCost: 1, dailyCost: 2 });
+  await overlay(db, "bdg_drain", {
+    expiresAt: NOW + 600_000,
+    concurrentPerMachine: 4,
+    perCycleCost: 1,
+    dailyCost: 2,
+  });
   const inForce = await coord.policy(NOW);
   expect(inForce.overlay?.id).toBe("bdg_drain");
   // What admission is judged by is the overlaid number; what a draw is replayable against — the
-  // version, the lease, the shares — is the standing row, untouched.
+  // version, the lease, the shares — is the standing row, untouched. The bound carries the batch
+  // with it, so one review still reserves one bound's worth of the cycle's allowance.
+  expect(inForce.policy.concurrentPerMachine).toBe(4);
   expect(inForce.policy.batchSize).toBe(4);
   expect(inForce.standing.batchSize).toBe(1);
+  expect(inForce.standing.concurrentPerMachine).toBeUndefined();
   expect(inForce.policy.leaseSeconds).toBe(inForce.standing.leaseSeconds);
   expect(inForce.policy.version).toBe(inForce.standing.version);
   expect(drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n })).recordId).toBe(id);
@@ -1001,8 +1051,13 @@ test("an overlay moves the batch and the ceilings while it lasts, and nothing wh
 
 test("a cleared overlay stops applying, and the one it covered applies again for what is left of its own TTL", async () => {
   const { db, coord } = await deployment({ enabled: true, batchSize: 2 });
-  await overlay(db, "bdg_first", { createdAt: NOW - 5000, expiresAt: NOW + 600_000, batchSize: 8 });
-  await overlay(db, "bdg_second", { createdAt: NOW - 1000, expiresAt: NOW + 60_000, batchSize: 16, clearedAt: NOW });
+  await overlay(db, "bdg_first", { createdAt: NOW - 5000, expiresAt: NOW + 600_000, concurrentPerMachine: 8 });
+  await overlay(db, "bdg_second", {
+    createdAt: NOW - 1000,
+    expiresAt: NOW + 60_000,
+    concurrentPerMachine: 16,
+    clearedAt: NOW,
+  });
   expect((await coord.policy(NOW)).policy.batchSize).toBe(8);
 
   await db.run(`UPDATE budgets SET cleared_at = ? WHERE id = 'bdg_first'`, [new Date(NOW).toISOString()]);
@@ -1014,7 +1069,7 @@ test("an in-flight assignment's id is identical before and after an overlay is s
 
   await overlay(db, "bdg_drain", {
     expiresAt: NOW + 3_600_000,
-    batchSize: 8,
+    concurrentPerMachine: 8,
     perCycleCost: 1,
     dailyCost: 2,
   });
@@ -1090,6 +1145,43 @@ test("the batch is per machine: two machines hold four, the fifth draw is refuse
   expect(alone.gap.reason).toBe("batch");
 });
 
+test("a machine that has gone offline holds no slot the online fleet could use", async () => {
+  // #281/3: the cap is the bound over the machines this cycle found online, so two claims held
+  // by a host that dropped off do not freeze the one still running. Counting them would idle
+  // the fleet until their lease ran out — fifteen minutes by default, eighty-six under a
+  // drain-sized one — and the refusal would name hosts holding nothing.
+  const { db, coord } = await deployment({
+    enabled: true,
+    batchSize: 8,
+    concurrentPerMachine: 2,
+    perCycleCost: 4,
+    dailyCost: 8,
+  });
+  const id = await record(db, "hyp_00000001", "hypothesis", 40);
+  await filing(db, id, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+  for (const n of [0, 1]) {
+    const jobId = `job_gone${String(n)}`;
+    await claimRow(db, `asg_gone${String(n)}`, "cycle_dead", 0.1, null, 0, jobId);
+    await runOn(db, jobId, "dev-03");
+  }
+  expect(await coord.open(NOW)).toEqual({ total: 2, byMachine: { "dev-03": 2 } });
+
+  const admitted = await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: ["dev-01"] });
+  expect(drawn(admitted).recordId).toBe(id);
+
+  // What the ONLINE fleet holds still bounds it, and the refusal names only what it holds.
+  for (const n of [0, 1]) {
+    const jobId = `job_here${String(n)}`;
+    await claimRow(db, `asg_here${String(n)}`, "cycle_dead", 0.1, null, 0, jobId);
+    await runOn(db, jobId, "dev-01");
+  }
+  const full = await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: ["dev-01"] });
+  if (full.outcome !== "gap") throw new Error("a machine at its bound took a third job");
+  expect(full.gap.detail).toContain("dev-01 holds 2");
+  expect(full.gap.detail).not.toContain("dev-03");
+});
+
 test("an overlay that raises the per-machine bound raises the fleet's cap with it", async () => {
   const { db, coord } = await deployment({
     enabled: true,
@@ -1120,34 +1212,46 @@ test("the overlay's own validator refuses what a policy being installed would be
     id: "bdg_1",
     createdAt: NOW,
     expiresAt: NOW + 3_600_000,
-    batchSize: null,
     perCycleCost: null,
     dailyCost: null,
     concurrentPerMachine: null,
     reason: "a drain",
   };
   // An overlay that moves nothing is not one; the CHECK in the table says the same thing.
-  expect(validateBudget(standing, drain)).toContain("moves no number");
-  // A lease is the standing policy's and an overlay may not move it, so a batch the lease cannot
+  expect(validateBudget(standing, drain, CONCURRENT_JOBS)).toContain("moves no number");
+  // A lease is the standing policy's and an overlay may not move it, so a bound the lease cannot
   // cover is refused here rather than discovered as expired claims.
-  expect(validateBudget(standing, { ...drain, batchSize: 64 })).toContain("1280s");
-  expect(validateBudget(standing, { ...drain, concurrentPerMachine: 64 })).toContain("1280s");
+  const short: Policy = { ...standing, leaseSeconds: 300 };
+  expect(validateBudget(short, { ...drain, concurrentPerMachine: 16 }, CONCURRENT_JOBS)).toContain("320s");
   // The standing rules, judged against the policy the overlay would produce.
-  expect(validateBudget(standing, { ...drain, dailyCost: 0.1 })).toContain("below the per-cycle cost");
-  expect(validateBudget(standing, { ...drain, perCycleCost: 0 })).toContain("must be positive");
-  expect(validateBudget(standing, { ...drain, expiresAt: NOW, batchSize: 8 })).toContain(
-    "no time at all",
+  expect(validateBudget(standing, { ...drain, dailyCost: 0.1 }, CONCURRENT_JOBS)).toContain(
+    "below the per-cycle cost",
   );
-  expect(validateBudget(standing, { ...drain, batchSize: 8, perCycleCost: 1, dailyCost: 2 })).toBeNull();
+  expect(validateBudget(standing, { ...drain, perCycleCost: 0 }, CONCURRENT_JOBS)).toContain("must be positive");
+  expect(
+    validateBudget(standing, { ...drain, expiresAt: NOW, concurrentPerMachine: 8 }, CONCURRENT_JOBS),
+  ).toContain("no time at all");
+  expect(
+    validateBudget(standing, { ...drain, concurrentPerMachine: 8, perCycleCost: 1, dailyCost: 2 }, CONCURRENT_JOBS),
+  ).toBeNull();
 
-  // And what it produces is the standing policy with those numbers and nothing else moved.
-  const overlaid = applyBudget(standing, { ...drain, batchSize: 8, dailyCost: 9 });
-  expect(overlaid).toEqual({ ...standing, batchSize: 8, dailyCost: 9 });
-  // What it REPORTS is what it named. A batch moved with no per-machine bound beside it moves
-  // the bound too (one falls back to the other), and saying so as a second row would read as
-  // two knobs where the drain turned one.
-  expect(budgetChanges(standing, { ...drain, batchSize: 8, dailyCost: 9 })).toEqual([
-    { field: "batchSize", standing: 4, overlaid: 8 },
+  // And what it produces is the standing policy with those numbers and nothing else moved: the
+  // bound carries the batch, because that is what one review reserves against the cycle.
+  const overlaid = applyBudget(standing, { ...drain, concurrentPerMachine: 8, dailyCost: 9 });
+  expect(overlaid).toEqual({ ...standing, batchSize: 8, concurrentPerMachine: 8, dailyCost: 9 });
+  expect(budgetChanges(standing, { ...drain, concurrentPerMachine: 8, dailyCost: 9 })).toEqual([
     { field: "dailyCost", standing: 2, overlaid: 9 },
+    { field: "concurrentPerMachine", standing: 4, overlaid: 8 },
+  ]);
+
+  // THE INERT OVERLAY (#281/2). Admission reads the per-machine bound, so the number an overlay
+  // names is compared against the bound in force — never against a batch nothing consults,
+  // which is how an overlay could once report `Batch 4 → 16` and admit not one more draw.
+  const bounded: Policy = { ...standing, concurrentPerMachine: 2 };
+  expect(validateBudget(bounded, { ...drain, concurrentPerMachine: 2 }, CONCURRENT_JOBS)).toContain(
+    "moves no number",
+  );
+  expect(budgetChanges(bounded, { ...drain, concurrentPerMachine: 16 })).toEqual([
+    { field: "concurrentPerMachine", standing: 2, overlaid: 16 },
   ]);
 });

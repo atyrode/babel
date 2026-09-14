@@ -99,6 +99,13 @@ export interface JobRunState {
     readonly reason: string | null;
     readonly outputs: readonly JobOutput[];
   } | null;
+  /** WHY A POSTING WAS REFUSED, which is never in `result`: a job refused at admission never
+   *  ran and has no result at all. The hub's own word for it — `concurrency_limit` when the
+   *  operation's declared `limits.concurrentJobs` is full — is on the authority decision
+   *  (`PublicJobSchema.authority`), which the kit's own `GuestJobStatus` does not restate. */
+  readonly authority?:
+    | { readonly decision?: { readonly refusal: string | null } | null | undefined }
+    | undefined;
 }
 
 /** What `describe` answers, narrowed to the four facts that decide where a job may run. */
@@ -1788,7 +1795,13 @@ export function conductor(deps: ConductorDeps): Conductor {
       refusal = message(error);
     }
     if (refusal === null && posted !== null && posted.state === "refused") {
-      refusal = posted.result?.reason ?? `${host.machineId} refused ${jobId}`;
+      // A refusal the hub NAMES is the one worth reporting: `concurrency_limit` says the fleet
+      // is at the ceiling this plugin's manifest declared, which is a bound to raise or a
+      // drain to slow, while "dev-01 refused job_…" is a sentence nobody can act on.
+      const named = posted.authority?.decision?.refusal ?? null;
+      refusal =
+        posted.result?.reason ??
+        (named === null ? `${host.machineId} refused ${jobId}` : `${host.machineId} refused ${jobId}: ${named}`);
     }
     if (refusal !== null) {
       const abandoned = await release(claim, `the job was never posted: ${refusal}`);

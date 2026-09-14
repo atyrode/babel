@@ -358,10 +358,10 @@ export function until(instant: string, now: number): string {
   return `for ${String(Math.floor(hours / 24))}d`;
 }
 
-/** The overlay's fields in the operator's words, and how each is written. */
+/** The overlay's fields in the operator's words, and how each is written. There is no batch
+ *  row: the bound per machine is the one number an overlay moves admission with. */
 export const OVERLAY_FIELDS: Record<string, { readonly label: string; readonly money: boolean }> = {
   perCycleCost: { label: "Per run", money: true },
   dailyCost: { label: "Per day", money: true },
-  batchSize: { label: "Batch", money: false },
   concurrentPerMachine: { label: "At once, per machine", money: false },
 };

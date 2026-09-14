@@ -174,6 +174,10 @@ class Fleet implements JobsSlice {
   connected = true;
   /** What `execute` refuses every posting with, as the hub does when a machine will not take it. */
   refusal: string | null = null;
+  /** What the HUB refuses an ADMITTED posting with: a job that never ran, whose reason is on the
+   *  authority decision rather than in a result it never got — `concurrency_limit` when the
+   *  operation's declared `limits.concurrentJobs` is full (atyrode/manifold#551). */
+  decision: string | null = null;
   /** Jobs the hub can no longer report at all: a machine that vanished mid-review. */
   readonly silent = new Set<string>();
 
@@ -196,6 +200,16 @@ class Fleet implements JobsSlice {
 
   execute(args: JobLaunch): JobRunState {
     if (this.refusal !== null) throw new Error(this.refusal);
+    if (this.decision !== null) {
+      return {
+        jobId: args.jobId,
+        machineId: args.machineId,
+        operationId: args.operationId,
+        state: "refused",
+        result: null,
+        authority: { decision: { refusal: this.decision } },
+      };
+    }
     this.launched.push(args);
     this.jobs.set(args.jobId, {
       state: "started",
@@ -1572,6 +1586,47 @@ test("a posting the machine refuses abandons its claim in the same breath", asyn
   // No job was posted, so no run row was written for one.
   const runs = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM runs`);
   expect(runs[0]?.n).toBe(0n);
+});
+
+test("a posting the hub refuses at admission is reported with the reason the hub named", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  // The hub admitted nothing: the operation's `limits.concurrentJobs` is full on that machine,
+  // so the job is `refused` with no result at all and its reason is on the authority decision.
+  fleet.decision = "concurrency_limit";
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const report = await loop.tick();
+
+  // "dev-01 refused job_…" is a sentence nobody can act on; the fleet being at the ceiling this
+  // plugin's manifest declares is a bound to raise or a drain to slow (#281).
+  expect(report.refused).toEqual([
+    {
+      assignmentId: "asg_a1b2",
+      recordId: "hyp_00000001",
+      reason: "refused-job",
+      detail: "dev-01 refused job_asg_a1b2: concurrency_limit",
+    },
+  ]);
+  expect(draws.abandoned).toEqual([
+    {
+      id: "clm_asg_a1b2",
+      fence: 1,
+      reason: "the job was never posted: dev-01 refused job_asg_a1b2: concurrency_limit",
+    },
+  ]);
 });
 
 test("the reaper releases a grant whose job was never posted, once its lease has run out", async () => {
