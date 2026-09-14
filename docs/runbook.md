@@ -1239,8 +1239,13 @@ count, a socket count, or a percentage read by a home-made script is not any of 
 ### 11.5 Stopping
 
 > **OPERATOR STEP — stop (not executed).**
-> `drain.stop` cancels in-flight jobs through `jobs.cancel` and answers how many it cancelled and
-> which it could not; the panel shows those two numbers rather than assuming the cancels landed.
+> `drain.stop` cancels what the drain still holds, in the lane each job is in: a run that
+> reached a model is a CODE SESSION and is cancelled through `code.cancelSession`, because its
+> job belongs to `atyrode.omp` and the hub's own `jobs.cancel` is bound to the caller's plugin
+> id; a run still PREPARING has no session yet, so its `atyrode.babel.prepare` job is cancelled
+> — that one with `jobs.cancel`, it is Babel's — and its row is closed, which is what stops a
+> later wake from posting the session anyway. The door answers how many it cancelled and which
+> it could not; the panel shows those two numbers rather than assuming the cancels landed.
 > A drain that still holds a job is `closing`, not finished: what those jobs metered is part of
 > what this drain spent, so the row keeps them, folds each receipt as it lands, and records its
 > ending when none is left. **The final totals are the ones on the `closing` drain when it

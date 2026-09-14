@@ -487,7 +487,7 @@ test("a window offering nothing the lease can hold is refused by name, not as an
 
   const refused = String(answer["refused"]);
   expect(refused).toStartWith("material_too_large:");
-  expect(refused).toContain("512 MiB");
+  expect(refused).toContain("448 MiB");
   expect(refused).not.toContain("has catalogued no session");
   expect(fleet.executed).toEqual([]);
 });
@@ -632,4 +632,43 @@ test("stopping a Code session cancels it through Code, never through the hub's o
   expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_code_1" }]);
   expect(fleet.cancelled).toEqual([]);
   expect((await harness.store.run("run_session")).run).toMatchObject({ state: "stopped" });
+});
+
+test("stopping a run that is still preparing cancels the preparation and closes the row", async () => {
+  /*
+    A RUN IS STARTED IN TWO WAKES (#592), so there is a window where the operator's Stop finds
+    no session: `job_id` is NULL, the preparation is in flight, and the id the panel could
+    name is not a job anywhere. Refusing there — "no job on a machine to stop" — left the
+    posting wake free to post the session afterwards, which is the operator pressing stop and
+    the account spending anyway.
+
+    So the preparation is cancelled, with the HUB's verb because that job is Babel's own, and
+    the row is closed — the row being what `postPrepared` reads.
+  */
+  await insert(harness.db, "runs", {
+    id: "run_preparing", kind: OPERATIONS.explore, machine_id: MACHINE,
+    container_id: "ctr_workbench", prepare_job_id: "job_x_material",
+    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+  });
+
+  // The panel asks at the PREPARATION's node, which is the only job this run has yet.
+  const answer = await halt("run_preparing", {
+    operationId: OPERATIONS.prepare,
+    jobId: "job_x_material",
+  });
+
+  expect(answer).toEqual({
+    runId: "run_preparing", jobId: "", machineId: MACHINE, closure: "stopped",
+  });
+  expect(fleet.cancelled).toEqual([
+    {
+      kind: "job",
+      machineId: MACHINE,
+      operationId: OPERATIONS.prepare,
+      jobId: "job_x_material",
+    },
+  ]);
+  // Nothing was said to Code: there is no session to say it about.
+  expect(code.cancelled).toEqual([]);
+  expect((await harness.store.run("run_preparing")).run).toMatchObject({ state: "stopped" });
 });

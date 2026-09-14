@@ -965,6 +965,12 @@ export const RunRowSchema = z.strictObject({
   kind: z.string(),
   machineId: z.string(),
   jobId: z.string(),
+  /**
+   * The `atyrode.babel.prepare` job whose sealed material this run reads, empty when it has
+   * none. A run is started in two wakes (#592) and the first posts only that job, so while
+   * `jobId` is empty this is the node a Stop is authorized at.
+   */
+  prepareJobId: z.string(),
   recipe: z.string(),
   state: RunStateSchema,
   startedAt: z.string(),

@@ -1,5 +1,6 @@
 import {
   DRAIN_SPENDING_PRESETS,
+  OPERATIONS,
   PRESET_OPERATIONS,
   type DrainEnding,
   type DrainPreset,
@@ -26,7 +27,7 @@ import {
   type Reconciled,
 } from "../store/drains.ts";
 import type { BabelStore } from "../store/store.ts";
-import type { LaunchIdentity, Started } from "../doors/launch.ts";
+import { materialJobId, type LaunchIdentity, type Started } from "../doors/launch.ts";
 import type { JobsSlice, RunPlan } from "./conductor.ts";
 import type { CodeEngine } from "./engine/session.ts";
 import type { BabelJobs } from "./plan.ts";
@@ -258,18 +259,60 @@ export interface Ended {
  */
 
 /**
- * THE CODE WORKSPACE A RUN WAS POSTED ON, or empty for a job of Babel's own.
+ * WHICH LANE A RUN IS IN, AND THE ID THAT LANE RETAINED — the three columns that decide which
+ * verb stops it.
  *
- * It is the one column that says which of the two lanes a job is in, and therefore which verb
- * stops it: `ctx.jobs.cancel` for a job this plugin posted, `code.cancelSession` for a session
- * `atyrode.code` posted under `atyrode.omp`'s operation.
+ * A DRAIN'S `LiveJob.jobId` IS NOT A JOB for the lane that spends. It is the run's derived
+ * identity, and what gets posted under it is the preparation (`${jobId}_material`) and, one
+ * wake later, CODE's session under an id only Code minted. So a stop that reached for
+ * `job.jobId` would ask Code for a session id that never existed and hear
+ * `code_session_unknown`, while the preparation it could have cancelled ran on and
+ * `postPrepared` posted the session after the drain had ended. The row is the only place the
+ * real ids are.
+ *
+ * Three shapes, and each has its own verb:
+ * - no container: a job of Babel's own (the beat), cancelled with `ctx.jobs.cancel`;
+ * - a container and a `job_id`: a CODE SESSION, cancelled with `code.cancelSession`, because
+ *   its job belongs to `atyrode.omp` and the hub's verb is bound to the caller's plugin id;
+ * - a container and no `job_id`: INTENT — the preparation is in flight and no session exists.
+ *   That one is Babel's own job at `atyrode.babel.prepare`.
  */
-async function containerOf(store: DrainDeps["store"], runId: string): Promise<string> {
-  const rows = await store.db.query<{ container_id: string | null }>(
-    `SELECT container_id FROM runs WHERE id = ?`,
-    [runId],
+interface RunLane {
+  readonly container: string;
+  readonly jobId: string;
+  readonly prepareJobId: string;
+}
+
+async function laneOf(store: DrainDeps["store"], runId: string): Promise<RunLane> {
+  const rows = await store.db.query<{
+    container_id: string | null;
+    job_id: string | null;
+    prepare_job_id: string | null;
+  }>(`SELECT container_id, job_id, prepare_job_id FROM runs WHERE id = ?`, [runId]);
+  const row = rows[0];
+  return {
+    container: row?.container_id ?? "",
+    jobId: row?.job_id ?? "",
+    prepareJobId: row?.prepare_job_id ?? "",
+  };
+}
+
+/**
+ * CLOSES A RUN THAT NEVER REACHED A SESSION, so no later wake posts one for it.
+ *
+ * `postPrepared` walks every row whose material has sealed and whose `job_id` is still NULL;
+ * an intent row left open outlives the drain that made it, and the session it would post
+ * would spend an account after the operator stopped spending. `AND job_id IS NULL` is the
+ * fence against the opposite race — a wake that posted the session between the read and this
+ * write owns the row, and that run is cancelled through Code on the next tick.
+ */
+async function closeIntent(deps: DrainDeps, runId: string, reason: string): Promise<void> {
+  const at = new Date(deps.now()).toISOString();
+  await deps.store.db.run(
+    `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ?
+      WHERE id = ? AND closure IS NULL AND job_id IS NULL`,
+    [at, JSON.stringify({ closure: "stopped", reason, stoppedAt: at }), runId],
   );
-  return rows[0]?.container_id ?? "";
 }
 /**
  * WHAT A DRAIN'S END DOES TO WHAT IT IS HOLDING: asks for each live job to be cancelled, in
@@ -286,29 +329,50 @@ export async function endDrain(
   const operationId = drainOperation(row.preset);
   let cancelled = 0;
   for (const job of live) {
-    /*
-      A CODE SESSION IS CANCELLED THROUGH CODE (#279). Its job belongs to `atyrode.omp` and
-      `ctx.jobs.cancel` is bound to the calling plugin's id, so a drain that reached for the
-      hub's verb would refuse every job of the lane it exists to stop. `container_id` on the
-      run row is what says which lane a job is in, and `cancelSession` is idempotent on a job
-      that has already settled — a stop that raced a settlement answers the job.
-    */
-    const container = await containerOf(deps.store, job.runId);
+    const lane = await laneOf(deps.store, job.runId);
     try {
-      if (container === "") {
+      if (lane.container === "") {
+        // BABEL'S OWN JOB (the beat): posted under this plugin's id at the drain's operation,
+        // so the hub's own verb is the one that stops it.
         await deps.jobs.cancel({
           kind: "job",
           machineId: row.machineId,
           operationId,
           jobId: job.jobId,
         });
+      } else if (lane.jobId === "") {
+        /*
+          INTENT: the preparation is in flight and no session exists yet. Cancelling the
+          PREPARATION is only half of it — `postPrepared` walks every open row whose material
+          has sealed, so a preparation that settles anyway (a cancel is a request, and one
+          that races the seal loses) would have its session posted by the next wake, after
+          this drain ended. Closing the row is what makes that impossible, and it is the row
+          that the wake's own `WHERE r.closure IS NULL` reads.
+        */
+        if (lane.prepareJobId !== "") {
+          await deps.jobs.cancel({
+            kind: "job",
+            machineId: row.machineId,
+            operationId: OPERATIONS.prepare,
+            jobId: lane.prepareJobId,
+          });
+        }
+        await closeIntent(deps, job.runId, reason);
       } else {
+        /*
+          A CODE SESSION IS CANCELLED THROUGH CODE (#279). Its job belongs to `atyrode.omp`
+          and `ctx.jobs.cancel` is bound to the calling plugin's id, so a drain that reached
+          for the hub's verb would refuse every job of the lane it exists to stop. The id is
+          the ROW's, because Code minted it: `job.jobId` is the run's derived identity and
+          naming it here is how a stop asks Code about a session that never existed.
+          `cancelSession` is idempotent on a job that has already settled.
+        */
         const answered = await deps.engine.cancelSession({
-          containerId: container,
-          jobId: job.jobId,
+          containerId: lane.container,
+          jobId: lane.jobId,
         });
         if (!answered.ok) {
-          notes.push(`${job.jobId} was not cancelled: ${answered.refused}`);
+          notes.push(`${lane.jobId} was not cancelled: ${answered.refused}`);
           continue;
         }
       }
@@ -434,7 +498,18 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     const started = SPENDING.includes(row.preset)
       ? await deps.launch.startExplore(identity, deps.jobs, deps.engine, input, plan)
       : await deps.launch.startBeat(identity, deps.jobs, input, plan);
-    const job: LiveJob = { runId: identity.runId, jobId: identity.jobId, launchedAt: at };
+    /*
+      WHAT IS RECORDED AS LIVE IS THE JOB THAT WAS POSTED, which for the lane that spends is
+      the PREPARATION and not the run's derived identity: `startExplore` posts
+      `materialJobId(identity.jobId)` and the session comes one wake later under an id Code
+      mints (#592). `drain.start`'s own first fan records `started.jobId`, which is the same
+      string, and the two paths writing different things into one column is how a stop ends
+      up naming an id nothing holds. The verb that stops a run still reads the ROW, not this.
+    */
+    const postedJobId = SPENDING.includes(row.preset)
+      ? materialJobId(identity.jobId)
+      : identity.jobId;
+    const job: LiveJob = { runId: identity.runId, jobId: postedJobId, launchedAt: at };
     if ("refused" in started) {
       /*
         A JOB THIS DRAIN ALREADY POSTED IS ADOPTED RATHER THAN RE-POSTED. `job_digest_conflict`

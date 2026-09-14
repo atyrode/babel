@@ -154,7 +154,7 @@ export const DRAW_PENDING =
 const MAX_SELECTION = 120;
 
 /**
- * HOW MANY BYTES OF LOG ONE PREPARATION MAY SEAL, and why it is 512 MiB.
+ * HOW MANY BYTES OF LOG ONE PREPARATION MAY SEAL, and why it is 448 MiB under a 512 MiB job.
  *
  * The count above bounds the REQUEST; this bounds the OUTPUT, and they are different failures.
  * `prepare` seals the normalized record stream of every selected session into the material
@@ -164,18 +164,37 @@ const MAX_SELECTION = 120;
  *
  * THE NUMBER IS THE POST-MORTEM'S OWN. A catalogued session averages ~12 MB, and the two logs
  * that broke 2026-09-13 were 35 MB (a harness transcript) and 240 MB (a live Code session);
- * 120 sessions at that average is ~1.4 GB, so the count alone bounds nothing. 512 MiB holds
- * about forty average sessions, or two of the largest the corpus has ever held, and it is
- * under the gigabyte this plugin's own database is allowed — a machine that cannot spare half
- * a gigabyte of tmpfs for a lease cannot run this operation at all. The normalized stream is
- * SMALLER than the log it came from (one canonical record per line, no whitespace), so this is
- * a conservative bound on what is actually written.
+ * 120 sessions at that average is ~1.4 GB, so the count alone bounds nothing. The declared
+ * job is 512 MiB, which holds about forty average sessions or two of the largest the corpus
+ * has ever held, and is under the gigabyte this plugin's own database is allowed — a machine
+ * that cannot spare half a gigabyte of tmpfs for a lease cannot run this operation at all.
+ *
+ * AND `outputBytes` IS THE AGGREGATE, WHICH IS WHY THIS IS NOT THAT NUMBER. The owner seals a
+ * job's outputs against ONE running budget — `remainingBytes = limits.outputBytes`, minus
+ * stdout, minus stderr, minus each sealed lease in turn, and a negative remainder is
+ * `output_collection_refused` (`agent/src/job-owner.ts`). This operation writes TWO leases,
+ * `outputs` and `material`, and each is sealed as a POSIX ustar archive: 512 bytes of header
+ * plus padding to 512 for every member, and a 1,024-byte trailer. A selection admitted at
+ * exactly the job's bound would therefore pack to the bound and be refused at the seal, after
+ * the full read — the very failure this constant exists to move before the post.
+ *
+ * So the selection gets 87.5% of the job and the remaining 64 MiB is the framing, the
+ * ordinary `outputs` lease and the two byte streams. `test/contract.test.ts` pins the
+ * inequality with a margin, not just `<=`.
  *
  * It is checked against the catalogued `size` — what `scan` measured — because that is the
- * only figure the hub has before the job runs. It must stay at or below the `outputBytes` the
- * manifest declares for `atyrode.babel.prepare`, and `test/contract.test.ts` pins that.
+ * only figure the hub has before the job runs.
  */
-export const MAX_MATERIAL_BYTES = 512 * 1024 * 1024;
+export const MAX_MATERIAL_BYTES = 448 * 1024 * 1024;
+
+/**
+ * THE PREPARATION'S JOB ID, derived from the run's own so a retried start posts the same
+ * preparation rather than a second one over the same sessions — and so the controller that
+ * has to cancel it can name it without having kept the answer of the call that posted it.
+ */
+export function materialJobId(jobId: string): string {
+  return `${jobId}_material`;
+}
 
 /** The engine's own bound on one job's whole input record, in bytes. */
 const MAX_INPUT_BYTES = 65_536;
@@ -611,7 +630,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     // the normalized record stream per session and writes the index a citation's digest comes
     // from. Its id is DERIVED from the run's so a retried start posts the same preparation
     // rather than a second one over the same sessions.
-    const prepareJobId = `${identity.jobId}_material`;
+    const prepareJobId = materialJobId(identity.jobId);
     const admitted = await ready(jobs, input.machineId, OPERATIONS.prepare);
     if ("refused" in admitted) return admitted;
     const built = document({
@@ -1003,26 +1022,48 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
     async (ctx, { runId, job, reason }) => {
       const rows = await store.db.query<{
         job_id: string | null;
+        prepare_job_id: string | null;
         machine_id: string | null;
         kind: string;
         closure: string | null;
         container_id: string | null;
-      }>(`SELECT job_id, machine_id, kind, closure, container_id FROM runs WHERE id = ?`, [runId]);
+      }>(
+        `SELECT job_id, prepare_job_id, machine_id, kind, closure, container_id
+           FROM runs WHERE id = ?`,
+        [runId],
+      );
       const run = rows[0];
       if (run === undefined) return { refused: `no run ${runId}` };
       if (run.closure !== null) return { refused: `${runId} already ended: ${run.closure}` };
       const jobId = run.job_id ?? "";
       const machineId = run.machine_id ?? "";
-      if (jobId === "" || machineId === "") {
+      const container = run.container_id ?? "";
+      const prepareJobId = run.prepare_job_id ?? "";
+      /*
+        A RUN STILL PREPARING HAS NO SESSION TO NAME (#592). It is started in two wakes and
+        the first posts only `atyrode.babel.prepare`, so between them the one job this run
+        has is its preparation — at `prepare`'s own node, which is where the panel asks. A
+        door that refused here (there was no job to name, and it said so) left the posting
+        wake free to post the session AFTER the operator pressed stop.
+      */
+      const preparing = jobId === "" && prepareJobId !== "";
+      if (machineId === "" || (jobId === "" && !preparing)) {
         return { refused: `${runId} has no job on a machine to stop` };
       }
       // The caller was admitted at the node it POSTED; the row says which job this run is. A
       // request that authorized one job and named another is refused rather than reconciled.
-      if (job.jobId !== jobId || job.machineId !== machineId || job.operationId !== run.kind) {
+      const node = preparing
+        ? { jobId: prepareJobId, operationId: OPERATIONS.prepare as string }
+        : { jobId, operationId: run.kind };
+      if (
+        job.jobId !== node.jobId ||
+        job.machineId !== machineId ||
+        job.operationId !== node.operationId
+      ) {
         return {
           refused:
-            `${runId} is ${machineId}/${run.kind}/${jobId} and this stop asks for authority ` +
-            `at ${job.machineId}/${job.operationId}/${job.jobId}`,
+            `${runId} is ${machineId}/${node.operationId}/${node.jobId} and this stop asks ` +
+            `for authority at ${job.machineId}/${job.operationId}/${job.jobId}`,
         };
       }
       /*
@@ -1031,13 +1072,21 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         every run of the lane that reaches a model. `container_id` says which lane this run is
         in; `cancelSession` is idempotent on a job that has already settled, so a Stop that
         raced the run's own ending answers the job rather than an error.
+
+        A RUN STILL PREPARING IS STOPPED AT ITS PREPARATION, and the row below is what makes
+        that stick: `postPrepared` posts a session for every open row whose material sealed,
+        so a Stop that only cancelled the preparation would be answered by the next wake
+        posting the session anyway — the operator pressing stop and the account spending
+        afterwards, which is the 2026-09-13 failure this lane exists not to repeat.
       */
-      const container = run.container_id ?? "";
-      if (container === "") {
+      if (preparing || container === "") {
+        // BABEL'S OWN JOB, either way: the beat's, or the preparation of a run that has not
+        // reached a session. `job` is the node the caller was admitted at and the row just
+        // agreed with, so it is what the cancel names.
         try {
           await deps.jobs(ctx).cancel(job);
         } catch (error) {
-          return { refused: `${machineId} refused to stop ${jobId}: ${message(error)}` };
+          return { refused: `${machineId} refused to stop ${job.jobId}: ${message(error)}` };
         }
       } else {
         const answered = await deps.engine(ctx.actions).cancelSession({
@@ -1052,7 +1101,12 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       // reserved, which is why the claim is settled in the same breath.
       const at = new Date(deps.now()).toISOString();
       await store.db.run(
-        `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ? WHERE id = ?`,
+        // `AND closure IS NULL` for the same reason the read above refuses a closed run: two
+        // stops, or a stop racing the run's own ending, write the first closure and not the
+        // second. For a PREPARING run this write is the whole stop: it is the row the posting
+        // wake reads, so once it is closed no session can be posted for it.
+        `UPDATE runs SET closure = 'stopped', finished_at = ?, payload = ?
+          WHERE id = ? AND closure IS NULL`,
         [
           at,
           JSON.stringify({

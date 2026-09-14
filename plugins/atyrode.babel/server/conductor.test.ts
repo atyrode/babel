@@ -915,7 +915,8 @@ const NO_CODE: CodeEngine = {
  * the distinction the whole reconcile turns on.
  */
 function sessionRead(over: {
-  readonly state: string;
+  /** The hub's own states, so a fake cannot answer a word `JobStateSchema` does not have. */
+  readonly state: SessionRead["job"]["state"];
   readonly sealed?: boolean;
   readonly finalMessage?: string;
   readonly exitCode?: number;
@@ -2494,7 +2495,10 @@ test("a Code session still running leaves its run open and settles nothing", asy
   // as a fault and would have closed the run at the reaper's bound.
   const code = codeAnswering(() => ({
     ok: true,
-    value: sessionRead({ state: "running", sealed: false }),
+    // `started` and not "running": the states are the hub's (`JobStateSchema`), and a fake
+    // answering a word the protocol does not have would prove this reconcile against a world
+    // that cannot occur.
+    value: sessionRead({ state: "started", sealed: false }),
   }));
   const { runId, claimId } = await sessionInFlight(db);
 

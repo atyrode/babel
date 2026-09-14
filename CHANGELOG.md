@@ -51,7 +51,11 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   records the run's intent and the session is posted on the wake that preparation's own
   settlement causes — which is also why the prompt is composed from the material's real index,
   with the file names and digests a citation must copy, instead of the layout the press could
-  only guess (#279, #268).
+  only guess. **A stop between the two wakes** cancels the preparation and CLOSES the run,
+  because the posting wake walks every open row whose material sealed: a row left open would
+  post its session after the operator pressed stop. What stops a run is read off the row and
+  not off the drain's own bookkeeping — the container says which lane, and the job id in it
+  is the one that lane minted (#279, #268).
 - **A drain names a Code profile, a session is posted when its material is sealed, and the
   dependency on Code is required.** The drain's five typed fields — provider, credential id,
   identity key, model, thinking — are gone: a drain picks a Code profile from the same list

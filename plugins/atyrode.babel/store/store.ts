@@ -141,6 +141,13 @@ export interface RunRow {
   kind: string;
   machineId: string;
   jobId: string;
+  /**
+   * The `atyrode.babel.prepare` job this run's material is sealed by, empty for a run that has
+   * none. It is the NODE a Stop names while `jobId` is still empty: a run is started in two
+   * wakes and the first of them posts only the preparation (#592), so this is the only job a
+   * run has to be stopped at until Code's session id lands.
+   */
+  prepareJobId: string;
   recipe: string;
   state: "queued" | "running" | "finished" | "failed" | "stopped";
   startedAt: string;
@@ -511,6 +518,7 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
     kind: text(row["kind"]),
     machineId: text(row["machine_id"]),
     jobId: text(row["job_id"]),
+    prepareJobId: text(row["prepare_job_id"]),
     recipe: text(row["recipe_id"]),
     state,
     startedAt,
@@ -533,6 +541,7 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
  * payload the conductor wrote the hub's own `usage.inference` into.
  */
 const RUN_COLUMNS = `r.id AS id, r.kind AS kind, r.machine_id AS machine_id, r.job_id AS job_id,
+  r.prepare_job_id AS prepare_job_id,
   r.recipe_id AS recipe_id, r.started_at AS started_at, r.finished_at AS finished_at,
   r.closure AS closure, r.cost_usd AS cost_usd, r.tokens AS tokens, r.records AS records,
   CASE WHEN json_valid(r.payload) THEN json_extract(r.payload, '$.inference.calls') END AS metered_calls,

@@ -83,6 +83,7 @@ export function runRow(row: Partial<RunRow> & Pick<RunRow, "id" | "state" | "sta
     kind: OPERATIONS.explore,
     machineId: "m-dev-01",
     jobId: "job_1",
+    prepareJobId: "",
     recipe: "code-health-comprehensibility",
     finishedAt: "",
     costUsd: null,

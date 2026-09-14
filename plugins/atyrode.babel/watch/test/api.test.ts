@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { ageClause, elapsedClock, usd, usdRate } from "../api.ts";
+import { ageClause, elapsedClock, stopInput, usd, usdRate } from "../api.ts";
+import { OPERATIONS } from "../../contract.ts";
+import { runRow } from "./host.ts";
 
 /*
   WHAT THE PANEL COMPUTES OUT OF WHAT A RUN SAID, and nothing about starting one.
@@ -33,4 +35,47 @@ test("a spend reads in two places; a rate per 1k reads in three", () => {
   expect(usd(20)).toBe("$20.00");
   expect(usdRate(0.015)).toBe("$0.015");
   expect(usdRate(0.0005)).toBe("$0.001");
+});
+
+test("a run still preparing is stopped at its preparation, not at a job it does not have", () => {
+  /*
+    A run is started in two wakes (#592): the press posts only `atyrode.babel.prepare` and the
+    session arrives one wake later under Code's own id. The node the panel names has to be a
+    job that exists, or the operator's Stop is refused and the posting wake spends the account
+    after he pressed it.
+  */
+  const preparing = stopInput(
+    runRow({
+      id: "run_1",
+      state: "running",
+      startedAt: "2026-09-14T12:00:00.000Z",
+      lastWord: "2026-09-14T12:00:00.000Z",
+      jobId: "",
+      prepareJobId: "job_1_material",
+    }),
+  );
+  expect(preparing.job).toEqual({
+    kind: "job",
+    machineId: "m-dev-01",
+    operationId: OPERATIONS.prepare,
+    jobId: "job_1_material",
+  });
+
+  // Once the session is posted the run has its own job, and that is the node again.
+  const posted = stopInput(
+    runRow({
+      id: "run_1",
+      state: "running",
+      startedAt: "2026-09-14T12:00:00.000Z",
+      lastWord: "2026-09-14T12:00:00.000Z",
+      jobId: "omp_1",
+      prepareJobId: "job_1_material",
+    }),
+  );
+  expect(posted.job).toEqual({
+    kind: "job",
+    machineId: "m-dev-01",
+    operationId: OPERATIONS.explore,
+    jobId: "omp_1",
+  });
 });

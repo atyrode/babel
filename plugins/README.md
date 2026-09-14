@@ -180,6 +180,24 @@ from Code's parse. Babel's composed explore prompt is about 33,700 bytes and fit
 to spare; the guard stays because a longer contract, a bigger selection or a corpus of
 non-ASCII selectors is how it would stop fitting.
 
+**WHAT STOPS A RUN IS READ OFF THE ROW, and there are three answers.** A drain's own
+bookkeeping cannot say it: `LiveJob.jobId` is the run's DERIVED identity, and for the lane
+that spends no job is ever posted under it — the preparation is `${jobId}_material` and the
+session is Code's own id. So `endDrain` and the `stop` door both read `runs`: no container is
+a job of Babel's, cancelled with `ctx.jobs.cancel`; a container and a `job_id` is a Code
+session, cancelled with `code.cancelSession`; a container and NO `job_id` is a run still
+preparing, whose `atyrode.babel.prepare` job is cancelled — and whose ROW IS CLOSED, because
+`postPrepared` posts a session for every open row whose material sealed and a cancel that
+races the seal loses. A stop that left the row open would be the operator pressing stop and
+the account spending afterwards.
+
+**AND THE SELECTION'S BOUND IS UNDER THE JOB'S, WITH ROOM.** `outputBytes` is the AGGREGATE
+the owner seals against — stdout, stderr and both of `prepare`'s leases come out of one
+running budget, and each lease is a ustar archive carrying 512 bytes of header and padding
+per member. So `MAX_MATERIAL_BYTES` is 448 MiB under a 512 MiB job: a selection admitted at
+exactly the job's bound would pack to it and be refused `output_collection_refused` after the
+full read, which is the failure the pre-post check exists to move.
+
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
 They are not in `MACHINE_OPERATIONS`, which is what the machine half implements and what

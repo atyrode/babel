@@ -222,15 +222,21 @@ describe("the machine half is declared as the machine half is built", () => {
       },
     });
     /*
-      THE HUB'S OWN BOUND IS AT OR UNDER THE MACHINE'S. `doors/launch.ts` refuses a selection
-      whose catalogued bytes exceed `MAX_MATERIAL_BYTES`, BEFORE a job is posted; the machine
-      refuses a lease over `outputBytes`, AFTER it has read every log in the selection. The
+      THE HUB'S OWN BOUND IS UNDER THE MACHINE'S, WITH ROOM. `doors/launch.ts` refuses a
+      selection whose catalogued bytes exceed `MAX_MATERIAL_BYTES`, BEFORE a job is posted;
+      the machine refuses at the seal, AFTER it has read every log in the selection. The
       first must be the one that fires, or the operator learns his window was too wide from a
-      twenty-minute job that failed at the seal.
+      twenty-minute job that failed at the end.
+
+      And `<=` would not be enough: `outputBytes` is the AGGREGATE the owner seals against —
+      stdout, stderr and BOTH of this operation's leases come out of one running budget, and
+      each lease is a ustar archive carrying 512 bytes of header and padding per member
+      (`agent/src/job-owner.ts`). A selection admitted at exactly the job's bound packs to it
+      and is refused `output_collection_refused` after the full read. A tenth of the job is
+      the margin this pins; the constant currently leaves an eighth.
     */
-    expect(MAX_MATERIAL_BYTES).toBeLessThanOrEqual(
-      machine.operations[OPERATIONS.prepare]!.limits?.outputBytes ?? 0,
-    );
+    const outputBytes = machine.operations[OPERATIONS.prepare]!.limits?.outputBytes ?? 0;
+    expect(MAX_MATERIAL_BYTES).toBeLessThanOrEqual(Math.floor(outputBytes * 0.9));
     const prepare = machine.operations[OPERATIONS.prepare]!;
     expect(prepare.outputs).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
     expect(prepare.exports).toEqual([MATERIAL_EXPORT]);

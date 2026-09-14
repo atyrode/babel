@@ -305,11 +305,22 @@ export function accountsClause(profile: {
  * The row already carries every part of it — the machine, the operation it ran as its `kind`,
  * and the job — so the panel posts the node rather than asking the door to look one up, because
  * the requirement is discharged against these arguments before the door is entered.
+ *
+ * A RUN STILL PREPARING NAMES ITS PREPARATION (#592). A run is started in two wakes and the
+ * first posts only `atyrode.babel.prepare`, so until Code's session id lands there is exactly
+ * one job to stop and it is that one — at its own operation, because a node is an operation on
+ * a machine and the explore node has no job behind it yet.
  */
 export function stopInput(run: RunRow, reason = ""): z.infer<typeof StopInputSchema> {
+  const preparing = run.jobId === "" && run.prepareJobId !== "";
   return StopInputSchema.parse({
     runId: run.id,
-    job: { kind: "job", machineId: run.machineId, operationId: run.kind, jobId: run.jobId },
+    job: {
+      kind: "job",
+      machineId: run.machineId,
+      operationId: preparing ? OPERATIONS.prepare : run.kind,
+      jobId: preparing ? run.prepareJobId : run.jobId,
+    },
     reason,
   });
 }
