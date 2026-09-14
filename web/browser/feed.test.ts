@@ -1143,7 +1143,17 @@ test.skipIf(!chrome)("the identity fold asks Babel rather than rewriting the led
     await page.select("[data-ask='into']", "kepler");
     const reason = `Both cover one import pipeline ${Date.now()}`;
     await page.type(".topic-ask textarea", reason);
-    await page.click(".topic-ask button[type='submit']");
+    // Submit through the element, not through a pointer at its last known box:
+    // twice on CI the pointer click left no POST behind while the button read
+    // enabled with both values in place (#274's first two captures), which is
+    // the one failure a coordinate hit can have and a DOM click cannot. The
+    // button must be enabled when it is pressed; a disabled one is the bug the
+    // wait above exists for, and is reported as such rather than as a timeout.
+    await page.$eval(".topic-ask button[type='submit']", (element) => {
+      const button = element as HTMLButtonElement;
+      if (button.disabled) throw new Error("the submit button is still disabled");
+      button.click();
+    });
     // The ask is listed under the form, in the operator's own words, with no
     // status attached to it: capture opens nothing and schedules nothing.
     // When it is not, say what the page was doing instead of "timed out":
@@ -1157,7 +1167,9 @@ test.skipIf(!chrome)("the identity fold asks Babel rather than rewriting the led
         const button = document.querySelector(".topic-ask button[type='submit']") as HTMLButtonElement | null;
         const into = document.querySelector("[data-ask='into']") as HTMLSelectElement | null;
         const box = document.querySelector(".topic-ask textarea") as HTMLTextAreaElement | null;
+        const form = document.querySelector("form.topic-ask") as HTMLFormElement | null;
         return {
+          valid: form?.checkValidity() ?? null,
           disabled: button?.disabled ?? null,
           label: button?.textContent ?? null,
           into: into?.value ?? null,
