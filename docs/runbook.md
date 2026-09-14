@@ -1203,13 +1203,13 @@ posts rather than discovered one refused job at a time.
 >    either, or an install whose grant does not reach Code's doors, answers `engine_unavailable`
 >    or `engine_forbidden` on the `profiles` door before any button. **Success:** the Start
 >    section shows profiles rather than a refusal sentence.
-> 4. **CODE'S PROMPT BOUND STOPS EVERY RUN, so no drain can begin.** The material now binds
->    (ADR 0044): `prepare` exports it and a posted session carries the input. What does not
->    fit is the prompt — `SessionRunInputSchema` takes 16,384 characters and Babel's composed
->    explore prompt is about 33,000 — so the settle wake closes each run `prompt_too_large`
->    with both figures on it. Until Code's bound or Babel's analysis contract moves, this
->    whole section is a rehearsal on paper: it is the honest no-go, and no setting turns it
->    off. **Success:** a run posted by the settle wake takes a Code job id instead.
+> 4. **The pinned Code takes Babel's prompt.** `runSession` bounds a prompt at
+>    `PROMPT_MAX_BYTES` (44 KiB — the hub's job-input map, counted in encoded bytes) and
+>    Babel's composed explore prompt is about 33,700, so it fits with room to spare. A
+>    selection far larger than the presets', or a corpus of non-ASCII selectors, is how that
+>    stops being true. **Success:** no run in the drain closes `prompt_too_large`; if one
+>    does, the row carries both figures and what moves is Code's bound or the analysis
+>    contract, never a narrower window.
 > 5. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names
 >    a blocker for this machine is a no-go.
 > 6. A five-minute rehearsal: `drain.start` with `concurrent: 2`, the Code profile from item 2,
@@ -1287,37 +1287,33 @@ never reaches Babel; a refused submission is still spend, and settles its claim 
 The drain's fan goes through the same launch path and names the same Code profile.
 
 **Exercised, with the evidence.** On this workstation (`workstation-linux`, 2026-09-14): the
-plugin gate — `deps:code`, `check`, `bun test` (**517 tests**), `pack`, `verify` — against a
-real engine at Manifold `476a586c`, with `atyrode/code` pinned at `c2e3d92e` in BOTH
+plugin gate — `deps:code`, `check`, `bun test` (**516 tests**), `pack`, `verify` — against a
+real engine at Manifold `476a586c`, with `atyrode/code` pinned at `8b5ba71d` in BOTH
 `plugins/CODE_REV` and `@atyrode/manifold-code`. `verify` composes **ten bundles** on the
 disposable engine in dependency order: `atyrode.omp` and its two parts, `atyrode.code` and its
 three, then `atyrode.babel` and its two — which is what a `required` dependency costs and what
 it proves. Beside the gate: the Code client's refusal translation against the real host
-sentences (`server/engine/session.test.ts`); the material bound into a posted session, with
-Code's own input schema parsing the request (`server/engine/session.test.ts`,
-`doors/drain.test.ts`); the settle path — valid, refused-and-charged, still running,
-cancelled-with-no-transcript, and a read Code refuses twice — against a fake `readSession`
-(`server/conductor.test.ts`); the sealed material's layout and its digests against a real
-temporary lease (`machine/prepare.test.ts`); both launch wakes, the press that seals and the
-settle that composes (`doors/launch.test.ts`, `doors/drain.test.ts`); Watch's Start and drain
-sections rendered from a fake `profiles` door (`watch/test/`).
+sentences (`server/engine/session.test.ts`); the material bound into a posted session that
+takes Code's job id, with Code's own input schema parsing the request
+(`server/engine/session.test.ts`, `doors/drain.test.ts`); the settle path — valid,
+refused-and-charged, still running, cancelled-with-no-transcript, and a read Code refuses
+twice — against a fake `readSession` (`server/conductor.test.ts`); the sealed material's
+layout and its digests against a real temporary lease (`machine/prepare.test.ts`); both launch
+wakes, the press that seals and the settle that posts (`doors/launch.test.ts`,
+`doors/drain.test.ts`); Watch's Start and drain sections rendered from a fake `profiles` door
+(`watch/test/`).
 
-**Not exercised, and blocked at the prompt — every item below is an OPERATOR STEP.** No Babel
-run has reached a model on a real hub and none can yet, for one reason: Code's `runSession`
-takes a prompt of 16,384 characters and Babel's composed explore prompt is about 33,000, so
-the settle wake closes each run `prompt_too_large` with both figures on it. There is no real
-model call, no `inference_call` on a real journal and no provider window moved. Nothing here
-ran against a real hub, a real Code install or a real omp account. What remains owed, in
-order:
+**Not exercised — every item below is an OPERATOR STEP.** Nothing here ran against a real hub,
+a real Code install or a real omp account: no model has answered, no `inference_call` sits on
+a real journal, no provider window has moved. The lane is whole in code and unproven in the
+world. What remains owed, in order:
 
-> 1. Code's prompt bound, or Babel's analysis contract, moves. The stage's JSON Schema is
->    ~8,900 characters of it and the per-role instructions most of the rest, so this is a
->    decision about the contract rather than about one run. **Success:** the settle wake
->    answers a Code job id, and `doors/drain.test.ts`'s first assertions flip from
->    `prompt_too_large` to `{ runId, jobId }`.
-> 2. A Code profile exists on `dev-01` for the account and model the drain will spend; Code
+> 1. A Code profile exists on `dev-01` for the account and model the drain will spend; Code
 >    and omp are installed and consented at the revisions in force. **Success:** Watch's Start
 >    section lists it, and a launch reaches Code's door.
+> 2. One exploration, by hand, from the Start section. **Success:** the run takes a Code job
+>    id, `code.readSession` answers it on a later cycle, and the receipt carries the model,
+>    the account and what it spent.
 > 3. §11.2 item 6, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`,
 >    target one exploration's price, deadline now + 5 min. **Success:** two rows reach
 >    `at the model` within 90 s and settle with calls > 0; record host, date and the drain row

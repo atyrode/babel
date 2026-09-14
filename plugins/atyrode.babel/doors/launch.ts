@@ -30,7 +30,12 @@ import {
   type Recipe,
 } from "../server/engine/prompts.ts";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
-import { PROMPT_LIMIT, type ActionsSlice, type CodeEngine } from "../server/engine/session.ts";
+import {
+  PROMPT_LIMIT,
+  promptBytes,
+  type ActionsSlice,
+  type CodeEngine,
+} from "../server/engine/session.ts";
 import type { JobLaunch, JobsSlice, MachineReadiness, RunPlan } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import type { BabelStore } from "../store/store.ts";
@@ -812,19 +817,24 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
         },
       });
       /*
-        CODE BOUNDS A SESSION'S PROMPT and Babel's analysis contract is longer than that bound
-        today: the stage's JSON Schema, the answering protocol and the per-role instructions
-        come to about 33,000 characters against `SessionRunInputSchema`'s 16,384. Measured
-        here, against CODE'S OWN published number, the run closes with both figures on it;
-        left to Code's parse it closes with a Zod issue inside a sentence about a door being
-        "asked for something it does not take", which is true and tells an operator nothing.
+        CODE BOUNDS A SESSION'S PROMPT IN BYTES, and the bound is the hub's own: a prompt is
+        carried in the 64 KiB job-input map, which counts ENCODED bytes — so a character
+        check would pass a prompt of legal length whose selectors and digests are multi-byte
+        and have it refused at admission instead. Babel's composed prompt fits with room to
+        spare; this stays because a longer contract, a bigger selection or a corpus of
+        non-ASCII selectors is how it would stop fitting.
 
-        It is not a thing a later wake fixes — the prompt is a function of the contract and
-        the selection, both fixed by now — so the run closes rather than being retried.
+        Measured here, against CODE'S OWN published number, the run closes with both figures
+        on it; left to Code's parse it closes with a Zod issue inside a sentence about a door
+        being "asked for something it does not take", which is true and tells an operator
+        nothing. It is not a thing a later wake fixes — the prompt is a function of the
+        contract and the selection, both fixed by now — so the run closes rather than being
+        retried.
       */
-      if (prompt.length > PROMPT_LIMIT) {
+      const bytes = promptBytes(prompt);
+      if (bytes > PROMPT_LIMIT) {
         const reason =
-          `prompt_too_large: this run's prompt is ${String(prompt.length)} characters and ` +
+          `prompt_too_large: this run's prompt is ${String(bytes)} bytes and ` +
           `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. The analysis contract ` +
           `and the stage's schema are most of it, so what moves is Code's bound or the ` +
           `contract itself — not this selection.`;

@@ -170,13 +170,15 @@ material's own index and posts the session. The prompt is the better half of tha
 built there, it carries the real file names, record counts and the digests a citation has to
 copy, instead of the layout the press could only guess.
 
-**WHAT IS STILL REFUSED: CODE'S PROMPT BOUND.** `SessionRunInputSchema` takes a prompt of
-16,384 characters and Babel's composed explore prompt is about 33,000 — the answering
-protocol, the per-role instructions and the stage's JSON Schema are most of it. `postPrepared`
-measures against CODE'S OWN published number and closes the run `prompt_too_large` with both
-figures, rather than letting Code's parse report it as a door "asked for something it does not
-take". What moves is Code's bound or the analysis contract; it is not a thing a narrower
-selection fixes.
+**THE PROMPT IS BOUNDED IN BYTES, AND FITS.** `runSession` takes a prompt of
+`PROMPT_MAX_BYTES` — omp's own constant, re-exported by Code, and the hub's real ceiling,
+since a prompt is carried in the 64 KiB job-input map, which counts ENCODED bytes.
+`postPrepared` measures against it with a `TextEncoder` rather than a character count, so a
+legal-length prompt whose selectors and digests are multi-byte cannot be refused at admission
+instead; over it, the run closes `prompt_too_large` with both figures rather than a Zod issue
+from Code's parse. Babel's composed explore prompt is about 33,700 bytes and fits with room
+to spare; the guard stays because a longer contract, a bigger selection or a corpus of
+non-ASCII selectors is how it would stop fitting.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.

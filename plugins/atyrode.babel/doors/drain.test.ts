@@ -43,6 +43,7 @@ import { launchMachinery, type LaunchIdentity, type Started } from "./launch.ts"
 import {
   PROMPT_LIMIT,
   materialInput,
+  promptBytes,
   type CodeEngine,
   type EngineAnswer,
 } from "../server/engine/session.ts";
@@ -964,7 +965,7 @@ test("disabling the policy mid-drain ends it as an operator's act rather than as
   expect((await readDrain(harness.store, drainId))?.state).toBe("stopped");
 });
 
-test("over the real launch path a drain's fan seals material, and the settle wake composes it", async () => {
+test("over the real launch path a drain's fan seals material, and the settle wake posts it", async () => {
   /*
     THE DRAIN AND THE BUTTON GO THROUGH ONE PATH (#279), which is why there is one answer and
     not two: whatever the operator's button does, the fan does. The controller above is
@@ -1041,55 +1042,38 @@ test("over the real launch path a drain's fan seals material, and the settle wak
 
   const posted = await machinery.postPrepared(fleet, deps.engine, PLAN);
 
-  /*
-    THE SETTLE WAKE IS WHERE THE SESSION IS POSTED, and today it is where Babel meets Code's
-    prompt bound: the analysis contract and the stage's JSON Schema come to about 33,000
-    characters against `SessionRunInputSchema`'s 16,384. The run closes carrying BOTH figures
-    rather than a Zod issue about a door being "asked for something it does not take", so
-    what has to move — Code's bound, or the contract — is legible from the row.
-
-    When it moves, the first assertions here become `{ runId, jobId }`; what the request must
-    carry is pinned by the test below, which drives the same seam `postPrepared` calls.
-  */
-  expect(posted).toHaveLength(1);
-  const outcome = posted[0]!;
-  expect("refused" in outcome).toBe(true);
-  if (!("refused" in outcome)) return;
-  expect(outcome.refused).toStartWith("prompt_too_large:");
-  expect(outcome.refused).toContain(String(PROMPT_LIMIT));
-  const row = await harness.db.query<{ closure: string; payload: string }>(
-    `SELECT closure, payload FROM runs WHERE id = ?`,
+  // THE SESSION IS POSTED, and the run takes CODE'S job id: that pair — the container and
+  // this job — is the whole of how the conductor reconciles a job `ctx.jobs` cannot read.
+  expect(posted).toEqual([{ runId: `run_${drainId}_0`, jobId: "omp_1" }]);
+  const row = await harness.db.query<{ job_id: string | null; container_id: string | null }>(
+    `SELECT job_id, container_id FROM runs WHERE id = ?`,
     [`run_${drainId}_0`],
   );
-  expect(row[0]?.closure).toBe("failed");
-  expect(String(row[0]?.payload)).toContain("prompt_too_large");
+  expect(row[0]).toEqual({ job_id: "omp_1", container_id: "ctr_workbench" });
 
-  // …and nothing was asked of Code, because the bound is read off Code's OWN schema: this is
-  // the verdict Code would give, reached before the call instead of inside its refusal.
-  expect(code.posted).toEqual([]);
-});
-
-test("a session Babel posts carries its material bound to the settled preparation", async () => {
   /*
-    THE ASSERTION THE WHOLE LANE EXISTS FOR (ADR 0044). The model reads `/inputs/material`,
-    and what puts bytes there is this binding naming the SETTLED `prepare` job's own sealed
-    output; a session posted without it would send a model to an empty directory and have
-    Babel record the answer as evidence-backed analysis.
+    AND THE REQUEST CARRIED THE MATERIAL (ADR 0044). This is the assertion the whole lane
+    exists for: the model reads `/inputs/material`, and what puts bytes there is this binding
+    naming the SETTLED `prepare` job's own sealed output. A session posted without it would
+    send a model to an empty directory and have Babel record the answer as evidence-backed.
 
-    It drives the seam rather than `postPrepared` because the composed prompt does not fit
-    Code's bound yet (the test above). The request is the same either way — `postPrepared`
-    calls exactly this — and CODE'S OWN input schema is what parses it in the fake.
+    The fake parses what it was handed with CODE'S OWN published input schema, so a request
+    Babel built that Code would refuse fails here rather than on a machine.
   */
-  const answered = await deps.engine.runSession({
-    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
-    machineId: MACHINE,
-    prompt: "read the material",
-    prepareJobId: "job_drn_1_0_material",
-  });
-
-  expect(answered.ok).toBe(true);
   expect(code.posted).toHaveLength(1);
   expect(code.posted[0]?.inputs).toEqual([
-    { name: "material", from: { jobId: "job_drn_1_0_material", output: "material" } },
+    { name: "material", from: { jobId: `job_${drainId}_0_material`, output: "material" } },
   ]);
+  /*
+    The prompt names the file the MATERIAL ACTUALLY HOLDS — the index's own `file`, not a name
+    the press derived from a selector before `prepare` had run — and the preparation it cites
+    is the sealed one's content-addressed id. The DIGEST is not in the prompt on purpose: it
+    is in `index.json`, which the prompt sends the model to read, because that is the one
+    place a citation's digest is written and a second copy is a second answer to it.
+  */
+  expect(code.posted[0]?.prompt).toContain("sessions/0001-omp-s1.jsonl");
+  expect(code.posted[0]?.prompt).toContain("prep-1");
+  expect(code.posted[0]?.prompt).toContain('"sourceDigest"');
+  // …and it fits Code's byte bound with room to spare, which is what `PROMPT_LIMIT` guards.
+  expect(promptBytes(code.posted[0]?.prompt ?? "")).toBeLessThan(PROMPT_LIMIT);
 });

@@ -1,7 +1,7 @@
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import {
   CODE_PLUGIN_ID,
-  SessionRunInputSchema,
+  PROMPT_MAX_BYTES,
   actionSchemas,
   type ActionInput,
   type ActionResult,
@@ -140,15 +140,26 @@ export function materialInput(prepareJobId: string): { readonly inputs: Material
 
 
 /**
- * CODE'S OWN BOUND ON ONE SESSION'S PROMPT, read off its published schema rather than
- * mirrored as a number here — a copy would be the thing nobody updated the day Code moved it.
+ * CODE'S OWN BOUND ON ONE SESSION'S PROMPT, IN BYTES, imported rather than mirrored — a
+ * number copied here would be the thing nobody updated the day it moved.
  *
- * It is read at all because a prompt over it is refused by Code's PARSE, which reports it as
- * "asked for something it does not take" with a Zod issue inside: true, and useless to an
- * operator. `postPrepared` measures against this and refuses by name instead, with both
- * figures, so what has to change is legible from the run row.
+ * It is BYTES and not characters because the real ceiling is the hub's 64 KiB job-input map,
+ * which counts encoded bytes: a prompt of legal length whose selectors and digests are
+ * multi-byte would pass a character check and be refused at admission. `PROMPT_MAX_BYTES` is
+ * omp's own constant, re-exported by Code, and `SessionRunInputSchema.prompt` is omp's schema
+ * by import — so there is one number and this reads it.
+ *
+ * `postPrepared` measures against it and refuses by name. Babel's composed prompt fits today
+ * with room to spare; the guard stays because a longer contract, a bigger selection or a
+ * corpus of non-ASCII selectors is how it would stop fitting, and a run that discovered that
+ * inside Code's parse would report a Zod issue instead of the two figures.
  */
-export const PROMPT_LIMIT: number = SessionRunInputSchema.shape.prompt.maxLength ?? 0;
+export const PROMPT_LIMIT: number = PROMPT_MAX_BYTES;
+
+/** What the bound is measured over: the encoded bytes the hub's input map will hold. */
+export function promptBytes(prompt: string): number {
+  return new TextEncoder().encode(prompt).byteLength;
+}
 
 /** What a session is posted with: the profile, the destination, the prompt, and the material. */
 export interface SessionRequest {

@@ -39,11 +39,10 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   settlement of it never reaches Babel: its final message is read for the answer, every
   citation is checked against the material's index, and the receipt is written with the model
   and what it spent — a refused submission included, at its cost, because the model answered
-  and the account is CODE's own report. What is left is Code's PROMPT BOUND:
-  `SessionRunInputSchema` takes 16,384 characters and Babel's composed explore prompt is about
-  33,000, so a run closes `prompt_too_large` carrying both figures rather than a Zod issue
-  from Code's parse — what moves is Code's bound or the analysis contract, and no narrower
-  selection fixes it (#279, #268, #258, #264).
+  and the account is CODE's own report. The prompt is bounded in BYTES against
+  `PROMPT_MAX_BYTES` — the hub's 64 KiB job-input map is the real ceiling, so the check is a
+  `TextEncoder` and not a character count — and a run over it closes `prompt_too_large` with
+  both figures rather than a Zod issue from Code's parse (#279, #268, #258, #264).
 - **The material is a bound job input, and a run is started in two wakes.** Manifold's
   job-inputs primitive (ADR 0044, atyrode/manifold#592) binds one job's sealed output into
   another's sandbox, so `atyrode.babel.prepare` now declares `exports: ["material"]` and a
