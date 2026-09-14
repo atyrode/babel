@@ -38,9 +38,10 @@
 */
 
 import { z } from "zod";
-import type { Receipt } from "../contract.ts";
+import { RUN_STAGES, type Receipt } from "../contract.ts";
 import { LIVE_GRACE_MS, babelOwnLog, type SessionRef } from "./adapters/index.ts";
 import type { OutputSink } from "./output.ts";
+import { SILENT, type ProgressChannel } from "./progress.ts";
 
 export const PrepareInputSchema = z.strictObject({
   /** The run this job is; empty mints one (see archive.ts). */
@@ -83,6 +84,8 @@ export interface PrepareDeps {
    * because skipping a moving 240 MB log is the point.
    */
   modifiedAt(ref: SessionRef): Promise<number>;
+  /** Where this run says it is; a caller that hands none is not watched (`progress.ts`). */
+  progress?: ProgressChannel | undefined;
 }
 
 /** The version of the preparation record's shape AND of the normalization behind its source
@@ -307,6 +310,8 @@ export async function prepare(
   let preparation: Preparation | null = null;
   let closure: Receipt["closure"] = "completed";
   let reason = "";
+  const progress = deps.progress ?? SILENT;
+  progress.report({ stage: RUN_STAGES.preparing, message: "discovering the sessions this machine holds" });
 
   const discovered = await deps.discover();
   counts.discovered = discovered.length;
@@ -325,7 +330,17 @@ export async function prepare(
     const selection: PreparationEntry[] = [];
     const named = input.selectors.length > 0;
     const at = Date.now();
+    // The loop already counts, so the fraction costs nothing and is the honest one: a digest
+    // over a large log is where the minutes go, and "3/927" is what the operator wanted to see
+    // on 2026-09-13 instead of silence.
+    let examined = 0;
     for (const session of chosen.chosen) {
+      examined += 1;
+      progress.report({
+        stage: RUN_STAGES.preparing,
+        message: `${session.selector} (${String(examined)}/${String(chosen.chosen.length)})`,
+        fraction: examined / chosen.chosen.length,
+      });
       const left = await excluded(session, input, deps, at);
       if (left !== null) {
         if (named) {
@@ -385,6 +400,7 @@ export async function prepare(
 
   // Every scoped session is registered in the hub's catalog, because a preparation that named
   // sessions the hub holds no row for would be an identity nothing could later resolve.
+  progress.report({ stage: RUN_STAGES.submitting, message: `${String(counts.selected)} sessions` });
   await out.write("sessions", closure === "completed" ? rows : []);
   const receipt: Receipt = {
     runId,

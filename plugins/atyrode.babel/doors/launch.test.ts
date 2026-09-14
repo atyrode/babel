@@ -59,6 +59,7 @@ const PLAN: RunPlan = {
   profile: { id: "analysis", revision: 3 },
   caps: { perRunUsd: 0.0625, toolCalls: 40, idleMs: 120_000, handshakeMs: 30_000 },
   recipes: {},
+  metered: {},
   requireContainment: true,
   limits: LIMITS,
 };
@@ -111,6 +112,10 @@ class Fleet implements BabelJobs {
     throw new Error("a launch never lists runs");
   }
 
+  follow(): never {
+    throw new Error("a launch never follows a job");
+  }
+
   output(): { data: string; eof: boolean } {
     throw new Error("a launch never reads an output");
   }
@@ -156,6 +161,7 @@ function report(over: Partial<TickReport> = {}): TickReport {
     gaps: [],
     parked: null,
     pulse: { tick: { gaps: {}, refusals: {} }, today: { gaps: {}, refusals: {} } },
+    runs: { running: 0, atModel: 0, stalled: 0 },
     pending: 0,
     notes: [],
     ...over,

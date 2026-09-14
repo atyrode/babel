@@ -1,5 +1,5 @@
 import { jobLimits, type MachineHalf, type PluginManifest } from "@manifold/protocol";
-import type { GuestCtx, GuestHookJobs } from "@manifold/plugin-kit/server";
+import type { GuestCtx, GuestHookJobs, GuestJobs } from "@manifold/plugin-kit/server";
 import { BABEL_PLUGIN_ID, OPERATIONS, type OperationName } from "../contract.ts";
 import { DEFAULT_POLICY, type Policy } from "../store/coordinator.ts";
 import type {
@@ -176,6 +176,25 @@ export function perRunUsd(policy: Policy): number {
   return policy.batchSize <= 0 ? policy.perCycleCost : policy.perCycleCost / policy.batchSize;
 }
 
+/**
+ * WHICH OPERATIONS THE OWNER MAY METER, by operation id ({@link RunPlan.metered}).
+ *
+ * A job's inference is metered by the OWNER, and only when its operation binds a service whose
+ * installed policy meters one of the bound operations (`agent/src/job-owner.ts`
+ * `prepareServiceProxies`: a binding, a policy, and `bound.meter !== undefined`). The policy is
+ * the operator's and no server half can read it, so the manifest answers the half it knows:
+ * an operation that binds NOTHING can never be metered, whatever the operator installed. That
+ * is the half the loop needs — it is what keeps an unmetered run from being called stalled —
+ * and a call the hub actually counted is what proves the other half.
+ */
+function meterableOperations(machine: MachineHalf | null): Record<string, boolean> {
+  const metered: Record<string, boolean> = {};
+  for (const [operationId, operation] of Object.entries(machine?.operations ?? {})) {
+    metered[operationId] = (operation.services ?? []).length > 0;
+  }
+  return metered;
+}
+
 export function runPlan(request: PlanRequest): RunPlan {
   const machine = request.manifest.machine ?? null;
   const cookbook = request.cookbook ?? {};
@@ -197,6 +216,7 @@ export function runPlan(request: PlanRequest): RunPlan {
       handshakeMs: HANDSHAKE_MS,
     },
     recipes,
+    metered: meterableOperations(machine),
     // Every Babel run is contained. The operator relaxes it per run and never by default: an
     // engine that reports no sandbox is refused by the machine half, which is the check.
     requireContainment: true,
@@ -240,6 +260,13 @@ function owned(outputs: JobLaunch["outputs"]): {
  * server half registers its OWN beat instead of recording that it cannot. The hole this file
  * used to state is closed, and with it the sentence the loop carried a refusal in.
  *
+ * THE NINTH VERB IS THE CALLER'S TO PASS. `follow` is the one thing `GuestHookJobs` omits, and
+ * it is the only read the hub serves for a job that is still running (`journal` refuses that
+ * job `job_unfinished`), so a dispatch hands its own and a hook hands none — which is what
+ * decides whether that cycle can fold where its in-flight runs are (#261). It is taken here
+ * rather than reached for, because the slice is built from a handle whose type says a hook's
+ * has no such member.
+ *
  * Everything is passed straight through: the protocol's own shapes already satisfy the loop's,
  * which is why this is a narrowing and not a translation. `schedules()` answers
  * `PublicJobSchedule` rows, which are `ScheduleRow`s carrying the plugin id and the pinned
@@ -248,7 +275,7 @@ function owned(outputs: JobLaunch["outputs"]): {
  * restate; `JobRunState` declares it optional and the loop reads it to name why a posting was
  * refused.
  */
-export function jobsSlice(jobs: GuestHookJobs): BabelJobs {
+export function jobsSlice(jobs: GuestHookJobs, follow?: GuestJobs["follow"]): BabelJobs {
   return {
     describe: async (args): Promise<MachineReadiness> =>
       await jobs.describe({ machineId: args.machineId, pluginId: args.pluginId }),
@@ -258,6 +285,12 @@ export function jobsSlice(jobs: GuestHookJobs): BabelJobs {
     listRuns: async (args) => await jobs.listRuns(args),
     output: async (args: { node: OutputRef; offset: number; maxBytes: number }) =>
       await jobs.output(args),
+    // Absent, not `undefined`: the loop reads `follow === undefined` as "this cycle cannot see
+    // a running job", and an own property holding undefined would satisfy neither
+    // `exactOptionalPropertyTypes` nor a reader of the object.
+    ...(follow === undefined
+      ? {}
+      : { follow: async (node: JobRef, receive: () => void) => await follow(node, receive) }),
     cancel: async (node: JobRef): Promise<void> => {
       await jobs.cancel(node);
     },

@@ -1,7 +1,7 @@
 import type { HostServices } from "@manifold/plugin";
 import type { ActionOutcome, MachineSummary } from "@manifold/protocol";
 import { ACTIONS, OPERATIONS, door, type ActionName } from "../../contract.ts";
-import type { LaunchAnswer, PolicyResult, RunRow, RunsResult, TopicsResult } from "../api.ts";
+import type { LaunchAnswer, PolicyResult, RunProgress, RunRow, RunsResult, TopicsResult } from "../api.ts";
 
 /*
   THE FAKE HOST.
@@ -78,9 +78,29 @@ export function runRow(row: Partial<RunRow> & Pick<RunRow, "id" | "state" | "sta
     recipe: "code-health-comprehensibility",
     finishedAt: "",
     costUsd: null,
+    tokens: null,
+    calls: null,
     records: 0,
     freshness: "fresh",
+    progress: null,
     ...row,
+  };
+}
+
+/** What the conductor folded out of a running job's replay ring, as a row carries it. */
+export function runProgress(over: Partial<RunProgress> & Pick<RunProgress, "stage" | "since">): RunProgress {
+  return {
+    message: "",
+    fraction: null,
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheTokens: 0,
+    costUsd: 0,
+    lastModel: "",
+    stalled: false,
+    updatedAt: over.since,
+    ...over,
   };
 }
 

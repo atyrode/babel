@@ -535,6 +535,62 @@ export const StopResultSchema = z.strictObject({
   closure: z.literal("stopped"),
 });
 
+/**
+ * WHERE A RUN IS, in the three words the machine half reports and a row shows (#261).
+ *
+ * A stage is the WORKLOAD's own account of its phase, written to the private owner channel and
+ * folded by the owner into one `job_progress` event per five seconds (manifold
+ * `packages/protocol/src/worker.ts`). Three words and no more, because the point is a row an
+ * operator reads at a glance: `preparing` is everything before the engine is asked anything,
+ * `at the model` is from the instant the prompt leaves Babel until the turn ends, and
+ * `submitting` is the results being written into the output lease. On 2026-09-13 a run printed
+ * `preparing N/M` and then nothing for the rest of its life, and seventy-five minutes passed
+ * with no engine on the machine and nothing saying so (post-mortem F12, O2).
+ *
+ * The words obey `JobProgressEventSchema.stage`: 1–64 characters of lowercase
+ * `[a-z0-9 ._-]` with no leading or trailing space. A stage the owner refuses is not a bad
+ * label, it is a failed channel and a cancelled job, so they are spelled once, here.
+ */
+export const RUN_STAGES = {
+  preparing: "preparing",
+  atModel: "at the model",
+  submitting: "submitting",
+} as const;
+export type RunStage = (typeof RUN_STAGES)[keyof typeof RUN_STAGES];
+
+/** What the owner's channel accepts, restated so the machine half can refuse its own frame. */
+export const STAGE_PATTERN = /^[a-z0-9](?:[a-z0-9 ._-]{0,62}[a-z0-9])?$/;
+export const STAGE_MESSAGE_MAX = 256;
+
+/**
+ * WHAT A RUNNING JOB IS DOING AND WHAT IT HAS SPENT, as the conductor folds it out of the job's
+ * replay ring each cycle: the newest `job_progress` for the stage and every `inference_call`
+ * since the last fold for the spend (manifold#554).
+ *
+ * `stalled` is the one judgement in it: a run the hub METERS that said `at the model` and has
+ * had no metered call for ninety seconds. A run nothing meters is never judged — where no call
+ * is ever counted, that silence is the ordinary state and not a symptom. It is a flag on a row
+ * and never a closure — nothing here observed a dead process — and the next call clears it.
+ */
+export const RunProgressSchema = z.strictObject({
+  stage: z.string(),
+  message: z.string(),
+  /** How far through the stage, where the loop reporting it counts; null where it cannot. */
+  fraction: z.number().nullable(),
+  /** When this stage was first observed: the "since" of `at the model since T`. */
+  since: z.string(),
+  calls: z.number().int(),
+  inputTokens: z.number().int(),
+  outputTokens: z.number().int(),
+  cacheTokens: z.number().int(),
+  costUsd: z.number(),
+  /** The model that answered the newest call; empty until one has. */
+  lastModel: z.string(),
+  stalled: z.boolean(),
+  updatedAt: z.string(),
+});
+export type RunProgress = z.infer<typeof RunProgressSchema>;
+
 export const RunRowSchema = z.strictObject({
   id: z.string(),
   kind: z.string(),
@@ -548,6 +604,15 @@ export const RunRowSchema = z.strictObject({
   records: z.number().int(),
   freshness: z.enum(["fresh", "recent", "lost", "ended"]),
   lastWord: z.string(),
+  /** What the run has spent, from the hub's own meter when it has one; null before it has. */
+  tokens: z.number().int().nullable(),
+  /**
+   * How many calls the hub metered, kept with the receipt when the run settled; null for a run
+   * nothing metered — which is every run of the local lane, not a run that made no call.
+   */
+  calls: z.number().int().nullable(),
+  /** Where it is and what it has spent so far; null for a run nothing is folding. */
+  progress: RunProgressSchema.nullable(),
 });
 
 /** `runs` serves all five narrowings; Watch sends the first three. */
@@ -676,6 +741,15 @@ export const ReceiptSchema = z.strictObject({
   reason: z.string().optional(),
   costUsd: z.number().optional(),
   tokens: z.number().int().optional(),
+  /**
+   * THE MODELS THAT ANSWERED, in the order the run first heard from each (#261).
+   *
+   * The profile block above says which model the run was LAUNCHED under, which is not the same
+   * sentence: a fallback, an auto-retry or an operator's steer moves it mid-run, and on
+   * 2026-09-13 nothing anywhere said what had actually answered. Absent for a run that reached
+   * no engine; empty for one whose engine never named a model.
+   */
+  models: z.array(z.string()).optional(),
   counts: z.record(z.string(), z.number().int()),
 });
 export type Receipt = z.infer<typeof ReceiptSchema>;

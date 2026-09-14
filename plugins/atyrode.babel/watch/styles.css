@@ -279,6 +279,26 @@
   color: var(--babel-ink-strong);
 }
 
+/* Where a run is: the phase reads as text, its clock as a quieter figure beside it. */
+.plugin-atyrode_babel_watch__stage {
+  color: var(--babel-ink-strong);
+  white-space: nowrap;
+}
+
+.plugin-atyrode_babel_watch__stage-since {
+  font-family: var(--babel-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A silence, not a death (#261) — warn, never bad, and never a light of its own. */
+.plugin-atyrode_babel_watch__stalled {
+  font-family: var(--babel-font-mono);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--babel-warn);
+}
+
 /* The only colour that moves: something is running right now. */
 .plugin-atyrode_babel_watch__dot {
   width: 7px;

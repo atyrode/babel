@@ -10,6 +10,8 @@ import {
   PolicyResultSchema,
   PresetSchema,
   RecipeRowSchema,
+  RUN_STAGES,
+  RunProgressSchema,
   RunRowSchema,
   RunsResultSchema,
   StopInputSchema,
@@ -365,3 +367,34 @@ export const OVERLAY_FIELDS: Record<string, { readonly label: string; readonly m
   dailyCost: { label: "Per day", money: true },
   concurrentPerMachine: { label: "At once, per machine", money: false },
 };
+
+// ------------------------------------------------------------------ where a run is (#261)
+
+/** What the conductor folded out of a running job's replay ring, as the row carries it. */
+export type RunProgress = z.infer<typeof RunProgressSchema>;
+
+/**
+ * What a stage means, for the row's own title. The three words are the machine half's
+ * (`RUN_STAGES`); anything else came from a build this panel does not know and is shown as it
+ * was reported rather than translated into a guess.
+ */
+export const STAGE_NOTE: Record<string, string> = {
+  [RUN_STAGES.preparing]: "Reading its input. Nothing has been asked of a model yet.",
+  [RUN_STAGES.atModel]: "The prompt is written and the engine is at the model.",
+  [RUN_STAGES.submitting]: "Writing what it produced into the job's output.",
+};
+
+/** What `stalled` means, spelled where it is shown: a silence, never a death. */
+export const STALLED_NOTE =
+  "At the model, and nothing metered for over 90 seconds. That is a silence, not a death.";
+
+/**
+ * The tokens a running row shows: input, output and cache, in that order and grouped.
+ *
+ * Three figures rather than a total, because they are three different costs — output is the
+ * expensive one, cache the cheap one — and a drain that reads only a sum cannot tell a run that
+ * is thinking from one that is re-reading its own context (#261, post-mortem O1).
+ */
+export function tokenClause(progress: RunProgress): string {
+  return `${figure(progress.inputTokens)} / ${figure(progress.outputTokens)} / ${figure(progress.cacheTokens)}`;
+}

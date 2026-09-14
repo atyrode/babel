@@ -27,8 +27,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { ROLES, type Receipt } from "../contract.ts";
-import { runEngineJob, type EngineOutcome } from "./engine/client.ts";
+import { ROLES, RUN_STAGES, type Receipt } from "../contract.ts";
+import { PROGRESS_STAGE, runEngineJob, type EngineOutcome } from "./engine/client.ts";
 import {
   ProfileRefSchema,
   SANDBOXED_RUN,
@@ -70,6 +70,7 @@ import {
 } from "./engine/rows.ts";
 import type { OperationDeps } from "./explore.ts";
 import type { OutputSink } from "./output.ts";
+import { SILENT } from "./progress.ts";
 
 // ---------------------------------------------------------------------------- the input
 
@@ -216,6 +217,10 @@ export async function evaluate(input: EvaluateInput, out: OutputSink, deps: Oper
   counts.plans = plans.length;
   counts.steeringReplies = replies.length;
 
+  (deps.progress ?? SILENT).report({
+    stage: RUN_STAGES.submitting,
+    message: `${String(assessments.length)} assessments, ${String(records.length)} records`,
+  });
   await out.write("assessments", assessments);
   await out.write("records", records);
   await out.write("edges", edges);
@@ -277,6 +282,8 @@ async function runReview(
   controller: AbortController,
 ): Promise<ReviewAttempt> {
   const assignment = input.assignment;
+  const progress = deps.progress ?? SILENT;
+  progress.report({ stage: RUN_STAGES.preparing, message: `${role}: composing the prompt` });
   const params: Record<string, string> = {
     [PARAM.reviewRole]: role,
     [PARAM.reviewSubjectKind]: assignment.kind,
@@ -363,6 +370,12 @@ async function runReview(
           ...(input.engine.cwd === "" ? {} : { cwd: input.engine.cwd }),
         },
         limits,
+        // The client's `prompt` record is the instant the review's material leaves Babel: the
+        // only moment this process can honestly call "at the model" (#261).
+        onProgress: (record) => {
+          if (record.stage !== PROGRESS_STAGE.prompt) return;
+          progress.report({ stage: RUN_STAGES.atModel, message: role });
+        },
         ...(deps.broker === undefined ? {} : { broker: deps.broker }),
         ...(deps.now === undefined ? {} : { now: deps.now }),
         signal: controller.signal,

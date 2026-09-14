@@ -3,7 +3,7 @@ import { resetPolledResources } from "@manifold/plugin/hooks";
 import { afterEach, expect, test } from "bun:test";
 import { ACTIONS, OPERATIONS } from "../../contract.ts";
 import { Watch } from "../web.tsx";
-import { MACHINES, fakeHost, runRow, runsResult, watchDoors } from "./host.ts";
+import { MACHINES, fakeHost, runProgress, runRow, runsResult, watchDoors } from "./host.ts";
 import { click, mount, settle, unmountAll } from "./render.tsx";
 
 /*
@@ -16,8 +16,10 @@ import { click, mount, settle, unmountAll } from "./render.tsx";
 */
 
 const ELAPSED = ".plugin-atyrode_babel_watch__elapsed";
-const LAST_WORD = ".plugin-atyrode_babel_watch__live-row td:nth-child(5)";
+const LAST_WORD = ".plugin-atyrode_babel_watch__last-word";
 const DOT = ".plugin-atyrode_babel_watch__dot";
+const STAGE = ".plugin-atyrode_babel_watch__stage-since";
+const STALLED = ".plugin-atyrode_babel_watch__stalled";
 
 afterEach(async () => {
   await unmountAll();
@@ -66,6 +68,77 @@ test("a run in flight ticks its own clock between polls, and wears the live mark
   expect(clockSeconds(root, ELAPSED)).toBeGreaterThan(elapsed);
   expect(clockSeconds(root, LAST_WORD)).toBeGreaterThan(word);
   expect(fake.callsTo(ACTIONS.runs).length).toBe(reads);
+});
+
+test("a running row says where it is, since when, and what it has spent so far", async () => {
+  const base = Date.now();
+  const fake = fakeHost(
+    watchDoors({
+      runs: () =>
+        runsResult([
+          runRow({
+            id: "run_burning",
+            state: "running",
+            startedAt: new Date(base - 600_000).toISOString(),
+            lastWord: new Date(base - 4_000).toISOString(),
+            progress: runProgress({
+              stage: "at the model",
+              since: new Date(base - 70_000).toISOString(),
+              calls: 2,
+              inputTokens: 12_400,
+              outputTokens: 3_100,
+              cacheTokens: 900,
+              costUsd: 0.42,
+              lastModel: "claude-opus-4",
+            }),
+          }),
+        ]),
+    }),
+    MACHINES,
+  );
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+
+  expect(root.textContent).toContain("1 in flight, 1 at the model");
+  const row = root.querySelector(".plugin-atyrode_babel_watch__live-row")?.textContent ?? "";
+  expect(row).toContain("at the model");
+  // The stage's own clock, not the run's: the run started ten minutes ago and reached the model
+  // seventy seconds ago, and it is the second figure an operator acts on.
+  expect(root.querySelector(STAGE)?.textContent).toMatch(/^1m \d\ds$/);
+  expect(root.querySelector(ELAPSED)?.textContent).toMatch(/^10m \d\ds$/);
+  expect(row).toContain("12,400 / 3,100 / 900");
+  expect(row).toContain("$0.42");
+  expect(row).toContain("claude-opus-4");
+  expect(root.querySelector(STALLED)).toBeNull();
+});
+
+test("a run at the model that has gone quiet is marked stalled, and says that is not a death", async () => {
+  const base = Date.now();
+  const fake = fakeHost(
+    watchDoors({
+      runs: () =>
+        runsResult([
+          runRow({
+            id: "run_quiet_model",
+            state: "running",
+            startedAt: new Date(base - 600_000).toISOString(),
+            lastWord: new Date(base - 300_000).toISOString(),
+            progress: runProgress({
+              stage: "at the model",
+              since: new Date(base - 300_000).toISOString(),
+              stalled: true,
+            }),
+          }),
+        ]),
+    }),
+    MACHINES,
+  );
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+
+  expect(root.textContent).toContain("1 in flight, 1 at the model, 1 stalled");
+  expect(root.querySelector(STALLED)?.textContent).toBe("stalled");
+  expect(root.querySelector(STALLED)?.getAttribute("title")).toContain("not a death");
 });
 
 test("stop asks the door for that run and says what stopping means", async () => {
@@ -125,7 +198,7 @@ test("a run nothing has been heard from keeps its row and loses only the mark", 
   await settle();
 
   expect(root.textContent).toContain("run_quiet");
-  expect(root.textContent).toContain("1 in flight, 0 heard from lately");
+  expect(root.textContent).toContain("1 in flight, 0 at the model, 0 heard from lately");
   expect(root.querySelector(DOT)).toBeNull();
   expect(root.querySelector(LAST_WORD)?.getAttribute("title")).toBe(
     "Nothing heard for a long time. That is not the same as dead.",
@@ -147,6 +220,8 @@ test("an ended run is a receipt: what it took, wrote, spent and how it closed", 
               finishedAt: new Date(base - 540_000).toISOString(),
               lastWord: new Date(base - 540_000).toISOString(),
               records: 40,
+              tokens: 21_500,
+              calls: 3,
               costUsd: 1.25,
             }),
           ],
@@ -164,7 +239,11 @@ test("an ended run is a receipt: what it took, wrote, spent and how it closed", 
   expect(row).toContain("run_done");
   expect(row).toContain("1m 00s");
   expect(row).toContain("$1.25");
-  expect(row).toContain("finished");
+  // What it wrote, what the meter counted and what it cost, in the columns' own order. The
+  // calls and the tokens are the hub's own numbers, kept with the receipt so that they outlive
+  // the in-flight row the conductor drops when a run settles.
+  const cells = [...root.querySelectorAll("tbody tr td")].map((cell) => cell.textContent ?? "");
+  expect(cells.slice(4)).toEqual(["40", "3", "21,500", "$1.25", "finished"]);
   expect(root.textContent).toContain("8 older runs in the store.");
 });
 

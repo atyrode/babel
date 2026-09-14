@@ -11,6 +11,7 @@ import {
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
+  RUN_STAGES,
 } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
@@ -27,7 +28,10 @@ import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
   conductor,
+  type FollowEvent,
+  type FollowRead,
   ingestOutputs,
+  type InferenceUsage,
   type JobLaunch,
   type JobOutput,
   type JobRunState,
@@ -161,7 +165,60 @@ interface FakeJob {
   machineId: string;
   operationId: string;
   archive: Buffer | null;
+  /** What the hub's replay ring holds for this job, in sequence; the fold reads it whole. */
+  journal: FollowEvent[];
+  /** What the OWNER metered, as `usage.inference` on the result of a settled job. */
+  inference: InferenceUsage | null;
 }
+
+/**
+ * WHAT THE RING HOLDS PER FRAME: a sequence and the frame. No instant of the hub's — the ring
+ * is not the journal and stamps nothing — so the only clock in one of these is the owner's own,
+ * inside a `job_progress` body.
+ */
+function progressed(seq: number, at: number, stage: string, message?: string): FollowEvent {
+  return {
+    seq,
+    event: {
+      type: "job_progress",
+      jobId: "job",
+      requestDigest: "d".repeat(64),
+      ownerId: "owner",
+      ownerGeneration: 1,
+      stage,
+      ...(message === undefined ? {} : { message }),
+      at,
+    },
+  };
+}
+
+function called(
+  seq: number,
+  over: Partial<{ model: string; inputTokens: number; outputTokens: number; cachedInputTokens: number; costMicros: number }> = {},
+): FollowEvent {
+  return {
+    seq,
+    event: {
+      type: "inference_call",
+      jobId: "job",
+      requestDigest: "d".repeat(64),
+      ownerId: "owner",
+      ownerGeneration: 1,
+      serviceId: "atyrode.code.inference",
+      operationId: "messages",
+      model: over.model ?? "claude-opus-4",
+      inputTokens: over.inputTokens ?? 1_000,
+      outputTokens: over.outputTokens ?? 200,
+      cachedInputTokens: over.cachedInputTokens ?? 50,
+      costMicros: over.costMicros ?? 30_000,
+      elapsedMs: 4_000,
+      status: 200,
+    },
+  };
+}
+
+/** `MAX_JOB_FOLLOW_EVENTS`: how many frames of any kind one job's ring holds. */
+const FOLLOW_RING = 128;
 
 class Fleet implements JobsSlice {
   readonly launched: JobLaunch[] = [];
@@ -180,6 +237,9 @@ class Fleet implements JobsSlice {
   decision: string | null = null;
   /** Jobs the hub can no longer report at all: a machine that vanished mid-review. */
   readonly silent = new Set<string>();
+  /** Every job this fake was asked to follow, and every subscription it was asked to close. */
+  readonly followed: string[] = [];
+  readonly closed: string[] = [];
 
   describe(args: { machineId: string; pluginId: string }): MachineReadiness {
     expect(args.pluginId).toBe(BABEL_PLUGIN_ID);
@@ -217,6 +277,8 @@ class Fleet implements JobsSlice {
       machineId: args.machineId,
       operationId: args.operationId,
       archive: null,
+      journal: [],
+      inference: null,
     });
     return this.status({ jobId: args.jobId });
   }
@@ -244,7 +306,13 @@ class Fleet implements JobsSlice {
       result:
         job.state === "started" || job.state === "queued"
           ? null
-          : { state: job.state, exitCode: job.exitCode, reason: null, outputs },
+          : {
+              state: job.state,
+              exitCode: job.exitCode,
+              reason: null,
+              outputs,
+              ...(job.inference === null ? {} : { usage: { inference: job.inference } }),
+            },
     };
   }
 
@@ -273,6 +341,48 @@ class Fleet implements JobsSlice {
       data: job.archive.subarray(args.offset, end).toString("base64"),
       eof: end === job.archive.byteLength,
     };
+  }
+
+  /**
+   * WHAT THE HUB SERVES FOR A JOB THAT IS STILL RUNNING, and it is only this. `follow` answers
+   * with a snapshot of the replay ring — the frames it still holds, the oldest sequence in it,
+   * and what it says it cannot replay — plus a subscription to close. It takes no `receive`
+   * here: the loop closes in the same turn, so nothing would ever be delivered, and this fake
+   * is the ring rather than a live hub.
+   */
+  follow(node: { jobId: string }): FollowRead {
+    const job = this.jobs.get(node.jobId);
+    if (job === undefined) throw new Error(`unknown job ${node.jobId}`);
+    if (this.silent.has(node.jobId)) throw new Error(`the machine holding ${node.jobId} is gone`);
+    this.followed.push(node.jobId);
+    const frames = job.journal.slice(-FOLLOW_RING);
+    const firstSeq = frames[0]?.seq ?? null;
+    const missingThrough = firstSeq === null ? (job.journal[job.journal.length - 1]?.seq ?? 0) : firstSeq - 1;
+    return {
+      snapshot: {
+        events: frames,
+        firstSeq,
+        unavailable: missingThrough > 0 ? { fromSeq: 1, toSeq: missingThrough } : null,
+      },
+      close: () => {
+        this.closed.push(node.jobId);
+      },
+    };
+  }
+
+  /**
+   * WHAT THE HUB REFUSES FOR ONE: `JobService.journal` is retrieval for a FINISHED job, and a
+   * running one is refused `job_unfinished` because watching it is what `follow` is for
+   * (`packages/server/src/job-service.ts`; its own suite pins the refusal). It is on the fake
+   * although the slice no longer declares it, so a loop that went back to reading a journal
+   * fails here the way it would fail on a hub.
+   */
+  journal(args: { node: { jobId: string } }): never {
+    const job = this.jobs.get(args.node.jobId);
+    if (job !== undefined && job.state !== "started" && job.state !== "queued") {
+      throw new Error(`this fake serves no finished journal for ${args.node.jobId}`);
+    }
+    throw new Error("job_unfinished");
   }
 
   schedule(args: JobLaunch & ScheduleTiming): Record<string, never> {
@@ -331,9 +441,43 @@ class Fleet implements JobsSlice {
       machineId,
       operationId: BEAT_OPERATION,
       archive: tar(files),
+      journal: [],
+      inference: null,
     });
     this.beats.add(jobId);
   }
+
+  /** What this job's replay ring holds, as the owner would have emitted it. */
+  journals(jobId: string, entries: readonly FollowEvent[]): void {
+    const job = this.jobs.get(jobId);
+    if (job === undefined) throw new Error(`unknown job ${jobId}`);
+    job.journal = [...entries];
+  }
+
+  /** What the owner metered for this job, as the result of a settled one carries it. */
+  metered(jobId: string, inference: InferenceUsage): void {
+    const job = this.jobs.get(jobId);
+    if (job === undefined) throw new Error(`unknown job ${jobId}`);
+    job.inference = inference;
+  }
+}
+
+/**
+ * THE SLICE A SETTLEMENT'S HOOK IS SERVED: every verb of the fake but the live subscription,
+ * which is exactly what `GuestHookJobs` is (`plugin-kit/src/server.ts`: "every job verb but
+ * `follow`"). A cycle over this one can settle what ended and cannot read what has not.
+ */
+function hookWoken(fleet: Fleet): JobsSlice {
+  return {
+    describe: (args) => fleet.describe(args),
+    execute: (args) => fleet.execute(args),
+    status: (node) => fleet.status(node),
+    listRuns: (args) => fleet.listRuns(args),
+    output: (args) => fleet.output(args),
+    schedule: (args) => fleet.schedule(args),
+    schedules: () => fleet.schedules(),
+    disableSchedule: (args) => fleet.disableSchedule(args),
+  };
 }
 
 // ---------------------------------------------------------------------------- a fake host
@@ -581,6 +725,12 @@ class Draws {
   }
 }
 
+/**
+ * The plan a cycle runs under here, with evaluate METERED: the review lane binds a service the
+ * owner meters, which is what makes its silence at the model a judgeable thing. {@link
+ * UNMETERED_PLAN} is the same plan for a deployment that binds none, which is this repository
+ * today (#256).
+ */
 const PLAN: RunPlan = {
   engine: { binary: "code", args: [] },
   profile: { id: "analysis", revision: 3 },
@@ -588,9 +738,12 @@ const PLAN: RunPlan = {
   recipes: {
     reception: { id: "reception-vote", version: 1, title: "Reception", body: "Does it hold?" },
   },
+  metered: { [OPERATIONS.evaluate]: true },
   requireContainment: true,
   limits: { timeoutMs: 900000, memoryBytes: 2147483648, processes: 64, outputBytes: 67108864 },
 };
+
+const UNMETERED_PLAN: RunPlan = { ...PLAN, metered: {} };
 
 // ---------------------------------------------------------------------------- the corpus
 
@@ -759,6 +912,303 @@ function outputs(runId: string): Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------- the tests
+
+test("a running job's stage and spend are folded out of its replay ring, and the meter settles the run", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  await loop.tick();
+  // The job says where it is and the owner meters two calls against it. This is served through
+  // `follow` and nothing else: the fake refuses `journal` for a running job the way the hub
+  // does, so a fold that read one would fail here rather than pass against a friendly fake.
+  fleet.journals("job_asg_a1b2", [
+    progressed(1, started, RUN_STAGES.preparing, "reception: composing the prompt"),
+    progressed(4, started + 20_000, RUN_STAGES.atModel, "reception"),
+    called(6, { inputTokens: 12_000, outputTokens: 900, cachedInputTokens: 400, costMicros: 250_000 }),
+    called(9, {
+      model: "claude-sonnet-4",
+      inputTokens: 400,
+      outputTokens: 100,
+      cachedInputTokens: 0,
+      costMicros: 30_000,
+    }),
+  ]);
+  clock = started + 60_000;
+  const running = await loop.tick();
+  expect(running.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+
+  const row = (
+    await db.query(`SELECT stage, message, since, calls, input_tokens, output_tokens, cache_tokens,
+                           cost_usd, last_model, stalled
+                      FROM run_progress WHERE run_id = 'run_asg_a1b2'`)
+  )[0];
+  expect(row).toMatchObject({
+    stage: "at the model",
+    message: "reception",
+    // The stage's own instant, not the newest frame's: the job has been at the model since it
+    // said so, and the two calls after it did not restart that clock.
+    since: new Date(started + 20_000).toISOString(),
+    calls: 2n,
+    input_tokens: 12_400n,
+    output_tokens: 1_000n,
+    cache_tokens: 400n,
+    last_model: "claude-sonnet-4",
+    stalled: 0n,
+  });
+  expect(Number(row?.["cost_usd"])).toBeCloseTo(0.28, 6);
+  // Every subscription this cycle opened was closed in the same turn.
+  expect(fleet.followed).toEqual(["job_asg_a1b2"]);
+  expect(fleet.closed).toEqual(["job_asg_a1b2"]);
+
+  // A second cycle over the same ring folds nothing twice: the loop reads above the newest
+  // sequence it has already seen.
+  clock = started + 70_000;
+  await loop.tick();
+  const again = await db.query(`SELECT calls FROM run_progress WHERE run_id = 'run_asg_a1b2'`);
+  expect(again[0]?.["calls"]).toBe(2n);
+
+  // THE SECOND PROMPT IS A SECOND WAIT. Composing it is sub-second and the owner coalesces
+  // newest-wins every five seconds, so `preparing` between two prompts is usually never seen at
+  // all and the stage word repeats. At the model the message says WHICH prompt is out, so a
+  // changed message restamps the clock: otherwise "at the model since" would count the first
+  // turn's wait across every turn of the run.
+  fleet.journals("job_asg_a1b2", [
+    progressed(1, started, RUN_STAGES.preparing, "reception: composing the prompt"),
+    progressed(4, started + 20_000, RUN_STAGES.atModel, "reception"),
+    called(6, { inputTokens: 12_000, outputTokens: 900, cachedInputTokens: 400, costMicros: 250_000 }),
+    called(9, { model: "claude-sonnet-4", inputTokens: 400, outputTokens: 100, cachedInputTokens: 0, costMicros: 30_000 }),
+    progressed(11, started + 72_000, RUN_STAGES.atModel, "challenge"),
+  ]);
+  clock = started + 75_000;
+  const turning = await loop.tick();
+  expect(turning.notes.filter((note) => note.includes("was not retained"))).toEqual([]);
+  const second = await db.query(`SELECT message, since FROM run_progress`);
+  expect(second[0]).toMatchObject({
+    message: "challenge",
+    since: new Date(started + 72_000).toISOString(),
+  });
+
+  // The job ends and the OWNER's meter — not the receipt's own numbers — fills the run row.
+  fleet.metered("job_asg_a1b2", {
+    calls: 3,
+    inputTokens: 20_000,
+    outputTokens: 1_500,
+    cachedInputTokens: 400,
+    costMicros: 410_000,
+  });
+  fleet.finish("job_asg_a1b2", 0, outputs("run_asg_a1b2"));
+  clock = started + 80_000;
+  await loop.tick();
+
+  const settledRow = (
+    await db.query(`SELECT closure, tokens, cost_usd, payload FROM runs WHERE id = 'run_asg_a1b2'`)
+  )[0];
+  expect(settledRow?.["closure"]).toBe("completed");
+  expect(settledRow?.["tokens"]).toBe(21_500n);
+  expect(Number(settledRow?.["cost_usd"])).toBeCloseTo(0.41, 6);
+  // The whole of what the meter counted is kept with the receipt, because the in-flight row is
+  // dropped and two columns cannot hold five numbers: the calls and the cache survive the run.
+  const kept = JSON.parse(String(settledRow?.["payload"])) as Record<string, unknown>;
+  expect(kept["runId"]).toBe("run_asg_a1b2");
+  expect(kept["inference"]).toEqual({
+    calls: 3,
+    inputTokens: 20_000,
+    outputTokens: 1_500,
+    cachedInputTokens: 400,
+    costMicros: 410_000,
+  });
+  // …and the in-flight row is gone: the receipt is the record of a run that ended.
+  expect(await db.query(`SELECT run_id FROM run_progress`)).toEqual([]);
+  clock = started;
+});
+
+test("a metered job at the model with nothing metered for ninety seconds is stalled, and one call clears it", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await loop.tick();
+  fleet.journals("job_asg_a1b2", [progressed(2, started, RUN_STAGES.atModel, "reception")]);
+
+  // Eighty-nine seconds is a slow turn, not a stall.
+  clock = started + 89_000;
+  const patient = await loop.tick();
+  expect(patient.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+
+  clock = started + 91_000;
+  const stalled = await loop.tick();
+  expect(stalled.runs).toEqual({ running: 1, atModel: 1, stalled: 1 });
+  const quiet = await db.query(`SELECT stalled FROM run_progress`);
+  expect(quiet[0]?.["stalled"]).toBe(1n);
+
+  // A metered call is the answer arriving: the flag goes, and the clock now runs from the call.
+  fleet.journals("job_asg_a1b2", [
+    progressed(2, started, RUN_STAGES.atModel, "reception"),
+    called(5),
+  ]);
+  clock = started + 93_000;
+  const answered = await loop.tick();
+  expect(answered.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+  const moving = await db.query(`SELECT stalled, calls, last_model FROM run_progress`);
+  expect(moving[0]).toMatchObject({ stalled: 0n, calls: 1n, last_model: "claude-opus-4" });
+  clock = started;
+});
+
+test("a job at the model that nothing meters is never called stalled", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    // The deployment this repository actually is: the review lane binds no inference service,
+    // so nothing will ever meter a call of it (#256).
+    plan: UNMETERED_PLAN,
+    now: () => clock,
+  });
+  await loop.tick();
+  fleet.journals("job_asg_a1b2", [progressed(2, started, RUN_STAGES.atModel, "reception")]);
+
+  // Ten minutes at the model with nothing counted is what an unmetered review looks like from
+  // the hub: the run is at the model, and "nothing metered" says nothing about it at all.
+  clock = started + 600_000;
+  const quiet = await loop.tick();
+  expect(quiet.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+  const row = await db.query(`SELECT stage, stalled FROM run_progress`);
+  expect(row[0]).toMatchObject({ stage: "at the model", stalled: 0n });
+  clock = started;
+});
+
+test("a cycle a settlement woke folds nothing and says nothing about a running job", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const deps = {
+    store,
+    coordinator: draws as unknown as Coordinator,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  };
+  const woken = conductor({ ...deps, jobs: fleet });
+  await woken.tick();
+  fleet.journals("job_asg_a1b2", [
+    progressed(2, started, RUN_STAGES.atModel, "reception"),
+    called(5, { inputTokens: 1_000, outputTokens: 200, cachedInputTokens: 50, costMicros: 30_000 }),
+  ]);
+  clock = started + 30_000;
+  await woken.tick();
+
+  // The hook's slice has no `follow`, so this cycle cannot read a running job at all. Another
+  // call arrives in the ring and nothing folds it: the row stands as the dispatch left it, the
+  // report repeats that row, and no note claims a thing about the job either way.
+  fleet.journals("job_asg_a1b2", [
+    progressed(2, started, RUN_STAGES.atModel, "reception"),
+    called(5, { inputTokens: 1_000, outputTokens: 200, cachedInputTokens: 50, costMicros: 30_000 }),
+    called(7, { inputTokens: 9_000, outputTokens: 900, cachedInputTokens: 0, costMicros: 90_000 }),
+  ]);
+  clock = started + 60_000;
+  const settledWake = await conductor({ ...deps, jobs: hookWoken(fleet) }).tick();
+  expect(settledWake.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+  expect(settledWake.notes.filter((note) => note.includes("job_asg_a1b2"))).toEqual([]);
+  const held = await db.query(`SELECT calls, input_tokens, updated_at FROM run_progress`);
+  expect(held[0]).toMatchObject({
+    calls: 1n,
+    input_tokens: 1_000n,
+    // Not even the fold's own clock moved: nothing was written.
+    updated_at: new Date(started + 30_000).toISOString(),
+  });
+
+  // And the next dispatch-woken cycle folds what the hook could not see.
+  clock = started + 90_000;
+  await woken.tick();
+  expect((await db.query(`SELECT calls FROM run_progress`))[0]?.["calls"]).toBe(2n);
+  clock = started;
+});
+
+test("a running job that has said nothing has no in-flight row to read", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await loop.tick();
+
+  // The ring holds nothing — a job the owner has not launched yet, or one inside the five-second
+  // window its first frame is coalesced in. A row of empty strings would read in the panel as a
+  // blank stage over a clock counting from this fold, so there is no row: `runProgress()`
+  // answers null for it and the panel says "no word yet".
+  clock = started + 45_000;
+  const silent = await loop.tick();
+  expect(silent.runs).toEqual({ running: 1, atModel: 0, stalled: 0 });
+  expect(await db.query(`SELECT run_id FROM run_progress`)).toEqual([]);
+
+  // The ring keeps the newest frames and drops the rest, so a job that outran the loop has a
+  // prefix nobody folded. The hub says so with `firstSeq`, and the note names the sequence and
+  // what it costs the running total — once, not once a page.
+  fleet.journals("job_asg_a1b2", [
+    progressed(300, started + 50_000, RUN_STAGES.atModel, "reception"),
+    called(301, { costMicros: 120_000 }),
+  ]);
+  clock = started + 60_000;
+  const short = await loop.tick();
+  expect(short.notes.filter((note) => note.includes("was not retained"))).toEqual([
+    "job job_asg_a1b2: progress before seq 300 was not retained; its spend so far is short by " +
+      "what those frames carried",
+  ]);
+  const folded = await db.query(`SELECT stage, calls, seq FROM run_progress`);
+  expect(folded[0]).toMatchObject({ stage: "at the model", calls: 1n, seq: 301n });
+  clock = started;
+});
 
 test("a cycle draws, claims, requests the job, then ingests every output file it wrote", async () => {
   const db = openDatabase();
