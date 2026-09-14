@@ -26,6 +26,14 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A release delivers Babel's dependency closure to the preview.** Babel requires Code and Code
+  requires omp, so a preview that received Babel alone refused composition. A `v*` tag now builds
+  omp's and Code's bundles at the pinned revisions through the same `deps:code` the gate verifies
+  against, attaches them to the release beside Babel's three, and the receiver installs them in
+  dependency order - omp, then Code, then Babel, baseline before parts. The plugin gate the
+  release runs is the same pin the PR gate uses (`476a586c`) with `deps:code` in front, as
+  `manifold-plugins.yml` already had. Proof is the release run's deliver job: ten `plugin` calls,
+  each answered by the receiver.
 - **Babel runs are Code sessions: a Code profile, `code.runSession` through `ctx.actions.call`,
   and the material as a job input.** The Start section is a form again — three requests, a
   machine and a list of the CODE PROFILES Code answered, each naming the model it will run as
