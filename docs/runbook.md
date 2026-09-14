@@ -1154,7 +1154,9 @@ contract its assessments were formed under.
 drain (`docs/postmortem-2026-09-13-drain.md`), which recorded 50 reviews in two hours and
 fourteen minutes and moved the target account's 7-day window by zero percent. Every procedure
 below is an **OPERATOR STEP** until a rehearsal on a real hub records host, date and observed
-output here; until the drain door ships there is no supported way to run one (see *Interim*).
+output here. The drain door, its controller and its Watch panel ship in v0.3.0 (2026-09-14,
+§11.7 says what was exercised and what was not); until that rehearsal is recorded, this
+section describes a supported operation nobody has yet performed.
 
 ### 11.1 What a drain is
 
@@ -1190,13 +1192,20 @@ posts rather than discovered one refused job at a time.
 >
 > 1. `atyrode context show` reports the OMP auth broker `active`. On 2026-09-13 it was `failed`
 >    from 11:07 to 11:24 and every engine launched in that window died before its ready frame.
-> 2. The drain machine's owner has the `atyrode.babel.inference` policy installed with `prices`
->    for the profile's model, and the operator has consented `services:invoke` at the current
->    artifact revision. **Success:** Watch's launch preview shows the price and the ceiling, not
->    "install the policy" (babel#256).
-> 3. The account the policy's `credential.ref` resolves to is the one to drain. Until a policy
->    can hold several credentials, one policy is one account: a different account means a
->    different machine or a policy edit by the owner, made before the day, never during it.
+> 2. The drain machine's owner has Babel's inference service installed: Watch's **Start** shows
+>    the session line with the policy state `priced` for the chosen model — not `no policy`,
+>    `unpriced`, `policy unread` or `hub too old`. `no policy` is fixed from the plugin itself:
+>    the `setupInference` door (`services:configure`) installs the `atyrode.babel.inference`
+>    policy on the machine — omp's gateway as its runtime, the `stream` operation metered
+>    `pi-native-usage`, the default price table — and a refresh carries an edited price table
+>    through. The operator then consents `machines:run` for the `explore` operation and
+>    `services:invoke` at the current artifact revision where the hub asks. **Success:** the
+>    launch preview shows the price and the ceiling, not a policy state.
+> 3. The account to drain is the one the session names: Watch's account picker lists the
+>    machine's broker-observed accounts (blocked ones disabled) and the launch carries exactly
+>    that one as the job's account pool, so a different account is a different choice in the
+>    picker, never a policy edit. The drain panel names it before the button and for as long as
+>    the drain runs.
 > 4. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names
 >    a blocker for this machine is a no-go.
 > 5. A five-minute rehearsal: `drain.start` with `concurrent: 2`, `target.costMicros` equal to
@@ -1255,17 +1264,52 @@ Mandatory, and each one was broken on 2026-09-13.
    account are named by the operator or asked for before the drain starts. An agent running
    Babel never chooses them silently; an operator running it by hand is asked by the door.
 
-### 11.7 Interim
+### 11.7 What shipped, what was exercised, what remains (v0.3.0, 2026-09-14)
 
-Until the drain door ships (the atyrode/babel drain epic, filed with the post-mortem), there is
-no supported way to drain: the Go product is frozen (babel#250) and its loop scripts
-(`~/.config/babel/review-*.sh`, `usage-window.py`, `evaluate-loop.sh`, `explore-fleet.sh`,
-`sync-loop.sh`) are retired with it. Two things the 2026-09-13 drain left behind on the Go
-deployment remain owed and are **OPERATOR STEPS** before any Go conductor run: the evaluation
-policy is `eval-policy-10` (batch 256, lease 5200 s, per-cycle 100 USD) and must go back to
-batch 4 / lease 900 s / per-cycle 25 through the browser's **Evaluation → Review policy** form;
-the analysis profile is rev 6 (the drain account, opus, xhigh, advisor sonnet) and is the operator's
-to keep or revert.
+**Shipped on `main`; the v0.3.0 tag hands it to the preview.** The engine (#284): Babel's own
+`explore`/`evaluate` job launches `omp --mode rpc` and reaches the model only through the
+`atyrode.babel.inference` service binding — omp's gateway as runtime, `stream` metered
+`pi-native-usage` (atyrode/manifold#572) — so the job never holds a credential and every call
+is journaled with tokens and cost. The drain (#285): `drain.start` / `drain.status` /
+`drain.stop`, the controller, the Watch drain section and the session picker (account, model,
+thinking) both forms share. The release path (#286): a `v*` tag packs, verifies, attaches the
+three bundles and hands them to the integrated preview's receiver.
+
+**Exercised, with the evidence.** On this workstation (`workstation-linux`, 2026-09-14): the
+plugin gate (`check`, 582 tests, `pack`, `verify` against a real engine at Manifold
+`0bc76660`); one whole `explore` operation driving the **real** `omp` 18.1.14 binary in rpc mode
+against a loopback stand-in for the metered proxy — stage `at the model` reported, the corpus
+and submit host tools served, the submission validated, the receipt carrying account, model,
+tokens and cost (`plugins/atyrode.babel/machine/omp.test.ts`); the controller's self-stop,
+cancellation and spend accounting against a fake hub (`doors/drain.test.ts`, 20 cases); the
+three bundles installed on a local preview-equivalent hub and Home, Watch (Start, Runs,
+Recipes, Ceilings) rendered in Chromium. Independent review verdicts: #284 pass, #285 fail then
+pass, manifold#572 pass.
+
+**Not exercised — every item below is an OPERATOR STEP.** No job has run on a real hub: the
+preview's machine (`dev-01`) has no `atyrode.babel.inference` policy until `setupInference` is
+run there, and no consent for `machines:run` / `services:invoke` at the installed revision; so
+no real model call, no `inference_call` on a real journal, no provider window moved. The
+pre-flight (§11.2) is therefore the next thing to do, in this order, on the preview:
+
+> 1. Open Watch → Start, pick `dev-01`; the session line reads `no policy`. Run
+>    `atyrode.babel.setupInference { machineId, apply: true }` (the plugin manager's action
+>    console, or the door from a panel once one carries it); the line reads `priced` for
+>    `anthropic/…` models in the default table. **Success:** `state: installed` and the price
+>    beside the ceiling.
+> 2. Consent `machines:run` on `atyrode.babel.explore` and `services:invoke` on the inference
+>    binding where the hub asks on the first press. **Success:** the launch answers a run id.
+> 3. §11.2 item 5, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`,
+>    target one review's price, deadline now + 5 min. **Success:** two rows reach `at the model`
+>    within 90 s and settle with calls > 0; record host, date and the drain row here.
+
+The Go product is frozen (babel#250) and its loop scripts (`~/.config/babel/review-*.sh`,
+`usage-window.py`, `evaluate-loop.sh`, `explore-fleet.sh`, `sync-loop.sh`) are retired with
+it. Two things the 2026-09-13 drain left behind on the Go deployment remain owed and are
+**OPERATOR STEPS** before any Go conductor run: the evaluation policy is `eval-policy-10`
+(batch 256, lease 5200 s, per-cycle 100 USD) and must go back to batch 4 / lease 900 s /
+per-cycle 25 through the browser's **Evaluation → Review policy** form; the analysis profile is
+rev 6 (the drain account, opus, xhigh, advisor sonnet) and is the operator's to keep or revert.
 
 ---
 
