@@ -10,6 +10,7 @@ import {
   ReceiptSchema,
   type Receipt,
 } from "../contract.ts";
+import { perMachineBound } from "../store/coordinator.ts";
 import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
 import { refusalCode, type RefusalCode } from "../machine/engine/results.ts";
@@ -98,6 +99,13 @@ export interface JobRunState {
     readonly reason: string | null;
     readonly outputs: readonly JobOutput[];
   } | null;
+  /** WHY A POSTING WAS REFUSED, which is never in `result`: a job refused at admission never
+   *  ran and has no result at all. The hub's own word for it — `concurrency_limit` when the
+   *  operation's declared `limits.concurrentJobs` is full — is on the authority decision
+   *  (`PublicJobSchema.authority`), which the kit's own `GuestJobStatus` does not restate. */
+  readonly authority?:
+    | { readonly decision?: { readonly refusal: string | null } | null | undefined }
+    | undefined;
 }
 
 /** What `describe` answers, narrowed to the four facts that decide where a job may run. */
@@ -271,6 +279,17 @@ export interface ConductorDeps {
 }
 
 // ---------------------------------------------------------------------------- the report
+
+/**
+ * WHERE A CYCLE MAY PUT A JOB: the machines it found online with the operation ready, and how
+ * many assignments each of them may hold at once (#260). The coordinator is told the list so a
+ * fleet's cap is the sum over it; the dispatcher is told the bound so no one host takes the
+ * fleet's whole allowance.
+ */
+interface Admission {
+  readonly machines: readonly string[];
+  readonly bound: number;
+}
 
 export type ScheduleState = "registered" | "kept" | "unregistered" | "absent";
 
@@ -1060,17 +1079,53 @@ export function conductor(deps: ConductorDeps): Conductor {
     return rows.map((row) => row.machineId);
   }
 
+  /** Whether a described machine can run one operation right now: connected, this plugin
+   *  installed, enabled and ready, and the operation itself not reported unready. */
+  function usable(
+    described: MachineReadiness | null,
+    operationId: string,
+  ): described is MachineReadiness {
+    if (described === null || !described.connected) return false;
+    const installed = described.installation;
+    if (installed === null || !installed.enabled || !installed.ready) return false;
+    return described.operations?.[operationId]?.ready !== false;
+  }
+
+  /**
+   * Every machine this cycle could dispatch to, which is what makes the batch a PER-MACHINE
+   * bound rather than a deployment-wide one (#260): the coordinator multiplies its bound by
+   * this list's length, and refuses naming the machines that are full. The readiness cache is
+   * the tick's own, so asking for the list costs the describes `machineFor` would have made
+   * anyway.
+   */
+  async function onlineMachines(
+    seen: Map<string, MachineReadiness | null>,
+    operationId: string,
+  ): Promise<string[]> {
+    const online: string[] = [];
+    for (const machineId of await knownMachines()) {
+      if (usable(await readiness(seen, machineId), operationId)) online.push(machineId);
+    }
+    return online;
+  }
+
   /**
    * Where the work belongs: the machine holding the sessions the record cites, because that is
    * where the evidence can be read, and the one that holds most of them first. Failing that, any
    * enrolled machine that is online with the operation ready — a review of a record whose
    * sessions sit on an offline machine is still a review Babel can perform, it just reads what
    * the hub already holds.
+   *
+   * `free` is the per-machine bound (#260), and it is applied HERE as well as at admission: a
+   * coordinator that admits a draw because the fleet has a slot, dispatched by a loop that
+   * always prefers the machine citing the evidence, would put every job of a two-machine
+   * deployment on one host. The beat asks nothing of it and passes nothing.
    */
   async function machineFor(
     seen: Map<string, MachineReadiness | null>,
     operationId: string,
     recordId: string,
+    free?: (machineId: string) => boolean,
   ): Promise<{ machineId: string; readiness: MachineReadiness } | null> {
     const order: string[] = [];
     if (recordId !== "") {
@@ -1088,11 +1143,9 @@ export function conductor(deps: ConductorDeps): Conductor {
       if (!order.includes(machineId)) order.push(machineId);
     }
     for (const machineId of order) {
+      if (free !== undefined && !free(machineId)) continue;
       const described = await readiness(seen, machineId);
-      if (described === null || !described.connected) continue;
-      const installed = described.installation;
-      if (installed === null || !installed.enabled || !installed.ready) continue;
-      if (described.operations?.[operationId]?.ready === false) continue;
+      if (!usable(described, operationId)) continue;
       return { machineId, readiness: described };
     }
     return null;
@@ -1621,6 +1674,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     cycleRunId: string,
     at: number,
     seen: Map<string, MachineReadiness | null>,
+    admission: Admission,
     requested: RequestedJob[],
     refused: RefusedDraw[],
   ): Promise<void> {
@@ -1645,13 +1699,27 @@ export function conductor(deps: ConductorDeps): Conductor {
       return;
     }
     const operationId = OPERATIONS.evaluate;
-    const host = await machineFor(seen, operationId, assignment.recordId);
+    // The open slots are re-read per dispatch, because the claims this cycle has already taken
+    // fill them: a cycle that read them once would put its whole batch on one machine.
+    const open = await coordinator.open(at);
+    const host = await machineFor(
+      seen,
+      operationId,
+      assignment.recordId,
+      (machineId) => (open.byMachine[machineId] ?? 0) < admission.bound,
+    );
     if (host === null) {
+      const full = admission.machines.filter(
+        (machineId) => (open.byMachine[machineId] ?? 0) >= admission.bound,
+      );
       refused.push({
         assignmentId: assignment.id,
         recordId: assignment.recordId,
         reason: "no-machine",
-        detail: `no online machine has ${operationId} ready`,
+        detail:
+          full.length > 0 && full.length === admission.machines.length
+            ? `no online machine has a free slot under the bound of ${String(admission.bound)}: ${full.join(", ")}`
+            : `no online machine has ${operationId} ready`,
       });
       return;
     }
@@ -1727,7 +1795,13 @@ export function conductor(deps: ConductorDeps): Conductor {
       refusal = message(error);
     }
     if (refusal === null && posted !== null && posted.state === "refused") {
-      refusal = posted.result?.reason ?? `${host.machineId} refused ${jobId}`;
+      // A refusal the hub NAMES is the one worth reporting: `concurrency_limit` says the fleet
+      // is at the ceiling this plugin's manifest declared, which is a bound to raise or a
+      // drain to slow, while "dev-01 refused job_…" is a sentence nobody can act on.
+      const named = posted.authority?.decision?.refusal ?? null;
+      refusal =
+        posted.result?.reason ??
+        (named === null ? `${host.machineId} refused ${jobId}` : `${host.machineId} refused ${jobId}: ${named}`);
     }
     if (refusal !== null) {
       const abandoned = await release(claim, `the job was never posted: ${refusal}`);
@@ -1885,9 +1959,15 @@ export function conductor(deps: ConductorDeps): Conductor {
       const at = deps.now();
       cycle += 1;
       const cycleRunId = `cyc_${String(at)}_${String(cycle)}`;
-      const policy = (await coordinator.policy()).policy;
+      // THE POLICY IN FORCE IS THE STANDING ROW PLUS WHATEVER OVERLAY IS UNEXPIRED (#260).
+      // Admission — the batch, the two ceilings — reads the overlaid numbers; the SCHEDULE
+      // reads the standing version, because the beat's revision is the policy's version and an
+      // overlay that re-registered the cadence would make a two-hour drain a permanent
+      // rewrite of the loop's own clock.
+      const inForce = await coordinator.policy(at);
+      const policy = inForce.policy;
       const notes: string[] = [];
-      const schedule = await reconcileSchedule(policy, at, notes);
+      const schedule = await reconcileSchedule(inForce.standing, at, notes);
       const requested: RequestedJob[] = [];
       const ingested: IngestedRun[] = [];
       const settled: SettledClaim[] = [];
@@ -1942,11 +2022,22 @@ export function conductor(deps: ConductorDeps): Conductor {
       // same assignment twice, so a draw the hub cannot dispatch ends the cycle rather than
       // spinning on it.
       const seen = new Map<string, MachineReadiness | null>();
+      // The machines this cycle could dispatch to, read once: the coordinator's batch is a
+      // per-machine bound and the deployment's cap is that bound over this list (#260), so a
+      // draw that did not know the fleet would admit one machine's worth for the whole of it.
+      const admission: Admission = {
+        machines: parked === null ? await onlineMachines(seen, OPERATIONS.evaluate) : [],
+        bound: perMachineBound(policy),
+      };
       const drawn = new Set<string>();
       let stop: Stop | null = null;
       let gaps: readonly Gap[] = [];
       while (parked === null) {
-        const draw = await coordinator.draw({ runId: cycleRunId, now: at });
+        const draw = await coordinator.draw({
+          runId: cycleRunId,
+          now: at,
+          machines: admission.machines,
+        });
         gaps = draw.gaps;
         if (draw.outcome === "gap") {
           stop = draw.gap;
@@ -1961,7 +2052,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           break;
         }
         drawn.add(assignment.id);
-        await dispatch(assignment, cycleRunId, at, seen, requested, refused);
+        await dispatch(assignment, cycleRunId, at, seen, admission, requested, refused);
       }
       // The reasons this cycle did not spend, counted once: the stop that ended the drawing and
       // the candidates the last draw declined. Only the LAST draw's gaps are counted, because

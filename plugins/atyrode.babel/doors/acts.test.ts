@@ -48,7 +48,8 @@ function openHarness(principal = "alex", isRoot = false): Harness {
       emitted.push({ kind, payload });
     },
   } as unknown as GuestCtx;
-  return { store, doors: actDoors(store), ctx, emitted };
+  // The manifest's `limits.concurrentJobs`, as `server.ts` hands it to the act doors.
+  return { store, doors: actDoors(store, 16), ctx, emitted };
 }
 
 afterEach(() => {
@@ -88,7 +89,7 @@ async function seedRecord(store: ActsStore, id: string, kind = "proposal"): Prom
   );
 }
 
-test("the nine acts are declared, each carrying the write capability except the crossing", () => {
+test("the eleven acts are declared, each carrying the write capability except the crossing", () => {
   const harness = openHarness();
   const names = harness.doors.map((door) => door.action.name);
   expect(names).toEqual([
@@ -100,6 +101,8 @@ test("the nine acts are declared, each carrying the write capability except the 
     ACTIONS.unfile,
     ACTIONS.tell,
     ACTIONS.setPolicy,
+    ACTIONS.setBudget,
+    ACTIONS.clearBudget,
     ACTIONS.importLedger,
   ]);
   for (const door of harness.doors) {
@@ -238,10 +241,17 @@ test("telling Babel something threads, and a policy under the floor is refused a
 
   expect(
     await refusal(harness, ACTIONS.setPolicy, {
-      policy: { ...DEFAULT_POLICY, leaseSeconds: 240, batchSize: 24 },
+      policy: { ...DEFAULT_POLICY, leaseSeconds: 240, batchSize: 24, concurrentPerMachine: 4 },
       reason: "faster",
     }),
   ).toMatch(/needs 480s/);
+  // And a bound above what a machine will run is refused at the same door, naming the ceiling.
+  expect(
+    await refusal(harness, ACTIONS.setPolicy, {
+      policy: { ...DEFAULT_POLICY, enabled: true, concurrentPerMachine: 24 },
+      reason: "a drain by another name",
+    }),
+  ).toMatch(/above the 16 jobs a machine runs at once/);
   const installed = (await knock(harness, ACTIONS.setPolicy, {
     policy: { ...DEFAULT_POLICY, enabled: true },
     reason: "turning it on",

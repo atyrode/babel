@@ -6,7 +6,8 @@
   provenance survives the rewrite (decision 91: import once, then retire).
 
   What changed in the crossing, and why:
-  - ninety-four tables become twenty-three. The Go tree kept a table per concept per package; here a
+  - ninety-four tables become twenty-three, and the shapes since have added one (`budgets`, #260).
+    The Go tree kept a table per concept per package; here a
     record is a record whatever its kind, an edge is an edge whatever it relates, and a revision
     is a row that supersedes another rather than a parallel table of revisions.
   - nothing is sealed and nothing is synced. The hub is the one place (§9 is retired); a row is
@@ -18,7 +19,41 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 1 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 2 } as const;
+
+/**
+ * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
+ * enable makes, and by `SCHEMA_ADDITIONS` for one an earlier enable already made.
+ *
+ * A drain is a bounded exception, not a new standing policy: the `policies` row says what the
+ * deployment does every day, and on 2026-09-13 the only way to draw more than four reviews at
+ * once was to rewrite it five times, which minted a new assignment id for every subject in
+ * flight (F5). So a row here names the three numbers a drain needs to move and the instant it
+ * stops being true, and nothing else — never a share, never a lease, never a version, because
+ * those are what a draw is replayable against. `concurrent_per_machine` is the ONE admission
+ * knob: it is what the coordinator bounds a machine by, and the batch it implies follows it
+ * (`applyBudget`), so there is no second column an operator could move and see nothing happen.
+ *
+ * Every number is nullable: an overlay carries what it changes and the standing policy answers
+ * for the rest. One that changes nothing is refused by the CHECK rather than stored as a no-op
+ * nobody can tell from a mistake. `cleared_at` is written once, from NULL, by an operator
+ * ending the overlay early, and `cleared_reason` beside it says why they ended it — which is
+ * why this table has no append-only trigger: the row is one bounded exception with one end,
+ * and clearing it is that end rather than a new fact about it.
+ */
+const BUDGETS_TABLE = `CREATE TABLE budgets(
+     id TEXT PRIMARY KEY,
+     created_at TEXT NOT NULL,
+     expires_at TEXT NOT NULL,
+     per_cycle_cost REAL,
+     daily_cost REAL,
+     concurrent_per_machine INTEGER,
+     reason TEXT NOT NULL,
+     cleared_at TEXT,
+     cleared_reason TEXT,
+     CHECK (per_cycle_cost IS NOT NULL OR daily_cost IS NOT NULL
+            OR concurrent_per_machine IS NOT NULL)
+   ) STRICT`;
 
 /** Statements of the first migration, in order; each is one `run`. */
 export const SCHEMA_V1: readonly string[] = [
@@ -409,6 +444,9 @@ export const SCHEMA_V1: readonly string[] = [
   `CREATE INDEX runs_by_started ON runs(started_at DESC)`,
   `CREATE INDEX runs_by_machine ON runs(machine_id, started_at DESC)`,
 
+  // ---------------------------------------------------------------- the budget overlay (#260)
+  BUDGETS_TABLE,
+
   // ---------------------------------------------------------------- the crossing
   // The one-off import's own ledger: where each table's rows came from and how many.
   `CREATE TABLE imports(
@@ -421,15 +459,16 @@ export const SCHEMA_V1: readonly string[] = [
 ];
 
 /**
- * ONE ADDED COLUMN, TWICE: in `SCHEMA_V1` above for a store this enable creates, and here for a
- * store an earlier enable already created.
+ * ONE ADDITIVE SHAPE, TWICE: in `SCHEMA_V1` above for a store this enable creates, and here for
+ * a store an earlier enable already created.
  *
  * A MINOR data version passes both ways and runs no chain (`planDataMigration`), which is the
- * right verdict for a column with a default — an older build reading this file sees rows it
- * understands, and a newer one sees `0` and `operator` where nothing observed otherwise. So the
- * additions are applied by the enable hook itself, by column name and only where the column is
- * absent, and that is the pattern the next additive shape follows. A MAJOR bump over data that
- * already exists is the other mechanism, and it is the engine's migration ledger, not this list.
+ * right verdict for a column with a default and for a table nothing older reads — an older
+ * build reading this file sees rows it understands, and a newer one sees `0` and `operator`
+ * where nothing observed otherwise. So the additions are applied by the enable hook itself, BY
+ * NAME and only where the thing is absent, and that is the pattern the next additive shape
+ * follows. A MAJOR bump over data that already exists is the other mechanism, and it is the
+ * engine's migration ledger, not this list.
  */
 export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   {
@@ -444,11 +483,19 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
       `ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'operator' ` +
       `CHECK (kind IN ('operator', 'agent'))`,
   },
+  {
+    // A whole TABLE and therefore no column: the hook asks `sqlite_master` for it by name.
+    table: "budgets",
+    sql: BUDGETS_TABLE,
+  },
 ];
 
-/** One column a later shape added to a table the first migration created. */
+/**
+ * One addition a later shape made to the store the first migration created: a column on one of
+ * its tables, or — with no `column` — a table of its own.
+ */
 export interface SchemaAddition {
   readonly table: string;
-  readonly column: string;
+  readonly column?: string | undefined;
   readonly sql: string;
 }

@@ -394,3 +394,10 @@
   color: var(--babel-ink-muted);
   font-size: 0.82rem;
 }
+
+/* The bounded exception over the standing ceilings (#260): set apart from them, never in place
+   of them, so an overlay can never be mistaken for what the deployment does every day. */
+.plugin-atyrode_babel_watch__overlay {
+  border-left: 2px solid var(--babel-accent);
+  padding-left: var(--babel-space-3);
+}

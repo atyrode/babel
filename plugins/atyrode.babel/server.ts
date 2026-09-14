@@ -22,6 +22,7 @@ import {
 import {
   ENABLE_WITHOUT_JOBS,
   HOOK_WITHOUT_MACHINES,
+  jobCeiling,
   jobsSlice,
   machinesSlice,
   runPlan,
@@ -50,9 +51,10 @@ import manifestJson from "./manifest.json";
     a plugin whose stored data version is null — a fresh install — so a migration chain never
     runs on a first enable; the chain exists for a MAJOR bump over data that already exists. The
     name of the shape this enable leaves is recorded as a key so the next one has a predecessor
-    to read. An ADDITIVE shape — a column with a default, a MINOR version, which `planDataMigration`
-    passes both ways and runs nothing for — is applied here too, by column name: `SCHEMA_ADDITIONS`
-    is what a store an earlier enable created is missing, and a fresh one already has.
+    to read. An ADDITIVE shape — a column with a default or a table nothing older reads, a MINOR
+    version, which `planDataMigration` passes both ways and runs nothing for — is applied here
+    too, by name: `SCHEMA_ADDITIONS` is what a store an earlier enable created is missing, and a
+    fresh one already has.
 
   THE LOOP HAS NO CLOCK. A plugin may not poll as an alternate scheduler (`docs/PLUGINS.md`),
   and a server half has no timer of its own, so `conductor.tick()` is called by something that
@@ -64,11 +66,12 @@ import manifestJson from "./manifest.json";
 */
 
 /**
- * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column
+ * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column and table
  * `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-12-store-v1` — recorded under the same key by the first enable — is its predecessor.
+ * `2026-09-13-store-v1-sessions-live-kind` — recorded under the same key by the enable before
+ * it — is its predecessor.
  */
-const STORE_MIGRATION = "2026-09-13-store-v1-sessions-live-kind";
+const STORE_MIGRATION = "2026-09-13-store-v1-budgets";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -121,7 +124,15 @@ const keys: KeysSlice = {
 
 const store = openStore(database);
 const manifest = PluginManifestSchema.parse(manifestJson);
-const coordinated = coordinator(store, () => store.now());
+/**
+ * THE CEILING, READ ONCE, FROM THE MANIFEST THIS BUNDLE SHIPS. `limits.concurrentJobs` on
+ * explore and evaluate is what a machine will actually run at once, and the hub refuses the
+ * rest at `execute`; the coordinator governs inside it and the acts that write a bound refuse
+ * above it, so the hub-side governor and the machine-side ceiling are one number rather than
+ * two that drift (#281).
+ */
+const CONCURRENT_JOBS = jobCeiling(manifest);
+const coordinated = coordinator(store, () => store.now(), CONCURRENT_JOBS);
 
 /**
  * THE COOKBOOK THIS HUB HOLDS, and the recipe each review role performs.
@@ -192,15 +203,19 @@ const WAKES: Record<string, true> = {
 const WAKE_FLOOR_MS = 30_000;
 let woke = 0;
 
-const doors = babelDoors(store, {
-  coordinator: coordinated,
-  cookbook: COOKBOOK,
-  jobs: (ctx) => jobsSlice(ctx.jobs),
-  machines: (ctx) => machinesSlice(ctx.machines),
-  plan: planFor,
-  cycle: loop,
-  now: () => store.now(),
-});
+const doors = babelDoors(
+  store,
+  {
+    coordinator: coordinated,
+    cookbook: COOKBOOK,
+    jobs: (ctx) => jobsSlice(ctx.jobs),
+    machines: (ctx) => machinesSlice(ctx.machines),
+    plan: planFor,
+    cycle: loop,
+    now: () => store.now(),
+  },
+  CONCURRENT_JOBS,
+);
 
 /**
  * Every door, with the calling context's own database bound for the length of its handler, and
@@ -255,15 +270,23 @@ export const plugin: ServerPluginDef = {
       if (Number(created[0]?.n ?? 0) === 0) {
         await database.batch(SCHEMA_V1.map((sql) => ({ sql })));
       } else {
-        // A store an earlier shape created reaches this one by the columns it is missing and
-        // nothing else. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the column is asked for by
-        // name first: this runs on every enable and must do nothing on all but one of them.
+        // A store an earlier shape created reaches this one by what it is missing and nothing
+        // else. SQLite has no `ADD COLUMN IF NOT EXISTS` and no `CREATE TABLE IF NOT EXISTS`
+        // worth trusting here, so each addition is asked for by name first — a column of its
+        // table, or the table itself when it names no column: this runs on every enable and
+        // must do nothing on all but one of them.
         const pending: SqlStatement[] = [];
         for (const addition of SCHEMA_ADDITIONS) {
-          const held = await database.query<{ n: number }>(
-            "SELECT count(*) AS n FROM pragma_table_info(?) WHERE name = ?",
-            [addition.table, addition.column],
-          );
+          const held =
+            addition.column === undefined
+              ? await database.query<{ n: number }>(
+                  "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?",
+                  [addition.table],
+                )
+              : await database.query<{ n: number }>(
+                  "SELECT count(*) AS n FROM pragma_table_info(?) WHERE name = ?",
+                  [addition.table, addition.column],
+                );
           if (Number(held[0]?.n ?? 0) === 0) pending.push({ sql: addition.sql });
         }
         if (pending.length > 0) await database.batch(pending);

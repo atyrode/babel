@@ -11,16 +11,17 @@
 */
 
 import { expect, test } from "bun:test";
-import { PluginManifestSchema, type PluginManifest } from "@manifold/protocol";
+import { JobLimitsSchema, PluginManifestSchema, type PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs } from "@manifold/plugin-kit/server";
 import { OPERATIONS } from "../contract.ts";
-import { PolicySchema } from "../store/coordinator.ts";
+import { DEFAULT_POLICY, PolicySchema } from "../store/coordinator.ts";
 import type { JobLaunch } from "./conductor.ts";
 import {
   DEFAULT_LIMITS,
   ENABLE_WITHOUT_JOBS,
   ENGINE_BINARY,
   HOOK_WITHOUT_MACHINES,
+  jobCeiling,
   jobsSlice,
   machinesSlice,
   operationLimits,
@@ -43,7 +44,11 @@ const ARTIFACT = {
   maxMembers: 64,
 };
 
-function operation(runtimeTools: readonly string[], timeoutMs: number): Record<string, unknown> {
+function operation(
+  runtimeTools: readonly string[],
+  timeoutMs: number,
+  concurrentJobs?: number,
+): Record<string, unknown> {
   return {
     argv: [{ literal: "/job/artifact" }],
     input: { input: { type: "string", required: true, maxLength: 65536 } },
@@ -53,7 +58,13 @@ function operation(runtimeTools: readonly string[], timeoutMs: number): Record<s
     locations: [{ locationId: "outputs", access: "write" }],
     outputs: ["outputs"],
     network: "none",
-    limits: { timeoutMs, memoryBytes: 1_073_741_824, processes: 32, outputBytes: 1_048_576 },
+    limits: {
+      timeoutMs,
+      memoryBytes: 1_073_741_824,
+      processes: 32,
+      outputBytes: 1_048_576,
+      ...(concurrentJobs === undefined ? {} : { concurrentJobs }),
+    },
     stdin: false,
   };
 }
@@ -100,6 +111,38 @@ test("the plan drives the engine the machine block binds, under the operation's 
   // manifest does not declare falls back to what a refused request would have been judged by.
   expect(operationLimits(MANIFEST.machine ?? null, OPERATIONS.archive)).toEqual(DEFAULT_LIMITS);
   expect(plan.requireContainment).toBe(true);
+});
+
+test("the ceiling a bound is judged against is the manifest's, and it never rides in a request", () => {
+  // What one machine will actually run at once. The coordinator governs inside this number and
+  // the acts that write a bound refuse above it (#281), so the manifest and the governor cannot
+  // disagree — every draw past it would be a posting the hub refuses at a reservation's cost.
+  const shipped = PluginManifestSchema.parse(manifestJson);
+  expect(jobCeiling(shipped)).toBe(16);
+
+  // One number governs both lanes, so it is the LOWER of the two: a bound honoured by explore
+  // and refused by evaluate is not a bound.
+  const mixed = manifestWith({
+    [OPERATIONS.scan]: operation(["bun"], 600_000),
+    [OPERATIONS.explore]: operation(["bun", "code"], 3_600_000, 16),
+    [OPERATIONS.evaluate]: operation(["bun", "code"], 3_600_000, 4),
+  });
+  expect(jobCeiling(mixed)).toBe(4);
+  // A manifest declaring no ceiling runs no fan either; the batch a policy is written with
+  // stands in rather than an invented one.
+  expect(jobCeiling(MANIFEST)).toBe(DEFAULT_POLICY.batchSize);
+
+  // AND THE PLAN CARRIES THE JOB'S HALF ONLY. `JobExecuteArgsSchema.limits` is strict, so a
+  // `concurrentJobs` key in a request is an unrecognised key: every posting would be refused
+  // for the declaration it was supposed to run under.
+  const plan = runPlan({ manifest: shipped, policy: POLICY, operationId: OPERATIONS.evaluate });
+  expect(Object.keys(plan.limits).toSorted()).toEqual([
+    "memoryBytes",
+    "outputBytes",
+    "processes",
+    "timeoutMs",
+  ]);
+  expect(JobLimitsSchema.safeParse(plan.limits).success).toBe(true);
 });
 
 test("an operation that drives Code without requiring it is a manifest this refuses to run", () => {

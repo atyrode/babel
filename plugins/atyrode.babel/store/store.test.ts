@@ -785,4 +785,43 @@ describe("runs and the policy", () => {
     // Only what settled today is spent today; yesterday's finished claim is not.
     expect(answer.spentTodayUsd).toBe(0.25);
   });
+
+  test("the overlay in force is reported against the bound admission reads, never a second one", async () => {
+    // `pol-3` is a Go-era row: it spells its numbers with underscores and names no per-machine
+    // bound, so the bound in force is the batch it was written with — four. The strip's "from"
+    // has to be that same four (#281/2): a panel reading one number where the coordinator reads
+    // another is how `Batch 4 → 16` came to mean no extra draw at all.
+    await insert(harness.db, "budgets", {
+      id: "bdg_drain",
+      created_at: stamp(NOW - HOUR),
+      expires_at: stamp(NOW + HOUR),
+      per_cycle_cost: null,
+      daily_cost: 24,
+      concurrent_per_machine: 16,
+      reason: "draining victorballu before the 13:00Z reset",
+      cleared_at: null,
+      cleared_reason: null,
+    });
+
+    const answer = await harness.store.policy();
+    // The standing figures are untouched by it.
+    expect(answer.ceilings).toEqual({ perRunUsd: 1.5, perDayUsd: 12, concurrent: 4 });
+    expect(answer.overlay).toEqual({
+      id: "bdg_drain",
+      createdAt: stamp(NOW - HOUR),
+      expiresAt: stamp(NOW + HOUR),
+      reason: "draining victorballu before the 13:00Z reset",
+      changes: [
+        { field: "dailyCost", standing: 12, overlaid: 24 },
+        { field: "concurrentPerMachine", standing: 4, overlaid: 16 },
+      ],
+    });
+
+    // A cleared overlay is not in force, and nothing unwinds it: the row simply stops answering.
+    await harness.db.run(`UPDATE budgets SET cleared_at = ?, cleared_reason = ? WHERE id = 'bdg_drain'`, [
+      stamp(NOW),
+      "the window reset early",
+    ]);
+    expect((await harness.store.policy()).overlay).toBeNull();
+  });
 });

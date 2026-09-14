@@ -12,6 +12,8 @@ import {
   NO_TOPIC,
   applyPlan,
   answer,
+  clearBudget,
+  setBudget,
   comment,
   declinePlan,
   file,
@@ -41,6 +43,10 @@ import { SCHEMA_V1 } from "./schema.ts";
 */
 
 const cleanup: string[] = [];
+
+/** The manifest's `limits.concurrentJobs` for explore and evaluate, as `server.ts` reads it and
+ *  hands it to the acts that write a bound. */
+const CONCURRENT_JOBS = 16;
 
 function openStore(at = Date.UTC(2026, 8, 12, 12, 0, 0)): ActsStore & { db: PluginDatabase; clock: { now: number } } {
   const dataDir = mkdtempSync(join(tmpdir(), "babel-acts-"));
@@ -914,39 +920,66 @@ test("steering threads by root and carries its target", async () => {
 test("a policy below the measured lease floor is refused, and the floor is the measurement", async () => {
   expect(leaseFloor(1)).toBe(300);
   expect(leaseFloor(24)).toBe(480);
-  expect(validateNewPolicy(DEFAULT_POLICY)).toBeNull();
+  expect(validateNewPolicy(DEFAULT_POLICY, CONCURRENT_JOBS)).toBeNull();
 
-  // The policy this deployment actually lost four runs under, on 2026-09-12.
-  expect(validateNewPolicy({ ...DEFAULT_POLICY, leaseSeconds: 240, batchSize: 24 })).toMatch(
-    /cannot cover a batch of 24.*needs 480s/,
+  // The policy this deployment actually lost four runs under, on 2026-09-12, with a per-machine
+  // bound the manifest's ceiling allows: what the lease must cover is the batch behind it.
+  const lost = { ...DEFAULT_POLICY, leaseSeconds: 240, batchSize: 24, concurrentPerMachine: 4 };
+  expect(validateNewPolicy(lost, CONCURRENT_JOBS)).toMatch(/cannot cover a batch of 24.*needs 480s/);
+  expect(validateNewPolicy({ ...DEFAULT_POLICY, explorationShare: 0 }, CONCURRENT_JOBS)).toMatch(
+    /protected allocation/,
   );
-  expect(validateNewPolicy({ ...DEFAULT_POLICY, explorationShare: 0 })).toMatch(/protected allocation/);
-  expect(validateNewPolicy({ ...DEFAULT_POLICY, discoveryShare: 0 })).toMatch(/protected allocation/);
-  expect(validateNewPolicy({ ...DEFAULT_POLICY, coverageShare: 0.8 })).toMatch(/over-commit one cycle/);
-  expect(validateNewPolicy({ ...DEFAULT_POLICY, maxItemReviews: 1 })).toMatch(/below initial reviews/);
-  expect(validateNewPolicy({ ...DEFAULT_POLICY, dailyCost: 0.1 })).toMatch(/below the per-cycle cost/);
+  expect(validateNewPolicy({ ...DEFAULT_POLICY, discoveryShare: 0 }, CONCURRENT_JOBS)).toMatch(
+    /protected allocation/,
+  );
+  expect(validateNewPolicy({ ...DEFAULT_POLICY, coverageShare: 0.8 }, CONCURRENT_JOBS)).toMatch(
+    /over-commit one cycle/,
+  );
+  expect(validateNewPolicy({ ...DEFAULT_POLICY, maxItemReviews: 1 }, CONCURRENT_JOBS)).toMatch(
+    /below initial reviews/,
+  );
+  expect(validateNewPolicy({ ...DEFAULT_POLICY, dailyCost: 0.1 }, CONCURRENT_JOBS)).toMatch(
+    /below the per-cycle cost/,
+  );
   // A zero filing or backlog share is a policy, not a fault.
-  expect(validateNewPolicy({ ...DEFAULT_POLICY, filingShare: 0, backlogShare: 0 })).toBeNull();
+  expect(validateNewPolicy({ ...DEFAULT_POLICY, filingShare: 0, backlogShare: 0 }, CONCURRENT_JOBS)).toBeNull();
 
   const store = openStore();
   await migrate(store);
-  expect(setPolicy(store, { ...DEFAULT_POLICY, leaseSeconds: 240, batchSize: 24 }, "faster", OPERATOR)).rejects.toThrow(
-    /needs 480s/,
-  );
+  expect(setPolicy(store, lost, "faster", OPERATOR, CONCURRENT_JOBS)).rejects.toThrow(/needs 480s/);
+  // And a policy whose per-machine bound is above what the machine half will run is refused
+  // here too, naming the ceiling: the hub would refuse those postings at execute and the
+  // deployment would pay a reservation for each one.
+  expect(
+    setPolicy(
+      store,
+      { ...DEFAULT_POLICY, enabled: true, concurrentPerMachine: 32, leaseSeconds: 900 },
+      "a drain by another name",
+      OPERATOR,
+      CONCURRENT_JOBS,
+    ),
+  ).rejects.toThrow(/32 concurrent assignments per machine is above the 16 jobs/);
   expect(await rows(store, `SELECT version FROM policies`)).toEqual([]);
 
-  const installed = await setPolicy(store, { ...DEFAULT_POLICY, enabled: true }, "turning it on", OPERATOR);
+  const installed = await setPolicy(
+    store,
+    { ...DEFAULT_POLICY, enabled: true },
+    "turning it on",
+    OPERATOR,
+    CONCURRENT_JOBS,
+  );
   expect(installed).toMatchObject({ version: "1", seq: 1 });
   const next = await setPolicy(
     store,
     { ...DEFAULT_POLICY, version: "2026-09-tuned", enabled: true, batchSize: 8, leaseSeconds: 900 },
     "bigger batches",
     OPERATOR,
+    CONCURRENT_JOBS,
   );
   expect(next.seq).toBe(2);
-  expect(setPolicy(store, { ...DEFAULT_POLICY, enabled: true }, "again", OPERATOR)).rejects.toThrow(
-    /already stored/,
-  );
+  expect(
+    setPolicy(store, { ...DEFAULT_POLICY, enabled: true }, "again", OPERATOR, CONCURRENT_JOBS),
+  ).rejects.toThrow(/already stored/);
   const stored = await rows<{ version: string; payload: string; actor_id: string }>(
     store,
     `SELECT version, payload, actor_id FROM policies ORDER BY seq`,
@@ -955,11 +988,117 @@ test("a policy below the measured lease floor is refused, and the floor is the m
   expect(JSON.parse(String(stored[0]?.payload))).toMatchObject({ enabled: true, leaseSeconds: 900 });
 });
 
+test("an overlay is a row of its own: setting and clearing one writes no policies row", async () => {
+  const store = openStore();
+  await migrate(store);
+  await setPolicy(store, { ...DEFAULT_POLICY, enabled: true, batchSize: 4 }, "turning it on", OPERATOR, CONCURRENT_JOBS);
+  const before = await rows<{ version: string; payload: string; seq: bigint }>(
+    store,
+    `SELECT version, payload, seq FROM policies ORDER BY seq`,
+  );
+
+  const overlaid = await setBudget(
+    store,
+    {
+      expiresAt: new Date(store.now() + 2 * 3_600_000).toISOString(),
+      concurrentPerMachine: 8,
+      perCycleCost: 2,
+      dailyCost: 20,
+      reason: "draining victorballu before the 13:00Z reset",
+    },
+    OPERATOR,
+    CONCURRENT_JOBS,
+  );
+  expect(overlaid.changes).toEqual([
+    { field: "perCycleCost", standing: 0.25, overlaid: 2 },
+    { field: "dailyCost", standing: 2, overlaid: 20 },
+    { field: "concurrentPerMachine", standing: 4, overlaid: 8 },
+  ]);
+  const cleared = await clearBudget(store, { id: overlaid.id, reason: "the window reset early" }, OPERATOR);
+  expect(cleared.id).toBe(overlaid.id);
+
+  // THE ACCEPTANCE OF #260: the standing policy is byte-for-byte what it was, so every
+  // assignment id derived from its version is where it was too.
+  expect(
+    await rows<{ version: string; payload: string; seq: bigint }>(
+      store,
+      `SELECT version, payload, seq FROM policies ORDER BY seq`,
+    ),
+  ).toEqual(before);
+  // And the overlay's own row keeps both instants AND both reasons: why it was set, and why
+  // somebody ended it early — a drain that finished and a box that fell over are not one row.
+  const held = await rows<{
+    id: string;
+    concurrent_per_machine: bigint | null;
+    cleared_at: string | null;
+    reason: string;
+    cleared_reason: string | null;
+  }>(store, `SELECT id, concurrent_per_machine, cleared_at, reason, cleared_reason FROM budgets`);
+  expect(held).toEqual([
+    {
+      id: overlaid.id,
+      concurrent_per_machine: 8n,
+      cleared_at: cleared.at,
+      reason: "draining victorballu before the 13:00Z reset",
+      cleared_reason: "the window reset early",
+    },
+  ]);
+
+  // Clearing it twice is refused rather than rewriting when it ended.
+  expect(clearBudget(store, { id: overlaid.id, reason: "" }, OPERATOR)).rejects.toThrow(
+    /was cleared at/,
+  );
+  expect(clearBudget(store, { id: "bdg_nothing", reason: "" }, OPERATOR)).rejects.toThrow(
+    /no budget overlay bdg_nothing/,
+  );
+});
+
+test("an overlay the standing lease cannot cover is refused, and so is one that moves nothing", async () => {
+  const store = openStore();
+  await migrate(store);
+  await setPolicy(
+    store,
+    { ...DEFAULT_POLICY, enabled: true, batchSize: 4, leaseSeconds: 300 },
+    "on",
+    OPERATOR,
+    CONCURRENT_JOBS,
+  );
+  const expiresAt = new Date(store.now() + 3_600_000).toISOString();
+
+  // eval-policy-8's batch, against the machine half this plugin ships: sixteen jobs is what a
+  // host runs at once, so two hundred and fifty-six is refused at the door rather than admitted
+  // and refused a posting at a time, each one paid for.
+  expect(
+    setBudget(store, { expiresAt, concurrentPerMachine: 256, perCycleCost: 4, dailyCost: 8, reason: "drain" }, OPERATOR, CONCURRENT_JOBS),
+  ).rejects.toThrow(/above the 16 jobs a machine runs at once/);
+  // And at the ceiling, the lease the deployment actually has is what refuses: a bound of
+  // sixteen needs 320s and this policy grants 300.
+  expect(
+    setBudget(store, { expiresAt, concurrentPerMachine: 16, perCycleCost: 4, dailyCost: 8, reason: "drain" }, OPERATOR, CONCURRENT_JOBS),
+  ).rejects.toThrow(/needs 320s/);
+  expect(setBudget(store, { expiresAt, reason: "drain" }, OPERATOR, CONCURRENT_JOBS)).rejects.toThrow(
+    /moves no number/,
+  );
+  expect(
+    setBudget(store, { expiresAt: "not an instant", concurrentPerMachine: 8, reason: "drain" }, OPERATOR, CONCURRENT_JOBS),
+  ).rejects.toThrow(/is not an instant/);
+  expect(
+    setBudget(
+      store,
+      { expiresAt: new Date(store.now() - 1000).toISOString(), concurrentPerMachine: 8, reason: "drain" },
+      OPERATOR,
+      CONCURRENT_JOBS,
+    ),
+  ).rejects.toThrow(/no time at all/);
+  expect(await rows(store, `SELECT id FROM budgets`)).toEqual([]);
+});
+
 // ---------------------------------------------------------------------------- the crossing
 
 test("the importable tables are derived from the migration itself", () => {
   const tables = importableTables();
-  expect(Object.keys(tables)).toHaveLength(23);
+  // Twenty-three from the crossing, plus `budgets` — the overlay table #260 added.
+  expect(Object.keys(tables)).toHaveLength(24);
   expect(tables["dispositions"]).toEqual([
     "id",
     "record_id",

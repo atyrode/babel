@@ -336,3 +336,32 @@ export function since(instant: string, now: number): string {
   if (hours < 48) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
 }
+
+/**
+ * HOW MUCH OF AN OVERLAY IS LEFT (#260), as the clause beside it: "for 42m", and "expired" for
+ * one the panel is still holding when its instant has passed.
+ *
+ * A TTL is the whole difference between a drain and an edit of the standing policy, so the
+ * figure that matters is the remaining time and not the expiry instant — the operator who read
+ * "batch 256" on 2026-09-13 had no way to see that it outlived the drain by ninety minutes.
+ */
+export function until(instant: string, now: number): string {
+  const at = Date.parse(instant);
+  if (!Number.isFinite(at)) return "for an unreadable while";
+  const seconds = (at - now) / 1000;
+  if (seconds <= 0) return "expired";
+  if (seconds < 90) return `for ${String(Math.max(1, Math.round(seconds)))}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `for ${String(minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `for ${String(hours)}h`;
+  return `for ${String(Math.floor(hours / 24))}d`;
+}
+
+/** The overlay's fields in the operator's words, and how each is written. There is no batch
+ *  row: the bound per machine is the one number an overlay moves admission with. */
+export const OVERLAY_FIELDS: Record<string, { readonly label: string; readonly money: boolean }> = {
+  perCycleCost: { label: "Per run", money: true },
+  dailyCost: { label: "Per day", money: true },
+  concurrentPerMachine: { label: "At once, per machine", money: false },
+};

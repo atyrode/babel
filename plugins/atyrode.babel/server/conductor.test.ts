@@ -14,7 +14,15 @@ import {
 } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
-import type { Assignment, Coordinator, Fence, Gap, Stop } from "../store/coordinator.ts";
+import type {
+  Assignment,
+  Coordinator,
+  Fence,
+  Gap,
+  OpenClaims,
+  Policy,
+  Stop,
+} from "../store/coordinator.ts";
 import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
@@ -166,6 +174,10 @@ class Fleet implements JobsSlice {
   connected = true;
   /** What `execute` refuses every posting with, as the hub does when a machine will not take it. */
   refusal: string | null = null;
+  /** What the HUB refuses an ADMITTED posting with: a job that never ran, whose reason is on the
+   *  authority decision rather than in a result it never got — `concurrency_limit` when the
+   *  operation's declared `limits.concurrentJobs` is full (atyrode/manifold#551). */
+  decision: string | null = null;
   /** Jobs the hub can no longer report at all: a machine that vanished mid-review. */
   readonly silent = new Set<string>();
 
@@ -188,6 +200,16 @@ class Fleet implements JobsSlice {
 
   execute(args: JobLaunch): JobRunState {
     if (this.refusal !== null) throw new Error(this.refusal);
+    if (this.decision !== null) {
+      return {
+        jobId: args.jobId,
+        machineId: args.machineId,
+        operationId: args.operationId,
+        state: "refused",
+        result: null,
+        authority: { decision: { refusal: this.decision } },
+      };
+    }
     this.launched.push(args);
     this.jobs.set(args.jobId, {
       state: "started",
@@ -415,21 +437,52 @@ class Draws {
   stop: Stop = { reason: "no-candidates", detail: "nothing due" };
   /** The candidates it declined on the way, which every draw carries whatever it answers. */
   declined: Gap[] = [];
+  /** What a budget overlay moves on top of the standing policy, or null: nothing is overlaid. */
+  overlay: Partial<Policy> | null = null;
+  /** The machines each draw was told this cycle could dispatch to (#260). */
+  readonly offered: (readonly string[])[] = [];
 
   constructor(private readonly db: PluginDatabase) {}
 
   async policy(): Promise<Record<string, unknown>> {
+    const standing = { ...POLICY, enabled: this.enabled, version: this.version };
     return {
-      policy: { ...POLICY, enabled: this.enabled, version: this.version },
+      policy: this.overlay === null ? standing : { ...standing, ...this.overlay },
+      standing,
+      overlay: null,
       source: "stored",
       version: this.version,
       recordedAt: clock,
     };
   }
 
-  async draw(request: { runId: string }): Promise<Record<string, unknown>> {
+  /**
+   * `coordinator.open`: the batch slots held, per machine. The real one counts claims whose job
+   * has a run row naming a machine, which is what the loop writes for every job it posts — so
+   * counting the unfinished run rows reads the same evidence, and the slots a cycle takes are
+   * visible to its own later dispatches.
+   */
+  async open(): Promise<OpenClaims> {
+    const rows = await this.db.query<{ machine: string; open: bigint }>(
+      `SELECT machine_id AS machine, COUNT(*) AS open FROM runs
+        WHERE finished_at IS NULL AND machine_id IS NOT NULL GROUP BY machine_id`,
+    );
+    const byMachine: Record<string, number> = {};
+    let total = 0;
+    for (const row of rows) {
+      byMachine[row.machine] = Number(row.open);
+      total += Number(row.open);
+    }
+    return { total, byMachine };
+  }
+
+  async draw(request: {
+    runId: string;
+    machines?: readonly string[] | undefined;
+  }): Promise<Record<string, unknown>> {
     this.draws += 1;
     expect(request.runId.startsWith("cyc_")).toBe(true);
+    this.offered.push([...(request.machines ?? [])]);
     const next = this.pending.shift();
     if (next === undefined) {
       return { outcome: "gap", gap: this.stop, gaps: this.declined };
@@ -854,6 +907,54 @@ test("a cycle draws, claims, requests the job, then ingests every output file it
     `SELECT actual_cost, outcome FROM claims WHERE id = 'clm_asg_a1b2'`,
   );
   expect(claim[0]).toEqual({ actual_cost: 0.42, outcome: "completed" });
+});
+
+test("a cycle names its online machines to the coordinator, and no machine takes more than its bound", async () => {
+  const db = openDatabase();
+  await seed(db);
+  // A second enrolled machine, known because it holds a session of its own.
+  await db.run(
+    `INSERT INTO sessions(selector, host, harness, source_id, title, snapshot_id, seen_at)
+     VALUES ('omp/s2', 'dev-02', 'omp', 's2', 'a second host', 'snap-2', '2026-09-01T00:00:00Z')`,
+  );
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  // A drain's overlay, at its narrowest: one assignment per machine.
+  draws.overlay = { concurrentPerMachine: 1 };
+  draws.pending = [
+    { ...ASSIGNMENT },
+    { ...ASSIGNMENT, id: "asg_c3d4" },
+    { ...ASSIGNMENT, id: "asg_e5f6" },
+  ];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const cycle = await loop.tick();
+  // The coordinator is told the fleet, because its batch is a bound PER MACHINE and the
+  // deployment's cap is that bound over these machines (#260).
+  expect(draws.offered[0]).toEqual(["dev-01", "dev-02"]);
+
+  // dev-01 cites the record's session and takes the first job; the second goes to dev-02 rather
+  // than to the machine that is already at its bound — which is what makes the bound real, and
+  // is the 2026-09-13 failure inverted: thirty-six draws on one host.
+  expect(cycle.requested.map((job) => job.machineId)).toEqual(["dev-01", "dev-02"]);
+  // The third has nowhere to go, and the refusal says so by name rather than as "no machine".
+  expect(cycle.refused).toEqual([
+    {
+      assignmentId: "asg_e5f6",
+      recordId: "hyp_00000001",
+      reason: "no-machine",
+      detail: "no online machine has a free slot under the bound of 1: dev-01, dev-02",
+    },
+  ]);
 });
 
 test("a job that died with no receipt abandons its claim at the reservation and closes its run", async () => {
@@ -1485,6 +1586,47 @@ test("a posting the machine refuses abandons its claim in the same breath", asyn
   // No job was posted, so no run row was written for one.
   const runs = await db.query<{ n: bigint }>(`SELECT COUNT(*) AS n FROM runs`);
   expect(runs[0]?.n).toBe(0n);
+});
+
+test("a posting the hub refuses at admission is reported with the reason the hub named", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  // The hub admitted nothing: the operation's `limits.concurrentJobs` is full on that machine,
+  // so the job is `refused` with no result at all and its reason is on the authority decision.
+  fleet.decision = "concurrency_limit";
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  const report = await loop.tick();
+
+  // "dev-01 refused job_…" is a sentence nobody can act on; the fleet being at the ceiling this
+  // plugin's manifest declares is a bound to raise or a drain to slow (#281).
+  expect(report.refused).toEqual([
+    {
+      assignmentId: "asg_a1b2",
+      recordId: "hyp_00000001",
+      reason: "refused-job",
+      detail: "dev-01 refused job_asg_a1b2: concurrency_limit",
+    },
+  ]);
+  expect(draws.abandoned).toEqual([
+    {
+      id: "clm_asg_a1b2",
+      fence: 1,
+      reason: "the job was never posted: dev-01 refused job_asg_a1b2: concurrency_limit",
+    },
+  ]);
 });
 
 test("the reaper releases a grant whose job was never posted, once its lease has run out", async () => {

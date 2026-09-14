@@ -349,6 +349,28 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   them filed under 7 repositories, 35 in directories that are not
   repositories and say so (plan §4, #244).
 
+- **A drain is a budget overlay with a TTL, never an edit of the standing
+  policy.** `setBudget({ expiresAt, concurrentPerMachine?, perCycleCost?,
+  dailyCost?, reason })` writes one `budgets` row and `clearBudget({ id,
+  reason })` ends it early, with both instants and both reasons kept; nothing
+  unwinds an overlay, because the newest unexpired uncleared row is simply the
+  one in force. The standing `policies` row is byte-identical before and
+  after, so the `policyVersion` every in-flight assignment id digests does not
+  move — on 2026-09-13 five policy rewrites minted a second id for reviews
+  already in flight, and eval-policy-10's batch of 256 outlived the drain it
+  was raised for by ninety minutes. The bound is now per machine
+  (`concurrentPerMachine`) and it is the ONE knob an overlay turns: admission
+  caps the deployment at that bound across the machines a cycle finds online,
+  names what each holds when it refuses, and never counts a machine that has
+  gone offline against the ones still running. What an overlay may name is
+  bounded in turn by the manifest's `limits.concurrentJobs` (16 on explore and
+  evaluate), because the hub refuses every posting past it at `execute` and a
+  refused posting costs its reservation and produces no review; the refusal
+  names the ceiling, and a posting the hub does refuse is reported with the
+  hub's own word for it. Watch shows the overlay as a strip beside the
+  standing figures — what moved, from what, and for how much longer — never
+  instead of them (#260, #281).
+
 ### Changed
 
 - **Publication needs nobody.** `babel web` drains the machine's journal at
