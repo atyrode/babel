@@ -50,17 +50,63 @@ jobs:
             --verify-tag \
             dist/*.tar.gz dist/SHA256SUMS
 
-# Babel releases its own binary and nothing else.
-#
-# The manifold plugins under plugins/ are paused: Babel is a standalone product
-# whose web surface is `babel web`, and nothing it does depends on a hub. The
-# integration was scratched before manifold had the primitives it needs
-# (SPEC.md 8.4 records the exec primitive run creation waits on), and packing
-# and installing a half-built bundle from the release path only made a green
-# build report failure - v0.2.4's preview install refused with
-# `artifact_invalid: server module must default-export a ServerPluginDef`,
-# a loader contract written after plugins/MANIFOLD_REV.
-#
-# The plugin sources stay in the tree. When manifold is ready, the packing and
-# preview jobs come back with the pin and the kit moving together, which
-# plugins/README.md and docs/manifold-transition.md describe.
+  # The plugin family is the product (decision 91): the same reusable gate that runs on every
+  # PR - check, test, pack, verify against a real engine - packs the tagged revision and uploads
+  # dist/ as the `manifold-plugins` artifact. The `uses:` ref and plugins/MANIFOLD_REV are one
+  # revision and move together (.github/workflows/manifold-plugins.yml says why).
+  plugins:
+    uses: atyrode/manifold/.github/workflows/plugins.yml@637cbb79faf6d9616e2003bb3e9ec0490ede9d8e
+    with:
+      plugins-dir: plugins
+
+  # The verified bundles ride the release, then reach the integrated preview through its
+  # receiver: `plugin <asset-url> <sha256>` over the forced-command SSH key, baseline before its
+  # parts, exactly what a developer types from dev-01 (plugins/README.md "Where a change is
+  # proved"). Production (manifold.tyrode.dev) is installed by the operator, by hand, and is not
+  # touched here.
+  deliver:
+    needs: [release, plugins]
+    runs-on: ubuntu-latest
+    environment:
+      name: development
+      url: ${{ vars.DEV_DEPLOY_URL }}
+    env:
+      TAG: ${{ github.ref_name }}
+      REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifold-plugins
+          path: dist
+
+      - name: Attach the bundles to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp dist/SHA256SUMS dist/manifold-plugins.SHA256SUMS
+          gh release upload "$TAG" --repo "$REPOSITORY" --clobber \
+            dist/*.manifold-plugin.json dist/manifold-plugins.SHA256SUMS
+
+      - name: Install on the preview, parents first
+        env:
+          DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
+          DEV_DEPLOY_HOST: ${{ vars.DEV_DEPLOY_HOST }}
+          DEV_DEPLOY_USER: ${{ vars.DEV_DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          [ -n "$DEV_DEPLOY_HOST" ] || { echo "no preview receiver configured; bundles are on the release"; exit 0; }
+          key=$(mktemp); printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"; chmod 600 "$key"
+          trap 'rm -f "$key"' EXIT
+          for id in atyrode.babel atyrode.babel.feed atyrode.babel.watch; do
+            file="$id.manifold-plugin.json"
+            sha=$(awk -v f="$file" '$2 == f { print $1 }' dist/SHA256SUMS)
+            [ -n "$sha" ] || { echo "no sum for $file"; exit 1; }
+            url="https://github.com/$REPOSITORY/releases/download/$TAG/$file"
+            for attempt in 1 2 3; do
+              if ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i "$key" \
+                "$DEV_DEPLOY_USER@$DEV_DEPLOY_HOST" "plugin $url $sha"; then break; fi
+              [ "$attempt" -lt 3 ] || exit 1
+              sleep 15
+            done
+          done
