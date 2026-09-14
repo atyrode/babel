@@ -16,6 +16,8 @@ import {
   type SessionChoice,
 } from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
+import { launchMachinery, type LaunchDeps } from "./doors/launch.ts";
+import { drainTick, type DrainDeps } from "./server/drain.ts";
 import {
   conductor,
   type Conductor,
@@ -37,6 +39,7 @@ import {
   STANDING_SESSION,
   unaskable,
   unauthorized,
+  type BabelJobs,
 } from "./server/plan.ts";
 import { coordinator, type Policy } from "./store/coordinator.ts";
 import { SCHEMA_ADDITIONS, SCHEMA_V1 } from "./store/schema.ts";
@@ -77,10 +80,10 @@ import manifestJson from "./manifest.json";
 /**
  * The name of the shape an enable leaves behind: `SCHEMA_V1` plus every column and table
  * `SCHEMA_ADDITIONS` names. `STORE_DATA_VERSION` is the version it reaches, and
- * `2026-09-13-store-v1-budgets` — recorded under the same key by the enable before it — is its
- * predecessor.
+ * `2026-09-13-store-v1-run-progress` — recorded under the same key by the enable before it — is
+ * its predecessor.
  */
-const STORE_MIGRATION = "2026-09-13-store-v1-run-progress";
+const STORE_MIGRATION = "2026-09-14-store-v1-drains";
 /** Where that name is recorded. The engine's own `$migration:` ledger is the engine's to write. */
 const SCHEMA_KEY = "schema";
 /** One table of the schema, asked for by name: present means this file has been created. */
@@ -190,6 +193,43 @@ function loop(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conducto
 }
 
 /**
+ * WHAT EVERY START REACHES THE WORLD THROUGH, declared once. The doors and the drain's
+ * controller take the SAME object: two of them would be two answers to what a run is — which
+ * document it carries, which ceiling it inherits, which row it leaves behind (`doors/launch.ts`).
+ */
+const LAUNCH_DEPS: LaunchDeps = {
+  coordinator: coordinated,
+  cookbook: COOKBOOK,
+  jobs: (ctx) => jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+  machines: (ctx) => machinesSlice(ctx.machines),
+  // The preview's second reader (#284): when the machine holds no inference policy, what the
+  // hub answered the last time an owner tried to install one is what decides whether the
+  // sentence is "install one" or "this hub does not know the meter kind".
+  services: (ctx) =>
+    servicesSlice(ctx.services, (machineId, serviceId) =>
+      lastServiceSetup(store, machineId, serviceId),
+    ),
+  plan: planFor,
+  cycle: loop,
+  now: () => store.now(),
+};
+
+/** The launch path every start goes through, doors and drain controller alike (#258). */
+const machinery = launchMachinery(store, LAUNCH_DEPS);
+
+/** The controller's dependencies over one wake's own authority (#258). */
+function draining(jobs: BabelJobs): DrainDeps {
+  return {
+    store,
+    coordinator: coordinated,
+    launch: machinery,
+    jobs,
+    plan: planFor,
+    now: () => store.now(),
+  };
+}
+
+/**
  * ONE CYCLE, over the authority the caller brought: a job slice to reach machines through, and
  * the one machine question the loop asks outside a job (what a catalogued folder is, #535).
  *
@@ -197,29 +237,52 @@ function loop(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conducto
  * cycle happens when something has already woken this half: a door the operator knocked on, or
  * one of this plugin's own jobs settling. Every step of it is idempotent, which is what makes
  * that safe: two cycles in the same second do the work of one.
+ *
+ * THE DRAIN MOVES ON AFTER THE CONDUCTOR, and the order is the point (#258): the conductor is
+ * what settles a finished job and writes what it metered, so a controller that read the runs
+ * table first would decide whether to launch another against last cycle's numbers. A settlement
+ * is also the wake that matters to a drain, because a settlement is exactly when a slot opens.
  */
-async function cycle(jobs: JobsSlice, machines: MachinesSlice): Promise<void> {
+async function cycle(jobs: BabelJobs, machines: MachinesSlice): Promise<void> {
   const policy = (await coordinated.policy()).policy;
   await loop(jobs, machines, planFor(policy, OPERATIONS.evaluate)).tick();
+  for (const report of await drainTick(draining(jobs))) {
+    for (const note of report.notes) {
+      console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);
+    }
+  }
 }
 
 /**
- * The doors a cycle follows. They are the two an operator watches and the one that starts work
+ * The doors a cycle follows. They are the ones an operator watches and the ones that start work
  * — never every read: `feed`, `record` and `thread` are opened dozens of times while a page is
  * being read, and a cycle behind each of them would turn a reader into a scheduler.
  *
- * A DISPATCH IS ALSO THE ONLY CYCLE THAT CAN SEE A RUNNING JOB, which is why these three
- * matter more than they look. `follow` is the one verb `GuestHookJobs` omits — "a live
- * subscription belongs to a dispatch, not to a hook" (`plugin-kit/src/server.ts`) — and it is
- * the only read the hub serves for a job that has not finished: `journal` refuses that job
- * `job_unfinished`. So the slice a door's cycle is given carries it and folds where each
- * in-flight run is; the slice a settlement's hook is given does not, and that cycle ingests
- * what ended and says nothing about what has not (#261).
+ * A DISPATCH IS ALSO THE ONLY CYCLE THAT CAN SEE A RUNNING JOB, which is why these matter more
+ * than they look. `follow` is the one verb `GuestHookJobs` omits — "a live subscription belongs
+ * to a dispatch, not to a hook" (`plugin-kit/src/server.ts`) — and it is the only read the hub
+ * serves for a job that has not finished: `journal` refuses that job `job_unfinished`. So the
+ * slice a door's cycle is given carries it and folds where each in-flight run is; the slice a
+ * settlement's hook is given does not, and that cycle ingests what ended and says nothing about
+ * what has not (#261).
+ *
+ * `drainStatus` is here for exactly that reason (#258). A settlement wakes the drain on its own
+ * hook, but that hook cannot fold where a RUNNING job is, and a drain is watched precisely while
+ * its jobs are running: without this wake the panel's tokens-per-minute would advance only when
+ * something finished, and "flat for three minutes" — the one no-go the runbook names — would be
+ * a fact about the wake rather than about the drain. The floor below still applies, so the
+ * panel's five-second poll costs one cycle every thirty seconds.
+ *
+ * EVERY DOOR IN THIS LIST MUST DELEGATE `jobs:read`. The dispatcher attenuates `ctx.jobs` to what
+ * the door declared, so a cycle behind one that does not can read back no job at all: nothing
+ * settles, nothing is folded, and the wake is worse than none because `woke` is one floor shared
+ * by every poller. It is exported so `server.test.ts` holds the list itself to that.
  */
-const WAKES: Record<string, true> = {
+export const WAKES: Record<string, true> = {
   [ACTIONS.pulse]: true,
   [ACTIONS.runs]: true,
   [ACTIONS.launch]: true,
+  [ACTIONS.drainStatus]: true,
 };
 
 /**
@@ -238,20 +301,12 @@ let woke = 0;
 
 const doors = babelDoors(
   store,
+  LAUNCH_DEPS,
   {
     coordinator: coordinated,
-    cookbook: COOKBOOK,
-    jobs: (ctx) => jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
-    machines: (ctx) => machinesSlice(ctx.machines),
-    // The preview's second reader (#284): when the machine holds no inference policy, what the
-    // hub answered the last time an owner tried to install one is what decides whether the
-    // sentence is "install one" or "this hub does not know the meter kind".
-    services: (ctx) =>
-      servicesSlice(ctx.services, (machineId, serviceId) =>
-        lastServiceSetup(store, machineId, serviceId),
-      ),
-    plan: planFor,
-    cycle: loop,
+    deps: (ctx) =>
+      draining(jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive))),
+    concurrentJobs: CONCURRENT_JOBS,
     now: () => store.now(),
   },
   CONCURRENT_JOBS,

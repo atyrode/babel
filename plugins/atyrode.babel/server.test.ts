@@ -18,8 +18,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx, GuestDatabase, GuestHookJobs } from "@manifold/plugin-kit/server";
 import type { SettledJob } from "@manifold/protocol";
-import { ACTIONS, BABEL_PLUGIN_ID, OPERATIONS } from "./contract.ts";
-import { plugin } from "./server.ts";
+import { ACTIONS, BABEL_PLUGIN_ID, OPERATIONS, RUN_STAGES } from "./contract.ts";
+import { WAKES, plugin } from "./server.ts";
 import { stamp } from "./store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "./store/testdb.ts";
 
@@ -32,6 +32,7 @@ class Jobs {
   described = 0;
   statuses = 0;
   listed = 0;
+  followed = 0;
   /** The cadences this fake has been asked to register, newest last. */
   readonly scheduled: { scheduleId: string; revision: string; machineId: string }[] = [];
 
@@ -49,15 +50,56 @@ class Jobs {
     };
   }
 
-  /** The job the run row is waiting on: exited cleanly, with nothing sealed. */
-  status(): unknown {
+  /**
+   * The job a run row is waiting on. `job_live` exited cleanly with nothing sealed; `job_running`
+   * is still going, which is the only case a cycle can fold progress for.
+   */
+  status(node: { jobId: string }): unknown {
     this.statuses += 1;
+    if (node.jobId === "job_running") {
+      return {
+        jobId: "job_running",
+        machineId: MACHINE,
+        operationId: OPERATIONS.explore,
+        state: "running",
+        result: null,
+      };
+    }
     return {
       jobId: "job_live",
       machineId: MACHINE,
       operationId: OPERATIONS.evaluate,
       state: "exited",
       result: { state: "exited", exitCode: 0, reason: null, outputs: [] },
+    };
+  }
+
+  /**
+   * The replay ring of a running job, as `follow` answers with it: where the job says it is, and
+   * every call the owner metered. A fold takes the snapshot and closes the subscription.
+   */
+  follow(_node: unknown, _receive: () => void): unknown {
+    this.followed += 1;
+    return {
+      snapshot: {
+        events: [
+          { seq: 1, event: { type: "job_progress", stage: RUN_STAGES.atModel, at: NOW } },
+          {
+            seq: 2,
+            event: {
+              type: "inference_call",
+              model: "claude-sonnet-4-5",
+              inputTokens: 4_000,
+              outputTokens: 120,
+              cachedInputTokens: 0,
+              costMicros: 90_000,
+            },
+          },
+        ],
+        firstSeq: 1,
+        unavailable: null,
+      },
+      close: () => {},
     };
   }
 
@@ -146,6 +188,38 @@ function context(
     newId: async () => await Promise.resolve("000001"),
     now: () => now,
   } as unknown as GuestCtx;
+}
+
+/**
+ * `ctx.jobs` AS THE HOST SERVES IT TO ONE DOOR'S DISPATCH: attenuated to what that action
+ * declared (`plugin-host.ts` intersects the door's caps and delegates with the native set, and
+ * `authorizedJob` refuses every job read without `jobs:read` in them). It is derived from the
+ * plugin's OWN declaration, so a door added to `WAKES` without the delegate is served a slice
+ * that cannot read a job — which is a cycle that settles nothing and folds nothing, and is the
+ * whole reason the delegate is on the door rather than assumed.
+ */
+function served(slice: Jobs, name: string): Jobs {
+  const action = plugin.actions.find((entry) => entry.name === name);
+  if (action === undefined) throw new Error(`no action ${name}`);
+  const reach = [...(action.caps ?? []), ...(action.delegates ?? [])];
+  if (reach.includes("jobs:read")) return slice;
+  const refuse = (): never => {
+    throw new Error("jobs:read capability required");
+  };
+  return new Proxy(slice, {
+    get(target, key, receiver) {
+      if (key === "status" || key === "follow" || key === "listRuns") return refuse;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+}
+
+/** A run of this plugin's whose job is still RUNNING: the only case progress can be folded for. */
+async function watched(): Promise<void> {
+  await insert(harness.db, "runs", {
+    id: "run_watched", kind: OPERATIONS.explore, machine_id: MACHINE, job_id: "job_running",
+    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+  });
 }
 
 function settled(over: Partial<SettledJob> = {}): SettledJob {
@@ -261,6 +335,47 @@ test("the doors an operator watches run a cycle; the ones he reads with do not",
   expect(pulse).toMatchObject({ since: expect.any(String) });
   expect(jobs.statuses).toBe(1);
   expect(await closure()).toBe("completed");
+});
+
+test("every door a cycle follows can read a job, and the drain's own read folds a running one", async () => {
+  /*
+    THE WAKE THAT WAS BLIND (the review of #285, finding 1). `drainStatus` is in `WAKES` so the
+    panel's poll folds where the running jobs are — that is the whole reason it is there, since a
+    settlement's hook is served no `follow` and cannot fold a job that has not finished. But the
+    slice a dispatch is served is attenuated to what its door declared, and a door without
+    `jobs:read` is served one that refuses every job read: the cycle behind it settled nothing and
+    folded nothing, and since `woke` is one floor shared by the `runs` and `drainStatus` pollers,
+    roughly every other period's cycle was the blind one.
+  */
+  expect(Object.keys(WAKES)).toContain(ACTIONS.drainStatus);
+  for (const name of Object.keys(WAKES)) {
+    const action = plugin.actions.find((entry) => entry.name === name);
+    expect([...(action?.caps ?? []), ...(action?.delegates ?? [])]).toContain("jobs:read");
+  }
+
+  await pending();
+  await watched();
+  const ctx = context(harness.db as unknown as GuestDatabase, served(jobs, ACTIONS.drainStatus));
+
+  const answer = await plugin.handlers[ACTIONS.drainStatus]?.(ctx, { limit: 10 } as never);
+
+  // The door's own answer is unchanged — it reads this plugin's tables — and the cycle behind it
+  // did the two things a dispatch-woken cycle is for: it settled what had finished…
+  expect(answer).toMatchObject({ drains: [] });
+  expect(await closure()).toBe("completed");
+  // …and it folded where the job still running is, which is what makes tokens-a-minute move at
+  // all while an operator watches a drain.
+  expect(jobs.followed).toBeGreaterThan(0);
+  const progress = await harness.db.query<{
+    stage: string;
+    calls: number | bigint;
+    output_tokens: number | bigint;
+    cost_usd: number;
+  }>(`SELECT stage, calls, output_tokens, cost_usd FROM run_progress WHERE run_id = 'run_watched'`);
+  expect(progress[0]?.stage).toBe(RUN_STAGES.atModel);
+  expect(Number(progress[0]?.calls)).toBe(1);
+  expect(Number(progress[0]?.output_tokens)).toBe(120);
+  expect(progress[0]?.cost_usd).toBeCloseTo(0.09, 6);
 });
 
 test("a second dispatch inside the floor is the same wake, not another cycle", async () => {

@@ -1176,8 +1176,10 @@ and a review can be as heavy as its profile makes it (thinking, advisor, turns, 
 2026-09-13 drain failed not because reviews are the wrong thing to spend on but because each
 review re-prepared the whole corpus before its first model call (post-mortem F1, O1); the
 plugin's `evaluate` cannot do that. What must hold for any allocation: a run never re-prepares
-the corpus, and the fan is sized to the measured cost of one run. A drain without a target and a deadline
-is not a drain; it is a loop.
+the corpus, and the fan is sized to the measured cost of one run. A drain without a target and a
+deadline is not a drain; it is a loop — so a drain that names no deadline is given one, two
+hours out, and the fan is refused above the manifest's `concurrentJobs` for the operation it
+posts rather than discovered one refused job at a time.
 
 ### 11.2 Pre-flight (T-24h, rehearsal)
 
@@ -1223,8 +1225,14 @@ count, a socket count, or a percentage read by a home-made script is not any of 
 ### 11.5 Stopping
 
 > **OPERATOR STEP — stop (not executed).**
-> `drain.stop` cancels in-flight jobs through `jobs.cancel`; the coordinator releases their
-> claims when the hub settles them; the panel shows the final totals from `usage.inference`.
+> `drain.stop` cancels in-flight jobs through `jobs.cancel` and answers how many it cancelled and
+> which it could not; the panel shows those two numbers rather than assuming the cancels landed.
+> A drain that still holds a job is `closing`, not finished: what those jobs metered is part of
+> what this drain spent, so the row keeps them, folds each receipt as it lands, and records its
+> ending when none is left. **The final totals are the ones on the `closing` drain when it
+> finishes**, and pressing stop again on a `closing` drain is how the stragglers a self-stop could
+> not cancel are cancelled — the tick that met the target holds no `jobs:cancel`, an operator's
+> press does.
 > **Never `pkill` a job.** The hub owns the process, and a killed worker's claim holds its batch
 > slot for the whole lease: on 2026-09-13 five rounds of kills under a 5200 s lease left ~70
 > ghost claims on the top-ranked subjects and the last fan could not draw at all. The

@@ -15,6 +15,7 @@ import { choose, click, mount, settle, type, unmountAll } from "./render.tsx";
   `session_required` after the press instead of being explained before it (#279).
 */
 
+const SECTION = ".plugin-atyrode_babel_watch__start-section";
 const PRESET = ".plugin-atyrode_babel_watch__preset";
 const KNOB_LABEL = ".plugin-atyrode_babel_watch__knob-label";
 const WILLRUN = ".plugin-atyrode_babel_watch__willrun-line";
@@ -25,9 +26,20 @@ afterEach(async () => {
   resetPolledResources();
 });
 
+/**
+ * The Start section itself. Every read below is scoped to it: the Drain form on the same screen
+ * offers a "Machine" picker, a session and a "Model" field of its own, and a document-wide
+ * query would answer about whichever came first in the document.
+ */
+function section(root: HTMLElement): HTMLElement {
+  const found = root.querySelector<HTMLElement>(SECTION);
+  if (found === null) throw new Error("the Start section is not on the screen");
+  return found;
+}
+
 /** The select under the label with this word; two pickers can be on screen at once. */
 function picker(root: HTMLElement, label: string): HTMLSelectElement {
-  for (const field of root.querySelectorAll("label")) {
+  for (const field of section(root).querySelectorAll("label")) {
     if (field.querySelector(KNOB_LABEL)?.textContent === label) {
       const select = field.querySelector("select");
       if (select !== null) return select;
@@ -37,14 +49,14 @@ function picker(root: HTMLElement, label: string): HTMLSelectElement {
 }
 
 function knobInput(root: HTMLElement): HTMLInputElement {
-  const input = root.querySelector<HTMLInputElement>(".plugin-atyrode_babel_watch__knob-input");
+  const input = section(root).querySelector<HTMLInputElement>(".plugin-atyrode_babel_watch__knob-input");
   if (input === null) throw new Error("no knob on screen");
   return input;
 }
 
 /** The text field under the label with this word: the model, and the typed account's three. */
 function field(root: HTMLElement, label: string): HTMLInputElement {
-  for (const entry of root.querySelectorAll("label")) {
+  for (const entry of section(root).querySelectorAll("label")) {
     if (entry.querySelector(KNOB_LABEL)?.textContent === label) {
       const input = entry.querySelector<HTMLInputElement>("input");
       if (input !== null) return input;
@@ -95,7 +107,7 @@ test("every preset says what it does; the first one is open with its own knob", 
     "Reads the sessions since you last looked and writes up what it found.",
   );
   expect(cards[0]?.getAttribute("aria-pressed")).toBe("true");
-  expect(root.querySelector(KNOB_LABEL)?.textContent).toBe("Days back");
+  expect(section(root).querySelector(KNOB_LABEL)?.textContent).toBe("Days back");
   expect(knobInput(root).value).toBe("1");
 });
 
@@ -241,7 +253,7 @@ test("switching preset switches the knob, and the old preset's knob is not sent"
   await click([...root.querySelectorAll(PRESET)][4] ?? null);
   await settle();
 
-  expect(root.querySelector(KNOB_LABEL)?.textContent).toBe("Minutes");
+  expect(section(root).querySelector(KNOB_LABEL)?.textContent).toBe("Minutes");
   expect(knobInput(root).value).toBe("60");
   expect(fake.callsTo(ACTIONS.launchPreview).at(-1)?.args).toEqual({
     machineId: "m-dev-01",

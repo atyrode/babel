@@ -6,10 +6,11 @@
   provenance survives the rewrite (decision 91: import once, then retire).
 
   What changed in the crossing, and why:
-  - ninety-four tables become twenty-three, and the shapes since have added two (`budgets`,
-    #260, and `run_progress`, #261). The Go tree kept a table per concept per package; here a
-    record is a record whatever its kind, an edge is an edge whatever it relates, and a revision
-    is a row that supersedes another rather than a parallel table of revisions.
+  - ninety-four tables become twenty-three, and the shapes since have added three (`budgets`,
+    #260, `run_progress`, #261, and `drains`, #258). The Go tree kept a table per concept per
+    package; here a record is a record whatever its kind, an edge is an edge whatever it
+    relates, and a revision is a row that supersedes another rather than a parallel table of
+    revisions.
   - nothing is sealed and nothing is synced. The hub is the one place (§9 is retired); a row is
     plaintext on the operator's own server, and "published" is a word this schema does not need.
   - every table that records an act is append-only by trigger: a ruling, a vote, a filing, a
@@ -19,7 +20,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 3 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 4 } as const;
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -53,6 +54,88 @@ const BUDGETS_TABLE = `CREATE TABLE budgets(
      cleared_reason TEXT,
      CHECK (per_cycle_cost IS NOT NULL OR daily_cost IS NOT NULL
             OR concurrent_per_machine IS NOT NULL)
+   ) STRICT`;
+
+/**
+ * THE DRAIN (#258), spelled once and created twice, for the reason `budgets` is.
+ *
+ * A drain is one operator decision that outlives every process that carries it out: spend this
+ * account's remaining window, on this preset, this many jobs at a time, until this target or
+ * this deadline. The controller that does it is rebuilt from nothing on every wake (the server
+ * half holds no state between them), so everything it needs to decide "launch another / stop
+ * now" is a column here, and the row is the drain.
+ *
+ * WHY THE FIVE COLUMNS BEYOND THE OBVIOUS ONES EXIST, each because a tick cannot work without
+ * it:
+ *
+ *   - `live` is the job the drain is actually holding — `[{runId, jobId, launchedAt}]`, never
+ *     more than `concurrent` of them. It is the membership no other table can answer: a
+ *     settled run's `preparation` is overwritten from its receipt (`runStatement`), so a mark
+ *     the launch wrote there would not survive the settlement that needs reading, and "the
+ *     open explores on this machine" would count a run the operator started by hand. It is
+ *     also exactly what a stop has to cancel, by node, rather than guess at.
+ *   - `spent` is the SETTLED total — `{calls, inputTokens, outputTokens, costMicros}`, folded
+ *     once per job as it closes and never recomputed, because the `run_progress` row a job's
+ *     spend was folded through is deleted the moment it settles. What is still in flight is
+ *     added at read time; the sum is what a target is judged against.
+ *   - `samples` is `[{at, outputTokens, costMicros}]`, one per tick, capped: a RATE needs two
+ *     observations and `run_progress` is rewritten in place, so without a sample here "tokens
+ *     per minute" could only ever be a total divided by an elapsed time — which never reads
+ *     flat, and reading flat for three minutes is the one no-go the runbook names (§11.4).
+ *   - `closures` and `refusals` are `{word: count}`, tallied as each job settles for the same
+ *     reason `spent` is: the run row that says how a job closed, and the receipt whose reason
+ *     names a refused submission, are on a run this drain will have forgotten by the time the
+ *     panel asks. A refusal is PAID work with no result (#265), so it is counted where the
+ *     receipt is and never inferred later from a failure.
+ *
+ * `knobs` is the preset's own request — the recipes, the window, the topic, the minutes — kept
+ * because a relaunch three settlements later must ask for the SAME thing: a controller that
+ * remembered only the preset would quietly widen or narrow the scope between the operator's
+ * first job and its ninetieth. `session` sits beside it rather than inside it so the account a
+ * drain spends is one column an operator and a panel read without parsing a request (#267).
+ *
+ * `started_by` is the principal whose act started it, and it is the `authority_id` every job
+ * the controller launches afterwards records — a relaunch three settlements later is still
+ * that operator's drain, and a tick has no principal of its own to put there.
+ *
+ * `ending` is the ending a `closing` drain will be recorded under once the last receipt lands.
+ * A drain stops launching the instant its target is met, but the jobs it holds were paid for and
+ * keep going, so their receipts are still owed to `spent`: the row goes to `closing` with them
+ * still in `live`, folds each as it settles, and takes `ending` as its `state` when none is
+ * left. Without it a self-stop that could not cancel — the ordinary case, since a tick woken by
+ * a settlement holds no `jobs:cancel` — would drop up to (N−1) receipts from its own total.
+ *
+ * There is no append-only trigger, and `budgets` says why: the row is one bounded operation
+ * with one end, `finished_at` and `state` are that end, and the projections (`spent`, `live`,
+ * `samples`, `closures`, `refusals`) are the controller's own working record of it rather than
+ * acts. There is no overlay column either: a drain's jobs are launched directly and consult no
+ * ceiling of the standing policy, so it moves no number and has none to unwind (`doors/drain.ts`).
+ */
+const DRAINS_TABLE = `CREATE TABLE drains(
+     id TEXT PRIMARY KEY,
+     machine_id TEXT NOT NULL,
+     preset TEXT NOT NULL,
+     session TEXT NOT NULL,
+     knobs TEXT NOT NULL DEFAULT '{}',
+     concurrent INTEGER NOT NULL CHECK (concurrent >= 1),
+     target TEXT NOT NULL,
+     started_at TEXT NOT NULL,
+     started_by TEXT NOT NULL,
+     finished_at TEXT,
+     state TEXT NOT NULL DEFAULT 'running'
+       CHECK (state IN ('running','closing','stopped','target','deadline','failed')),
+     ending TEXT NOT NULL DEFAULT ''
+       CHECK (ending IN ('','stopped','target','deadline','failed')),
+     reason TEXT NOT NULL DEFAULT '',
+     spent TEXT NOT NULL DEFAULT '{}',
+     live TEXT NOT NULL DEFAULT '[]',
+     samples TEXT NOT NULL DEFAULT '[]',
+     closures TEXT NOT NULL DEFAULT '{}',
+     refusals TEXT NOT NULL DEFAULT '{}',
+     jobs_launched INTEGER NOT NULL DEFAULT 0,
+     jobs_settled INTEGER NOT NULL DEFAULT 0,
+     CHECK ((state IN ('running','closing')) = (finished_at IS NULL)),
+     CHECK (state != 'closing' OR ending != '')
    ) STRICT`;
 
 /** Statements of the first migration, in order; each is one `run`. */
@@ -496,6 +579,13 @@ export const SCHEMA_V1: readonly string[] = [
      PRIMARY KEY (machine_id, service_id)
    ) STRICT`,
 
+  // ---------------------------------------------------------------- a drain (#258)
+  // No index: a deployment accumulates drains at the rate an operator decides to spend a
+  // window, the running ones are read by `state` over tens of rows, and an index here would be
+  // a statement `SCHEMA_ADDITIONS` cannot carry — an addition is one statement, so a store an
+  // earlier enable created would have the table and not the index, and the two creation paths
+  // would no longer produce the same shape.
+  DRAINS_TABLE,
   // ---------------------------------------------------------------- the crossing
   // The one-off import's own ledger: where each table's rows came from and how many.
   `CREATE TABLE imports(
@@ -573,6 +663,12 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
      observed_at TEXT NOT NULL,
      PRIMARY KEY (machine_id, service_id)
    ) STRICT`,
+  },
+  // #258: a drain. A whole table again, and the same additive sense: a build that does not know
+  // it never reads it, and a store this enable creates gets it from `SCHEMA_V1` instead.
+  {
+    table: "drains",
+    sql: DRAINS_TABLE,
   },
 ];
 
