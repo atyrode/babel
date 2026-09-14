@@ -28,7 +28,6 @@ import {
   drainStopInput,
   launchRequest,
   read,
-  sessionChoice,
   stopInput,
   type DrainDraft,
   type DrainStatus,
@@ -192,12 +191,17 @@ export function Watch({ host }: PanelProps) {
   );
 
   /*
-    WHO THE DRAIN WOULD SPEND. It is resolved from the form alone: Babel reads no broker, because
-    the accounts a machine holds are omp's and what a run is composed from is a Code profile
-    (#279). What this resolves is the drain's own record of the window it exists to spend, and
-    the reason it is not one yet is what disables the button.
+    WHICH PROFILE THE DRAIN WOULD SPEND, resolved out of the list the panel is showing — the
+    same door and the same rows the Start section reads. Babel reads no broker: the model and
+    the account belong to the Code profile, and what the drain records about them is Code's
+    own report copied at the press.
   */
-  const drainPick = useMemo(() => sessionChoice(drainDraft), [drainDraft]);
+  const drainProfiles: ProfilesResult =
+    profilesNote === "" ? profiles.value : { profiles: [], unavailable: profilesNote };
+  const drainProfile = useMemo(
+    () => chosenProfile(drainDraft, drainProfiles.profiles),
+    [drainDraft, drainProfiles],
+  );
 
   /*
     The clock advances only while something is in flight. A panel that ticked over a page of
@@ -242,7 +246,7 @@ export function Watch({ host }: PanelProps) {
   }, [draft, host, profiles, runs]);
 
   const onDrainStart = useCallback(async () => {
-    if (!drainPick.ok) return;
+    if (drainProfile === null) return;
     setDraining(true);
     setDrainNote("");
     const outcome = await act(
@@ -250,7 +254,7 @@ export function Watch({ host }: PanelProps) {
       ACTIONS.drainStart,
       // The deadline is an instant computed at the press, from the minutes the operator set: a
       // form left open for ten minutes must not post a deadline ten minutes in the past.
-      drainStartRequest(drainDraft, drainPick.session, Date.now()),
+      drainStartRequest(drainDraft, drainProfile, Date.now()),
       DrainStartResultSchema,
     );
     setDraining(false);
@@ -266,7 +270,7 @@ export function Watch({ host }: PanelProps) {
       return;
     }
     setDrainNote(outcome.message);
-  }, [drainDraft, drainPick, drains, host, runs]);
+  }, [drainDraft, drainProfile, drains, host, runs]);
 
   /*
     THE STOP'S ANSWER IS READ, NOT ASSUMED. The door returns `cancelled` and a `note` precisely
@@ -318,20 +322,18 @@ export function Watch({ host }: PanelProps) {
 
   return (
     <Stack gap="var(--babel-space-6)" className="plugin-atyrode_babel_watch">
+      {/*
+        A FAILED READ IS THE SAME SENTENCE AS A REFUSED ONE: `profiles` answers `unavailable`
+        when Code refused, and when the DOOR refused the read threw and the note holds it. Both
+        reach the two sections in one field rather than as two differently-shaped absences,
+        because the operator's remedy is the same kind of thing either way.
+      */}
       <Start
         draft={draft}
         machines={machines.value}
         topics={topics.value.topics}
         recipes={policy.value?.recipes ?? []}
-        /*
-          A FAILED READ IS THE SAME SENTENCE AS A REFUSED ONE. `profiles` answers `unavailable`
-          when Code refused; when the DOOR refused, the read threw and the note holds it — and
-          the operator's remedy is the same kind of thing either way, so it is shown in the
-          same place rather than as a second, differently-shaped absence.
-        */
-        profiles={
-          profilesNote === "" ? profiles.value : { profiles: [], unavailable: profilesNote }
-        }
+        profiles={drainProfiles}
         starting={starting}
         note={startNote}
         onDraft={setDraft}
@@ -352,7 +354,7 @@ export function Watch({ host }: PanelProps) {
         drains={drains.value}
         machines={machines.value}
         topics={topics.value.topics}
-        session={drainPick}
+        profiles={drainProfiles}
         now={now}
         starting={draining}
         stopping={drainStopping}

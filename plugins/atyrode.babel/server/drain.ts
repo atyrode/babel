@@ -6,7 +6,7 @@ import {
   type DrainSpend,
   type LaunchInput,
   type OperationName,
-  type SessionChoice,
+  type DrainProfile,
 } from "../contract.ts";
 import type { Coordinator, Policy } from "../store/coordinator.ts";
 import {
@@ -126,11 +126,11 @@ export interface DrainDeps {
    */
   readonly engine: CodeEngine;
   /**
-   * What a run of this operation runs under. The third parameter is the session the run is
-   * launched with (#279): a plan carries the model and the account rather than a profile
-   * reference, so the drain hands its own stored session to every job it launches.
+   * What a run of this operation runs under. The third parameter is the CODE PROFILE the drain
+   * was started on, with Babel's ledger of what Code said it runs as (#279): the drain hands
+   * its own stored profile to every job it launches, never a default re-read later.
    */
-  plan(policy: Policy, operationId: OperationName, session?: SessionChoice | undefined): RunPlan;
+  plan(policy: Policy, operationId: OperationName, profile?: DrainProfile | undefined): RunPlan;
   now(): number;
 }
 
@@ -152,12 +152,11 @@ export function drainInput(row: DrainRow): LaunchInput {
     machineId: row.machineId,
     preset: row.preset,
     recipes: [...row.knobs.recipes],
-    session: row.session,
+    profile: row.profile.profile,
     ...(row.knobs.sinceDays === undefined ? {} : { sinceDays: row.knobs.sinceDays }),
     ...(row.knobs.entityId === undefined ? {} : { entityId: row.knobs.entityId }),
     ...(row.knobs.minutes === undefined ? {} : { minutes: row.knobs.minutes }),
     ...(row.knobs.agentSessions === undefined ? {} : { agentSessions: row.knobs.agentSessions }),
-    ...(row.knobs.profile === undefined ? {} : { profile: row.knobs.profile }),
   };
 }
 
@@ -257,6 +256,25 @@ export interface Ended {
  * the standing policy, so it never moved one (`doors/drain.ts` says the whole of it): what used
  * to be unwound here was a number nothing read.
  */
+
+/**
+ * THE CODE WORKSPACE A RUN WAS POSTED ON, or empty for a job of Babel's own.
+ *
+ * It is the one column that says which of the two lanes a job is in, and therefore which verb
+ * stops it: `ctx.jobs.cancel` for a job this plugin posted, `code.cancelSession` for a session
+ * `atyrode.code` posted under `atyrode.omp`'s operation.
+ */
+async function containerOf(store: DrainDeps["store"], runId: string): Promise<string> {
+  const rows = await store.db.query<{ container_id: string | null }>(
+    `SELECT container_id FROM runs WHERE id = ?`,
+    [runId],
+  );
+  return rows[0]?.container_id ?? "";
+}
+/**
+ * WHAT A DRAIN'S END DOES TO WHAT IT IS HOLDING: asks for each live job to be cancelled, in
+ * the lane that job belongs to, and closes the row.
+ */
 export async function endDrain(
   deps: DrainDeps,
   row: DrainRow,
@@ -268,13 +286,32 @@ export async function endDrain(
   const operationId = drainOperation(row.preset);
   let cancelled = 0;
   for (const job of live) {
+    /*
+      A CODE SESSION IS CANCELLED THROUGH CODE (#279). Its job belongs to `atyrode.omp` and
+      `ctx.jobs.cancel` is bound to the calling plugin's id, so a drain that reached for the
+      hub's verb would refuse every job of the lane it exists to stop. `container_id` on the
+      run row is what says which lane a job is in, and `cancelSession` is idempotent on a job
+      that has already settled — a stop that raced a settlement answers the job.
+    */
+    const container = await containerOf(deps.store, job.runId);
     try {
-      await deps.jobs.cancel({
-        kind: "job",
-        machineId: row.machineId,
-        operationId,
-        jobId: job.jobId,
-      });
+      if (container === "") {
+        await deps.jobs.cancel({
+          kind: "job",
+          machineId: row.machineId,
+          operationId,
+          jobId: job.jobId,
+        });
+      } else {
+        const answered = await deps.engine.cancelSession({
+          containerId: container,
+          jobId: job.jobId,
+        });
+        if (!answered.ok) {
+          notes.push(`${job.jobId} was not cancelled: ${answered.refused}`);
+          continue;
+        }
+      }
       cancelled += 1;
     } catch (error) {
       notes.push(`${job.jobId} was not cancelled: ${message(error)}`);
@@ -387,7 +424,7 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   const operationId = drainOperation(row.preset);
   // The session is the drain's own, every time: the model and the account the operator named
   // when they started it, not whatever a later default would be (#267, #279).
-  const plan = deps.plan(inForce.policy, operationId, row.session);
+  const plan = deps.plan(inForce.policy, operationId, row.profile);
   const input = drainInput(row);
   const holding = [...seen.holding];
   let launched = 0;

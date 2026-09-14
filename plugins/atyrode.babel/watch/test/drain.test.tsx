@@ -69,19 +69,17 @@ async function open(
   return { root, fake };
 }
 /**
- * Fills in a startable drain: the machine, the account the operator names, the model, and why.
+ * Fills in a startable drain: the machine, the CODE PROFILE it spends, and why.
  *
- * The account is TYPED and not chosen from a list, because Babel reads no broker (#279): the
- * accounts a machine holds are omp's, reached through Code, and an operator who is draining
- * one knows which one he is draining.
+ * There is no provider, credential, identity key, model or thinking field to fill any more
+ * (#279): all five belong to the Code profile, and a drain names the profile. What it records
+ * about the model and the account is Code's own report, copied at the press.
  */
 async function compose(root: HTMLElement): Promise<void> {
   await choose(field(root, "Machine"), "m-dev-01");
   await settle();
-  await type(field(root, "Provider"), "anthropic");
-  await type(field(root, "Credential"), "7");
-  await type(field(root, "Identity key"), "victorballu");
-  await type(field(root, "Model"), "anthropic/claude-sonnet-4-5");
+  (section(root).querySelector("[data-container='ctr_workbench']") as HTMLElement).click();
+  await settle();
   await type(field(root, "Why"), "the 7-day window resets at 13:00Z");
 }
 
@@ -99,36 +97,36 @@ test("the three drain presets are the ones a drain fans out, and the beat says i
   expect(cards[2]?.textContent).toContain("spends nothing");
 });
 
-test("nothing can be started until the account is named: the button says what is missing", async () => {
+test("nothing can be started until a Code profile is named, and no model or account field exists", async () => {
   const { root, fake } = await open();
   expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
   expect(section(root).textContent).toContain("Pick a machine to drain on.");
 
   await choose(field(root, "Machine"), "m-dev-01");
   await settle();
-  expect(section(root).textContent).toContain("name the model this run asks for");
+  expect(section(root).textContent).toContain("Pick the Code profile this drain spends");
   expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
 
-  await type(field(root, "Model"), "claude-sonnet-4-5");
-  await settle();
-  // A bare model id misses the route and the price at once, so it is refused beside the button
-  // rather than at a run that fails on the machine for a reason nobody can read back.
-  expect(section(root).textContent).toContain("is not a model reference");
+  /*
+    THE FIVE FIELDS THAT MUST NOT EXIST. A provider, a credential id, an identity key, a model
+    and a thinking level were all Babel deciding what a run is; Code owns every one of them.
+    Their absence is asserted so they cannot drift back the next time somebody wants the drain
+    to "just name an account".
+  */
+  for (const label of ["Provider", "Credential", "Identity key", "Model", "Thinking"]) {
+    expect(section(root).textContent).not.toContain(label);
+  }
 
-  await type(field(root, "Model"), "anthropic/claude-sonnet-4-5");
+  (section(root).querySelector("[data-container='ctr_workbench']") as HTMLElement).click();
   await settle();
-  expect(section(root).textContent).toContain("name the account this drain spends");
-
-  await type(field(root, "Provider"), "anthropic");
-  await type(field(root, "Credential"), "7");
-  await type(field(root, "Identity key"), "victorballu");
-  await settle();
+  // …and the row says whose window Code reports it would spend, before the button.
+  expect(section(root).textContent).toContain("Code reports victorballu@gmail.com");
   expect(section(root).textContent).toContain("Say why: the reason is recorded on the overlay.");
   expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
   expect(fake.callsTo(ACTIONS.drainStart)).toHaveLength(0);
 });
 
-test("the button posts the account, the fan, the deadline and the operation node", async () => {
+test("the button posts the profile, the fan, the deadline and the operation node", async () => {
   const { root, fake } = await open();
   await compose(root);
   await type(field(root, "Jobs at once"), "4");
@@ -145,19 +143,10 @@ test("the button posts the account, the fan, the deadline and the operation node
   const calls = fake.callsTo(ACTIONS.drainStart);
   expect(calls).toHaveLength(1);
   const posted = DrainStartRequestSchema.parse(calls[0]?.args);
-  expect(posted.session).toEqual({
-    model: "anthropic/claude-sonnet-4-5",
-    account: {
-      provider: "anthropic",
-      // NO BROKER OBSERVATION TO NAME (#279). Babel reads no accounts: they are omp's, reached
-      // through Code, and what a run is composed from is a Code profile. So the scope is the
-      // one honest tag available — this panel, on this machine — rather than an observation
-      // that never happened.
-      scope: "atyrode.babel.watch/typed/m-dev-01",
-      credentialId: "7",
-      identityKey: "victorballu",
-    },
-  });
+  // THE PROFILE, AT THE REVISION THE OPERATOR WAS SHOWN IT AT: a profile that moved between
+  // the read and the press is refused `code_stale_preferences` by Code, which is the whole
+  // reason the revision travels rather than being re-read on the server.
+  expect(posted.profile).toEqual({ containerId: "ctr_workbench", expectedRevision: 7 });
   expect(posted.concurrent).toBe(4);
   expect(posted.target.costMicros).toBe(5_000_000);
   // THE DEADLINE IS COMPUTED AT THE PRESS, from the minutes the operator set: a form left open

@@ -12,7 +12,7 @@
     "dev": "./pack.sh --machine && bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/dev.ts\" ."
   },
   "dependencies": {
-    "@atyrode/manifold-code": "github:atyrode/code#977e6e6ad1b4a9644129ca96488d3ff32f079b4e",
+    "@atyrode/manifold-code": "github:atyrode/code#fcd131609012c7db522f54fa190fdef440ccc75f",
     "zod": "4.4.3"
   },
   "devDependencies": {

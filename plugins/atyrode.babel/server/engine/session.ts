@@ -1,7 +1,6 @@
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import {
   CODE_PLUGIN_ID,
-  RefusalSchema,
   actionSchemas,
   type ActionInput,
   type ActionResult,
@@ -94,11 +93,18 @@ export interface SessionReceipt {
   readonly usage: SessionUsage | null;
   readonly exitCode: number;
 }
-
-/** What `readSession` answered: where the job is, and the receipt its transcript yielded. */
+/**
+ * WHAT `readSession` ANSWERED: where the job is, and the receipt its transcript yielded.
+ *
+ * `job` is ALWAYS there for a job Code's door posted, whatever state it is in; `session` is
+ * there only when that job exited 0 and its transcript was sealed. So a RUNNING, cancelled,
+ * interrupted or non-zero-exit job is a successful read with a null receipt, and the consumer
+ * decides from `job.state` and `job.result.exitCode` — a refusal is reserved for a job Code
+ * never posted. The distinction is the whole reason a live session no longer reads as a fault.
+ */
 export interface SessionRead {
   readonly job: CodeJob;
-  readonly session: SessionReceipt;
+  readonly session: SessionReceipt | null;
 }
 
 /** One sealed output bound into a session's sandbox, as a job request will carry it. */
@@ -156,6 +162,14 @@ export interface CodeEngine {
   runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>>;
   /** Where a posted session is, and what its transcript yielded. */
   readSession(args: { containerId: string; jobId: string }): Promise<EngineAnswer<SessionRead>>;
+  /**
+   * STOP ONE POSTED SESSION. It is Code's to cancel and not Babel's: the job belongs to
+   * `atyrode.omp` and `ctx.jobs.cancel` is bound to the calling plugin's id, so an operator's
+   * Stop, a `drain.stop` and a drain's own deadline all reach it through this door. It is
+   * idempotent on a settled job — the answer is the job — and refuses only a job Code never
+   * posted, so a stop that raced a settlement is not an error to report.
+   */
+  cancelSession(args: { containerId: string; jobId: string }): Promise<EngineAnswer<CodeJob>>;
 }
 
 /**
@@ -204,9 +218,9 @@ const CODE_TOKEN = /\bcode_[a-z0-9_]+\b/;
 /**
  * Babel's side of Code's doors.
  *
- * Every call is one shape: parse the input with Code's schema, ask, check for Code's own refusal,
- * parse the result with Code's schema. A slice that is absent refuses every call by name rather
- * than being asked.
+ * Every call is one shape: parse the input with Code's schema, ask, and parse the reply with
+ * Code's schema. A refusal is a REJECTION the host raised, folded by {@link translate}; a
+ * slice that is absent refuses every call by name rather than being asked.
  */
 export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
   /** One refusal of this file's own, in the sentence every caller reports verbatim. */
@@ -265,14 +279,14 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
     } catch (error) {
       return translate(action, error);
     }
-    const refusal = RefusalSchema.safeParse(reply);
-    if (refusal.success) {
-      const token = refusal.data.refused;
-      return refuse(
-        CODE_TOKENS[token] ?? ENGINE_REFUSALS.refused,
-        `${CODE_PLUGIN_ID}.${action} (${token})`,
-      );
-    }
+    /*
+      THERE IS NO RESOLVED REFUSAL. A Code refusal reaches this plugin as a REJECTION raised
+      by the host, whose sentence names the class and then Code's own `code_…` word inside its
+      detail ({@link translate}); `{ refused: "code_…" }` is what Code's ORDINARY-CLIENT
+      adapter answers a session dispatch with, not what an in-process `ctx.actions.call`
+      resolves. Checking for it here made a second road that never carried anything and two
+      tests that proved a shape nobody produces.
+    */
     const parsed = schemas.result.safeParse(reply);
     if (!parsed.success) {
       return refuse(
@@ -291,12 +305,26 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
         ok: true,
         // A profile whose saved selection no longer reviews against its catalog answers
         // `selected: null` — a profile to open in Code, which the panel says rather than hides.
+        //
+        // `accounts` AND `resolved` ARE CODE'S FACTS AND BABEL HAS NO OTHER SOURCE FOR THEM:
+        // the accounts belong to the profile, Code resolves the container's saved choices
+        // against the live observation, and this plugin has no broker to ask. Code's choices
+        // are stored as EXCLUSIONS, so without an observation there is no list to give —
+        // `resolved: false` with an empty list means ASK AGAIN and never "spends nothing",
+        // and every reader of these rows says which of the two it is looking at.
         value: answered.value.profiles.map((profile) => ({
           containerId: profile.containerId,
           revision: profile.revision,
           model: profile.selected?.model ?? "",
           thinking: profile.selected?.thinking ?? "",
           lastMachineId: profile.machineId ?? "",
+          // `identityKey` is null for an API-key slot, which has a credential and no login.
+          accounts: profile.accounts.map((account) => ({
+            provider: account.provider,
+            identityKey: account.identityKey ?? "",
+            label: account.label ?? "",
+          })),
+          resolved: profile.resolved,
         })),
       };
     },
@@ -320,5 +348,11 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
       containerId: string;
       jobId: string;
     }): Promise<EngineAnswer<SessionRead>> => await call("readSession", args),
+
+    cancelSession: async (args: {
+      containerId: string;
+      jobId: string;
+    }): Promise<EngineAnswer<CodeJob>> =>
+      (await call("cancelSession", args)) as EngineAnswer<CodeJob>,
   };
 }

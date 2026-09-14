@@ -833,7 +833,8 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
         machine_id: string | null;
         kind: string;
         closure: string | null;
-      }>(`SELECT job_id, machine_id, kind, closure FROM runs WHERE id = ?`, [runId]);
+        container_id: string | null;
+      }>(`SELECT job_id, machine_id, kind, closure, container_id FROM runs WHERE id = ?`, [runId]);
       const run = rows[0];
       if (run === undefined) return { refused: `no run ${runId}` };
       if (run.closure !== null) return { refused: `${runId} already ended: ${run.closure}` };
@@ -851,10 +852,26 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
             `at ${job.machineId}/${job.operationId}/${job.jobId}`,
         };
       }
-      try {
-        await deps.jobs(ctx).cancel(job);
-      } catch (error) {
-        return { refused: `${machineId} refused to stop ${jobId}: ${message(error)}` };
+      /*
+        A CODE SESSION IS CANCELLED THROUGH CODE (#279). Its job belongs to `atyrode.omp` and
+        `ctx.jobs.cancel` is bound to the calling plugin's id, so the hub's verb would refuse
+        every run of the lane that reaches a model. `container_id` says which lane this run is
+        in; `cancelSession` is idempotent on a job that has already settled, so a Stop that
+        raced the run's own ending answers the job rather than an error.
+      */
+      const container = run.container_id ?? "";
+      if (container === "") {
+        try {
+          await deps.jobs(ctx).cancel(job);
+        } catch (error) {
+          return { refused: `${machineId} refused to stop ${jobId}: ${message(error)}` };
+        }
+      } else {
+        const answered = await deps.engine(ctx.actions).cancelSession({
+          containerId: container,
+          jobId,
+        });
+        if (!answered.ok) return { refused: answered.refused };
       }
       // The run is closed here rather than left for the loop to notice: the operator asked for
       // it to stop, and a row that kept saying `running` until the next cycle would be the

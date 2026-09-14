@@ -1672,16 +1672,24 @@ export function conductor(deps: ConductorDeps): Conductor {
     at: number,
     run: PendingRun,
     read: SessionRead,
+    closure: Receipt["closure"],
     ingested: IngestedRun[],
     settled: SettledClaim[],
     notes: string[],
     refusals: Counter,
   ): Promise<void> {
+    /*
+      A RECEIPT ONLY EXISTS FOR A JOB THAT EXITED 0 AND SEALED ITS TRANSCRIPT. Code answers
+      `session: null` for a job it cancelled, interrupted or that exited non-zero, and that is
+      a successful READ of a run that produced nothing to read — not a fault, and not a run
+      whose spend is knowable. It settles at zero with the closure the job itself reported,
+      because a receipt is the only thing that could have said what it cost.
+    */
     const session = read.session;
     // ONE CALL, because a Code session posted by `runSession` is omp's one-shot: `usage` is the
     // whole run's, there is no per-call frame to count, and writing `calls: 0` beside real
     // tokens would make a metered run read as one that never reached a model.
-    const usage = session.usage;
+    const usage = session?.usage ?? null;
     const inference: InferenceUsage | null =
       usage === null
         ? null
@@ -1694,11 +1702,15 @@ export function conductor(deps: ConductorDeps): Conductor {
           };
     const costUsd = usage?.cost ?? 0;
 
-    // WHAT THE ANSWER WAS WORTH. A session that exited non-zero never got to submit one, and
-    // saying so in the receipt's own reason is more use than a schema refusal about a message
-    // that was never written.
+    // WHAT THE ANSWER WAS WORTH. A session that never sealed a transcript submitted nothing,
+    // and the reason says which of the job's own endings that was rather than inventing a
+    // schema refusal about a message that was never written.
     let reason = "";
-    if (session.exitCode !== 0) {
+    if (session === null) {
+      reason =
+        `${REFUSALS.empty}: the session closed as ${read.job.state} and sealed no transcript, ` +
+        `so it submitted no result`;
+    } else if (session.exitCode !== 0) {
       reason = `${REFUSALS.schema}: the session exited ${String(session.exitCode)} and submitted no result`;
     } else {
       const answer = readExploreAnswer("explore", session.finalMessage);
@@ -1728,17 +1740,20 @@ export function conductor(deps: ConductorDeps): Conductor {
       kind: "explore",
       machineId: run.machine_id,
       ...(namedAccount(run.profile) === undefined ? {} : { account: namedAccount(run.profile) }),
-      model: session.model,
+      ...(session === null ? {} : { model: session.model }),
       ...(preparationOf(run.preparation) === undefined
         ? {}
         : { preparation: preparationOf(run.preparation) }),
       startedAt: run.started_at,
       finishedAt: new Date(at).toISOString(),
-      closure: reason === "" ? "completed" : "failed",
+      // A CLOSURE THE JOB REPORTED, not one inferred from the reason: a session an operator
+      // cancelled is `stopped` and not `failed`, and a panel that called every unreadable run
+      // a failure is how a stop looks like a fault.
+      closure: reason === "" ? "completed" : session === null ? closure : "failed",
       ...(reason === "" ? {} : { reason }),
       costUsd,
       tokens: usage === null ? 0 : usage.input + usage.output,
-      models: [session.model],
+      ...(session === null ? {} : { models: [session.model] }),
       counts: {},
     };
     // The run row is written through the SAME statement an ingested job's is: one shape for
@@ -1772,7 +1787,18 @@ export function conductor(deps: ConductorDeps): Conductor {
       rows: {},
       skipped: 0,
     });
-    await settleClaims(run.job_id, costUsd, reason === "" ? "completed" : "failed", settled);
+    /*
+      WHAT THE CLAIM IS WORTH. A refused SUBMISSION is `failed` and costs what the model was
+      paid; a session that sealed no transcript at all is `skipped` — nobody answered, nothing
+      was submitted, and calling it a failure would feed the park heuristic a streak that is
+      really an operator pressing Stop.
+    */
+    await settleClaims(
+      run.job_id,
+      costUsd,
+      reason === "" ? "completed" : session === null ? "skipped" : "failed",
+      settled,
+    );
   }
 
   /**
@@ -1828,11 +1854,20 @@ export function conductor(deps: ConductorDeps): Conductor {
       return { inFlight: false };
     }
     await silence(run.id, Number(run.unreadable), true);
-    // Code reports the omp job's own state, and the vocabulary is the hub's: a job that is not
-    // terminal is still going, and this loop folds no progress for it — the replay ring belongs
-    // to `atyrode.omp`'s job and `ctx.jobs.follow` on it is not Babel's to open.
-    if (TERMINAL_STATES[answered.value.job.state] !== true) return { inFlight: true };
-    await settleSession(at, run, answered.value, ingested, settled, notes, refusals);
+    /*
+      CODE ANSWERS FOR A JOB IN ANY STATE, and the vocabulary is the hub's own. A job that is
+      not terminal is still going, and this loop folds no progress for it — the replay ring
+      belongs to `atyrode.omp`'s job and `ctx.jobs.follow` on it is not Babel's to open.
+
+      A TERMINAL ONE CARRIES ITS OWN ENDING, which is what the receipt records when Code
+      sealed no transcript: `cancelled` is an operator's Stop and closes `stopped`, anything
+      else is `failed`. Reading that off the job rather than off the absent receipt is the
+      difference between a stop that looks like a stop and one that looks like a fault.
+    */
+    const job = answered.value.job;
+    if (TERMINAL_STATES[job.state] !== true) return { inFlight: true };
+    const closure: Receipt["closure"] = job.state === "cancelled" ? "stopped" : "failed";
+    await settleSession(at, run, answered.value, closure, ingested, settled, notes, refusals);
     return { inFlight: false };
   }
 

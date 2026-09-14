@@ -5,7 +5,8 @@ import {
   DRAIN_BOUNDS,
   DRAIN_CARDS,
   DRAIN_STATE_NOTE,
-  THINKING_CHOICES,
+  accountsClause,
+  chosenProfile,
   drainUnready,
   etaClause,
   figure,
@@ -15,8 +16,8 @@ import {
   usd,
   type DrainDraft,
   type DrainStatus,
-  type SessionDraft,
-  type SessionPick,
+  type ProfileRow,
+  type ProfilesResult,
   type TopicRow,
 } from "./api.ts";
 
@@ -49,8 +50,8 @@ export interface DrainProps {
   readonly drains: readonly DrainStatus[];
   readonly machines: readonly MachineSummary[];
   readonly topics: readonly TopicRow[];
-  /** The session the form has made, or why it is not one yet: the drain always needs one. */
-  readonly session: SessionPick;
+  /** Code's saved profiles, or the sentence saying why Code could not be asked. */
+  readonly profiles: ProfilesResult;
   /** The panel's clock, ticked once a second while a drain is running. */
   readonly now: number;
   readonly starting: boolean;
@@ -64,82 +65,63 @@ export interface DrainProps {
 }
 
 /**
- * WHO THE DRAIN SPENDS, in four typed fields.
+ * WHICH CODE PROFILE THIS DRAIN SPENDS (#267, #279).
  *
- * They are typed and not offered because Babel reads no broker: the accounts a machine holds
- * are omp's, and what a run is composed from is a Code profile (#279). An operator who is
- * draining knows the account he is draining — that is the whole premise of the operation — so
- * the drain records what he names and its panel says it back, and `drainUnready` refuses the
- * button until all of it is there.
+ * It was three typed fields — a provider, a credential id and an identity key — plus a model
+ * and a thinking level, and all five were Babel deciding what a run is. They are gone. A
+ * drain names a CODE PROFILE, exactly as Watch's Start section does and from the same
+ * `profiles` door, and what it records about the model and the account is CODE'S OWN REPORT,
+ * copied once when the button is pressed.
  *
- * The model is a text field for the same reason: nothing on this side knows what a machine's
- * Code profile prices, and a closed list here would be a guess at another plugin's
- * configuration.
+ * A profile whose accounts Code does not report says so rather than showing a blank: at the
+ * pin this plugin builds against Code publishes no `accounts` on a profile at all, and the
+ * difference between "Code says none" and "Code was not asked" is the difference between a
+ * drain an operator can account for and the one he could not on 2026-09-13.
  */
-function SessionFields({
-  session,
-  onSession,
+function ProfileFields({
+  draft,
+  profiles,
+  onDraft,
 }: {
-  readonly session: SessionDraft;
-  readonly onSession: (session: SessionDraft) => void;
+  readonly draft: DrainDraft;
+  readonly profiles: ProfilesResult;
+  readonly onDraft: (draft: DrainDraft) => void;
 }) {
+  if (profiles.unavailable !== "") {
+    return (
+      <p className="plugin-atyrode_babel_watch__note" data-field="drain-profiles-unavailable">
+        {profiles.unavailable}
+      </p>
+    );
+  }
   return (
-    <Cluster gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__session">
-      <label className="plugin-atyrode_babel_watch__knob">
-        <span className="plugin-atyrode_babel_watch__knob-label">Provider</span>
-        <input
-          type="text"
-          className="plugin-atyrode_babel_watch__session-input"
-          placeholder="anthropic"
-          value={session.provider}
-          onInput={(event) => onSession({ ...session, provider: event.currentTarget.value })}
-        />
-      </label>
-      <label className="plugin-atyrode_babel_watch__knob">
-        <span className="plugin-atyrode_babel_watch__knob-label">Credential</span>
-        <input
-          type="text"
-          className="plugin-atyrode_babel_watch__session-input"
-          placeholder="7"
-          value={session.credentialId}
-          onInput={(event) => onSession({ ...session, credentialId: event.currentTarget.value })}
-        />
-      </label>
-      <label className="plugin-atyrode_babel_watch__knob">
-        <span className="plugin-atyrode_babel_watch__knob-label">Identity key</span>
-        <input
-          type="text"
-          className="plugin-atyrode_babel_watch__session-input"
-          placeholder="empty for an api key"
-          value={session.identityKey}
-          onInput={(event) => onSession({ ...session, identityKey: event.currentTarget.value })}
-        />
-      </label>
-      <label className="plugin-atyrode_babel_watch__knob">
-        <span className="plugin-atyrode_babel_watch__knob-label">Model</span>
-        <input
-          type="text"
-          className="plugin-atyrode_babel_watch__session-input"
-          placeholder="provider/model"
-          value={session.model}
-          onInput={(event) => onSession({ ...session, model: event.currentTarget.value })}
-        />
-      </label>
-      <label className="plugin-atyrode_babel_watch__knob">
-        <span className="plugin-atyrode_babel_watch__knob-label">Thinking</span>
-        <select
-          className="plugin-atyrode_babel_watch__picker"
-          value={session.thinking}
-          onChange={(event) => onSession({ ...session, thinking: event.target.value })}
+    <Stack gap="var(--babel-space-2)" className="plugin-atyrode_babel_watch__profiles">
+      <span className="plugin-atyrode_babel_watch__knob-label">Code profile</span>
+      {profiles.profiles.length === 0 ? (
+        <span className="plugin-atyrode_babel_watch__muted">
+          Code holds no saved profile yet; a drain is posted on one.
+        </span>
+      ) : null}
+      {profiles.profiles.map((profile: ProfileRow) => (
+        <button
+          key={profile.containerId}
+          type="button"
+          className="plugin-atyrode_babel_watch__profile"
+          data-field="drain-profile"
+          data-container={profile.containerId}
+          aria-pressed={profile.containerId === draft.containerId}
+          onClick={() => onDraft({ ...draft, containerId: profile.containerId })}
         >
-          {THINKING_CHOICES.map((choice) => (
-            <option key={choice.value} value={choice.value}>
-              {choice.label}
-            </option>
-          ))}
-        </select>
-      </label>
-    </Cluster>
+          <span className="plugin-atyrode_babel_watch__mono">{profile.containerId}</span>
+          <span className="plugin-atyrode_babel_watch__muted">
+            {profile.model === ""
+              ? "no selection Code can review — open it in the generator"
+              : `${profile.model}${profile.thinking === "" ? "" : ` · thinking ${profile.thinking}`}`}
+          </span>
+          <span className="plugin-atyrode_babel_watch__muted">{accountsClause(profile)}</span>
+        </button>
+      ))}
+    </Stack>
   );
 }
 
@@ -375,7 +357,7 @@ export function Drain({
   drains,
   machines,
   topics,
-  session,
+  profiles,
   now,
   starting,
   stopping,
@@ -385,7 +367,8 @@ export function Drain({
   onStop,
 }: DrainProps) {
   const card = DRAIN_CARDS[draft.preset];
-  const blocked = drainUnready(draft, session);
+  const profile = chosenProfile(draft, profiles.profiles);
+  const blocked = drainUnready(draft, profile);
   return (
     // The section carries a class of its own because two sections on this screen offer a
     // "Machine" picker: `watch/test/drain.test.ts` scopes its reads to this one, and a test that
@@ -438,15 +421,11 @@ export function Drain({
               className="plugin-atyrode_babel_watch__picker"
               value={draft.machineId}
               onChange={(event) =>
-                // A machine change CLEARS the account, as it does in the Start form: the rows
-                // are that machine's broker's own, and a credential kept across the change
-                // would name a row in another one — refused `account_unavailable` on the
-                // machine, after the jobs were posted and the overlay set.
-                onDraft({
-                  ...draft,
-                  machineId: event.target.value,
-                  session: { ...draft.session, provider: "", credentialId: "", identityKey: "" },
-                })
+                // A machine change KEEPS the profile: a Code workspace is not a machine's and
+                // the destination is the caller's choice on every post (`TargetSchema`). What
+                // this used to clear — a credential id belonging to one machine's broker — is
+                // not a field of this form any more.
+                onDraft({ ...draft, machineId: event.target.value })
               }
             >
               <option value="">Pick a machine…</option>
@@ -514,19 +493,14 @@ export function Drain({
           />
         </Cluster>
         {/*
-          THE ACCOUNT THIS DRAIN SPENDS (#267), named before the fan rather than discovered
-          when it is running. It is TYPED and not offered: Babel no longer reads a machine's
-          broker, because account choice belongs to the Code profile a run is composed from
-          (#279), and a picker of Babel's own beside Code's would be two answers to "spend this
-          account". When Code's `runSession` door lands these three fields become a reference to
-          a Code profile; until then they are what the drain's row records and its panel says
-          back. A drain of `keep-going` names one too — that preset reaches no model, but a
-          drain of it is the rehearsal of one that does.
+          WHICH CODE PROFILE THIS DRAIN SPENDS (#267, #279), named before the fan rather than
+          discovered while it runs. The model and the account are the profile's and Code's;
+          what the drain records is Code's own report of them, copied at the press. A drain of
+          `keep-going` names one too — that preset reaches no model, but a drain of it is the
+          rehearsal of one that does, and rehearsing without naming the profile would rehearse
+          a different operation.
         */}
-        <SessionFields
-          session={draft.session}
-          onSession={(session) => onDraft({ ...draft, session })}
-        />
+        <ProfileFields draft={draft} profiles={profiles} onDraft={onDraft} />
         <Cluster gap="var(--babel-space-4)" className="plugin-atyrode_babel_watch__knobs">
           <Field
             label="Why"

@@ -100,38 +100,24 @@ describe("a refusal the host raised", () => {
   });
 });
 
-describe("a refusal Code resolved", () => {
-  test("a `code_…` value is read before the reply is parsed as a result", async () => {
-    const slice = actions(() => ({ refused: "code_catalog_missing" }));
-    const answered = await codeEngine(slice).profiles();
+/*
+  THERE IS NO SECOND ROAD. Two tests here proved that a RESOLVED `{ refused: "code_…" }` was
+  folded onto Babel's names, and no such value ever reaches `ctx.actions.call`: that shape is
+  what Code's ORDINARY-CLIENT adapter answers a session dispatch with. A Code refusal is a
+  REJECTION the host raises, carrying Code's own word inside the class's detail, which is what
+  the `refused: … (code_stale_preferences)` case above actually exercises. The branch and its
+  tests are deleted rather than re-pinned against a shape nobody produces.
+*/
+test("a door answering outside its own published result is a fault, never a value passed on", async () => {
+  const slice = actions(() => ({ profiles: "not a list" }));
+  const answered = await codeEngine(slice).profiles();
 
-    expect(answered.ok).toBe(false);
-    if (answered.ok) return;
-    expect(answered.code).toBe(ENGINE_REFUSALS.refused);
-    // The word rides the detail: it is what the operator acts on.
-    expect(answered.refused).toContain("code_catalog_missing");
-  });
-
-  test("code_stale_preferences is the one token Babel acts on differently", async () => {
-    const slice = actions(() => ({ refused: "code_stale_preferences" }));
-    const answered = await codeEngine(slice).readSession({ containerId: "c", jobId: "j" });
-
-    expect(answered.ok).toBe(false);
-    if (answered.ok) return;
-    expect(answered.code).toBe(ENGINE_REFUSALS.staleProfile);
-  });
-
-  test("a door answering outside its own published result is a fault, never a value passed on", async () => {
-    const slice = actions(() => ({ profiles: "not a list" }));
-    const answered = await codeEngine(slice).profiles();
-
-    expect(answered.ok).toBe(false);
-    if (answered.ok) return;
-    expect(answered.refused).toContain("answered outside its own published result");
-  });
+  expect(answered.ok).toBe(false);
+  if (answered.ok) return;
+  expect(answered.refused).toContain("answered outside its own published result");
 });
 
-test("a saved profile with no reviewable selection is a row with two empty fields, not a hidden one", async () => {
+test("a profile carries Code's own accounts, and its silence is told from its saying none", async () => {
   const slice = actions(() => ({
     profiles: [
       {
@@ -144,8 +130,23 @@ test("a saved profile with no reviewable selection is a row with two empty field
           advisor: "review",
         },
         machineId: "m-dev-01",
+        // An API-key slot has a credential and no login, so Code answers a null identity.
+        accounts: [
+          { provider: "anthropic", identityKey: "victorballu@gmail.com", label: "victorballu" },
+          { provider: "openai", identityKey: null },
+        ],
+        resolved: true,
       },
-      { containerId: "ctr_b", revision: 1, selected: null, machineId: null },
+      // No observation to resolve against: `resolved: false` with an empty list means ASK
+      // AGAIN, and a reader that printed it as "spends nothing" would be inventing a fact.
+      {
+        containerId: "ctr_b",
+        revision: 1,
+        selected: null,
+        machineId: null,
+        accounts: [],
+        resolved: false,
+      },
     ],
   }));
   const answered = await codeEngine(slice).profiles();
@@ -159,8 +160,21 @@ test("a saved profile with no reviewable selection is a row with two empty field
       model: "anthropic/claude-opus-4-1",
       thinking: "high",
       lastMachineId: "m-dev-01",
+      accounts: [
+        { provider: "anthropic", identityKey: "victorballu@gmail.com", label: "victorballu" },
+        { provider: "openai", identityKey: "", label: "" },
+      ],
+      resolved: true,
     },
-    { containerId: "ctr_b", revision: 1, model: "", thinking: "", lastMachineId: "" },
+    {
+      containerId: "ctr_b",
+      revision: 1,
+      model: "",
+      thinking: "",
+      lastMachineId: "",
+      accounts: [],
+      resolved: false,
+    },
   ]);
 });
 

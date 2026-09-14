@@ -115,7 +115,7 @@ const DRAINS_TABLE = `CREATE TABLE drains(
      id TEXT PRIMARY KEY,
      machine_id TEXT NOT NULL,
      preset TEXT NOT NULL,
-     session TEXT NOT NULL,
+     profile TEXT NOT NULL DEFAULT '{}',
      knobs TEXT NOT NULL DEFAULT '{}',
      concurrent INTEGER NOT NULL CHECK (concurrent >= 1),
      target TEXT NOT NULL,
@@ -675,6 +675,16 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     table: "runs",
     column: "unreadable",
     sql: `ALTER TABLE runs ADD COLUMN unreadable INTEGER NOT NULL DEFAULT 0`,
+  },
+  // #279: a drain names a CODE PROFILE, not a model and an account of Babel's own. The column
+  // it replaces held a `SessionChoice` the operator typed; this holds the profile plus the
+  // ledger entry of what Code said that profile would run as, copied once at the start. A row
+  // an earlier shape wrote reads `{}` and cannot be relaunched, which is the truth about it:
+  // nobody can say which Code profile a drain that named none was spending.
+  {
+    table: "drains",
+    column: "profile",
+    sql: `ALTER TABLE drains ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'`,
   },
 ];
 

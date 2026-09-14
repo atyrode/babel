@@ -12,10 +12,10 @@ import {
   DrainStopResultSchema,
   EVENTS,
   PRESET_OPERATIONS,
+  type DrainProfile,
   type DrainTarget,
 } from "../contract.ts";
 import { newId } from "../store/acts.ts";
-import type { Coordinator } from "../store/coordinator.ts";
 import {
   accountName,
   drainOnMachine,
@@ -36,6 +36,7 @@ import {
   type DrainDeps,
 } from "../server/drain.ts";
 import type { BabelStore } from "../store/store.ts";
+import type { Coordinator } from "../store/coordinator.ts";
 import { defineDoor, type Door } from "./door.ts";
 
 /*
@@ -251,14 +252,48 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         ...(input.entityId === undefined ? {} : { entityId: input.entityId }),
         ...(input.minutes === undefined ? {} : { minutes: input.minutes }),
         ...(input.agentSessions === undefined ? {} : { agentSessions: input.agentSessions }),
-        ...(input.profile === undefined ? {} : { profile: input.profile }),
       };
+
+      /*
+        WHAT CODE SAYS THIS PROFILE WILL SPEND, COPIED ONCE, HERE (#267, #279).
+
+        Babel chooses no model and no account, so the only honest record of what a fan is
+        burning is Code's own, read at the moment the operator presses and written on the row
+        as a LEDGER ENTRY — not re-read per job, because a controller that asked again between
+        the first job and the ninetieth would report whatever the profile had become rather
+        than what was started, which is the class of drift the whole operation exists against.
+
+        A profile Code does not list is refused here: the operator picked from a list, and a
+        container that has since gone is a press against something that no longer exists.
+        Code answering nothing at all is a different refusal and says so.
+      */
+      const doorDepsAtStart = doorDeps.deps(ctx);
+      const listed = await doorDepsAtStart.engine.profiles();
+      if (!listed.ok) return { refused: listed.refused };
+      const named = listed.value.find(
+        (candidate) => candidate.containerId === input.profile.containerId,
+      );
+      if (named === undefined) {
+        return {
+          refused:
+            `no_such_profile: Code lists no workspace ${input.profile.containerId}. Pick a ` +
+            `profile from the list this panel read, or parametrize one in Code's generator.`,
+        };
+      }
+      const ledger: DrainProfile = {
+        profile: input.profile,
+        model: named.model,
+        thinking: named.thinking,
+        accounts: [...named.accounts],
+        resolved: named.resolved,
+      };
+
       const drainId = newId("drn");
       await insertDrain(store, {
         id: drainId,
         machineId: input.machineId,
         preset: input.preset,
-        session: input.session,
+        profile: ledger,
         knobs,
         concurrent: input.concurrent,
         target,
@@ -278,8 +313,8 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       */
       const row = await readDrain(store, drainId);
       if (row === null) return { refused: `the drain row for ${drainId} was not written` };
-      const deps = doorDeps.deps(ctx);
-      const plan = deps.plan(inForce.policy, operationId, input.session);
+      const deps = doorDepsAtStart;
+      const plan = deps.plan(inForce.policy, operationId, ledger);
       const request = drainInput(row);
       const live: { runId: string; jobId: string; launchedAt: number }[] = [];
       let refused = "";
@@ -313,8 +348,8 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         concurrent: input.concurrent,
         launched: live.length,
         deadline: deadlineAt,
-        account: accountName(input.session),
-        model: input.session.model,
+        account: accountName(ledger),
+        model: ledger.model,
         note: refused === "" ? note : `${note === "" ? "" : `${note}; `}only ${String(live.length)} of ${String(input.concurrent)} started: ${refused}`,
       };
     },

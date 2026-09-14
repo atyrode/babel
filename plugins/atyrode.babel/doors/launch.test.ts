@@ -128,16 +128,17 @@ function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
  * it is ever reached, which is how the refusal's position in the sequence is pinned.
  */
 class Code implements CodeEngine {
-  saved: { containerId: string; revision: number; model: string; thinking: string; lastMachineId: string }[] =
-    [
-      {
-        containerId: "ctr_workbench",
-        revision: 7,
-        model: "anthropic/claude-opus-4-1",
-        thinking: "high",
-        lastMachineId: MACHINE,
-      },
-    ];
+  saved: ProfileRow[] = [
+    {
+      containerId: "ctr_workbench",
+      revision: 7,
+      model: "anthropic/claude-opus-4-1",
+      thinking: "high",
+      lastMachineId: MACHINE,
+      accounts: [{ provider: "anthropic", identityKey: "victorballu", label: "" }],
+      resolved: true,
+    },
+  ];
   unavailable = "";
 
   async profiles(): Promise<EngineAnswer<readonly ProfileRow[]>> {
@@ -165,6 +166,26 @@ class Code implements CodeEngine {
     throw new Error("the material binds now: this fake has to post a session");
   }
 
+
+  /** What a Stop reaches for on a Code session; the launch tests never press one. */
+  cancelled: { containerId: string; jobId: string }[] = [];
+
+  async cancelSession(args: {
+    containerId: string;
+    jobId: string;
+  }): Promise<EngineAnswer<CodeJob>> {
+    this.cancelled.push(args);
+    return await Promise.resolve({
+      ok: true,
+      value: {
+        jobId: args.jobId,
+        machineId: MACHINE,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "cancelled",
+      },
+    });
+  }
   async readSession(): Promise<never> {
     throw new Error("a launch never reads a session back");
   }
@@ -345,6 +366,10 @@ test("the profiles door answers Code's saved list, and Code's silence as the sen
       model: "anthropic/claude-opus-4-1",
       thinking: "high",
       lastMachineId: MACHINE,
+      // The accounts are CODE'S, passed through unchanged: Babel has no broker and infers
+      // none, and `resolved` is what says whether Code could name them at all.
+      accounts: [{ provider: "anthropic", identityKey: "victorballu", label: "" }],
+      resolved: true,
     },
   ]);
 
@@ -584,4 +609,29 @@ test("a stop authorized at one job and aimed at another reaches nothing", async 
   expect(elsewhere["refused"]).toContain("m-other");
   expect(fleet.cancelled).toEqual([]);
   expect((await harness.store.run("run_live")).run).toMatchObject({ state: "running" });
+});
+
+test("stopping a Code session cancels it through Code, never through the hub's own jobs verb", async () => {
+  await insert(harness.db, "runs", {
+    id: "run_session", kind: OPERATIONS.explore, machine_id: MACHINE, job_id: "job_code_1",
+    container_id: "ctr_workbench", prepare_job_id: "job_code_1_material",
+    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+  });
+
+  const answer = await halt("run_session", {
+    operationId: OPERATIONS.explore,
+    jobId: "job_code_1",
+  });
+
+  expect(answer).toEqual({
+    runId: "run_session", jobId: "job_code_1", machineId: MACHINE, closure: "stopped",
+  });
+  /*
+    THE JOB IS `atyrode.omp`'S AND `ctx.jobs.cancel` IS BOUND TO THE CALLING PLUGIN'S ID, so
+    reaching for the hub's verb here would refuse every run of the lane that reaches a model.
+    The container on the row is what says which lane this is.
+  */
+  expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_code_1" }]);
+  expect(fleet.cancelled).toEqual([]);
+  expect((await harness.store.run("run_session")).run).toMatchObject({ state: "stopped" });
 });

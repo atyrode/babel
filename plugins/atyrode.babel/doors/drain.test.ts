@@ -15,7 +15,13 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, MATERIAL_INPUT_PENDING_CODE, OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
+import {
+  ACTIONS,
+  MATERIAL_INPUT_PENDING_CODE,
+  OPERATIONS,
+  PRESET_OPERATIONS,
+  type ProfileRow,
+} from "../contract.ts";
 import type {
   JobLaunch,
   JobRef,
@@ -35,29 +41,6 @@ import { drainDoors } from "./drain.ts";
 import { launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
 import { materialInput, type CodeEngine, type EngineAnswer } from "../server/engine/session.ts";
 
-/**
- * CODE, as a drain reaches it. `runSession` answers the real {@link materialInput} refusal,
- * because that is the one line that moves when Manifold's job-inputs primitive lands and a
- * fake sentence here would keep passing the day it does.
- */
-const CODE: CodeEngine = {
-  profiles: async () => await Promise.resolve({ ok: true, value: [] }),
-  runSession: async (request) => {
-    const material = materialInput(request.prepareJobId);
-    if ("refused" in material) {
-      return await Promise.resolve({
-        ok: false,
-        code: MATERIAL_INPUT_PENDING_CODE,
-        refused: material.refused,
-      } as EngineAnswer<never>);
-    }
-    throw new Error("the material binds now: this fake has to post a session");
-  },
-  readSession: async () => {
-    throw new Error("a drain never reads a session back");
-  },
-};
-
 const NOW = Date.UTC(2026, 8, 14, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
 const MACHINE = "m-dev-01";
@@ -71,16 +54,64 @@ const LIMITS = {
   outputBytes: 16_777_216,
 };
 
-/** The account a drain names, in the contract's own shape (#267). */
-const SESSION = {
+/** The Code profile a drain names, and what Code reports about it (#267, #279). */
+const PROFILE = { containerId: "ctr_workbench", expectedRevision: 7 };
+const LISTED: ProfileRow = {
+  containerId: "ctr_workbench",
+  revision: 7,
   model: "anthropic/claude-sonnet-4-5",
-  account: {
-    provider: "anthropic",
-    scope: "subscription",
-    credentialId: "41",
-    identityKey: "the-drain-account",
+  thinking: "high",
+  lastMachineId: "m-dev-01",
+  accounts: [{ provider: "anthropic", identityKey: "the-drain-account", label: "" }],
+  resolved: true,
+};
+/**
+ * CODE, as a drain reaches it. `runSession` answers the real {@link materialInput} refusal,
+ * because that is the one line that moves when Manifold's job-inputs primitive lands and a
+ * fake sentence here would keep passing the day it does. `listed` is what `drain.start` reads
+ * to build its ledger entry, and `cancelled` is what a stop reached for.
+ */
+const code: CodeEngine & { listed: ProfileRow; cancelled: string[]; cancelRefusal: string } = {
+  listed: LISTED,
+  cancelled: [],
+  cancelRefusal: "",
+  profiles: async () => await Promise.resolve({ ok: true, value: [code.listed] }),
+  runSession: async (request) => {
+    const material = materialInput(request.prepareJobId);
+    if ("refused" in material) {
+      return await Promise.resolve({
+        ok: false,
+        code: MATERIAL_INPUT_PENDING_CODE,
+        refused: material.refused,
+      } as EngineAnswer<never>);
+    }
+    throw new Error("the material binds now: this fake has to post a session");
+  },
+  cancelSession: async (args) => {
+    if (code.cancelRefusal !== "") {
+      return await Promise.resolve({
+        ok: false,
+        code: "engine_forbidden",
+        refused: code.cancelRefusal,
+      } as EngineAnswer<never>);
+    }
+    code.cancelled.push(args.jobId);
+    return await Promise.resolve({
+      ok: true,
+      value: {
+        jobId: args.jobId,
+        machineId: MACHINE,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "cancelled",
+      },
+    });
+  },
+  readSession: async () => {
+    throw new Error("a drain never reads a session back");
   },
 };
+
 
 const PLAN: RunPlan = { metered: { [OPERATIONS.explore]: true }, limits: LIMITS };
 
@@ -188,7 +219,7 @@ async function start(over: Record<string, unknown> = {}): Promise<Record<string,
   return await dispatch(ACTIONS.drainStart, {
     machineId: MACHINE,
     preset,
-    session: SESSION,
+    profile: PROFILE,
     concurrent: 2,
     reason: "the 7-day window resets at 13:00Z",
     target: { costMicros: 1_000_000 },
@@ -280,16 +311,22 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
     } catch (error) {
       return { refused: error instanceof Error ? error.message : String(error) };
     }
+    /*
+      THE RUN ROW A CODE SESSION LEAVES, `container_id` included: it is the column that says
+      which lane a job is in, and therefore which verb stops it. A fake that omitted it would
+      let the drain's stop reach for `ctx.jobs.cancel` on a job that is not Babel's.
+    */
     await store.db.run(
-      `INSERT INTO runs(id, kind, machine_id, job_id, recipe_id, profile, authority_kind,
-                        authority_id, preparation, started_at, records, payload)
-       VALUES (?, ?, ?, ?, '', '{}', 'operator', ?, '{}', ?, 0, ?)
+      `INSERT INTO runs(id, kind, machine_id, job_id, container_id, recipe_id, profile,
+                        authority_kind, authority_id, preparation, started_at, records, payload)
+       VALUES (?, ?, ?, ?, ?, '', '{}', 'operator', ?, '{}', ?, 0, ?)
        ON CONFLICT(id) DO NOTHING`,
       [
         identity.runId,
         operationId,
         input.machineId,
         identity.jobId,
+        operationId === PRESET_OPERATIONS["keep-going"] ? null : "ctr_workbench",
         identity.authorityId,
         new Date(store.now()).toISOString(),
         JSON.stringify({ closure: null, requestedAt: store.now() }),
@@ -304,6 +341,11 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
 beforeEach(async () => {
   harness = await openTestStore(NOW);
   fleet = new Fleet();
+  // The Code fake is one object across the file, so its record of what it was asked is reset
+  // here: a count that leaked between tests would pass for the wrong reason.
+  code.listed = LISTED;
+  code.cancelled.length = 0;
+  code.cancelRefusal = "";
   const { db, store } = harness;
   // An enabled policy with a lease that can cover a fan of four, as `setBudget` demands.
   await insert(db, "policies", {
@@ -337,7 +379,7 @@ beforeEach(async () => {
     coordinator: coordinated,
     launch: posting(store, () => fleet),
     jobs: fleet,
-    engine: CODE,
+    engine: code,
     plan: () => PLAN,
     now: () => store.now(),
   };
@@ -393,7 +435,7 @@ test("the roster is a start, a dry read and a stop, and none of them names a nod
 test("a start posts the whole fan, moves no policy number, and names the account it spends", async () => {
   const answer = await start({ concurrent: 3 });
   expect(answer["launched"]).toBe(3);
-  expect(answer["account"]).toBe("the-drain-account");
+  expect(answer["account"]).toBe("ctr_workbench: the-drain-account (as Code reported at start)");
   expect(answer["model"]).toBe("anthropic/claude-sonnet-4-5");
   const drainId = String(answer["drainId"]);
 
@@ -421,8 +463,7 @@ test("a start posts the whole fan, moves no policy number, and names the account
   const row = await readDrain(harness.store, drainId);
   expect(row?.state).toBe("running");
   expect(row?.live).toHaveLength(3);
-  expect(row?.jobsLaunched).toBe(3);
-  expect(row?.session.account.identityKey).toBe("the-drain-account");
+  expect(row?.profile.accounts[0]?.identityKey).toBe("the-drain-account");
 
   // EVERY DRAIN CARRIES A DEADLINE. This one named none, so it stops two hours out whatever it
   // has spent: a drain that could outlive the window it exists to spend is the failure this
@@ -449,14 +490,16 @@ test("a fan the standing daily ceiling would have refused is admitted: a drain c
   expect(JSON.parse(daily[0]?.payload ?? "{}")["dailyCost"]).toBe(2);
 });
 
-test("an api-key account is named by its credential rather than answered as a blank", async () => {
-  // #267: `SessionChoiceSchema` admits an empty identity key for an api-key credential, where the
-  // broker's own row IS the account. The panel printed `Draining  as drn_…`.
-  const answer = await start({
-    session: { ...SESSION, account: { ...SESSION.account, identityKey: "" } },
-  });
-  expect(answer["account"]).toBe("anthropic#41");
-  expect((await statusOf(String(answer["drainId"])))["account"]).toBe("anthropic#41");
+test("a profile Code reported no account for is named as that rather than as a blank", async () => {
+  // #267: the panel printed `Draining  as drn_…` when nothing could name the account. Code
+  // publishes no accounts on a profile at this pin, so the honest answer is which silence it
+  // is — and the drain says the container it is spending through.
+  code.listed = { ...LISTED, accounts: [], resolved: true };
+  const answer = await start({});
+  expect(answer["account"]).toBe("ctr_workbench (Code reported no account)");
+  expect((await statusOf(String(answer["drainId"])))["account"]).toBe(
+    "ctr_workbench (Code reported no account)",
+  );
 });
 
 test("a drain without a target is refused, and so is a second drain on the same machine", async () => {
@@ -530,10 +573,10 @@ test("the target stops the drain and it closes on the job it cancelled, ending w
   expect(report?.launched).toBe(0);
   expect(fleet.executed).toHaveLength(2);
 
-  // The in-flight job is cancelled at its own job node…
-  expect(fleet.cancelled).toEqual([
-    { kind: "job", machineId: MACHINE, operationId: OPERATIONS.explore, jobId: `job_${drainId}_1` },
-  ]);
+  // The in-flight job is cancelled THROUGH CODE, because it is a Code session: its job is
+  // `atyrode.omp`'s and `ctx.jobs.cancel` is bound to the calling plugin's id.
+  expect(code.cancelled).toEqual([`job_${drainId}_1`]);
+  expect(fleet.cancelled).toEqual([]);
   // …and the drain is CLOSING on it, not finished: a cancel is a request and a receipt is what
   // answers it, so what that job metered is still owed to this drain's total.
   expect(report?.state).toBe("closing");
@@ -591,7 +634,7 @@ test("a stop leaves nothing in flight, takes no claim to release, and relaunches
 
   const halted = await halt(drainId, "the operator stopped it");
   expect(halted["cancelled"]).toBe(2);
-  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([
+  expect(code.cancelled).toEqual([
     `job_${drainId}_0`,
     `job_${drainId}_1`,
   ]);
@@ -628,7 +671,7 @@ test("a stop the hub will not honour keeps the job, and its later receipt still 
     panel's final total — §11.5's "final totals from usage.inference" — was short by their spend.
   */
   const drainId = String((await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"]);
-  fleet.cancelRefusal = "jobs:cancel capability required at target";
+  code.cancelRefusal = "jobs:cancel capability required at target";
   await settleJob(`run_${drainId}_0`, { costMicros: 600_000 });
 
   const [report] = await drainTick(deps);
@@ -655,21 +698,21 @@ test("a stop the hub will not honour keeps the job, and its later receipt still 
 
 test("an operator's stop cancels the stragglers of a drain that already closed itself", async () => {
   const drainId = String((await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"]);
-  fleet.cancelRefusal = "jobs:cancel capability required at target";
+  code.cancelRefusal = "jobs:cancel capability required at target";
   await settleJob(`run_${drainId}_0`, { costMicros: 600_000 });
   await drainTick(deps);
   expect((await readDrain(harness.store, drainId))?.state).toBe("closing");
 
   // The stop door is the one caller that holds `jobs:cancel` at the operation, and a closing
   // drain is exactly the one whose jobs a tick could not stop. Why it ended does not change.
-  fleet.cancelRefusal = "";
+  code.cancelRefusal = "";
   const halted = await halt(drainId, "kill the stragglers");
   expect(halted["cancelled"]).toBe(1);
   expect(halted["state"]).toBe("closing");
   const row = await readDrain(harness.store, drainId);
   expect(row?.ending).toBe("target");
   expect(row?.reason).toMatch(/target of 500000/);
-  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_1`]);
+  expect(code.cancelled).toEqual([`job_${drainId}_1`]);
 });
 
 test("a stop folds the receipt that landed since the last tick instead of closing over it", async () => {
@@ -686,7 +729,7 @@ test("a stop folds the receipt that landed since the last tick instead of closin
   const halted = await halt(drainId, "the window is about to reset");
   expect(halted["state"]).toBe("closing");
   // The settled job is folded, not cancelled: only the one still running is asked to stop.
-  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_1`]);
+  expect(code.cancelled).toEqual([`job_${drainId}_1`]);
   const closing = await readDrain(harness.store, drainId);
   expect(closing?.spent.costMicros).toBe(600_000);
   expect(closing?.jobsSettled).toBe(1);
@@ -887,7 +930,7 @@ test("disabling the policy mid-drain ends it as an operator's act rather than as
   expect(report?.launched).toBe(0);
   // Its one job was cancelled, so it closes on that receipt and ends when it lands.
   expect(report?.state).toBe("closing");
-  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_0`]);
+  expect(code.cancelled).toEqual([`job_${drainId}_0`]);
   await settleJob(`run_${drainId}_0`);
   const [after] = await drainTick(deps);
   expect(after?.state).toBe("stopped");

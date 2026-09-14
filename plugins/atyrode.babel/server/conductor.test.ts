@@ -16,7 +16,12 @@ import {
   type MaterialIndex,
 } from "../contract.ts";
 import { DRAW_PENDING } from "../doors/launch.ts";
-import type { CodeEngine, EngineAnswer, SessionRead } from "./engine/session.ts";
+import type {
+  CodeEngine,
+  EngineAnswer,
+  SessionRead,
+  SessionUsage,
+} from "./engine/session.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
 import type { Coordinator, Fence } from "../store/coordinator.ts";
@@ -897,14 +902,24 @@ const NO_CODE: CodeEngine = {
   readSession: async () => {
     throw new Error("a run with no container must never be read through Code");
   },
+  cancelSession: async () => {
+    throw new Error("a run with no container must never be cancelled through Code");
+  },
 };
 
-/** One Code session as `readSession` answers for it: where the job is, and what it yielded. */
+/**
+ * One Code session as `readSession` answers for it: where the job is, and what it yielded.
+ *
+ * `session: null` is the answer for a job Code posted that never sealed a transcript — still
+ * running, cancelled, interrupted, or exited non-zero — and it is a SUCCESSFUL read, which is
+ * the distinction the whole reconcile turns on.
+ */
 function sessionRead(over: {
   readonly state: string;
+  readonly sealed?: boolean;
   readonly finalMessage?: string;
   readonly exitCode?: number;
-  readonly usage?: SessionRead["session"]["usage"];
+  readonly usage?: SessionUsage | null;
   readonly model?: string;
 }): SessionRead {
   return {
@@ -915,14 +930,20 @@ function sessionRead(over: {
       pluginId: "atyrode.omp",
       state: over.state,
     },
-    session: {
-      sessionId: "ses_1",
-      sessionPath: "/home/job/.omp/agent/sessions/ses_1.jsonl",
-      model: over.model ?? "anthropic/claude-opus-4-1",
-      finalMessage: over.finalMessage ?? "",
-      usage: over.usage ?? { input: 12_000, output: 900, cacheRead: 400, cacheWrite: 0, cost: 0.31 },
-      exitCode: over.exitCode ?? 0,
-    },
+    session:
+      over.sealed === false
+        ? null
+        : {
+            sessionId: "ses_1",
+            sessionPath: "/home/job/.omp/agent/sessions/ses_1.jsonl",
+            model: over.model ?? "anthropic/claude-opus-4-1",
+            finalMessage: over.finalMessage ?? "",
+            usage:
+              over.usage === undefined
+                ? { input: 12_000, output: 900, cacheRead: 400, cacheWrite: 0, cost: 0.31 }
+                : over.usage,
+            exitCode: over.exitCode ?? 0,
+          },
   };
 }
 
@@ -941,6 +962,8 @@ function codeAnswering(
       asked.push(args);
       return await Promise.resolve(answer());
     },
+    cancelSession: async () =>
+      await Promise.resolve(refusedByCode("engine_unavailable", "not asked here")),
   };
 }
 
@@ -2466,7 +2489,13 @@ test("a Code session still running leaves its run open and settles nothing", asy
   await seed(db);
   const store = openStore(db);
   const draws = new Draws(db);
-  const code = codeAnswering(() => ({ ok: true, value: sessionRead({ state: "running" }) }));
+  // A RUNNING JOB SEALS NO TRANSCRIPT, so Code answers the job and a null receipt. That is a
+  // successful read of a live run — it used to be `code_omp_result_unavailable`, which read
+  // as a fault and would have closed the run at the reaper's bound.
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({ state: "running", sealed: false }),
+  }));
   const { runId, claimId } = await sessionInFlight(db);
 
   const report = await conductor({
@@ -2488,6 +2517,49 @@ test("a Code session still running leaves its run open and settles nothing", asy
     await db.query(`SELECT finished_at FROM claims WHERE id = ?`, [claimId])
   )[0]!;
   expect(claim["finished_at"]).toBeNull();
+});
+
+test("a session Code cancelled closes as stopped with no receipt, and its claim is settled", async () => {
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const draws = new Draws(db);
+  // An operator pressed Stop: the job is terminal, Code sealed no transcript, and nothing was
+  // submitted. It used to be unreadable; now it is a read that says exactly that.
+  const code = codeAnswering(() => ({
+    ok: true,
+    value: sessionRead({ state: "cancelled", sealed: false }),
+  }));
+  const { runId, claimId } = await sessionInFlight(db);
+
+  const report = await conductor({
+    engine: code,
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: new Fleet(),
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  }).tick();
+
+  const run = (
+    await db.query(`SELECT closure, cost_usd, payload FROM runs WHERE id = ?`, [runId])
+  )[0]!;
+  // STOPPED, NOT FAILED. The job reported its own ending and the receipt records it; a panel
+  // that called every unreadable run a failure is how an operator's Stop looks like a fault.
+  expect(run["closure"]).toBe("stopped");
+  const receipt = JSON.parse(String(run["payload"])) as Record<string, unknown>;
+  expect(String(receipt["reason"])).toStartWith("empty:");
+  expect(String(receipt["reason"])).toContain("cancelled");
+  expect(receipt["model"]).toBeUndefined();
+  expect(run["cost_usd"]).toBe(0);
+  // …and the claim is SKIPPED rather than failed: nobody answered, so there is no paid
+  // refusal here and the park heuristic must not read a streak of operator stops as a lane
+  // that is broken.
+  expect(report.settled.map((entry: SettledClaim) => [entry.claimId, entry.outcome])).toEqual([
+    [claimId, "skipped"],
+  ]);
 });
 
 test("a read Code refuses is recorded on the run, retried once, and then closed rather than asked for ever", async () => {

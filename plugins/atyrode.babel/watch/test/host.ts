@@ -191,8 +191,20 @@ export const PROFILES: readonly ProfileRow[] = [
     model: "anthropic/claude-opus-4-1",
     thinking: "high",
     lastMachineId: "m-dev-01",
+    accounts: [{ provider: "anthropic", identityKey: "victorballu@gmail.com", label: "" }],
+    resolved: true,
   },
-  { containerId: "ctr_spare", revision: 2, model: "", thinking: "", lastMachineId: "" },
+  // The second reports no selection Code can review and therefore no account: a profile to
+  // open in the generator, said as that rather than shown as a blank.
+  {
+    containerId: "ctr_spare",
+    revision: 2,
+    model: "",
+    thinking: "",
+    lastMachineId: "",
+    accounts: [],
+    resolved: false,
+  },
 ];
 
 

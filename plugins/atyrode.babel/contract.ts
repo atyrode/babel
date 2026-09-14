@@ -573,15 +573,40 @@ export type CodeProfile = z.infer<typeof CodeProfileSchema>;
  * operator acts on differently, and each is `unavailable` with the engine's own word in it
  * rather than an empty list that reads as "you have saved none".
  */
+/**
+ * ONE ACCOUNT A PROFILE WOULD SPEND, as Code reports it.
+ *
+ * It is CODE'S FACT and not Babel's: the account belongs to the profile, Code resolves it and
+ * omp holds it, and Babel has no broker to ask. Babel records what Code said, labelled as
+ * that, because "which window did that fan burn" has to be answerable afterwards (#267) and
+ * the only honest source for it is the plugin that chose it.
+ */
+export const ProfileAccountSchema = z.strictObject({
+  provider: z.string(),
+  /** The OAuth identity; empty for an api-key credential, which has none. */
+  identityKey: z.string(),
+  /** What Code shows a reader for it, when it shows anything. */
+  label: z.string().default(""),
+});
+export type ProfileAccount = z.infer<typeof ProfileAccountSchema>;
+
 export const ProfileRowSchema = z.strictObject({
   containerId: z.string(),
   revision: z.number().int(),
-  /** The model leading the default role and the depth it thinks at; null when the saved
+  /** The model leading the default role and the depth it thinks at; empty when the saved
    *  selection no longer reviews against its catalog, which is a profile to open in Code. */
   model: z.string(),
   thinking: z.string(),
   /** Where Code last posted a session for this workspace; empty when it never has. */
   lastMachineId: z.string(),
+  /**
+   * The accounts Code says this profile would spend. EMPTY IS NOT "none": a Code too old to
+   * report them answers nothing here, and the panel says which of the two it is rather than
+   * printing a blank where the answer to "whose window" belongs.
+   */
+  accounts: z.array(ProfileAccountSchema).max(64).default([]),
+  /** Whether Code could resolve the profile's selection against its catalog at all. */
+  resolved: z.boolean().default(false),
 });
 export type ProfileRow = z.infer<typeof ProfileRowSchema>;
 
@@ -593,6 +618,26 @@ export const ProfilesResultSchema = z.strictObject({
   /** Empty when Code answered; otherwise Babel's engine refusal, verbatim. */
   unavailable: z.string(),
 });
+
+/**
+ * WHAT A DRAIN RECORDS ABOUT WHAT IT IS SPENDING (#267, #279).
+ *
+ * A drain names a Code PROFILE, and everything else here is Babel's own ledger entry of what
+ * Code said that profile would run as, COPIED ONCE at the start and never re-read. Copied,
+ * because a controller that asked again between the first job and the ninetieth would report
+ * whatever the profile had become rather than what the operator started; a ledger entry,
+ * because Babel chooses none of it and must not present it as its own decision. The panel
+ * says so in as many words.
+ */
+export const DrainProfileSchema = z.strictObject({
+  profile: CodeProfileSchema,
+  model: z.string(),
+  thinking: z.string(),
+  accounts: z.array(ProfileAccountSchema).max(64),
+  /** Whether Code had resolved the selection when the drain was started. */
+  resolved: z.boolean(),
+});
+export type DrainProfile = z.infer<typeof DrainProfileSchema>;
 
 // ------------------------------------------------------------------- the material a run reads
 
@@ -1271,7 +1316,14 @@ export type DrainSpend = z.infer<typeof DrainSpendSchema>;
 export const DrainStartInputSchema = z.strictObject({
   machineId: bounded(120),
   preset: DrainPresetSchema,
-  session: SessionChoiceSchema,
+  /**
+   * THE CODE PROFILE EVERY JOB OF THIS FAN IS POSTED ON (#279), named before the button.
+   *
+   * It replaces the typed model/thinking/account a drain used to carry: Babel chooses none of
+   * the three, and a field for them was Babel deciding what a run is. What the drain RECORDS
+   * about them is copied from Code's own list at the start ({@link DrainProfileSchema}).
+   */
+  profile: CodeProfileSchema,
   concurrent: z.number().int().min(1).max(DRAIN_CONCURRENT_MAX),
   target: DrainTargetSchema,
   reason: z.string().trim().min(1).max(2000),
@@ -1284,16 +1336,7 @@ export const DrainStartInputSchema = z.strictObject({
   recipes: z.array(bounded(80)).max(16).default([]),
   /** Whether a preparation may hold Babel's own transcripts (#262); absent unless asked. */
   agentSessions: z.boolean().optional(),
-  /**
-   * THE CODE PROFILE EVERY JOB OF THIS FAN IS POSTED ON (#279), for a preset that reaches a
-   * model. It is named ONCE, at the start, and every launch carries the same one: a controller
-   * that re-read a default between the first job and the ninetieth would post the ninetieth
-   * against a profile the operator never saw. `keep-going` reaches no model and names none.
-   */
-  profile: CodeProfileSchema.optional(),
 });
-export type DrainStartInput = z.infer<typeof DrainStartInputSchema>;
-
 /**
  * What the `drain.start` door takes: the request above plus the OPERATION NODE it is authorized
  * at, for the reason `LaunchRequestSchema` carries one — `machines:run` is granted at a node and
