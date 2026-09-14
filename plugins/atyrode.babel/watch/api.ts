@@ -370,7 +370,7 @@ export const OVERLAY_FIELDS: Record<string, { readonly label: string; readonly m
 
 // ------------------------------------------------------------------ where a run is (#261)
 
-/** What the conductor folded out of a running job's journal, as the row carries it. */
+/** What the conductor folded out of a running job's replay ring, as the row carries it. */
 export type RunProgress = z.infer<typeof RunProgressSchema>;
 
 /**

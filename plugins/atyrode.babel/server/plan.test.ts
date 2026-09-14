@@ -12,7 +12,7 @@
 
 import { expect, test } from "bun:test";
 import { JobLimitsSchema, PluginManifestSchema, type PluginManifest } from "@manifold/protocol";
-import type { GuestCtx, GuestHookJobs } from "@manifold/plugin-kit/server";
+import type { GuestCtx, GuestHookJobs, GuestJobs } from "@manifold/plugin-kit/server";
 import { OPERATIONS } from "../contract.ts";
 import { DEFAULT_POLICY, PolicySchema } from "../store/coordinator.ts";
 import type { JobLaunch } from "./conductor.ts";
@@ -145,6 +145,33 @@ test("the ceiling a bound is judged against is the manifest's, and it never ride
   expect(JobLimitsSchema.safeParse(plan.limits).success).toBe(true);
 });
 
+test("the plan says which operations the owner may meter, out of the manifest's own bindings", () => {
+  const bound = manifestWith({
+    [OPERATIONS.scan]: operation(["bun"], 600_000),
+    [OPERATIONS.explore]: operation(["bun", "code"], 3_600_000),
+    [OPERATIONS.evaluate]: {
+      ...operation(["bun", "code"], 3_600_000),
+      services: [{ serviceId: "atyrode.code.inference", revision: "1", operationIds: ["messages"] }],
+    },
+  });
+  expect(runPlan({ manifest: bound, policy: POLICY }).metered).toEqual({
+    [OPERATIONS.scan]: false,
+    [OPERATIONS.explore]: false,
+    [OPERATIONS.evaluate]: true,
+  });
+
+  // What this repository actually ships: the review and exploration lanes bind no service at
+  // all, so nothing can meter them and a long silence at the model is never called a stall
+  // (#256). Whether the owner meters a binding that IS there is its installed policy's to say,
+  // which no server half can read — so a call the hub already counted is the fold's other proof.
+  const shipped = runPlan({
+    manifest: PluginManifestSchema.parse(manifestJson),
+    policy: POLICY,
+  }).metered;
+  expect(shipped[OPERATIONS.explore]).toBe(false);
+  expect(shipped[OPERATIONS.evaluate]).toBe(false);
+  expect(shipped[OPERATIONS.archive]).toBe(true);
+});
 test("an operation that drives Code without requiring it is a manifest this refuses to run", () => {
   const wrong = manifestWith({
     [OPERATIONS.scan]: operation(["bun"], 600_000),
@@ -254,6 +281,38 @@ test("every verb the boundary serves passes straight through, arrays and all", a
   expect(listed).toMatchObject([
     { scheduleId: "atyrode.babel.conductor", revision: "pol_1", machineId: "m", intervalMs: 900_000 },
   ]);
+});
+
+test("only a dispatch's slice carries follow, and it hands back the snapshot and its close", async () => {
+  const host = {} as unknown as GuestHookJobs;
+  const node = { kind: "job" as const, machineId: "m", operationId: OPERATIONS.evaluate, jobId: "j1" };
+  const snapshot = { events: [], firstSeq: null, unavailable: null };
+  const asked: unknown[] = [];
+  let closes = 0;
+  const served = async (followed: unknown): Promise<unknown> => {
+    asked.push(followed);
+    return await Promise.resolve({
+      snapshot,
+      close: async () => {
+        closes += 1;
+        await Promise.resolve();
+      },
+    });
+  };
+
+  // A HOOK'S. `GuestHookJobs` has no live subscription to pass, so the slice has no member —
+  // not a member that refuses — and the loop reads that as "this cycle cannot see a running
+  // job" and folds nothing.
+  expect(jobsSlice(host).follow).toBeUndefined();
+
+  // A DISPATCH'S. What the hub answered is handed back whole, and closing the subscription is
+  // the caller's: the fold takes the snapshot and closes in the same turn.
+  const dispatch = jobsSlice(host, served as unknown as GuestJobs["follow"]);
+  const read = await dispatch.follow?.(node, () => {});
+  expect(read?.snapshot).toBe(snapshot);
+  await read?.close();
+  expect(asked).toEqual([node]);
+  expect(closes).toBe(1);
 });
 
 test("a hook served no job authority refuses every verb with the reason it has none", () => {

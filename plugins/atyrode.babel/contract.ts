@@ -564,12 +564,13 @@ export const STAGE_MESSAGE_MAX = 256;
 
 /**
  * WHAT A RUNNING JOB IS DOING AND WHAT IT HAS SPENT, as the conductor folds it out of the job's
- * journal each cycle: the newest `job_progress` for the stage and every `inference_call` since
- * the last fold for the spend (manifold#554).
+ * replay ring each cycle: the newest `job_progress` for the stage and every `inference_call`
+ * since the last fold for the spend (manifold#554).
  *
- * `stalled` is the one judgement in it: a run that said `at the model` and has had no metered
- * call for ninety seconds. It is a flag on a row and never a closure — nothing here observed a
- * dead process — and the next call clears it.
+ * `stalled` is the one judgement in it: a run the hub METERS that said `at the model` and has
+ * had no metered call for ninety seconds. A run nothing meters is never judged — where no call
+ * is ever counted, that silence is the ordinary state and not a symptom. It is a flag on a row
+ * and never a closure — nothing here observed a dead process — and the next call clears it.
  */
 export const RunProgressSchema = z.strictObject({
   stage: z.string(),
@@ -605,6 +606,11 @@ export const RunRowSchema = z.strictObject({
   lastWord: z.string(),
   /** What the run has spent, from the hub's own meter when it has one; null before it has. */
   tokens: z.number().int().nullable(),
+  /**
+   * How many calls the hub metered, kept with the receipt when the run settled; null for a run
+   * nothing metered — which is every run of the local lane, not a run that made no call.
+   */
+  calls: z.number().int().nullable(),
   /** Where it is and what it has spent so far; null for a run nothing is folding. */
   progress: RunProgressSchema.nullable(),
 });

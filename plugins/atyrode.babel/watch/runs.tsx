@@ -165,6 +165,7 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
             <th>Ended</th>
             <th className="plugin-atyrode_babel_watch__numeric">Took</th>
             <th className="plugin-atyrode_babel_watch__numeric">Records</th>
+            <th className="plugin-atyrode_babel_watch__numeric">Calls</th>
             <th className="plugin-atyrode_babel_watch__numeric">Tokens</th>
             <th className="plugin-atyrode_babel_watch__numeric">Spend</th>
             <th>Closed</th>
@@ -192,6 +193,11 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
                 </td>
                 <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
                   {figure(run.records)}
+                </td>
+                {/* The meter's own count, kept with the receipt; a dash is a run nothing
+                    metered rather than a run that made no call. */}
+                <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
+                  {run.calls === null ? "—" : figure(run.calls)}
                 </td>
                 <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
                   {run.tokens === null ? "—" : figure(run.tokens)}

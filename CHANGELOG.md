@@ -528,6 +528,39 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   reports `gaps.batch === 1` and names the reason, adds up over a day and starts
   again at the boundary (#265, post-mortem finding F16/F11/G9).
 
+- **A run says where it is and what it has spent while it is still running, and
+  its receipt keeps both.** Between `started` and a terminal state a Manifold
+  job carried only the hub's own facts, which say nothing about the work: on
+  2026-09-13 a run printed `preparing N/M` and then nothing for the rest of its
+  life, and seventy-five minutes passed with no engine on the machine and
+  nothing anywhere saying so, while the tokens every receipt already held were
+  never read (`docs/postmortem-2026-09-13-drain.md`, F12/F19/O2). The machine
+  half now reports three stages — `preparing` with a fraction where its loop
+  counts, `at the model` from the instant the prompt is written, `submitting` —
+  on the private owner channel manifold#552 gives every job, and the conductor
+  folds them with the owner's metered `inference_call`s into one row per
+  in-flight run: the stage and its own clock, the calls, the input, output and
+  cache tokens, the spend and the model that answered last. It is read through
+  `follow`'s snapshot, taken and closed in the same turn, because the hub
+  refuses a running job's journal (`job_unfinished`) and keeps that snapshot's
+  ring for every job whether or not anyone watches; a cycle a settlement woke is
+  served no `follow` and says nothing rather than guessing. Watch shows the row,
+  says how many runs are at the model, and marks a metered run that has had no
+  call for ninety seconds `stalled` — never an unmetered one, where that silence
+  is the ordinary state and not a symptom. At settle the owner's meter fills the
+  run's tokens and cost in preference to the engine's own account of itself, and
+  the whole of `usage.inference` is kept beside the receipt, so the calls and
+  the cache survive the in-flight row being dropped. Proof: 17 new tests, among
+  them every stage parsed against the pinned `WorkerProgressSchema` and a frame
+  the owner would refuse never written, a real explore run reporting the three
+  stages in order, a fold over a fake ring that reads two calls, 12,400 input
+  tokens and the model that answered last and closes what it opened, a settle
+  that keeps the meter's three calls and 21,500 tokens with the receipt, 89
+  seconds being a slow turn where 91 seconds is a stall, ten minutes of an
+  unmetered run at the model being neither, a settlement-woken cycle folding
+  nothing and saying nothing, and a job that has said nothing having no row to
+  read (#261, post-mortem finding F12/F19/G5).
+
 ## [0.2.6] - 2026-09-12
 
 ### Added

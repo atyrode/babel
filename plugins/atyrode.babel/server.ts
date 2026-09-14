@@ -182,6 +182,14 @@ async function cycle(jobs: JobsSlice, machines: MachinesSlice): Promise<void> {
  * The doors a cycle follows. They are the two an operator watches and the one that starts work
  * — never every read: `feed`, `record` and `thread` are opened dozens of times while a page is
  * being read, and a cycle behind each of them would turn a reader into a scheduler.
+ *
+ * A DISPATCH IS ALSO THE ONLY CYCLE THAT CAN SEE A RUNNING JOB, which is why these three
+ * matter more than they look. `follow` is the one verb `GuestHookJobs` omits — "a live
+ * subscription belongs to a dispatch, not to a hook" (`plugin-kit/src/server.ts`) — and it is
+ * the only read the hub serves for a job that has not finished: `journal` refuses that job
+ * `job_unfinished`. So the slice a door's cycle is given carries it and folds where each
+ * in-flight run is; the slice a settlement's hook is given does not, and that cycle ingests
+ * what ended and says nothing about what has not (#261).
  */
 const WAKES: Record<string, true> = {
   [ACTIONS.pulse]: true,
@@ -208,7 +216,7 @@ const doors = babelDoors(
   {
     coordinator: coordinated,
     cookbook: COOKBOOK,
-    jobs: (ctx) => jobsSlice(ctx.jobs),
+    jobs: (ctx) => jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
     machines: (ctx) => machinesSlice(ctx.machines),
     plan: planFor,
     cycle: loop,
@@ -240,7 +248,10 @@ for (const [name, handler] of Object.entries(doors.handlers)) {
       if (wakes && at - woke >= WAKE_FLOOR_MS) {
         woke = at;
         try {
-          await cycle(jobsSlice(ctx.jobs), machinesSlice(ctx.machines));
+          await cycle(
+            jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
+            machinesSlice(ctx.machines),
+          );
         } catch (error) {
           console.warn(`${BABEL_PLUGIN_ID}: the cycle after ${name} failed: ${message(error)}`);
         }

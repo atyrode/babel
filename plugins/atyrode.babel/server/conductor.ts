@@ -130,32 +130,41 @@ export interface InferenceUsage {
 }
 
 /**
- * ONE PAGE OF A JOB'S JOURNAL, restated the same way.
+ * WHAT A RUNNING JOB'S REPLAY RING HOLDS, restated the same way.
  *
- * The journal is the DURABLE half of the follow stream and it retains lifecycle frames only, so
- * a reader sees holes in `seq` where byte-channel frames passed. Two of those frames are what
- * this loop reads — `job_progress` (manifold#552) and `inference_call` (#554) — and every other
- * one is a `type` it steps over, which is why the event is typed as its discriminant and parsed
- * by a schema at the fold rather than asserted into a shape here.
+ * `follow` is the only read the hub serves for a job that has NOT finished — `journal` refuses
+ * one `job_unfinished`, because "watching one is what `follow` is for" — and what it answers
+ * with is a snapshot of the ring the hub retains per job (`JobFollowSnapshotSchema`;
+ * `packages/server/src/job-service.ts` `follow`). That ring is kept for every running job
+ * whether or not anybody is watching (`retainJobEvent`), so a fold that opens a subscription,
+ * takes the snapshot and closes it in the same turn sees everything a subscriber would have
+ * been sent, and holds no stream between cycles.
+ *
+ * Unlike the journal's, this sequence is CONTIGUOUS: the ring carries byte frames too, so a
+ * hole below `firstSeq` is retention that dropped frames rather than the journal's own
+ * contract. Two of them are what this loop reads — `job_progress` (manifold#552) and
+ * `inference_call` (#554) — and every other one is a `type` it steps over, which is why the
+ * event is typed as its discriminant and parsed by a schema at the fold rather than asserted
+ * into a shape here. No frame carries a clock of the hub's: the only instant in one is the
+ * owner's, inside a `job_progress` body.
  */
-export interface JournalEntry {
+export interface FollowEvent {
   readonly seq: number;
-  /** The hub's clock when the event was journaled, in milliseconds. */
-  readonly at: number;
-  /**
-   * The frame itself. Its `type` is all this slice promises, because the set of lifecycle
-   * frames is the hub's to grow; the fold reads the two it knows through a schema and steps
-   * over everything else by its discriminant.
-   */
   readonly event: { readonly type: string } & Readonly<Record<string, unknown>>;
 }
 
-export interface JournalPage {
-  readonly events: readonly JournalEntry[];
-  /** The oldest sequence still retained for this job, or null once nothing is. */
+export interface FollowSnapshot {
+  readonly events: readonly FollowEvent[];
+  /** The oldest sequence still in the ring, or null while it holds nothing. */
   readonly firstSeq: number | null;
-  /** The `after` that continues this page, or null when the caller reached the end. */
-  readonly nextAfter: number | null;
+  /** What the hub says it cannot replay: a trimmed prefix, or a ring it threw away whole. */
+  readonly unavailable: { readonly fromSeq: number; readonly toSeq: number } | null;
+}
+
+/** One look at a running job: the snapshot, and the subscription to close in the same turn. */
+export interface FollowRead {
+  readonly snapshot: FollowSnapshot;
+  close(): Awaitable<void>;
 }
 
 /** What `describe` answers, narrowed to the four facts that decide where a job may run. */
@@ -217,9 +226,12 @@ export interface ScheduleRow extends ScheduleTiming {
  * fake. Everything returns `Awaitable` because in-realm the engine answers synchronously and
  * across the isolate boundary it answers with a promise (ADR 0016's one contract, both ends).
  *
- * `journal` is a PAGE, asked once a cycle per running job, and never `follow`: a subscription
- * per job would make the loop hold one live stream per in-flight run for the length of it, and
- * a plugin's server half has no clock to close them against (#261).
+ * `follow` IS THE ONE OPTIONAL MEMBER, and `journal` is not here at all. A running job's
+ * journal cannot be read — the hub refuses it `job_unfinished` — so the only way to learn where
+ * an in-flight run is is `follow`'s snapshot, taken and closed in one turn. It is a DISPATCH's
+ * verb alone (`GuestHookJobs` is every job verb except the live subscription), so the slice a
+ * settlement's hook is served carries none, and a cycle that hook woke folds nothing rather
+ * than pretending to (#261).
  */
 export interface JobsSlice {
   describe(args: { machineId: string; pluginId: string }): Awaitable<MachineReadiness>;
@@ -235,11 +247,12 @@ export interface JobsSlice {
     offset: number;
     maxBytes: number;
   }): Awaitable<{ data: string; eof: boolean }>;
-  journal(args: {
-    node: JobRef;
-    after?: number | undefined;
-    limit?: number | undefined;
-  }): Awaitable<JournalPage>;
+  /**
+   * A running job's replay ring, opened for its snapshot and closed in the same turn; absent on
+   * a hook's slice. `receive` is never called: what the hub sends after the snapshot is in the
+   * ring for the next cycle, and this half holds no stream between cycles.
+   */
+  follow?: (node: JobRef, receive: () => void) => Awaitable<FollowRead>;
   schedule(args: JobLaunch & ScheduleTiming): Awaitable<unknown>;
   schedules(): Awaitable<readonly ScheduleRow[]>;
   disableSchedule(args: { scheduleId: string; revision: string }): Awaitable<unknown>;
@@ -322,6 +335,20 @@ export interface RunPlan {
   };
   /** The recipe a role performs. A role with none is never dispatched, and says so. */
   readonly recipes: Readonly<Record<string, Recipe>>;
+  /**
+   * WHETHER A RUN OF THIS OPERATION IS ONE THE OWNER METERS, by operation id.
+   *
+   * It is what a stall may be judged of (`foldRun`), and it is derived from the manifest's own
+   * service bindings: the owner attaches `usage.inference` to a job only when its operation
+   * binds a service and the policy it installed meters one of the bound operations
+   * (`agent/src/job-owner.ts` `prepareServiceProxies`). The second half of that is the
+   * OPERATOR's, in a policy no server half can read, so `true` here is "the hub may meter this"
+   * and never "the hub is metering this" — which is why the fold also accepts a call it has
+   * already counted as proof. An operation that binds nothing can never be metered, and that is
+   * the half worth knowing: until #256 binds the inference service, every review and every
+   * exploration reaches the model through the engine's own credential and is never judged.
+   */
+  readonly metered: Readonly<Record<string, boolean>>;
   readonly requireContainment: boolean;
   readonly limits: JobLimits;
 }
@@ -428,13 +455,17 @@ export interface CycleTally {
 }
 
 /**
- * WHAT IS IN FLIGHT AND WHERE IT IS, counted once a cycle from the journals the loop just read.
+ * WHAT IS IN FLIGHT AND WHERE IT IS, counted once a cycle from what the loop could read.
  *
  * Three numbers, because three is what the 2026-09-13 drain needed and did not have: how many
  * jobs are running, how many of them have reached the model, and how many said they had and
  * then went quiet. `running` and `atModel` being far apart for a whole cycle is the shape of
  * that day — twenty-six draws, every one of them still reading the corpus, no engine anywhere
  * (F12, O2) — and `stalled` is the shape of the other half of it.
+ *
+ * `atModel` and `stalled` are what the cycle just folded, or — for a cycle woken by a
+ * settlement, which is served no `follow` — the rows exactly as the last dispatch-woken cycle
+ * left them. Neither is ever a number about a run this half has not read.
  */
 export interface RunsTally {
   readonly running: number;
@@ -460,7 +491,7 @@ export interface TickReport {
   readonly parked: Park | null;
   /** The reasons this cycle did not spend, for the tick and cumulatively for the UTC day. */
   readonly pulse: { readonly tick: CycleTally; readonly today: CycleTally };
-  /** Where this cycle's in-flight jobs are, from the journal pages it read. */
+  /** Where this cycle's in-flight jobs are, from the replay rings it read. */
   readonly runs: RunsTally;
   /** Jobs still in flight when the cycle ended. */
   readonly pending: number;
@@ -511,17 +542,17 @@ const UNREPORTED_CYCLES = 2;
  * idle bound, so the flag appears while an operator can still act on it and never on a run that
  * is merely thinking hard. It is a flag on a row and never a closure: nothing here observed a
  * dead process, and the next metered call clears it.
+ *
+ * IT IS SAID ONLY OF A RUN THE HUB METERS. Where nothing is metered, "nothing metered for over
+ * ninety seconds" is true of every run that ever reached a model and says nothing at all; see
+ * `foldRun`.
  */
 const STALLED_AFTER_MS = 90_000;
-/** How many journal pages one running job may cost a cycle; the rest waits for the next. */
-const JOURNAL_PAGES_PER_RUN = 4;
-/** `MAX_JOB_JOURNAL_EVENTS`: what one page of the hub's journal holds. */
-const JOURNAL_PAGE_EVENTS = 128;
 
 /**
  * The two lifecycle frames the loop reads, parsed rather than asserted — they arrive from the
- * hub's journal, which grows frames this build has never heard of, and a fold that trusted a
- * shape would write a NaN into a spend column the day one changed.
+ * job's replay ring, which grows frames this build has never heard of, and a fold that trusted
+ * a shape would write a NaN into a spend column the day one changed.
  */
 const ProgressFrameSchema = z.object({
   type: z.literal("job_progress"),
@@ -937,6 +968,20 @@ function runStatement(
     // session. They answer the same question from two sides and the hub's own count is the one
     // a spend is reconciled against (#261) — a run in the local lane has no meter and keeps the
     // receipt's numbers, which is the only reason both are read here.
+    //
+    // A METERED RUN THAT SPENT NOTHING SETTLES AT ZERO, and that is the meter's word rather
+    // than a hole: the owner attaches the block the moment a metered binding exists
+    // (`agent/src/job-owner.ts` `prepareServiceProxies`), so a job whose engine reached a model
+    // through some other credential records 0/0 here. What the hub counted against ITS
+    // credential is the number a spend is reconciled against; the receipt still says what the
+    // engine thinks it did.
+    //
+    // WHAT `tokens` MEANS IS THEREFORE THE LANE'S. Metered: the prompt and the answer the owner
+    // counted, `inputTokens + outputTokens`, with cache reads excluded because they are priced
+    // apart and summing them would overstate the turn. Local: the engine's own `total` for its
+    // session, whatever it counted into that. The two are not comparable to the token, and the
+    // block below is what lets a reader tell which one a row is — a row with `inference` is the
+    // meter's, one without is the engine's.
     cost_usd:
       target.inference === null || target.inference === undefined
         ? (receipt?.costUsd ?? null)
@@ -946,7 +991,18 @@ function runStatement(
         ? (receipt?.tokens ?? null)
         : target.inference.inputTokens + target.inference.outputTokens,
     records: produced,
-    payload: JSON.stringify(receipt ?? { closure, reason: target.closure }),
+    // THE METER OUTLIVES THE FOLD. `run_progress` is dropped the moment a run settles, and with
+    // it went the only record of how many calls were made and what the cache carried: two
+    // columns cannot hold five numbers, and `usage.inference` is the hub's own account of the
+    // whole run. So it is kept beside the machine's receipt, under a name of its own — the
+    // receipt stays the run's word about itself, `inference` is the hub's word about it, and
+    // neither is written into the other's fields. Which models answered is the receipt's
+    // `models`: the meter's frames name one per call and `JobInferenceUsageSchema` keeps none.
+    payload: JSON.stringify(
+      target.inference === null || target.inference === undefined
+        ? (receipt ?? { closure, reason: target.closure })
+        : { ...(receipt ?? { closure, reason: target.closure }), inference: target.inference },
+    ),
   };
   const columns = RUN_COLUMNS.filter((column) => values[column] !== undefined);
   const updates = columns.filter((column) => column !== "id").map((c) => `${c} = excluded.${c}`);
@@ -1582,16 +1638,28 @@ export function conductor(deps: ConductorDeps): Conductor {
   /**
    * WHAT ONE RUNNING JOB HAS BEEN DOING SINCE THE LAST CYCLE, folded into its `run_progress` row.
    *
-   * The journal is read from the sequence this run's row last folded, so a cycle pays for what
-   * it has not seen and nothing more. Two frames matter and every other one is stepped over:
-   * the newest `job_progress` is where the job says it is, and every `inference_call` since the
-   * last fold is added to the running spend.
+   * THE READ IS `follow`, TAKEN AS A SNAPSHOT AND CLOSED IN THE SAME TURN. A running job's
+   * journal cannot be read at all — the hub refuses it `job_unfinished`, because watching a
+   * live job is what `follow` is for — and the snapshot `follow` answers with is the replay
+   * ring the hub retains for every job whether or not anyone is watching. So this holds no live
+   * stream per in-flight run, which was the whole objection to `follow`: what it opens, it
+   * closes before it writes a row.
    *
-   * THE SPEND HERE IS A RUNNING BEST EFFORT, not the account. The journal keeps at most
-   * `MAX_JOB_JOURNAL_EVENTS` per job and drops its oldest, so a job that outran the loop by
-   * hundreds of calls has a prefix nobody folded — which the note says. `usage.inference` at
-   * settle is the meter's own total and overwrites this, so the number an operator reads while
-   * a drain runs is honest about the direction and the receipt is honest about the amount.
+   * A CYCLE A SETTLEMENT WOKE FOLDS NOTHING, because a hook is served no `follow`. It leaves
+   * the row as the last dispatch-woken cycle wrote it, reports that row unchanged, and says
+   * nothing: a stage nobody read is not a stage that moved.
+   *
+   * The ring is read from the sequence this row last folded, so a cycle counts what it has not
+   * seen and nothing more. Two frames matter and every other one is stepped over: the newest
+   * `job_progress` is where the job says it is, and every `inference_call` above that sequence
+   * is added to the running spend.
+   *
+   * THE SPEND HERE IS A RUNNING BEST EFFORT, not the account. The ring holds at most
+   * `MAX_JOB_FOLLOW_EVENTS` frames of EVERY kind, byte frames included, so a job that outran
+   * the loop has a prefix nobody folded — which the note names once, in the hub's own terms.
+   * `usage.inference` at settle is the meter's own total and overwrites this, so the number an
+   * operator reads while a drain runs is honest about the direction and the receipt is honest
+   * about the amount.
    */
   async function foldRun(
     at: number,
@@ -1599,13 +1667,20 @@ export function conductor(deps: ConductorDeps): Conductor {
     notes: string[],
   ): Promise<{ stage: string; stalled: boolean }> {
     const held = (
-      await store.db.query<RunProgressRow>(
+      await store.db.query<RunProgressRow & { stalled: number | bigint }>(
         `SELECT stage, message, fraction, since, calls, input_tokens, output_tokens, cache_tokens,
-                cost_usd, last_model, last_call_at, seq
+                cost_usd, last_model, last_call_at, seq, stalled
            FROM run_progress WHERE run_id = ?`,
         [run.id],
       )
     )[0];
+    /** The row as it stands: what a cycle that cannot read this job reports, unchanged. */
+    const standing = { stage: held?.stage ?? "", stalled: Number(held?.stalled ?? 0) === 1 };
+    // Bound, because the verb is read off the slice before it is called: the kit's slice and
+    // the host's are objects of closures, a fake's is a class whose method wants its receiver,
+    // and the loop's business is which of them HAS the verb rather than how it was written.
+    const watch = jobs.follow?.bind(jobs);
+    if (watch === undefined) return standing;
     const folded: RunProgressRow = {
       stage: held?.stage ?? "",
       message: held?.message ?? "",
@@ -1621,61 +1696,103 @@ export function conductor(deps: ConductorDeps): Conductor {
       seq: Number(held?.seq ?? 0),
     };
 
-    for (let page = 0; page < JOURNAL_PAGES_PER_RUN; page++) {
-      let read: JournalPage;
+    let read: FollowSnapshot;
+    try {
+      const watching = await watch(
+        { kind: "job", machineId: run.machine_id, operationId: run.kind, jobId: run.job_id },
+        // Nothing is ever delivered here: the subscription exists for its snapshot and is gone
+        // before the hub's next frame. What arrives after it is in the ring for the next cycle.
+        () => {},
+      );
       try {
-        read = await jobs.journal({
-          node: { kind: "job", machineId: run.machine_id, operationId: run.kind, jobId: run.job_id },
-          after: folded.seq,
-          limit: JOURNAL_PAGE_EVENTS,
-        });
-      } catch (error) {
-        notes.push(`job ${run.job_id} journal cannot be read: ${message(error)}`);
-        break;
+        read = watching.snapshot;
+      } finally {
+        await watching.close();
       }
-      if (folded.seq > 0 && read.firstSeq !== null && read.firstSeq > folded.seq + 1) {
-        notes.push(
-          `job ${run.job_id} journal dropped everything before ${String(read.firstSeq)}; ` +
-            `its spend so far is short by what those frames carried`,
-        );
-      }
-      for (const entry of read.events) {
-        if (entry.seq > folded.seq) folded.seq = entry.seq;
-        if (entry.event.type === "job_progress") {
-          const frame = ProgressFrameSchema.safeParse(entry.event);
-          if (!frame.success) continue;
-          // A stage that did not change keeps its `since`: the row says how long the job has
-          // been WHERE IT IS, and restamping it on every repeat of the same word would turn
-          // "at the model since 11 minutes" into "at the model since 4 seconds" for ever.
-          if (frame.data.stage !== folded.stage) {
-            folded.stage = frame.data.stage;
-            folded.since = new Date(frame.data.at).toISOString();
-          }
-          folded.message = frame.data.message ?? "";
-          folded.fraction = frame.data.fraction ?? null;
-          continue;
-        }
-        if (entry.event.type !== "inference_call") continue;
-        const frame = InferenceFrameSchema.safeParse(entry.event);
-        if (!frame.success) continue;
-        folded.calls += 1;
-        folded.input_tokens += frame.data.inputTokens;
-        folded.output_tokens += frame.data.outputTokens;
-        folded.cache_tokens += frame.data.cachedInputTokens;
-        folded.cost_usd += frame.data.costMicros / 1_000_000;
-        folded.last_model = frame.data.model;
-        folded.last_call_at = new Date(entry.at).toISOString();
-      }
-      if (read.nextAfter === null) break;
-      folded.seq = read.nextAfter;
+    } catch (error) {
+      notes.push(`job ${run.job_id} cannot be followed: ${message(error)}`);
+      return standing;
     }
 
+    // WHAT THE RING NO LONGER HOLDS, in the hub's own two shapes: `unavailable` is the span it
+    // says it cannot replay — a gap, a byte limit, a ring thrown away whole — and `firstSeq` is
+    // the oldest frame still in it. Either one above the sequence this row folded is progress
+    // and spend nobody will ever see. It is said once per fold, and it is a real loss rather
+    // than the journal's contractual holes: this ring carries the byte frames too.
+    const lostThrough = Math.max(read.unavailable?.toSeq ?? 0, (read.firstSeq ?? 0) - 1);
+    if (lostThrough > folded.seq) {
+      notes.push(
+        `job ${run.job_id}: progress before seq ${String(lostThrough + 1)} was not retained; ` +
+          `its spend so far is short by what those frames carried`,
+      );
+    }
+    for (const entry of read.events) {
+      if (entry.seq <= folded.seq) continue;
+      folded.seq = entry.seq;
+      if (entry.event.type === "job_progress") {
+        const frame = ProgressFrameSchema.safeParse(entry.event);
+        if (!frame.success) continue;
+        // A stage that did not change keeps its `since`: the row says how long the job has been
+        // WHERE IT IS, and restamping it on every repeat of the same word would turn "at the
+        // model since 11 minutes" into "at the model since 4 seconds" for ever. At the model it
+        // is the stage AND its message, because there the message is which prompt is out — the
+        // owner coalesces newest-wins every five seconds and composing the next prompt is
+        // sub-second, so the word alone would read one turn's clock across three of them.
+        const moved =
+          frame.data.stage !== folded.stage ||
+          (frame.data.stage === RUN_STAGES.atModel && (frame.data.message ?? "") !== folded.message);
+        if (moved) {
+          folded.stage = frame.data.stage;
+          folded.since = new Date(frame.data.at).toISOString();
+        }
+        folded.message = frame.data.message ?? "";
+        folded.fraction = frame.data.fraction ?? null;
+        continue;
+      }
+      if (entry.event.type !== "inference_call") continue;
+      const frame = InferenceFrameSchema.safeParse(entry.event);
+      if (!frame.success) continue;
+      folded.calls += 1;
+      folded.input_tokens += frame.data.inputTokens;
+      folded.output_tokens += frame.data.outputTokens;
+      folded.cache_tokens += frame.data.cachedInputTokens;
+      folded.cost_usd += frame.data.costMicros / 1_000_000;
+      folded.last_model = frame.data.model;
+      // THIS CYCLE'S CLOCK, because a call has no instant of its own: `inference_call` carries
+      // the tokens and the price and no time, and the ring stamps nothing. So the newest call
+      // is dated when the loop SAW it, which is the same clock the stall is judged against —
+      // late by at most one cycle, and never skewed against a machine's own.
+      folded.last_call_at = new Date(at).toISOString();
+    }
+
+    // NOTHING HEARD IS NOT A ROW. `run_progress` exists to say where a job is and what it has
+    // spent; a job that has reported no stage and had no call metered has told this deployment
+    // neither, and a row of empty strings would render as a blank stage over a clock ticking
+    // from the instant of the FOLD — which is what a queued job, a job inside the owner's
+    // five-second coalescing window and an operation that reports no stage at all would each
+    // have looked like. No row is what the store answers `null` for, and the panel says "no
+    // word yet" (#261). `since` is written as it was reported for the same reason: this loop
+    // never invents the instant a job reached a stage.
+    if (folded.stage === "" && folded.calls === 0) return { stage: "", stalled: false };
+
+    // WHOSE SILENCE IS A STALL: only a run the hub meters. One whose calls it has already
+    // counted, or one whose operation binds a service the owner may meter ({@link
+    // RunPlan.metered}). Everything else reaches the model through the engine's own credential
+    // and journals no `inference_call` ever, so judging it would mark every run that thought
+    // for ninety seconds "stalled" for the rest of its life and count it in the header — a
+    // number about an adjacent thing, reported as the thing asked (post-mortem O7).
+    //
     // The clock the flag is decided against is the CYCLE's, so every row of one report agrees
-    // about what is stalled. A job at the model that has never been metered is judged from the
-    // instant it said so; one that has is judged from its newest call.
+    // about what is stalled. A job that has been metered is judged from its newest call, which
+    // this loop dated when it read it; one that has not, from the instant it said it was at the
+    // model, which is the owner's own clock and the one figure here a machine's skew can shift.
+    const metered = folded.calls > 0 || plan.metered[run.kind] === true;
     const waitingSince = instantOf(folded.last_call_at === "" ? folded.since : folded.last_call_at);
     const stalled =
-      folded.stage === RUN_STAGES.atModel && waitingSince !== null && at - waitingSince >= STALLED_AFTER_MS;
+      metered &&
+      folded.stage === RUN_STAGES.atModel &&
+      waitingSince !== null &&
+      at - waitingSince >= STALLED_AFTER_MS;
     await store.db.run(
       `INSERT INTO run_progress(run_id, job_id, stage, message, fraction, since, calls,
                                 input_tokens, output_tokens, cache_tokens, cost_usd, last_model,
@@ -1694,7 +1811,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         folded.stage,
         folded.message,
         folded.fraction,
-        folded.since === "" ? new Date(at).toISOString() : folded.since,
+        folded.since,
         folded.calls,
         folded.input_tokens,
         folded.output_tokens,
@@ -1713,7 +1830,7 @@ export function conductor(deps: ConductorDeps): Conductor {
   /**
    * Every job the hub is waiting on, plus the beat's own, which nobody requested.
    *
-   * A job that is still running has its journal folded into `run_progress` before the cycle
+   * A job that is still running has its replay ring folded into `run_progress` before the cycle
    * moves on, which is the only reason this loop asks the hub about a job it cannot settle:
    * before #261 a running job was polled purely to be counted, and the count was the whole of
    * what anyone could learn about it.

@@ -220,6 +220,8 @@ test("an ended run is a receipt: what it took, wrote, spent and how it closed", 
               finishedAt: new Date(base - 540_000).toISOString(),
               lastWord: new Date(base - 540_000).toISOString(),
               records: 40,
+              tokens: 21_500,
+              calls: 3,
               costUsd: 1.25,
             }),
           ],
@@ -237,7 +239,11 @@ test("an ended run is a receipt: what it took, wrote, spent and how it closed", 
   expect(row).toContain("run_done");
   expect(row).toContain("1m 00s");
   expect(row).toContain("$1.25");
-  expect(row).toContain("finished");
+  // What it wrote, what the meter counted and what it cost, in the columns' own order. The
+  // calls and the tokens are the hub's own numbers, kept with the receipt so that they outlive
+  // the in-flight row the conductor drops when a run settles.
+  const cells = [...root.querySelectorAll("tbody tr td")].map((cell) => cell.textContent ?? "");
+  expect(cells.slice(4)).toEqual(["40", "3", "21,500", "$1.25", "finished"]);
   expect(root.textContent).toContain("8 older runs in the store.");
 });
 

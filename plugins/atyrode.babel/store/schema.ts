@@ -448,15 +448,15 @@ export const SCHEMA_V1: readonly string[] = [
   BUDGETS_TABLE,
 
   // ---------------------------------------------------------------- a run in flight (#261)
-  // WHERE A RUNNING JOB IS AND WHAT IT HAS SPENT, folded out of the job's journal once a cycle:
-  // the newest `job_progress` for the stage and every `inference_call` since the last fold for
-  // the spend. One row per run, rewritten in place — this is a PROJECTION of the hub's own
-  // journal and never an act, so it is the one table here that is neither append-only nor
-  // ingested from a machine.
+  // WHERE A RUNNING JOB IS AND WHAT IT HAS SPENT, folded once a cycle out of the replay ring the
+  // hub keeps for it: the newest `job_progress` for the stage and every `inference_call` since
+  // the last fold for the spend. One row per run, rewritten in place — this is a PROJECTION of
+  // the hub's own record and never an act, so it is the one table here that is neither
+  // append-only nor ingested from a machine.
   //
   // It exists because between `started` and a terminal state a job is invisible, and on
   // 2026-09-13 that invisibility cost seventy-five minutes with no engine running and nothing
-  // saying so (post-mortem F12, O2). `seq` is the newest journal sequence folded, so a cycle
+  // saying so (post-mortem F12, O2). `seq` is the newest sequence folded, so a cycle
   // reads only what it has not seen; `stalled` is `at the model` with no metered call for
   // ninety seconds, and the next call clears it.
   `CREATE TABLE run_progress(

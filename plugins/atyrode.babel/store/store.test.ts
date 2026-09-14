@@ -768,6 +768,28 @@ describe("runs and the policy", () => {
     expect((await harness.store.run("run-nowhere")).run).toBeNull();
   });
 
+  test("a settled run's metered calls are read off the hub's own block in the receipt", async () => {
+    // What the conductor writes beside the receipt when the owner metered the job: the whole of
+    // `usage.inference`, because the in-flight row is dropped when a run ends and two columns
+    // cannot hold five numbers.
+    await harness.db.run(
+      `UPDATE runs SET payload = ? WHERE id = 'run-b'`,
+      [
+        JSON.stringify({
+          runId: "run-b",
+          counts: {},
+          inference: { calls: 7, inputTokens: 20_000, outputTokens: 1_500, cachedInputTokens: 400, costMicros: 410_000 },
+        }),
+      ],
+    );
+    harness.store.touch();
+    const answer = await harness.store.runs({ limit: 25, offset: 0 });
+    expect(answer.runs.find((row) => row.id === "run-b")?.calls).toBe(7);
+    // A run nothing metered is not a run that made no call: the engine's own lane makes them
+    // and nobody counts them, so the column is empty rather than zero.
+    expect(answer.runs.find((row) => row.id === "run-a")?.calls).toBeNull();
+  });
+
   test("the policy projects its ceilings and joins the recipes to what ran", async () => {
     const answer = await harness.store.policy();
     expect(answer.version).toBe("pol-3");

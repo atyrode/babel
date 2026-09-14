@@ -79,6 +79,7 @@ export function runRow(row: Partial<RunRow> & Pick<RunRow, "id" | "state" | "sta
     finishedAt: "",
     costUsd: null,
     tokens: null,
+    calls: null,
     records: 0,
     freshness: "fresh",
     progress: null,
@@ -86,7 +87,7 @@ export function runRow(row: Partial<RunRow> & Pick<RunRow, "id" | "state" | "sta
   };
 }
 
-/** What the conductor folded out of a running job's journal, as a row carries it. */
+/** What the conductor folded out of a running job's replay ring, as a row carries it. */
 export function runProgress(over: Partial<RunProgress> & Pick<RunProgress, "stage" | "since">): RunProgress {
   return {
     message: "",

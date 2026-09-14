@@ -147,10 +147,16 @@ export interface RunRow {
   finishedAt: string;
   costUsd: number | null;
   tokens: number | null;
+  /**
+   * How many calls the hub metered for this run, from the `inference` block the conductor kept
+   * with the receipt; null for a run nothing metered — every local-lane run, and every run that
+   * has not settled yet.
+   */
+  calls: number | null;
   records: number;
   freshness: "fresh" | "recent" | "lost" | "ended";
   lastWord: string;
-  /** Where the run is and what it has spent, folded from the job's journal; null before any. */
+  /** Where the run is and what it has spent, folded from its replay ring; null before any. */
   progress: RunProgress | null;
 }
 
@@ -462,7 +468,7 @@ function runFreshness(state: RunRow["state"], lastWordMs: number, nowMs: number)
 }
 
 /**
- * What the conductor folded out of this job's journal, or null when it folded nothing.
+ * What the conductor folded out of this job's replay ring, or null when it folded nothing.
  *
  * `since` is what makes the row worth reading — "at the model since T", not "at the model" —
  * and the only judgement in it is `stalled`, which the loop decides against its own clock so
@@ -496,6 +502,10 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
   const lastWord = text(row["last_word"]);
   const cost = row["cost_usd"];
   const tokens = row["tokens"];
+  // The meter's own count, kept with the receipt at settle because `run_progress` is dropped
+  // when a run ends. A run with no `inference` block is one nothing metered, which is not the
+  // same claim as "no calls were made": the engine's own lane makes them and nobody counts them.
+  const calls = row["metered_calls"];
   return {
     id: text(row["id"]),
     kind: text(row["kind"]),
@@ -507,6 +517,7 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
     finishedAt,
     costUsd: typeof cost === "number" ? cost : null,
     tokens: typeof tokens === "number" || typeof tokens === "bigint" ? Number(tokens) : null,
+    calls: calls === null || calls === undefined ? null : count(calls),
     records: count(row["records"]),
     freshness: runFreshness(state, instant(lastWord), nowMs),
     lastWord,
@@ -516,12 +527,15 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
 
 /**
  * A run and, joined to it, whatever the loop last folded about it. The join is LEFT because
- * `run_progress` holds a row only for a job the loop has read a journal page for: a queued run,
- * a run from before this shape, and every run of an operation that reaches no model have none.
+ * `run_progress` holds a row only for a job that has reported a stage or had a call metered: a
+ * queued run, a run from before this shape, and every run of an operation that reaches no model
+ * have none. `metered_calls` is the settled half of the same question, read out of the receipt
+ * payload the conductor wrote the hub's own `usage.inference` into.
  */
 const RUN_COLUMNS = `r.id AS id, r.kind AS kind, r.machine_id AS machine_id, r.job_id AS job_id,
   r.recipe_id AS recipe_id, r.started_at AS started_at, r.finished_at AS finished_at,
   r.closure AS closure, r.cost_usd AS cost_usd, r.tokens AS tokens, r.records AS records,
+  CASE WHEN json_valid(r.payload) THEN json_extract(r.payload, '$.inference.calls') END AS metered_calls,
   p.stage AS progress_stage, p.message AS progress_message, p.fraction AS progress_fraction,
   p.since AS progress_since, p.calls AS progress_calls, p.input_tokens AS progress_input_tokens,
   p.output_tokens AS progress_output_tokens, p.cache_tokens AS progress_cache_tokens,
