@@ -16,7 +16,7 @@
   ],
   "dataVersion": {
     "major": 1,
-    "minor": 1
+    "minor": 2
   },
   "database": {
     "maxBytes": 1073741824
@@ -56,24 +56,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "1dcb318c26331725dfb8180779903ea18902372b4080f860558f0e9f61c0872d",
+        "sha256": "7ba7c92f9e343a9c5742942f6bb15c7599a74383353848635d76b4c6f1fb5c37",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "1dcb318c26331725dfb8180779903ea18902372b4080f860558f0e9f61c0872d",
+        "entrySha256": "7ba7c92f9e343a9c5742942f6bb15c7599a74383353848635d76b4c6f1fb5c37",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "1dcb318c26331725dfb8180779903ea18902372b4080f860558f0e9f61c0872d",
+        "sha256": "7ba7c92f9e343a9c5742942f6bb15c7599a74383353848635d76b4c6f1fb5c37",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "1dcb318c26331725dfb8180779903ea18902372b4080f860558f0e9f61c0872d",
+        "entrySha256": "7ba7c92f9e343a9c5742942f6bb15c7599a74383353848635d76b4c6f1fb5c37",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -444,7 +444,8 @@
           "timeoutMs": 3600000,
           "memoryBytes": 2147483648,
           "processes": 64,
-          "outputBytes": 16777216
+          "outputBytes": 16777216,
+          "concurrentJobs": 4
         },
         "stdin": false
       },
@@ -506,7 +507,8 @@
           "timeoutMs": 3600000,
           "memoryBytes": 2147483648,
           "processes": 64,
-          "outputBytes": 16777216
+          "outputBytes": 16777216,
+          "concurrentJobs": 4
         },
         "stdin": false
       }

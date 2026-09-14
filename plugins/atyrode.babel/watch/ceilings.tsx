@@ -1,5 +1,5 @@
 import { Cluster, Stack, Switcher } from "@manifold/ui";
-import { since, usd, type PolicyResult } from "./api.ts";
+import { OVERLAY_FIELDS, since, until, usd, type PolicyResult } from "./api.ts";
 
 /*
   THE CEILINGS — what bounds Babel's autonomy, and how much of today it has spent.
@@ -12,6 +12,12 @@ import { since, usd, type PolicyResult } from "./api.ts";
   own audit row, and the place for it is Settings rather than beside a launch button — an
   operator raising the day's ceiling is not starting a run, and a panel that let the two share a
   form would let a mis-click do both.
+
+  THE OVERLAY IS SHOWN BESIDE THE STANDING NUMBERS AND NEVER INSTEAD OF THEM (#260). A drain
+  moves the batch and the ceilings for a stated while; a panel that quietly showed the moved
+  numbers would be the interface that let eval-policy-10's batch of 256 outlive the drain it was
+  raised for by ninety minutes. So the standing figures stay where they are, and what a drain
+  changed — from what, to what, and for how much longer — is its own strip under them.
 */
 
 export interface CeilingsProps {
@@ -27,6 +33,40 @@ function Figure({ label, value, note }: { readonly label: string; readonly value
       <span className="plugin-atyrode_babel_watch__stat-label">{label}</span>
       <span className="plugin-atyrode_babel_watch__stat-value">{value}</span>
       <span className="plugin-atyrode_babel_watch__muted">{note}</span>
+    </Stack>
+  );
+}
+
+/**
+ * The bounded exception in force: what it moves, from what to what, and how much of its TTL is
+ * left. The expiry is a remaining time rather than an instant because "for 12m" is the fact an
+ * operator acts on, and `expired` is shown rather than hidden — a panel holding a stale read is
+ * a panel that must say so.
+ */
+function Overlay({ overlay, now }: { readonly overlay: NonNullable<PolicyResult["overlay"]>; readonly now: number }) {
+  return (
+    <Stack gap="var(--babel-space-1)" className="plugin-atyrode_babel_watch__overlay">
+      <span className="plugin-atyrode_babel_watch__stat-label">
+        Overlay {until(overlay.expiresAt, now)}
+      </span>
+      <Cluster gap="var(--babel-space-3)">
+        {overlay.changes.map((change) => {
+          const spelled = OVERLAY_FIELDS[change.field];
+          const write = (value: number): string =>
+            spelled?.money === true ? usd(value) : String(value);
+          return (
+            <span key={change.field} className="plugin-atyrode_babel_watch__lane">
+              {spelled?.label ?? change.field}{" "}
+              <span className="plugin-atyrode_babel_watch__mono">
+                {write(change.standing)} → {write(change.overlaid)}
+              </span>
+            </span>
+          );
+        })}
+      </Cluster>
+      <span className="plugin-atyrode_babel_watch__muted">
+        {overlay.reason === "" ? "No reason recorded." : overlay.reason}
+      </span>
     </Stack>
   );
 }
@@ -73,6 +113,7 @@ export function Ceilings({ policy, now, note }: CeilingsProps) {
           note="How many reviews may be claimed together."
         />
       </Switcher>
+      {policy.overlay === null ? null : <Overlay overlay={policy.overlay} now={now} />}
       {unset ? null : (
         <div
           className="plugin-atyrode_babel_watch__spend"

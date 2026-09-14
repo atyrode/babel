@@ -148,6 +148,11 @@ export function leaseFloor(batchSize: number): number {
  * a payload that predates a setting is completed rather than refused — and `enabled` defaults
  * to false, which is §14's activation gate expressed as a value: turning evaluation on is one
  * recorded operator decision and never a migration.
+ *
+ * `concurrentPerMachine` is the one field with no constant of its own, and deliberately: it is
+ * the batch READ PER MACHINE (#260), and the number every stored policy was written with is its
+ * `batchSize`. A policy that predates the split therefore means "this many at once, wherever
+ * they run", which on a one-machine deployment is exactly what it has always meant.
  */
 export const PolicySchema = z.strictObject({
   version: z.string().trim().min(1).default(DEFAULT_POLICY_VERSION),
@@ -166,8 +171,20 @@ export const PolicySchema = z.strictObject({
   dailyCost: z.number().default(MEASURED.dailyCost),
   leaseSeconds: z.number().int().default(MEASURED.leaseSeconds),
   batchSize: z.number().int().default(MEASURED.batchSize),
+  concurrentPerMachine: z.number().int().optional(),
 });
 export type Policy = z.infer<typeof PolicySchema>;
+
+/**
+ * How many assignments one MACHINE may hold at once under this policy: what it says, or the
+ * batch it was written with. The deployment-wide cap is this times the machines that are online
+ * (`admitSpend`), which is the whole of G3 — on 2026-09-13 the only bound was one
+ * deployment-wide number, so raising it to admit a second machine's draws raised it for the
+ * first machine too, and thirty-six draws landed on twelve cores.
+ */
+export function perMachineBound(policy: Policy): number {
+  return policy.concurrentPerMachine ?? policy.batchSize;
+}
 
 /** The policy a deployment runs before an operator configures one. It is disabled. */
 export const DEFAULT_POLICY: Policy = PolicySchema.parse({});
@@ -222,6 +239,9 @@ export function validatePolicy(policy: Policy): string | null {
   }
   if (policy.leaseSeconds <= 0) return `lease ${String(policy.leaseSeconds)}s must be positive`;
   if (policy.batchSize < 1) return `batch size ${String(policy.batchSize)} must be at least one`;
+  if (perMachineBound(policy) < 1) {
+    return `${String(perMachineBound(policy))} concurrent assignments per machine is below one`;
+  }
   return null;
 }
 
@@ -236,10 +256,14 @@ export function validatePolicy(policy: Policy): string | null {
 export function validateNewPolicy(policy: Policy): string | null {
   const refusal = validatePolicy(policy);
   if (refusal !== null) return refusal;
-  const floor = leaseFloor(policy.batchSize);
+  // Whichever of the two bounds admits more assignments at once is the one the lease has to
+  // cover: a machine holding `concurrentPerMachine` of them prepares them behind one lease
+  // exactly as a deployment holding a batch of them does.
+  const claimed = Math.max(policy.batchSize, perMachineBound(policy));
+  const floor = leaseFloor(claimed);
   if (policy.leaseSeconds < floor) {
     return (
-      `lease ${String(policy.leaseSeconds)}s cannot cover a batch of ${String(policy.batchSize)}: ` +
+      `lease ${String(policy.leaseSeconds)}s cannot cover a batch of ${String(claimed)}: ` +
       `a lease must allow at least ${String(LEASE_SECONDS_PER_SUBJECT)}s per assignment and never ` +
       `less than ${String(LEASE_FLOOR_SECONDS)}s, so this batch needs ${String(floor)}s`
     );
@@ -247,8 +271,104 @@ export function validateNewPolicy(policy: Policy): string | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------- the budget overlay
+
+/**
+ * THE FOUR NUMBERS AN OVERLAY MAY MOVE, and the reason it is only four: everything else the
+ * policy carries is what a draw is REPLAYABLE against. A share decides which lane drew a
+ * subject, a lease decides whose claim was live, a version is in the assignment id — change any
+ * of those for two hours and the reviews taken in those two hours cannot be read against the
+ * policy that took them. A ceiling and a batch are pure admission: they decide whether a draw
+ * happens, never what it is.
+ */
+export const BUDGET_FIELDS = ["batchSize", "perCycleCost", "dailyCost", "concurrentPerMachine"] as const;
+export type BudgetField = (typeof BUDGET_FIELDS)[number];
+
+/**
+ * A bounded exception to the standing policy, as the `budgets` row carries it: what it moves,
+ * until when, and why. A drain is one of these and never an edit of `policies` (#260, F5/F6).
+ *
+ * Expiry needs nobody. There is no reaper, no unwinding act and no scheduled revert: the newest
+ * row whose `expires_at` is still ahead and whose `cleared_at` is NULL is the overlay in force,
+ * so the moment that instant passes the standing numbers answer the next admission. That is the
+ * whole difference from 2026-09-13, when the drain's batch of 256 and lease of 5200s outlived
+ * the drain by an hour and a half because reverting them was an operator's errand.
+ */
+export interface Budget {
+  readonly id: string;
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly batchSize: number | null;
+  readonly perCycleCost: number | null;
+  readonly dailyCost: number | null;
+  readonly concurrentPerMachine: number | null;
+  readonly reason: string;
+}
+
+/** What an overlay moves, in the words a panel shows beside the standing number. */
+export interface BudgetChange {
+  readonly field: BudgetField;
+  readonly standing: number;
+  readonly overlaid: number;
+}
+
+/**
+ * The policy in force under an overlay: the standing policy with the numbers the overlay names,
+ * and everything else — the version above all — untouched. The version is what `asg_…` digests,
+ * so an overlay that carried one would mint a second assignment id for a review already in
+ * flight, which is exactly the footgun the drain fired five times.
+ */
+export function applyBudget(standing: Policy, overlay: Budget): Policy {
+  return {
+    ...standing,
+    batchSize: overlay.batchSize ?? standing.batchSize,
+    perCycleCost: overlay.perCycleCost ?? standing.perCycleCost,
+    dailyCost: overlay.dailyCost ?? standing.dailyCost,
+    ...(overlay.concurrentPerMachine === null
+      ? {}
+      : { concurrentPerMachine: overlay.concurrentPerMachine }),
+  };
+}
+
+/** Every number the overlay actually moves, standing value beside overlaid one. */
+export function budgetChanges(standing: Policy, overlay: Budget): readonly BudgetChange[] {
+  const overlaid = applyBudget(standing, overlay);
+  const changes: BudgetChange[] = [];
+  for (const field of BUDGET_FIELDS) {
+    if (overlay[field] === null) continue;
+    const before = field === "concurrentPerMachine" ? perMachineBound(standing) : standing[field];
+    const after = field === "concurrentPerMachine" ? perMachineBound(overlaid) : overlaid[field];
+    if (before !== after) changes.push({ field, standing: before, overlaid: after });
+  }
+  return changes;
+}
+
+/**
+ * Refuses an overlay that cannot be honoured, by judging THE POLICY IT WOULD PRODUCE against
+ * the rules a policy being installed satisfies — one set of rules, not a second copy that
+ * could come to disagree with `validateNewPolicy`. The lease in that judgement is the standing
+ * policy's, because an overlay may not move it: a drain that raises the batch to sixty-four
+ * under a fifteen-minute lease is refused here rather than discovered as expired claims, which
+ * is F5 read forwards.
+ */
+export function validateBudget(standing: Policy, overlay: Budget): string | null {
+  if (overlay.expiresAt <= overlay.createdAt) {
+    return "an overlay whose expiry is not ahead of its creation is in force for no time at all";
+  }
+  if (budgetChanges(standing, overlay).length === 0) {
+    return "an overlay that moves no number is not an overlay";
+  }
+  return validateNewPolicy(applyBudget(standing, overlay));
+}
+
 export interface PolicyInForce {
+  /** The standing policy with the overlay in force applied on top; what admission is judged by. */
   readonly policy: Policy;
+  /** The `policies` row itself — the version, the shares and the lease a draw is replayable
+   *  against — whatever an overlay says. */
+  readonly standing: Policy;
+  /** The newest unexpired, uncleared `budgets` row, or null: nothing is overlaid. */
+  readonly overlay: Budget | null;
   /** `stored` is the newest `policies` row; `default` is the disabled policy above. */
   readonly source: "stored" | "default";
   readonly version: string;
@@ -337,6 +457,14 @@ export type DrawResult =
 export interface DrawRequest {
   /** Who is drawing. The per-cycle ceiling is measured against one run's whole UTC day. */
   readonly runId: string;
+  /**
+   * The machines this draw could actually be dispatched to — online, with the operation ready.
+   * The batch is bounded PER MACHINE (#260), so the deployment-wide cap is that bound times
+   * this list's length, and a caller that names no machine is admitted against one machine's
+   * worth: a draw whose dispatcher cannot say where the work would run may not claim the fan a
+   * fleet would allow.
+   */
+  readonly machines?: readonly string[];
   readonly now?: number;
   readonly seed?: bigint;
 }
@@ -462,14 +590,28 @@ export interface Spend {
   readonly byRun: Readonly<Record<string, number>>;
 }
 
+/**
+ * The batch slots held right now, in total and by the machine whose job holds them. A claim's
+ * machine is its job's run row: a claim with a job the hub accepted but no run row yet is in
+ * `total` and under no machine, which is the conservative reading — it counts against the
+ * deployment while it cannot be counted against a host.
+ */
+export interface OpenClaims {
+  readonly total: number;
+  readonly byMachine: Readonly<Record<string, number>>;
+}
+
 export interface Coordinator {
-  policy(): Promise<PolicyInForce>;
+  /** The standing policy, the overlay in force at this moment, and the two applied together. */
+  policy(now?: number): Promise<PolicyInForce>;
   draw(request: DrawRequest): Promise<DrawResult>;
   claim(request: ClaimRequest): Promise<ClaimResult>;
   renew(request: RenewRequest): Promise<RenewResult>;
   finish(request: FinishRequest): Promise<FinishResult>;
   abandon(request: AbandonRequest): Promise<AbandonResult>;
   spend(now?: number): Promise<Spend>;
+  /** The open batch slots per machine, which is what the loop dispatches by (#260). */
+  open(now?: number): Promise<OpenClaims>;
 }
 
 // ---------------------------------------------------------------------------- the tables it reads
@@ -678,14 +820,46 @@ class Stream {
 export function coordinator(store: CoordinatorStore, now: () => number = Date.now): Coordinator {
   const db = store.db;
 
-  async function policyInForce(): Promise<PolicyInForce> {
+  /**
+   * The newest overlay that is still true: unexpired at this moment and never cleared. A drain
+   * that ran this morning and a drain that was cleared are both simply not it, and neither
+   * needed anyone to unwind them.
+   */
+  async function budgetInForce(moment: number): Promise<Budget | null> {
     const rows = await db.query(
-      `SELECT version, payload, recorded_at FROM policies ORDER BY seq DESC LIMIT 1`,
+      `SELECT id, created_at, expires_at, batch_size, per_cycle_cost, daily_cost,
+              concurrent_per_machine, reason
+         FROM budgets
+        WHERE cleared_at IS NULL AND expires_at > ?
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [iso(moment)],
     );
+    const row = rows[0];
+    if (row === undefined) return null;
+    return {
+      id: text(row["id"]),
+      createdAt: at(row["created_at"]),
+      expiresAt: at(row["expires_at"]),
+      batchSize: maybeCount(row["batch_size"]),
+      perCycleCost: maybeCount(row["per_cycle_cost"]),
+      dailyCost: maybeCount(row["daily_cost"]),
+      concurrentPerMachine: maybeCount(row["concurrent_per_machine"]),
+      reason: text(row["reason"]),
+    };
+  }
+
+  async function policyInForce(moment?: number): Promise<PolicyInForce> {
+    const instant = moment ?? now();
+    const [rows, overlay] = await Promise.all([
+      db.query(`SELECT version, payload, recorded_at FROM policies ORDER BY seq DESC LIMIT 1`),
+      budgetInForce(instant),
+    ]);
     const row = rows[0];
     if (row === undefined) {
       return {
-        policy: DEFAULT_POLICY,
+        policy: overlay === null ? DEFAULT_POLICY : applyBudget(DEFAULT_POLICY, overlay),
+        standing: DEFAULT_POLICY,
+        overlay,
         source: "default",
         version: DEFAULT_POLICY.version,
         recordedAt: null,
@@ -705,8 +879,11 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     if (!parsed.success) {
       throw new Error(`the policy row ${version} is not a policy: ${parsed.error.message}`);
     }
+    const standing = parsed.data;
     return {
-      policy: parsed.data,
+      policy: overlay === null ? standing : applyBudget(standing, overlay),
+      standing,
+      overlay,
       source: "stored",
       version,
       recordedAt: maybeAt(row["recorded_at"]),
@@ -739,41 +916,85 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
   }
 
   /**
-   * How many batch slots are held right now. A claim is a slot only while a JOB stands behind
+   * The batch slots held right now, and WHERE. A claim is a slot only while a JOB stands behind
    * it: a row whose `job_id` is NULL is a grant whose posting never landed (`claim` reserves
    * before the conductor calls `jobs.execute`), and a grant with no worker is not work in
    * progress. Counting it would let a refused posting hold a quarter of the cycle's batch for a
    * whole lease — the ghost of F3, arriving through the one door the settle path cannot see.
    * Releasing it is the conductor reaper's job (`server/conductor.ts`); refusing to count it is
    * this one's.
+   *
+   * The machine is the claim's job's run row, read as a scalar subquery rather than a join: one
+   * machine per claim whatever the `runs` table holds, where a join could fan one claim out
+   * across two rows and report a batch twice its size.
    */
-  async function openClaims(moment: number): Promise<number> {
+  async function openClaims(moment: number): Promise<OpenClaims> {
     const rows = await db.query(
-      `SELECT COUNT(*) AS open FROM claims
-        WHERE finished_at IS NULL AND expires_at > ? AND job_id IS NOT NULL`,
+      `SELECT COALESCE((SELECT r.machine_id FROM runs r
+                         WHERE r.job_id = c.job_id AND r.machine_id IS NOT NULL
+                         ORDER BY r.started_at DESC LIMIT 1), '') AS machine,
+              COUNT(*) AS open
+         FROM claims c
+        WHERE c.finished_at IS NULL AND c.expires_at > ? AND c.job_id IS NOT NULL
+        GROUP BY machine`,
       [iso(moment)],
     );
-    return count(rows[0]?.["open"]);
+    const byMachine: Record<string, number> = {};
+    let total = 0;
+    for (const row of rows) {
+      const open = count(row["open"]);
+      total += open;
+      const machine = text(row["machine"]);
+      if (machine !== "") byMachine[machine] = (byMachine[machine] ?? 0) + open;
+    }
+    return { total, byMachine };
   }
 
   /**
    * The three independent bounds on one cycle's attention, in one place because every path that
-   * claims work passes exactly these gates: the cycle batch, the per-cycle ceiling and the daily
+   * claims work passes exactly these gates: the batch, the per-cycle ceiling and the daily
    * ceiling. A second copy for any follow-up would be a second answer to "may this deployment
    * spend now", and the two would drift the first time a bound was tuned.
+   *
+   * THE BATCH IS PER MACHINE (#260, G3). A deployment of two machines may hold twice one
+   * machine's bound, and neither machine may hold more than its own — which is the bound that
+   * matters, because the thing that fell over on 2026-09-13 was one host with thirty-six draws
+   * on twelve cores, not a fleet. A caller that names no machine is judged against one
+   * machine's worth, so nothing about a single-machine deployment changes. The refusal names
+   * the machines and what each holds: "the cycle batch is already claimed" was the sentence
+   * the drain read seven hundred times without learning where.
    */
   function admitSpend(
     policy: Policy,
-    active: number,
+    open: OpenClaims,
     spentCycle: number,
     spentToday: number,
+    machines: readonly string[],
   ): Stop | null {
     const reserved = reservedCost(policy);
-    if (active >= policy.batchSize) {
-      return {
-        reason: "batch",
-        detail: `the cycle batch of ${String(policy.batchSize)} assignments is already claimed`,
-      };
+    const bound = perMachineBound(policy);
+    if (machines.length === 0) {
+      if (open.total >= bound) {
+        return {
+          reason: "batch",
+          detail: `the cycle batch of ${String(bound)} assignments is already claimed`,
+        };
+      }
+    } else {
+      const cap = bound * machines.length;
+      const free = machines.filter((machineId) => (open.byMachine[machineId] ?? 0) < bound);
+      if (free.length === 0 || open.total >= cap) {
+        const held = machines
+          .map((machineId) => `${machineId} holds ${String(open.byMachine[machineId] ?? 0)}`)
+          .join(", ");
+        return {
+          reason: "batch",
+          detail:
+            `${String(bound)} concurrent assignments per machine bounds this deployment at ` +
+            `${String(cap)} across ${String(machines.length)} online machines, and ` +
+            `${String(open.total)} are claimed: ${held}`,
+        };
+      }
     }
     if (spentCycle + reserved > policy.perCycleCost) {
       return {
@@ -1507,8 +1728,13 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
 
   async function draw(request: DrawRequest): Promise<DrawResult> {
     const moment = request.now ?? now();
-    const inForce = await policyInForce();
+    const inForce = await policyInForce(moment);
+    // ADMISSION READS THE OVERLAY, THE ASSIGNMENT READS THE STANDING POLICY. Every gate below
+    // judges the overlaid numbers — that is what an overlay is for — and the identity minted at
+    // the end digests `standing.version`, so a drain starting or ending mid-cycle leaves every
+    // assignment id in flight exactly where it was (#260; F5 was the opposite).
     const policy = inForce.policy;
+    const standing = inForce.standing;
 
     const refusal = validatePolicy(policy);
     if (refusal !== null) {
@@ -1526,7 +1752,13 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     }
 
     const [active, spent] = await Promise.all([openClaims(moment), spendOn(moment)]);
-    const overspent = admitSpend(policy, active, spent.byRun[request.runId] ?? 0, spent.total);
+    const overspent = admitSpend(
+      policy,
+      active,
+      spent.byRun[request.runId] ?? 0,
+      spent.total,
+      request.machines ?? [],
+    );
     if (overspent !== null) return { outcome: "gap", gap: overspent, gaps: [] };
 
     const { candidates, gaps } = await buildCandidates(policy, moment);
@@ -1566,13 +1798,13 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     return {
       outcome: "assignment",
       assignment: {
-        id: `asg_${digest([chosen.head.id, chosen.role, policy.version, String(chosen.ordinal)])}`,
+        id: `asg_${digest([chosen.head.id, chosen.role, standing.version, String(chosen.ordinal)])}`,
         recordId: chosen.head.id,
         rootId: chosen.head.rootId,
         kind: chosen.head.kind,
         role: chosen.role,
         lane,
-        policyVersion: policy.version,
+        policyVersion: standing.version,
         ordinal: chosen.ordinal,
         seed: seed.toString(),
         inputDigest,
@@ -1631,7 +1863,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     if (request.runId === "") {
       return { outcome: "refused", refusal: { reason: "invalid", detail: "a claim names no run" } };
     }
-    const policy = (await policyInForce()).policy;
+    const policy = (await policyInForce(moment)).policy;
     if (policy.leaseSeconds <= 0) {
       return {
         outcome: "refused",
@@ -1791,7 +2023,7 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
   async function renew(request: RenewRequest): Promise<RenewResult> {
     const moment = request.now ?? now();
     const fence = count(request.fence);
-    const policy = (await policyInForce()).policy;
+    const policy = (await policyInForce(moment)).policy;
     if (policy.leaseSeconds <= 0) {
       return {
         outcome: "refused",
@@ -2020,5 +2252,6 @@ export function coordinator(store: CoordinatorStore, now: () => number = Date.no
     finish,
     abandon,
     spend: async (moment?: number) => spendOn(moment ?? now()),
+    open: async (moment?: number) => openClaims(moment ?? now()),
   };
 }

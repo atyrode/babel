@@ -15,9 +15,12 @@ import { afterEach, expect, test } from "bun:test";
 import type { GuestDatabase, GuestSqlParam, GuestSqlRow, GuestSqlStatement } from "@manifold/plugin-kit";
 import { SCHEMA_V1 } from "./schema.ts";
 import {
+  applyBudget,
+  budgetChanges,
   coordinator,
   DEFAULT_POLICY,
   leaseFloor,
+  validateBudget,
   validateNewPolicy,
   validatePolicy,
   type Assignment,
@@ -920,4 +923,231 @@ test("a corpus larger than one page is read whole: the first page and the last b
   // …and the reserved coverage lane draws the oldest due across the WHOLE corpus, which is the
   // first row of the first page.
   expect(draws.some((assignment) => assignment.recordId === oldest)).toBe(true);
+});
+
+// ---------------------------------------------------------------------------- the budget overlay
+
+/** One `budgets` row, as the `setBudget` act writes one: what it moves and when it stops. */
+async function overlay(
+  db: GuestDatabase,
+  id: string,
+  moves: {
+    readonly expiresAt: number;
+    readonly createdAt?: number;
+    readonly batchSize?: number;
+    readonly perCycleCost?: number;
+    readonly dailyCost?: number;
+    readonly concurrentPerMachine?: number;
+    readonly clearedAt?: number;
+  },
+): Promise<void> {
+  await db.run(
+    `INSERT INTO budgets(id, created_at, expires_at, batch_size, per_cycle_cost, daily_cost,
+                         concurrent_per_machine, reason, cleared_at)
+     VALUES(?,?,?,?,?,?,?,?,?)`,
+    [
+      id,
+      new Date(moves.createdAt ?? NOW - 1000).toISOString(),
+      new Date(moves.expiresAt).toISOString(),
+      moves.batchSize ?? null,
+      moves.perCycleCost ?? null,
+      moves.dailyCost ?? null,
+      moves.concurrentPerMachine ?? null,
+      "a drain",
+      moves.clearedAt === undefined ? null : new Date(moves.clearedAt).toISOString(),
+    ],
+  );
+}
+
+/** The run row that binds a claim's job to a machine; `openClaims` reads the machine off it. */
+async function runOn(db: GuestDatabase, jobId: string, machineId: string): Promise<void> {
+  await db.run(
+    `INSERT INTO runs(id, kind, machine_id, job_id, started_at, records, payload)
+     VALUES(?, 'atyrode.babel.evaluate', ?, ?, ?, 0, '{}')`,
+    [`run_${jobId}`, machineId, jobId, new Date(NOW).toISOString()],
+  );
+}
+
+test("an overlay moves the batch and the ceilings while it lasts, and nothing when it has expired", async () => {
+  const { db, coord } = await deployment({ enabled: true, batchSize: 1, perCycleCost: 0.1, dailyCost: 0.2 });
+  const id = await record(db, "hyp_00000001", "hypothesis", 40);
+  await filing(db, id, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+  // One slot, and it is held: the standing policy draws nothing.
+  await claimRow(db, "asg_open", "cycle_1", 0.01, null, 0, "job_open");
+  const standing = await coord.draw({ runId: "cycle_1", now: NOW });
+  if (standing.outcome !== "gap") throw new Error("a full batch drew work");
+  expect(standing.gap.reason).toBe("batch");
+
+  await overlay(db, "bdg_drain", { expiresAt: NOW + 600_000, batchSize: 4, perCycleCost: 1, dailyCost: 2 });
+  const inForce = await coord.policy(NOW);
+  expect(inForce.overlay?.id).toBe("bdg_drain");
+  // What admission is judged by is the overlaid number; what a draw is replayable against — the
+  // version, the lease, the shares — is the standing row, untouched.
+  expect(inForce.policy.batchSize).toBe(4);
+  expect(inForce.standing.batchSize).toBe(1);
+  expect(inForce.policy.leaseSeconds).toBe(inForce.standing.leaseSeconds);
+  expect(inForce.policy.version).toBe(inForce.standing.version);
+  expect(drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n })).recordId).toBe(id);
+
+  // NOBODY UNWINDS IT. The same store, ten minutes later, admits what the standing policy admits.
+  const later = NOW + 601_000;
+  expect((await coord.policy(later)).overlay).toBeNull();
+  expect((await coord.policy(later)).policy.batchSize).toBe(1);
+  const expired = await coord.draw({ runId: "cycle_1", now: later });
+  if (expired.outcome !== "gap") throw new Error("an expired overlay still admitted a draw");
+  expect(expired.gap.reason).toBe("batch");
+});
+
+test("a cleared overlay stops applying, and the one it covered applies again for what is left of its own TTL", async () => {
+  const { db, coord } = await deployment({ enabled: true, batchSize: 2 });
+  await overlay(db, "bdg_first", { createdAt: NOW - 5000, expiresAt: NOW + 600_000, batchSize: 8 });
+  await overlay(db, "bdg_second", { createdAt: NOW - 1000, expiresAt: NOW + 60_000, batchSize: 16, clearedAt: NOW });
+  expect((await coord.policy(NOW)).policy.batchSize).toBe(8);
+
+  await db.run(`UPDATE budgets SET cleared_at = ? WHERE id = 'bdg_first'`, [new Date(NOW).toISOString()]);
+  expect((await coord.policy(NOW)).policy.batchSize).toBe(2);
+});
+
+test("an in-flight assignment's id is identical before and after an overlay is set", async () => {
+  const { db, coord, assignment } = await oneAssignment();
+
+  await overlay(db, "bdg_drain", {
+    expiresAt: NOW + 3_600_000,
+    batchSize: 8,
+    perCycleCost: 1,
+    dailyCost: 2,
+  });
+
+  // THE WHOLE OF F5. A policy rewrite mid-cycle re-digested `policyVersion` and minted a second
+  // id for this very review, so one vote had two live claims and the ghost of the first held a
+  // batch slot for the rest of its lease. The same draw under an eight-times batch is the same
+  // assignment, named identically, and only its reservation moves.
+  const again = drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n }));
+  expect(again.id).toBe(assignment.id);
+  expect(again.policyVersion).toBe(assignment.policyVersion);
+  expect(again.reservedCost).not.toBe(assignment.reservedCost);
+
+  // And the claim taken BEFORE the overlay is the one the assignment still names: a second
+  // claimer is refused the conflict, and its own holder may still renew and finish it.
+  const claimed = await coord.claim({ assignment, runId: "run_a", jobId: "job_a", now: NOW });
+  if (claimed.outcome !== "granted") throw new Error(claimed.refusal.detail);
+  const contended = await coord.claim({ assignment: again, runId: "run_b", now: NOW + 1000 });
+  if (contended.outcome !== "refused") throw new Error("an overlay minted a second claim");
+  expect(contended.refusal.reason).toBe("conflict");
+  const renewed = await coord.renew({
+    id: again.id,
+    runId: "run_a",
+    fence: claimed.claim.fence,
+    now: NOW + 2000,
+  });
+  expect(renewed.outcome).toBe("renewed");
+});
+
+test("the batch is per machine: two machines hold four, the fifth draw is refused naming them, and a settlement admits the next", async () => {
+  const { db, coord } = await deployment({
+    enabled: true,
+    batchSize: 8,
+    concurrentPerMachine: 2,
+    perCycleCost: 4,
+    dailyCost: 8,
+  });
+  const id = await record(db, "hyp_00000001", "hypothesis", 40);
+  await filing(db, id, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+  const fleet = ["dev-01", "dev-02"];
+
+  for (const [n, machine] of ["dev-01", "dev-01", "dev-02", "dev-02"].entries()) {
+    const jobId = `job_${String(n)}`;
+    await claimRow(db, `asg_live${String(n)}`, "cycle_dead", 0.1, null, 0, jobId);
+    await runOn(db, jobId, machine);
+  }
+  expect(await coord.open(NOW)).toEqual({ total: 4, byMachine: { "dev-01": 2, "dev-02": 2 } });
+
+  const full = await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: fleet });
+  if (full.outcome !== "gap") throw new Error("a full fleet drew a fifth assignment");
+  expect(full.gap.reason).toBe("batch");
+  // Naming WHERE, which is what seven hundred "the cycle batch is already claimed" lines never did.
+  expect(full.gap.detail).toContain("dev-01 holds 2");
+  expect(full.gap.detail).toContain("dev-02 holds 2");
+
+  // One machine's claim settles…
+  const settled = await coord.finish({
+    id: "asg_live0",
+    runId: "cycle_dead",
+    fence: 1,
+    cost: 0.1,
+    outcome: "completed",
+    now: NOW,
+  });
+  expect(settled.outcome).toBe("finished");
+  expect(drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: fleet })).recordId).toBe(id);
+
+  // …and a caller that cannot say where the work would run is judged against ONE machine's
+  // worth, so a draw with no fleet named never claims the fan a fleet would allow.
+  const alone = await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n });
+  if (alone.outcome !== "gap") throw new Error("an unnamed fleet drew against the whole deployment");
+  expect(alone.gap.reason).toBe("batch");
+});
+
+test("an overlay that raises the per-machine bound raises the fleet's cap with it", async () => {
+  const { db, coord } = await deployment({
+    enabled: true,
+    batchSize: 8,
+    concurrentPerMachine: 1,
+    perCycleCost: 4,
+    dailyCost: 8,
+  });
+  const id = await record(db, "hyp_00000001", "hypothesis", 40);
+  await filing(db, id, "ent_0000000a");
+  await fact(db, "ent_0000000a", "lifecycle", "active");
+  await claimRow(db, "asg_live", "cycle_dead", 0.1, null, 0, "job_live");
+  await runOn(db, "job_live", "dev-01");
+
+  const bounded = await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: ["dev-01"] });
+  if (bounded.outcome !== "gap") throw new Error("a machine at its bound took a second job");
+  expect(bounded.gap.reason).toBe("batch");
+
+  await overlay(db, "bdg_drain", { expiresAt: NOW + 600_000, concurrentPerMachine: 4 });
+  expect(
+    drawn(await coord.draw({ runId: "cycle_1", now: NOW, seed: 3n, machines: ["dev-01"] })).recordId,
+  ).toBe(id);
+});
+
+test("the overlay's own validator refuses what a policy being installed would be refused for", async () => {
+  const standing: Policy = { ...DEFAULT_POLICY, enabled: true, leaseSeconds: 900, batchSize: 4 };
+  const drain = {
+    id: "bdg_1",
+    createdAt: NOW,
+    expiresAt: NOW + 3_600_000,
+    batchSize: null,
+    perCycleCost: null,
+    dailyCost: null,
+    concurrentPerMachine: null,
+    reason: "a drain",
+  };
+  // An overlay that moves nothing is not one; the CHECK in the table says the same thing.
+  expect(validateBudget(standing, drain)).toContain("moves no number");
+  // A lease is the standing policy's and an overlay may not move it, so a batch the lease cannot
+  // cover is refused here rather than discovered as expired claims.
+  expect(validateBudget(standing, { ...drain, batchSize: 64 })).toContain("1280s");
+  expect(validateBudget(standing, { ...drain, concurrentPerMachine: 64 })).toContain("1280s");
+  // The standing rules, judged against the policy the overlay would produce.
+  expect(validateBudget(standing, { ...drain, dailyCost: 0.1 })).toContain("below the per-cycle cost");
+  expect(validateBudget(standing, { ...drain, perCycleCost: 0 })).toContain("must be positive");
+  expect(validateBudget(standing, { ...drain, expiresAt: NOW, batchSize: 8 })).toContain(
+    "no time at all",
+  );
+  expect(validateBudget(standing, { ...drain, batchSize: 8, perCycleCost: 1, dailyCost: 2 })).toBeNull();
+
+  // And what it produces is the standing policy with those numbers and nothing else moved.
+  const overlaid = applyBudget(standing, { ...drain, batchSize: 8, dailyCost: 9 });
+  expect(overlaid).toEqual({ ...standing, batchSize: 8, dailyCost: 9 });
+  // What it REPORTS is what it named. A batch moved with no per-machine bound beside it moves
+  // the bound too (one falls back to the other), and saying so as a second row would read as
+  // two knobs where the drain turned one.
+  expect(budgetChanges(standing, { ...drain, batchSize: 8, dailyCost: 9 })).toEqual([
+    { field: "batchSize", standing: 4, overlaid: 8 },
+    { field: "dailyCost", standing: 2, overlaid: 9 },
+  ]);
 });

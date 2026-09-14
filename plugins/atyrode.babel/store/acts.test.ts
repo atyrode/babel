@@ -12,6 +12,8 @@ import {
   NO_TOPIC,
   applyPlan,
   answer,
+  clearBudget,
+  setBudget,
   comment,
   declinePlan,
   file,
@@ -955,11 +957,98 @@ test("a policy below the measured lease floor is refused, and the floor is the m
   expect(JSON.parse(String(stored[0]?.payload))).toMatchObject({ enabled: true, leaseSeconds: 900 });
 });
 
+test("an overlay is a row of its own: setting and clearing one writes no policies row", async () => {
+  const store = openStore();
+  await migrate(store);
+  await setPolicy(store, { ...DEFAULT_POLICY, enabled: true, batchSize: 4 }, "turning it on", OPERATOR);
+  const before = await rows<{ version: string; payload: string; seq: bigint }>(
+    store,
+    `SELECT version, payload, seq FROM policies ORDER BY seq`,
+  );
+
+  const overlaid = await setBudget(
+    store,
+    {
+      expiresAt: new Date(store.now() + 2 * 3_600_000).toISOString(),
+      batchSize: 8,
+      perCycleCost: 2,
+      dailyCost: 20,
+      reason: "draining victorballu before the 13:00Z reset",
+    },
+    OPERATOR,
+  );
+  expect(overlaid.changes).toEqual([
+    { field: "batchSize", standing: 4, overlaid: 8 },
+    { field: "perCycleCost", standing: 0.25, overlaid: 2 },
+    { field: "dailyCost", standing: 2, overlaid: 20 },
+  ]);
+  const cleared = await clearBudget(store, { id: overlaid.id, reason: "done" }, OPERATOR);
+  expect(cleared.id).toBe(overlaid.id);
+
+  // THE ACCEPTANCE OF #260: the standing policy is byte-for-byte what it was, so every
+  // assignment id derived from its version is where it was too.
+  expect(
+    await rows<{ version: string; payload: string; seq: bigint }>(
+      store,
+      `SELECT version, payload, seq FROM policies ORDER BY seq`,
+    ),
+  ).toEqual(before);
+  // And the overlay's own row keeps both instants: what it did, and when it stopped.
+  const held = await rows<{ id: string; batch_size: bigint | null; cleared_at: string | null; reason: string }>(
+    store,
+    `SELECT id, batch_size, cleared_at, reason FROM budgets`,
+  );
+  expect(held).toEqual([
+    {
+      id: overlaid.id,
+      batch_size: 8n,
+      cleared_at: cleared.at,
+      reason: "draining victorballu before the 13:00Z reset",
+    },
+  ]);
+
+  // Clearing it twice is refused rather than rewriting when it ended.
+  expect(clearBudget(store, { id: overlaid.id, reason: "" }, OPERATOR)).rejects.toThrow(
+    /was cleared at/,
+  );
+  expect(clearBudget(store, { id: "bdg_nothing", reason: "" }, OPERATOR)).rejects.toThrow(
+    /no budget overlay bdg_nothing/,
+  );
+});
+
+test("an overlay the standing lease cannot cover is refused, and so is one that moves nothing", async () => {
+  const store = openStore();
+  await migrate(store);
+  await setPolicy(store, { ...DEFAULT_POLICY, enabled: true, batchSize: 4 }, "on", OPERATOR);
+  const expiresAt = new Date(store.now() + 3_600_000).toISOString();
+
+  // eval-policy-8's batch, against the lease the deployment actually has: refused at the door
+  // instead of discovered as claims that expired during their own preparation.
+  expect(
+    setBudget(store, { expiresAt, batchSize: 256, perCycleCost: 4, dailyCost: 8, reason: "drain" }, OPERATOR),
+  ).rejects.toThrow(/needs 5120s/);
+  expect(setBudget(store, { expiresAt, reason: "drain" }, OPERATOR)).rejects.toThrow(
+    /moves no number/,
+  );
+  expect(
+    setBudget(store, { expiresAt: "not an instant", batchSize: 8, reason: "drain" }, OPERATOR),
+  ).rejects.toThrow(/is not an instant/);
+  expect(
+    setBudget(
+      store,
+      { expiresAt: new Date(store.now() - 1000).toISOString(), batchSize: 8, reason: "drain" },
+      OPERATOR,
+    ),
+  ).rejects.toThrow(/no time at all/);
+  expect(await rows(store, `SELECT id FROM budgets`)).toEqual([]);
+});
+
 // ---------------------------------------------------------------------------- the crossing
 
 test("the importable tables are derived from the migration itself", () => {
   const tables = importableTables();
-  expect(Object.keys(tables)).toHaveLength(23);
+  // Twenty-three from the crossing, plus `budgets` — the overlay table #260 added.
+  expect(Object.keys(tables)).toHaveLength(24);
   expect(tables["dispositions"]).toEqual([
     "id",
     "record_id",

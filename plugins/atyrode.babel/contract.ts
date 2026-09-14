@@ -96,6 +96,9 @@ export const ACTIONS = {
   unfile: "unfile",
   tell: "tell",
   setPolicy: "setPolicy",
+  /** The two acts of #260: a bounded exception to the standing policy, and its early end. */
+  setBudget: "setBudget",
+  clearBudget: "clearBudget",
   launch: "launch",
   launchPreview: "launchPreview",
   stop: "stop",
@@ -590,10 +593,34 @@ export const RecipeRowSchema = z.strictObject({
 });
 
 /**
+ * THE OVERLAY IN FORCE, as the ceilings panel shows it beside the standing numbers (#260): what
+ * it moves, until when, and why. `changes` carries both values because the operator's question
+ * is never "what is the batch" but "what did the drain change it from".
+ *
+ * The fields are the policy's own camelCase names — `batchSize`, `perCycleCost`, `dailyCost`,
+ * `concurrentPerMachine` — so a reader of the panel and a reader of `setBudget` see one
+ * vocabulary.
+ */
+export const BudgetOverlaySchema = z.strictObject({
+  id: z.string(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+  reason: z.string(),
+  changes: z.array(
+    z.strictObject({ field: z.string(), standing: z.number(), overlaid: z.number() }),
+  ),
+});
+export type BudgetOverlay = z.infer<typeof BudgetOverlaySchema>;
+
+/**
  * The evaluation policy in force, as Watch reads it: the ceilings and the lanes projected out of
  * the stored document, what has been spent against them today, the recipes joined to what has
- * actually run under them — and the document itself, so the projection above can be checked
- * against the row it came from rather than believed.
+ * actually run under them, the bounded exception in force over it — and the document itself, so
+ * the projection above can be checked against the row it came from rather than believed.
+ *
+ * `ceilings` are the STANDING numbers throughout. An overlay is reported as itself rather than
+ * folded into them, because a panel that showed 64 with no other word would be the interface
+ * that let the drain's batch outlive the drain by ninety minutes unnoticed.
  */
 export const PolicyResultSchema = z.strictObject({
   version: z.string(),
@@ -609,6 +636,8 @@ export const PolicyResultSchema = z.strictObject({
   spentTodayUsd: z.number(),
   lanes: z.array(z.strictObject({ lane: z.string(), role: z.string(), share: z.number() })),
   recipes: z.array(RecipeRowSchema),
+  /** Null when nothing is overlaid: the standing numbers are the numbers. */
+  overlay: BudgetOverlaySchema.nullable(),
   payload: z.record(z.string(), z.unknown()),
 });
 

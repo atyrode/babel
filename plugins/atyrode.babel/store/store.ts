@@ -29,6 +29,7 @@ import {
   PulseResultSchema,
   ROLES,
   RULINGS,
+  type BudgetOverlay,
   type Comment,
   type FeedPost,
   type FeedQuery,
@@ -39,6 +40,12 @@ import {
 } from "../contract.ts";
 import type { z } from "zod";
 import { standingOf, type Standing } from "./acts.ts";
+import {
+  budgetChanges,
+  DEFAULT_POLICY,
+  type Budget,
+  type Policy,
+} from "./coordinator.ts";
 import {
   buildFeedIndex,
   filterFeed,
@@ -183,6 +190,8 @@ export interface PolicyResult {
   spentTodayUsd: number;
   lanes: { lane: string; role: string; share: number }[];
   recipes: RecipeRow[];
+  /** The bounded exception in force over the standing numbers (#260), or null: there is none. */
+  overlay: BudgetOverlay | null;
   /** The stored policy document, so nothing is lost in the projection above. */
   payload: Record<string, unknown>;
 }
@@ -219,6 +228,14 @@ function count(value: SqlParam | undefined): number {
   if (typeof value === "number") return value;
   if (typeof value === "bigint") return Number(value);
   return 0;
+}
+
+/** A nullable numeric column, NULL kept: an overlay carries only the numbers it moves (#260),
+ *  and reading an absent one as zero would report a ceiling of nothing. */
+function maybeNumber(value: SqlParam | undefined): number | null {
+  if (typeof value === "number") return value;
+  if (typeof value === "bigint") return Number(value);
+  return null;
 }
 
 /** A stored JSON document as an object; anything else — absent, null, malformed — is empty. */
@@ -1250,6 +1267,52 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   /**
+   * THE BOUNDED EXCEPTION IN FORCE (#260): the newest overlay that has neither expired nor been
+   * cleared, with what it moves read against the standing numbers this projection just read.
+   *
+   * The comparison is `budgetChanges`, the coordinator's own, rather than a second one written
+   * here: a panel that reported a change admission does not make would be worse than a panel
+   * that reported nothing.
+   */
+  const overlayInForce = async (
+    at: number,
+    ceilings: PolicyResult["ceilings"],
+  ): Promise<BudgetOverlay | null> => {
+    const row = await one(
+      `SELECT id, created_at, expires_at, batch_size, per_cycle_cost, daily_cost,
+              concurrent_per_machine, reason
+         FROM budgets WHERE cleared_at IS NULL AND expires_at > ?
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [stamp(at)],
+    );
+    if (row === null) return null;
+    const overlay: Budget = {
+      id: text(row["id"]),
+      createdAt: instant(text(row["created_at"])),
+      expiresAt: instant(text(row["expires_at"])),
+      batchSize: maybeNumber(row["batch_size"]),
+      perCycleCost: maybeNumber(row["per_cycle_cost"]),
+      dailyCost: maybeNumber(row["daily_cost"]),
+      concurrentPerMachine: maybeNumber(row["concurrent_per_machine"]),
+      reason: text(row["reason"]),
+    };
+    const standing: Policy = {
+      ...DEFAULT_POLICY,
+      perCycleCost: ceilings.perRunUsd,
+      dailyCost: ceilings.perDayUsd,
+      batchSize: ceilings.concurrent,
+      concurrentPerMachine: ceilings.concurrent,
+    };
+    return {
+      id: overlay.id,
+      createdAt: text(row["created_at"]),
+      expiresAt: text(row["expires_at"]),
+      reason: overlay.reason,
+      changes: budgetChanges(standing, overlay).map((change) => ({ ...change })),
+    };
+  };
+
+  /**
    * The evaluation policy in force: the newest row, with the ceilings and lanes read out of its
    * own document and the recipes joined to what has actually run under them.
    *
@@ -1308,20 +1371,31 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
       const share = numberField(payload, key);
       if (share > 0) lanes.push({ lane: key.replace("_share", ""), role, share });
     }
+    // THE STANDING NUMBERS, in whichever spelling the row holds: the payload is a `Policy`
+    // document (camelCase, as `setPolicy` and the importer write one) and the Go-era rows the
+    // crossing brought across spell the same fields with underscores. `concurrent` is the
+    // PER-MACHINE bound (#260) — what one host may hold at once — which is
+    // `concurrentPerMachine` where a policy states it and the batch it was written with
+    // otherwise.
+    const ceiling = (camel: string, snake: string): number =>
+      numberField(payload, camel) || numberField(payload, snake);
+    const ceilings = {
+      perRunUsd: ceiling("perCycleCost", "per_cycle_cost"),
+      perDayUsd: ceiling("dailyCost", "daily_cost"),
+      concurrent:
+        numberField(payload, "concurrentPerMachine") || ceiling("batchSize", "batch_size"),
+    };
     return {
       version: text(row?.["version"]),
       seq: count(row?.["seq"]),
       actorId: text(row?.["actor_id"]),
       reason: text(row?.["reason"]),
       recordedAt: text(row?.["recorded_at"]),
-      ceilings: {
-        perRunUsd: numberField(payload, "per_cycle_cost"),
-        perDayUsd: numberField(payload, "daily_cost"),
-        concurrent: numberField(payload, "batch_size"),
-      },
+      ceilings,
       spentTodayUsd: count(spent?.["spent"]),
       lanes,
       recipes,
+      overlay: await overlayInForce(at, ceilings),
       payload,
     };
   };

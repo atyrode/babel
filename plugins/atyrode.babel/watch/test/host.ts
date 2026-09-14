@@ -120,7 +120,8 @@ export const POLICY: PolicyResult = {
       runs: 0,
     },
   ],
-  payload: { batch_size: 3 },
+  overlay: null,
+  payload: { batchSize: 3 },
 };
 
 export const TOPICS: TopicsResult = {

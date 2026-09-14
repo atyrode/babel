@@ -88,7 +88,7 @@ async function seedRecord(store: ActsStore, id: string, kind = "proposal"): Prom
   );
 }
 
-test("the nine acts are declared, each carrying the write capability except the crossing", () => {
+test("the eleven acts are declared, each carrying the write capability except the crossing", () => {
   const harness = openHarness();
   const names = harness.doors.map((door) => door.action.name);
   expect(names).toEqual([
@@ -100,6 +100,8 @@ test("the nine acts are declared, each carrying the write capability except the 
     ACTIONS.unfile,
     ACTIONS.tell,
     ACTIONS.setPolicy,
+    ACTIONS.setBudget,
+    ACTIONS.clearBudget,
     ACTIONS.importLedger,
   ]);
   for (const door of harness.doors) {

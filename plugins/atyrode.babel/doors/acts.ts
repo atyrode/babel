@@ -17,19 +17,25 @@ import {
 import {
   ActRefused,
   AnsweredSchema,
+  BudgetClearedSchema,
+  BudgetSetSchema,
+  ClearBudgetInputSchema,
   CommentedSchema,
   FiledSchema,
   ImportedSchema,
   InterestedSchema,
   PolicySetSchema,
+  SetBudgetInputSchema,
   SetPolicyInputSchema,
   ToldSchema,
   answer,
+  clearBudget,
   comment,
   file,
   importLedger,
   interest,
   rule,
+  setBudget,
   setPolicy,
   tell,
   unfile,
@@ -144,6 +150,31 @@ const setPolicyAction = defineServerAction({
   caps: ACT_CAPS,
   input: SetPolicyInputSchema,
   result: PolicySetSchema,
+});
+
+/*
+  THE TWO DOORS OF #260, and they carry exactly the authority `setPolicy` carries. Setting a
+  batch of sixty-four for two hours and setting it for ever are the same act with different
+  words: both decide how much of an operator's money a loop may commit without asking again. A
+  cheaper door for the temporary one would make "temporary" the way round the check.
+
+  What they are NOT is a scheduler command. `budget.set` starts nothing and `budget.clear` stops
+  nothing: the next admission reads the newest unexpired row, and that is the whole mechanism.
+*/
+const setBudgetAction = defineServerAction({
+  name: ACTIONS.setBudget,
+  title: "Set a budget overlay with a TTL",
+  caps: ACT_CAPS,
+  input: SetBudgetInputSchema,
+  result: BudgetSetSchema,
+});
+
+const clearBudgetAction = defineServerAction({
+  name: ACTIONS.clearBudget,
+  title: "Clear a budget overlay before it expires",
+  caps: ACT_CAPS,
+  input: ClearBudgetInputSchema,
+  result: BudgetClearedSchema,
 });
 
 const importLedgerAction = defineServerAction({
@@ -269,6 +300,26 @@ export function actDoors(store: ActsStore): readonly Door[] {
         const installed = await setPolicy(store, args.policy, args.reason, ctx.principal.id);
         ctx.emit(OWN_NODE, EVENTS.recordWritten, { version: installed.version, seq: installed.seq });
         return installed;
+      }),
+    ),
+
+    defineDoor(setBudgetAction, async (ctx, args) =>
+      await acted(async () => {
+        const overlaid = await setBudget(store, args, ctx.principal.id);
+        ctx.emit(OWN_NODE, EVENTS.recordWritten, {
+          budgetId: overlaid.id,
+          expiresAt: overlaid.expiresAt,
+          changes: overlaid.changes.length,
+        });
+        return overlaid;
+      }),
+    ),
+
+    defineDoor(clearBudgetAction, async (ctx, args) =>
+      await acted(async () => {
+        const cleared = await clearBudget(store, args, ctx.principal.id);
+        ctx.emit(OWN_NODE, EVENTS.recordWritten, { budgetId: cleared.id, cleared: true });
+        return cleared;
       }),
     ),
 

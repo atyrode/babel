@@ -9,11 +9,22 @@ import {
 } from "../machine/engine/results.ts";
 import { SCHEMA_V1 } from "./schema.ts";
 import {
+  budgetChanges,
+  coordinator,
+  PolicySchema,
+  validateBudget,
+  validateNewPolicy,
+  type Budget,
+  type Policy,
+} from "./coordinator.ts";
+export {
+  DEFAULT_POLICY,
+  leaseFloor,
+  perMachineBound,
   PolicySchema,
   validateNewPolicy,
   type Policy,
 } from "./coordinator.ts";
-export { DEFAULT_POLICY, leaseFloor, PolicySchema, validateNewPolicy, type Policy } from "./coordinator.ts";
 
 /*
   THE OPERATOR'S ACTS, as writes. Everything in this file appends: a ruling, a comment, an
@@ -378,6 +389,42 @@ export const PolicySetSchema = z.strictObject({
   at: z.string(),
 });
 export type PolicySet = z.infer<typeof PolicySetSchema>;
+
+/**
+ * WHAT AN OVERLAY IS SET WITH (#260). `expiresAt` is an ISO-8601 instant and is required: an
+ * overlay with no end is an edit of the standing policy wearing another name, and the whole
+ * point of the row is that nobody has to remember to unwind it. Every number is optional and
+ * an overlay carries only what it moves; the reason is required, because "why is the batch
+ * sixty-four today" is the question nobody could answer on 2026-09-13.
+ */
+export const SetBudgetInputSchema = z.strictObject({
+  expiresAt: z.string().min(1).max(64),
+  batchSize: z.number().int().min(1).max(4096).optional(),
+  perCycleCost: z.number().positive().max(1_000_000).optional(),
+  dailyCost: z.number().positive().max(1_000_000).optional(),
+  concurrentPerMachine: z.number().int().min(1).max(4096).optional(),
+  reason: z.string().trim().min(1).max(2000),
+});
+
+export const ClearBudgetInputSchema = z.strictObject({
+  id: z.string().min(1).max(200),
+  reason: z.string().max(2000).default(""),
+});
+
+export const BudgetSetSchema = z.strictObject({
+  id: z.string(),
+  expiresAt: z.string(),
+  at: z.string(),
+  /** What it moves, so the answer says the change rather than the row. */
+  changes: z.array(z.strictObject({ field: z.string(), standing: z.number(), overlaid: z.number() })),
+});
+export type BudgetSet = z.infer<typeof BudgetSetSchema>;
+
+export const BudgetClearedSchema = z.strictObject({
+  id: z.string(),
+  at: z.string(),
+});
+export type BudgetCleared = z.infer<typeof BudgetClearedSchema>;
 
 export const ImportedSchema = z.strictObject({
   source: z.string(),
@@ -1442,6 +1489,107 @@ export async function setPolicy(
   );
   store.touch();
   return { version: policy.version, seq: Number(rows[0]?.seq ?? 1), at };
+}
+
+/**
+ * Sets a BUDGET OVERLAY: the standing policy's batch and ceilings, moved for a stated while and
+ * a stated reason, and nothing else about the policy touched (#260).
+ *
+ * This is the act a drain performs instead of `setPolicy`. It writes no `policies` row, so the
+ * version every in-flight assignment id digests is exactly where it was, and it ends by itself:
+ * `expires_at` passing is the whole of the unwind. What it refuses is what
+ * `validateNewPolicy` refuses about the policy the overlay would produce — a lease that cannot
+ * cover the batch above all, which is the refusal the drain talked itself out of five times by
+ * raising the lease instead.
+ *
+ * An overlay does not supersede the live one by editing it: the newest unexpired row is simply
+ * the one in force, so setting a second is a second row and clearing it exposes the first again
+ * for whatever is left of its own TTL.
+ */
+export async function setBudget(
+  store: ActsStore,
+  args: z.infer<typeof SetBudgetInputSchema>,
+  operator: string,
+): Promise<BudgetSet> {
+  if (operator === "") throw new ActRefused("an overlay has no operator");
+  const expires = Date.parse(args.expiresAt);
+  if (!Number.isFinite(expires)) {
+    throw new ActRefused(`${JSON.stringify(args.expiresAt)} is not an instant an overlay can expire at`);
+  }
+  const created = store.now();
+  const standing = (await coordinator({ db: store.db }, store.now).policy(created)).standing;
+  const overlay: Budget = {
+    id: newId("bdg"),
+    createdAt: created,
+    expiresAt: expires,
+    batchSize: args.batchSize ?? null,
+    perCycleCost: args.perCycleCost ?? null,
+    dailyCost: args.dailyCost ?? null,
+    concurrentPerMachine: args.concurrentPerMachine ?? null,
+    reason: args.reason,
+  };
+  const refusal = validateBudget(standing, overlay);
+  if (refusal !== null) throw new ActRefused(refusal);
+  const at = stamp(created);
+  await store.db.run(
+    `INSERT INTO budgets(id, created_at, expires_at, batch_size, per_cycle_cost, daily_cost,
+                         concurrent_per_machine, reason, cleared_at)
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    [
+      overlay.id,
+      at,
+      stamp(expires),
+      overlay.batchSize,
+      overlay.perCycleCost,
+      overlay.dailyCost,
+      overlay.concurrentPerMachine,
+      overlay.reason,
+    ],
+  );
+  store.touch();
+  return {
+    id: overlay.id,
+    expiresAt: stamp(expires),
+    at,
+    changes: budgetChanges(standing, overlay).map((change) => ({ ...change })),
+  };
+}
+
+/**
+ * Ends an overlay before its expiry. `cleared_at` is written once, from NULL — the guard is the
+ * WHERE clause, so clearing twice refuses rather than rewriting when it ended — and an overlay
+ * that has already expired is refused for the same reason a finished claim is: there is nothing
+ * left to end.
+ */
+export async function clearBudget(
+  store: ActsStore,
+  args: z.infer<typeof ClearBudgetInputSchema>,
+  operator: string,
+): Promise<BudgetCleared> {
+  if (operator === "") throw new ActRefused("clearing an overlay has no operator");
+  const at = stamp(store.now());
+  const rows = await store.db.query<{ id: string }>(
+    `UPDATE budgets SET cleared_at = ?
+      WHERE id = ? AND cleared_at IS NULL AND expires_at > ?
+      RETURNING id`,
+    [at, args.id, at],
+  );
+  const cleared = rows[0];
+  if (cleared === undefined) {
+    const held = await first<{ cleared_at: string | null; expires_at: string }>(
+      store,
+      `SELECT cleared_at, expires_at FROM budgets WHERE id = ?`,
+      [args.id],
+    );
+    if (held === null) throw new ActRefused(`no budget overlay ${args.id}`);
+    throw new ActRefused(
+      held.cleared_at === null
+        ? `budget overlay ${args.id} expired at ${held.expires_at}, so the standing policy is already in force`
+        : `budget overlay ${args.id} was cleared at ${held.cleared_at}`,
+    );
+  }
+  store.touch();
+  return { id: cleared.id, at };
 }
 
 // ---------------------------------------------------------------------------- the crossing
