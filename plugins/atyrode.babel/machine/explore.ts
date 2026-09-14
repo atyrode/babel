@@ -27,7 +27,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { RUN_STAGES, type Receipt } from "../contract.ts";
+import { OMP_HOME, RUN_STAGES, type Receipt } from "../contract.ts";
 import {
   PROGRESS_STAGE,
   runEngineJob,
@@ -37,7 +37,7 @@ import {
 } from "./engine/client.ts";
 import {
   ENGINE_FAILURES,
-  ProfileRefSchema,
+  SessionRefSchema,
   SANDBOXED_RUN,
   UNSANDBOXED,
   type EngineLimits,
@@ -121,7 +121,7 @@ export const ExploreInputSchema = z.strictObject({
     args: z.array(z.string()).default([]),
     cwd: z.string().default(""),
   }),
-  profile: ProfileRefSchema,
+  session: SessionRefSchema,
   preparation: z.strictObject({
     id: z.string().default(""),
     selection: z.array(SelectionSchema).default([]),
@@ -166,7 +166,18 @@ export interface OperationDeps {
    */
   served?: (locator: Evidence["locator"]) => boolean;
   now?: () => Date;
-  /** Where the per-launch runtime-info sidecar directory is made; the system temp dir by default. */
+  /**
+   * THE JOB'S PRIVATE HOME: where the OWNER materialized `models.yml` and `config.yml` out of
+   * the `atyrode.babel.inference` binding, and what `HOME` is for the engine. `process.env.HOME`
+   * by default, which is what it is inside a job (`/home/job`).
+   *
+   * It is a dependency rather than a read of the environment because admission is a check on
+   * THIS directory (`machine/engine/launch.ts` `inferenceShortfall`): a test that could not name
+   * the home could only exercise the refusal, never the admission, and a lane that is only ever
+   * tested refused is a lane nobody has run.
+   */
+  home?: string;
+  /** Where the per-stage engine working directory is made; the system temp dir by default. */
   workDir?: string;
   /** Where this run says it is; a caller that hands none is not watched (`progress.ts`). */
   progress?: ProgressChannel | undefined;
@@ -360,7 +371,7 @@ async function runStage(args: {
     const outcome = await runEngineJob(
       {
         runId: `${runId}/${stage}`,
-        profile: input.profile,
+        session: input.session,
         prompt,
         submitSchema: exploreJsonSchema(stage),
         tools,
@@ -383,9 +394,14 @@ async function runStage(args: {
         launch: {
           binary: input.engine.binary,
           args: input.engine.args,
-          profile: input.profile,
-          runtimeInfoPath: join(directory, "runtime.json"),
-          ...(input.engine.cwd === "" ? {} : { cwd: input.engine.cwd }),
+          session: input.session,
+          // The job's private home, where the OWNER materialized `models.yml` and `config.yml`
+          // out of the inference binding; the launch reads that they are there and never their
+          // contents (`machine/engine/launch.ts`).
+          home: deps.home ?? process.env["HOME"] ?? OMP_HOME,
+          // A disposable directory per stage. omp starting in `$HOME` would switch itself to a
+          // temp dir of its own; this makes the choice Babel's and the path one it can clean up.
+          cwd: input.engine.cwd === "" ? directory : input.engine.cwd,
         },
         limits: args.limits,
         // The client's `prompt` record is written the instant the job's material leaves Babel,

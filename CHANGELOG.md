@@ -11,6 +11,17 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **Babel launches its own engine and meters it through its own inference service.** Code's
+  `code engine` is gone (atyrode/code#153) and Manifold has no plugin-to-plugin call, so
+  `explore` and `evaluate` now spawn `omp --mode rpc` themselves from a manifest-pinned `omp`
+  runtime tool and reach a model only through the `atyrode.babel.inference` binding, whose
+  runtime is omp's own gateway — so the job holds no credential and the machine owner meters
+  every call (ADR 0038). A launch names its model, its thinking level and the account it spends;
+  the receipt records all three, the per-run ceiling rides on the request as
+  `limits.inference.costMicros`, and a failed launch carries a named cause
+  (`broker_unavailable`, `rate_limited`, `inference_unbound`) instead of a sentence about a
+  missing ready frame (#279, #277, #267, and the hub half of #256).
+
 - **Babel becomes a manifold plugin family.** `plugins/atyrode.babel` is the
   baseline — one SQLite store of its own (manifold ADR 0034), the doors over it
   and the five event kinds it originates — with `atyrode.babel.feed` (Home, the

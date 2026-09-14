@@ -19,10 +19,15 @@ import { refuseRow } from "../store/acts.ts";
 import { evaluate, EvaluateInputSchema } from "./evaluate.ts";
 import type { Row } from "./engine/rows.ts";
 import type { OperationDeps } from "./explore.ts";
+import { writeJobHome } from "./test/fixtures.ts";
 import type { OutputFile, OutputSink } from "./output.ts";
 
 const FIXTURE = join(import.meta.dir, "engine", "fakeengine.ts");
-const PROFILE = { id: "analysis", revision: 3 };
+const SESSION_CHOICE = {
+  model: "anthropic/claude-sonnet-5",
+  thinking: "high" as const,
+  account: { provider: "anthropic", identityKey: "victorballu@gmail.com" },
+};
 
 const RECIPE = { id: "reception-vote", version: 2, title: "Receive a record", body: "Read it and say what you think." };
 
@@ -107,7 +112,14 @@ interface Launched {
   promptPath: string;
 }
 
-/** One `evaluate` run against the fixture. */
+/**
+ * One `evaluate` run against the fixture.
+ *
+ * The HOME is the one the OWNER materialized the inference binding into, which is what makes the
+ * launch admissible (`machine/engine/launch.ts` `inferenceShortfall`); containment is relaxed
+ * because this process is a development shell and not a Manifold job sandbox, which
+ * `machine/explore.test.ts` proves is refused.
+ */
 async function launch(options: {
   result: unknown;
   assignment?: Record<string, unknown>;
@@ -123,6 +135,7 @@ async function launch(options: {
   const promptPath = join(directory, "prompt.txt");
   const payloadPath = join(directory, "submission.json");
   await Bun.write(payloadPath, JSON.stringify(options.result));
+  const home = await writeJobHome(directory);
 
   const input = EvaluateInputSchema.parse({
     runId: "run_evaluate_test",
@@ -131,7 +144,7 @@ async function launch(options: {
       binary: process.execPath,
       args: [FIXTURE, "--fake-prompt-out", promptPath, "--fake-submit", payloadPath],
     },
-    profile: PROFILE,
+    session: SESSION_CHOICE,
     assignment: { ...ASSIGNMENT, ...options.assignment },
     target: options.target ?? TARGET,
     previous: options.previous ?? [],
@@ -141,9 +154,10 @@ async function launch(options: {
     recipe: RECIPE,
     sources: [{ kind: "session", selector: "omp/session-1", digest: "sha256:capture" }],
     caps: { toolCalls: 4, minutes: 0, perRunUsd: 0, idleMs: 15_000, handshakeMs: 15_000 },
+    requireContainment: false,
   });
   const sink = new MemorySink();
-  const receipt = await evaluate(input, sink, { workDir: directory, ...options.deps });
+  const receipt = await evaluate(input, sink, { workDir: directory, home, ...options.deps });
   return { sink, receipt, promptPath };
 }
 

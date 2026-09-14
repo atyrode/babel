@@ -27,10 +27,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { ROLES, RUN_STAGES, type Receipt } from "../contract.ts";
+import { OMP_HOME, ROLES, RUN_STAGES, type Receipt } from "../contract.ts";
 import { PROGRESS_STAGE, runEngineJob, type EngineOutcome } from "./engine/client.ts";
 import {
-  ProfileRefSchema,
+  SessionRefSchema,
   SANDBOXED_RUN,
   UNSANDBOXED,
   type EngineLimits,
@@ -119,7 +119,7 @@ export const EvaluateInputSchema = z.strictObject({
     args: z.array(z.string()).default([]),
     cwd: z.string().default(""),
   }),
-  profile: ProfileRefSchema,
+  session: SessionRefSchema,
   assignment: AssignmentSchema,
   /** The projection of the record under review, as the hub built it for this role. */
   target: z.unknown(),
@@ -344,7 +344,7 @@ async function runReview(
     const outcome = await runEngineJob(
       {
         runId,
-        profile: input.profile,
+        session: input.session,
         prompt,
         submitSchema: reviewJsonSchema(role),
         tools,
@@ -365,9 +365,10 @@ async function runReview(
         launch: {
           binary: input.engine.binary,
           args: input.engine.args,
-          profile: input.profile,
-          runtimeInfoPath: join(directory, "runtime.json"),
-          ...(input.engine.cwd === "" ? {} : { cwd: input.engine.cwd }),
+          session: input.session,
+          /** The job's private home; see `OperationDeps.home` in `machine/explore.ts`. */
+          home: deps.home ?? process.env["HOME"] ?? OMP_HOME,
+          cwd: input.engine.cwd === "" ? directory : input.engine.cwd,
         },
         limits,
         // The client's `prompt` record is the instant the review's material leaves Babel: the

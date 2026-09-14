@@ -22,6 +22,7 @@ import {
   OUTPUT_LOCATION,
   PRESET_OPERATIONS,
 } from "../contract.ts";
+import { ExploreInputSchema } from "../machine/explore.ts";
 import type {
   Conductor,
   JobLaunch,
@@ -32,7 +33,7 @@ import type {
   RunPlan,
   TickReport,
 } from "../server/conductor.ts";
-import type { BabelJobs } from "../server/plan.ts";
+import type { BabelJobs, ServicePolicyOutcome } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
@@ -54,9 +55,21 @@ const RECIPE: Recipe = {
 
 const LIMITS = { timeoutMs: 600_000, memoryBytes: 1_073_741_824, processes: 32, outputBytes: 1_048_576 };
 
+/** The session the operator's own launch names: a model, a level, and the account to spend. */
+const SESSION = {
+  model: "anthropic/claude-sonnet-5",
+  thinking: "high" as const,
+  account: {
+    provider: "anthropic",
+    scope: "atyrode.omp.accounts.broker@7/m-dev-01",
+    credentialId: "3",
+    identityKey: "victorballu@gmail.com",
+  },
+};
+
 const PLAN: RunPlan = {
-  engine: { binary: "/runtime/bin/code", args: [] },
-  profile: { id: "analysis", revision: 3 },
+  engine: { binary: "/runtime/bin/omp", args: [] },
+  session: SESSION,
   caps: { perRunUsd: 0.0625, toolCalls: 40, idleMs: 120_000, handshakeMs: 30_000 },
   recipes: {},
   metered: {},
@@ -173,6 +186,8 @@ let fleet: Fleet;
 let cycle: Cycle;
 let cookbook: Record<string, Recipe>;
 let doors: readonly Door[];
+/** What `services.policy` answers; a test overrides it to reach the other three states. */
+let servicePolicy: ServicePolicyOutcome;
 let minted = 0;
 
 const ctx = {
@@ -254,6 +269,14 @@ async function preparationOf(db: TestStore["db"], runId: string): Promise<Record
 }
 
 beforeEach(async () => {
+  servicePolicy = {
+    ok: true,
+    policy: {
+      prices: {
+        models: { [SESSION.model]: { inputPerMillion: 2_000_000, outputPerMillion: 10_000_000 } },
+      },
+    },
+  };
   harness = await openTestStore(NOW);
   fleet = new Fleet();
   cycle = new Cycle();
@@ -285,10 +308,17 @@ beforeEach(async () => {
     jobs: () => fleet,
     // The drawn presets run cycles of the loop, and a cycle asks what the folders a scan
     // catalogued are. These sessions record no workspace, so it is never asked.
+    services: () => ({ policy: () => servicePolicy }),
     machines: () => ({
       repository: () => ({ ok: false, reason: "this test enrolls no machine" }),
     }),
-    plan: () => PLAN,
+    // The ceiling is the plan's, and only the two model-driving operations carry one: a beat
+    // reaches no model, so a request for one asks for no inference allowance at all (#279).
+    plan: (_policy, operationId, session) => ({
+      ...PLAN,
+      session: session ?? PLAN.session,
+      limits: operationId === OPERATIONS.scan ? LIMITS : { ...LIMITS, inference: { costMicros: 62_500 } },
+    }),
     cycle: () => cycle,
     now: () => store.now(),
   };
@@ -362,9 +392,12 @@ test("a preview states what will run, and runs nothing", async () => {
     payload: JSON.stringify({
       runId: "run-old",
       closure: "completed",
+      // Babel's own launch report, as the machine half writes it into the receipt (#279).
       profile: {
-        id: "analysis", revision: 3, model: "claude-sonnet-4-5", disclosure: "cloud",
-        costPer1k: { input: 0.003, output: 0.015 },
+        schema: "babel.launch/1",
+        model: "anthropic/claude-opus-5",
+        thinking: "xhigh",
+        account: "victorballu@gmail.com",
       },
     }),
   });
@@ -379,16 +412,109 @@ test("a preview states what will run, and runs nothing", async () => {
     machineId: MACHINE,
     kind: "explore",
     // What actually ran last, from the receipt that recorded it — never the reference asked for.
-    profile: {
-      id: "analysis", revision: 3, model: "claude-sonnet-4-5", disclosure: "cloud",
-      costPer1k: { input: 0.003, output: 0.015 },
-    },
+    profile: { model: "anthropic/claude-opus-5", thinking: "xhigh", account: "victorballu@gmail.com" },
     // One claim's reservation is the per-cycle allowance over the batch; the day's is the day's.
     ceiling: { perRunUsd: 0.0625, perDayUsd: 2 },
+    // AND WHAT THE OWNER WOULD METER IT AT (ADR 0038). This preview names no session, so the
+    // policy is installed and the price is unknowable: the ceiling the request would carry is
+    // still stated, because it is the plan's and not the model's.
+    session: {
+      serviceId: "atyrode.babel.inference",
+      account: "",
+      model: "",
+      priced: false,
+      ceilingMicros: 62_500,
+      policy: "unpriced",
+      unreadable: "",
+      note: "atyrode.babel.inference is installed; choose a model to see what it is priced at",
+    },
   });
   expect(fleet.executed).toEqual([]);
   expect(fleet.described).toBe(0);
   expect((await harness.store.runs({ limit: 25, offset: 0 })).total).toBe(1);
+});
+
+test("a preview of the session the operator chose carries its price and its ceiling", async () => {
+  // The sentence above the button and the number the owner enforces come from one place: the
+  // installed policy's price for that exact model, and the ceiling the job request will carry.
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
+  });
+
+  expect(answer["session"]).toEqual({
+    serviceId: "atyrode.babel.inference",
+    account: SESSION.account.identityKey,
+    model: SESSION.model,
+    priced: true,
+    price: { inputPerMillion: 2_000_000, outputPerMillion: 10_000_000 },
+    ceilingMicros: 62_500,
+    policy: "priced",
+    unreadable: "",
+    note:
+      `${SESSION.model} is metered at $2.0000 per million input tokens and $10.0000 per million ` +
+      `output, on ${SESSION.account.identityKey}, under a ceiling of $0.0625 for this run`,
+  });
+});
+
+test("a hub that refused Babel's meter kind is reported as unsupported, not as unconfigured", async () => {
+  // #284: on a hub predating manifold#572 `ServicePolicySchema` admits `openai-usage` alone, so
+  // `setupInference` cannot write the policy omp's wire needs and the configuration read shows
+  // the same absence as a machine nobody set up. Telling the operator to run `setupInference`
+  // would be telling him to repeat what the hub just refused — and on that hub the deployment
+  // review refuses Babel's whole machine half over the same missing policy, so the sentence he
+  // needs names the hub, not the machine.
+  servicePolicy = {
+    ok: true,
+    policy: null,
+    setup: {
+      state: "refused",
+      detail:
+        'invalid_value at policies.0.operations.stream.meter.kind: expected "openai-usage"',
+    },
+  };
+
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
+  });
+
+  expect(answer["session"]).toMatchObject({
+    policy: "unsupported",
+    priced: false,
+    setupRefusal:
+      'invalid_value at policies.0.operations.stream.meter.kind: expected "openai-usage"',
+  });
+  expect(String((answer["session"] as Record<string, unknown>)["note"])).toContain(
+    "does not know the pi-native-usage meter kind",
+  );
+});
+
+test("an absent policy refused for any other reason reports the hub's own sentence", async () => {
+  servicePolicy = {
+    ok: true,
+    policy: null,
+    setup: { state: "refused", detail: "service_configuration_conflict" },
+  };
+
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
+  });
+
+  // Still `missing` — the owner CAN act on it — but never silently: the refusal is the evidence.
+  expect(answer["session"]).toMatchObject({
+    policy: "missing",
+    setupRefusal: "service_configuration_conflict",
+  });
+});
+
+test("an absent policy nobody has tried to install still says setupInference installs one", async () => {
+  servicePolicy = { ok: true, policy: null };
+
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
+  });
+
+  expect(answer["session"]).toMatchObject({ policy: "missing" });
+  expect((answer["session"] as Record<string, unknown>)["setupRefusal"]).toBeUndefined();
 });
 
 test("a preview of a deployment that has run nothing states no profile", async () => {
@@ -439,8 +565,10 @@ test("reading what is new carries the window's sessions and the recipe it was to
   expect(document).toMatchObject({
     runId: "run_000001",
     machineId: MACHINE,
-    engine: { binary: "/runtime/bin/code", args: [], cwd: "" },
-    profile: { id: "analysis", revision: 3 },
+    engine: { binary: "/runtime/bin/omp", args: [], cwd: "" },
+    // The session travels IN THE DOCUMENT, and the credential does not: the three job inputs
+    // beside it carry the pool and the two home files (#279).
+    session: SESSION,
     recipes: [RECIPE],
     stages: ["explore"],
     caps: { toolCalls: 40, minutes: 0, perRunUsd: 0.0625, idleMs: 120_000, handshakeMs: 30_000 },
@@ -455,6 +583,16 @@ test("reading what is new carries the window's sessions and the recipe it was to
   });
   // One job's whole input record is bounded at 64 KiB, and this one is inside it.
   expect(new TextEncoder().encode(JSON.stringify(launch.input)).byteLength).toBeLessThan(65_536);
+
+  // AND THE MACHINE HALF ACCEPTS THE DOCUMENT THIS DOOR WROTE, parsed by its own schema rather
+  // than compared to a fixture (#284). The blocker this holds: `session` is the operator's
+  // whole `SessionChoice` — provider, scope, credentialId, identityKey — and
+  // `machine/engine/launch.ts` `SessionRefSchema` is strict, so a narrower shape refused every
+  // explore `unrecognized_keys` in `machine/main.ts` before omp was ever launched. The
+  // hand-written session in the machine's own fixtures could not see it; this can only be
+  // wrong if the two halves genuinely disagree.
+  const received = ExploreInputSchema.parse(document);
+  expect(received.session).toEqual(SESSION);
 
   const run = await harness.store.run("run_000001");
   expect(run.run).toMatchObject({ recipe: RECIPE.id, kind: OPERATIONS.explore });

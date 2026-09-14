@@ -179,6 +179,40 @@
   background: var(--babel-bg);
 }
 
+/* WHO ANSWERS THE RUN: the same field furniture as a knob, wider, because a model
+   reference and an identity key are long and are read character by character. */
+.plugin-atyrode_babel_watch__session-input {
+  width: 14rem;
+  padding: var(--babel-space-1) var(--babel-space-2);
+  border: 1px solid var(--babel-rule-strong);
+  border-radius: var(--babel-radius-sm);
+  color: var(--babel-ink);
+  background: var(--babel-bg);
+  font-family: var(--babel-font-mono);
+}
+
+.plugin-atyrode_babel_watch__session-note {
+  margin: 0;
+  max-width: 78ch;
+}
+
+/* The policy's state as a word beside the price: what the note is a note about. */
+.plugin-atyrode_babel_watch__session-policy {
+  padding: 1px var(--babel-space-2);
+  border: 1px solid var(--babel-rule);
+  border-radius: 2rem;
+  color: var(--babel-ink-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.plugin-atyrode_babel_watch__session-policy[data-policy="priced"] {
+  border-color: color-mix(in srgb, var(--babel-accent) 45%, transparent);
+  color: var(--babel-accent-ink);
+  background: color-mix(in srgb, var(--babel-accent) 14%, transparent);
+}
+
 .plugin-atyrode_babel_watch__chip {
   padding: 2px var(--babel-space-2);
   border: 1px solid var(--babel-rule);

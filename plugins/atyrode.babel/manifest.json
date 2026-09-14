@@ -12,7 +12,9 @@
     "jobs:input",
     "jobs:cancel",
     "locations:read",
-    "locations:write"
+    "locations:write",
+    "services:read",
+    "services:configure"
   ],
   "dataVersion": {
     "major": 1,
@@ -56,24 +58,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "1ea1fa6b2dcdf806a0e03576fd89abc83bf90664d330b01fd092bff8ed7928c3",
+        "sha256": "453c91afb49963319af8a1a08eb8ad3a17e6744c6f58c9f4fa81c49919407b9d",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "1ea1fa6b2dcdf806a0e03576fd89abc83bf90664d330b01fd092bff8ed7928c3",
+        "entrySha256": "453c91afb49963319af8a1a08eb8ad3a17e6744c6f58c9f4fa81c49919407b9d",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "1ea1fa6b2dcdf806a0e03576fd89abc83bf90664d330b01fd092bff8ed7928c3",
+        "sha256": "453c91afb49963319af8a1a08eb8ad3a17e6744c6f58c9f4fa81c49919407b9d",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "1ea1fa6b2dcdf806a0e03576fd89abc83bf90664d330b01fd092bff8ed7928c3",
+        "entrySha256": "453c91afb49963319af8a1a08eb8ad3a17e6744c6f58c9f4fa81c49919407b9d",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -399,17 +401,70 @@
           "input": {
             "type": "string",
             "required": true,
-            "maxLength": 65536
+            "maxLength": 49152
+          },
+          "accountPool": {
+            "type": "string",
+            "required": true,
+            "maxLength": 8192
+          },
+          "models": {
+            "type": "string",
+            "required": true,
+            "maxLength": 4096
+          },
+          "config": {
+            "type": "string",
+            "required": true,
+            "maxLength": 4096
           }
         },
         "inputFiles": {
           "input": {
             "input": "input"
+          },
+          "models": {
+            "input": "models",
+            "homePath": [
+              ".omp",
+              "agent",
+              "models.yml"
+            ],
+            "jsonValues": [
+              {
+                "path": [
+                  "providers",
+                  "*",
+                  "baseUrl"
+                ],
+                "serviceId": "atyrode.babel.inference",
+                "value": "url"
+              },
+              {
+                "path": [
+                  "providers",
+                  "*",
+                  "apiKey"
+                ],
+                "serviceId": "atyrode.babel.inference",
+                "value": "bearer"
+              }
+            ]
+          },
+          "config": {
+            "input": "config",
+            "homePath": [
+              ".omp",
+              "agent",
+              "config.yml"
+            ]
           }
         },
         "runtimeTools": [
           "bun",
-          "code"
+          "omp",
+          "ca-certificates",
+          "system"
         ],
         "executable": {
           "runtimeTool": "bun"
@@ -447,7 +502,20 @@
           "outputBytes": 16777216,
           "concurrentJobs": 16
         },
-        "stdin": false
+        "stdin": false,
+        "environment": {
+          "SSL_CERT_FILE": "/runtime/bin/ca-certificates"
+        },
+        "services": [
+          {
+            "serviceId": "atyrode.babel.inference",
+            "revision": "1",
+            "operationIds": [
+              "models",
+              "stream"
+            ]
+          }
+        ]
       },
       "atyrode.babel.evaluate": {
         "argv": [
@@ -474,17 +542,70 @@
           "input": {
             "type": "string",
             "required": true,
-            "maxLength": 65536
+            "maxLength": 49152
+          },
+          "accountPool": {
+            "type": "string",
+            "required": true,
+            "maxLength": 8192
+          },
+          "models": {
+            "type": "string",
+            "required": true,
+            "maxLength": 4096
+          },
+          "config": {
+            "type": "string",
+            "required": true,
+            "maxLength": 4096
           }
         },
         "inputFiles": {
           "input": {
             "input": "input"
+          },
+          "models": {
+            "input": "models",
+            "homePath": [
+              ".omp",
+              "agent",
+              "models.yml"
+            ],
+            "jsonValues": [
+              {
+                "path": [
+                  "providers",
+                  "*",
+                  "baseUrl"
+                ],
+                "serviceId": "atyrode.babel.inference",
+                "value": "url"
+              },
+              {
+                "path": [
+                  "providers",
+                  "*",
+                  "apiKey"
+                ],
+                "serviceId": "atyrode.babel.inference",
+                "value": "bearer"
+              }
+            ]
+          },
+          "config": {
+            "input": "config",
+            "homePath": [
+              ".omp",
+              "agent",
+              "config.yml"
+            ]
           }
         },
         "runtimeTools": [
           "bun",
-          "code"
+          "omp",
+          "ca-certificates",
+          "system"
         ],
         "executable": {
           "runtimeTool": "bun"
@@ -510,7 +631,48 @@
           "outputBytes": 16777216,
           "concurrentJobs": 16
         },
-        "stdin": false
+        "stdin": false,
+        "environment": {
+          "SSL_CERT_FILE": "/runtime/bin/ca-certificates"
+        },
+        "services": [
+          {
+            "serviceId": "atyrode.babel.inference",
+            "revision": "1",
+            "operationIds": [
+              "models",
+              "stream"
+            ]
+          }
+        ]
+      }
+    },
+    "tools": {
+      "omp": {
+        "linux-x64": {
+          "url": "https://github.com/can1357/oh-my-pi/releases/download/v18.1.14/omp-linux-x64",
+          "sha256": "27dd66cb6a2c39fff51e1fe6db40f1f376fee4a3d04457f236edaa5d0290e4d2",
+          "format": "raw",
+          "entry": [
+            "omp-linux-x64"
+          ],
+          "entrySha256": "27dd66cb6a2c39fff51e1fe6db40f1f376fee4a3d04457f236edaa5d0290e4d2",
+          "maxBytes": 200111584,
+          "maxExpandedBytes": 200111584,
+          "maxMembers": 1
+        },
+        "linux-arm64": {
+          "url": "https://github.com/can1357/oh-my-pi/releases/download/v18.1.14/omp-linux-arm64",
+          "sha256": "93ba1143e95c6a138ecfaea5efa6057e45aa6e40853d88a55b48586d118f7325",
+          "format": "raw",
+          "entry": [
+            "omp-linux-arm64"
+          ],
+          "entrySha256": "93ba1143e95c6a138ecfaea5efa6057e45aa6e40853d88a55b48586d118f7325",
+          "maxBytes": 156551464,
+          "maxExpandedBytes": 156551464,
+          "maxMembers": 1
+        }
       }
     }
   },

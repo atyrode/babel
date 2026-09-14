@@ -1,8 +1,11 @@
 /*
-  THE OMP RPC CLIENT. Babel speaks nothing of its own on this pipe: Code launches `omp --mode rpc`
-  inside its sandbox and forwards the engine's stdio byte for byte, so what travels here is OMP's
-  native protocol (packages/coding-agent/src/modes/rpc/rpc-types.ts), ported from
-  internal/worker/{rpc.go,worker.go}.
+  THE OMP RPC CLIENT. Babel speaks nothing of its own on this pipe: `launch.ts` spawns
+  `omp --mode rpc` inside the job's sandbox, so what travels here is OMP's native protocol
+  (packages/coding-agent/src/modes/rpc/rpc-types.ts), ported from internal/worker/{rpc.go,worker.go}.
+
+  Until #279 the process on the other end was `code engine`, forwarding omp's stdio byte for
+  byte. Code's engine is gone (atyrode/code#153) and Babel launches omp itself — and not one line
+  of the wire changed, which is why this module is nearly untouched: it always spoke to omp.
 
   Babel sends four commands — negotiate_protocol, set_host_tools, prompt, get_session_stats (plus
   abort on cancellation) — and answers host_tool_call frames. Everything Babel needs from a run
@@ -10,10 +13,20 @@
   that records the result under the job's own JSON Schema, which the engine validates before
   Babel ever sees a call.
 
-  What this module owns is the boundary (SPEC.md §2.6): the containment check before any prompt is
+  What this module owns is the boundary (SPEC.md §2.6): the admission check before any prompt is
   written, authorization of every tool call, the lifetime of the whole process tree, and the run's
-  final status. What it never does is choose a model, retry, compact or steer the model's turn —
-  those are the engine's, and this client is thin so that they stay there.
+  final status. What changed at #279 is what admission READS. It used to read Code's
+  runtime-info sidecar — a declaration by the process being judged. It now reads the job's own
+  surroundings and the job's own home: the sandbox the machine owner built, and the two files the
+  owner materialized out of the inference binding. A run that could reach a model outside the
+  owner's metered proxy is refused there, before a byte of prompt is written.
+
+  What this module never does is choose a model, retry, compact or steer the model's turn — those
+  are the engine's, and this client is thin so that they stay there. The one number it keeps about
+  them is a COUNT: the `auto_retry_start` frames the engine sends, bounded, so a run inside a
+  window that has run out ends `rate_limited` instead of spending an hour saying nothing (K-5).
+  The count and the named cause are read off the PIPE, never off stderr — omp logs to
+  `~/.omp/logs` and leaves stderr empty, so a client watching stderr watches nothing (#284).
 
   Two rules shape the reader. v2's chunked framing is negotiated because it is what makes a large
   tool result or a long final message lossless rather than truncated at the engine's physical
@@ -28,19 +41,23 @@ import { z } from "zod";
 import {
   containmentShortfall,
   DEFAULT_LIMITS,
+  diagnoseEngineError,
+  diagnoseStderr,
   ENGINE_FAILURES,
   EngineFailure,
+  inferenceShortfall,
+  LAUNCH_FAILURES,
+  LAUNCH_REPORT_SCHEMA,
   launchEngine,
-  metadataShortfall,
-  readRuntimeReport,
+  observeContainment,
   SANDBOXED_RUN,
   type EngineFailureCode,
   type EngineLimits,
   type EngineProcess,
+  type LaunchReport,
   type LaunchSpec,
-  type ProfileRef,
   type Requirement,
-  type RuntimeReport,
+  type SessionRef,
 } from "./launch.ts";
 
 // ---------------------------------------------------------------------------- the wire
@@ -64,6 +81,15 @@ const FRAME = {
   fallbackSucceeded: "retry_fallback_succeeded",
   extensionError: "extension_error",
   messageEnd: "message_end",
+  /**
+   * THE TWO FRAMES A PROVIDER REFUSAL IS COUNTED FROM (#284). omp announces every refusal it is
+   * about to retry as `auto_retry_start` and the settlement as `auto_retry_end`, with the
+   * fields `attempt`, `maxAttempts`, `delayMs`, `errorMessage` and `success`/`finalError`. They
+   * are the names omp's own RPC client accepts (`modes/rpc/rpc-client.ts`, the session-event
+   * set) and they were read off the real binary, not inferred.
+   */
+  autoRetryStart: "auto_retry_start",
+  autoRetryEnd: "auto_retry_end",
 } as const;
 
 /** The lifecycle frames a run records as progress and nothing else. */
@@ -75,8 +101,6 @@ const LIFECYCLE_FRAMES: Record<string, true> = {
   tool_execution_end: true,
   auto_compaction_start: true,
   auto_compaction_end: true,
-  auto_retry_start: true,
-  auto_retry_end: true,
 };
 
 /** Commands Babel writes. */
@@ -132,6 +156,15 @@ const FrameSchema = z.looseObject({
   model: z.unknown().optional(),
   event: z.string().optional(),
   extensionPath: z.string().optional(),
+  /** `auto_retry_start`/`auto_retry_end`: which refusal this is, of how many omp itself allows. */
+  attempt: z.number().optional(),
+  maxAttempts: z.number().optional(),
+  delayMs: z.number().optional(),
+  /** What the provider or the gateway said, as omp reports it on the pipe. */
+  errorMessage: z.string().optional(),
+  finalError: z.string().optional(),
+  /** `message_end`: the assistant message, whose `stopReason` is how a failed turn is known. */
+  message: z.unknown().optional(),
 });
 export type Frame = z.infer<typeof FrameSchema>;
 
@@ -146,6 +179,17 @@ const ChunkSchema = z.looseObject({
 
 /** What set_host_tools answers with: the names the engine actually registered. */
 const ToolNamesSchema = z.looseObject({ toolNames: z.array(z.string()) });
+
+/**
+ * The part of a `message_end` message a failure is read from. omp ends a turn the provider or
+ * the gateway refused with `stopReason:"error"` and the refusal verbatim in `errorMessage` —
+ * measured against 18.1.14: `"Unable to connect. Is the computer able to access the url?"` for
+ * a gateway that is not listening, and the gateway's own sentence for one that answers 5xx.
+ */
+const TurnMessageSchema = z.looseObject({
+  stopReason: z.string().optional(),
+  errorMessage: z.string().optional(),
+});
 
 /** What `prompt` answers with. `agentInvoked:false` is a prompt the engine completed locally. */
 const PromptAckSchema = z.looseObject({ agentInvoked: z.boolean().optional() });
@@ -423,8 +467,9 @@ export interface ToolBroker {
 /** One analysis or evaluation job: what the engine is asked, what it may call, what it must produce. */
 export interface EngineJob {
   runId: string;
-  profile: ProfileRef;
-  /** The whole of what the model is told. Written only after the runtime report passes admission. */
+  /** WHO ANSWERS AND ON WHOSE ACCOUNT; the launch report records it verbatim (#279). */
+  session: SessionRef;
+  /** The whole of what the model is told. Written only after admission passes. */
   prompt: string;
   /** Registered as the submit tool's parameters; the engine enforces it structurally. */
   submitSchema: unknown;
@@ -487,17 +532,31 @@ export interface FailureRecord {
   code: EngineFailureCode;
   message: string;
   origin: "engine" | "babel";
+  /**
+   * THE NAMED CAUSE, when one was diagnosed (#277): `broker_unavailable`, `rate_limited`,
+   * `inference_unbound`; "" when the code is the whole of what is known.
+   *
+   * On 2026-09-13 every run of an hour failed as "the engine closed its stdout before a ready
+   * frame, exit status -1" while the real reason was one line earlier on stderr and nowhere in
+   * any receipt. The code says WHERE the run stopped; this says WHY, and it is the field an
+   * operator acts on.
+   */
+  named: string;
 }
 
 /** What one supervised run did. It is returned whenever a process started, including on failure. */
 export interface EngineOutcome {
   closure: "completed" | "failed";
   failure: FailureRecord | null;
-  /** The launch report, present whenever the engine became ready — including a refused launch. */
-  runtime: RuntimeReport | null;
-  runtimeUnknown: readonly string[];
-  /** Code's post-exit report, when it wrote one; where the measured resources live. */
-  finished: RuntimeReport | null;
+  /**
+   * BABEL'S OWN LAUNCH REPORT, present whenever a process was started — including a run refused
+   * before its prompt. It replaces Code's runtime-info sidecar, and every field in it is something
+   * this process observed or was handed as a job input.
+   */
+  report: LaunchReport | null;
+  reportUnknown: readonly string[];
+  /** The same report rewritten after the engine exits: the exit status and the retries. */
+  finished: LaunchReport | null;
   /** The accepted submission's payload, or null when nothing was accepted. */
   result: unknown;
   submissions: number;
@@ -542,9 +601,20 @@ class Run {
   submissions = 0;
   result: unknown = null;
   usage: Usage | null = null;
-  runtime: RuntimeReport | null = null;
-  runtimeUnknown: readonly string[] = [];
-  finished: RuntimeReport | null = null;
+  report: LaunchReport | null = null;
+  reportUnknown: readonly string[] = [];
+  finished: LaunchReport | null = null;
+  /** `auto_retry_start` frames the engine sent; bounded by `limits.maxRetries`. */
+  retries = 0;
+  /** Set once `retries` passes the bound; the supervisor ends the run by name on its next turn. */
+  rateLimited = false;
+  /**
+   * THE LAST THING THE ENGINE ITSELF SAID WENT WRONG, verbatim, or "". It is the text a failed
+   * run is NAMED from (`diagnoseEngineError`), and it comes off the pipe — a retry frame's
+   * `errorMessage`, a settled retry's `finalError`, or the `errorMessage` of a turn omp ended
+   * with `stopReason:"error"`. Never off stderr: omp writes none.
+   */
+  engineError = "";
   tools: ToolDecision[] = [];
   progress: ProgressRecord[] = [];
   models: string[] = [];
@@ -621,6 +691,21 @@ export async function runEngineJob(job: EngineJob, deps: EngineDeps): Promise<En
   const engine = launchEngine(deps.launch);
   const run = new Run(job, deps, engine, new Inbox(engine.stdout, limits, engine));
   collectDiagnostics(run);
+  // THE LAUNCH REPORT IS WRITTEN BEFORE THE HANDSHAKE, not after it. A run that dies before its
+  // ready frame is exactly the run whose report is needed (#277): it names what was launched,
+  // under which session, inside which observed boundary. The post-exit copy below adds only the
+  // things that cannot be known yet — the exit status, the retries, the named cause.
+  run.report = {
+    schema: LAUNCH_REPORT_SCHEMA,
+    engine: { name: "omp", version: "" },
+    session: job.session,
+    containment: observeContainment(deps.launch.home, engine.env),
+    models: [],
+    failure: "",
+    reason: "",
+    retries: 0,
+    finished: false,
+  };
 
   let failure: EngineFailure | null = null;
   try {
@@ -628,12 +713,35 @@ export async function runEngineJob(job: EngineJob, deps: EngineDeps): Promise<En
   } catch (error) {
     failure = error instanceof EngineFailure ? error : new EngineFailure(ENGINE_FAILURES.launch, String(error), "babel");
   }
-  await readFinishedReport(run);
+  // A FAILED RUN'S CAUSE IS READ OFF WHAT THE ENGINE REPORTED, once, here, and in that order:
+  // the text it put on its own pipe first, its stderr tail only as a last resort (omp writes
+  // none — see `diagnoseStderr`). It is read only for a failure: a run that answered is
+  // explained by its answer, and a 429 it recovered from is a retry rather than a cause.
+  const diagnosed =
+    failure === null ? null : (diagnoseEngineError(run.engineError) ?? diagnoseStderr(run.stderr));
+  const named = failure === null ? "" : failure.named !== "" ? failure.named : (diagnosed?.name ?? "");
+  const said = run.engineError.trim();
+  const reason =
+    named === ""
+      ? ""
+      : (diagnosed?.reason ?? (said === "" ? (failure?.message ?? "") : said.slice(0, 512)));
+  run.finished = {
+    ...(run.report as LaunchReport),
+    models: [...run.models],
+    failure: named,
+    reason,
+    retries: run.retries,
+    finished: true,
+    exit_code: engine.exitCode(),
+  };
   return {
     closure: failure === null ? "completed" : "failed",
-    failure: failure === null ? null : { code: failure.code, message: failure.message, origin: failure.origin },
-    runtime: run.runtime,
-    runtimeUnknown: run.runtimeUnknown,
+    failure:
+      failure === null
+        ? null
+        : { code: failure.code, message: failure.message, origin: failure.origin, named },
+    report: run.report,
+    reportUnknown: run.reportUnknown,
     finished: run.finished,
     result: run.result,
     submissions: run.submissions,
@@ -691,9 +799,19 @@ async function ready(run: Run): Promise<void> {
   }
   if (inbound.kind === "error") throw inbound.failure;
   if (inbound.kind === "eof") {
+    // #277: AN EOF BEFORE THE READY FRAME IS NAMED, not described. The exit status alone was
+    // what every run of 2026-09-13 09:07–11:24 reported while the broker was down. An engine
+    // that never reached its pipe said nothing ON it either, so this is the one place the
+    // last-resort stderr reading is the ONLY reading there can be; when it names nothing the
+    // wording below stands, because a run that said nothing is honestly described as one.
+    const diagnosed = diagnoseStderr(run.stderr);
     throw new EngineFailure(
       ENGINE_FAILURES.handshake,
-      `the engine closed its stdout before a ready frame, exit status ${run.engine.exitCode()}`,
+      diagnosed === null
+        ? `the engine closed its stdout before a ready frame, exit status ${run.engine.exitCode()}`
+        : `${diagnosed.name}: ${diagnosed.reason}`,
+      "engine",
+      diagnosed?.name ?? "",
     );
   }
   const frame = inbound.frame;
@@ -710,27 +828,43 @@ async function ready(run: Run): Promise<void> {
 }
 
 /**
- * Reads Code's launch report and decides whether this engine may be prompted at all. Every
- * refusal here happens before a byte of the prompt is written: what a refused engine has seen is
- * the profile it was launched under and the tool names Babel would have registered.
+ * DECIDES WHETHER THIS ENGINE MAY BE PROMPTED AT ALL, over facts rather than over a declaration.
+ *
+ * Every refusal here happens before a byte of the prompt is written: what a refused engine has
+ * seen is the session it was launched under and the tool names Babel would have registered.
+ *
+ * The two checks are what #279 replaced Code's runtime-info sidecar with, and each is something
+ * this process can verify rather than believe:
+ *
+ * - the BOUNDARY is read out of the job's own surroundings (`observeContainment`), so a run
+ *   outside a Manifold job sandbox is refused by the same rule that used to refuse a Code
+ *   reporting no sandbox — except that nobody is being taken at their word;
+ * - the METERED LANE is read out of the job's own home (`inferenceShortfall`): the two files the
+ *   owner materialized out of the inference binding are there, and the launch environment holds
+ *   no provider credential with which the engine could reach a model any other way. That is the
+ *   check the sidecar's `lane` string was standing in for, done on the facts.
  */
 async function admit(run: Run): Promise<void> {
-  const { report, unknown } = await readRuntimeReport(run.deps.launch.runtimeInfoPath);
-  run.runtime = report;
-  run.runtimeUnknown = unknown;
-  const secret = metadataShortfall(report.metadata);
-  if (secret !== "") throw new EngineFailure(ENGINE_FAILURES.secretDeclared, secret);
-  if (report.profile.id !== run.job.profile.id || report.profile.revision !== run.job.profile.revision) {
+  const containment = observeContainment(run.deps.launch.home, run.engine.env);
+  if (run.report !== null) run.report = { ...run.report, containment };
+  const shortfall = containmentShortfall(containment, run.job.requirement ?? SANDBOXED_RUN);
+  if (shortfall !== "") throw new EngineFailure(ENGINE_FAILURES.containment, shortfall);
+  const unbound = await inferenceShortfall(run.deps.launch.home, run.engine.env);
+  if (unbound !== "") {
     throw new EngineFailure(
-      ENGINE_FAILURES.profileMismatch,
-      `the job named ${run.job.profile.id}@${run.job.profile.revision}, ` +
-        `Code launched ${report.profile.id}@${report.profile.revision}`,
+      ENGINE_FAILURES.inference,
+      unbound,
+      "babel",
+      LAUNCH_FAILURES.inferenceUnbound,
     );
   }
-  const shortfall = containmentShortfall(report.containment, run.job.requirement ?? SANDBOXED_RUN);
-  if (shortfall !== "") throw new EngineFailure(ENGINE_FAILURES.containment, shortfall);
-  run.spoke(String(report.metadata?.["model"] ?? ""));
-  run.record(PROGRESS_STAGE.launch, `admitted under ${report.containment?.backend ?? "no backend"}`);
+  // The model the run ASKED for is the first name in the trail; every later one is a model that
+  // actually answered and moved it (#261).
+  run.spoke(run.job.session.model);
+  run.record(
+    PROGRESS_STAGE.launch,
+    `admitted under ${containment.backend === "" ? "no backend" : containment.backend}`,
+  );
 }
 
 /** Negotiates the transport and registers the job's tools. */
@@ -816,6 +950,20 @@ async function supervise(run: Run): Promise<void> {
       run.engine.write({ id: run.command(), type: COMMAND.abort });
       throw new EngineFailure(ENGINE_FAILURES.stalled, "the run was cancelled", "babel");
     }
+    // THE RETRY CAP (K-5). Past the bound the run ends by name rather than spending its whole
+    // idle budget on a provider that is refusing: the engine is asked to abort, and the receipt
+    // says `rate_limited` with the count of `auto_retry_start` frames, which is a sentence an
+    // operator acts on.
+    if (run.rateLimited) {
+      run.engine.write({ id: run.command(), type: COMMAND.abort });
+      throw new EngineFailure(
+        ENGINE_FAILURES.rateLimited,
+        `the engine reported ${String(run.retries)} provider refusals, past the ` +
+          `${String(run.limits.maxRetries)} this run allows${run.engineError === "" ? "" : `: ${run.engineError}`}`,
+        "engine",
+        LAUNCH_FAILURES.rateLimited,
+      );
+    }
     const inbound = await run.inbox.next(run.limits.idleMs);
     if (inbound.kind === "timeout") {
       throw new EngineFailure(ENGINE_FAILURES.stalled, `no frame for ${run.limits.idleMs}ms`);
@@ -874,7 +1022,36 @@ async function handle(run: Run, frame: Frame): Promise<void> {
       });
       return;
     case FRAME.messageEnd:
+      noteTurnError(run, frame);
       return;
+    case FRAME.autoRetryStart: {
+      // ONE MORE PROVIDER REFUSAL, counted rather than parsed: what the line says decides
+      // nothing, only that omp is about to try again. This is the cap's only input.
+      run.retries += 1;
+      const said = (frame.errorMessage ?? "").trim();
+      if (said !== "") run.engineError = said;
+      run.record(
+        PROGRESS_STAGE.agent,
+        `the provider refused, retry ${String(frame.attempt ?? run.retries)} of ` +
+          `${String(frame.maxAttempts ?? 0)} after ${String(Math.round(frame.delayMs ?? 0))}ms` +
+          `${said === "" ? "" : `: ${said}`}`,
+      );
+      if (run.retries > run.limits.maxRetries) run.rateLimited = true;
+      return;
+    }
+    case FRAME.autoRetryEnd: {
+      // The settlement. A recovered retry is history; one that gave up names the cause the run
+      // is about to fail with, which is the whole of the gateway-is-down case.
+      const said = (frame.finalError ?? "").trim();
+      if (frame.success === false && said !== "") run.engineError = said;
+      run.record(
+        PROGRESS_STAGE.agent,
+        frame.success === false
+          ? `the retries gave up after ${String(frame.attempt ?? run.retries)}${said === "" ? "" : `: ${said}`}`
+          : `the retry recovered after ${String(frame.attempt ?? run.retries)}`,
+      );
+      return;
+    }
     case FRAME.modelChanged:
       run.spoke(modelName(frame.model));
       run.record(PROGRESS_STAGE.model, `model changed: ${JSON.stringify(frame.model ?? null)}`);
@@ -896,6 +1073,22 @@ async function handle(run: Run, frame: Frame): Promise<void> {
       run.unknown[frame.type] = true;
       return;
   }
+}
+
+/**
+ * KEEPS WHAT THE ENGINE SAID WENT WRONG, from a turn it ended in error.
+ *
+ * It is the gateway-is-down case in full: omp does not fail the process, does not close its
+ * pipe and writes nothing to stderr — it ends the turn with `stopReason:"error"` and the
+ * refusal in `errorMessage`, then `agent_end`. Without this the run failed as "0 submission(s),
+ * none accepted", which is #277's sentence under a different name.
+ */
+function noteTurnError(run: Run, frame: Frame): void {
+  const parsed = TurnMessageSchema.safeParse(frame.message);
+  if (!parsed.success || parsed.data.stopReason !== "error") return;
+  const said = (parsed.data.errorMessage ?? "").trim();
+  if (said !== "") run.engineError = said;
+  run.record(PROGRESS_STAGE.agent, `the turn ended in error${said === "" ? "" : `: ${said}`}`);
 }
 
 /**
@@ -1049,23 +1242,17 @@ async function finish(run: Run): Promise<void> {
 }
 
 /**
- * Reads Code's post-exit report for the measurements it carries. Best effort by contract: a
- * wrapper killed before it could write the report leaves the launch report in place, and Babel
- * claims no measurement from one that does not say it is finished.
- */
-async function readFinishedReport(run: Run): Promise<void> {
-  try {
-    const { report } = await readRuntimeReport(run.deps.launch.runtimeInfoPath);
-    if (report.finished) run.finished = report;
-  } catch {
-    /* the launch report is what there is */
-  }
-}
-
-/**
- * Drains the engine's stderr into a bounded tail. It is never parsed: stderr carries Code's and
- * the engine's own logging, and treating it as protocol would let a log line steer a run. The
- * bound is the point — a process writing a gigabyte must not take Babel down.
+ * Drains the engine's stderr into a bounded tail, and nothing else.
+ *
+ * The tail is never treated as protocol: stderr carries the engine's own logging, and a run
+ * steered by a log line would be a run anything in a transcript could steer. The bound is the
+ * point — a process writing a gigabyte must not take Babel down.
+ *
+ * IT NO LONGER COUNTS RETRIES (#284). The cap counted lines matching `429|rate.?limit` here,
+ * and omp 18.1.14 writes nothing here at all: its diagnostics go to `~/.omp/logs` and its
+ * refusals go on the pipe as `auto_retry_start` frames, which is what `handle` counts now. The
+ * tail survives for the one thing it can still answer — an engine that died before its pipe
+ * ever spoke (`ready`, `diagnoseStderr`) — and for a receipt's `stderrTail`.
  */
 function collectDiagnostics(run: Run): void {
   const limit = run.limits.stderrTailBytes;

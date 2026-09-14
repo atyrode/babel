@@ -102,6 +102,15 @@ export const ACTIONS = {
   launch: "launch",
   launchPreview: "launchPreview",
   stop: "stop",
+  /**
+   * The two doors #279 adds. `accounts` is a dry read of the accounts the machine's broker has
+   * observed, so the Start panel can offer the operator one to spend rather than ask him to
+   * type an identity key; `setupInference` installs or refreshes the `atyrode.babel.inference`
+   * policy on a machine, so the owner is not asked to hand-write the JSON of a service whose
+   * shape is Babel's own.
+   */
+  accounts: "accounts",
+  setupInference: "setupInference",
   // the crossing (owner only)
   importLedger: "importLedger",
 } as const;
@@ -439,6 +448,146 @@ export const ImportChunkSchema = z.strictObject({
   rows: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.null()]))).min(1).max(500),
 });
 
+// ------------------------------------------------------------------------- the model session
+
+/*
+  WHO ANSWERS A RUN, AND WHAT IT COSTS — the vocabulary #279 replaced a Code profile reference
+  with.
+
+  Until 2026-09-13 an `explore` or an `evaluate` named `analysis@3`, and what was behind it —
+  the model, the account, the price — was `code engine`'s to resolve and to report back. Code's
+  engine no longer exists (atyrode/code#153), so Babel's own job launches `omp --mode rpc` and
+  reaches a model ONLY through the `atyrode.babel.inference` service binding, whose runtime is
+  omp's own gateway. Three consequences shape everything below:
+
+  - The choice is the OPERATOR's and travels with the request. There is no profile to resolve,
+    so a run states its model, its thinking level and the account it spends, and the job carries
+    them as `models`/`config`/`accountPool` for the owner to materialize.
+  - The price is the OWNER's. `prices.models` in the installed policy is what a call is metered
+    at, in integer micro-dollars per million tokens, and Babel restates it here rather than
+    inventing one: a ceiling in money without a price is not a ceiling.
+  - The model reference is FULLY QUALIFIED — `anthropic/claude-sonnet-4-5`, provider and all —
+    because that is the string omp's gateway keys its model map by, the `modelId` the metered
+    proxy reads off the request body, and therefore the key a price is looked up under. A bare
+    model id misses in all three places at once.
+*/
+
+/**
+ * A model's price as the owner's policy states it: integer micro-dollars per million tokens, so
+ * $3.00 per million input tokens is `3000000`. Restated rather than imported from the hub's
+ * protocol because Watch reads it out of `launchPreview` rather than out of a policy, and a
+ * machine half compiles without the hub's package at all.
+ */
+export const ModelPriceSchema = z.strictObject({
+  inputPerMillion: z.number().int().min(0),
+  outputPerMillion: z.number().int().min(0),
+  cachedInputPerMillion: z.number().int().min(0).optional(),
+});
+export type ModelPrice = z.infer<typeof ModelPriceSchema>;
+
+/**
+ * The thinking levels Babel offers. omp's own enum is wider (`minimal` … `max`); these four are
+ * the ones an analysis run is worth asking at, and the one that is absent is the honest shape of
+ * "whatever the model does by default" rather than a level nobody chose.
+ */
+export const THINKING_LEVELS = ["low", "medium", "high", "xhigh"] as const;
+export const ThinkingSchema = z.enum(THINKING_LEVELS);
+export type Thinking = z.infer<typeof ThinkingSchema>;
+
+/**
+ * The fully qualified model reference omp routes by: `<provider>/<model>`, matching
+ * manifold-omp's own `modelReference` (`plugins/api/index.ts`), because the string Babel writes
+ * into `models.yml` has to be one omp accepts unchanged.
+ */
+export const MODEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._/:-]{0,255}$/;
+
+/**
+ * WHAT A RUN IS ASKED TO BE: one model, one thinking level, one account to spend.
+ *
+ * `account` is one slot of manifold-omp's `RuntimeAccountPool` (`plugins/api/contracts.ts`) and
+ * carries every field its broker verifies a pool against — the provider it belongs to, the
+ * observation scope it was seen in, the credential row and the identity. None of them is a
+ * secret: a credential id and an identity key NAME a credential the machine's broker holds and
+ * resolves, which is exactly why a job may carry them and never a bearer.
+ *
+ * TWO FIELDS ARE SPELLED AS STRINGS HERE AND ARE NOT STRINGS ON THE WIRE, deliberately. In the
+ * pool, `credentialId` is a positive INTEGER and `identityKey` is `string | null`
+ * (`RuntimeAccountPoolSchema`). This is a DOOR surface: it is posted by a `<select>` whose every
+ * value is a string and carried through a job input record, so it takes the decimal digits and
+ * `server/plan.ts` `sessionInputs` converts once, at the one place the pool is built. The regex
+ * is what makes that conversion total — a credential id that cannot be a positive integer is
+ * refused by the door rather than by a gateway that answers `gateway_unavailable` and says no
+ * more. An EMPTY `identityKey` is the api-key case, where the broker's own reference is the
+ * credential row and there is no OAuth identity; it becomes `null` in the pool.
+ */
+export const SessionChoiceSchema = z.strictObject({
+  model: z.string().trim().min(1).max(256).regex(MODEL_REFERENCE),
+  thinking: ThinkingSchema.optional(),
+  account: z.strictObject({
+    provider: bounded(128),
+    scope: z.string().trim().min(1).max(1024),
+    credentialId: z.string().regex(/^[1-9][0-9]{0,14}$/),
+    identityKey: z.string().trim().max(1024),
+  }),
+});
+export type SessionChoice = z.infer<typeof SessionChoiceSchema>;
+
+/**
+ * THE FOUR STATES AN OPERATOR ACTS DIFFERENTLY ON, plus the one that is not a state at all.
+ *
+ * `missing`: the machine's owner has installed no `atyrode.babel.inference` policy, so there is
+ * no lane to a model and the button does nothing but refuse. `unpriced`: the policy is there and
+ * prices no such model, so a cost ceiling refuses the run `service_price_unknown` before its
+ * first call. `priced`: the price and the ceiling are both facts and the preview states them.
+ *
+ * `unsupported`: the owner DID try and THIS HUB refused the policy, because it does not know
+ * the `pi-native-usage` meter kind omp's wire needs (manifold#570, landing as #572). It is a
+ * fourth state and not a shade of `missing` because the act is different: nobody installs
+ * anything until the hub moves, and the same hub also refuses to deploy Babel's machine half at
+ * all (`service_definition_changed` over every operation's bindings, hub-side) — so the
+ * sentence an operator needs is "this hub is older than this plugin", not "install a policy".
+ *
+ * `unreadable` is the answer that is deliberately not a state:
+ * `services.readConfiguration` is admitted only to a root caller holding `services:configure` at
+ * the machine, so an ordinary operator's dispatch is refused the read. Telling him to install a
+ * policy that is already installed, and disabling the button over it, is worse than saying
+ * nothing — so it says what it could not see.
+ */
+export const SESSION_POLICY_STATES = [
+  "missing",
+  "unpriced",
+  "priced",
+  "unreadable",
+  "unsupported",
+] as const;
+export const SessionPolicyStateSchema = z.enum(SESSION_POLICY_STATES);
+
+/** What `launchPreview` answers about the session: the account, the model, the price, the ceiling. */
+export const SessionPreviewSchema = z.strictObject({
+  serviceId: z.string(),
+  /** The identity key of the account this run would spend, or "" when none was chosen yet. */
+  account: z.string(),
+  /** The model reference this run would ask for, or "" when none was chosen yet. */
+  model: z.string(),
+  priced: z.boolean(),
+  price: ModelPriceSchema.optional(),
+  /** The ceiling the job request will carry as `limits.inference.costMicros`; absent when none. */
+  ceilingMicros: z.number().int().min(0).optional(),
+  policy: SessionPolicyStateSchema,
+  /** Why the configuration could not be read, or "". Never an absent policy. */
+  unreadable: z.string(),
+  /** One sentence for the operator: what will be metered, and what will refuse the run. */
+  note: z.string(),
+  /**
+   * WHAT THE HUB ANSWERED the last time an owner installed this policy on this machine,
+   * verbatim; absent when it never refused one. It is what turns `unsupported` from a claim
+   * into evidence: the sentence is the hub's, so an operator can tell a version gap from a
+   * refusal Babel misread.
+   */
+  setupRefusal: z.string().optional(),
+});
+export type SessionPreview = z.infer<typeof SessionPreviewSchema>;
+
 // ---------------------------------------------------------------------------- runs and launches
 
 /** What Watch offers instead of flags: a preset is a named request the operator understands. */
@@ -464,6 +613,23 @@ export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> 
   "keep-going": OPERATIONS.scan,
 };
 
+/**
+ * WHICH PRESETS REACH A MODEL, and therefore must name a session (#279).
+ *
+ * It sits beside {@link PRESET_OPERATIONS} for the same reason that table does: `launch`
+ * refuses a session-less request for every preset in it (`session_required`), and the panel
+ * hides its session picker for the one that reaches none. The beat asks a model nothing — it
+ * ticks the conductor, which claims and dispatches jobs of its own — so a request for it is not
+ * refused for lacking a session it would never spend.
+ */
+export const PRESET_REACHES_MODEL: Record<(typeof PRESETS)[number], boolean> = {
+  "read-whats-new": true,
+  "explore-topic": true,
+  "review-backlog": true,
+  "file-and-tidy": true,
+  "keep-going": false,
+};
+
 export const LaunchInputSchema = z.strictObject({
   machineId: bounded(120),
   preset: PresetSchema,
@@ -487,6 +653,18 @@ export const LaunchInputSchema = z.strictObject({
    * selectable and have no flag: a preparation's identity is its selection's content.
    */
   agentSessions: z.boolean().optional(),
+  /**
+   * WHICH MODEL, AT WHICH THINKING LEVEL, ON WHOSE ACCOUNT (#279).
+   *
+   * Babel's explore and evaluate jobs launch `omp --mode rpc` themselves and reach a model only
+   * through the `atyrode.babel.inference` binding, so the three things that used to be behind a
+   * Code profile reference are now the operator's own choice and travel with the request. It is
+   * OPTIONAL on the schema and REQUIRED in effect: `launchPreview` is polled while the operator
+   * is still choosing and must answer without one, and `launch` refuses `session_required` for
+   * any preset that reaches a model. A preset that reaches none — the beat — needs no session
+   * and is not refused for lacking one.
+   */
+  session: SessionChoiceSchema.optional(),
 });
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 
@@ -511,9 +689,24 @@ export const LaunchResultSchema = z.strictObject({
   jobId: z.string(),
   machineId: z.string(),
   kind: z.enum(["explore", "evaluate", "conductor", "prepare"]),
-  /** What will run, from the machine's `code engine --describe`, before the first byte. */
-  profile: z.strictObject({ id: z.string(), revision: z.number().int(), model: z.string(), disclosure: z.string(), costPer1k: z.strictObject({ input: z.number(), output: z.number() }) }).nullable(),
+  /**
+   * WHAT THE MACHINE'S LAST COMPLETED RUN ACTUALLY RAN UNDER, from the receipt it wrote: the
+   * model that was asked for, the thinking level it was asked at, and the account it spent.
+   *
+   * It is a RECORDED figure and not a restatement of the request, which is the whole of its
+   * value: a fallback or a retry moves the model mid-run (#261), and a machine that has run
+   * nothing answers `null` rather than echoing what would be asked of it.
+   */
+  profile: z
+    .strictObject({ model: z.string(), thinking: z.string(), account: z.string() })
+    .nullable(),
   ceiling: z.strictObject({ perRunUsd: z.number(), perDayUsd: z.number() }),
+  /**
+   * WHAT THE OWNER WILL METER THIS REQUEST AT (ADR 0038). The price is the owner's policy's and
+   * the ceiling is the one the job request will carry, so the sentence above the button and the
+   * number the owner enforces come from the same place.
+   */
+  session: SessionPreviewSchema,
 });
 
 /**
@@ -734,6 +927,17 @@ export const ReceiptSchema = z.strictObject({
   recipeId: z.string().optional(),
   role: RoleSchema.optional(),
   profile: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * WHOSE WINDOW THIS RUN SPENT, and WHICH MODEL IT ASKED FOR (#267, #279).
+   *
+   * The `profile` block above is Babel's own launch report and says the same two things in the
+   * launcher's words; these two fields are the flat pair every reader wants — the run row, the
+   * drain's fold, the receipt page — and they are the ones a drain is measured by, because
+   * "drain THIS account" is answered by summing the runs that named it and by nothing else.
+   * Absent for a run that reaches no model at all (`scan`, `archive`, `prepare`).
+   */
+  account: z.strictObject({ provider: z.string(), identityKey: z.string() }).optional(),
+  model: z.string().optional(),
   preparation: z.record(z.string(), z.unknown()).optional(),
   startedAt: z.string(),
   finishedAt: z.string(),
@@ -757,15 +961,30 @@ export type Receipt = z.infer<typeof ReceiptSchema>;
 // ---------------------------------------------------------------------------- job bindings
 
 /**
- * The runtime tools an operation may name, and nothing about where they come from: a Manifold
- * job sandbox carries no libc, so a tool must arrive WITH its closure, and only the machine's
- * owner can bind one (`execution.runtimeToolClosures`, manifold docs/SELF-HOST.md). `bun` runs
- * machine.js; `code` is the engine explore and evaluate drive; `git` reads repository identity
- * for scan and prepare; `restic` owns the archive's repository format. The manifest declares
- * none of them as an artifact, so an operation runs exactly where its owner said it may.
+ * The runtime tools an operation may name. Two kinds, and the difference matters:
+ *
+ * `bun`, `git`, `restic`, `ca-certificates` and `system` are the machine OWNER's, bound WITH
+ * their closures (`execution.runtimeToolClosures`, manifold docs/SELF-HOST.md) because a
+ * Manifold job sandbox carries no libc and a bare binary cannot exec in one. `bun` runs
+ * machine.js; `git` reads repository identity for scan and prepare; `restic` owns the archive's
+ * repository format; `ca-certificates` is the CA bundle `SSL_CERT_FILE` names, and `system` is
+ * the reviewed libc closure a dynamically linked binary needs.
+ *
+ * `omp` is the one tool this manifest PINS as an artifact, by url and digest, from
+ * manifold-omp's own `runtime-artifacts.json` (SDK 18.1.14). It is pinned rather than delegated
+ * because it is the thing being driven: a run's answers come from that exact build, and an
+ * owner-bound `omp` would let one machine's engine differ from another's without anything in
+ * the record saying so. Babel's own launch report names the version it got.
  */
-export const RUNTIME_TOOLS = ["bun", "code", "git", "restic"] as const;
-/** Where the owner binds a runtime tool inside the sandbox: `<RUNTIME_TOOL_BIN>/<alias>`. */
+export const RUNTIME_TOOLS = [
+  "bun",
+  "omp",
+  "ca-certificates",
+  "system",
+  "git",
+  "restic",
+] as const;
+/** Where a runtime tool is bound inside the sandbox: `<RUNTIME_TOOL_BIN>/<alias>`. */
 export const RUNTIME_TOOL_BIN = "/runtime/bin";
 
 /**
@@ -807,3 +1026,167 @@ export const RESTIC_SERVICE = {
 } as const;
 /** Where the engine binds that file inside the sandbox: one job's own, read-only. */
 export const RESTIC_CREDENTIAL_FILE = `/inputs/${RESTIC_SERVICE.inputFile}`;
+
+// ------------------------------------------------------------- the inference service (#279)
+
+/**
+ * THE INFERENCE SERVICE `explore` and `evaluate` ARE BOUND TO (ADR 0038, babel#256's hub half).
+ *
+ * A job that drives a model never holds the model's credential, and after atyrode/code#153 there
+ * is no Code process to hold one on its behalf either. So Babel's job launches `omp --mode rpc`
+ * itself, and the only route out of that sandbox to a provider is this binding, whose RUNTIME is
+ * `atyrode.omp.gateway`'s own `serve` operation: a job-scoped gateway the machine's owner starts
+ * with the account pool THIS job named, and whose `stream` operation the owner meters per call.
+ *
+ * Why a runtime and not an origin. An `origin` policy points at a provider and needs a credential
+ * the owner holds; a `runtime` policy points at another plugin's machine operation, so there is
+ * no credential in the policy at all — the gateway resolves one from the machine's broker for the
+ * pool it was handed, and the job receives a loopback url and a bearer minted for it alone. The
+ * bearer is spliced by the OWNER into `models.yml`'s `providers.*.apiKey` (see
+ * {@link OMP_INPUT_FILES}), so it never passes through Babel's code, argv, environment or logs.
+ *
+ * `operationIds` are exactly omp's gateway's two: listing models, and one streaming call. The
+ * metered one is `stream`; `plugins/README.md` carries the policy the owner installs and
+ * `doors/inference.ts` is what installs it, so nobody hand-writes it.
+ */
+export const INFERENCE_SERVICE = {
+  serviceId: `${BABEL_PLUGIN_ID}.inference`,
+  revision: "1",
+  /** Every operation the binding names, in the manifest's own order. */
+  operationIds: ["models", "stream"] as const,
+  /** omp's gateway, which provides the service: the plugin and the operation that serves it. */
+  gatewayPluginId: "atyrode.omp.gateway",
+  gatewayOperationId: "atyrode.omp.gateway.serve",
+  /**
+   * The meter kind the owner reads usage with. omp's wire is pi-native (`modelId`,
+   * `context.messages`, `usage.input`/`.output`/`.cacheRead`), not OpenAI's, so `openai-usage`
+   * would refuse every call rather than silently miss; manifold#570 adds this kind.
+   */
+  meterKind: "pi-native-usage",
+  /** The gateway's own route, which the policy's `stream` operation proxies. */
+  streamPath: "/v1/pi/stream",
+  modelsPath: "/v1/models",
+} as const;
+
+/**
+ * THE ACCOUNTS BROKER Babel READS, and never writes (#267).
+ *
+ * manifold-omp's accounts plugin owns one Instance Service holding the machine's enrolled
+ * credentials, and it projects a secret-free subset of the broker's snapshot through its
+ * `metadata` operation — ids, providers, identity keys, credential type and email, and the
+ * blocks in force (`plugins/atyrode.omp/service-policies.ts` `buildSharedBrokerPolicy`). That
+ * projection is exactly what a picker needs and nothing more, which is why Babel reads it
+ * instead of asking the operator to type an identity key he would have to find elsewhere.
+ *
+ * It is an INSTANCE service, so the read is `ctx.services.readInstance` under `services:read` —
+ * the same call manifold-omp's own `accountObservation` makes. There is no plugin-to-plugin door
+ * call in Manifold and none is needed: an Instance Service is the seam.
+ */
+export const ACCOUNTS_SERVICE = {
+  serviceId: "atyrode.omp.accounts.broker",
+  /** The projected, secret-free snapshot: what accounts exist, and which are blocked. */
+  metadataOperationId: "metadata",
+  /** The projected usage windows a drain reads to know what is left (#258, #267). */
+  usageOperationId: "usage",
+} as const;
+
+// ------------------------------------------------------------------- launching omp (#279)
+
+/** The pinned engine's alias and the path it is bound at inside a job. */
+export const OMP_TOOL = "omp";
+export const OMP_BINARY = `${RUNTIME_TOOL_BIN}/${OMP_TOOL}`;
+
+/**
+ * WHERE THE JOB'S PRIVATE HOME IS, and the two files the OWNER materializes into it.
+ *
+ * A Manifold job's home is a tmpfs the sandbox creates and `HOME` names it
+ * (`agent/src/job-linux.ts`); an `inputFiles` declaration with a `homePath` is bound read-only
+ * underneath it (`agent/src/job-inputs.ts`). omp discovers `~/.omp/agent/models.yml` for its
+ * providers and takes `--config` for the rest, which is exactly the pair `atyrode.omp.launch`
+ * declares — so Babel declares the same two files with the same two paths, and the credential
+ * splice (`jsonValues` into `providers.*.baseUrl` and `providers.*.apiKey`) is the owner's.
+ *
+ * Babel's machine half therefore WRITES NEITHER FILE. It reads that both exist and refuses by
+ * name when one does not, which is the only honest check available to a process that must never
+ * be able to see the bearer inside them.
+ */
+export const OMP_HOME = "/home/job";
+export const OMP_INPUT_FILES = {
+  models: { name: "models", path: `${OMP_HOME}/.omp/agent/models.yml` },
+  config: { name: "config", path: `${OMP_HOME}/.omp/agent/config.yml` },
+} as const;
+
+/**
+ * THE JOB INPUT FIELDS an explore or an evaluate carries beyond its launch document.
+ *
+ * `accountPool` is a `RuntimeAccountPool` JSON document — `{[provider]: [{scope, credentialId,
+ * identityKey}]}` — and is NOT read by Babel's machine half at all: the service policy's runtime
+ * maps it into the gateway job (`ServiceRuntime.input`, exactly as manifold-omp's own
+ * `configureGateway` does), which is how a job says which of several enrolled accounts it spends
+ * without any new primitive (#267, and why manifold#549 is unnecessary here). `models` and
+ * `config` are the two YAML documents above, derived the way manifold-omp's `execution.ts`
+ * `nativeModelConfiguration`/`effectiveOverlay` derive them.
+ */
+export const SESSION_INPUTS = {
+  accountPool: "accountPool",
+  models: OMP_INPUT_FILES.models.name,
+  config: OMP_INPUT_FILES.config.name,
+} as const;
+
+// --------------------------------------------------------------- accounts and setup (#279)
+
+/** One account the machine's broker has observed, as the Start panel offers it. */
+export const AccountRowSchema = z.strictObject({
+  provider: z.string(),
+  scope: z.string(),
+  credentialId: z.string(),
+  identityKey: z.string(),
+  /** What the broker's projected snapshot calls it, when it says anything; "" otherwise. */
+  label: z.string(),
+  /** True when the broker reports the credential blocked or disabled: offered, and marked. */
+  disabled: z.boolean(),
+});
+export type AccountRow = z.infer<typeof AccountRowSchema>;
+
+export const AccountsQuerySchema = z.strictObject({ machineId: bounded(120) });
+
+/**
+ * WHAT THE BROKER HAS SEEN, or the reason nobody could be asked.
+ *
+ * `unavailable` is not an empty list: Babel reads the accounts through its own binding to
+ * `atyrode.omp.accounts.broker`'s projected `metadata` operation, and a hub where that service is
+ * not installed, or a caller not admitted to read it, is a picker that says so and accepts a
+ * typed identity key instead. An empty list with no reason is the broker answering "none
+ * enrolled", which is a different instruction to the operator.
+ */
+export const AccountsResultSchema = z.strictObject({
+  accounts: z.array(AccountRowSchema),
+  unavailable: z.string(),
+});
+
+/**
+ * WHAT `setupInference` TAKES. It is the owner's act — `services:configure` at the machine — and
+ * it is compare-and-set on the machine's whole service configuration, so the revision the caller
+ * last read travels with it: two operators installing two policies at once must not silently
+ * overwrite one another.
+ *
+ * `apply: false` is the preview. It answers exactly what the write would do without doing it,
+ * which is how Watch can state "this would install a policy pricing 4 models" before the button.
+ */
+export const SetupInferenceInputSchema = z.strictObject({
+  machineId: bounded(120),
+  /** What `readConfiguration` last reported, or null for a machine with no configuration yet. */
+  expectedServiceRevision: z.string().max(200).nullable().default(null),
+  apply: z.boolean().default(false),
+});
+
+export const SetupInferenceResultSchema = z.strictObject({
+  serviceId: z.string(),
+  /** The configuration revision after the write, or null for a preview. */
+  revision: z.string().nullable(),
+  state: z.enum(["previewed", "installed", "refreshed", "unchanged"]),
+  /** Every model the policy prices, in the order the policy states them. */
+  models: z.array(z.string()),
+  /** One sentence naming what the owner now has, or what stopped it. */
+  note: z.string(),
+});

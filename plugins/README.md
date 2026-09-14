@@ -48,7 +48,7 @@ manifest and served as `ctx.database`. Three consequences worth knowing before r
   purge deletes `data.db` with its `-wal` and `-shm`. `bun run verify` asserts both halves of
   that: the file exists once the doors have answered, and is gone after the purge.
 
-## The machine half: one bundled file, four runtime tools the machine provides
+## The machine half: one bundled file, one pinned engine, four tools the machine provides
 
 A run is a **job on an enrolled machine** (manifold `docs/PLUGINS.md` §8), and the baseline's
 manifest carries the `machine` block that says what may run there. `atyrode.babel/machine/` is
@@ -77,34 +77,201 @@ anchor, must already exist on the machine for `write` and refuses a second job f
 `scan` and `prepare` run with `network: "none"`; `explore` and `evaluate` reach the host because
 they launch the engine, and `archive` because it reaches the repository and its storage service.
 
-Four tools are **runtime tools the machine's owner provides, not artifacts this manifest pins**:
-`bun`, the executable every operation runs; `code`, the engine `explore` and `evaluate` launch;
-`git`, which reads repository identity for `scan` and `prepare`; and `restic`, which owns the
-archive's repository format. A Manifold job sandbox is built from `/proc`, `/dev`, the job's own
-directories and the declared binds and nothing else — no `/lib64`, no libc — and manifold's own
-rule is that "a dynamically linked executable without its loader cannot run in the empty sandbox"
-(`docs/SELF-HOST.md`). Neither bun nor code ships a static build (the musl bun is dynamic
-against `ld-musl` too), so a pinned artifact could be downloaded and verified and still die at
-`execvp` — which is exactly what happened on the first real job. The owner's
-`execution.runtimeToolClosures` binds a tool WITH its exact closure at Nix build time, per
-machine, under the alias the operation names; the manifest therefore declares
-`runtimeTools: ["bun"]` / `["bun", "code"]` / `["bun", "restic"]` and no `tools` block, so a
-declared artifact can never shadow the owner's binding. Each tool is resolved at
-`/runtime/bin/<alias>` first and on PATH second, so the same code runs in a job and in a test.
-For the operator's fleet that is one dotfiles module:
+**Four tools are runtime tools the machine's owner provides, not artifacts this manifest pins**:
+`bun`, the executable every operation runs; `git`, which reads repository identity for `scan` and
+`prepare`; `restic`, which owns the archive's repository format; and — for the two operations that
+drive a model — `ca-certificates`, the CA bundle `SSL_CERT_FILE` names, and `system`, the reviewed
+libc closure a dynamically linked binary needs. A Manifold job sandbox is built from `/proc`,
+`/dev`, the job's own tmpfs home and the artifacts it declares, and it carries no libc at all, so
+a bare binary cannot `execvp` in one — which is exactly what happened on the first real job. The
+owner's `execution.runtimeToolClosures` binds a tool WITH its exact closure at Nix build time,
+per machine, under the alias the operation names. Each tool is resolved at `/runtime/bin/<alias>`
+first and on PATH second, so the same code runs in a job and in a test. For the operator's fleet
+that is one dotfiles module:
 
 ```nix
 services.manifold.execution = {
   runtimeTools.bun = [{ source = "${pkgs.bun}/bin/bun"; target = "/runtime/bin/bun"; kind = "file"; }];
   runtimeToolClosures.bun = [ pkgs.bun ];
-  runtimeTools.code = [{ source = "${code}/bin/code"; target = "/runtime/bin/code"; kind = "file"; }];
-  runtimeToolClosures.code = [ code ];
   runtimeTools.git = [{ source = "${pkgs.git}/bin/git"; target = "/runtime/bin/git"; kind = "file"; }];
   runtimeToolClosures.git = [ pkgs.git ];
   runtimeTools.restic = [{ source = "${pkgs.restic}/bin/restic"; target = "/runtime/bin/restic"; kind = "file"; }];
   runtimeToolClosures.restic = [ pkgs.restic ];
+  runtimeTools.ca-certificates = [{ source = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; target = "/runtime/bin/ca-certificates"; kind = "file"; }];
+  runtimeToolClosures.ca-certificates = [ pkgs.cacert ];
+  # `system` is the reviewed libc closure; manifold-omp's runtime-artifacts.json names the exact
+  # interpreter and sonames it must supply per platform.
 };
 ```
+
+**`omp` is the one tool this manifest PINS**, by url and digest, from manifold-omp's own
+`runtime-artifacts.json` at SDK 18.1.14 — `machine.tools.omp`, one `MachineArtifact` per platform,
+which the machine agent downloads and verifies against `entrySha256` before binding it read-only
+at `/runtime/bin/omp`. It is pinned rather than delegated because it is the thing being DRIVEN: a
+run's answers come from that exact build, and an owner-bound `omp` would let one machine's engine
+differ from another's with nothing in the record saying so.
+
+### What launches the model, and what it is never given
+
+Until 2026-09-13 `explore` and `evaluate` launched `code engine`, a Code subcommand that owned
+the profile, the credential and the sandbox and wrote a runtime-info sidecar Babel read before
+writing a prompt. atyrode/code#153 removed that engine, and Manifold has no plugin-to-plugin call
+to replace it with — `ActionCtx` carries no way to reach another plugin's doors, and every
+`ctx.jobs` verb is bound to the calling plugin's own id. So Babel's own job launches the engine
+(atyrode/babel#279):
+
+```
+/runtime/bin/omp --mode rpc --no-tools --no-lsp --no-session --no-extensions --no-rules \
+  --no-skills --no-title --auto-approve --config $HOME/.omp/agent/config.yml --cwd <scratch>
+```
+
+That argv carries nothing about a model, an account or a provider, and it never will: argv is
+world-readable in any process listing on the host. The session travels as two files the OWNER
+materializes into the job's private home out of the job's own inputs —
+`~/.omp/agent/models.yml` and `~/.omp/agent/config.yml`, declared as `inputFiles` with a
+`homePath` — and the inference binding's url and bearer are spliced by the owner into
+`models.yml`'s `providers.*.baseUrl` and `providers.*.apiKey` through `jsonValues`. The bearer
+therefore never passes through Babel's code, its argv, its environment or a log line, and the
+provider credential never enters the sandbox at all.
+
+Admission is over facts rather than over a declaration, which is the substantive improvement on
+the sidecar. Before a byte of prompt is written the machine half checks that the boundary around
+it is a Manifold job sandbox (its `HOME` is the job's private home and the XDG directories are
+inside it) and that the two files above are present and the environment holds no provider
+credential variable. A run that fails either is refused with a named reason — `inference_unbound`
+— and its receipt records what it was asked to be. Babel's own launch report (`babel.launch/1`)
+replaces Code's runtime-info sidecar: the model, the thinking level, the account, the observed
+boundary, the models that answered, the exit status, the bounded retry count, and a named failure
+(`broker_unavailable`, `rate_limited`, `inference_unbound`) instead of "the engine closed its
+stdout before a ready frame".
+
+### The policy the owner installs, and the one table he edits
+
+`explore` and `evaluate` bind ONE service, `atyrode.babel.inference`, and its policy is the
+machine owner's to install. `setupInference` (`doors/inference.ts`) assembles and compare-and-sets
+it against the omp gateway actually installed on that host, which is why nobody types it: three of
+its fields are pins of that installation and only a live `readConfiguration` can produce them.
+This is what it installs, so an operator reading a machine's service configuration knows what he
+is looking at:
+
+```json
+{
+  "serviceId": "atyrode.babel.inference",
+  "revision": "1",
+  "runtime": {
+    "pluginId": "atyrode.omp.gateway",
+    "operationId": "atyrode.omp.gateway.serve",
+    "installationRevision": "<the gateway installation on THIS machine>",
+    "artifactSha256": "<its artifact digest>",
+    "resourceBindingDigest": "<its resource binding digest>",
+    "input": { "accountPool": { "input": "accountPool" } }
+  },
+  "maxConcurrent": 16,
+  "operations": {
+    "models": {
+      "kind": "http-proxy",
+      "method": "GET",
+      "path": "/v1/models",
+      "request": { "kind": "none" },
+      "response": {
+        "kind": "stream",
+        "disclosure": "full",
+        "contentTypes": ["application/json"],
+        "headers": []
+      },
+      "timeoutMs": 60000,
+      "maxRequestBytes": 65536,
+      "maxResponseBytes": 4194304
+    },
+    "stream": {
+      "kind": "http-proxy",
+      "method": "POST",
+      "path": "/v1/pi/stream",
+      "request": { "kind": "json", "disclosure": "full" },
+      "response": {
+        "kind": "stream",
+        "disclosure": "full",
+        "contentTypes": ["application/json", "text/event-stream"],
+        "headers": []
+      },
+      "meter": { "kind": "pi-native-usage" },
+      "timeoutMs": 300000,
+      "maxRequestBytes": 16777216,
+      "maxResponseBytes": 268435456
+    }
+  },
+  "prices": {
+    "models": {
+      "anthropic/claude-opus-5":     { "inputPerMillion": 5000000,  "outputPerMillion": 25000000, "cachedInputPerMillion": 500000 },
+      "anthropic/claude-opus-4-8":   { "inputPerMillion": 5000000,  "outputPerMillion": 25000000, "cachedInputPerMillion": 500000 },
+      "anthropic/claude-sonnet-5":   { "inputPerMillion": 2000000,  "outputPerMillion": 10000000, "cachedInputPerMillion": 200000 },
+      "anthropic/claude-sonnet-4-6": { "inputPerMillion": 2000000,  "outputPerMillion": 10000000, "cachedInputPerMillion": 200000 },
+      "anthropic/claude-haiku-4-5":  { "inputPerMillion": 1000000,  "outputPerMillion": 5000000,  "cachedInputPerMillion": 100000 },
+      "anthropic/claude-fable-5-1":  { "inputPerMillion": 10000000, "outputPerMillion": 50000000, "cachedInputPerMillion": 250000 }
+    }
+  }
+}
+```
+
+Four things in it are load-bearing and one is a default:
+
+- **`runtime`, not `origin`.** An origin policy points at a provider and needs a credential the
+  owner holds; this one points at another plugin's machine operation, so there is no credential in
+  the policy at all. The gateway resolves one from the machine's broker for the pool it was handed,
+  and the job gets a loopback url and a bearer minted for it alone. It carries no `scope`, because
+  the candidates a hub offers carry none and job scope is the default: an INSTANCE-scoped
+  candidate is refused by name (`doors/inference.ts`), since an instance runtime may hold only
+  literal inputs and so could not carry the job's account pool at all.
+- **`input: {accountPool: {input: "accountPool"}}`** is how a run names the account it spends: the
+  owner maps the CALLING job's `accountPool` input into the gateway's own, so the pool the launch
+  posted is the pool that gateway resolves a credential for. manifold-omp installs its own `omp`
+  service exactly this way; #267 therefore needs no `credentialRef` selector on a job request.
+- **`meter` on `stream` only.** Listing models costs nothing; the streaming call is what spends,
+  and `pi-native-usage` is the kind that reads omp's own wire (`usage.input`, `usage.output`,
+  `usage.cacheRead`). `openai-usage` over this wire would refuse every call rather than silently
+  mis-read one. The kind is POLICY CONTENT and appears in no manifest: a manifest's service
+  declaration is `{serviceId, revision, operationIds}` (`ServiceBindingSchema`) and names no
+  meter, so nothing about the kind is baked into the artifact an owner installs.
+
+  **Which hub revisions run what.** manifold#570 adds the kind and #572 landed it; `MANIFOLD_REV`
+  0bc76660 carries it, so the SDK this tree typechecks, tests and packs against knows it and the
+  policy is handed to `configureConfiguration` with no cast. On a HUB older than that revision the
+  consequence is wider than the write:
+
+  - `setupInference` is refused by the hub's own schema, by name, and `launchPreview` reports
+    the session policy as `unsupported` with that sentence as its evidence (#284) rather than as
+    a machine nobody configured;
+  - the machine half cannot be DEPLOYED there at all. The deployment review asks for a policy
+    per service any operation binds — `servicePolicies` flattens
+    `Object.values(machine.operations).flatMap(op => op.services)`
+    (manifold `packages/server/src/job-service.ts`) — so the absent inference policy refuses the
+    whole target `service_definition_changed`, and `scan`, `prepare` and `archive` are collateral
+    even though they bind no model. Nothing in this plugin can narrow that: the requirement is
+    real for `explore` and `evaluate`, and the review's scope is the hub's.
+  - once deployed on a hub that DOES know the kind, admission is per operation
+    (`resourceRefusal` reads only that operation's bindings), so a machine whose gateway is down
+    still scans, prepares and archives while `explore` and `evaluate` are refused by name.
+- **`prices.models` keys are FULLY QUALIFIED** (`anthropic/claude-sonnet-5`, never
+  `claude-sonnet-5`): the owner prices a call by the verbatim `modelId` the request body carried,
+  and omp's gateway keys its model map by `<provider>/<id>`. A bare key prices nothing, and a model
+  the table does not price is refused `service_price_unknown` before its first call whenever the
+  request carries a cost ceiling — which every Babel run's does.
+- **THE PRICE TABLE IS OPERATOR-EDITABLE POLICY AND NOT A FACT ABOUT ANTHROPIC.** The numbers
+  above are the self-serve list prices observed 2026-09-14, in integer micro-dollars per million
+  tokens, and they are a default so that installing the service does not require retyping a price
+  table. An operator on an enterprise rate, a batch discount or another provider edits the
+  installed policy; a price change is a new policy revision he consents to, and `launchPreview`
+  states the price it FOUND on the machine, never the table in this repository. A REFRESH DOES NOT
+  TAKE IT BACK: `setupInference` exists for the runtime pins, so when a policy is already there it
+  carries the installed table through verbatim and rewrites the pins alone — reinstating these
+  defaults would reprice every run behind the owner's back and move the policy digest a deployment
+  is pinned at.
+
+The ceiling is the other half and it comes from the other side: the operator's per-run allowance
+leaves the hub as `limits.inference.costMicros` on the job request (`server/plan.ts`
+`inferenceCeiling`, rounded UP so a ceiling is never quietly tightened), and the OWNER refuses the
+call that would pass it. Nothing in the policy above states a budget, and nothing in a request
+states a price.
 
 **`archive` is declared, and `restic` is a closure like the others.** restic is half of why the
 operation waited: upstream's whole Linux distribution is bare bzip2 —

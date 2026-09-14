@@ -13,14 +13,16 @@
 import { expect, test } from "bun:test";
 import { JobLimitsSchema, PluginManifestSchema, type PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs, GuestJobs } from "@manifold/plugin-kit/server";
-import { OPERATIONS } from "../contract.ts";
+import { INFERENCE_SERVICE, OPERATIONS } from "../contract.ts";
 import { DEFAULT_POLICY, PolicySchema } from "../store/coordinator.ts";
 import type { JobLaunch } from "./conductor.ts";
 import {
   DEFAULT_LIMITS,
   ENABLE_WITHOUT_JOBS,
   ENGINE_BINARY,
+  ENGINE_TOOL,
   HOOK_WITHOUT_MACHINES,
+  inferenceCeiling,
   jobCeiling,
   jobsSlice,
   machinesSlice,
@@ -74,7 +76,7 @@ function manifestWith(operations: Record<string, unknown>): PluginManifest {
     ...manifestJson,
     machine: {
       artifacts: { "linux-x64": ARTIFACT },
-      tools: { bun: { "linux-x64": ARTIFACT }, code: { "linux-x64": ARTIFACT } },
+      tools: { bun: { "linux-x64": ARTIFACT }, [ENGINE_TOOL]: { "linux-x64": ARTIFACT } },
       operations,
       locations: {
         outputs: {
@@ -91,8 +93,8 @@ function manifestWith(operations: Record<string, unknown>): PluginManifest {
 
 const MANIFEST = manifestWith({
   [OPERATIONS.scan]: operation(["bun"], 600_000),
-  [OPERATIONS.explore]: operation(["bun", "code"], 3_600_000),
-  [OPERATIONS.evaluate]: operation(["bun", "code"], 3_600_000),
+  [OPERATIONS.explore]: operation(["bun", ENGINE_TOOL], 3_600_000),
+  [OPERATIONS.evaluate]: operation(["bun", ENGINE_TOOL], 3_600_000),
 });
 
 const POLICY = PolicySchema.parse({ enabled: true, perCycleCost: 0.25, batchSize: 4, dailyCost: 2 });
@@ -103,7 +105,7 @@ test("the plan drives the engine the machine block binds, under the operation's 
   const plan = runPlan({ manifest: MANIFEST, policy: POLICY, operationId: OPERATIONS.evaluate });
 
   expect(plan.engine).toEqual({ binary: ENGINE_BINARY, args: [] });
-  expect(ENGINE_BINARY).toBe("/runtime/bin/code");
+  expect(ENGINE_BINARY).toBe("/runtime/bin/omp");
   expect(plan.limits.timeoutMs).toBe(3_600_000);
   // The beat is a cheaper operation and its own declaration is what bounds it, not the review's.
   expect(operationLimits(MANIFEST.machine ?? null, OPERATIONS.scan).timeoutMs).toBe(600_000);
@@ -124,8 +126,8 @@ test("the ceiling a bound is judged against is the manifest's, and it never ride
   // and refused by evaluate is not a bound.
   const mixed = manifestWith({
     [OPERATIONS.scan]: operation(["bun"], 600_000),
-    [OPERATIONS.explore]: operation(["bun", "code"], 3_600_000, 16),
-    [OPERATIONS.evaluate]: operation(["bun", "code"], 3_600_000, 4),
+    [OPERATIONS.explore]: operation(["bun", ENGINE_TOOL], 3_600_000, 16),
+    [OPERATIONS.evaluate]: operation(["bun", ENGINE_TOOL], 3_600_000, 4),
   });
   expect(jobCeiling(mixed)).toBe(4);
   // A manifest declaring no ceiling runs no fan either; the batch a policy is written with
@@ -134,9 +136,11 @@ test("the ceiling a bound is judged against is the manifest's, and it never ride
 
   // AND THE PLAN CARRIES THE JOB'S HALF ONLY. `JobExecuteArgsSchema.limits` is strict, so a
   // `concurrentJobs` key in a request is an unrecognised key: every posting would be refused
-  // for the declaration it was supposed to run under.
+  // for the declaration it was supposed to run under. `inference` is the other way round — it
+  // is a request's to carry and the owner's to enforce (#279), and it is here.
   const plan = runPlan({ manifest: shipped, policy: POLICY, operationId: OPERATIONS.evaluate });
   expect(Object.keys(plan.limits).toSorted()).toEqual([
+    "inference",
     "memoryBytes",
     "outputBytes",
     "processes",
@@ -145,13 +149,50 @@ test("the ceiling a bound is judged against is the manifest's, and it never ride
   expect(JobLimitsSchema.safeParse(plan.limits).success).toBe(true);
 });
 
+test("the run the operator's allowance pays for carries its ceiling in micro-dollars, and only where a model answers", () => {
+  /*
+    ADR 0038's whole enforcement point, and the one number that leaves the hub. The operator
+    states an allowance in dollars; the OWNER refuses the call that would pass it, in integer
+    micro-dollars, so the conversion is the contract: a plan that rounded down would tighten a
+    ceiling the operator was promised, and one that emitted a zero for an exhausted allowance
+    would refuse the first call instead of saying nothing was allowed.
+  */
+  const shipped = PluginManifestSchema.parse(manifestJson);
+  // The two operations that bind the inference service are the two that get a ceiling: 0.25 / 4
+  // = $0.0625 a run, which is 62,500 micro-dollars.
+  for (const operationId of [OPERATIONS.explore, OPERATIONS.evaluate]) {
+    const metered = runPlan({ manifest: shipped, policy: POLICY, operationId });
+    expect(metered.limits.inference).toEqual({ costMicros: 62_500 });
+    // The binding the ceiling is enforced against is the manifest's own, at the revision this
+    // build ships: the plan never names a service, so a drift here is a job the owner refuses.
+    const declared = shipped.machine?.operations[operationId]?.services ?? [];
+    expect(declared).toEqual([
+      {
+        serviceId: INFERENCE_SERVICE.serviceId,
+        revision: INFERENCE_SERVICE.revision,
+        operationIds: [...INFERENCE_SERVICE.operationIds],
+      },
+    ]);
+  }
+  // A ceiling on an operation that reaches no model would be a bound on calls it cannot make.
+  for (const operationId of [OPERATIONS.scan, OPERATIONS.prepare, OPERATIONS.archive]) {
+    expect(runPlan({ manifest: shipped, policy: POLICY, operationId }).limits.inference).toBeUndefined();
+  }
+  // Rounding is UP, and an exhausted allowance yields NO ceiling rather than a zero one.
+  expect(inferenceCeiling(0.000_000_4)).toBe(1);
+  expect(inferenceCeiling(0)).toBeNull();
+  expect(inferenceCeiling(-1)).toBeNull();
+});
+
 test("the plan says which operations the owner may meter, out of the manifest's own bindings", () => {
   const bound = manifestWith({
     [OPERATIONS.scan]: operation(["bun"], 600_000),
-    [OPERATIONS.explore]: operation(["bun", "code"], 3_600_000),
+    [OPERATIONS.explore]: operation(["bun", ENGINE_TOOL], 3_600_000),
     [OPERATIONS.evaluate]: {
-      ...operation(["bun", "code"], 3_600_000),
-      services: [{ serviceId: "atyrode.code.inference", revision: "1", operationIds: ["messages"] }],
+      ...operation(["bun", ENGINE_TOOL], 3_600_000),
+      services: [
+        { serviceId: INFERENCE_SERVICE.serviceId, revision: INFERENCE_SERVICE.revision, operationIds: ["stream"] },
+      ],
     },
   });
   expect(runPlan({ manifest: bound, policy: POLICY }).metered).toEqual({
@@ -160,24 +201,26 @@ test("the plan says which operations the owner may meter, out of the manifest's 
     [OPERATIONS.evaluate]: true,
   });
 
-  // What this repository actually ships: the review and exploration lanes bind no service at
-  // all, so nothing can meter them and a long silence at the model is never called a stall
-  // (#256). Whether the owner meters a binding that IS there is its installed policy's to say,
-  // which no server half can read — so a call the hub already counted is the fold's other proof.
+  // What this repository actually ships: both model-driving lanes bind the inference service,
+  // so the owner CAN meter them — whether it does is its installed policy's to say, which no
+  // server half can read, and a call the hub already counted is the fold's other proof (#256).
   const shipped = runPlan({
     manifest: PluginManifestSchema.parse(manifestJson),
     policy: POLICY,
   }).metered;
-  expect(shipped[OPERATIONS.explore]).toBe(false);
-  expect(shipped[OPERATIONS.evaluate]).toBe(false);
+  expect(shipped[OPERATIONS.explore]).toBe(true);
+  expect(shipped[OPERATIONS.evaluate]).toBe(true);
   expect(shipped[OPERATIONS.archive]).toBe(true);
+  expect(shipped[OPERATIONS.scan]).toBe(false);
+  expect(shipped[OPERATIONS.prepare]).toBe(false);
 });
-test("an operation that drives Code without requiring it is a manifest this refuses to run", () => {
+
+test("an operation that drives the engine without requiring it is a manifest this refuses to run", () => {
   const wrong = manifestWith({
     [OPERATIONS.scan]: operation(["bun"], 600_000),
     [OPERATIONS.evaluate]: operation(["bun"], 3_600_000),
   });
-  expect(() => runPlan({ manifest: wrong, policy: POLICY })).toThrow(/does not require the code/);
+  expect(() => runPlan({ manifest: wrong, policy: POLICY })).toThrow(/does not require the omp/);
 });
 
 test("one run may spend one claim's reservation, which is the policy's own arithmetic", () => {

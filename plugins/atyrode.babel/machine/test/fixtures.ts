@@ -190,3 +190,21 @@ export async function digestOf(path: string): Promise<string> {
   hasher.update(new Uint8Array(await Bun.file(path).arrayBuffer()));
   return "sha256:" + hasher.digest("hex");
 }
+
+/**
+ * A JOB'S PRIVATE HOME, as the OWNER leaves one: `.omp/agent/models.yml` and `.omp/agent/
+ * config.yml`, materialized by the machine owner out of the job's `atyrode.babel.inference`
+ * binding (`manifest.json` `inputFiles[*].homePath`).
+ *
+ * It is what makes a launch ADMISSIBLE: `inferenceShortfall` refuses a run whose home holds
+ * neither file, because such a job has no metered lane to a model. The contents are not written
+ * to be read — one of the two holds a bearer in a real job, and Babel never opens either — so
+ * what is here is only what makes them exist.
+ */
+export async function writeJobHome(parent: string): Promise<string> {
+  const home = join(parent, "home");
+  await mkdir(join(home, ".omp", "agent"), { recursive: true });
+  await Bun.write(join(home, ".omp", "agent", "models.yml"), "providers: {}\n");
+  await Bun.write(join(home, ".omp", "agent", "config.yml"), "modelRoles: {}\n");
+  return home;
+}

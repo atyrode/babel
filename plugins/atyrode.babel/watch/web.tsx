@@ -2,12 +2,15 @@ import type { PanelProps } from "@manifold/plugin";
 import { usePolledResource } from "@manifold/plugin/hooks";
 import type { MachineSummary } from "@manifold/protocol";
 import { Stack } from "@manifold/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import {
   ACTIONS,
+  AccountsQuerySchema,
+  AccountsResultSchema,
   LaunchResultSchema,
   PANELS,
+  PRESET_REACHES_MODEL,
   PolicyResultSchema,
   RunsQuerySchema,
   RunsResultSchema,
@@ -16,12 +19,15 @@ import {
 } from "../contract.ts";
 import {
   INITIAL_DRAFT,
+  NO_ACCOUNTS,
   act,
   launchInput,
   launchRequest,
   read,
+  sessionChoice,
   stopInput,
   unready,
+  type AccountsResult,
   type LaunchAnswer,
   type LaunchDraft,
   type PolicyResult,
@@ -52,6 +58,8 @@ const RUNS_POLL_MS = 5_000;
 const POLICY_POLL_MS = 60_000;
 const TOPICS_POLL_MS = 60_000;
 const MACHINES_POLL_MS = 30_000;
+/** Which accounts a broker has observed changes when an account is enrolled, and not otherwise. */
+const ACCOUNTS_POLL_MS = 60_000;
 /** A dry preview is a read of the machine's own runtime report; it does not go stale quickly. */
 const PREVIEW_POLL_MS = 120_000;
 /** The clock the elapsed columns advance on. One second, because that is what "ticking" means. */
@@ -83,6 +91,7 @@ export function Watch({ host }: PanelProps) {
   const [runsNote, setRunsNote] = useState("");
   const [stopNote, setStopNote] = useState("");
   const [policyNote, setPolicyNote] = useState("");
+  const [accountsNote, setAccountsNote] = useState("");
 
   const runs = usePolledResource<RunsResult>(
     () => read(host, ACTIONS.runs, RunsQuerySchema.parse({ limit }), RunsResultSchema),
@@ -119,13 +128,57 @@ export function Watch({ host }: PanelProps) {
   });
 
   /*
+    WHICH ACCOUNTS THIS RUN COULD SPEND (#279), read per machine because a broker is a machine's
+    own: the rows come from that host's enrolled credentials, and there is nothing to ask before
+    one is picked.
+
+    A FAILED READ IS THE SAME ANSWER AS AN UNAVAILABLE BROKER. The door already reports "nobody
+    could be asked" as a reason rather than an empty list, and a refused dispatch — a hub whose
+    caller may not read the service, a plugin half that is older than this panel — is that same
+    situation arriving as an exception. Folding it into `unavailable` is what puts the typed
+    fallback on screen instead of a dead select with a note nobody connects to it.
+  */
+  const accounts = usePolledResource<AccountsResult>(
+    () =>
+      read(
+        host,
+        ACTIONS.accounts,
+        AccountsQuerySchema.parse({ machineId: draft.machineId }),
+        AccountsResultSchema,
+      ),
+    ACCOUNTS_POLL_MS,
+    {
+      key: "atyrode.babel.accounts",
+      initial: NO_ACCOUNTS,
+      enabled: draft.machineId !== "",
+      restartKey: draft.machineId,
+      onError: (reason) => setAccountsNote(noteOf(reason)),
+      onSuccess: () => setAccountsNote(""),
+    },
+  );
+  const offered = useMemo<AccountsResult>(
+    () => (accountsNote === "" ? accounts.value : { accounts: [], unavailable: accountsNote }),
+    [accounts.value, accountsNote],
+  );
+
+  /*
+    WHO WILL ANSWER IT. The pick is remade whenever the draft or the offered rows move — a poll
+    can report the chosen account blocked between the choice and the press — and `needed` is the
+    door's own table, so the one preset that reaches no model is never held up for a session it
+    would never spend.
+  */
+  const needed = PRESET_REACHES_MODEL[draft.preset];
+  const pick = useMemo(() => sessionChoice(draft, offered), [draft, offered]);
+  const chosen = needed && pick.ok ? pick.session : null;
+
+  /*
     WHAT WILL RUN is a resource keyed on the request itself: change the machine, the preset or a
     knob and the dry read happens again, because the profile, the cost and the ceilings are
     facts about THAT request on THAT machine. `blocked` is why there is nothing to ask yet, and
     it is also the sentence the card shows in the line's place.
   */
   const blocked = unready(draft);
-  const request = useMemo(() => (blocked === "" ? launchInput(draft) : null), [blocked, draft]);
+  const request = useMemo(() => (blocked === "" ? launchInput(draft, chosen) : null), [blocked, chosen, draft]);
   const [previewNote, setPreviewNote] = useState("");
   const preview = usePolledResource<LaunchAnswer | null>(
     () =>
@@ -144,6 +197,27 @@ export function Watch({ host }: PanelProps) {
   );
 
   /*
+    THE MODEL THE MACHINE LAST RAN, offered as the field's starting point — once per machine, and
+    never over the operator's own typing.
+
+    `profile` is a RECORDED figure out of the newest receipt on that host, so it names a model
+    that has actually answered there; a machine that has run nothing leaves the field empty,
+    which is the honest shape of "nobody has run anything here yet" and is exactly the blank the
+    picker exists to have the operator fill.
+  */
+  const prefilledFor = useRef("");
+  useEffect(() => {
+    const answer = preview.value;
+    if (answer === null) return;
+    const last = answer.profile?.model ?? "";
+    if (last === "" || prefilledFor.current === answer.machineId) return;
+    prefilledFor.current = answer.machineId;
+    setDraft((current) =>
+      current.session.model === "" ? { ...current, session: { ...current.session, model: last } } : current,
+    );
+  }, [preview.value]);
+
+  /*
     The clock advances only while something is in flight. A panel that ticked over a page of
     receipts would be re-rendering a table of fixed numbers once a second forever.
   */
@@ -155,10 +229,10 @@ export function Watch({ host }: PanelProps) {
   }, [inFlight]);
 
   const onStart = useCallback(async () => {
-    if (blocked !== "") return;
+    if (blocked !== "" || (needed && chosen === null)) return;
     setStarting(true);
     setStartNote("");
-    const outcome = await act(host, ACTIONS.launch, launchRequest(draft), LaunchResultSchema);
+    const outcome = await act(host, ACTIONS.launch, launchRequest(draft, chosen), LaunchResultSchema);
     setStarting(false);
     if (outcome.ok) {
       setStartNote(`Started ${outcome.value.kind} as ${outcome.value.runId}.`);
@@ -167,7 +241,7 @@ export function Watch({ host }: PanelProps) {
       return;
     }
     setStartNote(outcome.message);
-  }, [blocked, draft, host, runs]);
+  }, [blocked, chosen, draft, host, needed, runs]);
 
   const onStop = useCallback(
     async (run: RunRow) => {
@@ -189,6 +263,8 @@ export function Watch({ host }: PanelProps) {
         machines={machines.value}
         topics={topics.value.topics}
         recipes={policy.value?.recipes ?? []}
+        accounts={offered}
+        session={needed ? pick : null}
         preview={preview.value}
         previewNote={blocked === "" ? previewNote : blocked}
         starting={starting}

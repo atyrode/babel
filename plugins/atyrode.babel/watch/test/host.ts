@@ -1,7 +1,15 @@
 import type { HostServices } from "@manifold/plugin";
 import type { ActionOutcome, MachineSummary } from "@manifold/protocol";
 import { ACTIONS, OPERATIONS, door, type ActionName } from "../../contract.ts";
-import type { LaunchAnswer, PolicyResult, RunProgress, RunRow, RunsResult, TopicsResult } from "../api.ts";
+import type {
+  AccountsResult,
+  LaunchAnswer,
+  PolicyResult,
+  RunProgress,
+  RunRow,
+  RunsResult,
+  TopicsResult,
+} from "../api.ts";
 
 /*
   THE FAKE HOST.
@@ -171,6 +179,35 @@ export const TOPICS: TopicsResult = {
   unfiled: 12,
 };
 
+/**
+ * WHAT THE MACHINE'S BROKER HAS OBSERVED, as the `accounts` door projects it: one account to
+ * spend and one the broker reports blocked, because "offered" and "spendable" are two facts and
+ * the picker shows both.
+ */
+export const BROKER_SCOPE = "atyrode.omp.accounts.broker@rev_4/m-dev-01";
+
+export const ACCOUNTS: AccountsResult = {
+  accounts: [
+    {
+      provider: "anthropic",
+      scope: BROKER_SCOPE,
+      credentialId: "7",
+      identityKey: "victorballu",
+      label: "victorballu@gmail.com",
+      disabled: false,
+    },
+    {
+      provider: "anthropic",
+      scope: BROKER_SCOPE,
+      credentialId: "9",
+      identityKey: "helena",
+      label: "helena@example.com",
+      disabled: true,
+    },
+  ],
+  unavailable: "",
+};
+
 /** What the machine's own runtime report becomes on the way back through `launch`. */
 export function launchAnswer(overrides: Partial<LaunchAnswer> = {}): LaunchAnswer {
   return {
@@ -178,14 +215,21 @@ export function launchAnswer(overrides: Partial<LaunchAnswer> = {}): LaunchAnswe
     jobId: "job_new",
     machineId: "m-dev-01",
     kind: "explore",
-    profile: {
-      id: "babel-explore",
-      revision: 4,
-      model: "claude-opus-4",
-      disclosure: "full",
-      costPer1k: { input: 0.015, output: 0.075 },
-    },
+    profile: { model: "anthropic/claude-opus-5", thinking: "high", account: "victorballu" },
     ceiling: { perRunUsd: 2, perDayUsd: 20 },
+    session: {
+      serviceId: "atyrode.babel.inference",
+      account: "victorballu",
+      model: "anthropic/claude-opus-5",
+      priced: true,
+      price: { inputPerMillion: 5_000_000, outputPerMillion: 25_000_000 },
+      ceilingMicros: 2_000_000,
+      policy: "priced",
+      unreadable: "",
+      note:
+        "anthropic/claude-opus-5 is metered at $5.0000 per million input tokens and $25.0000 " +
+        "per million output, on victorballu, under a ceiling of $2.0000 for this run",
+    },
     ...overrides,
   };
 }
@@ -195,6 +239,8 @@ export function watchDoors(answers: {
   readonly runs: () => RunsResult;
   readonly policy?: () => PolicyResult;
   readonly topics?: () => TopicsResult;
+  /** What the machine's broker has seen, or the reason nobody could be asked (#279). */
+  readonly accounts?: (args: unknown) => AccountsResult;
   /** The dry read the card polls; `launch` below is only ever the button. */
   readonly launchPreview?: (args: unknown) => LaunchAnswer;
   readonly launch?: (args: unknown) => LaunchAnswer;
@@ -204,6 +250,7 @@ export function watchDoors(answers: {
     [door(ACTIONS.runs)]: () => answers.runs(),
     [door(ACTIONS.policy)]: () => (answers.policy ?? (() => POLICY))(),
     [door(ACTIONS.topics)]: () => (answers.topics ?? (() => TOPICS))(),
+    [door(ACTIONS.accounts)]: (args) => (answers.accounts ?? (() => ACCOUNTS))(args),
     [door(ACTIONS.launchPreview)]: (args) =>
       (answers.launchPreview ?? (() => launchAnswer({ runId: "", jobId: "" })))(args),
     [door(ACTIONS.launch)]: (args) => (answers.launch ?? (() => launchAnswer()))(args),
