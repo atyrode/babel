@@ -1097,8 +1097,9 @@ test("an overlay the standing lease cannot cover is refused, and so is one that 
 
 test("the importable tables are derived from the migration itself", () => {
   const tables = importableTables();
-  // Twenty-three from the crossing, plus `budgets` — the overlay table #260 added.
-  expect(Object.keys(tables)).toHaveLength(24);
+  // Twenty-three from the crossing, plus `budgets` (the overlay table #260 added) and
+  // `run_progress` (#261).
+  expect(Object.keys(tables)).toHaveLength(25);
   expect(tables["dispositions"]).toEqual([
     "id",
     "record_id",

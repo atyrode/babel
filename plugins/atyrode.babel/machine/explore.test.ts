@@ -12,11 +12,13 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WorkerProgressSchema } from "@manifold/protocol";
 import type { Receipt } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { Row } from "./engine/rows.ts";
 import { explore, ExploreInputSchema, type OperationDeps } from "./explore.ts";
 import type { OutputFile, OutputSink } from "./output.ts";
+import { openProgress } from "./progress.ts";
 
 const FIXTURE = join(import.meta.dir, "engine", "fakeengine.ts");
 const PROFILE = { id: "analysis", revision: 3 };
@@ -195,6 +197,26 @@ async function launch(
   const receipt = await explore(input, sink, { workDir: directory, ...options.deps });
   return { sink, receipt, promptPath };
 }
+
+test("a run says where it is: preparing, at the model when the prompt leaves, then submitting", async () => {
+  const written: string[] = [];
+  const progress = openProgress({ sink: { write: (line) => written.push(line) } });
+  const { receipt } = await launch({ deps: { progress } });
+
+  expect(receipt.closure).toBe("completed");
+  const frames = written.map((line) => WorkerProgressSchema.parse(JSON.parse(line)));
+  // In order, and each one a frame the owner's own schema admits: a stage it refuses fails the
+  // job's context channel rather than merely being dropped (#261).
+  expect(frames.map((frame) => frame.stage)).toEqual(["preparing", "at the model", "submitting"]);
+  expect(frames[1]?.message).toBe("explore");
+  expect(frames[2]?.message).toContain("records");
+  expect(progress.refused).toBe(0);
+});
+
+test("the receipt keeps the models that answered, not only the one it launched under", async () => {
+  const { receipt } = await launch();
+  expect(receipt.models).toEqual(["synthetic-1"]);
+});
 
 test("a run writes every output file in the store's row shapes", async () => {
   const { sink, receipt, promptPath } = await launch();

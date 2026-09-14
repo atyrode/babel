@@ -111,6 +111,10 @@ class Fleet implements BabelJobs {
     throw new Error("a launch never lists runs");
   }
 
+  journal(): never {
+    throw new Error("a launch never reads a journal");
+  }
+
   output(): { data: string; eof: boolean } {
     throw new Error("a launch never reads an output");
   }
@@ -156,6 +160,7 @@ function report(over: Partial<TickReport> = {}): TickReport {
     gaps: [],
     parked: null,
     pulse: { tick: { gaps: {}, refusals: {} }, today: { gaps: {}, refusals: {} } },
+    runs: { running: 0, atModel: 0, stalled: 0 },
     pending: 0,
     notes: [],
     ...over,

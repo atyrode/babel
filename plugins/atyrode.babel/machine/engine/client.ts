@@ -451,6 +451,20 @@ export interface Usage {
   messages: number;
 }
 
+/**
+ * The words a {@link ProgressRecord} is stamped with. They are the run's own lifecycle rather
+ * than the model's turn structure, and `prompt` is the one a caller acts on: it is written the
+ * instant the job's material leaves Babel, which is what "at the model since T" means (#261).
+ */
+export const PROGRESS_STAGE = {
+  launch: "launch",
+  prompt: "prompt",
+  tool: "tool",
+  agent: "agent",
+  model: "model",
+  extension: "extension",
+} as const;
+
 /** One lifecycle event, so an interface stays responsive while a run is in flight. */
 export interface ProgressRecord {
   seq: number;
@@ -489,6 +503,12 @@ export interface EngineOutcome {
   submissions: number;
   prompted: boolean;
   usage: Usage | null;
+  /**
+   * The models that answered, first heard from first: the launch report's, then every model the
+   * engine changed to. The profile block of a receipt says what the run was LAUNCHED under, and
+   * a fallback or a retry moves it (#261); these are what actually spoke.
+   */
+  models: readonly string[];
   tools: readonly ToolDecision[];
   progress: readonly ProgressRecord[];
   unknownFrames: readonly string[];
@@ -527,6 +547,7 @@ class Run {
   finished: RuntimeReport | null = null;
   tools: ToolDecision[] = [];
   progress: ProgressRecord[] = [];
+  models: string[] = [];
   progressDropped = 0;
   unknown: Record<string, true> = {};
   stderr = "";
@@ -554,6 +575,12 @@ class Run {
     if (this.progress.length < this.limits.maxProgress) this.progress.push(entry);
     else this.progressDropped += 1;
     this.deps.onProgress?.(entry);
+  }
+
+  /** Notes a model that answered. The trail is ordered by first appearance and never repeats. */
+  spoke(model: string): void {
+    const named = model.trim();
+    if (named !== "" && !this.models.includes(named)) this.models.push(named);
   }
 }
 
@@ -612,6 +639,7 @@ export async function runEngineJob(job: EngineJob, deps: EngineDeps): Promise<En
     submissions: run.submissions,
     prompted: run.prompted,
     usage: run.usage,
+    models: run.models,
     tools: run.tools,
     progress: run.progress,
     unknownFrames: Object.keys(run.unknown).sort(),
@@ -701,7 +729,8 @@ async function admit(run: Run): Promise<void> {
   }
   const shortfall = containmentShortfall(report.containment, run.job.requirement ?? SANDBOXED_RUN);
   if (shortfall !== "") throw new EngineFailure(ENGINE_FAILURES.containment, shortfall);
-  run.record("launch", `admitted under ${report.containment?.backend ?? "no backend"}`);
+  run.spoke(String(report.metadata?.["model"] ?? ""));
+  run.record(PROGRESS_STAGE.launch, `admitted under ${report.containment?.backend ?? "no backend"}`);
 }
 
 /** Negotiates the transport and registers the job's tools. */
@@ -732,6 +761,10 @@ async function register(run: Run): Promise<void> {
 
 /** Writes the job's prompt. It is the first moment the run's material leaves Babel. */
 async function prompt(run: Run): Promise<void> {
+  // BEFORE the write, not after: the record's instant is what "at the model since T" means, and
+  // the response to this command does not arrive until the engine has been to the model at
+  // least once. A run that reported the stage on the answer would report it on the way back.
+  run.record(PROGRESS_STAGE.prompt, `${String(run.job.prompt.length)} characters written to the engine`);
   const data = await call(run, { id: run.command(), type: COMMAND.prompt, message: run.job.prompt });
   const ack = PromptAckSchema.safeParse(data);
   if (ack.success && ack.data.agentInvoked === false) {
@@ -811,11 +844,11 @@ async function handle(run: Run, frame: Frame): Promise<void> {
     case FRAME.hostToolCancel:
       // Every call is answered before the next frame is read, so a cancellation can only name a
       // call already answered. It is noted and nothing is withdrawn.
-      run.record("tool", `the engine withdrew call ${frame.targetId ?? ""} after it was answered`);
+      run.record(PROGRESS_STAGE.tool, `the engine withdrew call ${frame.targetId ?? ""} after it was answered`);
       return;
     case FRAME.agentEnd:
       if (frame.isTerminal !== false) run.ended = true;
-      run.record("agent", "turn ended");
+      run.record(PROGRESS_STAGE.agent, "turn ended");
       return;
     case FRAME.promptResult:
       if (frame.agentInvoked === false) run.ended = true;
@@ -843,25 +876,41 @@ async function handle(run: Run, frame: Frame): Promise<void> {
     case FRAME.messageEnd:
       return;
     case FRAME.modelChanged:
-      run.record("model", `model changed: ${JSON.stringify(frame.model ?? null)}`);
+      run.spoke(modelName(frame.model));
+      run.record(PROGRESS_STAGE.model, `model changed: ${JSON.stringify(frame.model ?? null)}`);
       return;
     case FRAME.retryFallback:
     case FRAME.fallbackSucceeded:
-      run.record("agent", frame.type);
+      run.record(PROGRESS_STAGE.agent, frame.type);
       return;
     case FRAME.extensionError:
-      run.record("extension", `extension error in ${frame.event ?? frame.extensionPath ?? "an extension"}`);
+      run.record(PROGRESS_STAGE.extension, `extension error in ${frame.event ?? frame.extensionPath ?? "an extension"}`);
       return;
     case FRAME.ready:
       throw new EngineFailure(ENGINE_FAILURES.protocol, "a second ready frame");
     default:
       if (LIFECYCLE_FRAMES[frame.type] === true) {
-        run.record("agent", frame.type);
+        run.record(PROGRESS_STAGE.agent, frame.type);
         return;
       }
       run.unknown[frame.type] = true;
       return;
   }
+}
+
+/**
+ * The name inside a `model_changed` frame. OMP sends either the bare identifier or an object
+ * describing it, and neither is Babel's to define — so a shape this does not recognize
+ * contributes no name rather than a stringified object nobody can compare to a price list.
+ */
+function modelName(model: unknown): string {
+  if (typeof model === "string") return model;
+  if (model === null || typeof model !== "object") return "";
+  for (const key of ["id", "model", "name"]) {
+    const value = Reflect.get(model, key);
+    if (typeof value === "string" && value.trim() !== "") return value;
+  }
+  return "";
 }
 
 /**

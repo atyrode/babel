@@ -5,6 +5,7 @@ import {
   type Receipt,
 } from "../contract.ts";
 import { type OutputSink, directorySink } from "./output.ts";
+import { openProgress, type ProgressChannel } from "./progress.ts";
 import { claim, discover, existingRoots } from "./adapters/index.ts";
 
 /*
@@ -48,7 +49,10 @@ const USAGE = `babel-machine <${Object.keys(OPERATIONS).join("|")}> --input <fil
  * client for `explore` and `evaluate`. A static import graph would make every scheduled scan
  * load all five.
  */
-const DISPATCH: Record<OperationWord, (raw: unknown, out: OutputSink) => Promise<Receipt>> = {
+const DISPATCH: Record<
+  OperationWord,
+  (raw: unknown, out: OutputSink, progress: ProgressChannel) => Promise<Receipt>
+> = {
   scan: async (raw, out) => {
     const { ScanInputSchema, scan } = await import("./scan.ts");
     return scan(ScanInputSchema.parse(raw), out);
@@ -63,17 +67,17 @@ const DISPATCH: Record<OperationWord, (raw: unknown, out: OutputSink) => Promise
       credentialFile: process.env["BABEL_RESTIC_BINDING"]?.trim() || RESTIC_CREDENTIAL_FILE,
     });
   },
-  prepare: async (raw, out) => {
+  prepare: async (raw, out, progress) => {
     const { PrepareInputSchema, prepare, digests, modifiedAt } = await import("./prepare.ts");
-    return prepare(PrepareInputSchema.parse(raw), out, { discover, digests, modifiedAt });
+    return prepare(PrepareInputSchema.parse(raw), out, { discover, digests, modifiedAt, progress });
   },
-  explore: async (raw, out) => {
+  explore: async (raw, out, progress) => {
     const { ExploreInputSchema, explore } = await import("./explore.ts");
-    return explore(ExploreInputSchema.parse(raw), out);
+    return explore(ExploreInputSchema.parse(raw), out, { progress });
   },
-  evaluate: async (raw, out) => {
+  evaluate: async (raw, out, progress) => {
     const { EvaluateInputSchema, evaluate } = await import("./evaluate.ts");
-    return evaluate(EvaluateInputSchema.parse(raw), out);
+    return evaluate(EvaluateInputSchema.parse(raw), out, { progress });
   },
 };
 
@@ -111,14 +115,18 @@ export function parseArgv(argv: readonly string[]): Invocation {
  * Runs one operation and returns its receipt, or writes a failed one and rethrows. Reading the
  * input is inside the attempt on purpose: a job whose input document is missing or malformed
  * is a run that failed, and it must leave the same receipt as one that failed later.
+ *
+ * The progress channel is opened here and handed down: it is the JOB's, one per process, and an
+ * operation that opened its own would be a second writer on a descriptor the owner made for one
+ * (`machine/progress.ts`). A caller that hands one — a test, a hand-run — keeps it.
  */
-export async function run(invocation: Invocation): Promise<Receipt> {
+export async function run(invocation: Invocation, progress: ProgressChannel = openProgress()): Promise<Receipt> {
   const sink = directorySink(invocation.outputDir);
   const startedAt = new Date().toISOString();
   let raw: unknown = null;
   try {
     raw = await Bun.file(invocation.inputPath).json();
-    return await DISPATCH[invocation.operation](raw, sink);
+    return await DISPATCH[invocation.operation](raw, sink, progress);
   } catch (cause) {
     const fields = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
     const named = typeof fields["runId"] === "string" ? fields["runId"].trim() : "";

@@ -27,8 +27,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { type Receipt } from "../contract.ts";
-import { runEngineJob, type EngineOutcome, type HostTool, type ToolBroker } from "./engine/client.ts";
+import { RUN_STAGES, type Receipt } from "../contract.ts";
+import {
+  PROGRESS_STAGE,
+  runEngineJob,
+  type EngineOutcome,
+  type HostTool,
+  type ToolBroker,
+} from "./engine/client.ts";
 import {
   ENGINE_FAILURES,
   ProfileRefSchema,
@@ -67,6 +73,7 @@ import {
   type Row,
 } from "./engine/rows.ts";
 import type { OutputSink } from "./output.ts";
+import { SILENT, type ProgressChannel } from "./progress.ts";
 
 // ---------------------------------------------------------------------------- the input
 
@@ -161,6 +168,8 @@ export interface OperationDeps {
   now?: () => Date;
   /** Where the per-launch runtime-info sidecar directory is made; the system temp dir by default. */
   workDir?: string;
+  /** Where this run says it is; a caller that hands none is not watched (`progress.ts`). */
+  progress?: ProgressChannel | undefined;
 }
 
 // ---------------------------------------------------------------------------- the operation
@@ -200,8 +209,18 @@ export async function explore(input: ExploreInput, out: OutputSink, deps: Operat
 
   let closure: Receipt["closure"] = "completed";
   let reason = "";
+  const progress = deps.progress ?? SILENT;
+  // The stage word is the run's phase, not the exploration's: `explore`, `challenge` and
+  // `synthesize` are what the MESSAGE says, because a row an operator scans has room for one
+  // word and that word has to mean the same thing for every operation (#261).
+  let done = 0;
   try {
     for (const stage of input.stages) {
+      progress.report({
+        stage: RUN_STAGES.preparing,
+        message: `${stage}: composing the prompt`,
+        fraction: done / input.stages.length,
+      });
       const recipes = input.recipes.filter((recipe) => recipe.stages.includes(stage));
       if (recipes.length === 0) {
         // A stage no selected recipe declares is not a failure of the run: it is a stage the
@@ -236,6 +255,7 @@ export async function explore(input: ExploreInput, out: OutputSink, deps: Operat
       brief.hypotheses.push(...written.emitted.hypotheses);
       brief.observations.push(...written.emitted.observations);
       brief.objections.push(...written.emitted.objections);
+      done += 1;
     }
   } finally {
     clearTimeout(deadline);
@@ -248,6 +268,7 @@ export async function explore(input: ExploreInput, out: OutputSink, deps: Operat
 
   // The output files go out whatever the closure: a stage that produced records before a later
   // one failed produced them, and a failed run's receipt is exactly the record that is needed.
+  progress.report({ stage: RUN_STAGES.submitting, message: `${String(records.length)} records` });
   await out.write("records", records);
   await out.write("edges", edges);
   await out.write("statusEvents", statuses);
@@ -367,6 +388,14 @@ async function runStage(args: {
           ...(input.engine.cwd === "" ? {} : { cwd: input.engine.cwd }),
         },
         limits: args.limits,
+        // The client's `prompt` record is written the instant the job's material leaves Babel,
+        // which is the only moment this process can honestly call "at the model" (#261). Every
+        // other lifecycle record stays where it is: a run's trail is the receipt's, and the
+        // owner's channel carries a phase rather than a transcript.
+        onProgress: (record) => {
+          if (record.stage !== PROGRESS_STAGE.prompt) return;
+          (deps.progress ?? SILENT).report({ stage: RUN_STAGES.atModel, message: stage });
+        },
         ...(deps.broker === undefined ? {} : { broker: deps.broker }),
         ...(deps.now === undefined ? {} : { now: deps.now }),
         signal: args.controller.signal,

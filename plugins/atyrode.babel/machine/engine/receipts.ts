@@ -49,6 +49,8 @@ export function buildReceipt(input: ReceiptInput): Receipt {
   let costUsd: number | null = null;
   let tokens: number | null = null;
   let submissions = 0;
+  /** Every model that answered across the run's stages, first heard from first (#261). */
+  const models: string[] = [];
   /** Per tool, how many calls were served and how many refused: the run's boundary, counted. */
   const tools: Record<string, number> = {};
   for (const job of input.jobs) {
@@ -56,6 +58,7 @@ export function buildReceipt(input: ReceiptInput): Receipt {
       costUsd = (costUsd ?? 0) + job.usage.costUsd;
       tokens = (tokens ?? 0) + job.usage.totalTokens;
     }
+    for (const model of job.models) if (!models.includes(model)) models.push(model);
     for (const decision of job.tools) {
       const key = `${decision.tool}.${decision.allowed ? "served" : "refused"}`;
       tools[key] = (tools[key] ?? 0) + 1;
@@ -78,6 +81,7 @@ export function buildReceipt(input: ReceiptInput): Receipt {
     ...(reason === "" ? {} : { reason }),
     ...(costUsd === null ? {} : { costUsd }),
     ...(tokens === null ? {} : { tokens }),
+    ...(models.length === 0 ? {} : { models }),
     counts: { ...input.counts, ...tools, jobs: input.jobs.length, submissions },
   };
   return ReceiptSchema.parse(receipt);

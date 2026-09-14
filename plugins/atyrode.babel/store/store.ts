@@ -36,6 +36,7 @@ import {
   type FeedResult,
   type PostKind,
   type RecordPeel,
+  type RunProgress,
   type Ruling,
 } from "../contract.ts";
 import type { z } from "zod";
@@ -145,9 +146,12 @@ export interface RunRow {
   startedAt: string;
   finishedAt: string;
   costUsd: number | null;
+  tokens: number | null;
   records: number;
   freshness: "fresh" | "recent" | "lost" | "ended";
   lastWord: string;
+  /** Where the run is and what it has spent, folded from the job's journal; null before any. */
+  progress: RunProgress | null;
 }
 
 export interface RunsQuery {
@@ -457,6 +461,33 @@ function runFreshness(state: RunRow["state"], lastWordMs: number, nowMs: number)
   return "fresh";
 }
 
+/**
+ * What the conductor folded out of this job's journal, or null when it folded nothing.
+ *
+ * `since` is what makes the row worth reading — "at the model since T", not "at the model" —
+ * and the only judgement in it is `stalled`, which the loop decides against its own clock so
+ * that two readers of the same row never disagree about it (#261).
+ */
+function runProgress(row: SqlRow): RunProgress | null {
+  const since = text(row["progress_since"]);
+  if (since === "") return null;
+  const fraction = row["progress_fraction"];
+  return {
+    stage: text(row["progress_stage"]),
+    message: text(row["progress_message"]),
+    fraction: typeof fraction === "number" ? fraction : null,
+    since,
+    calls: count(row["progress_calls"]),
+    inputTokens: count(row["progress_input_tokens"]),
+    outputTokens: count(row["progress_output_tokens"]),
+    cacheTokens: count(row["progress_cache_tokens"]),
+    costUsd: count(row["progress_cost_usd"]),
+    lastModel: text(row["progress_last_model"]),
+    stalled: count(row["progress_stalled"]) === 1,
+    updatedAt: text(row["progress_updated_at"]),
+  };
+}
+
 function runRow(row: SqlRow, nowMs: number): RunRow {
   const closure = text(row["closure"]);
   const startedAt = text(row["started_at"]);
@@ -464,6 +495,7 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
   const state = runState(closure, startedAt, finishedAt);
   const lastWord = text(row["last_word"]);
   const cost = row["cost_usd"];
+  const tokens = row["tokens"];
   return {
     id: text(row["id"]),
     kind: text(row["kind"]),
@@ -474,18 +506,33 @@ function runRow(row: SqlRow, nowMs: number): RunRow {
     startedAt,
     finishedAt,
     costUsd: typeof cost === "number" ? cost : null,
+    tokens: typeof tokens === "number" || typeof tokens === "bigint" ? Number(tokens) : null,
     records: count(row["records"]),
     freshness: runFreshness(state, instant(lastWord), nowMs),
     lastWord,
+    progress: runProgress(row),
   };
 }
 
+/**
+ * A run and, joined to it, whatever the loop last folded about it. The join is LEFT because
+ * `run_progress` holds a row only for a job the loop has read a journal page for: a queued run,
+ * a run from before this shape, and every run of an operation that reaches no model have none.
+ */
 const RUN_COLUMNS = `r.id AS id, r.kind AS kind, r.machine_id AS machine_id, r.job_id AS job_id,
   r.recipe_id AS recipe_id, r.started_at AS started_at, r.finished_at AS finished_at,
-  r.closure AS closure, r.cost_usd AS cost_usd, r.records AS records,
+  r.closure AS closure, r.cost_usd AS cost_usd, r.tokens AS tokens, r.records AS records,
+  p.stage AS progress_stage, p.message AS progress_message, p.fraction AS progress_fraction,
+  p.since AS progress_since, p.calls AS progress_calls, p.input_tokens AS progress_input_tokens,
+  p.output_tokens AS progress_output_tokens, p.cache_tokens AS progress_cache_tokens,
+  p.cost_usd AS progress_cost_usd, p.last_model AS progress_last_model,
+  p.stalled AS progress_stalled, p.updated_at AS progress_updated_at,
   MAX(r.started_at, COALESCE(r.finished_at, ''),
       COALESCE((SELECT MAX(created_at) FROM records WHERE run_id = r.id), ''),
       COALESCE((SELECT MAX(recorded_at) FROM assessments WHERE run_id = r.id), '')) AS last_word`;
+
+/** The one join every run read makes; `runs r` alone is what the counts are taken over. */
+const RUN_FROM = `runs r LEFT JOIN run_progress p ON p.run_id = r.id`;
 
 // ---------------------------------------------------------------------------- the store
 
@@ -1249,7 +1296,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
     const where = clauses.length === 0 ? "" : `WHERE ${clauses.join(" AND ")}`;
     const total = await one(`SELECT COUNT(*) AS n FROM runs r ${where}`, params);
     const rows = await db.query(
-      `SELECT ${RUN_COLUMNS} FROM runs r ${where} ORDER BY r.started_at DESC, r.id DESC LIMIT ? OFFSET ?`,
+      `SELECT ${RUN_COLUMNS} FROM ${RUN_FROM} ${where} ORDER BY r.started_at DESC, r.id DESC LIMIT ? OFFSET ?`,
       [...params, query.limit, query.offset],
     );
     const at = clock();
@@ -1257,7 +1304,7 @@ export function openStore(db: PluginDatabase, now?: () => number): BabelStore {
   };
 
   const run = async (id: string): Promise<RunResult> => {
-    const row = await one(`SELECT ${RUN_COLUMNS}, r.payload AS payload FROM runs r WHERE r.id = ?`, [id]);
+    const row = await one(`SELECT ${RUN_COLUMNS}, r.payload AS payload FROM ${RUN_FROM} WHERE r.id = ?`, [id]);
     if (row === null) return { run: null, receipt: null };
     const receipt = document(row["payload"]);
     return {

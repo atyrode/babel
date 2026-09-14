@@ -1,13 +1,16 @@
 import { Cluster, Stack } from "@manifold/ui";
-import { ACTIONS, door } from "../contract.ts";
+import { ACTIONS, RUN_STAGES, door } from "../contract.ts";
 import {
   FRESHNESS_NOTE,
   RUN_KIND_LABELS,
+  STAGE_NOTE,
+  STALLED_NOTE,
   ageClause,
   elapsedClock,
   elapsedSince,
   figure,
   since,
+  tokenClause,
   usd,
   type RunRow,
 } from "./api.ts";
@@ -60,8 +63,12 @@ function LiveTable({
         <thead>
           <tr>
             <th>Run</th>
-            <th>Recipe</th>
+            <th>Stage</th>
             <th className="plugin-atyrode_babel_watch__numeric">Elapsed</th>
+            <th className="plugin-atyrode_babel_watch__numeric">Calls</th>
+            <th className="plugin-atyrode_babel_watch__numeric">In / out / cache</th>
+            <th className="plugin-atyrode_babel_watch__numeric">Spent</th>
+            <th>Model</th>
             <th className="plugin-atyrode_babel_watch__numeric">Records</th>
             <th>Last word</th>
             <th />
@@ -71,6 +78,10 @@ function LiveTable({
           {runs.map((run) => {
             const seconds = elapsedSince(run.startedAt, now);
             const heard = run.freshness === "fresh" || run.freshness === "recent";
+            // The stage's own clock, ticking against the panel's: "at the model" is a claim
+            // about a phase, and "at the model since 11m 40s" is the one an operator acts on.
+            const progress = run.progress;
+            const inStage = progress === null ? null : elapsedSince(progress.since, now);
             return (
               <tr key={run.id} className="plugin-atyrode_babel_watch__live-row">
                 <td>
@@ -82,12 +93,45 @@ function LiveTable({
                     </span>
                   </Cluster>
                 </td>
-                <td className="plugin-atyrode_babel_watch__mono">{run.recipe === "" ? "—" : run.recipe}</td>
+                <td className="plugin-atyrode_babel_watch__stage">
+                  {progress === null ? (
+                    <span className="plugin-atyrode_babel_watch__muted">no word yet</span>
+                  ) : (
+                    <Cluster gap="var(--babel-space-2)">
+                      <span title={STAGE_NOTE[progress.stage] ?? ""}>{progress.stage}</span>
+                      {inStage === null ? null : (
+                        <span className="plugin-atyrode_babel_watch__muted plugin-atyrode_babel_watch__stage-since">
+                          {elapsedClock(inStage)}
+                        </span>
+                      )}
+                      {progress.stalled ? (
+                        <span className="plugin-atyrode_babel_watch__stalled" title={STALLED_NOTE}>
+                          stalled
+                        </span>
+                      ) : null}
+                    </Cluster>
+                  )}
+                </td>
                 <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__elapsed">
                   {seconds === null ? "—" : elapsedClock(seconds)}
                 </td>
+                <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
+                  {progress === null ? "—" : figure(progress.calls)}
+                </td>
+                <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
+                  {progress === null ? "—" : tokenClause(progress)}
+                </td>
+                <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
+                  {progress === null ? "—" : usd(progress.costUsd)}
+                </td>
+                <td className="plugin-atyrode_babel_watch__mono">
+                  {progress === null || progress.lastModel === "" ? "—" : progress.lastModel}
+                </td>
                 <td className="plugin-atyrode_babel_watch__numeric">{figure(run.records)}</td>
-                <td className="plugin-atyrode_babel_watch__mono" title={FRESHNESS_NOTE[run.freshness] ?? ""}>
+                <td
+                  className="plugin-atyrode_babel_watch__mono plugin-atyrode_babel_watch__last-word"
+                  title={FRESHNESS_NOTE[run.freshness] ?? ""}
+                >
                   {ageClause(run.lastWord, now)}
                 </td>
                 <td>
@@ -121,6 +165,7 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
             <th>Ended</th>
             <th className="plugin-atyrode_babel_watch__numeric">Took</th>
             <th className="plugin-atyrode_babel_watch__numeric">Records</th>
+            <th className="plugin-atyrode_babel_watch__numeric">Tokens</th>
             <th className="plugin-atyrode_babel_watch__numeric">Spend</th>
             <th>Closed</th>
           </tr>
@@ -149,6 +194,9 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
                   {figure(run.records)}
                 </td>
                 <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
+                  {run.tokens === null ? "—" : figure(run.tokens)}
+                </td>
+                <td className="plugin-atyrode_babel_watch__numeric plugin-atyrode_babel_watch__mono">
                   {run.costUsd === null ? "—" : usd(run.costUsd)}
                 </td>
                 <td>
@@ -163,19 +211,31 @@ function EndedTable({ runs, now }: { readonly runs: readonly RunRow[]; readonly 
   );
 }
 
+/**
+ * The one sentence above the tables. Before #261 it counted rows and heartbeats, which is what
+ * the 2026-09-13 drain had: twenty-six jobs "in flight", every one of them reading a corpus, no
+ * engine anywhere, and a header that said they were fine. So it says how many have reached a
+ * model and how many said they had and went quiet, and nothing else changes.
+ */
+function lede(live: readonly RunRow[]): string {
+  if (live.length === 0) return "Nothing running. Every row below is a receipt.";
+  const atModel = live.filter((run) => run.progress?.stage === RUN_STAGES.atModel).length;
+  const stalled = live.filter((run) => run.progress?.stalled === true).length;
+  const heardFrom = live.filter((run) => run.freshness === "fresh" || run.freshness === "recent").length;
+  const clauses = [`${live.length} in flight`, `${atModel} at the model`];
+  if (stalled > 0) clauses.push(`${stalled} stalled`);
+  if (heardFrom !== live.length) clauses.push(`${heardFrom} heard from lately`);
+  return `${clauses.join(", ")}.`;
+}
+
 export function Runs({ runs, total, now, stopping, note, onStop, onMore }: RunsProps) {
   const live = runs.filter((run) => IN_FLIGHT[run.state] === true);
   const ended = runs.filter((run) => IN_FLIGHT[run.state] !== true);
-  const heardFrom = live.filter((run) => run.freshness === "fresh" || run.freshness === "recent").length;
   return (
     <Stack gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__section">
       <Stack gap="var(--babel-space-1)">
         <h2 className="plugin-atyrode_babel_watch__title">Runs</h2>
-        <p className="plugin-atyrode_babel_watch__lede">
-          {live.length === 0
-            ? "Nothing running. Every row below is a receipt."
-            : `${live.length} in flight${heardFrom === live.length ? "" : `, ${heardFrom} heard from lately`}.`}
-        </p>
+        <p className="plugin-atyrode_babel_watch__lede">{lede(live)}</p>
       </Stack>
       {note === "" ? null : <p className="plugin-atyrode_babel_watch__note">{note}</p>}
       {live.length === 0 ? null : <LiveTable runs={live} now={now} stopping={stopping} onStop={onStop} />}

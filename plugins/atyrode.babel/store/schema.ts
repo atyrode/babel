@@ -6,8 +6,8 @@
   provenance survives the rewrite (decision 91: import once, then retire).
 
   What changed in the crossing, and why:
-  - ninety-four tables become twenty-three, and the shapes since have added one (`budgets`, #260).
-    The Go tree kept a table per concept per package; here a
+  - ninety-four tables become twenty-three, and the shapes since have added two (`budgets`,
+    #260, and `run_progress`, #261). The Go tree kept a table per concept per package; here a
     record is a record whatever its kind, an edge is an edge whatever it relates, and a revision
     is a row that supersedes another rather than a parallel table of revisions.
   - nothing is sealed and nothing is synced. The hub is the one place (§9 is retired); a row is
@@ -19,7 +19,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 2 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 3 } as const;
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -447,6 +447,37 @@ export const SCHEMA_V1: readonly string[] = [
   // ---------------------------------------------------------------- the budget overlay (#260)
   BUDGETS_TABLE,
 
+  // ---------------------------------------------------------------- a run in flight (#261)
+  // WHERE A RUNNING JOB IS AND WHAT IT HAS SPENT, folded out of the job's journal once a cycle:
+  // the newest `job_progress` for the stage and every `inference_call` since the last fold for
+  // the spend. One row per run, rewritten in place — this is a PROJECTION of the hub's own
+  // journal and never an act, so it is the one table here that is neither append-only nor
+  // ingested from a machine.
+  //
+  // It exists because between `started` and a terminal state a job is invisible, and on
+  // 2026-09-13 that invisibility cost seventy-five minutes with no engine running and nothing
+  // saying so (post-mortem F12, O2). `seq` is the newest journal sequence folded, so a cycle
+  // reads only what it has not seen; `stalled` is `at the model` with no metered call for
+  // ninety seconds, and the next call clears it.
+  `CREATE TABLE run_progress(
+     run_id TEXT PRIMARY KEY,
+     job_id TEXT NOT NULL,
+     stage TEXT NOT NULL DEFAULT '',
+     message TEXT NOT NULL DEFAULT '',
+     fraction REAL,
+     since TEXT NOT NULL,
+     calls INTEGER NOT NULL DEFAULT 0,
+     input_tokens INTEGER NOT NULL DEFAULT 0,
+     output_tokens INTEGER NOT NULL DEFAULT 0,
+     cache_tokens INTEGER NOT NULL DEFAULT 0,
+     cost_usd REAL NOT NULL DEFAULT 0,
+     last_model TEXT NOT NULL DEFAULT '',
+     last_call_at TEXT NOT NULL DEFAULT '',
+     seq INTEGER NOT NULL DEFAULT 0,
+     stalled INTEGER NOT NULL DEFAULT 0 CHECK (stalled IN (0, 1)),
+     updated_at TEXT NOT NULL
+   ) STRICT`,
+
   // ---------------------------------------------------------------- the crossing
   // The one-off import's own ledger: where each table's rows came from and how many.
   `CREATE TABLE imports(
@@ -487,6 +518,29 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     // A whole TABLE and therefore no column: the hook asks `sqlite_master` for it by name.
     table: "budgets",
     sql: BUDGETS_TABLE,
+  },
+  // #261: where a running job is and what it has spent. A whole table rather than a column,
+  // and additive in exactly the same sense — a build that does not know it never reads it.
+  {
+    table: "run_progress",
+    sql: `CREATE TABLE run_progress(
+     run_id TEXT PRIMARY KEY,
+     job_id TEXT NOT NULL,
+     stage TEXT NOT NULL DEFAULT '',
+     message TEXT NOT NULL DEFAULT '',
+     fraction REAL,
+     since TEXT NOT NULL,
+     calls INTEGER NOT NULL DEFAULT 0,
+     input_tokens INTEGER NOT NULL DEFAULT 0,
+     output_tokens INTEGER NOT NULL DEFAULT 0,
+     cache_tokens INTEGER NOT NULL DEFAULT 0,
+     cost_usd REAL NOT NULL DEFAULT 0,
+     last_model TEXT NOT NULL DEFAULT '',
+     last_call_at TEXT NOT NULL DEFAULT '',
+     seq INTEGER NOT NULL DEFAULT 0,
+     stalled INTEGER NOT NULL DEFAULT 0 CHECK (stalled IN (0, 1)),
+     updated_at TEXT NOT NULL
+   ) STRICT`,
   },
 ];
 

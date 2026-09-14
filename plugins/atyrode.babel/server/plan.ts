@@ -258,6 +258,14 @@ export function jobsSlice(jobs: GuestHookJobs): BabelJobs {
     listRuns: async (args) => await jobs.listRuns(args),
     output: async (args: { node: OutputRef; offset: number; maxBytes: number }) =>
       await jobs.output(args),
+    // The kit's `journal` takes its two bounds as plain optionals, so an absent one is left out
+    // rather than passed as `undefined` (`exactOptionalPropertyTypes`).
+    journal: async (args) =>
+      await jobs.journal({
+        node: args.node,
+        ...(args.after === undefined ? {} : { after: args.after }),
+        ...(args.limit === undefined ? {} : { limit: args.limit }),
+      }),
     cancel: async (node: JobRef): Promise<void> => {
       await jobs.cancel(node);
     },
@@ -294,6 +302,7 @@ export function unauthorized(reason: string): BabelJobs {
     status: refuse,
     listRuns: refuse,
     output: refuse,
+    journal: refuse,
     cancel: refuse,
     schedules: refuse,
     schedule: refuse,

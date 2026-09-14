@@ -11,6 +11,7 @@ import {
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
+  RUN_STAGES,
 } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { BabelStore } from "../store/store.ts";
@@ -28,11 +29,14 @@ import {
   CONDUCTOR_SCHEDULE_ID,
   conductor,
   ingestOutputs,
+  type InferenceUsage,
   type JobLaunch,
   type JobOutput,
   type JobRunState,
   type JobsSlice,
   type JobState,
+  type JournalEntry,
+  type JournalPage,
   type KeysSlice,
   type MachineReadiness,
   type MachinesSlice,
@@ -161,6 +165,55 @@ interface FakeJob {
   machineId: string;
   operationId: string;
   archive: Buffer | null;
+  /** What the hub's journal retains for this job, in sequence; the fold reads it by page. */
+  journal: JournalEntry[];
+  /** What the OWNER metered, as `usage.inference` on the result of a settled job. */
+  inference: InferenceUsage | null;
+}
+
+/** One journaled frame, at the next sequence, as the owner would have emitted it. */
+function progressed(seq: number, at: number, stage: string, message?: string): JournalEntry {
+  return {
+    seq,
+    at,
+    event: {
+      type: "job_progress",
+      jobId: "job",
+      requestDigest: "d".repeat(64),
+      ownerId: "owner",
+      ownerGeneration: 1,
+      stage,
+      ...(message === undefined ? {} : { message }),
+      at,
+    },
+  };
+}
+
+function called(
+  seq: number,
+  at: number,
+  over: Partial<{ model: string; inputTokens: number; outputTokens: number; cachedInputTokens: number; costMicros: number }> = {},
+): JournalEntry {
+  return {
+    seq,
+    at,
+    event: {
+      type: "inference_call",
+      jobId: "job",
+      requestDigest: "d".repeat(64),
+      ownerId: "owner",
+      ownerGeneration: 1,
+      serviceId: "atyrode.code.inference",
+      operationId: "messages",
+      model: over.model ?? "claude-opus-4",
+      inputTokens: over.inputTokens ?? 1_000,
+      outputTokens: over.outputTokens ?? 200,
+      cachedInputTokens: over.cachedInputTokens ?? 50,
+      costMicros: over.costMicros ?? 30_000,
+      elapsedMs: 4_000,
+      status: 200,
+    },
+  };
 }
 
 class Fleet implements JobsSlice {
@@ -217,6 +270,8 @@ class Fleet implements JobsSlice {
       machineId: args.machineId,
       operationId: args.operationId,
       archive: null,
+      journal: [],
+      inference: null,
     });
     return this.status({ jobId: args.jobId });
   }
@@ -244,7 +299,13 @@ class Fleet implements JobsSlice {
       result:
         job.state === "started" || job.state === "queued"
           ? null
-          : { state: job.state, exitCode: job.exitCode, reason: null, outputs },
+          : {
+              state: job.state,
+              exitCode: job.exitCode,
+              reason: null,
+              outputs,
+              ...(job.inference === null ? {} : { usage: { inference: job.inference } }),
+            },
     };
   }
 
@@ -272,6 +333,25 @@ class Fleet implements JobsSlice {
     return {
       data: job.archive.subarray(args.offset, end).toString("base64"),
       eof: end === job.archive.byteLength,
+    };
+  }
+
+  /**
+   * One page of what this job's journal retains, as the hub serves it: the frames after `after`,
+   * `firstSeq` for the oldest still held and `nextAfter` when the page did not reach the end.
+   */
+  journal(args: { node: { jobId: string }; after?: number | undefined; limit?: number | undefined }): JournalPage {
+    const job = this.jobs.get(args.node.jobId);
+    if (job === undefined) throw new Error(`unknown job ${args.node.jobId}`);
+    if (this.silent.has(args.node.jobId)) throw new Error(`the machine holding ${args.node.jobId} is gone`);
+    const after = args.after ?? 0;
+    const held = job.journal.filter((entry) => entry.seq > after);
+    const events = held.slice(0, args.limit ?? held.length);
+    const last = events[events.length - 1];
+    return {
+      events,
+      firstSeq: job.journal[0]?.seq ?? null,
+      nextAfter: events.length < held.length && last !== undefined ? last.seq : null,
     };
   }
 
@@ -331,8 +411,24 @@ class Fleet implements JobsSlice {
       machineId,
       operationId: BEAT_OPERATION,
       archive: tar(files),
+      journal: [],
+      inference: null,
     });
     this.beats.add(jobId);
+  }
+
+  /** What this job's journal holds, as the owner would have emitted it. */
+  journals(jobId: string, entries: readonly JournalEntry[]): void {
+    const job = this.jobs.get(jobId);
+    if (job === undefined) throw new Error(`unknown job ${jobId}`);
+    job.journal = [...entries];
+  }
+
+  /** What the owner metered for this job, as the result of a settled one carries it. */
+  metered(jobId: string, inference: InferenceUsage): void {
+    const job = this.jobs.get(jobId);
+    if (job === undefined) throw new Error(`unknown job ${jobId}`);
+    job.inference = inference;
   }
 }
 
@@ -759,6 +855,134 @@ function outputs(runId: string): Record<string, unknown> {
 }
 
 // ---------------------------------------------------------------------------- the tests
+
+test("a running job's stage and spend are folded out of its journal, and the meter settles the run", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+
+  await loop.tick();
+  // The job says where it is and the owner meters two calls against it.
+  fleet.journals("job_asg_a1b2", [
+    progressed(1, started, RUN_STAGES.preparing, "reception: composing the prompt"),
+    progressed(4, started + 20_000, RUN_STAGES.atModel, "reception"),
+    called(6, started + 34_000, { inputTokens: 12_000, outputTokens: 900, cachedInputTokens: 400, costMicros: 250_000 }),
+    called(9, started + 51_000, {
+      model: "claude-sonnet-4",
+      inputTokens: 400,
+      outputTokens: 100,
+      cachedInputTokens: 0,
+      costMicros: 30_000,
+    }),
+  ]);
+  clock = started + 60_000;
+  const running = await loop.tick();
+  expect(running.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+
+  const row = (
+    await db.query(`SELECT stage, message, since, calls, input_tokens, output_tokens, cache_tokens,
+                           cost_usd, last_model, stalled
+                      FROM run_progress WHERE run_id = 'run_asg_a1b2'`)
+  )[0];
+  expect(row).toMatchObject({
+    stage: "at the model",
+    message: "reception",
+    // The stage's own instant, not the newest frame's: the job has been at the model since it
+    // said so, and the two calls after it did not restart that clock.
+    since: new Date(started + 20_000).toISOString(),
+    calls: 2n,
+    input_tokens: 12_400n,
+    output_tokens: 1_000n,
+    cache_tokens: 400n,
+    last_model: "claude-sonnet-4",
+    stalled: 0n,
+  });
+  expect(Number(row?.["cost_usd"])).toBeCloseTo(0.28, 6);
+
+  // A second cycle over the same journal folds nothing twice: the loop reads after the newest
+  // sequence it has already seen.
+  clock = started + 70_000;
+  await loop.tick();
+  const again = await db.query(`SELECT calls FROM run_progress WHERE run_id = 'run_asg_a1b2'`);
+  expect(again[0]?.["calls"]).toBe(2n);
+
+  // The job ends and the OWNER's meter — not the receipt's own numbers — fills the run row.
+  fleet.metered("job_asg_a1b2", {
+    calls: 3,
+    inputTokens: 20_000,
+    outputTokens: 1_500,
+    cachedInputTokens: 400,
+    costMicros: 410_000,
+  });
+  fleet.finish("job_asg_a1b2", 0, outputs("run_asg_a1b2"));
+  clock = started + 80_000;
+  await loop.tick();
+
+  const settledRow = (await db.query(`SELECT closure, tokens, cost_usd FROM runs WHERE id = 'run_asg_a1b2'`))[0];
+  expect(settledRow?.["closure"]).toBe("completed");
+  expect(settledRow?.["tokens"]).toBe(21_500n);
+  expect(Number(settledRow?.["cost_usd"])).toBeCloseTo(0.41, 6);
+  // …and the in-flight row is gone: the receipt is the record of a run that ended.
+  expect(await db.query(`SELECT run_id FROM run_progress`)).toEqual([]);
+  clock = started;
+});
+
+test("a job at the model with nothing metered for ninety seconds is stalled, and one call clears it", async () => {
+  const started = clock;
+  const db = openDatabase();
+  await seed(db);
+  const store = openStore(db);
+  const fleet = new Fleet();
+  const draws = new Draws(db);
+  draws.pending = [{ ...ASSIGNMENT }];
+  const loop = conductor({
+    store,
+    coordinator: draws as unknown as Coordinator,
+    jobs: fleet,
+    machines: new Folders(),
+    keys: new Keys(),
+    plan: PLAN,
+    now: () => clock,
+  });
+  await loop.tick();
+  fleet.journals("job_asg_a1b2", [progressed(2, started, RUN_STAGES.atModel, "reception")]);
+
+  // Eighty-nine seconds is a slow turn, not a stall.
+  clock = started + 89_000;
+  const patient = await loop.tick();
+  expect(patient.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+
+  clock = started + 91_000;
+  const stalled = await loop.tick();
+  expect(stalled.runs).toEqual({ running: 1, atModel: 1, stalled: 1 });
+  const quiet = await db.query(`SELECT stalled FROM run_progress`);
+  expect(quiet[0]?.["stalled"]).toBe(1n);
+
+  // A metered call is the answer arriving: the flag goes, and the clock now runs from the call.
+  fleet.journals("job_asg_a1b2", [
+    progressed(2, started, RUN_STAGES.atModel, "reception"),
+    called(5, started + 92_000),
+  ]);
+  clock = started + 93_000;
+  const answered = await loop.tick();
+  expect(answered.runs).toEqual({ running: 1, atModel: 1, stalled: 0 });
+  const moving = await db.query(`SELECT stalled, calls, last_model FROM run_progress`);
+  expect(moving[0]).toMatchObject({ stalled: 0n, calls: 1n, last_model: "claude-opus-4" });
+  clock = started;
+});
 
 test("a cycle draws, claims, requests the job, then ingests every output file it wrote", async () => {
   const db = openDatabase();
