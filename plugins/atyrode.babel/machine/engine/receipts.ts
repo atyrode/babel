@@ -7,7 +7,7 @@
   The profile block is the point of it. It is BABEL'S OWN launch report now (#279): the model the
   run was asked for, the thinking level, the account it spent, the boundary this process observed
   around itself and — after the engine exits — the exit status, the models that actually answered
-  and the NAMED cause of a failure. Code's `code.runtime/1` sidecar is gone with Code's engine,
+  and the NAMED cause of a failure. Code's runtime-info sidecar is gone with Code's engine,
   and what replaced it is better evidence rather than worse: every field is something the
   launcher observed or was handed as a job input, not an assertion by the process being judged.
   A refused launch therefore still produces a receipt with a profile, which is what a refused

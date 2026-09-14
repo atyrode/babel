@@ -1,13 +1,18 @@
 #!/usr/bin/env bun
 /*
-  THE FAKE ENGINE: the synthetic counterpart of `code engine`. It writes Code's runtime-info
-  sidecar and then speaks OMP's native RPC on stdio the way a contained engine would, with no
-  model behind it. Ported from internal/worker/testdata/fakeengine.
+  THE FAKE ENGINE: the synthetic counterpart of the `omp --mode rpc` process Babel launches. It
+  speaks OMP's native RPC on stdio the way a contained engine would, with no model behind it.
+  Ported from internal/worker/testdata/fakeengine.
 
-  It exists so the machine half can be tested without Code, OMP, a provider or a credential, and
-  so every misbehaviour the supervision must survive can be produced on demand: each flag breaks
+  It exists so the machine half can be tested without omp, a provider or a credential, and so
+  every misbehaviour the supervision must survive can be produced on demand: each flag breaks
   exactly one thing and leaves the rest well behaved, which is what makes the corresponding
   obligation discriminating rather than merely present.
+
+  It writes NO runtime document of its own. Until #279 it wrote Code's runtime-info sidecar
+  and Babel's admission read it; admission now reads the job's own surroundings and the job's own
+  home, so a fixture that still wrote a self-report would be describing a contract nothing reads.
+  The launch report is Babel's, written by the process that launched something.
 
   Everything it writes is built from literals and plain objects, never from the plugin's own
   types, so the fixture stays honest about the wire: a test that passed because both sides shared
@@ -15,20 +20,15 @@
   is the `[babel-params]` block the prompt embeds, which lets a submission template name
   identifiers the operation minted mid-run.
 
-  Its own flags come BEFORE the `engine` subcommand, which is exactly how Babel composes argv: the
-  operator's arguments first, then the subcommand and Babel's flags.
+  Its own flags come BEFORE Babel's, which is exactly how Babel composes argv: the operator's
+  arguments first, then the fixed omp flags. Those omp flags are parsed and IGNORED rather than
+  swallowed by a default case — a fixture that accepted anything would keep passing after Babel
+  started launching a command line omp itself would refuse.
 */
 
 const argv = process.argv.slice(2);
 
 interface Flags {
-  containment: "full" | "weak" | "none" | "missing";
-  runtimeInfo: string;
-  profile: string;
-  profileOverride: string;
-  describe: boolean;
-  noRuntimeInfo: boolean;
-  secretMetadata: boolean;
   submit: string[];
   submitPath: string;
   noSubmit: boolean;
@@ -36,7 +36,13 @@ interface Flags {
   chunk: boolean;
   badFrame: "" | "malformed" | "oversized" | "chunk-short";
   noReady: boolean;
+  /** Exit before the ready frame, which is #277's shape: an EOF with a cause on stderr. */
+  dieBeforeReady: boolean;
+  /** Lines written to stderr before anything else; what `diagnoseFailure` reads. */
+  stderr: string[];
   readyVersions: number[];
+  /** A model that ANSWERS, announced with `model_changed`; it moves the run's model trail. */
+  model: string;
   promptOut: string;
   refuseCommand: string;
   dropTool: boolean;
@@ -46,20 +52,12 @@ interface Flags {
   statsRefused: boolean;
   unknownFrame: boolean;
   extensionUI: boolean;
-  noFinished: boolean;
   /** Stay alive after stdin closes, which is the one thing a supervised engine may not do. */
   ignoreEof: boolean;
 }
 
 function parse(args: readonly string[]): Flags {
   const flags: Flags = {
-    containment: "full",
-    runtimeInfo: "",
-    profile: "",
-    profileOverride: "",
-    describe: false,
-    noRuntimeInfo: false,
-    secretMetadata: false,
     ignoreEof: false,
     submit: [],
     submitPath: "",
@@ -68,7 +66,10 @@ function parse(args: readonly string[]): Flags {
     chunk: false,
     badFrame: "",
     noReady: false,
+    dieBeforeReady: false,
+    stderr: [],
     readyVersions: [1, 2],
+    model: "",
     promptOut: "",
     refuseCommand: "",
     dropTool: false,
@@ -78,7 +79,6 @@ function parse(args: readonly string[]): Flags {
     statsRefused: false,
     unknownFrame: false,
     extensionUI: false,
-    noFinished: false,
   };
   let index = 0;
   const value = (): string => {
@@ -88,20 +88,6 @@ function parse(args: readonly string[]): Flags {
   for (; index < args.length; index += 1) {
     const flag = args[index];
     switch (flag) {
-      case "--fake-containment":
-        flags.containment = value() as Flags["containment"];
-        break;
-      case "--fake-profile":
-        // Resolve a different profile than argv named, which is the one way a launch can be
-        // running under a profile the job did not ask for.
-        flags.profileOverride = value();
-        break;
-      case "--fake-no-runtime-info":
-        flags.noRuntimeInfo = true;
-        break;
-      case "--fake-secret-metadata":
-        flags.secretMetadata = true;
-        break;
       case "--fake-submit-json":
         flags.submit.push(value());
         break;
@@ -123,11 +109,22 @@ function parse(args: readonly string[]): Flags {
       case "--fake-no-ready":
         flags.noReady = true;
         break;
+      case "--fake-die-before-ready":
+        // #277: the engine leaves before it ever speaks. What it said on stderr on the way out
+        // is the only thing that can name the cause, which is why the two flags compose.
+        flags.dieBeforeReady = true;
+        break;
+      case "--fake-stderr":
+        flags.stderr.push(value());
+        break;
       case "--fake-ready-versions":
         flags.readyVersions = value()
           .split(",")
           .filter((part) => part !== "")
           .map((part) => Number.parseInt(part, 10));
+        break;
+      case "--fake-model":
+        flags.model = value();
         break;
       case "--fake-prompt-out":
         flags.promptOut = value();
@@ -156,22 +153,25 @@ function parse(args: readonly string[]): Flags {
       case "--fake-extension-ui":
         flags.extensionUI = true;
         break;
-      case "--fake-no-finished-report":
-        flags.noFinished = true;
-        break;
       case "--fake-ignore-eof":
         flags.ignoreEof = true;
         break;
-      case "engine":
+      // BABEL'S OWN FLAGS, as `engineArgv` composes them (`launch.ts` OMP_FLAGS). They are
+      // accepted and ignored: the fixture is not omp, but a command line omp would refuse is one
+      // this fixture must refuse too, or the launch contract could drift unobserved.
+      case "--mode":
+      case "--config":
+      case "--cwd":
+        value();
         break;
-      case "--profile":
-        flags.profile = value();
-        break;
-      case "--runtime-info":
-        flags.runtimeInfo = value();
-        break;
-      case "--describe":
-        flags.describe = true;
+      case "--no-tools":
+      case "--no-lsp":
+      case "--no-session":
+      case "--no-extensions":
+      case "--no-rules":
+      case "--no-skills":
+      case "--no-title":
+      case "--auto-approve":
         break;
       default:
         throw new Error(`fakeengine: unexpected argument ${JSON.stringify(flag)}`);
@@ -181,60 +181,6 @@ function parse(args: readonly string[]): Flags {
 }
 
 const flags = parse(argv);
-
-/** The `code.runtime/1` document for one launch. */
-function runtimeReport(finished: boolean): Record<string, unknown> {
-  const resolved = flags.profileOverride === "" ? flags.profile : flags.profileOverride;
-  const [id = "synthetic-profile", revision = "1"] = resolved.split("@");
-  const metadata: Record<string, string> = { provider: "synthetic", model: "synthetic-1", thinking: "low" };
-  if (flags.secretMetadata) metadata["api_key"] = "sk-synthetic-should-never-be-stored";
-  const containment: Record<string, unknown> | null =
-    flags.containment === "full"
-      ? {
-          backend: "synthetic-bwrap",
-          filesystem_isolation: true,
-          network_default_deny: true,
-          resource_ceilings: true,
-          disposable: true,
-          escape: "none modelled",
-        }
-      : flags.containment === "weak"
-        ? {
-            backend: "synthetic-bwrap",
-            filesystem_isolation: true,
-            network_default_deny: false,
-            resource_ceilings: false,
-            disposable: true,
-            escape: "network is open",
-          }
-        : flags.containment === "none"
-          ? { backend: "", escape: "" }
-          : null;
-  const report: Record<string, unknown> = {
-    schema: "code.runtime/1",
-    worker: { name: "fakeengine", version: "0.0.1-synthetic" },
-    profile: { id, revision: Number.parseInt(revision, 10) },
-    privacy: { disclosure: "local", redaction_required: false },
-    cost: { currency: "USD", input_per_1k: 0.001, output_per_1k: 0.002, estimated_run: 0.05 },
-    metadata,
-    finished,
-  };
-  if (containment !== null) report["containment"] = containment;
-  if (finished) {
-    report["exit_code"] = flags.exitCode;
-    report["resources"] = { cpu_seconds: 0.42, max_rss_bytes: 123_456_789 };
-    report["resources_provenance"] = "synthetic";
-  }
-  return report;
-}
-
-async function writeReport(finished: boolean): Promise<void> {
-  if (flags.noRuntimeInfo || flags.runtimeInfo === "") return;
-  await Bun.write(`${flags.runtimeInfo}.tmp`, JSON.stringify(runtimeReport(finished)));
-  // Code writes the sidecar atomically; a reader that caught a half-written file would refuse a
-  // launch that was fine.
-  await Bun.$`mv ${`${flags.runtimeInfo}.tmp`} ${flags.runtimeInfo}`.quiet();
-}
 
 // ---------------------------------------------------------------------------- the wire
 
@@ -362,14 +308,12 @@ function expand(text: string, params: Readonly<Record<string, string>>): string 
 // ---------------------------------------------------------------------------- the run
 
 async function main(): Promise<void> {
-  if (flags.describe) {
-    const report = runtimeReport(false);
-    delete report["containment"];
-    await line(JSON.stringify(report));
-    process.exit(0);
-  }
+  // WHAT THE ENGINE SAID ON ITS WAY OUT. It is written before any frame because that is where a
+  // real one appears: on 2026-09-13 `account_unavailable` sat one line before an EOF the
+  // supervision could only describe as "closed its stdout before a ready frame" (#277).
+  for (const text of flags.stderr) process.stderr.write(`${text}\n`);
+  if (flags.dieBeforeReady) process.exit(1);
 
-  await writeReport(false);
   if (!flags.noReady) {
     await emit({
       type: "ready",
@@ -430,6 +374,9 @@ async function main(): Promise<void> {
     const params = promptParams(prompt);
     await emit({ type: "agent_start" });
     await emit({ type: "turn_start" });
+    // A MODEL THAT ANSWERED, which is not the model the run was launched under: omp announces
+    // one with `model_changed` on a fallback or a retry, and the run's trail has to move.
+    if (flags.model !== "") await emit({ type: "model_changed", model: flags.model });
     if (flags.unknownFrame) await emit({ type: "telemetry_sample", value: 1 });
     if (flags.extensionUI) {
       await emit({ type: "extension_ui_request", id: "ui-1", method: "confirm", message: "Continue?" });
@@ -482,9 +429,8 @@ async function main(): Promise<void> {
   }
 
   // An engine that outstays its stdin is what the exit grace and the process-group kill exist
-  // for; it never writes the finished report, because it never got to leave on its own.
+  // for.
   if (flags.ignoreEof) await stall();
-  if (!flags.noFinished) await writeReport(true);
   process.exit(flags.exitCode);
 }
 

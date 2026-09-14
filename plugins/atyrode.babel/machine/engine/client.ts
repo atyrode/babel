@@ -16,7 +16,7 @@
   What this module owns is the boundary (SPEC.md §2.6): the admission check before any prompt is
   written, authorization of every tool call, the lifetime of the whole process tree, and the run's
   final status. What changed at #279 is what admission READS. It used to read Code's
-  `code.runtime/1` sidecar — a declaration by the process being judged. It now reads the job's own
+  runtime-info sidecar — a declaration by the process being judged. It now reads the job's own
   surroundings and the job's own home: the sandbox the machine owner built, and the two files the
   owner materialized out of the inference binding. A run that could reach a model outside the
   owner's metered proxy is refused there, before a byte of prompt is written.
@@ -520,7 +520,7 @@ export interface EngineOutcome {
   failure: FailureRecord | null;
   /**
    * BABEL'S OWN LAUNCH REPORT, present whenever a process was started — including a run refused
-   * before its prompt. It replaces Code's `code.runtime/1`, and every field in it is something
+   * before its prompt. It replaces Code's runtime-info sidecar, and every field in it is something
    * this process observed or was handed as a job input.
    */
   report: LaunchReport | null;
@@ -795,7 +795,7 @@ async function ready(run: Run): Promise<void> {
  * Every refusal here happens before a byte of the prompt is written: what a refused engine has
  * seen is the session it was launched under and the tool names Babel would have registered.
  *
- * The two checks are what #279 replaced the `code.runtime/1` sidecar with, and each is something
+ * The two checks are what #279 replaced Code's runtime-info sidecar with, and each is something
  * this process can verify rather than believe:
  *
  * - the BOUNDARY is read out of the job's own surroundings (`observeContainment`), so a run

@@ -19,6 +19,7 @@ import { refuseRow } from "../store/acts.ts";
 import { evaluate, EvaluateInputSchema } from "./evaluate.ts";
 import type { Row } from "./engine/rows.ts";
 import type { OperationDeps } from "./explore.ts";
+import { writeJobHome } from "./test/fixtures.ts";
 import type { OutputFile, OutputSink } from "./output.ts";
 
 const FIXTURE = join(import.meta.dir, "engine", "fakeengine.ts");
@@ -111,7 +112,14 @@ interface Launched {
   promptPath: string;
 }
 
-/** One `evaluate` run against the fixture. */
+/**
+ * One `evaluate` run against the fixture.
+ *
+ * The HOME is the one the OWNER materialized the inference binding into, which is what makes the
+ * launch admissible (`machine/engine/launch.ts` `inferenceShortfall`); containment is relaxed
+ * because this process is a development shell and not a Manifold job sandbox, which
+ * `machine/explore.test.ts` proves is refused.
+ */
 async function launch(options: {
   result: unknown;
   assignment?: Record<string, unknown>;
@@ -127,6 +135,7 @@ async function launch(options: {
   const promptPath = join(directory, "prompt.txt");
   const payloadPath = join(directory, "submission.json");
   await Bun.write(payloadPath, JSON.stringify(options.result));
+  const home = await writeJobHome(directory);
 
   const input = EvaluateInputSchema.parse({
     runId: "run_evaluate_test",
@@ -145,9 +154,10 @@ async function launch(options: {
     recipe: RECIPE,
     sources: [{ kind: "session", selector: "omp/session-1", digest: "sha256:capture" }],
     caps: { toolCalls: 4, minutes: 0, perRunUsd: 0, idleMs: 15_000, handshakeMs: 15_000 },
+    requireContainment: false,
   });
   const sink = new MemorySink();
-  const receipt = await evaluate(input, sink, { workDir: directory, ...options.deps });
+  const receipt = await evaluate(input, sink, { workDir: directory, home, ...options.deps });
   return { sink, receipt, promptPath };
 }
 

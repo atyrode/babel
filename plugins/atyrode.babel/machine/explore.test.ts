@@ -16,6 +16,7 @@ import { WorkerProgressSchema } from "@manifold/protocol";
 import type { Receipt } from "../contract.ts";
 import { SCHEMA_V1 } from "../store/schema.ts";
 import type { Row } from "./engine/rows.ts";
+import { writeJobHome } from "./test/fixtures.ts";
 import { explore, ExploreInputSchema, type OperationDeps } from "./explore.ts";
 import type { OutputFile, OutputSink } from "./output.ts";
 import { openProgress } from "./progress.ts";
@@ -167,7 +168,15 @@ interface Launched {
   promptPath: string;
 }
 
-/** One `explore` run against the fixture. */
+/**
+ * One `explore` run against the fixture.
+ *
+ * Two things a real job's surroundings give and a test process does not have to be named here.
+ * The HOME is the one the owner materialized the inference binding into, which is what makes the
+ * launch admissible at all; and containment is RELAXED, because this process is a development
+ * shell and not a Manifold job sandbox — `requireContainment` is left at its strict default only
+ * by the one test that proves a run outside one is refused.
+ */
 async function launch(
   options: {
     fake?: readonly string[];
@@ -176,6 +185,9 @@ async function launch(
     stages?: ("explore" | "challenge" | "synthesize")[];
     recipes?: unknown[];
     deps?: OperationDeps;
+    requireContainment?: boolean;
+    /** False leaves the home empty: a job whose inference binding was never materialized. */
+    bound?: boolean;
   } = {},
 ): Promise<Launched> {
   const directory = await mkdtemp(join(tmpdir(), "babel-explore-test-"));
@@ -183,6 +195,7 @@ async function launch(
   const promptPath = join(directory, "prompt.txt");
   const payloadPath = join(directory, "submission.json");
   await Bun.write(payloadPath, JSON.stringify(options.result ?? RESULT));
+  const home = options.bound === false ? directory : await writeJobHome(directory);
 
   const input = ExploreInputSchema.parse({
     runId: options.runId ?? "run_explore_test",
@@ -196,9 +209,10 @@ async function launch(
     recipes: options.recipes ?? [RECIPE],
     stages: options.stages ?? ["explore"],
     caps: { toolCalls: 8, minutes: 0, perRunUsd: 0, idleMs: 15_000, handshakeMs: 15_000 },
+    requireContainment: options.requireContainment ?? false,
   });
   const sink = new MemorySink();
-  const receipt = await explore(input, sink, { workDir: directory, ...options.deps });
+  const receipt = await explore(input, sink, { workDir: directory, home, ...options.deps });
   return { sink, receipt, promptPath };
 }
 
@@ -218,8 +232,11 @@ test("a run says where it is: preparing, at the model when the prompt leaves, th
 });
 
 test("the receipt keeps the models that answered, not only the one it launched under", async () => {
-  const { receipt } = await launch();
-  expect(receipt.models).toEqual(["synthetic-1"]);
+  // The trail starts at the model the run ASKED for and moves when one actually answers: omp
+  // announces a fallback or a retry's model with `model_changed`, and a receipt that kept only
+  // the launch's name would price a run against a model that never spoke (#261).
+  const { receipt } = await launch({ fake: ["--fake-model", "anthropic/claude-opus-5"] });
+  expect(receipt.models).toEqual([SESSION_CHOICE.model, "anthropic/claude-opus-5"]);
 });
 
 test("a run writes every output file in the store's row shapes", async () => {
@@ -313,18 +330,33 @@ test("a run writes every output file in the store's row shapes", async () => {
   expect(receipt.costUsd).toBeCloseTo(0.0123, 6);
 });
 
-test("a refused containment stops before any prompt and the receipt carries the reason", async () => {
-  const { sink, receipt, promptPath } = await launch({ fake: ["--fake-containment", "weak"] });
+test("a run outside a job sandbox is refused before any prompt and the receipt carries the reason", async () => {
+  // The boundary is OBSERVED and not declared (#279): this test process's HOME is a temporary
+  // directory and not the job's private `/home/job`, so a run that demands containment is
+  // refused on that fact — and the refusal names the fact rather than a claim.
+  const { sink, receipt, promptPath } = await launch({ requireContainment: true });
 
   expect(receipt.closure).toBe("failed");
-  expect(receipt.reason).toContain("containment");
-  expect(receipt.reason).toContain("network default-deny");
+  expect(receipt.reason).toContain("not inside a Manifold job sandbox");
   expect(await Bun.file(promptPath).exists()).toBe(false);
   // Nothing was produced, and the empty files say so rather than being absent.
   expect(sink.rows("records")).toEqual([]);
   expect(receipt.counts["records"]).toBe(0);
   // The session is still recorded: it is what the refused engine was launched under.
   expect(receipt.model).toBe(SESSION_CHOICE.model);
+});
+
+test("a run whose inference binding was never materialized is refused by name", async () => {
+  // ADR 0038's other half: the two files the owner writes out of the `atyrode.babel.inference`
+  // binding are the only route from this sandbox to a model, so a home without them is a job
+  // with no metered lane — refused before a prompt, and NAMED, because `inference_unbound`
+  // tells an operator to look at the binding and nothing else does.
+  const { receipt, promptPath } = await launch({ bound: false });
+
+  expect(receipt.closure).toBe("failed");
+  expect(receipt.reason).toContain("models.yml");
+  expect(receipt.profile?.["failure"]).toBe("inference_unbound");
+  expect(await Bun.file(promptPath).exists()).toBe(false);
 });
 
 test("a malformed result is a failed closure carrying the refusal the model was given", async () => {

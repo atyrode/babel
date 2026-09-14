@@ -552,9 +552,9 @@ export function sessionShortfall(session: SessionChoice): string {
 
 /**
  * BABEL'S OWN LAUNCH PROFILE: the three things a run was asked to be, as the `runs` row records
- * them before the machine answers and as the receipt restates them afterwards. It replaces
- * `code.runtime/1`'s profile block, which named a Code profile id and revision that no longer
- * resolve to anything.
+ * them before the machine answers and as the receipt restates them afterwards. It replaces the
+ * profile block of Code's runtime-info sidecar, which named a Code profile id and revision that
+ * no longer resolve to anything.
  */
 export function launchProfile(session: SessionChoice | null): {
   model: string;

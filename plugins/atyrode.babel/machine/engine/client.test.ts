@@ -4,7 +4,7 @@
   particular are checked by the ABSENCE of the prompt file, because "refused before any prompt is
   written" is a claim about what the far side saw and nothing else can observe it.
 
-  WHAT #279 CHANGED HERE. Admission used to read Code's `code.runtime/1` sidecar, so the cases
+  WHAT #279 CHANGED HERE. Admission used to read Code's runtime-info sidecar, so the cases
   were about a DECLARATION: a weak containment claim, a missing sidecar, a profile mismatch,
   credential-shaped metadata. Babel launches omp itself now and admission reads FACTS — the job's
   own home and the job's own environment — so those cases are gone rather than re-pinned, because
@@ -18,9 +18,10 @@
 */
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeJobHome } from "../test/fixtures.ts";
 import { runEngineJob, type EngineJob, type EngineOutcome } from "./client.ts";
 import {
   engineArgv,
@@ -29,6 +30,7 @@ import {
   LAUNCH_REPORT_SCHEMA,
   SANDBOXED_RUN,
   UNSANDBOXED,
+  type EngineLimits,
   type SessionRef,
 } from "./launch.ts";
 
@@ -48,25 +50,20 @@ afterEach(async () => {
 });
 
 /**
- * A job home as the OWNER leaves one: `~/.omp/agent/models.yml` and `config.yml`, materialized
- * from the job's inference binding. Babel never reads their contents — one of them holds a
- * bearer — so what is written here is only what makes the files exist.
+ * A job home as the OWNER leaves one, or — unbound — an empty directory: the two states
+ * admission decides between.
  */
 async function jobHome(bound: boolean): Promise<string> {
-  const home = await mkdtemp(join(tmpdir(), "babel-job-home-"));
-  directories.push(home);
-  if (!bound) return home;
-  await mkdir(join(home, ".omp", "agent"), { recursive: true });
-  await writeFile(join(home, ".omp", "agent", "models.yml"), "{}");
-  await writeFile(join(home, ".omp", "agent", "config.yml"), "{}");
-  return home;
+  const parent = await mkdtemp(join(tmpdir(), "babel-job-home-"));
+  directories.push(parent);
+  return bound ? await writeJobHome(parent) : parent;
 }
 
 /** One run against the fixture. `fake` are the fixture's flags, which precede Babel's in argv. */
 async function run(
   fake: readonly string[],
   job: Partial<EngineJob> = {},
-  options: { bound?: boolean } = {},
+  options: { bound?: boolean; limits?: Partial<EngineLimits> } = {},
 ): Promise<{ outcome: EngineOutcome; promptPath: string; home: string }> {
   const directory = await mkdtemp(join(tmpdir(), "babel-client-test-"));
   directories.push(directory);
@@ -89,7 +86,10 @@ async function run(
         home,
         cwd: directory,
       },
-      limits: { handshakeMs: 15_000, idleMs: 15_000, exitGraceMs: 5_000 },
+      // The graces are SHORT on purpose: every budget here bounds silence or departure, and a
+      // fixture that misbehaves on purpose must be caught inside one test's own timeout rather
+      // than by the runner killing a dangling process out from under the assertion.
+      limits: { handshakeMs: 15_000, idleMs: 15_000, exitGraceMs: 1_000, terminateGraceMs: 200, ...options.limits },
     },
   );
   return { outcome, promptPath, home };
@@ -292,9 +292,7 @@ test("a non-zero exit after an accepted result is a dirty exit, and the result i
 });
 
 test("an engine that outstays its stdin is killed and reported as lingering", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "babel-client-test-"));
-  directories.push(directory);
-  const { outcome } = await run(["--fake-ignore-eof", "--fake-submit-json", '{"answer":"ok"}'], {}, {});
+  const { outcome } = await run(["--fake-ignore-eof", "--fake-submit-json", '{"answer":"ok"}']);
 
   // The result was accepted and is kept; the verdict is still that the tree had to be killed.
   expect(outcome.result).toEqual({ answer: "ok" });
@@ -302,57 +300,20 @@ test("an engine that outstays its stdin is killed and reported as lingering", as
 });
 
 test("an engine that goes silent is stalled rather than waited on forever", async () => {
-  const home = await jobHome(true);
-  const directory = await mkdtemp(join(tmpdir(), "babel-client-test-"));
-  directories.push(directory);
-  const outcome = await runEngineJob(
-    {
-      runId: "run_stall",
-      session: SESSION,
-      prompt: "the job document",
-      submitSchema: { type: "object" },
-      requirement: UNSANDBOXED,
-    },
-    {
-      launch: {
-        binary: process.execPath,
-        args: [FIXTURE, "--fake-stall-after", "prompt"],
-        session: SESSION,
-        home,
-        cwd: directory,
-      },
-      limits: { handshakeMs: 10_000, idleMs: 300, exitGraceMs: 1_000, terminateGraceMs: 200 },
-    },
-  );
+  const { outcome } = await run(["--fake-stall-after", "prompt"], {}, { limits: { idleMs: 300 } });
 
   expect(outcome.failure?.code).toBe(ENGINE_FAILURES.stalled);
 });
 
 test("an engine that never becomes ready fails the handshake, and says what it said", async () => {
-  const home = await jobHome(true);
-  const directory = await mkdtemp(join(tmpdir(), "babel-client-test-"));
-  directories.push(directory);
-  const outcome = await runEngineJob(
-    {
-      runId: "run_ready",
-      session: SESSION,
-      prompt: "the job document",
-      submitSchema: { type: "object" },
-      requirement: UNSANDBOXED,
-    },
-    {
-      launch: {
-        binary: process.execPath,
-        args: [FIXTURE, "--fake-no-ready", "--fake-stall-after", "ready"],
-        session: SESSION,
-        home,
-        cwd: directory,
-      },
-      limits: { handshakeMs: 300, idleMs: 300, exitGraceMs: 1_000, terminateGraceMs: 200 },
-    },
+  const { outcome } = await run(
+    ["--fake-no-ready", "--fake-stall-after", "ready"],
+    {},
+    { limits: { handshakeMs: 300 } },
   );
 
   expect(outcome.failure?.code).toBe(ENGINE_FAILURES.handshake);
+  expect(outcome.failure?.message).toContain("no ready frame within 300ms");
   // #277: an engine that said nothing is honestly described as one that said nothing. The NAMED
   // case is the one beside it, where the diagnostics carry a cause.
   expect(outcome.failure?.named).toBe("");
@@ -363,7 +324,7 @@ test("a handshake that dies with the broker down is named broker_unavailable (#2
   // ready frame, exit status -1" while `account_unavailable` sat one line earlier on stderr and
   // nowhere in any receipt. The cause is read off the engine's own diagnostics and named.
   const { outcome } = await run([
-    "--fake-no-ready",
+    "--fake-die-before-ready",
     "--fake-stderr",
     "engine: the account snapshot is unavailable, so the run would launch with no account policy",
   ]);

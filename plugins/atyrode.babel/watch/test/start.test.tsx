@@ -3,7 +3,7 @@ import { resetPolledResources } from "@manifold/plugin/hooks";
 import { afterEach, expect, test } from "bun:test";
 import { ACTIONS, LaunchRequestSchema, LaunchInputSchema, OPERATIONS } from "../../contract.ts";
 import { Watch } from "../web.tsx";
-import { MACHINES, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
+import { MACHINES, fakeHost, launchAnswer, runsResult, watchDoors, type FakeHost } from "./host.ts";
 import { choose, click, mount, settle, type, unmountAll } from "./render.tsx";
 
 /*
@@ -74,7 +74,7 @@ test("with no machine there is no launch and no preview: the card says why", asy
   expect(fake.callsTo(ACTIONS.launch)).toHaveLength(0);
 });
 
-test("picking a machine states what will run — profile, model, cost per 1k, both ceilings", async () => {
+test("picking a machine states what will run — the session, what it is metered at, both ceilings, and the last run", async () => {
   const { root, fake } = await open();
   await choose(picker(root, "Machine"), "m-dev-01");
   await settle();
@@ -92,11 +92,55 @@ test("picking a machine states what will run — profile, model, cost per 1k, bo
   expect(fake.callsTo(ACTIONS.launch)).toHaveLength(0);
 
   const line = root.querySelector(WILLRUN)?.textContent ?? "";
-  expect(line).toContain("claude-opus-4");
-  expect(line).toContain("babel-explore/4");
-  expect(line).toContain("$0.015 in / $0.075 out per 1k");
+  // WHAT THE RUN WILL BE: the session the request would carry, and the OWNER's own price and
+  // ceiling for it — never this panel's arithmetic (ADR 0038, #279).
+  expect(line).toContain("Will run explore as anthropic/claude-opus-5 on victorballu");
+  expect(line).toContain("$5.0000 per million input tokens and $25.0000 per million output");
+  expect(line).toContain("under a ceiling of $2.0000 for this run");
   expect(line).toContain("stops at $2.00 this run, $20.00 today");
+  // AND WHAT ACTUALLY RAN LAST, from the receipt that recorded it: all three of the launch
+  // profile, because a model without its thinking level and its account does not say which
+  // window was spent (#251).
+  expect(line).toContain("last run here: anthropic/claude-opus-5 at high on victorballu");
   expect(root.querySelector<HTMLButtonElement>(LAUNCH_BUTTON)?.disabled).toBe(false);
+});
+
+test("a machine whose policy is not installed says so instead of a price", async () => {
+  // The state an operator acts on differently from every other: there is no lane to a model at
+  // all, and `setupInference` is what makes one. A panel that showed a ceiling here would be
+  // stating a bound on calls that cannot happen.
+  const fake = fakeHost(
+    watchDoors({
+      runs: () => runsResult([]),
+      launchPreview: () =>
+        launchAnswer({
+          runId: "",
+          jobId: "",
+          profile: null,
+          session: {
+            serviceId: "atyrode.babel.inference",
+            account: "",
+            model: "",
+            priced: false,
+            policy: "missing",
+            unreadable: "",
+            note:
+              "no atyrode.babel.inference policy is installed on this machine, so a run has no " +
+              "lane to a model; setupInference installs one",
+          },
+        }),
+    }),
+    MACHINES,
+  );
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+  await choose(picker(root, "Machine"), "m-dev-01");
+  await settle();
+
+  const line = root.querySelector(WILLRUN)?.textContent ?? "";
+  expect(line).toContain("choose a model and an account");
+  expect(line).toContain("no atyrode.babel.inference policy is installed on this machine");
+  expect(line).not.toContain("last run here");
 });
 
 test("the button posts the contract's launch request, with the node it is authorized at", async () => {
@@ -208,7 +252,7 @@ test("a chosen recipe replaces the default set in the launch input", async () =>
 
 test("a refused launch shows the hub's own sentence and starts nothing", async () => {
   const refuse = () => {
-    throw new Error("dev-01 has no code engine configured");
+    throw new Error("m-dev-01 is not enrolled for atyrode.babel.explore");
   };
   const fake = fakeHost(
     watchDoors({ runs: () => runsResult([]), launchPreview: refuse, launch: refuse }),
@@ -219,8 +263,8 @@ test("a refused launch shows the hub's own sentence and starts nothing", async (
   await choose(picker(root, "Machine"), "m-dev-01");
   await settle();
 
-  expect(root.querySelector(WILLRUN)?.textContent).toContain("dev-01 has no code engine configured");
+  expect(root.querySelector(WILLRUN)?.textContent).toContain("not enrolled for atyrode.babel.explore");
   await click(root.querySelector(LAUNCH_BUTTON));
   await settle();
-  expect(root.textContent).toContain("dev-01 has no code engine configured");
+  expect(root.textContent).toContain("not enrolled for atyrode.babel.explore");
 });

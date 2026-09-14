@@ -2,7 +2,7 @@
   THE LAUNCH: `omp --mode rpc` inside the job's sandbox, and the boundary Babel refuses it at.
 
   Until 2026-09-13 this file launched `code engine --profile <id@revision> --runtime-info <path>`
-  and read the `code.runtime/1` sidecar Code wrote: Code owned the profile, the credential and
+  and read the runtime-info sidecar Code wrote: Code owned the profile, the credential and
   the sandbox, and Babel owned whether that engine could be prompted at all. atyrode/code#153
   deleted that engine, so Babel is the launcher now (#279), and three things changed and one did
   not.
@@ -263,11 +263,11 @@ export async function inferenceShortfall(
 // ---------------------------------------------------------------------------- the launch report
 
 /**
- * BABEL'S OWN LAUNCH REPORT — what `code.runtime/1` used to be, written by the process that
- * actually launched something.
+ * BABEL'S OWN LAUNCH REPORT — what Code's runtime-info sidecar used to be, written by the
+ * process that actually launched something.
  *
  * The schema identifier is Babel's because the document is Babel's: a reader that finds
- * `code.runtime/1` is reading a run from before #279 and should say so rather than decode it.
+ * a sidecar's schema is reading a run from before #279 and should say so rather than decode it.
  * `finished` marks the report rewritten after the engine exits, which is where the exit status
  * and the retry count live — the same split the sidecar had, for the same reason: a reader can
  * tell "this is what was launched" from "this is how it ended".

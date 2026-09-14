@@ -166,7 +166,18 @@ export interface OperationDeps {
    */
   served?: (locator: Evidence["locator"]) => boolean;
   now?: () => Date;
-  /** Where the per-launch runtime-info sidecar directory is made; the system temp dir by default. */
+  /**
+   * THE JOB'S PRIVATE HOME: where the OWNER materialized `models.yml` and `config.yml` out of
+   * the `atyrode.babel.inference` binding, and what `HOME` is for the engine. `process.env.HOME`
+   * by default, which is what it is inside a job (`/home/job`).
+   *
+   * It is a dependency rather than a read of the environment because admission is a check on
+   * THIS directory (`machine/engine/launch.ts` `inferenceShortfall`): a test that could not name
+   * the home could only exercise the refusal, never the admission, and a lane that is only ever
+   * tested refused is a lane nobody has run.
+   */
+  home?: string;
+  /** Where the per-stage engine working directory is made; the system temp dir by default. */
   workDir?: string;
   /** Where this run says it is; a caller that hands none is not watched (`progress.ts`). */
   progress?: ProgressChannel | undefined;
@@ -387,7 +398,7 @@ async function runStage(args: {
           // The job's private home, where the OWNER materialized `models.yml` and `config.yml`
           // out of the inference binding; the launch reads that they are there and never their
           // contents (`machine/engine/launch.ts`).
-          home: process.env["HOME"] ?? OMP_HOME,
+          home: deps.home ?? process.env["HOME"] ?? OMP_HOME,
           // A disposable directory per stage. omp starting in `$HOME` would switch itself to a
           // temp dir of its own; this makes the choice Babel's and the path one it can clean up.
           cwd: input.engine.cwd === "" ? directory : input.engine.cwd,

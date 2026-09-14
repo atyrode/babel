@@ -132,6 +132,18 @@ describe("the machine half is declared as the machine half is built", () => {
   const machine = babel.machine!;
   const declared = Object.keys(machine.operations);
 
+  /** The engine's own bound on one job's input record (`doors/launch.ts` MAX_INPUT_BYTES). */
+  const MAX_INPUT_BYTES = 65_536;
+
+  /** The declared bytes of one operation's whole input record. */
+  function inputBytes(operation: NonNullable<(typeof machine.operations)[string]>): number {
+    let bytes = 0;
+    for (const field of Object.values(operation.input)) {
+      if (field.type === "string") bytes += field.maxLength ?? 0;
+    }
+    return bytes;
+  }
+
   test("it declares every operation the machine half implements, in the contract's order", () => {
     expect(declared).toEqual([
       OPERATIONS.scan,
@@ -162,7 +174,12 @@ describe("the machine half is declared as the machine half is built", () => {
         { literal: "--out" },
         { literal: `/outputs/${OUTPUT_BINDING}` },
       ]);
-      expect(op.input[INPUT_FIELD]).toEqual({ type: "string", required: true, maxLength: 65536 });
+      // The document is one required string, and what is FIXED across the five operations is
+      // not its bound but the record's: the two that reach a model shrink the document to make
+      // room for the session's three fields (#279), and the hub admits the whole record.
+      expect(op.input[INPUT_FIELD]?.type).toBe("string");
+      expect(op.input[INPUT_FIELD]?.required).toBe(true);
+      expect(inputBytes(op)).toBeLessThanOrEqual(MAX_INPUT_BYTES);
       expect(op.inputFiles?.[INPUT_FIELD]).toEqual({ input: INPUT_FIELD });
       expect(op.outputs).toEqual([OUTPUT_BINDING]);
       expect(op.executable).toEqual({ runtimeTool: "bun" });
@@ -271,12 +288,7 @@ describe("the machine half is declared as the machine half is built", () => {
       expect(Object.keys(drives.environment ?? {})).toEqual(["SSL_CERT_FILE"]);
       // The whole input record is bounded at 65,536 bytes and so is the owner's
       // materialization of the home files, so the four fields have to fit inside it together.
-      const fields = Object.values(drives.input).filter((field) => field !== undefined);
-      const bytes = fields.reduce(
-        (total, field) => total + (field.type === "string" ? field.maxLength : 0),
-        0,
-      );
-      expect(bytes).toBeLessThanOrEqual(65_536);
+      expect(inputBytes(drives)).toBeLessThanOrEqual(MAX_INPUT_BYTES);
     }
   });
 

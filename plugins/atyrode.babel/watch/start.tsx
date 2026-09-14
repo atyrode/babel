@@ -257,6 +257,14 @@ function WillRun({
             <>
               {" "}
               · last run here: {preview.profile.model || "unknown"}
+              {preview.profile.thinking === "" ? null : <> at {preview.profile.thinking}</>}
+              {preview.profile.account === "" ? null : (
+                <>
+                  {" "}
+                  on{" "}
+                  <span className="plugin-atyrode_babel_watch__mono">{preview.profile.account}</span>
+                </>
+              )}
             </>
           )}
         </p>

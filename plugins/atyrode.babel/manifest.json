@@ -12,7 +12,9 @@
     "jobs:input",
     "jobs:cancel",
     "locations:read",
-    "locations:write"
+    "locations:write",
+    "services:read",
+    "services:configure"
   ],
   "dataVersion": {
     "major": 1,
@@ -56,24 +58,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "67233efbf0bf71df92aaadd7621531ef7263d292b4aa09086696d72b8fefe292",
+        "sha256": "bd9bf87f656aa5c3b580ad5492a0d641f27387d44020d1de4e6f273a196396d0",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "67233efbf0bf71df92aaadd7621531ef7263d292b4aa09086696d72b8fefe292",
+        "entrySha256": "bd9bf87f656aa5c3b580ad5492a0d641f27387d44020d1de4e6f273a196396d0",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "67233efbf0bf71df92aaadd7621531ef7263d292b4aa09086696d72b8fefe292",
+        "sha256": "bd9bf87f656aa5c3b580ad5492a0d641f27387d44020d1de4e6f273a196396d0",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "67233efbf0bf71df92aaadd7621531ef7263d292b4aa09086696d72b8fefe292",
+        "entrySha256": "bd9bf87f656aa5c3b580ad5492a0d641f27387d44020d1de4e6f273a196396d0",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1

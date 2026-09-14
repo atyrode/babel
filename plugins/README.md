@@ -114,7 +114,7 @@ differ from another's with nothing in the record saying so.
 ### What launches the model, and what it is never given
 
 Until 2026-09-13 `explore` and `evaluate` launched `code engine`, a Code subcommand that owned
-the profile, the credential and the sandbox and wrote a `code.runtime/1` sidecar Babel read before
+the profile, the credential and the sandbox and wrote a runtime-info sidecar Babel read before
 writing a prompt. atyrode/code#153 removed that engine, and Manifold has no plugin-to-plugin call
 to replace it with — `ActionCtx` carries no way to reach another plugin's doors, and every
 `ctx.jobs` verb is bound to the calling plugin's own id. So Babel's own job launches the engine
@@ -140,11 +140,112 @@ it is a Manifold job sandbox (its `HOME` is the job's private home and the XDG d
 inside it) and that the two files above are present and the environment holds no provider
 credential variable. A run that fails either is refused with a named reason — `inference_unbound`
 — and its receipt records what it was asked to be. Babel's own launch report (`babel.launch/1`)
-replaces `code.runtime/1`: the model, the thinking level, the account, the observed boundary,
-the models that answered, the exit status, the bounded retry count, and a named failure
+replaces Code's runtime-info sidecar: the model, the thinking level, the account, the observed
+boundary, the models that answered, the exit status, the bounded retry count, and a named failure
 (`broker_unavailable`, `rate_limited`, `inference_unbound`) instead of "the engine closed its
 stdout before a ready frame".
+
+### The policy the owner installs, and the one table he edits
+
+`explore` and `evaluate` bind ONE service, `atyrode.babel.inference`, and its policy is the
+machine owner's to install. `setupInference` (`doors/inference.ts`) assembles and compare-and-sets
+it against the omp gateway actually installed on that host, which is why nobody types it: three of
+its fields are pins of that installation and only a live `readConfiguration` can produce them.
+This is what it installs, so an operator reading a machine's service configuration knows what he
+is looking at:
+
+```json
+{
+  "serviceId": "atyrode.babel.inference",
+  "revision": "1",
+  "runtime": {
+    "scope": "job",
+    "pluginId": "atyrode.omp.gateway",
+    "operationId": "atyrode.omp.gateway.serve",
+    "installationRevision": "<the gateway installation on THIS machine>",
+    "artifactSha256": "<its artifact digest>",
+    "resourceBindingDigest": "<its resource binding digest>",
+    "input": { "accountPool": { "input": "accountPool" } }
+  },
+  "maxConcurrent": 16,
+  "operations": {
+    "models": {
+      "kind": "http-proxy",
+      "method": "GET",
+      "path": "/v1/models",
+      "request": { "kind": "none" },
+      "response": {
+        "kind": "stream",
+        "disclosure": "full",
+        "contentTypes": ["application/json"],
+        "headers": []
+      },
+      "timeoutMs": 60000,
+      "maxRequestBytes": 65536,
+      "maxResponseBytes": 4194304
+    },
+    "stream": {
+      "kind": "http-proxy",
+      "method": "POST",
+      "path": "/v1/pi/stream",
+      "request": { "kind": "json", "disclosure": "full" },
+      "response": {
+        "kind": "stream",
+        "disclosure": "full",
+        "contentTypes": ["application/json", "text/event-stream"],
+        "headers": []
+      },
+      "meter": { "kind": "pi-native-usage" },
+      "timeoutMs": 300000,
+      "maxRequestBytes": 16777216,
+      "maxResponseBytes": 268435456
+    }
+  },
+  "prices": {
+    "models": {
+      "anthropic/claude-opus-5":     { "inputPerMillion": 5000000,  "outputPerMillion": 25000000, "cachedInputPerMillion": 500000 },
+      "anthropic/claude-opus-4-8":   { "inputPerMillion": 5000000,  "outputPerMillion": 25000000, "cachedInputPerMillion": 500000 },
+      "anthropic/claude-sonnet-5":   { "inputPerMillion": 2000000,  "outputPerMillion": 10000000, "cachedInputPerMillion": 200000 },
+      "anthropic/claude-sonnet-4-6": { "inputPerMillion": 2000000,  "outputPerMillion": 10000000, "cachedInputPerMillion": 200000 },
+      "anthropic/claude-haiku-4-5":  { "inputPerMillion": 1000000,  "outputPerMillion": 5000000,  "cachedInputPerMillion": 100000 },
+      "anthropic/claude-fable-5-1":  { "inputPerMillion": 10000000, "outputPerMillion": 50000000, "cachedInputPerMillion": 250000 }
+    }
+  }
+}
 ```
+
+Four things in it are load-bearing and one is a default:
+
+- **`runtime`, not `origin`.** An origin policy points at a provider and needs a credential the
+  owner holds; this one points at another plugin's machine operation, so there is no credential in
+  the policy at all. The gateway resolves one from the machine's broker for the pool it was handed,
+  and the job gets a loopback url and a bearer minted for it alone.
+- **`input: {accountPool: {input: "accountPool"}}`** is how a run names the account it spends: the
+  owner maps the CALLING job's `accountPool` input into the gateway's own, so the pool the launch
+  posted is the pool that gateway resolves a credential for. manifold-omp installs its own `omp`
+  service exactly this way; #267 therefore needs no `credentialRef` selector on a job request.
+- **`meter` on `stream` only.** Listing models costs nothing; the streaming call is what spends,
+  and `pi-native-usage` is the kind that reads omp's own wire (`usage.input`, `usage.output`,
+  `usage.cacheRead`). `openai-usage` over this wire would refuse every call rather than silently
+  mis-read one (manifold#570 adds the kind; until the SDK pin moves, a hub that does not know it
+  refuses the write by name and `setupInference` reports that refusal).
+- **`prices.models` keys are FULLY QUALIFIED** (`anthropic/claude-sonnet-5`, never
+  `claude-sonnet-5`): the owner prices a call by the verbatim `modelId` the request body carried,
+  and omp's gateway keys its model map by `<provider>/<id>`. A bare key prices nothing, and a model
+  the table does not price is refused `service_price_unknown` before its first call whenever the
+  request carries a cost ceiling — which every Babel run's does.
+- **THE PRICE TABLE IS OPERATOR-EDITABLE POLICY AND NOT A FACT ABOUT ANTHROPIC.** The numbers
+  above are the self-serve list prices observed 2026-09-14, in integer micro-dollars per million
+  tokens, and they are a default so that installing the service does not require retyping a price
+  table. An operator on an enterprise rate, a batch discount or another provider edits the
+  installed policy; a price change is a new policy revision he consents to, and `launchPreview`
+  states the price it FOUND on the machine, never the table in this repository.
+
+The ceiling is the other half and it comes from the other side: the operator's per-run allowance
+leaves the hub as `limits.inference.costMicros` on the job request (`server/plan.ts`
+`inferenceCeiling`, rounded UP so a ceiling is never quietly tightened), and the OWNER refuses the
+call that would pass it. Nothing in the policy above states a budget, and nothing in a request
+states a price.
 
 **`archive` is declared, and `restic` is a closure like the others.** restic is half of why the
 operation waited: upstream's whole Linux distribution is bare bzip2 —

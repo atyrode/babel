@@ -311,7 +311,13 @@ beforeEach(async () => {
     machines: () => ({
       repository: () => ({ ok: false, reason: "this test enrolls no machine" }),
     }),
-    plan: () => PLAN,
+    // The ceiling is the plan's, and only the two model-driving operations carry one: a beat
+    // reaches no model, so a request for one asks for no inference allowance at all (#279).
+    plan: (_policy, operationId, session) => ({
+      ...PLAN,
+      session: session ?? PLAN.session,
+      limits: operationId === OPERATIONS.scan ? LIMITS : { ...LIMITS, inference: { costMicros: 62_500 } },
+    }),
     cycle: () => cycle,
     now: () => store.now(),
   };
@@ -385,9 +391,12 @@ test("a preview states what will run, and runs nothing", async () => {
     payload: JSON.stringify({
       runId: "run-old",
       closure: "completed",
+      // Babel's own launch report, as the machine half writes it into the receipt (#279).
       profile: {
-        id: "analysis", revision: 3, model: "claude-sonnet-4-5", disclosure: "cloud",
-        costPer1k: { input: 0.003, output: 0.015 },
+        schema: "babel.launch/1",
+        model: "anthropic/claude-opus-5",
+        thinking: "xhigh",
+        account: "victorballu@gmail.com",
       },
     }),
   });
@@ -402,16 +411,48 @@ test("a preview states what will run, and runs nothing", async () => {
     machineId: MACHINE,
     kind: "explore",
     // What actually ran last, from the receipt that recorded it — never the reference asked for.
-    profile: {
-      id: "analysis", revision: 3, model: "claude-sonnet-4-5", disclosure: "cloud",
-      costPer1k: { input: 0.003, output: 0.015 },
-    },
+    profile: { model: "anthropic/claude-opus-5", thinking: "xhigh", account: "victorballu@gmail.com" },
     // One claim's reservation is the per-cycle allowance over the batch; the day's is the day's.
     ceiling: { perRunUsd: 0.0625, perDayUsd: 2 },
+    // AND WHAT THE OWNER WOULD METER IT AT (ADR 0038). This preview names no session, so the
+    // policy is installed and the price is unknowable: the ceiling the request would carry is
+    // still stated, because it is the plan's and not the model's.
+    session: {
+      serviceId: "atyrode.babel.inference",
+      account: "",
+      model: "",
+      priced: false,
+      ceilingMicros: 62_500,
+      policy: "unpriced",
+      unreadable: "",
+      note: "atyrode.babel.inference is installed; choose a model to see what it is priced at",
+    },
   });
   expect(fleet.executed).toEqual([]);
   expect(fleet.described).toBe(0);
   expect((await harness.store.runs({ limit: 25, offset: 0 })).total).toBe(1);
+});
+
+test("a preview of the session the operator chose carries its price and its ceiling", async () => {
+  // The sentence above the button and the number the owner enforces come from one place: the
+  // installed policy's price for that exact model, and the ceiling the job request will carry.
+  const answer = await dispatch(ACTIONS.launchPreview, {
+    machineId: MACHINE, preset: "read-whats-new", sinceDays: 1, session: SESSION,
+  });
+
+  expect(answer["session"]).toEqual({
+    serviceId: "atyrode.babel.inference",
+    account: SESSION.account.identityKey,
+    model: SESSION.model,
+    priced: true,
+    price: { inputPerMillion: 2_000_000, outputPerMillion: 10_000_000 },
+    ceilingMicros: 62_500,
+    policy: "priced",
+    unreadable: "",
+    note:
+      `${SESSION.model} is metered at $2.0000 per million input tokens and $10.0000 per million ` +
+      `output, on ${SESSION.account.identityKey}, under a ceiling of $0.0625 for this run`,
+  });
 });
 
 test("a preview of a deployment that has run nothing states no profile", async () => {
@@ -462,8 +503,10 @@ test("reading what is new carries the window's sessions and the recipe it was to
   expect(document).toMatchObject({
     runId: "run_000001",
     machineId: MACHINE,
-    engine: { binary: "/runtime/bin/code", args: [], cwd: "" },
-    profile: { id: "analysis", revision: 3 },
+    engine: { binary: "/runtime/bin/omp", args: [], cwd: "" },
+    // The session travels IN THE DOCUMENT, and the credential does not: the three job inputs
+    // beside it carry the pool and the two home files (#279).
+    session: SESSION,
     recipes: [RECIPE],
     stages: ["explore"],
     caps: { toolCalls: 40, minutes: 0, perRunUsd: 0.0625, idleMs: 120_000, handshakeMs: 30_000 },

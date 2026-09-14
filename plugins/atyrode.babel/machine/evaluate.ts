@@ -366,8 +366,8 @@ async function runReview(
           binary: input.engine.binary,
           args: input.engine.args,
           session: input.session,
-          /** The job's private home; see the same comment in `machine/explore.ts`. */
-          home: process.env["HOME"] ?? OMP_HOME,
+          /** The job's private home; see `OperationDeps.home` in `machine/explore.ts`. */
+          home: deps.home ?? process.env["HOME"] ?? OMP_HOME,
           cwd: input.engine.cwd === "" ? directory : input.engine.cwd,
         },
         limits,
