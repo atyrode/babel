@@ -32,6 +32,7 @@ import {
   drainInput,
   drainOperation,
   endDrain,
+  foldDrain,
   type DrainDeps,
 } from "../server/drain.ts";
 import type { BabelStore } from "../store/store.ts";
@@ -369,6 +370,15 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       // this press is not something to cancel, and asking the hub to would be a refusal reported
       // as a failure of the stop.
       const seen = await reconcileLive(store, row.live);
+      /*
+        AND WHAT SETTLED IN THAT WINDOW IS FOLDED BEFORE THE ROW IS CLOSED. `closeDrain` writes
+        `live` as what is still running, so a receipt that landed since the last tick — one
+        cycle's own window between the conductor's closure write and the drain's fold, or a settle
+        hook cut off by its two-second lease — would leave the row unfolded and unreachable, and
+        the total the operator reads at the end would be short by exactly what that job metered
+        (the review of #285). The fold is `server/drain.ts`'s own, so the stop and the tick agree.
+      */
+      const folded = await foldDrain(store, row, seen, doorDeps.now());
       const reason =
         row.state === "closing"
           ? row.reason
@@ -386,7 +396,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         drainId: row.id,
         state: ended.state,
         cancelled: ended.cancelled,
-        note: ended.notes.join("; "),
+        note: [...folded.notes, ...ended.notes].join("; "),
       };
     },
   );

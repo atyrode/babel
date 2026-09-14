@@ -402,6 +402,14 @@ export async function insertDrain(store: DrainsStore, drain: NewDrain): Promise<
  * The write is the whole array rather than an append, because the row is the controller's only
  * memory and two ticks in the same second must do the work of one: `live` is read, the job added
  * if it is not already there, and the array written back with the launch counted once.
+ *
+ * A CLOSING DRAIN HOLDS IT TOO, because recording a launch is not launching: by the time this is
+ * called the hub has ALREADY taken the job and it is running. A launch is two writes —
+ * `jobs.execute`, then this one — and an operator's stop can land between them; a write that
+ * only landed under `running` made that job nobody's, running off the row with its receipt
+ * folding into nothing and the drain taking its ending while it was still at the model (the
+ * review of #285). What decides that nothing more is launched is the controller's own read of the
+ * state, not this statement; what this statement must never do is drop a job that exists.
  */
 export async function recordLaunch(
   store: DrainsStore,
@@ -411,7 +419,8 @@ export async function recordLaunch(
 ): Promise<void> {
   if (live.some((entry) => entry.jobId === job.jobId)) return;
   await store.db.run(
-    `UPDATE drains SET live = ?, jobs_launched = jobs_launched + 1 WHERE id = ? AND state = 'running'`,
+    `UPDATE drains SET live = ?, jobs_launched = jobs_launched + 1
+      WHERE id = ? AND state IN ('running', 'closing')`,
     [JSON.stringify([...live, job]), id],
   );
 }

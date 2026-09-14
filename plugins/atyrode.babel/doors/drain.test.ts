@@ -4,9 +4,9 @@
   Every test dispatches the way the kit does — parse the arguments against the action's own input,
   run the handler, parse what it produced against the action's own result — and then asks the
   STORE and the FLEET what happened, because that is what a drain is: N jobs posted to one
-  machine, one row that remembers them, and an overlay with a TTL. The fleet is fake and the store
-  is real, which is the right way round: a job request is a shape this file can pin exactly, and
-  the drain row is SQL under every CHECK the schema declares.
+  machine, and one row that remembers them until the last receipt lands. The fleet is fake and
+  the store is real, which is the right way round: a job request is a shape this file can pin
+  exactly, and the drain row is SQL under every CHECK the schema declares.
 
   The launch path is the REAL `launchMachinery` over the same store, so a job this drain posts is
   the job the operator's own button posts — if the two ever diverged these tests would still pass
@@ -89,14 +89,20 @@ class Fleet implements BabelJobs {
   refusal = "";
   /** Set to refuse cancellation the way a credential without `jobs:cancel` does. */
   cancelRefusal = "";
+  /**
+   * What happens between the hub taking a job and the caller recording it: the window a launch
+   * really has, and where an operator's stop lands in the test below.
+   */
+  duringExecute: ((args: JobLaunch) => Promise<void>) | null = null;
 
   describe(): MachineReadiness {
     return READY;
   }
 
-  execute(args: JobLaunch): JobRunState {
+  async execute(args: JobLaunch): Promise<JobRunState> {
     if (this.refusal !== "") throw new Error(this.refusal);
     this.executed.push(args);
+    if (this.duringExecute !== null) await this.duringExecute(args);
     return {
       jobId: args.jobId,
       machineId: args.machineId,
@@ -606,6 +612,86 @@ test("an operator's stop cancels the stragglers of a drain that already closed i
   expect(row?.ending).toBe("target");
   expect(row?.reason).toMatch(/target of 500000/);
   expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_1`]);
+});
+
+test("a stop folds the receipt that landed since the last tick instead of closing over it", async () => {
+  /*
+    THE RECEIPT IN THE WINDOW (the re-review of #285, finding 1). A job's closure is written by
+    the conductor and folded by the drain's own tick, and between those two writes — one cycle's
+    window, or a settle hook cut off by its two-second lease — the operator can press stop. A door
+    that closed the row on what was still RUNNING wrote `live` without that job in it, so no later
+    tick could ever reach it: the drain reported 900000 of the 1500000 it had metered.
+  */
+  const drainId = String((await start({ concurrent: 2 }))["drainId"]);
+  await settleJob(`run_${drainId}_0`, { costMicros: 600_000, outputTokens: 500 });
+
+  const halted = await halt(drainId, "the window is about to reset");
+  expect(halted["state"]).toBe("closing");
+  // The settled job is folded, not cancelled: only the one still running is asked to stop.
+  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_1`]);
+  const closing = await readDrain(harness.store, drainId);
+  expect(closing?.spent.costMicros).toBe(600_000);
+  expect(closing?.jobsSettled).toBe(1);
+  expect(closing?.closures).toEqual({ completed: 1 });
+  expect(closing?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1`]);
+
+  // …and the straggler's own receipt lands on top of it, so the final total is the whole spend.
+  harness.at(NOW + 5 * 60_000);
+  await settleJob(`run_${drainId}_1`, { costMicros: 900_000, outputTokens: 700 });
+  const [after] = await drainTick(deps);
+  expect(after?.state).toBe("stopped");
+  const row = await readDrain(harness.store, drainId);
+  expect(row?.spent.costMicros).toBe(1_500_000);
+  expect(row?.spent.outputTokens).toBe(1_200);
+  expect(row?.jobsSettled).toBe(2);
+  expect((await statusOf(drainId))["spent"]).toMatchObject({ costMicros: 1_500_000 });
+});
+
+test("a stop that lands mid-launch keeps the job the hub already took, and ends behind it", async () => {
+  /*
+    THE JOB POSTED INTO A CLOSING DRAIN (the re-review of #285, finding 2). A launch is two writes
+    — `jobs.execute`, then the row that records it — and a stop can land between them. A
+    `recordLaunch` that only wrote under `running` made that job nobody's: it ran on the hub with
+    a run row and off `live`, the stop answered for one job while two were out, and the drain took
+    its ending on the straggler it knew about while the other was still at the model.
+  */
+  const drainId = String((await start({ concurrent: 2 }))["drainId"]);
+  await settleJob(`run_${drainId}_0`, { costMicros: 200_000 });
+  fleet.duringExecute = async (args) => {
+    if (args.jobId !== `job_${drainId}_2`) return;
+    fleet.duringExecute = null;
+    await halt(drainId, "the operator stopped it");
+  };
+  await drainTick(deps);
+
+  expect(fleet.executed.map((job) => job.jobId)).toEqual([
+    `job_${drainId}_0`,
+    `job_${drainId}_1`,
+    `job_${drainId}_2`,
+  ]);
+  const closing = await readDrain(harness.store, drainId);
+  expect(closing?.state).toBe("closing");
+  // BOTH running jobs are on the row: the one the stop cancelled, and the one it could not know
+  // about because the hub had only just taken it.
+  expect(closing?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1`, `job_${drainId}_2`]);
+  expect(closing?.jobsLaunched).toBe(3);
+
+  // The cancelled job's receipt does not end the drain: it still holds the other one.
+  await settleJob(`run_${drainId}_1`, { costMicros: 300_000 });
+  const [held] = await drainTick(deps);
+  expect(held?.state).toBe("closing");
+  expect(held?.launched).toBe(0);
+  expect((await readDrain(harness.store, drainId))?.live.map((job) => job.jobId)).toEqual([
+    `job_${drainId}_2`,
+  ]);
+
+  await settleJob(`run_${drainId}_2`, { costMicros: 400_000 });
+  const [ended] = await drainTick(deps);
+  expect(ended?.state).toBe("stopped");
+  const row = await readDrain(harness.store, drainId);
+  expect(row?.live).toEqual([]);
+  expect(row?.spent.costMicros).toBe(900_000);
+  expect(row?.jobsSettled).toBe(3);
 });
 
 test("the status folds the live spend, the rate over the last three minutes, and the ETA", async () => {

@@ -1205,8 +1205,9 @@ export const SetupInferenceResultSchema = z.strictObject({
  * reviewed, claims it under a fence and the conductor dispatches it, and a controller that
  * fanned those out would be a second implementation of the one thing the coordinator exists to
  * arbitrate — the lane, the fence, the reservation and the day's allowance (`doors/launch.ts`
- * says this about its own drawn branch). Running the loop faster is what the drain's overlay
- * does, by raising the bound the conductor admits against.
+ * says this about its own drawn branch). Running that loop faster is an operator's own budget
+ * overlay (`setBudget`, #260), which raises the bound admission reads; a drain sets none,
+ * because nothing it launches consults one (`server/drain.ts`).
  *
  * So a drain fans out exactly the presets that are launched DIRECTLY: two explores and the
  * beat. `keep-going` is in the list because it is the one lane that spends no model at all,

@@ -96,6 +96,24 @@ test("a launch is counted once however many times the same job is recorded", asy
   const row = await readDrain(harness.store, "drn_one");
   expect(row?.live).toEqual([job]);
   expect(row?.jobsLaunched).toBe(1);
+
+  // A CLOSING DRAIN HOLDS WHAT THE HUB ALREADY TOOK. A launch is `jobs.execute` and then this
+  // write, and a stop can land between them: a write that only landed under `running` left that
+  // job running off the row, with nothing to fold its receipt onto (the review of #285).
+  expect(await closeDrain(harness.store, "drn_one", "stopped", "stopped mid-launch", [job])).toBe(
+    "closing",
+  );
+  const late = { runId: "run_b", jobId: "job_b", launchedAt: NOW };
+  await recordLaunch(harness.store, "drn_one", late, [job]);
+  const closing = await readDrain(harness.store, "drn_one");
+  expect(closing?.live).toEqual([job, late]);
+  expect(closing?.jobsLaunched).toBe(2);
+
+  // …and a drain that has ENDED holds nothing more: its receipts are all in, and a row nobody
+  // folds again is not one a late write may reopen.
+  expect(await closeDrain(harness.store, "drn_one", "stopped", "and it is over", [])).toBe("ended");
+  await recordLaunch(harness.store, "drn_one", late, []);
+  expect((await readDrain(harness.store, "drn_one"))?.live).toEqual([]);
 });
 
 test("a drain holding nothing ends at once, and ends only once", async () => {

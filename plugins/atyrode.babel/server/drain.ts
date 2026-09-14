@@ -3,6 +3,7 @@ import {
   PRESET_OPERATIONS,
   type DrainEnding,
   type DrainPreset,
+  type DrainSpend,
   type LaunchInput,
   type OperationName,
   type SessionChoice,
@@ -20,7 +21,9 @@ import {
   saveFold,
   targetMet,
   type DrainRow,
+  type DrainsStore,
   type LiveJob,
+  type Reconciled,
 } from "../store/drains.ts";
 import type { BabelStore } from "../store/store.ts";
 import type { LaunchIdentity, Started } from "../doors/launch.ts";
@@ -41,10 +44,13 @@ import type { BabelJobs } from "./plan.ts";
   `launchMachinery`'s own `startExplore`/`startBeat`, so the document, the ceiling, the pinned
   installation and the run row are the ones the operator's own button produces — there is no
   second answer to what a run IS. It is not a second governor either: the standing `policies` row
-  is never touched, the drain's concurrency lives in a `budgets` overlay with a TTL (#260), and
-  nothing here edits a lease, a share or a version — the three things a draw is replayable
-  against, and the five rewrites of them on 2026-09-13 are why assignment ids kept changing under
-  jobs in flight.
+  is never touched and there is no overlay to set — `doors/drain.ts` says the whole of it: an
+  overlay moves admission numbers, and a drain's jobs, launched directly, consult none of them.
+  THE FAN IS BOUNDED WHERE IT IS REAL, twice: the door refuses a `concurrent` above the
+  manifest's `concurrentJobs` for the operation the preset posts, and this controller launches
+  only into the slots its own live jobs leave free. Nothing here edits a lease, a share or a
+  version — the three things a draw is replayable against, and the five rewrites of them on
+  2026-09-13 are why assignment ids kept changing under jobs in flight.
 
   IT HAS NO CLOCK, and cannot have one: a plugin may not poll as an alternate scheduler. A tick
   happens when something has already woken this half — the operator opening the panel, or one of
@@ -153,6 +159,63 @@ export function drainIdentity(row: DrainRow, ordinal: number): LaunchIdentity {
   return { runId: `run_${tail}`, jobId: `job_${tail}`, authorityId: row.startedBy };
 }
 
+/** What one fold wrote, and what the read of this drain's jobs could not account for. */
+export interface Folded {
+  /** Everything this drain has metered: the receipts that landed, plus what its live jobs report. */
+  readonly spent: DrainSpend;
+  /** Jobs held with no run row, named: their slots were released rather than held for ever. */
+  readonly notes: readonly string[];
+}
+
+/**
+ * WHAT THIS DRAIN'S JOBS HAVE DONE, folded onto its row: the receipts that landed since the last
+ * fold added to `spent`, their closures and refusals tallied, the jobs still running kept, and
+ * one observation taken so a rate has two to work from.
+ *
+ * IT IS WHAT EVERY READER OF {@link reconcileLive} DOES NEXT, controller or door, and it is the
+ * same fold in both because the row is one row. A caller that closed the drain on what was still
+ * running WITHOUT folding first wrote `live` without the settled jobs in it, and no later tick
+ * could find them again: the receipt of a job that closed between the last tick and an
+ * operator's stop — one cycle's own window, or a settle hook cut off by its two-second lease —
+ * was simply missing from the total §11.5 asks the operator to read (the review of #285).
+ *
+ * Idempotent on the same rule as the rest of the controller: a settled job leaves `live`, so a
+ * second fold over the same receipt has nothing left to add.
+ */
+export async function foldDrain(
+  store: DrainsStore,
+  row: DrainRow,
+  seen: Reconciled,
+  at: number,
+): Promise<Folded> {
+  const notes: string[] = [];
+  for (const gone of seen.missing) {
+    notes.push(
+      `${gone.jobId} was launched with no run row to show for it, so its slot is released`,
+    );
+  }
+  const settledSpend = seen.settled.reduce((total, run) => addSpend(total, run.spend), row.spent);
+  const spent = addSpend(settledSpend, seen.inFlight);
+  const closures = { ...row.closures };
+  const refusals = { ...row.refusals };
+  for (const run of seen.settled) {
+    const closure = run.closure === "" ? "unknown" : run.closure;
+    closures[closure] = (closures[closure] ?? 0) + 1;
+    // A refusal is PAID work with no result (#265): counted where the receipt is, because the
+    // run it is on is one this drain will have forgotten by the time anybody asks.
+    if (run.refusal !== null) refusals[run.refusal] = (refusals[run.refusal] ?? 0) + 1;
+  }
+  await saveFold(store, row.id, {
+    live: seen.holding,
+    spent: settledSpend,
+    closures,
+    refusals,
+    samples: sample(row.samples, at, spent),
+    settledNow: seen.settled.length,
+  });
+  return { spent, notes };
+}
+
 /** What ending a drain did: the state it is in now, what was cancelled, and what it could not do. */
 export interface Ended {
   /** `closing` while it still holds a job whose receipt is owed, otherwise the ending itself. */
@@ -227,32 +290,10 @@ export async function endDrain(
  */
 async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   const at = deps.now();
-  const notes: string[] = [];
   const seen = await reconcileLive(deps.store, row.live);
-  for (const gone of seen.missing) {
-    notes.push(
-      `${gone.jobId} was launched with no run row to show for it, so its slot is released`,
-    );
-  }
-  const settledSpend = seen.settled.reduce((total, run) => addSpend(total, run.spend), row.spent);
-  const spent = addSpend(settledSpend, seen.inFlight);
-  const closures = { ...row.closures };
-  const refusals = { ...row.refusals };
-  for (const run of seen.settled) {
-    const closure = run.closure === "" ? "unknown" : run.closure;
-    closures[closure] = (closures[closure] ?? 0) + 1;
-    // A refusal is PAID work with no result (#265): counted where the receipt is, because the
-    // run it is on is one this drain will have forgotten by the time anybody asks.
-    if (run.refusal !== null) refusals[run.refusal] = (refusals[run.refusal] ?? 0) + 1;
-  }
-  await saveFold(deps.store, row.id, {
-    live: seen.holding,
-    spent: settledSpend,
-    closures,
-    refusals,
-    samples: sample(row.samples, at, spent),
-    settledNow: seen.settled.length,
-  });
+  const folded = await foldDrain(deps.store, row, seen, at);
+  const notes: string[] = [...folded.notes];
+  const spent = folded.spent;
 
   if (row.state === "closing") {
     const ending = row.ending === "" ? "stopped" : row.ending;
