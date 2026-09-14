@@ -18,6 +18,7 @@ import {
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { ADAPTERS } from "../atyrode.babel/machine/adapters/index.ts";
 import { STORE_DATA_VERSION } from "../atyrode.babel/store/schema.ts";
+import { MAX_MATERIAL_BYTES } from "../atyrode.babel/doors/launch.ts";
 import { plugin } from "../atyrode.babel/server.ts";
 import babelManifest from "../atyrode.babel/manifest.json";
 import feedManifest from "../atyrode.babel/feed/manifest.json";
@@ -220,6 +221,16 @@ describe("the machine half is declared as the machine half is built", () => {
         reason: expect.stringContaining("runSession") as unknown as string,
       },
     });
+    /*
+      THE HUB'S OWN BOUND IS AT OR UNDER THE MACHINE'S. `doors/launch.ts` refuses a selection
+      whose catalogued bytes exceed `MAX_MATERIAL_BYTES`, BEFORE a job is posted; the machine
+      refuses a lease over `outputBytes`, AFTER it has read every log in the selection. The
+      first must be the one that fires, or the operator learns his window was too wide from a
+      twenty-minute job that failed at the seal.
+    */
+    expect(MAX_MATERIAL_BYTES).toBeLessThanOrEqual(
+      machine.operations[OPERATIONS.prepare]!.limits?.outputBytes ?? 0,
+    );
     const prepare = machine.operations[OPERATIONS.prepare]!;
     expect(prepare.outputs).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
     // The material's lease is cut from the same managed location the ordinary one is: a second
@@ -300,11 +311,18 @@ describe("the machine half is declared as the machine half is built", () => {
   test("the ceiling on a run is the ceiling the operator was promised", () => {
     // The loop launches with the operation's own limits; the hub refuses anything above them.
     // These three numbers are therefore the whole answer to "how long can this run".
+    //
+    // `prepare` is thirty minutes and half a gigabyte because it SEALS THE MATERIAL now
+    // (#279): it reads every selected log and writes the normalized record stream into a
+    // second lease, and the bound `doors/launch.ts` refuses a selection against
+    // (`MAX_MATERIAL_BYTES`) has to fit under this one or the machine is what discovers the
+    // window was too wide.
     const minutes = (operation: string): number =>
       machine.operations[operation]!.limits.timeoutMs / 60_000;
     expect(minutes(OPERATIONS.scan)).toBe(10);
-    expect(minutes(OPERATIONS.prepare)).toBe(5);
+    expect(minutes(OPERATIONS.prepare)).toBe(30);
     expect(minutes(OPERATIONS.archive)).toBe(10);
+    expect(machine.operations[OPERATIONS.prepare]!.limits.outputBytes).toBe(512 * 1024 * 1024);
   });
 
   test("this bundle pins no tool at all: every one is the owner's to provide", () => {

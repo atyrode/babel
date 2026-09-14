@@ -22,7 +22,7 @@
   },
   "dataVersion": {
     "major": 1,
-    "minor": 5
+    "minor": 6
   },
   "database": {
     "maxBytes": 1073741824
@@ -380,10 +380,10 @@
         ],
         "network": "none",
         "limits": {
-          "timeoutMs": 300000,
+          "timeoutMs": 1800000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 33554432
+          "outputBytes": 536870912
         },
         "stdin": false
       }

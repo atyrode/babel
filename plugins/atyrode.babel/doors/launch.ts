@@ -146,6 +146,30 @@ export const DRAW_PENDING =
  */
 const MAX_SELECTION = 120;
 
+/**
+ * HOW MANY BYTES OF LOG ONE PREPARATION MAY SEAL, and why it is 512 MiB.
+ *
+ * The count above bounds the REQUEST; this bounds the OUTPUT, and they are different failures.
+ * `prepare` seals the normalized record stream of every selected session into the material
+ * lease, and a lease over the operation's `limits.outputBytes` is refused by the machine —
+ * after it has read every one of those logs. The operator's remedy is a narrower window, and
+ * he cannot guess it from an `output_too_large` on a job that already spent twenty minutes.
+ *
+ * THE NUMBER IS THE POST-MORTEM'S OWN. A catalogued session averages ~12 MB, and the two logs
+ * that broke 2026-09-13 were 35 MB (a harness transcript) and 240 MB (a live Code session);
+ * 120 sessions at that average is ~1.4 GB, so the count alone bounds nothing. 512 MiB holds
+ * about forty average sessions, or two of the largest the corpus has ever held, and it is
+ * under the gigabyte this plugin's own database is allowed — a machine that cannot spare half
+ * a gigabyte of tmpfs for a lease cannot run this operation at all. The normalized stream is
+ * SMALLER than the log it came from (one canonical record per line, no whitespace), so this is
+ * a conservative bound on what is actually written.
+ *
+ * It is checked against the catalogued `size` — what `scan` measured — because that is the
+ * only figure the hub has before the job runs. It must stay at or below the `outputBytes` the
+ * manifest declares for `atyrode.babel.prepare`, and `test/contract.test.ts` pins that.
+ */
+export const MAX_MATERIAL_BYTES = 512 * 1024 * 1024;
+
 /** The engine's own bound on one job's whole input record, in bytes. */
 const MAX_INPUT_BYTES = 65_536;
 
@@ -229,6 +253,8 @@ type SessionRow = {
   content_digest: string | null;
   snapshot_id: string | null;
   seen_at: string;
+  /** What `scan` measured the log at. The only figure the hub has before `prepare` runs. */
+  size: number | bigint | null;
 };
 
 /** What one preset's window offered: the scope, its size, and what it was not allowed to read. */
@@ -238,6 +264,10 @@ interface Selected {
   readonly held: number;
   /** How many of those are live or Babel's own, and so were never candidates (#262). */
   readonly excluded: number;
+  /** The catalogued bytes of the rows actually taken, which bounds the sealed material. */
+  readonly bytes: number;
+  /** How many selectable sessions the byte bound left out, on top of `MAX_SELECTION`. */
+  readonly overBound: number;
 }
 
 /** The machine, as the engine describes it, or the sentence saying why it cannot run this. */
@@ -303,7 +333,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
 
     const rows = await store.db.query<SessionRow>(
       `SELECT DISTINCT s.selector AS selector, s.harness AS harness, s.source_id AS source_id,
-              s.content_digest AS content_digest, s.snapshot_id AS snapshot_id, s.seen_at AS seen_at
+              s.content_digest AS content_digest, s.snapshot_id AS snapshot_id,
+              s.seen_at AS seen_at, s.size AS size
          ${scope} ${allowed}
         ORDER BY s.seen_at DESC, s.selector
         LIMIT ?`,
@@ -318,11 +349,33 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     );
     const held = Number(counted[0]?.held ?? 0);
     const selectable = Number(counted[0]?.selectable ?? 0);
-    return {
-      rows: rows.slice(0, MAX_SELECTION),
-      held,
-      excluded: Math.max(0, held - selectable),
-    };
+
+    /*
+      NEWEST FIRST UNTIL THE MATERIAL IS FULL. The count is not a bound on bytes: 120 sessions
+      at the corpus's own average is over a gigabyte, and a selection that overran
+      `prepare`'s `outputBytes` would be discovered by the machine AFTER it had read every one
+      of those logs. Taking rows in the order they are already sorted — newest first, which is
+      what every preset asks for — stops at the bound and SAYS how many it left, so the
+      operator reads a narrower window rather than an `output_too_large`.
+
+      A row with no catalogued size counts as nothing: `scan` measured every log it catalogued,
+      so a NULL is an imported row, and refusing the run for a figure the crossing never
+      carried would make old corpora unusable. It is the one place this bound is approximate,
+      and `prepare` still refuses the lease if the seal really does overrun.
+    */
+    const taken: SessionRow[] = [];
+    let bytes = 0;
+    let overBound = 0;
+    for (const row of rows.slice(0, MAX_SELECTION)) {
+      const size = Number(row.size ?? 0);
+      if (bytes + size > MAX_MATERIAL_BYTES) {
+        overBound += 1;
+        continue;
+      }
+      taken.push(row);
+      bytes += size;
+    }
+    return { rows: taken, held, excluded: Math.max(0, held - selectable), bytes, overBound };
   }
 
   /**
@@ -502,9 +555,20 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     }
     const prepared = await selection(input);
     if (prepared.rows.length === 0) {
-      // A window can hold sessions and offer none: a log still being written, or one of Babel's
-      // own runs', is catalogued and not a candidate (#262). Which of the two it is decides what
-      // the operator does next, so the refusal says it.
+      // A window can hold sessions and offer none, in three ways that need three answers. A
+      // log still being written, or one of Babel's own runs', is catalogued and not a
+      // candidate (#262); a session larger than the whole material bound is a candidate the
+      // lease cannot hold. Which of the three it is decides what the operator does next.
+      if (prepared.overBound > 0) {
+        return {
+          refused:
+            `material_too_large: every session this window offers is larger than the ` +
+            `${String(Math.round(MAX_MATERIAL_BYTES / (1024 * 1024)))} MiB one preparation may ` +
+            `seal (${String(prepared.overBound)} left out). A run reads what a job's sealed ` +
+            `output can hold; ask for a narrower window, or archive the log that is too big to ` +
+            `read in one piece.`,
+        };
+      }
       const left =
         prepared.excluded === 0
           ? ""
@@ -561,6 +625,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           selected: prepared.rows.length,
           available: prepared.held,
           excluded: prepared.excluded,
+          bytes: prepared.bytes,
+          overBound: prepared.overBound,
         },
       },
     );
@@ -602,6 +668,8 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
       selected: prepared.rows.length,
       available: prepared.held,
       excluded: prepared.excluded,
+      bytes: prepared.bytes,
+      overBound: prepared.overBound,
       promptVersion: PROMPT_VERSION,
       sessions: entries,
       recipes: recipes.map((recipe) => ({ id: recipe.id, version: recipe.version })),

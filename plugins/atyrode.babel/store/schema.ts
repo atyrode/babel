@@ -20,7 +20,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 5 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 6 } as const;
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -532,6 +532,8 @@ export const SCHEMA_V1: readonly string[] = [
      cost_usd REAL,
      tokens INTEGER,
      records INTEGER NOT NULL DEFAULT 0,
+     /* Consecutive cycles the hub could not say where this run's job is; see SCHEMA_ADDITIONS. */
+     unreadable INTEGER NOT NULL DEFAULT 0,
      payload TEXT NOT NULL
    ) STRICT`,
   `CREATE INDEX runs_by_started ON runs(started_at DESC)`,
@@ -661,6 +663,18 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
     table: "runs",
     column: "prepare_job_id",
     sql: `ALTER TABLE runs ADD COLUMN prepare_job_id TEXT`,
+  },
+  // #279: HOW MANY CYCLES IN A ROW NOBODY COULD SAY WHERE THIS RUN'S JOB IS.
+  //
+  // It was a `Map` in the conductor's closure, and the closure is the bug: `server.ts` builds a
+  // NEW conductor for every wake, so "twice running" was counted in an object that never
+  // survived to be read a second time and the reaper's bound could not fire. A counter whose
+  // whole predicate is "the cycle before this one" has to be durable, so it is a column on the
+  // row it is about; a run whose job answers resets it to zero.
+  {
+    table: "runs",
+    column: "unreadable",
+    sql: `ALTER TABLE runs ADD COLUMN unreadable INTEGER NOT NULL DEFAULT 0`,
   },
 ];
 

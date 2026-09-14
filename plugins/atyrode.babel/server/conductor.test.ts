@@ -24,6 +24,8 @@ import {
   BEAT_OPERATION,
   CONDUCTOR_SCHEDULE_ID,
   conductor,
+  type Conductor,
+  type SettledClaim,
   type FollowEvent,
   type FollowRead,
   ingestOutputs,
@@ -2500,39 +2502,50 @@ test("a read Code refuses is recorded on the run, retried once, and then closed 
     ),
   );
   const { runId, claimId } = await sessionInFlight(db);
-  const loop = conductor({
-    engine: code,
-    store,
-    coordinator: draws as unknown as Coordinator,
-    jobs: new Fleet(),
-    machines: new Folders(),
-    keys: new Keys(),
-    plan: PLAN,
-    now: () => clock,
-  });
+  /*
+    A NEW CONDUCTOR PER WAKE, which is what `server.ts` actually does: every door and every
+    settlement builds one. The count of consecutive silent cycles therefore cannot live in the
+    loop's closure — it did, and the bound could never fire because the object was gone before
+    the second cycle read it. It is a column on the run row now, and this test drives the
+    hub's own shape rather than one long-lived loop.
+  */
+  const wake = (): Conductor =>
+    conductor({
+      engine: code,
+      store,
+      coordinator: draws as unknown as Coordinator,
+      jobs: new Fleet(),
+      machines: new Folders(),
+      keys: new Keys(),
+      plan: PLAN,
+      now: () => clock,
+    });
 
   // ONE REFUSAL IS A HICCUP. The sentence is on the row so a reader sees it without the
   // journal, and the run stays open for the next wake to ask again.
-  const first = await loop.tick();
+  const first = await wake().tick();
   expect(first.runs.running).toBe(1);
-  const held = (await db.query(`SELECT closure, payload FROM runs WHERE id = ?`, [runId]))[0]!;
+  const held = (
+    await db.query(`SELECT closure, payload, unreadable FROM runs WHERE id = ?`, [runId])
+  )[0]!;
+  expect(Number(held["unreadable"])).toBe(1);
   expect(held["closure"]).toBeNull();
   expect(String(held["payload"])).toContain("code_stale_preferences");
 
   // TWO IN A ROW IS A RUN NOBODY WILL EVER READ. It is closed with that sentence and its claim
   // released, rather than retried on every wake for the life of the deployment.
-  const second = await loop.tick();
+  const second = await wake().tick();
   expect(second.runs.running).toBe(0);
   const closed = (
     await db.query(`SELECT closure, finished_at, payload FROM runs WHERE id = ?`, [runId])
   )[0]!;
   expect(closed["closure"]).toBe("failed");
   expect(String(closed["payload"])).toContain("engine_stale_profile");
-  expect(second.settled.map((entry) => [entry.claimId, entry.outcome])).toEqual([
+  expect(second.settled.map((entry: SettledClaim) => [entry.claimId, entry.outcome])).toEqual([
     [claimId, "abandoned"],
   ]);
 
   // …and a third wake asks Code nothing more about it: two reads, and no run left to poll.
-  await loop.tick();
+  await wake().tick();
   expect(code.asked).toHaveLength(2);
 });

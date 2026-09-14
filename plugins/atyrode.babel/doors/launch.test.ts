@@ -44,7 +44,7 @@ import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
-import { DRAW_PENDING, launchDoors, type LaunchDeps } from "./launch.ts";
+import { DRAW_PENDING, MAX_MATERIAL_BYTES, launchDoors, type LaunchDeps } from "./launch.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -409,6 +409,64 @@ test("an explore seals its material, then answers material_input_pending and lea
   expect(runs).toHaveLength(1);
   expect(runs[0]?.kind).toBe(OPERATIONS.prepare);
   expect(runs[0]?.container_id).toBeNull();
+});
+
+test("the selection stops at the bytes one preparation may seal, and says how many it left", async () => {
+  // Three quarters of the bound apiece: the newest fits, the next does not, and the third
+  // does not either. `scan`'s own `size` is the only figure the hub has before the job runs.
+  const big = Math.floor(MAX_MATERIAL_BYTES * 0.75);
+  for (const [n, at] of [
+    ["big1", NOW - 1000],
+    ["big2", NOW - 2000],
+    ["big3", NOW - 3000],
+  ] as const) {
+    await insert(harness.db, "sessions", {
+      selector: `omp/${n}`, host: MACHINE, harness: "omp", source_id: n, title: n,
+      content_digest: `d-${n}`, size: big, seen_at: stamp(at),
+    });
+  }
+
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  // It still reaches the material refusal, so the selection was admitted — and it holds the
+  // newest big log and the one small seeded session, not all four.
+  expect(String(answer["refused"])).toStartWith(`${MATERIAL_INPUT_PENDING_CODE}:`);
+  const sealed = fleet.executed[0]!;
+  const selectors = JSON.parse(String(sealed.input["input"]))["selectors"] as string[];
+  expect(selectors).toEqual(["omp/big1", "omp/s1"]);
+  const runs = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE kind = ?`,
+    [OPERATIONS.prepare],
+  );
+  const preparation = JSON.parse(String(runs[0]?.preparation)) as Record<string, number>;
+  expect(preparation["overBound"]).toBe(2);
+  expect(preparation["bytes"]).toBeLessThanOrEqual(MAX_MATERIAL_BYTES);
+});
+
+test("a window offering nothing the lease can hold is refused by name, not as an empty window", async () => {
+  // One session larger than the whole bound. The machine would discover this after reading
+  // every byte of it; the door says it before a job exists.
+  await harness.db.run(`DELETE FROM sessions`);
+  await insert(harness.db, "sessions", {
+    selector: "omp/huge", host: MACHINE, harness: "omp", source_id: "huge", title: "huge",
+    content_digest: "d-huge", size: MAX_MATERIAL_BYTES + 1, seen_at: stamp(NOW - 1000),
+  });
+
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  const refused = String(answer["refused"]);
+  expect(refused).toStartWith("material_too_large:");
+  expect(refused).toContain("512 MiB");
+  expect(refused).not.toContain("has catalogued no session");
+  expect(fleet.executed).toEqual([]);
 });
 
 test("a drawn preset answers draw_pending, names where the lane returns, and posts nothing", async () => {

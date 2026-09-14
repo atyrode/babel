@@ -1153,6 +1153,7 @@ type PendingRun = {
   started_at: string;
   profile: string | null;
   preparation: string | null;
+  unreadable: number | bigint;
 };
 /**
  * The `run_progress` row the fold carries between cycles. Every INTEGER column arrives as a
@@ -1186,6 +1187,8 @@ type OrphanClaim = {
   /** Two `COUNT(*)` subqueries, so bigints from the engine's database, as {@link Fence} is. */
   runs: number | bigint;
   open_runs: number | bigint;
+  /** The run row's own consecutive-silence count; NULL when no run row stands behind it. */
+  silent: number | bigint | null;
 };
 type MachineCount = { machineId: string; cited: number };
 type MachineRow = { machineId: string };
@@ -1242,11 +1245,19 @@ export function conductor(deps: ConductorDeps): Conductor {
   const { store, coordinator, jobs, machines, keys, plan, engine } = deps;
   let cycle = 0;
   /**
-   * How many cycles in a row the hub has failed to report a job the loop is waiting on, by job
-   * id. It lives across ticks because "twice running" is the whole predicate; it is a Map
-   * because its keys are job ids that come and go, and `reconcileRuns` prunes it every cycle.
+   * HOW MANY CYCLES IN A ROW NOBODY COULD SAY WHERE A RUN'S JOB IS, written on the run row.
+   *
+   * It was a `Map` in this closure, and the closure was the bug: `server.ts` builds a NEW
+   * conductor for every wake, so a counter whose whole predicate is "and the cycle before
+   * this one" was reset before it could ever be read a second time and the reaper's bound
+   * could not fire. A run that answers is set back to zero, which is what makes the count
+   * CONSECUTIVE rather than cumulative.
    */
-  const unreadable = new Map<string, number>();
+  async function silence(runId: string, held: number, seen: boolean): Promise<number> {
+    const next = seen ? 0 : held + 1;
+    if (next !== held) await store.db.run(`UPDATE runs SET unreadable = ? WHERE id = ?`, [next, runId]);
+    return next;
+  }
 
   /** Machines are described once per tick: the answer is the same for every draw in it. */
   async function readiness(
@@ -1789,8 +1800,7 @@ export function conductor(deps: ConductorDeps): Conductor {
     const containerId = run.container_id ?? "";
     const answered = await engine.readSession({ containerId, jobId: run.job_id });
     if (!answered.ok) {
-      const silent = (unreadable.get(run.job_id) ?? 0) + 1;
-      unreadable.set(run.job_id, silent);
+      const silent = await silence(run.id, Number(run.unreadable), false);
       const note = `session ${run.job_id} in ${containerId} cannot be read: ${answered.refused}`;
       notes.push(note);
       if (silent < UNREPORTED_CYCLES) {
@@ -1809,7 +1819,6 @@ export function conductor(deps: ConductorDeps): Conductor {
       );
       await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
       store.touch();
-      unreadable.delete(run.job_id);
       for (const claim of await store.db.query<OpenClaim>(
         `SELECT id, run_id, fence, reserved_cost FROM claims WHERE job_id = ? AND finished_at IS NULL`,
         [run.job_id],
@@ -1818,7 +1827,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       }
       return { inFlight: false };
     }
-    unreadable.delete(run.job_id);
+    await silence(run.id, Number(run.unreadable), true);
     // Code reports the omp job's own state, and the vocabulary is the hub's: a job that is not
     // terminal is still going, and this loop folds no progress for it — the replay ring belongs
     // to `atyrode.omp`'s job and `ctx.jobs.follow` on it is not Babel's to open.
@@ -2036,7 +2045,7 @@ export function conductor(deps: ConductorDeps): Conductor {
   ): Promise<{ inFlight: number; runs: RunsTally }> {
     const pending = await store.db.query<PendingRun>(
       `SELECT id, job_id, machine_id, kind, container_id, prepare_job_id, started_at,
-              profile, preparation
+              profile, preparation, unreadable
          FROM runs
         WHERE closure IS NULL AND job_id IS NOT NULL AND machine_id IS NOT NULL
         ORDER BY started_at`,
@@ -2044,7 +2053,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     let inFlight = 0;
     let atModel = 0;
     let stalled = 0;
-    const answered = new Set<string>();
+    // The count of silent cycles is on the row now, so nothing is pruned here: a run that is
+    // no longer waited on is not selected, and one that answers is set back to zero in place.
     for (const run of pending) {
       // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
       // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
@@ -2057,7 +2067,7 @@ export function conductor(deps: ConductorDeps): Conductor {
           // and the job's only work is the turn. There is no replay ring of Babel's to fold, so
           // the count is the honest one rather than a stage nobody read.
           atModel += 1;
-        } else answered.add(run.job_id);
+        }
         continue;
       }
       let state: JobRunState | null = null;
@@ -2075,11 +2085,11 @@ export function conductor(deps: ConductorDeps): Conductor {
       // in flight for this cycle and is remembered: a machine that vanished would otherwise keep
       // its claims "running" for ever, and the reaper below counts the cycles.
       if (state === null) {
-        unreadable.set(run.job_id, (unreadable.get(run.job_id) ?? 0) + 1);
+        await silence(run.id, Number(run.unreadable), false);
         inFlight += 1;
         continue;
       }
-      answered.add(run.job_id);
+      await silence(run.id, Number(run.unreadable), true);
       if (TERMINAL_STATES[state.state] !== true) {
         inFlight += 1;
         const folded = await foldRun(at, run, notes);
@@ -2109,12 +2119,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
     }
 
-    // The count is CONSECUTIVE cycles of silence: a job that answered this time, and a job that
-    // is no longer waited on at all, start again from nothing.
-    const polled = new Set(pending.map((run) => run.job_id));
-    for (const jobId of unreadable.keys()) {
-      if (answered.has(jobId) || !polled.has(jobId)) unreadable.delete(jobId);
-    }
+
 
     for (const machineId of await knownMachines()) {
       let listed: readonly { job: JobRunState | null }[];
@@ -2194,7 +2199,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     const orphans = await store.db.query<OrphanClaim>(
       `SELECT c.id, c.fence, c.job_id, c.granted_at,
               (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id) AS runs,
-              (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id AND r.closure IS NULL) AS open_runs
+              (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id AND r.closure IS NULL) AS open_runs,
+              (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
          FROM claims c
         WHERE c.finished_at IS NULL
         ORDER BY c.granted_at`,
@@ -2205,7 +2211,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       // An unparseable grant time is as old as it gets: it can never become fresh.
       const overdue = !Number.isFinite(granted) || granted <= stale;
       const jobId = orphan.job_id;
-      const silent = jobId === null ? 0 : (unreadable.get(jobId) ?? 0);
+      const silent = Number(orphan.silent ?? 0);
       const reason =
         jobId === null
           ? overdue
