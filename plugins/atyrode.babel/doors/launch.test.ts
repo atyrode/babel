@@ -1,16 +1,18 @@
 /*
-  The two doors Watch posts to, held to what they do to the world.
+  The three doors Watch posts to, held to what they do to the world.
 
   Every test dispatches the way the kit does — parse the arguments against the action's own
   input, run the handler, parse what it produced against the action's own result — and then
   asks the STORE and the FLEET what happened.
 
-  WHAT A LAUNCH DOES TO THE WORLD IS NOTHING (#279). A Babel run is a Code session: the
-  operator picks a saved Code profile or parametrizes one in Code's generator, and Code's
-  `runSession` door posts it. So the cases that pinned Babel's own posting — the preparation
-  window, the recipe selection, the machine description, the run row, the drawn cycle — are
-  deleted rather than re-pinned, and what stands in their place is the refusal, by name, with
-  both issues in it, and the proof that the fleet was never touched.
+  WHAT A LAUNCH DOES IS FIVE STEPS AND STOPS AT THE FIFTH (#279). A Babel run is a Code
+  session: the operator names a saved Code profile, Babel chooses the sessions, posts its OWN
+  `prepare` job to seal them as the material, composes the prompt around `/inputs/material` —
+  and then asks `atyrode.code.runSession` to post the session. That last call is what
+  `MATERIAL_INPUT_PENDING` still refuses, because Manifold cannot yet bind one job's sealed
+  output into another plugin's job. So the tests below pin the four steps that DO happen, the
+  refusal that ends the fifth, and the fact that the preparation is real work left behind
+  rather than a ghost.
 
   `stop` is unchanged and still fully exercised: a run this deployment already started can be
   running when the plugin is upgraded, and ending it releases what it reserved.
@@ -18,14 +20,28 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, MACHINE_OPERATIONS, OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
+import {
+  ACTIONS,
+  MACHINE_OPERATIONS,
+  MATERIAL_OUTPUT,
+  OPERATIONS,
+  OUTPUT_BINDING,
+  PRESET_OPERATIONS,
+  type ProfileRow,
+} from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
+import {
+  type CodeEngine,
+  type CodeJob,
+  type EngineAnswer,
+} from "../server/engine/session.ts";
+import type { Recipe } from "../server/engine/prompts.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
-import { launchDoors, type LaunchDeps } from "./launch.ts";
+import { DRAW_PENDING, MAX_MATERIAL_BYTES, launchDoors, type LaunchDeps } from "./launch.ts";
 
 const NOW = Date.UTC(2026, 8, 12, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -97,11 +113,95 @@ class Fleet implements BabelJobs {
   }
 }
 
+/** A Code refusal, in the shape `codeEngine` folds every refusal onto. */
+function refusedByCode<T>(code: string, detail: string): EngineAnswer<T> {
+  return { ok: false, code: code as never, refused: `${code}: ${detail}` };
+}
+
+/**
+ * CODE, as this door reaches it. `runSession` is the one verb that cannot be called yet:
+ * `codeEngine` refuses it `material_input_pending` before the call is made, so a fake that
+ * ACCEPTED it would be testing a door against a world that does not exist. This one throws if
+ * it is ever reached, which is how the refusal's position in the sequence is pinned.
+ */
+class Code implements CodeEngine {
+  saved: ProfileRow[] = [
+    {
+      containerId: "ctr_workbench",
+      revision: 7,
+      model: "anthropic/claude-opus-4-1",
+      thinking: "high",
+      lastMachineId: MACHINE,
+      accounts: [{ provider: "anthropic", identityKey: "victorballu", label: "" }],
+      resolved: true,
+    },
+  ];
+  unavailable = "";
+
+  async profiles(): Promise<EngineAnswer<readonly ProfileRow[]>> {
+    if (this.unavailable !== "") {
+      return await Promise.resolve(refusedByCode("engine_unavailable", this.unavailable));
+    }
+    return await Promise.resolve({ ok: true, value: this.saved });
+  }
+
+  /*
+    THE PRESS DOES NOT REACH CODE AT ALL (ADR 0044). A job input binds a SETTLED job's output,
+    and `prepare` is running the instant the press posts it, so the session belongs to the
+    settle wake — `postPrepared`, which `doors/drain.test.ts` drives end to end. A `launch`
+    that called this is a `launch` that would bind a job still in flight, and the fake says so
+    rather than quietly answering a job id.
+  */
+  async runSession(): Promise<never> {
+    throw new Error("the press must not post a session: the preparation is still running");
+  }
+
+
+  /** What a Stop reaches for on a Code session; the launch tests never press one. */
+  cancelled: { containerId: string; jobId: string }[] = [];
+
+  async cancelSession(args: {
+    containerId: string;
+    jobId: string;
+  }): Promise<EngineAnswer<CodeJob>> {
+    this.cancelled.push(args);
+    return await Promise.resolve({
+      ok: true,
+      value: {
+        jobId: args.jobId,
+        machineId: MACHINE,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "cancelled",
+      },
+    });
+  }
+  async readSession(): Promise<never> {
+    throw new Error("a launch never reads a session back");
+  }
+}
+
+/** One cookbook recipe, as the hub's policy document holds one and the prompt carries it. */
+const RECIPES: Record<string, Recipe> = {
+  "code-health": {
+    id: "code-health",
+    version: 3,
+    title: "Code health",
+    body: "Look for the thing that keeps going wrong.",
+  },
+};
+
 let harness: TestStore;
 let fleet: Fleet;
+let code: Code;
+let cookbook: Record<string, Recipe>;
 let doors: readonly Door[];
 
-const ctx = { principal: { id: "operator" } } as unknown as GuestCtx;
+let minted = 0;
+const ctx = {
+  principal: { id: "operator" },
+  newId: () => `id${String((minted += 1))}`,
+} as unknown as GuestCtx;
 
 async function dispatch(name: string, args: unknown): Promise<Record<string, unknown>> {
   const found = doors.find((entry) => entry.action.name === name);
@@ -171,9 +271,22 @@ beforeEach(async () => {
     selector: "omp/s1", host: MACHINE, harness: "omp", source_id: "s1", title: "yesterday",
     content_digest: "d1", snapshot_id: "snap-1", seen_at: stamp(NOW - 2 * HOUR),
   });
+  code = new Code();
+  cookbook = { ...RECIPES };
   const deps: LaunchDeps = {
     coordinator: coordinator(store, () => store.now(), 16),
     jobs: () => fleet,
+    engine: () => code,
+    cookbook: async () => await Promise.resolve(cookbook),
+    plan: () => ({
+      metered: {},
+      limits: {
+        timeoutMs: 3_600_000,
+        memoryBytes: 1024 * 1024 * 1024,
+        processes: 64,
+        outputBytes: 64 * 1024 * 1024,
+      },
+    }),
     now: () => store.now(),
   };
   doors = launchDoors(store, deps);
@@ -183,23 +296,28 @@ afterEach(() => {
   harness.close();
 });
 
-test("the roster is a launch and a stop, and neither is governed at a node that is gone", () => {
-  // The preview went with Babel's own inference policy: what a run costs is a fact about a
-  // composition, and a composition is Code's to make.
-  expect(doors.map((entry) => entry.action.name)).toEqual([ACTIONS.launch, ACTIONS.stop]);
-  const [launch, stop] = doors as readonly Door[];
+test("the roster is profiles, launch and stop, and none of them is governed at a node that is gone", () => {
+  expect(doors.map((entry) => entry.action.name)).toEqual([
+    ACTIONS.profiles,
+    ACTIONS.launch,
+    ACTIONS.stop,
+  ]);
+  const [profiles, launch, stop] = doors as readonly Door[];
 
-  // A launch starts nothing, so it asks what a reading door asks and names no node: the
-  // governed `machines:run` requirement comes back with Code's operation (#279). It keeps the
-  // one delegate every door a cycle follows keeps, so the cycle behind the press can still
-  // read a job back and settle it.
+  // Reading Code's saved profiles is a read of containers and nothing else.
+  expect(profiles?.action.caps).toEqual(["containers:read"]);
+  expect(profiles?.action.requirements).toBeUndefined();
+
+  // A launch posts Babel's OWN `prepare` job and asks Code to post the session, so it keeps
+  // the delegates that posting needs — reading the job back, and the locations the sealed
+  // leases are cut from — and names no governed node, because the operations a requirement
+  // would name (`explore`, `evaluate`) are declared by nobody.
   expect(launch?.action.caps).toEqual(["containers:read"]);
   expect(launch?.action.requirements).toBeUndefined();
-  expect(launch?.action.delegates).toEqual(["jobs:read"]);
+  expect(launch?.action.delegates).toEqual(["jobs:read", "locations:read", "locations:write"]);
 
   // A stop closes this plugin's own rows and reaches a job through its OWN ceiling: a delegate
-  // rather than a cap the caller must hold at a node no installation declares any more. The
-  // hub still checks consent at the effect, and a cancel it refuses is reported by name.
+  // rather than a cap the caller must hold at a node no installation declares any more.
   expect(stop?.action.caps).toEqual(["containers:write"]);
   expect(stop?.action.requirements).toBeUndefined();
   expect(stop?.action.delegates).toEqual(["jobs:cancel"]);
@@ -213,8 +331,8 @@ test("no door requires a node at an operation no installation declares", () => {
     `job-service.ts` refuses an operation the installation does not declare). `machines:run` at
     `atyrode.babel.explore` was exactly that, and this bundle stopped declaring the operation
     — so every model preset was refused "explicit version-bound consent required" at a node
-    that cannot exist, and `engine_pending` was unreachable. A refusal the caller cannot reach
-    is not a refusal, so neither door may name a node while none is declared.
+    that cannot exist, and the door's own refusal was unreachable. A refusal the caller cannot
+    reach is not a refusal, so no door may name a node while none is declared.
   */
   for (const entry of doors) {
     expect({ door: entry.action.name, requirements: entry.action.requirements }).toEqual({
@@ -228,26 +346,174 @@ test("no door requires a node at an operation no installation declares", () => {
   expect(declared).not.toContain(OPERATIONS.evaluate);
 });
 
-test("every preset answers engine_pending, naming manifold#575 and code#170, and posts nothing", async () => {
-  /*
-    THE ONE THING THIS DOOR DOES. The refusal has to carry both issues because they are what an
-    operator schedules against: manifold#575 is the missing in-process door call and code#170 is
-    the door Babel will call. A refusal that said only "not available" would send him looking.
-  */
-  for (const preset of Object.keys(PRESET_OPERATIONS) as (keyof typeof PRESET_OPERATIONS)[]) {
-    const answer = await start({ preset, sinceDays: 1, draws: 1, minutes: 5 });
-    const refused = String(answer["refused"]);
-    expect(refused).toStartWith("engine_pending:");
-    expect(refused).toContain("Babel runs are Code sessions");
-    expect(refused).toContain("Code's runSession door is not yet available");
-    expect(refused).toContain("atyrode/manifold#575");
-    expect(refused).toContain("atyrode/code#170");
-  }
-  // Nothing was posted, nothing was described, and no run row was invented for a job that does
-  // not exist: a row for a run nobody started is a row an operator waits on for ever.
+test("the profiles door answers Code's saved list, and Code's silence as the sentence it refused with", async () => {
+  const listed = await dispatch(ACTIONS.profiles, {});
+  expect(listed["unavailable"]).toBe("");
+  expect(listed["profiles"]).toEqual([
+    {
+      containerId: "ctr_workbench",
+      revision: 7,
+      model: "anthropic/claude-opus-4-1",
+      thinking: "high",
+      lastMachineId: MACHINE,
+      // The accounts are CODE'S, passed through unchanged: Babel has no broker and infers
+      // none, and `resolved` is what says whether Code could name them at all.
+      accounts: [{ provider: "anthropic", identityKey: "victorballu", label: "" }],
+      resolved: true,
+    },
+  ]);
+
+  // BOTH HALVES ARE ANSWERS. An empty list with no word beside it reads as "you have saved
+  // none" when what happened is that Code could not be asked at all.
+  code.unavailable = "atyrode.babel -> atyrode.code";
+  const silent = await dispatch(ACTIONS.profiles, {});
+  expect(silent["profiles"]).toEqual([]);
+  expect(String(silent["unavailable"])).toStartWith("engine_unavailable:");
+});
+
+test("a model preset naming no Code profile is refused by name, and nothing is posted", async () => {
+  const answer = await start({ preset: "read-whats-new", sinceDays: 1 });
+  expect(String(answer["refused"])).toStartWith("profile_required:");
   expect(fleet.executed).toEqual([]);
-  expect(fleet.described).toBe(0);
   expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+});
+
+test("a hub holding no cookbook recipe refuses an explore rather than posting one with no method", async () => {
+  cookbook = {};
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+  expect(answer["refused"]).toBe(
+    "no cookbook recipe is installed on this hub, so an explore has no method to run",
+  );
+  expect(fleet.executed).toEqual([]);
+});
+
+test("an explore seals its material and records the intent; the session waits for the settle", async () => {
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  /*
+    THE PRESS ENDS AT THE PREPARATION (#592). A job-inputs binding names a SETTLED job's
+    output, so the session cannot be posted while its own `prepare` is still running — the
+    answer is the preparation's job, and `postPrepared` turns the run into a Code session on
+    the wake that preparation's settlement causes.
+  */
+  expect(answer["refused"]).toBeUndefined();
+  expect(answer["kind"]).toBe("explore");
+  expect(answer["jobId"]).toBe(`job_${answer["runId"] as string}`.replace("job_run_", "job_") + "_material");
+
+  // THE MATERIAL IS REAL WORK, POSTED: one `atyrode.babel.prepare` job with TWO sealed leases,
+  // the ordinary outputs and the material a session will read. Code was not called at all.
+  expect(fleet.executed).toHaveLength(1);
+  const sealed = fleet.executed[0]!;
+  expect(sealed.operationId).toBe(OPERATIONS.prepare);
+  expect(sealed.outputs.map((output) => output.name)).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
+  expect(JSON.parse(String(sealed.input["input"]))["selectors"]).toEqual(["omp/s1"]);
+
+  // TWO ROWS: the preparation's, and the explore's own — open, in the Code lane by its
+  // container, holding no job yet, and carrying the intent the settle wake composes from.
+  const runs = await harness.db.query<{
+    id: string;
+    kind: string;
+    job_id: string | null;
+    container_id: string | null;
+    prepare_job_id: string | null;
+    preparation: string;
+  }>(`SELECT id, kind, job_id, container_id, prepare_job_id, preparation FROM runs ORDER BY kind`);
+  expect(runs.map((row) => row.kind)).toEqual([OPERATIONS.explore, OPERATIONS.prepare]);
+  const explore = runs[0]!;
+  expect(explore.job_id).toBeNull();
+  expect(explore.container_id).toBe("ctr_workbench");
+  expect(explore.prepare_job_id).toBe(sealed.jobId);
+  expect(JSON.parse(explore.preparation)["recipes"]).toEqual([{ id: "code-health", version: 3 }]);
+});
+
+test("the selection stops at the bytes one preparation may seal, and says how many it left", async () => {
+  // Three quarters of the bound apiece: the newest fits, the next does not, and the third
+  // does not either. `scan`'s own `size` is the only figure the hub has before the job runs.
+  const big = Math.floor(MAX_MATERIAL_BYTES * 0.75);
+  for (const [n, at] of [
+    ["big1", NOW - 1000],
+    ["big2", NOW - 2000],
+    ["big3", NOW - 3000],
+  ] as const) {
+    await insert(harness.db, "sessions", {
+      selector: `omp/${n}`, host: MACHINE, harness: "omp", source_id: n, title: n,
+      content_digest: `d-${n}`, size: big, seen_at: stamp(at),
+    });
+  }
+
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  // The selection was admitted and holds the newest big log plus the one small seeded
+  // session, not all four: the bound is on the bytes, not on the count.
+  expect(answer["refused"]).toBeUndefined();
+  const sealed = fleet.executed[0]!;
+  const selectors = JSON.parse(String(sealed.input["input"]))["selectors"] as string[];
+  expect(selectors).toEqual(["omp/big1", "omp/s1"]);
+  const runs = await harness.db.query<{ preparation: string }>(
+    `SELECT preparation FROM runs WHERE kind = ?`,
+    [OPERATIONS.prepare],
+  );
+  const preparation = JSON.parse(String(runs[0]?.preparation)) as Record<string, number>;
+  expect(preparation["overBound"]).toBe(2);
+  expect(preparation["bytes"]).toBeLessThanOrEqual(MAX_MATERIAL_BYTES);
+});
+
+test("a window offering nothing the lease can hold is refused by name, not as an empty window", async () => {
+  // One session larger than the whole bound. The machine would discover this after reading
+  // every byte of it; the door says it before a job exists.
+  await harness.db.run(`DELETE FROM sessions`);
+  await insert(harness.db, "sessions", {
+    selector: "omp/huge", host: MACHINE, harness: "omp", source_id: "huge", title: "huge",
+    content_digest: "d-huge", size: MAX_MATERIAL_BYTES + 1, seen_at: stamp(NOW - 1000),
+  });
+
+  const answer = await start({
+    preset: "read-whats-new",
+    sinceDays: 1,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
+
+  const refused = String(answer["refused"]);
+  expect(refused).toStartWith("material_too_large:");
+  expect(refused).toContain("448 MiB");
+  expect(refused).not.toContain("has catalogued no session");
+  expect(fleet.executed).toEqual([]);
+});
+
+test("a drawn preset answers draw_pending, names where the lane returns, and posts nothing", async () => {
+  for (const preset of ["review-backlog", "file-and-tidy"] as const) {
+    const answer = await start({ preset, draws: 1 });
+    expect(answer["refused"]).toBe(DRAW_PENDING);
+    expect(String(answer["refused"])).toContain("#268");
+  }
+  expect(fleet.executed).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM runs`)).toEqual([]);
+});
+
+test("keep-going posts Babel's own beat, which reaches no model and needs no profile", async () => {
+  const answer = await start({ preset: "keep-going", minutes: 30 });
+
+  expect(answer["kind"]).toBe("conductor");
+  expect(fleet.executed).toHaveLength(1);
+  const beat = fleet.executed[0]!;
+  expect(beat.operationId).toBe(OPERATIONS.scan);
+  // The operator's own bound on the beat, under the operation's ceiling.
+  expect(beat.limits?.timeoutMs).toBe(30 * 60_000);
+  const runs = await harness.db.query<{ id: string; kind: string }>(`SELECT id, kind FROM runs`);
+  expect(runs).toHaveLength(1);
+  expect(runs[0]?.kind).toBe(OPERATIONS.scan);
 });
 
 test("a request authorized at one node and aimed at another is refused as itself", async () => {
@@ -341,4 +607,68 @@ test("a stop authorized at one job and aimed at another reaches nothing", async 
   expect(elsewhere["refused"]).toContain("m-other");
   expect(fleet.cancelled).toEqual([]);
   expect((await harness.store.run("run_live")).run).toMatchObject({ state: "running" });
+});
+
+test("stopping a Code session cancels it through Code, never through the hub's own jobs verb", async () => {
+  await insert(harness.db, "runs", {
+    id: "run_session", kind: OPERATIONS.explore, machine_id: MACHINE, job_id: "job_code_1",
+    container_id: "ctr_workbench", prepare_job_id: "job_code_1_material",
+    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+  });
+
+  const answer = await halt("run_session", {
+    operationId: OPERATIONS.explore,
+    jobId: "job_code_1",
+  });
+
+  expect(answer).toEqual({
+    runId: "run_session", jobId: "job_code_1", machineId: MACHINE, closure: "stopped",
+  });
+  /*
+    THE JOB IS `atyrode.omp`'S AND `ctx.jobs.cancel` IS BOUND TO THE CALLING PLUGIN'S ID, so
+    reaching for the hub's verb here would refuse every run of the lane that reaches a model.
+    The container on the row is what says which lane this is.
+  */
+  expect(code.cancelled).toEqual([{ containerId: "ctr_workbench", jobId: "job_code_1" }]);
+  expect(fleet.cancelled).toEqual([]);
+  expect((await harness.store.run("run_session")).run).toMatchObject({ state: "stopped" });
+});
+
+test("stopping a run that is still preparing cancels the preparation and closes the row", async () => {
+  /*
+    A RUN IS STARTED IN TWO WAKES (#592), so there is a window where the operator's Stop finds
+    no session: `job_id` is NULL, the preparation is in flight, and the id the panel could
+    name is not a job anywhere. Refusing there — "no job on a machine to stop" — left the
+    posting wake free to post the session afterwards, which is the operator pressing stop and
+    the account spending anyway.
+
+    So the preparation is cancelled, with the HUB's verb because that job is Babel's own, and
+    the row is closed — the row being what `postPrepared` reads.
+  */
+  await insert(harness.db, "runs", {
+    id: "run_preparing", kind: OPERATIONS.explore, machine_id: MACHINE,
+    container_id: "ctr_workbench", prepare_job_id: "job_x_material",
+    started_at: stamp(NOW - HOUR), records: 0, payload: JSON.stringify({ closure: null }),
+  });
+
+  // The panel asks at the PREPARATION's node, which is the only job this run has yet.
+  const answer = await halt("run_preparing", {
+    operationId: OPERATIONS.prepare,
+    jobId: "job_x_material",
+  });
+
+  expect(answer).toEqual({
+    runId: "run_preparing", jobId: "", machineId: MACHINE, closure: "stopped",
+  });
+  expect(fleet.cancelled).toEqual([
+    {
+      kind: "job",
+      machineId: MACHINE,
+      operationId: OPERATIONS.prepare,
+      jobId: "job_x_material",
+    },
+  ]);
+  // Nothing was said to Code: there is no session to say it about.
+  expect(code.cancelled).toEqual([]);
+  expect((await harness.store.run("run_preparing")).run).toMatchObject({ state: "stopped" });
 });

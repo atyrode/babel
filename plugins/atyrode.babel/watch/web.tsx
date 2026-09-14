@@ -10,8 +10,10 @@ import {
   DrainStartResultSchema,
   DrainStatusResultSchema,
   DrainStopResultSchema,
+  LaunchResultSchema,
   PANELS,
   PolicyResultSchema,
+  ProfilesResultSchema,
   RunsQuerySchema,
   RunsResultSchema,
   TopicsResultSchema,
@@ -19,15 +21,19 @@ import {
 } from "../contract.ts";
 import {
   INITIAL_DRAIN,
+  INITIAL_LAUNCH,
   act,
+  chosenProfile,
   drainStartRequest,
   drainStopInput,
+  launchRequest,
   read,
-  sessionChoice,
   stopInput,
   type DrainDraft,
   type DrainStatus,
+  type LaunchDraft,
   type PolicyResult,
+  type ProfilesResult,
   type RunRow,
   type RunsResult,
   type TopicsResult,
@@ -70,11 +76,20 @@ const RUNS_PAGE = 25;
 const DRAINS_POLL_MS = 5_000;
 /** How many drains the panel lists: the running one, and enough history to compare against. */
 const DRAINS_LISTED = 6;
+/**
+ * How often the saved Code profiles are re-read. It is the RETURN PATH of the generator link:
+ * the operator leaves for Code, changes the model or the account on a workspace and comes
+ * back, and nothing tells this panel he did — so the list is re-read on the machines' own
+ * half-minute, which is short enough that a revision he just bumped is the one the button
+ * carries and long enough that reading the page does not poll Code.
+ */
+const PROFILES_POLL_MS = 30_000;
 
 const NO_RUNS: RunsResult = { runs: [], total: 0 };
 const NO_DRAINS: readonly DrainStatus[] = [];
 const NO_TOPICS: TopicsResult = { topics: [], proposed: [], unfiled: 0 };
 const NO_MACHINES: readonly MachineSummary[] = [];
+const NO_PROFILES: ProfilesResult = { profiles: [], unavailable: "" };
 
 /** A denial's sentence, or the error's, as the note under a section. */
 function noteOf(reason: unknown): string {
@@ -82,10 +97,13 @@ function noteOf(reason: unknown): string {
 }
 
 export function Watch({ host }: PanelProps) {
+  const [draft, setDraft] = useState<LaunchDraft>(INITIAL_LAUNCH);
   const [drainDraft, setDrainDraft] = useState<DrainDraft>(INITIAL_DRAIN);
   const [limit, setLimit] = useState(RUNS_PAGE);
   const [now, setNow] = useState(() => Date.now());
   const [stopping, setStopping] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [startNote, setStartNote] = useState("");
   const [draining, setDraining] = useState(false);
   const [drainStopping, setDrainStopping] = useState("");
   const [drainNote, setDrainNote] = useState("");
@@ -99,6 +117,7 @@ export function Watch({ host }: PanelProps) {
   const [runsNote, setRunsNote] = useState("");
   const [stopNote, setStopNote] = useState("");
   const [policyNote, setPolicyNote] = useState("");
+  const [profilesNote, setProfilesNote] = useState("");
 
   const runs = usePolledResource<RunsResult>(
     () => read(host, ACTIONS.runs, RunsQuerySchema.parse({ limit }), RunsResultSchema),
@@ -134,6 +153,24 @@ export function Watch({ host }: PanelProps) {
     initial: NO_MACHINES,
   });
 
+  /*
+    THE SAVED CODE PROFILES, and the sentence saying Code could not be asked. Both halves are
+    the door's answer and both are rendered: the panel never turns "Code is not installed" into
+    an empty list, which reads as "you have saved none" and sends an operator to the wrong fix.
+    A failed READ (the door itself refusing) is the third case, and it lands the same way —
+    as the sentence under the section, through `unavailable`.
+  */
+  const profiles = usePolledResource<ProfilesResult>(
+    () => read(host, ACTIONS.profiles, {}, ProfilesResultSchema),
+    PROFILES_POLL_MS,
+    {
+      key: "atyrode.babel.profiles",
+      initial: NO_PROFILES,
+      onError: (reason) => setProfilesNote(noteOf(reason)),
+      onSuccess: () => setProfilesNote(""),
+    },
+  );
+
   const drains = usePolledResource<readonly DrainStatus[]>(
     async () =>
       (
@@ -154,12 +191,17 @@ export function Watch({ host }: PanelProps) {
   );
 
   /*
-    WHO THE DRAIN WOULD SPEND. It is resolved from the form alone: Babel reads no broker, because
-    the accounts a machine holds are omp's and what a run is composed from is a Code profile
-    (#279). What this resolves is the drain's own record of the window it exists to spend, and
-    the reason it is not one yet is what disables the button.
+    WHICH PROFILE THE DRAIN WOULD SPEND, resolved out of the list the panel is showing — the
+    same door and the same rows the Start section reads. Babel reads no broker: the model and
+    the account belong to the Code profile, and what the drain records about them is Code's
+    own report copied at the press.
   */
-  const drainPick = useMemo(() => sessionChoice(drainDraft), [drainDraft]);
+  const drainProfiles: ProfilesResult =
+    profilesNote === "" ? profiles.value : { profiles: [], unavailable: profilesNote };
+  const drainProfile = useMemo(
+    () => chosenProfile(drainDraft, drainProfiles.profiles),
+    [drainDraft, drainProfiles],
+  );
 
   /*
     The clock advances only while something is in flight. A panel that ticked over a page of
@@ -176,8 +218,35 @@ export function Watch({ host }: PanelProps) {
     return () => clearInterval(timer);
   }, [inFlight]);
 
+  /*
+    THE START. The Code profile is resolved out of the list the panel is showing, so what the
+    button carries is the container AND the revision the operator was looking at: a profile
+    that moved between the read and the press is refused `code_stale_preferences` by Code
+    itself, which is what the next poll of `profiles` then explains.
+  */
+  const onStart = useCallback(async () => {
+    setStarting(true);
+    setStartNote("");
+    const outcome = await act(
+      host,
+      ACTIONS.launch,
+      launchRequest(draft, chosenProfile(draft, profiles.value.profiles)),
+      LaunchResultSchema,
+    );
+    setStarting(false);
+    setStartNote(
+      outcome.ok
+        ? `Started ${outcome.value.kind} as ${outcome.value.runId} — Code's job is ${outcome.value.jobId}.`
+        : outcome.message,
+    );
+    if (outcome.ok) {
+      setNow(Date.now());
+      runs.refresh();
+    } else profiles.refresh();
+  }, [draft, host, profiles, runs]);
+
   const onDrainStart = useCallback(async () => {
-    if (!drainPick.ok) return;
+    if (drainProfile === null) return;
     setDraining(true);
     setDrainNote("");
     const outcome = await act(
@@ -185,7 +254,7 @@ export function Watch({ host }: PanelProps) {
       ACTIONS.drainStart,
       // The deadline is an instant computed at the press, from the minutes the operator set: a
       // form left open for ten minutes must not post a deadline ten minutes in the past.
-      drainStartRequest(drainDraft, drainPick.session, Date.now()),
+      drainStartRequest(drainDraft, drainProfile, Date.now()),
       DrainStartResultSchema,
     );
     setDraining(false);
@@ -201,7 +270,7 @@ export function Watch({ host }: PanelProps) {
       return;
     }
     setDrainNote(outcome.message);
-  }, [drainDraft, drainPick, drains, host, runs]);
+  }, [drainDraft, drainProfile, drains, host, runs]);
 
   /*
     THE STOP'S ANSWER IS READ, NOT ASSUMED. The door returns `cancelled` and a `note` precisely
@@ -253,7 +322,24 @@ export function Watch({ host }: PanelProps) {
 
   return (
     <Stack gap="var(--babel-space-6)" className="plugin-atyrode_babel_watch">
-      <Start />
+      {/*
+        A FAILED READ IS THE SAME SENTENCE AS A REFUSED ONE: `profiles` answers `unavailable`
+        when Code refused, and when the DOOR refused the read threw and the note holds it. Both
+        reach the two sections in one field rather than as two differently-shaped absences,
+        because the operator's remedy is the same kind of thing either way.
+      */}
+      <Start
+        draft={draft}
+        machines={machines.value}
+        topics={topics.value.topics}
+        recipes={policy.value?.recipes ?? []}
+        profiles={drainProfiles}
+        starting={starting}
+        note={startNote}
+        onDraft={setDraft}
+        onStart={onStart}
+        onOpen={(uri) => host.navigate(uri)}
+      />
       <Runs
         runs={runs.value.runs}
         total={runs.value.total}
@@ -268,7 +354,7 @@ export function Watch({ host }: PanelProps) {
         drains={drains.value}
         machines={machines.value}
         topics={topics.value.topics}
-        session={drainPick}
+        profiles={drainProfiles}
         now={now}
         starting={draining}
         stopping={drainStopping}

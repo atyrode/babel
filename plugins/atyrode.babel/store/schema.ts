@@ -20,7 +20,7 @@
     something wrote, so "who did this" is a column and never an inference.
  */
 
-export const STORE_DATA_VERSION = { major: 1, minor: 4 } as const;
+export const STORE_DATA_VERSION = { major: 1, minor: 6 } as const;
 
 /**
  * THE BUDGET OVERLAY (#260), spelled once and created twice: by `SCHEMA_V1` for a store this
@@ -115,7 +115,7 @@ const DRAINS_TABLE = `CREATE TABLE drains(
      id TEXT PRIMARY KEY,
      machine_id TEXT NOT NULL,
      preset TEXT NOT NULL,
-     session TEXT NOT NULL,
+     profile TEXT NOT NULL DEFAULT '{}',
      knobs TEXT NOT NULL DEFAULT '{}',
      concurrent INTEGER NOT NULL CHECK (concurrent >= 1),
      target TEXT NOT NULL,
@@ -506,11 +506,21 @@ export const SCHEMA_V1: readonly string[] = [
   // ---------------------------------------------------------------- runs (§7)
   // A run is a job on a machine: what it was asked, what it read, what it produced, what it
   // cost. `payload` is the receipt as the machine half wrote it.
+  //
+  // A run that reaches a model is a CODE SESSION (#279), and two columns carry what that means.
+  // `container_id` is the Code workspace whose profile answered it — the only handle
+  // `code.readSession` takes beside the job id, and therefore the whole of how the conductor
+  // reconciles a job it does not own (`job_id` on such a row is Code's, posted under
+  // `atyrode.omp`'s operation, which `ctx.jobs` refuses to read). `prepare_job_id` is the
+  // `prepare` job whose sealed `material` output that session read, which is what makes a
+  // claim's citations checkable against the selection they were served from.
   `CREATE TABLE runs(
      id TEXT PRIMARY KEY,
      kind TEXT NOT NULL,
      machine_id TEXT,
      job_id TEXT,
+     container_id TEXT,
+     prepare_job_id TEXT,
      recipe_id TEXT,
      profile TEXT,
      authority_kind TEXT,
@@ -522,6 +532,8 @@ export const SCHEMA_V1: readonly string[] = [
      cost_usd REAL,
      tokens INTEGER,
      records INTEGER NOT NULL DEFAULT 0,
+     /* Consecutive cycles the hub could not say where this run's job is; see SCHEMA_ADDITIONS. */
+     unreadable INTEGER NOT NULL DEFAULT 0,
      payload TEXT NOT NULL
    ) STRICT`,
   `CREATE INDEX runs_by_started ON runs(started_at DESC)`,
@@ -637,6 +649,42 @@ export const SCHEMA_ADDITIONS: readonly SchemaAddition[] = [
   {
     table: "drains",
     sql: DRAINS_TABLE,
+  },
+  // #279: a run that reaches a model is a Code session. Two nullable columns with no default,
+  // which is additive in the strictest sense — every row an earlier shape wrote reads as NULL,
+  // and NULL is the truth about it: those runs were posted by a launcher of Babel's own and
+  // belong to no Code container.
+  {
+    table: "runs",
+    column: "container_id",
+    sql: `ALTER TABLE runs ADD COLUMN container_id TEXT`,
+  },
+  {
+    table: "runs",
+    column: "prepare_job_id",
+    sql: `ALTER TABLE runs ADD COLUMN prepare_job_id TEXT`,
+  },
+  // #279: HOW MANY CYCLES IN A ROW NOBODY COULD SAY WHERE THIS RUN'S JOB IS.
+  //
+  // It was a `Map` in the conductor's closure, and the closure is the bug: `server.ts` builds a
+  // NEW conductor for every wake, so "twice running" was counted in an object that never
+  // survived to be read a second time and the reaper's bound could not fire. A counter whose
+  // whole predicate is "the cycle before this one" has to be durable, so it is a column on the
+  // row it is about; a run whose job answers resets it to zero.
+  {
+    table: "runs",
+    column: "unreadable",
+    sql: `ALTER TABLE runs ADD COLUMN unreadable INTEGER NOT NULL DEFAULT 0`,
+  },
+  // #279: a drain names a CODE PROFILE, not a model and an account of Babel's own. The column
+  // it replaces held a `SessionChoice` the operator typed; this holds the profile plus the
+  // ledger entry of what Code said that profile would run as, copied once at the start. A row
+  // an earlier shape wrote reads `{}` and cannot be relaunched, which is the truth about it:
+  // nobody can say which Code profile a drain that named none was spending.
+  {
+    table: "drains",
+    column: "profile",
+    sql: `ALTER TABLE drains ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'`,
   },
 ];
 

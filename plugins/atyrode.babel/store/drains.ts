@@ -1,10 +1,11 @@
 import type { PluginDatabase, SqlParam } from "@manifold/plugin";
 import {
+  CodeProfileSchema,
   DRAIN_ENDINGS,
   DRAIN_PRESETS,
   DRAIN_STATES,
   DrainSpendSchema,
-  SessionChoiceSchema,
+  DrainProfileSchema,
   RUN_STAGES,
   type DrainEnding,
   type DrainPreset,
@@ -12,7 +13,7 @@ import {
   type DrainState,
   type DrainStatus,
   type DrainTarget,
-  type SessionChoice,
+  type DrainProfile,
 } from "../contract.ts";
 import { refusalCode } from "../machine/results.ts";
 
@@ -69,7 +70,8 @@ export interface DrainRow {
   readonly id: string;
   readonly machineId: string;
   readonly preset: DrainPreset;
-  readonly session: SessionChoice;
+  /** The Code profile this fan is posted on, and Babel's ledger of what Code said it runs as. */
+  readonly profile: DrainProfile;
   readonly knobs: DrainKnobs;
   readonly concurrent: number;
   readonly target: DrainTarget;
@@ -133,6 +135,14 @@ export interface DrainKnobs {
   readonly entityId?: string | undefined;
   readonly minutes?: number | undefined;
   readonly agentSessions?: boolean | undefined;
+  /**
+   * THE CODE PROFILE EVERY JOB OF THIS DRAIN IS POSTED ON (#279). It is a knob rather than a
+   * column for the reason the others are: it is the launch input's own field, kept verbatim so
+   * the ninetieth job of a drain asks for what the first one did. A drain that names none
+   * refuses `profile_required` at the seam, which is the honest answer — a Code session needs a
+   * Code profile, and Babel has no model of its own to fall back on.
+   */
+  readonly profile?: { readonly containerId: string; readonly expectedRevision: number } | undefined;
 }
 
 /**
@@ -157,7 +167,7 @@ const ENDINGS: readonly string[] = DRAIN_ENDINGS;
 
 /** Every column, in one place, so a read and a write cannot come to disagree about the shape. */
 const COLUMNS =
-  `id, machine_id, preset, session, knobs, concurrent, target, started_at, started_by, ` +
+  `id, machine_id, preset, profile, knobs, concurrent, target, started_at, started_by, ` +
   `finished_at, state, ending, reason, spent, live, samples, closures, refusals, ` +
   `jobs_launched, jobs_settled`;
 
@@ -166,7 +176,7 @@ type DrainDbRow = {
   id: string;
   machine_id: string;
   preset: string;
-  session: string;
+  profile: string;
   knobs: string;
   concurrent: number | bigint;
   target: string;
@@ -260,12 +270,17 @@ function knobsOf(text: string): DrainKnobs {
   const recipes = Array.isArray(row["recipes"])
     ? row["recipes"].filter((entry): entry is string => typeof entry === "string")
     : [];
+  // The profile is read back through the contract's own schema rather than field by field: a
+  // container id and a revision are what `runSession` is pinned by, and a half-read pair would
+  // post a session against a revision nobody was shown.
+  const profile = CodeProfileSchema.safeParse(row["profile"]);
   return {
     recipes,
     ...(typeof row["sinceDays"] === "number" ? { sinceDays: row["sinceDays"] } : {}),
     ...(typeof row["entityId"] === "string" ? { entityId: row["entityId"] } : {}),
     ...(typeof row["minutes"] === "number" ? { minutes: row["minutes"] } : {}),
     ...(typeof row["agentSessions"] === "boolean" ? { agentSessions: row["agentSessions"] } : {}),
+    ...(profile.success ? { profile: profile.data } : {}),
   };
 }
 
@@ -284,16 +299,16 @@ function rowOf(row: DrainDbRow): DrainRow {
   if (row.ending !== "" && !ENDINGS.includes(row.ending)) {
     throw new Error(`drain ${row.id} is closing towards ${row.ending}, which is not an ending`);
   }
-  const session = SessionChoiceSchema.safeParse(parsed(row.session));
-  if (!session.success) {
-    throw new Error(`drain ${row.id} names no account and model a run could be launched under`);
+  const profile = DrainProfileSchema.safeParse(parsed(row.profile));
+  if (!profile.success) {
+    throw new Error(`drain ${row.id} names no Code profile a run could be posted on`);
   }
   const target = parsed(row.target);
   return {
     id: row.id,
     machineId: row.machine_id,
     preset: row.preset as DrainPreset,
-    session: session.data,
+    profile: profile.data,
     knobs: knobsOf(row.knobs),
     concurrent: count(row.concurrent),
     target: target === null || typeof target !== "object" ? {} : (target as DrainTarget),
@@ -367,7 +382,7 @@ export interface NewDrain {
   readonly id: string;
   readonly machineId: string;
   readonly preset: DrainPreset;
-  readonly session: SessionChoice;
+  readonly profile: DrainProfile;
   readonly knobs: DrainKnobs;
   readonly concurrent: number;
   readonly target: DrainTarget;
@@ -377,7 +392,7 @@ export interface NewDrain {
 /** The row a `drain.start` leaves behind, before its first job is posted. */
 export async function insertDrain(store: DrainsStore, drain: NewDrain): Promise<void> {
   await store.db.run(
-    `INSERT INTO drains(id, machine_id, preset, session, knobs, concurrent, target, started_at,
+    `INSERT INTO drains(id, machine_id, preset, profile, knobs, concurrent, target, started_at,
                         started_by, state, ending, reason, spent, live, samples, closures,
                         refusals, jobs_launched, jobs_settled)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', '', '', ?, '[]', '[]', '{}', '{}', 0, 0)`,
@@ -385,7 +400,7 @@ export async function insertDrain(store: DrainsStore, drain: NewDrain): Promise<
       drain.id,
       drain.machineId,
       drain.preset,
-      JSON.stringify(drain.session),
+      JSON.stringify(drain.profile),
       JSON.stringify(drain.knobs),
       drain.concurrent,
       JSON.stringify(drain.target),
@@ -752,17 +767,25 @@ export function deadlineOf(target: DrainTarget): number | null {
 }
 
 /**
- * THE ACCOUNT AS IT CAN BE NAMED (#267). The identity key is empty for an api-key credential,
- * where the broker's own row IS the account, so the credential is named rather than leaving a
- * blank where the answer to "which account is this burning" belongs — and it is one function
- * rather than two readings, because the drain the door answers for and the drain the panel polls
- * are the same drain: `Draining  as drn_…` is what two of them produced.
+ * WHOSE WINDOW THIS DRAIN IS SPENDING, as CODE reported it when the drain started (#267).
+ *
+ * Babel has no broker and chooses no account: the account belongs to the Code profile, and
+ * the only honest source for it is Code's own list, read once at the start and recorded as a
+ * ledger entry. So this reads what was recorded and NEVER infers: a profile Code reported no
+ * account for says that, in as many words, rather than leaving the blank that made "which
+ * account did that fan burn" unanswerable on 2026-09-13.
  */
-export function accountName(session: SessionChoice): string {
-  const account = session.account;
-  return account.identityKey === ""
-    ? `${account.provider}#${account.credentialId}`
-    : account.identityKey;
+export function accountName(profile: DrainProfile): string {
+  const named = profile.accounts
+    .map((account) => account.label || account.identityKey || account.provider)
+    .filter((name) => name !== "");
+  const container = profile.profile.containerId;
+  if (named.length > 0) return `${container}: ${named.join(", ")} (as Code reported at start)`;
+  // `resolved: false` with an empty list means ASK AGAIN, never "spends nothing": Code stores
+  // its account choices as exclusions, so without a live observation there is no list to give.
+  return profile.resolved
+    ? `${container} (Code reported no account)`
+    : `${container} (Code could not resolve an account)`;
 }
 
 // ---------------------------------------------------------------------------- the status
@@ -795,8 +818,8 @@ export async function drainStatus(store: DrainsStore, row: DrainRow): Promise<Dr
     finishedAt: row.finishedAt,
     concurrent: row.concurrent,
     target: row.target,
-    account: accountName(row.session),
-    model: row.session.model,
+    account: accountName(row.profile),
+    model: row.profile.model,
     jobsLaunched: row.jobsLaunched,
     jobsSettled: row.jobsSettled + seen.settled.length,
     jobsLive: seen.holding.length,

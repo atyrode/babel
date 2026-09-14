@@ -7,6 +7,7 @@ import type {
   RunProgress,
   RunRow,
   RunsResult,
+  ProfileRow,
   TopicsResult,
 } from "../api.ts";
 
@@ -82,6 +83,7 @@ export function runRow(row: Partial<RunRow> & Pick<RunRow, "id" | "state" | "sta
     kind: OPERATIONS.explore,
     machineId: "m-dev-01",
     jobId: "job_1",
+    prepareJobId: "",
     recipe: "code-health-comprehensibility",
     finishedAt: "",
     costUsd: null,
@@ -178,6 +180,34 @@ export const TOPICS: TopicsResult = {
   unfiled: 12,
 };
 
+/**
+ * The saved Code profiles, as Babel's `profiles` door answers them. Two, because the choice
+ * the panel makes is between them, and the second carries no selection Code can review — the
+ * state a profile is in when it must be opened in the generator rather than pressed.
+ */
+export const PROFILES: readonly ProfileRow[] = [
+  {
+    containerId: "ctr_workbench",
+    revision: 7,
+    model: "anthropic/claude-opus-4-1",
+    thinking: "high",
+    lastMachineId: "m-dev-01",
+    accounts: [{ provider: "anthropic", identityKey: "victorballu@gmail.com", label: "" }],
+    resolved: true,
+  },
+  // The second reports no selection Code can review and therefore no account: a profile to
+  // open in the generator, said as that rather than shown as a blank.
+  {
+    containerId: "ctr_spare",
+    revision: 2,
+    model: "",
+    thinking: "",
+    lastMachineId: "",
+    accounts: [],
+    resolved: false,
+  },
+];
+
 
 /**
  * One drain as the status door answers for it (#258). The defaults are a drain that has just
@@ -220,6 +250,11 @@ export function watchDoors(answers: {
   readonly topics?: () => TopicsResult;
   readonly launch?: (args: unknown) => unknown;
   readonly stop?: (args: unknown) => unknown;
+  /** Code's saved profiles as Babel's own door answers them; both halves are answers. */
+  readonly profiles?: (args: unknown) => {
+    readonly profiles: readonly ProfileRow[];
+    readonly unavailable: string;
+  };
   /** What is draining; the panel polls this one every five seconds like the runs feed. */
   readonly drainStatus?: (args: unknown) => { readonly drains: readonly DrainStatus[] };
   readonly drainStart?: (args: unknown) => unknown;
@@ -233,6 +268,8 @@ export function watchDoors(answers: {
     [door(ACTIONS.stop)]: (args) => (answers.stop ?? (() => ({ asked: true })))(args),
     [door(ACTIONS.drainStatus)]: (args) =>
       (answers.drainStatus ?? (() => ({ drains: [] })))(args),
+    [door(ACTIONS.profiles)]: (args) =>
+      (answers.profiles ?? (() => ({ profiles: PROFILES, unavailable: "" })))(args),
     [door(ACTIONS.drainStart)]: (args) =>
       (
         answers.drainStart ??

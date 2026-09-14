@@ -36,6 +36,14 @@ permissions:
 
 jobs:
   bundles:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@0bc76660cbc215124738fa82c6d3041656c9c7f6
+    uses: atyrode/manifold/.github/workflows/plugins.yml@476a586ce6cce520bdaf8f8a346ee0eb84b0bb6e
     with:
       plugins-dir: plugins
+      # `atyrode.babel` declares `atyrode.code` a REQUIRED dependency, so `verify` cannot
+      # compose Babel on the disposable engine until Code — and omp beneath it — are on disk.
+      # `deps:code` fetches atyrode/code at plugins/CODE_REV, arranges the sibling layout
+      # Code's own `prepare:integration` expects, and runs CODE'S packers: this repository
+      # builds no other family's bundles itself. It needs no second `actions/checkout`,
+      # because the fetch is the script's own and the manifold sibling this workflow already
+      # lays out is the one `manifold-dir.sh` resolves.
+      prepare-command: bun run deps:code

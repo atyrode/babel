@@ -4,7 +4,7 @@ import {
   type OperationWord,
   type Receipt,
 } from "../contract.ts";
-import { type OutputSink, directorySink } from "./output.ts";
+import { type MaterialSink, type OutputSink, directorySink, materialSink } from "./output.ts";
 import { openProgress, type ProgressChannel } from "./progress.ts";
 import { claim, discover, existingRoots } from "./adapters/index.ts";
 
@@ -16,14 +16,18 @@ import { claim, discover, existingRoots } from "./adapters/index.ts";
   last and return it. This file is the dispatcher and nothing else — it holds no knowledge of
   what an operation does, only where its input and its outputs are and which module owns it.
 
-    babel-machine <operation> --input <file> --out <directory>
+    babel-machine <operation> --input <file> --out <directory> [--material <directory>]
 
   WHAT IS NOT HERE: `explore` and `evaluate` (#279). A run that reaches a model is a Code
   session — the operator picks a saved Code profile or parametrizes one in Code's generator,
-  and Code's `runSession` door posts the omp job (atyrode/code#170, through
-  atyrode/manifold#575). Babel neither composes a session nor launches omp, so the two lanes
-  that did are not operations of this binary. What remains is the catalog: what is on the
-  machine, what a run may read, and what is kept.
+  and Code's `runSession` door posts the omp job. Babel neither composes a session nor launches
+  omp, so the two lanes that did are not operations of this binary. What remains is the catalog:
+  what is on the machine, what a run may read, and what is kept.
+
+  `--material` IS `prepare`'S SECOND LEASE, and only `prepare` is given one: the evidence a
+  session reads, sealed as its own output so ANOTHER plugin's job can bind it read-only at
+  `/inputs/material` (`machine/output.ts` says the whole of it). A hand-run that passes none
+  prepares a selection and seals no evidence, which its receipt says.
 
   A job supplies both paths through its bindings; the environment variables are the same two
   values for a hand-run on a machine, as `BABEL_RESTIC_BINDING` is for the one operation that
@@ -44,9 +48,13 @@ export interface Invocation {
   operation: OperationWord;
   inputPath: string;
   outputDir: string;
+  /** Where the material is sealed; empty for an invocation that bound no such lease. */
+  materialDir: string;
 }
 
-const USAGE = `babel-machine <${Object.keys(MACHINE_OPERATIONS).join("|")}> --input <file> --out <directory>`;
+const USAGE =
+  `babel-machine <${Object.keys(MACHINE_OPERATIONS).join("|")}> --input <file> ` +
+  `--out <directory> [--material <directory>]`;
 
 /**
  * Each operation parses its own input with its own schema; only the module knows the shape.
@@ -57,7 +65,12 @@ const USAGE = `babel-machine <${Object.keys(MACHINE_OPERATIONS).join("|")}> --in
  */
 const DISPATCH: Record<
   OperationWord,
-  (raw: unknown, out: OutputSink, progress: ProgressChannel) => Promise<Receipt>
+  (
+    raw: unknown,
+    out: OutputSink,
+    progress: ProgressChannel,
+    material: MaterialSink | null,
+  ) => Promise<Receipt>
 > = {
   scan: async (raw, out) => {
     const { ScanInputSchema, scan } = await import("./scan.ts");
@@ -73,9 +86,15 @@ const DISPATCH: Record<
       credentialFile: process.env["BABEL_RESTIC_BINDING"]?.trim() || RESTIC_CREDENTIAL_FILE,
     });
   },
-  prepare: async (raw, out, progress) => {
+  prepare: async (raw, out, progress, material) => {
     const { PrepareInputSchema, prepare, digests, modifiedAt } = await import("./prepare.ts");
-    return prepare(PrepareInputSchema.parse(raw), out, { discover, digests, modifiedAt, progress });
+    return prepare(PrepareInputSchema.parse(raw), out, {
+      discover,
+      digests,
+      modifiedAt,
+      material,
+      progress,
+    });
   },
 };
 
@@ -83,15 +102,18 @@ export function parseArgv(argv: readonly string[]): Invocation {
   let operation: OperationWord | null = null;
   let inputPath = process.env["BABEL_JOB_INPUT"]?.trim() ?? "";
   let outputDir = process.env["BABEL_JOB_OUTPUT_DIR"]?.trim() ?? "";
+  let materialDir = process.env["BABEL_JOB_MATERIAL_DIR"]?.trim() ?? "";
   for (let i = 0; i < argv.length; i++) {
     const argument = argv[i] ?? "";
     switch (argument) {
       case "--input":
-      case "--out": {
+      case "--out":
+      case "--material": {
         const value = argv[i + 1];
         if (value === undefined || value === "") throw new Error(`${argument} needs a path\n${USAGE}`);
         if (argument === "--input") inputPath = value;
-        else outputDir = value;
+        else if (argument === "--out") outputDir = value;
+        else materialDir = value;
         i++;
         continue;
       }
@@ -106,7 +128,7 @@ export function parseArgv(argv: readonly string[]): Invocation {
   if (operation === null) throw new Error(`no operation named\n${USAGE}`);
   if (inputPath === "") throw new Error(`${operation} needs --input <file>\n${USAGE}`);
   if (outputDir === "") throw new Error(`${operation} needs --out <directory>\n${USAGE}`);
-  return { operation, inputPath, outputDir };
+  return { operation, inputPath, outputDir, materialDir };
 }
 
 /**
@@ -120,11 +142,12 @@ export function parseArgv(argv: readonly string[]): Invocation {
  */
 export async function run(invocation: Invocation, progress: ProgressChannel = openProgress()): Promise<Receipt> {
   const sink = directorySink(invocation.outputDir);
+  const material = invocation.materialDir === "" ? null : materialSink(invocation.materialDir);
   const startedAt = new Date().toISOString();
   let raw: unknown = null;
   try {
     raw = await Bun.file(invocation.inputPath).json();
-    return await DISPATCH[invocation.operation](raw, sink, progress);
+    return await DISPATCH[invocation.operation](raw, sink, progress, material);
   } catch (cause) {
     const fields = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
     const named = typeof fields["runId"] === "string" ? fields["runId"].trim() : "";

@@ -11,12 +11,28 @@
 */
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Receipt } from "../contract.ts";
+import {
+  MATERIAL_INDEX,
+  MATERIAL_SCHEMA,
+  MATERIAL_SESSIONS,
+  MaterialIndexSchema,
+  materialFile,
+  type Receipt,
+} from "../contract.ts";
 import type { SessionRef } from "./adapters/index.ts";
-import type { OutputFile, OutputSink } from "./output.ts";
+import { materialSink, type OutputFile, type OutputSink } from "./output.ts";
 import {
   PREPARATION_SCHEMA,
   PrepareInputSchema,
@@ -357,6 +373,83 @@ test("a machine with nothing to prepare is skipped, not an empty scope", async (
   expect(receipt.reason).toBe("no session on this machine to prepare");
   expect(receipt.preparation).toBeUndefined();
   expect(rows).toEqual([]);
+});
+
+/*
+  THE SEALED MATERIAL (#279).
+
+  A Code session reads `/inputs/material`, and every later reader of a claim recovers its bytes
+  from there. The layout is fixed in `contract.ts` because two things far apart depend on it
+  being the same: this half writes it and `server/engine/prompts.ts` describes it. What the
+  tests below pin is the three promises the prompt makes about it — an index at the root, one
+  file per session named the way the index names it, one canonical JSON record per line — and
+  the one that makes a citation checkable: the digest in the index is taken over exactly the
+  bytes of that file.
+*/
+test("the material is an index plus one canonical record stream per session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "babel-material-"));
+  try {
+    const recorder = new Recorder();
+    const receipt = await prepare(
+      PrepareInputSchema.parse({ machineId: MACHINE }),
+      recorder,
+      { ...deps(), material: materialSink(dir) },
+    );
+
+    const index = MaterialIndexSchema.parse(
+      JSON.parse(readFileSync(join(dir, MATERIAL_INDEX), "utf8")),
+    );
+    expect(index.schema).toBe(MATERIAL_SCHEMA);
+    expect(index.preparationId).toBe(idOf(receipt));
+    expect(index.machineId).toBe(MACHINE);
+    // The receipt carries the SAME document, so the hub can verify a citation from one row
+    // rather than pulling the sealed archive back to read the front of it.
+    expect(receipt.material).toEqual(index);
+
+    // The ordinal goes in front of the name so two selectors differing only in a replaced
+    // character cannot become one file — a material where one session silently overwrote
+    // another is worse than no material at all.
+    expect(index.sessions.map((held) => held.file)).toEqual(
+      index.sessions.map((held, ordinal) => materialFile(ordinal, held.selector)),
+    );
+
+    for (const held of index.sessions) {
+      const body = readFileSync(join(dir, MATERIAL_SESSIONS, held.file), "utf8");
+      const lines = body.split("\n").filter((line) => line !== "");
+      // ONE CANONICAL RECORD PER LINE, in the order the harness wrote them: re-serialised,
+      // so a reflowed log and a tidy one are byte-identical here and cite the same digest.
+      expect(lines).toHaveLength(held.records);
+      for (const line of lines) {
+        expect(JSON.stringify(JSON.parse(line) as unknown)).toBe(line);
+      }
+      // AND THE DIGEST IS OVER EXACTLY THOSE BYTES. This is the whole reason a claim may cite
+      // a line of this file: the index's `sourceDigest` is what the model copies into its
+      // locator, and it must be a digest of what the model actually read.
+      const hashed = new Bun.CryptoHasher("sha256").update(body).digest("hex");
+      expect(held.sourceDigest).toBe(`sha256:${hashed}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a preparation that selected nothing seals no material rather than an empty one", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "babel-material-"));
+  try {
+    const receipt = await prepare(
+      PrepareInputSchema.parse({ machineId: MACHINE }),
+      new Recorder(),
+      { ...deps([]), material: materialSink(dir) },
+    );
+
+    expect(receipt.closure).toBe("skipped");
+    expect(receipt.material).toBeUndefined();
+    // The lease is left exactly as it was found: a bound material nobody chose the contents of
+    // is a directory a session would read and call evidence.
+    expect(existsSync(join(dir, MATERIAL_INDEX))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function idOf(receipt: Receipt): string {

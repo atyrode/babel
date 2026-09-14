@@ -451,12 +451,13 @@ export const STOP_REASONS = [
   "no-candidates",
   "no-lane",
   /**
-   * Nothing was drawn because there is nowhere to post it (#279): a Babel run is a Code
-   * session, and Code's `runSession` door does not exist yet. It is the CYCLE's reason and
-   * never a draw's — the coordinator is not asked at all — and it is in this list because the
-   * pulse tallies one vocabulary of reasons and a word outside it would show as nothing.
+   * Nothing was drawn because a DRAWN review has nowhere to go (#279, #290): the engine is Code
+   * and the `launch` door reaches it, but the coordinator's dispatch and the blinded projection
+   * a review is handed went with Babel's own launcher and have not come back. It is the CYCLE's
+   * reason and never a draw's — the coordinator is not asked at all — and it is in this list
+   * because the pulse tallies one vocabulary of reasons and a word outside it shows as nothing.
    */
-  "engine-pending",
+  "draw-pending",
 ] as const;
 export type StopReason = (typeof STOP_REASONS)[number];
 

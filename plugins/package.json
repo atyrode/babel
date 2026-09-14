@@ -8,10 +8,12 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "pack": "./pack.sh",
-    "verify": "bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/verify.ts\" dist/*.manifold-plugin.json",
+    "deps:code": "bun scripts/prepare-code.ts",
+    "verify": "bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/verify.ts\" .integration/code/plugins/.integration/omp/plugins/dist/*.manifold-plugin.json .integration/code/plugins/dist/*.manifold-plugin.json dist/*.manifold-plugin.json",
     "dev": "./pack.sh --machine && bun \"$(./manifold-dir.sh)/packages/plugin-kit/src/dev.ts\" ."
   },
   "dependencies": {
+    "@atyrode/manifold-code": "github:atyrode/code#8b5ba71da6cce5dc8ceeca9e0c66b25d8c198636",
     "zod": "4.4.3"
   },
   "devDependencies": {

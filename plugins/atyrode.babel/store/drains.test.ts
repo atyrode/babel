@@ -30,19 +30,19 @@ import {
   type DrainSample,
   type LiveJob,
 } from "./drains.ts";
+import type { DrainProfile } from "../contract.ts";
 import { openTestStore, type TestStore } from "./testdb.ts";
 
 const NOW = Date.UTC(2026, 8, 14, 12, 0, 0);
 const MINUTE = 60_000;
 
-const SESSION = {
+/** What a drain records about what it spends: the profile, and Code's own report of it. */
+const LEDGER: DrainProfile = {
+  profile: { containerId: "ctr_workbench", expectedRevision: 7 },
   model: "anthropic/claude-sonnet-4-5",
-  account: {
-    provider: "anthropic",
-    scope: "subscription",
-    credentialId: "41",
-    identityKey: "the-drain-account",
-  },
+  thinking: "high",
+  accounts: [{ provider: "anthropic", identityKey: "the-drain-account", label: "" }],
+  resolved: true,
 };
 
 let harness: TestStore;
@@ -60,7 +60,7 @@ async function open(id: string, over: Record<string, unknown> = {}): Promise<voi
     id,
     machineId: "m-dev-01",
     preset: "read-whats-new",
-    session: SESSION,
+    profile: LEDGER,
     knobs: { recipes: ["code-health"], sinceDays: 3 },
     concurrent: 2,
     target: { costMicros: 1_000_000 },
@@ -77,7 +77,7 @@ test("a drain row keeps what a relaunch needs and reads back as it was written",
   // The knobs are what a relaunch three settlements later asks for: a controller that remembered
   // only the preset would quietly widen or narrow the scope between the first job and the last.
   expect(row?.knobs).toEqual({ recipes: ["code-health"], sinceDays: 3 });
-  expect(row?.session.account.credentialId).toBe("41");
+  expect(row?.profile.accounts[0]?.identityKey).toBe("the-drain-account");
   expect(row?.ending).toBe("");
   expect(row?.spent).toEqual({ calls: 0, inputTokens: 0, outputTokens: 0, costMicros: 0 });
 
@@ -333,11 +333,12 @@ test("a state the vocabulary does not admit is refused by the store rather than 
   ).rejects.toThrow();
 });
 
-test("an account with no identity key is named by its credential rather than left blank", () => {
-  // #267: the api-key case, where the broker's own row IS the account. `Draining  as drn_…` is
-  // what a second reading of this produced on the start door.
-  expect(accountName(SESSION)).toBe("the-drain-account");
-  expect(
-    accountName({ ...SESSION, account: { ...SESSION.account, identityKey: "" } }),
-  ).toBe("anthropic#41");
+test("a profile Code reported no account for says so rather than leaving a blank", () => {
+  // #267: "which account did that fan burn" has to be answerable, and at this pin Code
+  // publishes no accounts on a profile at all — so the reading says which of the two
+  // silences it is instead of printing nothing.
+  expect(accountName(LEDGER)).toBe("ctr_workbench: the-drain-account (as Code reported at start)");
+  expect(accountName({ ...LEDGER, accounts: [] })).toBe(
+    "ctr_workbench (Code reported no account)",
+  );
 });

@@ -112,21 +112,99 @@ service, a `setupInference` door and a price table. **That is reverted** (atyrod
 
 The operator's architecture is `atyrode.babel` → `atyrode.code` → `atyrode.omp`. Code owns the
 profiles — the model, the thinking level, the account — and Code launches omp. When Babel's
-button is pressed, Babel either names a saved Code profile or opens Code's generator so the run
-is parametrized there, and then posts the run through Code's `runSession` door. Babel never
-composes a session and never launches omp, so this bundle pins no engine, binds no model
-service, declares no `explore` or `evaluate` operation and installs no price table.
+button is pressed, the operator has already picked a saved Code profile or parametrized one in
+Code's generator, and Babel posts the run through Code's `runSession` door. Babel never composes
+a session and never launches omp, so this bundle pins no engine, binds no model service,
+declares no `explore` or `evaluate` operation and installs no price table.
 
-Two pieces of that are in flight elsewhere: **atyrode/manifold#575**, the in-process door call
-a plugin's server needs to reach a sibling plugin's door, and **atyrode/code#170**, the
-`runSession` door itself. Until both land, every posting path in this plugin — the `launch`
-door, the drain's fan and the conductor's own cycle — answers one refusal, `engine_pending`,
-whose detail names both issues. Watch's Start section shows that sentence and offers no button.
+**A BABEL RUN IS A CODE SESSION, IN FIVE STEPS.** `doors/launch.ts` does them in this order and
+the order is the point:
+
+1. the **selection** — this machine's catalogued sessions, never a live log and never one of
+   Babel's own runs' transcripts (#262);
+2. the **recipes** — the methods this hub holds, read off the policy document's own `recipes`
+   block, which is the same list Watch's Recipes section shows. A hub whose policy names none
+   refuses the explore by name rather than posting one with no method to run;
+3. the **material** — one `atyrode.babel.prepare` job, posted here, whose SECOND sealed output
+   is the evidence the run reads. `prepare` was already digesting every selected session; the
+   same single pass now writes the normalized record stream into that lease, so the material
+   costs no second read of a 240 MB log;
+4. the **prompt**, composed around `/inputs/material` — no tool block at all, because Babel
+   runs no session and holds no tools in one. The answering protocol is a fenced ` ```json `
+   block in the session's final message, with the stage's JSON Schema printed above it;
+5. the **session** — `atyrode.code.runSession`, and a `runs` row that records Code's job id,
+   the container that answered and the `prepare` job whose material it read.
+
+**The material is what makes a claim checkable.** `/inputs/material` holds `index.json` — the
+selection, with a `sourceDigest` per session — and `sessions/<file>`, one canonical JSON record
+per line in the order the harness wrote them. A citation names the file the index names and
+copies that digest unchanged; anything else is a recorded refusal (`unknown-reference`). The
+index rides the `prepare` receipt as well as the lease, so the hub verifies a locator from one
+row instead of pulling a sealed archive back to read the front of it. That is the answer to the
+2026-09-13 post-mortem's F1: the breadth-of-evidence principle survives as an immutable
+selection, not as a whole-corpus digest per run.
+
+**A settled session is reconciled through Code, never through `ctx.jobs`.** `onJobSettled` is
+delivered only to the plugin that STARTED the job and `ctx.jobs` verbs are bound to the calling
+plugin's id, so Code's job — posted under `atyrode.omp`'s own operation — is never Babel's to
+poll or be woken by. `server/conductor.ts` splits every run whose `container_id` is non-null
+onto `code.readSession({containerId, jobId})`: a finished one has its final message read for the
+answer, its citations checked against the material index, its receipt written with the model and
+the usage (one call; the tokens and cost as omp counted them) and its claim settled — and a
+REFUSED submission settles too, at the cost, because the model answered and the deployment paid
+for it. A read Code refuses is recorded on the run as its note and retried once; twice in a row
+closes the run and releases its claim, on the same bound the claim reaper uses.
+
+**THE MATERIAL IS A BOUND JOB INPUT (ADR 0044, atyrode/manifold#592).** `materialInput()`
+returns `inputs: [{ name: "material", from: { jobId: <the prepare job>, output: "material" } }]`
+and `atyrode.babel.prepare` declares `exports: ["material"]` — the second is what lets ANOTHER
+plugin's job bind the first, since a same-plugin binding needs no export and Code's job is
+`atyrode.omp`'s. Admission refuses `input_not_exported:material` without it, and
+`test/contract.test.ts` refuses an operation that exports a name it does not output.
+
+**A BINDING NAMES A SETTLED JOB, which is why a run is started in two wakes.** The hub refuses
+a binding whose source is still active, and `prepare` is running the instant the press posts
+it. So the press seals the material and records the run's intent, and `postPrepared` — reached
+from the cycle once the conductor has settled that preparation — composes the prompt from the
+material's own index and posts the session. The prompt is the better half of that constraint:
+built there, it carries the real file names, record counts and the digests a citation has to
+copy, instead of the layout the press could only guess.
+
+**THE PROMPT IS BOUNDED IN BYTES, AND FITS.** `runSession` takes a prompt of
+`PROMPT_MAX_BYTES` — omp's own constant, re-exported by Code, and the hub's real ceiling,
+since a prompt is carried in the 64 KiB job-input map, which counts ENCODED bytes.
+`postPrepared` measures against it with a `TextEncoder` rather than a character count, so a
+legal-length prompt whose selectors and digests are multi-byte cannot be refused at admission
+instead; over it, the run closes `prompt_too_large` with both figures rather than a Zod issue
+from Code's parse. Babel's composed explore prompt is about 33,700 bytes and fits with room
+to spare; the guard stays because a longer contract, a bigger selection or a corpus of
+non-ASCII selectors is how it would stop fitting.
+
+**WHAT STOPS A RUN IS READ OFF THE ROW, and there are three answers.** A drain's own
+bookkeeping cannot say it: `LiveJob.jobId` is the run's DERIVED identity, and for the lane
+that spends no job is ever posted under it — the preparation is `${jobId}_material` and the
+session is Code's own id. So `endDrain` and the `stop` door both read `runs`: no container is
+a job of Babel's, cancelled with `ctx.jobs.cancel`; a container and a `job_id` is a Code
+session, cancelled with `code.cancelSession`; a container and NO `job_id` is a run still
+preparing, whose `atyrode.babel.prepare` job is cancelled — and whose ROW IS CLOSED, because
+`postPrepared` posts a session for every open row whose material sealed and a cancel that
+races the seal loses. A stop that left the row open would be the operator pressing stop and
+the account spending afterwards.
+
+**AND THE SELECTION'S BOUND IS UNDER THE JOB'S, WITH ROOM.** `outputBytes` is the AGGREGATE
+the owner seals against — stdout, stderr and both of `prepare`'s leases come out of one
+running budget, and each lease is a ustar archive carrying 512 bytes of header and padding
+per member. So `MAX_MATERIAL_BYTES` is 448 MiB under a 512 MiB job: a selection admitted at
+exactly the job's bound would pack to it and be refused `output_collection_refused` after the
+full read, which is the failure the pre-post check exists to move.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.
 They are not in `MACHINE_OPERATIONS`, which is what the machine half implements and what
-`manifest.json` declares.
+`manifest.json` declares. A DRAWN review (`review-backlog`, `file-and-tidy`) is a third thing
+again: the coordinator picks it, claims it under a fence and dispatches it with a blinded
+projection of the record under review, and that dispatch went with Babel's own launcher in the
+revert. Both the door and the conductor answer `draw_pending` for it, and it returns with #268.
 
 **`archive` is declared, and `restic` is a closure like the others.** restic is half of why the
 operation waited: upstream's whole Linux distribution is bare bzip2 —
@@ -324,10 +402,47 @@ version, and the one thing inlined into every bundle), `typescript`, React with 
 React, `@manifold/plugin` and `@manifold/ui` are **shared externals**, rewritten by `pack` into
 reads from the shell's own module registry, so a bundle never carries a second copy of them.
 
+## Code is a second pin, and verification composes three families
+
+`atyrode.babel` declares `atyrode.code` a **required** dependency, because that is the
+architecture and not a convenience: a hub that enabled Babel without Code would offer a Start
+section whose every press the host itself refuses, and assembly refusing the install is the
+earlier and better answer. A required dependency is a dependency ASSEMBLY CHECKS, so
+`bun run verify` — which installs every bundle on a disposable engine — cannot compose Babel
+until Code, and `atyrode.omp` beneath it, are on disk.
+
+`CODE_REV` is that pin: one commit of atyrode/code, and **the same commit**
+`package.json`'s `@atyrode/manifold-code` names, because verifying against one revision while
+compiling the types against another proves nothing about either. `test/contract.test.ts`
+refuses a tree where the two disagree.
+
+```sh
+bun run deps:code   # fetch atyrode/code @ CODE_REV and build its bundles, and omp's
+bun run pack
+bun run verify      # installs atyrode.omp*, then atyrode.code*, then atyrode.babel*
+```
+
+`scripts/prepare-code.ts` **packs nothing of its own**. It fetches the Code revision into
+`.integration/<rev>/code`, links this tree's Manifold checkout beside it as
+`.integration/<rev>/manifold` — the sibling layout Code's own scripts resolve — and then runs
+CODE's `prepare:integration` (which does the same for omp) and CODE's `pack`. A packer here
+would be a second answer to what a Code bundle is, and the day Code changed its own it would
+be the copy nobody updated. The script refuses a Code whose `plugins/MANIFOLD_REV` is not this
+tree's: three families verified against two different kits would prove nothing about the hub
+they install on.
+
+`.integration/` is gitignored — it is another repository's source and another family's
+bundles — and `pack.sh` prunes it, so this family's `dist/` holds this family's bundles only.
+In CI the same thing happens through the reusable workflow's `prepare-command` hook
+(`manifold-plugins.yml`), which needs no second `actions/checkout`: the fetch is the script's
+own, and the manifold sibling the workflow already lays out is the one `manifold-dir.sh`
+resolves.
+
 ## Build, test, pack, verify, develop
 
 ```sh
 bun install                 # zod, typescript, react + types, happy-dom; nothing else
+bun run deps:code           # atyrode/code @ CODE_REV, and omp beneath it, as bundles to compose against
 bun run check               # tsc over both halves, the store, the panels and the tests
 bun test                    # the manifests against the contract, the doors against a real temporary database, the panels in a document, and `pack` itself
 bun run pack                # builds machine.js, stamps the manifest, dist/<id>.manifold-plugin.json per manifest, parents first, plus dist/SHA256SUMS

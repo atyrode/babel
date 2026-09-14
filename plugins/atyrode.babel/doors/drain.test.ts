@@ -15,7 +15,14 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
+import {
+  ACTIONS,
+  MATERIAL_SCHEMA,
+  OPERATIONS,
+  PRESET_OPERATIONS,
+  type ProfileRow,
+} from "../contract.ts";
+import { actionSchemas, type ActionInput } from "@atyrode/manifold-code";
 import type {
   JobLaunch,
   JobRef,
@@ -33,6 +40,13 @@ import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
 import { drainDoors } from "./drain.ts";
 import { launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
+import {
+  PROMPT_LIMIT,
+  materialInput,
+  promptBytes,
+  type CodeEngine,
+  type EngineAnswer,
+} from "../server/engine/session.ts";
 
 const NOW = Date.UTC(2026, 8, 14, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -47,16 +61,84 @@ const LIMITS = {
   outputBytes: 16_777_216,
 };
 
-/** The account a drain names, in the contract's own shape (#267). */
-const SESSION = {
+/** The Code profile a drain names, and what Code reports about it (#267, #279). */
+const PROFILE = { containerId: "ctr_workbench", expectedRevision: 7 };
+const LISTED: ProfileRow = {
+  containerId: "ctr_workbench",
+  revision: 7,
   model: "anthropic/claude-sonnet-4-5",
-  account: {
-    provider: "anthropic",
-    scope: "subscription",
-    credentialId: "41",
-    identityKey: "the-drain-account",
+  thinking: "high",
+  lastMachineId: "m-dev-01",
+  accounts: [{ provider: "anthropic", identityKey: "the-drain-account", label: "" }],
+  resolved: true,
+};
+/**
+ * CODE, as a drain reaches it.
+ *
+ * `runSession` parses what it was handed with CODE'S OWN published input schema, which is the
+ * point of driving a fake at all here: a request Babel built that Code's schema refuses is
+ * Babel's bug, and a fake that accepted anything would hide it. `posted` keeps the parsed
+ * requests so a test can read the material binding off the one the settle wake sent.
+ */
+const code: CodeEngine & {
+  listed: ProfileRow;
+  posted: ActionInput<"runSession">[];
+  cancelled: string[];
+  cancelRefusal: string;
+} = {
+  listed: LISTED,
+  posted: [],
+  cancelled: [],
+  cancelRefusal: "",
+  profiles: async () => await Promise.resolve({ ok: true, value: [code.listed] }),
+  runSession: async (request) => {
+    const parsed = actionSchemas.runSession.input.safeParse({
+      containerId: request.profile.containerId,
+      machineId: request.machineId,
+      expectedRevision: request.profile.expectedRevision,
+      prompt: request.prompt,
+      ...materialInput(request.prepareJobId),
+    });
+    if (!parsed.success) {
+      throw new Error(`Babel built a request Code refuses: ${parsed.error.message}`);
+    }
+    code.posted.push(parsed.data);
+    return await Promise.resolve({
+      ok: true,
+      value: {
+        jobId: `omp_${String(code.posted.length)}`,
+        machineId: request.machineId,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "queued",
+      },
+    });
+  },
+  cancelSession: async (args) => {
+    if (code.cancelRefusal !== "") {
+      return await Promise.resolve({
+        ok: false,
+        code: "engine_forbidden",
+        refused: code.cancelRefusal,
+      } as EngineAnswer<never>);
+    }
+    code.cancelled.push(args.jobId);
+    return await Promise.resolve({
+      ok: true,
+      value: {
+        jobId: args.jobId,
+        machineId: MACHINE,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "cancelled",
+      },
+    });
+  },
+  readSession: async () => {
+    throw new Error("a drain never reads a session back");
   },
 };
+
 
 const PLAN: RunPlan = { metered: { [OPERATIONS.explore]: true }, limits: LIMITS };
 
@@ -164,7 +246,7 @@ async function start(over: Record<string, unknown> = {}): Promise<Record<string,
   return await dispatch(ACTIONS.drainStart, {
     machineId: MACHINE,
     preset,
-    session: SESSION,
+    profile: PROFILE,
     concurrent: 2,
     reason: "the 7-day window resets at 13:00Z",
     target: { costMicros: 1_000_000 },
@@ -223,24 +305,75 @@ async function settleJob(
 }
 
 /**
- * A LAUNCH PATH THAT POSTS, which the real one no longer is (#279).
+ * THE RECEIPT A SETTLED PREPARATION LEAVES: its index, which is what the posting wake reads
+ * the prompt's file names and digests out of. One shape, used for both of a fan's two
+ * preparations, because a difference between them would be a difference this test did not
+ * mean.
+ */
+function sealedMaterial(): string {
+  return JSON.stringify({
+    closure: "completed",
+    material: {
+      schema: MATERIAL_SCHEMA,
+      preparationId: "prep-1",
+      preparedAt: stamp(NOW),
+      machineId: MACHINE,
+      sessions: [
+        {
+          selector: "omp/s1",
+          harness: "omp",
+          sourceId: "s1",
+          captureDigest: "c".repeat(64),
+          sourceDigest: "a".repeat(64),
+          file: "0001-omp-s1.jsonl",
+          records: 4,
+          bytes: 1024,
+        },
+      ],
+    },
+  });
+}
+
+/**
+ * WHETHER THIS FAKE'S LAUNCH REACHES THE SECOND WAKE (#592). A real run is started twice: the
+ * press seals the material and records INTENT — `job_id` NULL, the preparation in flight —
+ * and `postPrepared` posts the session one wake later and writes CODE'S OWN job id. Both
+ * states are stoppable, and they are stopped with different verbs, so both are launchable
+ * here. Reset per test by `beforeEach`.
+ */
+let reachesCode = true;
+
+/** What Code's job id looks like: its own, never the identity Babel derived. */
+function codeJobOf(identity: LaunchIdentity): string {
+  return identity.jobId.replace(/^job_/, "omp_");
+}
+
+/**
+ * A LAUNCH PATH THAT POSTS, which the real one no longer is in one wake (#279, #592).
  *
- * `launchMachinery` answers `engine_pending` for everything now: a Babel run is a Code session
- * and Code's `runSession` door does not exist yet. The CONTROLLER's contract is with the
- * `DrainLaunch` interface — keep a fan of N filled, fold what settles, stop at the target —
- * and none of that is about who posts, so the controller is exercised against a path that
- * does. What the real one answers is its own test below, and `drain.start` inherits it.
+ * The CONTROLLER's contract is with the `DrainLaunch` interface — keep a fan of N filled, fold
+ * what settles, stop at the target — and none of that is about who posts, so the controller is
+ * exercised against a path that does. What the real one answers is its own test below, and
+ * `drain.start` inherits it.
  *
- * It posts and records exactly what `startExplore` did: one job of the preset's operation
- * under the identity the controller derived, and the run row that makes it foldable.
+ * It posts ONE job as a stand-in for the two the real path posts, and then writes THE ROW THE
+ * REAL PATH LEAVES, which is the part that matters here: `container_id` says which lane the
+ * run is in, `prepare_job_id` is the job Babel posted, and `job_id` is CODE'S — a different
+ * id, because a fake that wrote the identity the controller derived into `job_id` would make
+ * a stop that reached for `LiveJob.jobId` look correct against a world where it is not.
  */
 function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch {
   const post = async (
     identity: LaunchIdentity,
     _slice: JobsSlice,
-    input: { readonly machineId: string; readonly preset: keyof typeof PRESET_OPERATIONS },
+    ..._rest: unknown[]
   ): Promise<Started> => {
+    const input = _rest.find(
+      (entry): entry is { machineId: string; preset: keyof typeof PRESET_OPERATIONS } =>
+        typeof entry === "object" && entry !== null && "preset" in entry,
+    )!;
     const operationId = PRESET_OPERATIONS[input.preset];
+    const beat = operationId === PRESET_OPERATIONS["keep-going"];
     try {
       await jobs().execute({
         jobId: identity.jobId,
@@ -252,30 +385,41 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
     } catch (error) {
       return { refused: error instanceof Error ? error.message : String(error) };
     }
+    const prepareJobId = `${identity.jobId}_material`;
     await store.db.run(
-      `INSERT INTO runs(id, kind, machine_id, job_id, recipe_id, profile, authority_kind,
-                        authority_id, preparation, started_at, records, payload)
-       VALUES (?, ?, ?, ?, '', '{}', 'operator', ?, '{}', ?, 0, ?)
+      `INSERT INTO runs(id, kind, machine_id, job_id, container_id, prepare_job_id, recipe_id,
+                        profile, authority_kind, authority_id, preparation, started_at, records,
+                        payload)
+       VALUES (?, ?, ?, ?, ?, ?, '', '{}', 'operator', ?, '{}', ?, 0, ?)
        ON CONFLICT(id) DO NOTHING`,
       [
         identity.runId,
         operationId,
         input.machineId,
-        identity.jobId,
+        beat ? identity.jobId : reachesCode ? codeJobOf(identity) : null,
+        beat ? null : "ctr_workbench",
+        beat ? null : prepareJobId,
         identity.authorityId,
         new Date(store.now()).toISOString(),
         JSON.stringify({ closure: null, requestedAt: store.now() }),
       ],
     );
     store.touch();
-    return { runId: identity.runId, jobId: identity.jobId };
+    return { runId: identity.runId, jobId: beat ? identity.jobId : prepareJobId };
   };
   return { startExplore: post, startBeat: post };
 }
 
 beforeEach(async () => {
   harness = await openTestStore(NOW);
+  code.posted.length = 0;
   fleet = new Fleet();
+  // The Code fake is one object across the file, so its record of what it was asked is reset
+  // here: a count that leaked between tests would pass for the wrong reason.
+  code.listed = LISTED;
+  code.cancelled.length = 0;
+  code.cancelRefusal = "";
+  reachesCode = true;
   const { db, store } = harness;
   // An enabled policy with a lease that can cover a fan of four, as `setBudget` demands.
   await insert(db, "policies", {
@@ -309,6 +453,7 @@ beforeEach(async () => {
     coordinator: coordinated,
     launch: posting(store, () => fleet),
     jobs: fleet,
+    engine: code,
     plan: () => PLAN,
     now: () => store.now(),
   };
@@ -364,7 +509,7 @@ test("the roster is a start, a dry read and a stop, and none of them names a nod
 test("a start posts the whole fan, moves no policy number, and names the account it spends", async () => {
   const answer = await start({ concurrent: 3 });
   expect(answer["launched"]).toBe(3);
-  expect(answer["account"]).toBe("the-drain-account");
+  expect(answer["account"]).toBe("ctr_workbench: the-drain-account (as Code reported at start)");
   expect(answer["model"]).toBe("anthropic/claude-sonnet-4-5");
   const drainId = String(answer["drainId"]);
 
@@ -392,8 +537,7 @@ test("a start posts the whole fan, moves no policy number, and names the account
   const row = await readDrain(harness.store, drainId);
   expect(row?.state).toBe("running");
   expect(row?.live).toHaveLength(3);
-  expect(row?.jobsLaunched).toBe(3);
-  expect(row?.session.account.identityKey).toBe("the-drain-account");
+  expect(row?.profile.accounts[0]?.identityKey).toBe("the-drain-account");
 
   // EVERY DRAIN CARRIES A DEADLINE. This one named none, so it stops two hours out whatever it
   // has spent: a drain that could outlive the window it exists to spend is the failure this
@@ -420,14 +564,16 @@ test("a fan the standing daily ceiling would have refused is admitted: a drain c
   expect(JSON.parse(daily[0]?.payload ?? "{}")["dailyCost"]).toBe(2);
 });
 
-test("an api-key account is named by its credential rather than answered as a blank", async () => {
-  // #267: `SessionChoiceSchema` admits an empty identity key for an api-key credential, where the
-  // broker's own row IS the account. The panel printed `Draining  as drn_…`.
-  const answer = await start({
-    session: { ...SESSION, account: { ...SESSION.account, identityKey: "" } },
-  });
-  expect(answer["account"]).toBe("anthropic#41");
-  expect((await statusOf(String(answer["drainId"])))["account"]).toBe("anthropic#41");
+test("a profile Code reported no account for is named as that rather than as a blank", async () => {
+  // #267: the panel printed `Draining  as drn_…` when nothing could name the account. Code
+  // publishes no accounts on a profile at this pin, so the honest answer is which silence it
+  // is — and the drain says the container it is spending through.
+  code.listed = { ...LISTED, accounts: [], resolved: true };
+  const answer = await start({});
+  expect(answer["account"]).toBe("ctr_workbench (Code reported no account)");
+  expect((await statusOf(String(answer["drainId"])))["account"]).toBe(
+    "ctr_workbench (Code reported no account)",
+  );
 });
 
 test("a drain without a target is refused, and so is a second drain on the same machine", async () => {
@@ -476,7 +622,10 @@ test("a settlement relaunches: the fan is refilled and the spend is folded once"
     `job_${drainId}_2`,
   ]);
   const row = await readDrain(harness.store, drainId);
-  expect(row?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1`, `job_${drainId}_2`]);
+  expect(row?.live.map((job) => job.jobId)).toEqual([
+    `job_${drainId}_1_material`,
+    `job_${drainId}_2_material`,
+  ]);
   expect(row?.spent.costMicros).toBe(250_000);
   expect(row?.spent.outputTokens).toBe(900);
   expect(row?.jobsSettled).toBe(1);
@@ -501,10 +650,10 @@ test("the target stops the drain and it closes on the job it cancelled, ending w
   expect(report?.launched).toBe(0);
   expect(fleet.executed).toHaveLength(2);
 
-  // The in-flight job is cancelled at its own job node…
-  expect(fleet.cancelled).toEqual([
-    { kind: "job", machineId: MACHINE, operationId: OPERATIONS.explore, jobId: `job_${drainId}_1` },
-  ]);
+  // The in-flight job is cancelled THROUGH CODE, because it is a Code session: its job is
+  // `atyrode.omp`'s and `ctx.jobs.cancel` is bound to the calling plugin's id.
+  expect(code.cancelled).toEqual([`omp_${drainId}_1`]);
+  expect(fleet.cancelled).toEqual([]);
   // …and the drain is CLOSING on it, not finished: a cancel is a request and a receipt is what
   // answers it, so what that job metered is still owed to this drain's total.
   expect(report?.state).toBe("closing");
@@ -512,7 +661,7 @@ test("the target stops the drain and it closes on the job it cancelled, ending w
   expect(closing?.state).toBe("closing");
   expect(closing?.ending).toBe("target");
   expect(closing?.finishedAt).toBe("");
-  expect(closing?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1`]);
+  expect(closing?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1_material`]);
   // No policy number was moved, so there is none to unwind (#260, and the review of #285).
   expect(await harness.db.query(`SELECT id FROM budgets`)).toEqual([]);
 
@@ -562,10 +711,7 @@ test("a stop leaves nothing in flight, takes no claim to release, and relaunches
 
   const halted = await halt(drainId, "the operator stopped it");
   expect(halted["cancelled"]).toBe(2);
-  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([
-    `job_${drainId}_0`,
-    `job_${drainId}_1`,
-  ]);
+  expect(code.cancelled).toEqual([`omp_${drainId}_0`, `omp_${drainId}_1`]);
   // Both cancels landed, so the drain is closing on two receipts rather than finished.
   expect(halted["state"]).toBe("closing");
   const row = await readDrain(harness.store, drainId);
@@ -590,6 +736,39 @@ test("a stop leaves nothing in flight, takes no claim to release, and relaunches
   expect(String((await halt(drainId))["refused"])).toMatch(/already ended as stopped/);
 });
 
+test("a stop before the session is posted cancels the preparation and closes the intent row", async () => {
+  /*
+    THE OTHER HALF OF A CODE-SESSION STOP (#592). A run is started in two wakes: the press
+    seals the material and records INTENT, and only the second wake posts the session and
+    writes Code's job id. A stop that lands between them has no session to cancel — and the
+    id it would have named, the run's derived identity, is not a job anywhere. What it must
+    do instead is cancel BABEL'S OWN preparation and close the row, and the row is the half
+    that matters: `postPrepared` posts a session for every open row whose material sealed, so
+    an intent row left open outlives the drain and spends the account afterwards.
+  */
+  reachesCode = false;
+  const drainId = String((await start({ concurrent: 1 }))["drainId"]);
+
+  const halted = await halt(drainId, "the operator stopped it");
+  expect(halted["cancelled"]).toBe(1);
+  // Not one word was said to Code: there is no session yet to say it about.
+  expect(code.cancelled).toEqual([]);
+  expect(fleet.cancelled).toEqual([
+    {
+      kind: "job",
+      machineId: MACHINE,
+      operationId: OPERATIONS.prepare,
+      jobId: `job_${drainId}_0_material`,
+    },
+  ]);
+  // The row is closed, which is what the posting wake reads.
+  const rows = await harness.db.query<{ closure: string | null; job_id: string | null }>(
+    `SELECT closure, job_id FROM runs WHERE id = ?`,
+    [`run_${drainId}_0`],
+  );
+  expect(rows[0]).toEqual({ closure: "stopped", job_id: null });
+});
+
 test("a stop the hub will not honour keeps the job, and its later receipt still lands in spent", async () => {
   /*
     THE SPEND OF A JOB NOBODY COULD CANCEL (the review of #285, finding 4). A target or a deadline
@@ -599,7 +778,7 @@ test("a stop the hub will not honour keeps the job, and its later receipt still 
     panel's final total — §11.5's "final totals from usage.inference" — was short by their spend.
   */
   const drainId = String((await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"]);
-  fleet.cancelRefusal = "jobs:cancel capability required at target";
+  code.cancelRefusal = "jobs:cancel capability required at target";
   await settleJob(`run_${drainId}_0`, { costMicros: 600_000 });
 
   const [report] = await drainTick(deps);
@@ -626,21 +805,21 @@ test("a stop the hub will not honour keeps the job, and its later receipt still 
 
 test("an operator's stop cancels the stragglers of a drain that already closed itself", async () => {
   const drainId = String((await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"]);
-  fleet.cancelRefusal = "jobs:cancel capability required at target";
+  code.cancelRefusal = "jobs:cancel capability required at target";
   await settleJob(`run_${drainId}_0`, { costMicros: 600_000 });
   await drainTick(deps);
   expect((await readDrain(harness.store, drainId))?.state).toBe("closing");
 
   // The stop door is the one caller that holds `jobs:cancel` at the operation, and a closing
   // drain is exactly the one whose jobs a tick could not stop. Why it ended does not change.
-  fleet.cancelRefusal = "";
+  code.cancelRefusal = "";
   const halted = await halt(drainId, "kill the stragglers");
   expect(halted["cancelled"]).toBe(1);
   expect(halted["state"]).toBe("closing");
   const row = await readDrain(harness.store, drainId);
   expect(row?.ending).toBe("target");
   expect(row?.reason).toMatch(/target of 500000/);
-  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_1`]);
+  expect(code.cancelled).toEqual([`omp_${drainId}_1`]);
 });
 
 test("a stop folds the receipt that landed since the last tick instead of closing over it", async () => {
@@ -657,12 +836,12 @@ test("a stop folds the receipt that landed since the last tick instead of closin
   const halted = await halt(drainId, "the window is about to reset");
   expect(halted["state"]).toBe("closing");
   // The settled job is folded, not cancelled: only the one still running is asked to stop.
-  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_1`]);
+  expect(code.cancelled).toEqual([`omp_${drainId}_1`]);
   const closing = await readDrain(harness.store, drainId);
   expect(closing?.spent.costMicros).toBe(600_000);
   expect(closing?.jobsSettled).toBe(1);
   expect(closing?.closures).toEqual({ completed: 1 });
-  expect(closing?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1`]);
+  expect(closing?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1_material`]);
 
   // …and the straggler's own receipt lands on top of it, so the final total is the whole spend.
   harness.at(NOW + 5 * 60_000);
@@ -702,7 +881,10 @@ test("a stop that lands mid-launch keeps the job the hub already took, and ends 
   expect(closing?.state).toBe("closing");
   // BOTH running jobs are on the row: the one the stop cancelled, and the one it could not know
   // about because the hub had only just taken it.
-  expect(closing?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1`, `job_${drainId}_2`]);
+  expect(closing?.live.map((job) => job.jobId)).toEqual([
+    `job_${drainId}_1_material`,
+    `job_${drainId}_2_material`,
+  ]);
   expect(closing?.jobsLaunched).toBe(3);
 
   // The cancelled job's receipt does not end the drain: it still holds the other one.
@@ -711,7 +893,7 @@ test("a stop that lands mid-launch keeps the job the hub already took, and ends 
   expect(held?.state).toBe("closing");
   expect(held?.launched).toBe(0);
   expect((await readDrain(harness.store, drainId))?.live.map((job) => job.jobId)).toEqual([
-    `job_${drainId}_2`,
+    `job_${drainId}_2_material`,
   ]);
 
   await settleJob(`run_${drainId}_2`, { costMicros: 400_000 });
@@ -831,7 +1013,7 @@ test("a job the hub already holds under this id is taken back rather than re-pos
   expect(report?.notes.join(" ")).toMatch(/was already posted by an earlier tick, and is taken back/);
   expect(report?.launched).toBe(1);
   const row = await readDrain(harness.store, drainId);
-  expect(row?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1`]);
+  expect(row?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1_material`]);
   // Nothing was posted a second time: the hub holds one job under that id and so does the row.
   expect(fleet.executed).toHaveLength(2);
 
@@ -858,43 +1040,116 @@ test("disabling the policy mid-drain ends it as an operator's act rather than as
   expect(report?.launched).toBe(0);
   // Its one job was cancelled, so it closes on that receipt and ends when it lands.
   expect(report?.state).toBe("closing");
-  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_0`]);
+  expect(code.cancelled).toEqual([`omp_${drainId}_0`]);
   await settleJob(`run_${drainId}_0`);
   const [after] = await drainTick(deps);
   expect(after?.state).toBe("stopped");
   expect((await readDrain(harness.store, drainId))?.state).toBe("stopped");
 });
 
-test("over the real launch path a start answers engine_pending and leaves a failed drain", async () => {
+test("over the real launch path a drain's fan seals material, and the settle wake posts it", async () => {
   /*
-    THE DRAIN AND THE BUTTON REFUSE THE SAME SENTENCE (#279). A drain posts through
-    `launchMachinery`'s own `startExplore`, which is exactly why there is one refusal and not
-    two: whatever the operator's button answers, the fan answers. The controller above is
-    exercised against a path that posts, because keeping a fan filled is not a claim about who
+    THE DRAIN AND THE BUTTON GO THROUGH ONE PATH (#279), which is why there is one answer and
+    not two: whatever the operator's button does, the fan does. The controller above is
+    exercised against a fake that posts, because keeping a fan filled is not a claim about who
     posts; this is the claim about who posts.
+
+    And the press no longer reaches Code at all (#592): it seals the material and records the
+    intent, and the SESSION is posted by `postPrepared` on the wake that preparation's own
+    settlement causes. So this drain STARTS, and what Code says is said there.
   */
-  deps = {
-    ...deps,
-    launch: launchMachinery(harness.store, {
-      coordinator: deps.coordinator,
-      jobs: () => fleet,
-      now: () => harness.store.now(),
-    }),
-  };
+  const machinery = launchMachinery(harness.store, {
+    coordinator: deps.coordinator,
+    jobs: () => fleet,
+    engine: () => deps.engine,
+    cookbook: async () =>
+      await Promise.resolve({
+        "code-health": { id: "code-health", version: 3, body: "look for what keeps breaking" },
+      }),
+    plan: () => PLAN,
+    now: () => harness.store.now(),
+  });
+  deps = { ...deps, launch: machinery };
 
-  const answer = await start({ concurrent: 3 });
+  const answer = await start({
+    concurrent: 2,
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+  });
 
-  const refused = String(answer["refused"]);
-  expect(refused).toMatch(/this drain launched nothing/);
-  expect(refused).toContain("engine_pending:");
-  expect(refused).toContain("atyrode/manifold#575");
-  expect(refused).toContain("atyrode/code#170");
-  expect(fleet.executed).toEqual([]);
-  // The row is written before the first post and closed when none lands, so what survives says
-  // why rather than sitting at `running` holding nothing.
-  const rows = await harness.db.query<{ id: string; state: string; reason: string }>(
-    `SELECT id, state, reason FROM drains`,
+  // TWO PREPARATIONS POSTED, and nothing asked of Code yet.
+  expect(answer["launched"]).toBe(2);
+  expect(fleet.executed.map((job) => job.operationId)).toEqual([
+    OPERATIONS.prepare,
+    OPERATIONS.prepare,
+  ]);
+  const drainId = String(answer["drainId"]);
+  const waiting = await harness.db.query<{ id: string; job_id: string | null }>(
+    `SELECT id, job_id FROM runs WHERE kind = ? ORDER BY id`,
+    [OPERATIONS.explore],
   );
-  expect(rows[0]).toMatchObject({ state: "failed" });
-  expect(rows[0]?.reason).toContain("engine_pending");
+  expect(waiting.map((row) => row.id)).toEqual([`run_${drainId}_0`, `run_${drainId}_1`]);
+  expect(waiting.every((row) => row.job_id === null)).toBe(true);
+
+  // THE SETTLE WAKE IS WHERE THE MATERIAL BINDING IS MADE. A settled preparation with no
+  // material in its receipt closes its run for that reason; one that sealed an index reaches
+  // `runSession` with the binding on the request.
+  await harness.db.run(
+    `UPDATE runs SET closure = 'completed', finished_at = ?, payload = ? WHERE job_id = ?`,
+    [stamp(NOW), sealedMaterial(), `job_${drainId}_0_material`],
+  );
+
+  const posted = await machinery.postPrepared(fleet, deps.engine, PLAN);
+
+  // THE SESSION IS POSTED, and the run takes CODE'S job id: that pair — the container and
+  // this job — is the whole of how the conductor reconciles a job `ctx.jobs` cannot read.
+  expect(posted).toEqual([{ runId: `run_${drainId}_0`, jobId: "omp_1" }]);
+  const row = await harness.db.query<{ job_id: string | null; container_id: string | null }>(
+    `SELECT job_id, container_id FROM runs WHERE id = ?`,
+    [`run_${drainId}_0`],
+  );
+  expect(row[0]).toEqual({ job_id: "omp_1", container_id: "ctr_workbench" });
+
+  /*
+    AND THE REQUEST CARRIED THE MATERIAL (ADR 0044). This is the assertion the whole lane
+    exists for: the model reads `/inputs/material`, and what puts bytes there is this binding
+    naming the SETTLED `prepare` job's own sealed output. A session posted without it would
+    send a model to an empty directory and have Babel record the answer as evidence-backed.
+
+    The fake parses what it was handed with CODE'S OWN published input schema, so a request
+    Babel built that Code would refuse fails here rather than on a machine.
+  */
+  expect(code.posted).toHaveLength(1);
+  expect(code.posted[0]?.inputs).toEqual([
+    { name: "material", from: { jobId: `job_${drainId}_0_material`, output: "material" } },
+  ]);
+  /*
+    The prompt names the file the MATERIAL ACTUALLY HOLDS — the index's own `file`, not a name
+    the press derived from a selector before `prepare` had run — and the preparation it cites
+    is the sealed one's content-addressed id. The DIGEST is not in the prompt on purpose: it
+    is in `index.json`, which the prompt sends the model to read, because that is the one
+    place a citation's digest is written and a second copy is a second answer to it.
+  */
+  expect(code.posted[0]?.prompt).toContain("sessions/0001-omp-s1.jsonl");
+  expect(code.posted[0]?.prompt).toContain("prep-1");
+  expect(code.posted[0]?.prompt).toContain('"sourceDigest"');
+  // …and it fits Code's byte bound with room to spare, which is what `PROMPT_LIMIT` guards.
+  expect(promptBytes(code.posted[0]?.prompt ?? "")).toBeLessThan(PROMPT_LIMIT);
+
+  /*
+    AND A RUN WHOSE ROW IS CLOSED IS NOT POSTED, however well its material sealed. A stop
+    that lands while a run is still preparing cancels the preparation and closes the row —
+    but a cancel is a request, and one that races the seal loses, so the preparation settles
+    anyway. The closed row is what makes this wake pass it by; without it the drain the
+    operator stopped posts a session, and the account spends after the stop.
+  */
+  await harness.db.run(
+    `UPDATE runs SET closure = 'completed', finished_at = ?, payload = ? WHERE job_id = ?`,
+    [stamp(NOW), sealedMaterial(), `job_${drainId}_1_material`],
+  );
+  await harness.db.run(
+    `UPDATE runs SET closure = 'stopped', finished_at = ? WHERE id = ?`,
+    [stamp(NOW), `run_${drainId}_1`],
+  );
+  expect(await machinery.postPrepared(fleet, deps.engine, PLAN)).toEqual([]);
+  expect(code.posted).toHaveLength(1);
 });

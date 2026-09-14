@@ -100,15 +100,22 @@ export const ACTIONS = {
   setBudget: "setBudget",
   clearBudget: "clearBudget",
   /**
-   * STARTING A RUN, which today only ever refuses (#279). Babel's runs are Code sessions: the
-   * operator parametrizes one through a saved Code profile or Code's own generator, and Code's
-   * `runSession` door posts it. Until atyrode/manifold#575 gives a plugin's server a way to call
-   * a sibling's door and atyrode/code#170 opens that door, there is nothing to call, so a launch
-   * answers `engine_pending` and starts nothing. There is no dry preview beside it any more:
-   * what a run would cost is Code's to say, once the run is composed there.
+   * STARTING A RUN, which is posting a Code session (#279). Babel's runs are Code sessions: the
+   * operator picks a saved Code profile or parametrizes one in Code's own generator, and Babel
+   * posts the run through `atyrode.code.runSession` — reached with `ctx.actions.call` on the
+   * declared dependency (ADR 0041). Babel composes the prompt and nothing else about the
+   * session: no model, no thinking level, no account. There is no dry preview beside it: what a
+   * run would cost is Code's to say, out of the profile the operator chose.
    */
   launch: "launch",
   stop: "stop",
+  /**
+   * THE SAVED CODE PROFILES, as Watch's Start section offers them. It is Babel's own door and
+   * not a client-side call into Code, for one reason: the panel must read exactly the list the
+   * SERVER will post against, and a browser that asked Code directly would show a revision the
+   * server never saw — which is `code_stale_preferences` after the press instead of before it.
+   */
+  profiles: "profiles",
   /** The three acts of #258: start a drain, read one, end one. */
   drainStart: "drainStart",
   drainStatus: "drainStatus",
@@ -441,12 +448,18 @@ export type JobRef = z.infer<typeof JobRefSchema>;
 
 // ---------------------------------------------------------------------------- events
 
+/**
+ * The five kinds this plugin ORIGINATES. An event id is claimed across the whole assembly,
+ * and Manifold `476a586c` gave `run_changed` to `core.access` — the hub's own word for a
+ * terminal run moving — so Babel's is prefixed. Nothing else is: the other four are Babel's
+ * nouns and nobody else's.
+ */
 export const EVENTS = {
   recordWritten: "record_written",
   ruled: "ruled",
   assessed: "assessed",
   planApplied: "plan_applied",
-  runChanged: "run_changed",
+  runChanged: "babel_run_changed",
 } as const;
 
 // ---------------------------------------------------------------------------- panels
@@ -470,20 +483,20 @@ export const ImportChunkSchema = z.strictObject({
 // ------------------------------------------------------------------------- the model session
 
 /*
-  WHO ANSWERS A RUN — the vocabulary a drain still holds, and the one thing it is no longer for.
+  WHO ANSWERS A RUN — which is never Babel, and the vocabulary a drain still holds.
 
   Babel does not choose a model, a thinking level or an account. Code does: `atyrode.babel`
   depends on `atyrode.code`, which depends on `atyrode.omp`, and the profiles — model, thinking,
   account — are Code's to save, to generate and to resolve when its `runSession` door posts the
-  omp job (atyrode/code#170, atyrode/manifold#575). Babel's own picker, its own
-  `atyrode.babel.inference` policy and its own price table were #284's interim and are gone.
+  omp job. Babel's own picker, its own `atyrode.babel.inference` policy and its own price table
+  were #284's interim and are gone. What Babel names is a PROFILE: one configured Code
+  workspace, at the revision the operator was shown.
 
-  What survives is the SHAPE a drain records: a drain exists to spend one named account's window
-  before it resets (#258, #267), so its row has to say which account and which model it was
-  started for, and its panel has to say it back. When Code's door lands, that shape becomes a
-  reference to a Code profile and this block shrinks again; until then a drain names the three
-  fields it is measured by, and every launch it posts refuses `engine_pending` before anything
-  reaches a machine.
+  What survives beside it is the SHAPE a drain records: a drain exists to spend one named
+  account's window before it resets (#258, #267), so its row has to say which account and which
+  model it was started for, and its panel has to say it back. That shape is a drain's own
+  accounting and is never posted to Code — `runSession` takes a container, a destination and a
+  prompt, and reads the rest off the profile.
 
   The model reference is FULLY QUALIFIED — `anthropic/claude-sonnet-4-5`, provider and all —
   because that is the string Code's composition and omp's gateway both key their model map by.
@@ -520,8 +533,8 @@ export const MODEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0
  * the api-key case, where the broker's own reference is the credential row and there is no OAuth
  * identity.
  *
- * When Code's `runSession` door lands this becomes a reference to a Code profile, and the three
- * fields go back to being Code's (atyrode/code#170).
+ * A drain records it; nothing posts it. The run itself is parametrized by the Code profile the
+ * operator picked, and `runSession` reads the model, the level and the account off that.
  */
 export const SessionChoiceSchema = z.strictObject({
   model: z.string().trim().min(1).max(256).regex(MODEL_REFERENCE),
@@ -535,25 +548,217 @@ export const SessionChoiceSchema = z.strictObject({
 });
 export type SessionChoice = z.infer<typeof SessionChoiceSchema>;
 
-/** The refusal every launch answers with until Code's door exists (#279). */
-export const ENGINE_PENDING_CODE = "engine_pending";
+// ---------------------------------------------------------------- the profile a run is posted on
 
 /**
- * WHY NOTHING STARTS, in the one sentence every posting path answers with.
+ * A SAVED CODE PROFILE, as a launch names one: the configured Code WORKSPACE, at the revision
+ * the operator was shown it at.
  *
- * It is a constant and not a sentence each door writes, because the operator's button, the
- * drain's fan and the conductor's own draw are three ways to reach one missing thing: a door on
- * Code that composes the session from a Code profile and posts the omp job. Naming both issues
- * is the whole value of it — a refusal that says only "not available" is a refusal nobody can
- * schedule work against.
+ * A profile IS a configured workspace (Code's `ProfileSchema`): its catalog, its selection and
+ * its account choices belong to the container, and `machineId` on Code's own row is only where
+ * Code last posted for it — never a saved pin. So a launch carries the container and the
+ * destination separately, and the destination is Babel's `machineId` as it always was.
+ *
+ * `expectedRevision` is the optimistic pin `runSession` refuses `code_stale_preferences`
+ * against. It is carried from the panel rather than re-read here on purpose: it is the whole of
+ * how an operator learns that the profile moved between reading the list and pressing the
+ * button, which is a thing he must be told rather than have silently accommodated.
  */
-export const ENGINE_PENDING =
-  `${ENGINE_PENDING_CODE}: Babel runs are Code sessions; Code's runSession door is not yet ` +
-  `available. Babel depends on atyrode.code, which depends on atyrode.omp: the operator picks ` +
-  `a saved Code profile or parametrizes the run in Code's generator, and Code posts it. The ` +
-  `two pieces in flight are atyrode/manifold#575 (a plugin's server calling a sibling ` +
-  `plugin's door) and atyrode/code#170 (Code's runSession door). Until both land Babel ` +
-  `launches nothing.`;
+export const CodeProfileSchema = z.strictObject({
+  containerId: bounded(128),
+  expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+export type CodeProfile = z.infer<typeof CodeProfileSchema>;
+
+/**
+ * WHAT WATCH'S START SECTION OFFERS, read through Babel's own `profiles` door: every saved Code
+ * profile, and — when Code could not be asked — the sentence saying so.
+ *
+ * The two halves are both answers. A hub with Code disabled, a Babel whose install grant does
+ * not reach Code's doors, a Code too old to publish `listProfiles`: each is a refusal the
+ * operator acts on differently, and each is `unavailable` with the engine's own word in it
+ * rather than an empty list that reads as "you have saved none".
+ */
+/**
+ * ONE ACCOUNT A PROFILE WOULD SPEND, as Code reports it.
+ *
+ * It is CODE'S FACT and not Babel's: the account belongs to the profile, Code resolves it and
+ * omp holds it, and Babel has no broker to ask. Babel records what Code said, labelled as
+ * that, because "which window did that fan burn" has to be answerable afterwards (#267) and
+ * the only honest source for it is the plugin that chose it.
+ */
+export const ProfileAccountSchema = z.strictObject({
+  provider: z.string(),
+  /** The OAuth identity; empty for an api-key credential, which has none. */
+  identityKey: z.string(),
+  /** What Code shows a reader for it, when it shows anything. */
+  label: z.string().default(""),
+});
+export type ProfileAccount = z.infer<typeof ProfileAccountSchema>;
+
+export const ProfileRowSchema = z.strictObject({
+  containerId: z.string(),
+  revision: z.number().int(),
+  /** The model leading the default role and the depth it thinks at; empty when the saved
+   *  selection no longer reviews against its catalog, which is a profile to open in Code. */
+  model: z.string(),
+  thinking: z.string(),
+  /** Where Code last posted a session for this workspace; empty when it never has. */
+  lastMachineId: z.string(),
+  /**
+   * The accounts Code says this profile would spend. EMPTY IS NOT "none": a Code too old to
+   * report them answers nothing here, and the panel says which of the two it is rather than
+   * printing a blank where the answer to "whose window" belongs.
+   */
+  accounts: z.array(ProfileAccountSchema).max(64).default([]),
+  /** Whether Code could resolve the profile's selection against its catalog at all. */
+  resolved: z.boolean().default(false),
+});
+export type ProfileRow = z.infer<typeof ProfileRowSchema>;
+
+/** The `profiles` door takes nothing: the list is every saved profile the hub's Code holds. */
+export const ProfilesQuerySchema = z.strictObject({});
+
+export const ProfilesResultSchema = z.strictObject({
+  profiles: z.array(ProfileRowSchema).max(4096),
+  /** Empty when Code answered; otherwise Babel's engine refusal, verbatim. */
+  unavailable: z.string(),
+});
+
+/**
+ * WHAT A DRAIN RECORDS ABOUT WHAT IT IS SPENDING (#267, #279).
+ *
+ * A drain names a Code PROFILE, and everything else here is Babel's own ledger entry of what
+ * Code said that profile would run as, COPIED ONCE at the start and never re-read. Copied,
+ * because a controller that asked again between the first job and the ninetieth would report
+ * whatever the profile had become rather than what the operator started; a ledger entry,
+ * because Babel chooses none of it and must not present it as its own decision. The panel
+ * says so in as many words.
+ */
+export const DrainProfileSchema = z.strictObject({
+  profile: CodeProfileSchema,
+  model: z.string(),
+  thinking: z.string(),
+  accounts: z.array(ProfileAccountSchema).max(64),
+  /** Whether Code had resolved the selection when the drain was started. */
+  resolved: z.boolean(),
+});
+export type DrainProfile = z.infer<typeof DrainProfileSchema>;
+
+// ------------------------------------------------------------------- the material a run reads
+
+/*
+  THE MATERIAL: the evidence a run reads, sealed by Babel and bound into the session's sandbox.
+
+  Babel holds no host tools in the session any more — #284's `babel_search`/`babel_fetch`/
+  `babel_submit` were tools of a driver Babel no longer runs. A Code session is omp's own job
+  with omp's own tools, so the way Babel serves evidence is the way a job serves any input: a
+  sealed OUTPUT of Babel's own `prepare`, bound into the consumer's sandbox as a read-only
+  directory. The model reads it with the tools it already has.
+
+  The layout is fixed here because two things far apart depend on it being the same: the machine
+  half writes it (`machine/prepare.ts`) and the prompt describes it (`server/engine/prompts.ts`).
+*/
+
+/** The second sealed output of `atyrode.babel.prepare`: the material, as its own lease. */
+export const MATERIAL_OUTPUT = "material";
+/** Where the consumer's sandbox sees it, read-only: `/inputs/<name>` is the job's own namespace. */
+export const MATERIAL_ROOT = `/inputs/${MATERIAL_OUTPUT}`;
+/** What names the selection: the preparation's identity and one entry per session. */
+export const MATERIAL_INDEX = "index.json";
+/** The directory the per-session files live in, one file per session in the index. */
+export const MATERIAL_SESSIONS = "sessions";
+/** The shape of `index.json`, recorded in it so a reader never guesses which layout it has. */
+export const MATERIAL_SCHEMA = "babel.material/1";
+
+/**
+ * THE NAME ONE SESSION'S FILE HAS INSIDE THE MATERIAL, and why it is not the selector.
+ *
+ * A selector is `harness/source-id` and a source id is whatever the harness chose: slashes,
+ * spaces, colons, and on one harness a whole path. A file name has to be one path component, so
+ * every run of characters outside `[A-Za-z0-9._-]` becomes a dash — and the ORDINAL goes in
+ * front, because two sessions whose ids differ only in a character that was replaced would
+ * otherwise be one file, and a material where one session silently overwrote another is worse
+ * than no material at all. The index maps the name back to the selector, which is why the name
+ * itself need only be unique and readable.
+ *
+ * It is HERE rather than in either half because both halves need the same answer and neither may
+ * import the other: `machine/prepare.ts` writes the file and `doors/launch.ts` tells the model
+ * which file to open, and a second copy of this rule is a prompt pointing at a path that is not
+ * there.
+ */
+export function materialFile(ordinal: number, selector: string): string {
+  const safe = selector
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96);
+  return `${String(ordinal + 1).padStart(4, "0")}-${safe === "" ? "session" : safe}.jsonl`;
+}
+
+/**
+ * ONE SESSION AS THE MATERIAL CARRIES IT: how the prompt names it, where its records are, and
+ * the two digests that say which bytes those are (SPEC §7).
+ */
+export const MaterialEntrySchema = z.strictObject({
+  selector: z.string(),
+  harness: z.string(),
+  sourceId: z.string(),
+  captureDigest: z.string(),
+  sourceDigest: z.string(),
+  /** The file inside {@link MATERIAL_SESSIONS}, relative to the material's root. */
+  file: z.string(),
+  records: z.number().int(),
+  bytes: z.number().int(),
+});
+export type MaterialEntry = z.infer<typeof MaterialEntrySchema>;
+
+export const MaterialIndexSchema = z.strictObject({
+  schema: z.literal(MATERIAL_SCHEMA),
+  preparationId: z.string(),
+  preparedAt: z.string(),
+  machineId: z.string(),
+  sessions: z.array(MaterialEntrySchema),
+});
+export type MaterialIndex = z.infer<typeof MaterialIndexSchema>;
+
+/**
+ * WHERE THE MATERIAL IS DECLARED, so another plugin's job may bind it (ADR 0044, #592).
+ *
+ * `atyrode.babel.prepare` writes the material into its own second sealed output and DECLARES
+ * it exportable; a session Code posts under `atyrode.omp`'s operation then names it as an
+ * input, and the hub extracts it read-only at {@link MATERIAL_ROOT}. A same-plugin binding
+ * needs no export — this one is cross-plugin, and admission refuses
+ * `input_not_exported:material` without the declaration.
+ *
+ * It is one string because the manifest, the request and `test/contract.test.ts` all name it
+ * and three spellings of one output name is how a binding silently binds nothing.
+ */
+export const MATERIAL_EXPORT = MATERIAL_OUTPUT;
+
+/**
+ * THE FOUR NAMES BABEL GIVES AN ENGINE REFUSAL, because the operator acts differently on each.
+ *
+ * A call into Code refuses in two shapes and they arrive by different roads (ADR 0041): the
+ * HOST's own refusal is a rejection whose sentence starts with its class
+ * (`undeclared_dependency`, `dependency_unavailable`, `unknown_action`, `caller_ceiling`,
+ * `capability`, `refused`, `dispatch_cycle`, `dispatch_depth`), and CODE's own refusal is a
+ * resolved `{ refused: "code_…" }` value. Both are folded onto these four:
+ *
+ *   `engine_unavailable`  — there is no Code to ask: not declared, not installed, not enabled,
+ *                           or too old to publish the door. The operator installs or upgrades.
+ *   `engine_forbidden`    — Code's door demands authority this caller or this install does not
+ *                           hold. The operator consents, or reinstalls Babel with the grant.
+ *   `engine_stale_profile`— the profile moved between the read and the press. Re-read the list
+ *                           and press again; the panel does exactly that.
+ *   `engine_refused`      — Code said no, in its own word, which rides the detail.
+ */
+export const ENGINE_REFUSALS = {
+  unavailable: "engine_unavailable",
+  forbidden: "engine_forbidden",
+  staleProfile: "engine_stale_profile",
+  refused: "engine_refused",
+} as const;
+export type EngineRefusalCode = (typeof ENGINE_REFUSALS)[keyof typeof ENGINE_REFUSALS];
 
 // ---------------------------------------------------------------------------- runs and launches
 
@@ -578,6 +783,34 @@ export const PRESET_OPERATIONS: Record<(typeof PRESETS)[number], OperationName> 
   "review-backlog": OPERATIONS.evaluate,
   "file-and-tidy": OPERATIONS.evaluate,
   "keep-going": OPERATIONS.scan,
+};
+
+/**
+ * HOW A PRESET IS STARTED, which is the other half of the question above and the one the panel
+ * could only answer by guessing (#279).
+ *
+ *   `explore` — a Code session over sealed material. It reaches a model, so it needs a CODE
+ *               PROFILE: the operator picks a saved one or parametrizes a workspace in Code's
+ *               generator, and the launch carries its container and the revision he was shown.
+ *   `beat`    — one `atyrode.babel.scan`, Babel's own job. It reaches no model and takes no
+ *               profile; a form that demanded one would be asking for a field nothing reads.
+ *   `draw`    — a review the COORDINATOR picks, claims under a fence and dispatches with a
+ *               blinded projection of the record. That dispatch is not on this build (#268),
+ *               so `launch` answers `draw_pending` and the panel offers no button for it:
+ *               a card whose press is always refused is an interface asking to be discovered
+ *               by pressing, which is the shape the drain post-mortem is about.
+ *
+ * `doors/launch.ts` plans from this table and Watch's Start section renders from it, so the
+ * two cannot disagree about which press posts what.
+ */
+export const PRESET_STARTS = ["explore", "draw", "beat"] as const;
+export type PresetStart = (typeof PRESET_STARTS)[number];
+export const PRESET_START: Record<(typeof PRESETS)[number], PresetStart> = {
+  "read-whats-new": "explore",
+  "explore-topic": "explore",
+  "review-backlog": "draw",
+  "file-and-tidy": "draw",
+  "keep-going": "beat",
 };
 
 export const LaunchInputSchema = z.strictObject({
@@ -607,11 +840,20 @@ export const LaunchInputSchema = z.strictObject({
    * WHICH MODEL, AT WHICH THINKING LEVEL, ON WHOSE ACCOUNT — the drain's own record (#258).
    *
    * Babel chooses none of the three: a run's model, thinking level and account are Code's, and
-   * the operator sets them on a Code profile or in Code's generator (atyrode/code#170). What a
-   * drain needs is the NAME of the account whose window it exists to spend, so it carries this
-   * and its panel says it back. A launch refuses `engine_pending` whether it names one or not.
+   * the operator sets them on a Code profile or in Code's generator. What a drain needs is the
+   * NAME of the account whose window it exists to spend, so it carries this and its panel says
+   * it back. It is never posted to Code, which reads all three off the profile below.
    */
   session: SessionChoiceSchema.optional(),
+  /**
+   * THE CODE PROFILE THE RUN IS POSTED ON (#279), for a preset that reaches a model.
+   *
+   * Optional on the schema and required by the presets that need one, because `keep-going` is a
+   * `scan` of Babel's own and reaches no model at all: a field the schema demanded would make
+   * the beat carry a profile nothing would read. `startExplore` refuses by name when a model
+   * preset names none, so the requirement is stated where it is true.
+   */
+  profile: CodeProfileSchema.optional(),
 });
 export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 
@@ -631,10 +873,10 @@ export type LaunchInput = z.infer<typeof LaunchInputSchema>;
 export const LaunchRequestSchema = LaunchInputSchema.extend({ operation: OperationRefSchema });
 
 /**
- * WHAT A LAUNCH ANSWERS when one starts something. Today none does: every path answers
- * {@link ENGINE_PENDING} instead, and this is the shape that returns when Code's `runSession`
- * door does (#279). The preview blocks #284 hung off it — the machine's last recorded profile,
- * the ceiling, the owner's price for the model — went with Babel's own inference policy.
+ * WHAT A LAUNCH ANSWERS when it started something: the run row's own id, the CODE job the
+ * session runs as, the machine it runs on and what kind of run it is. `jobId` is Code's — the
+ * job is posted by `atyrode.code.runSession` under `atyrode.omp`'s own operation — which is
+ * why a run row keeps it beside the container it belongs to (#279).
  */
 export const LaunchResultSchema = z.strictObject({
   runId: z.string(),
@@ -723,6 +965,12 @@ export const RunRowSchema = z.strictObject({
   kind: z.string(),
   machineId: z.string(),
   jobId: z.string(),
+  /**
+   * The `atyrode.babel.prepare` job whose sealed material this run reads, empty when it has
+   * none. A run is started in two wakes (#592) and the first posts only that job, so while
+   * `jobId` is empty this is the node a Stop is authorized at.
+   */
+  prepareJobId: z.string(),
   recipe: z.string(),
   state: RunStateSchema,
   startedAt: z.string(),
@@ -873,6 +1121,18 @@ export const ReceiptSchema = z.strictObject({
   account: z.strictObject({ provider: z.string(), identityKey: z.string() }).optional(),
   model: z.string().optional(),
   preparation: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * THE MATERIAL THIS `prepare` SEALED, as its own index — the same document it wrote into the
+   * `material` lease (#279).
+   *
+   * It is in the receipt as well as in the lease because the two readers are different. The
+   * lease is bound into a SESSION's sandbox and read by the model; the receipt is ingested into
+   * this hub's `runs` row, and the hub is what checks a submitted claim's locators against the
+   * selection they were served from. Verifying out of the row costs one query; verifying out of
+   * the lease would mean pulling a sealed archive of every session's records back through the
+   * hub to read the twenty lines at the front of it.
+   */
+  material: MaterialIndexSchema.optional(),
   startedAt: z.string(),
   finishedAt: z.string(),
   closure: z.enum(["completed", "failed", "stopped", "skipped"]),
@@ -1055,7 +1315,14 @@ export type DrainSpend = z.infer<typeof DrainSpendSchema>;
 export const DrainStartInputSchema = z.strictObject({
   machineId: bounded(120),
   preset: DrainPresetSchema,
-  session: SessionChoiceSchema,
+  /**
+   * THE CODE PROFILE EVERY JOB OF THIS FAN IS POSTED ON (#279), named before the button.
+   *
+   * It replaces the typed model/thinking/account a drain used to carry: Babel chooses none of
+   * the three, and a field for them was Babel deciding what a run is. What the drain RECORDS
+   * about them is copied from Code's own list at the start ({@link DrainProfileSchema}).
+   */
+  profile: CodeProfileSchema,
   concurrent: z.number().int().min(1).max(DRAIN_CONCURRENT_MAX),
   target: DrainTargetSchema,
   reason: z.string().trim().min(1).max(2000),
@@ -1069,8 +1336,6 @@ export const DrainStartInputSchema = z.strictObject({
   /** Whether a preparation may hold Babel's own transcripts (#262); absent unless asked. */
   agentSessions: z.boolean().optional(),
 });
-export type DrainStartInput = z.infer<typeof DrainStartInputSchema>;
-
 /**
  * What the `drain.start` door takes: the request above plus the OPERATION NODE it is authorized
  * at, for the reason `LaunchRequestSchema` carries one — `machines:run` is granted at a node and

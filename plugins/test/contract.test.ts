@@ -5,6 +5,8 @@ import {
   EVENTS,
   FEED_PLUGIN_ID,
   INPUT_FIELD,
+  MATERIAL_EXPORT,
+  MATERIAL_OUTPUT,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
@@ -14,8 +16,10 @@ import {
   RUNTIME_TOOLS,
   WATCH_PLUGIN_ID,
 } from "../atyrode.babel/contract.ts";
+import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
 import { ADAPTERS } from "../atyrode.babel/machine/adapters/index.ts";
 import { STORE_DATA_VERSION } from "../atyrode.babel/store/schema.ts";
+import { MAX_MATERIAL_BYTES } from "../atyrode.babel/doors/launch.ts";
 import { plugin } from "../atyrode.babel/server.ts";
 import babelManifest from "../atyrode.babel/manifest.json";
 import feedManifest from "../atyrode.babel/feed/manifest.json";
@@ -160,9 +164,15 @@ describe("the machine half is declared as the machine half is built", () => {
     // The VERB is the operation's short word, never its declared id: the hub needs a namespaced
     // id to tell two plugins' operations apart, and the binary behind the id belongs to one
     // plugin and takes `scan`.
+    //
+    // `prepare` alone takes a SECOND lease (#279). The material a Code session reads is a
+    // separate sealed output, because a session binds one named output of one job and Babel's
+    // ordinary `outputs` lease carries the receipt and the catalog rows the hub ingests — a
+    // model handed that directory would be reading Babel's bookkeeping as if it were evidence.
     for (const [word, operation] of Object.entries(OPERATIONS)) {
       if (!declared.includes(operation)) continue;
       const op = machine.operations[operation]!;
+      const material = operation === OPERATIONS.prepare;
       expect(op.argv).toEqual([
         { literal: "/job/artifact" },
         { literal: word },
@@ -170,20 +180,94 @@ describe("the machine half is declared as the machine half is built", () => {
         { literal: `/inputs/${INPUT_FIELD}` },
         { literal: "--out" },
         { literal: `/outputs/${OUTPUT_BINDING}` },
+        ...(material
+          ? [{ literal: "--material" }, { literal: `/outputs/${MATERIAL_OUTPUT}` }]
+          : []),
       ]);
-      // The document is one required string, and what is FIXED across the five operations is
-      // not its bound but the record's: the two that reach a model shrink the document to make
-      // room for the session's three fields (#279), and the hub admits the whole record.
+      // The document is one required string, and what is FIXED across the operations is not its
+      // bound but the record's: the hub admits the whole record.
       expect(op.input[INPUT_FIELD]?.type).toBe("string");
       expect(op.input[INPUT_FIELD]?.required).toBe(true);
       expect(inputBytes(op)).toBeLessThanOrEqual(MAX_INPUT_BYTES);
       expect(op.inputFiles?.[INPUT_FIELD]).toEqual({ input: INPUT_FIELD });
-      expect(op.outputs).toEqual([OUTPUT_BINDING]);
+      expect(op.outputs).toEqual(material ? [OUTPUT_BINDING, MATERIAL_OUTPUT] : [OUTPUT_BINDING]);
       expect(op.executable).toEqual({ runtimeTool: "bun" });
       expect(op.stdin).toBe(false);
       // The lease is cut from a location the operation may write, or the hub refuses the launch.
       expect(op.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
     }
+  });
+
+  /*
+    THE TWO DECLARATIONS A CODE SESSION RESTS ON (#279), and the one that is not there yet.
+
+    The dependency is REQUIRED, and that is the operator's architecture rather than a
+    convenience: `atyrode.babel` depends on `atyrode.code`, which depends on `atyrode.omp`,
+    and a hub that enabled Babel without Code would offer a Start section whose every press
+    the HOST refuses (`undeclared_dependency`/`dependency_unavailable`) — assembly refusing
+    the install is the earlier and better answer. It is also what makes `verify` install the
+    three families in order, which is what `bun run deps:code` is for.
+
+    `prepare` seals the material as a second output and DECLARES it exportable. The export is
+    what lets ANOTHER plugin's job bind it: a same-plugin binding needs none, and Code's job
+    is `atyrode.omp`'s, so admission refuses `input_not_exported:material` without it (ADR
+    0044). Outputs and exports are asserted together because an output nobody may bind is a
+    lease this plugin writes and nothing reads.
+  */
+  test("the baseline requires Code, and prepare exports the material it seals", () => {
+    expect(babel.dependencies).toEqual({
+      [CODE_PLUGIN_ID]: {
+        type: "required",
+        reason: expect.stringContaining("runSession") as unknown as string,
+      },
+    });
+    /*
+      THE HUB'S OWN BOUND IS UNDER THE MACHINE'S, WITH ROOM. `doors/launch.ts` refuses a
+      selection whose catalogued bytes exceed `MAX_MATERIAL_BYTES`, BEFORE a job is posted;
+      the machine refuses at the seal, AFTER it has read every log in the selection. The
+      first must be the one that fires, or the operator learns his window was too wide from a
+      twenty-minute job that failed at the end.
+
+      And `<=` would not be enough: `outputBytes` is the AGGREGATE the owner seals against —
+      stdout, stderr and BOTH of this operation's leases come out of one running budget, and
+      each lease is a ustar archive carrying 512 bytes of header and padding per member
+      (`agent/src/job-owner.ts`). A selection admitted at exactly the job's bound packs to it
+      and is refused `output_collection_refused` after the full read. A tenth of the job is
+      the margin this pins; the constant currently leaves an eighth.
+    */
+    const outputBytes = machine.operations[OPERATIONS.prepare]!.limits?.outputBytes ?? 0;
+    expect(MAX_MATERIAL_BYTES).toBeLessThanOrEqual(Math.floor(outputBytes * 0.9));
+    const prepare = machine.operations[OPERATIONS.prepare]!;
+    expect(prepare.outputs).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
+    expect(prepare.exports).toEqual([MATERIAL_EXPORT]);
+    // Every exported name is one this operation actually writes: an export of a lease that is
+    // never cut is a binding that resolves to nothing at the consumer's admission.
+    for (const exported of prepare.exports ?? []) expect(prepare.outputs).toContain(exported);
+    // The material's lease is cut from the same managed location the ordinary one is: a second
+    // anchor would be a second thing an operator has to arrange per machine.
+    expect(prepare.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
+    // …and no other operation exports anything: `scan` and `archive` write for this hub alone.
+    for (const operation of [OPERATIONS.scan, OPERATIONS.archive]) {
+      expect(machine.operations[operation]!.exports ?? []).toEqual([]);
+    }
+  });
+
+  /*
+    ONE CODE REVISION, NAMED IN TWO PLACES. `package.json`'s `@atyrode/manifold-code` is where
+    the TYPES come from — the schemas `server/engine/session.ts` parses every call and reply
+    with — and `CODE_REV` is what `deps:code` fetches and builds the bundles `verify` composes
+    Babel on top of. Verifying against one revision while compiling against another proves
+    nothing about either, so the two are held together here rather than by remembering.
+  */
+  test("the Code the types come from is the Code verification composes", async () => {
+    const pinned = (await Bun.file(new URL("../CODE_REV", import.meta.url)).text()).trim();
+    expect(pinned).toMatch(/^[a-f0-9]{40}$/);
+    const dependency = (
+      JSON.parse(await Bun.file(new URL("../package.json", import.meta.url)).text()) as {
+        dependencies: Record<string, string>;
+      }
+    ).dependencies["@atyrode/manifold-code"];
+    expect(dependency).toBe(`github:atyrode/code#${pinned}`);
   });
 
   test("the roots the adapters read are the roots the job mounts", () => {
@@ -258,11 +342,18 @@ describe("the machine half is declared as the machine half is built", () => {
   test("the ceiling on a run is the ceiling the operator was promised", () => {
     // The loop launches with the operation's own limits; the hub refuses anything above them.
     // These three numbers are therefore the whole answer to "how long can this run".
+    //
+    // `prepare` is thirty minutes and half a gigabyte because it SEALS THE MATERIAL now
+    // (#279): it reads every selected log and writes the normalized record stream into a
+    // second lease, and the bound `doors/launch.ts` refuses a selection against
+    // (`MAX_MATERIAL_BYTES`) has to fit under this one or the machine is what discovers the
+    // window was too wide.
     const minutes = (operation: string): number =>
       machine.operations[operation]!.limits.timeoutMs / 60_000;
     expect(minutes(OPERATIONS.scan)).toBe(10);
-    expect(minutes(OPERATIONS.prepare)).toBe(5);
+    expect(minutes(OPERATIONS.prepare)).toBe(30);
     expect(minutes(OPERATIONS.archive)).toBe(10);
+    expect(machine.operations[OPERATIONS.prepare]!.limits.outputBytes).toBe(512 * 1024 * 1024);
   });
 
   test("this bundle pins no tool at all: every one is the owner's to provide", () => {

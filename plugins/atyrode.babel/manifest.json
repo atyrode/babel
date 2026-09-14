@@ -14,9 +14,15 @@
     "locations:read",
     "locations:write"
   ],
+  "dependencies": {
+    "atyrode.code": {
+      "type": "required",
+      "reason": "a Babel run is a Code session: Code owns the profile (model, thinking level, account) and posts the omp job through its runSession door, which Babel calls with ctx.actions.call"
+    }
+  },
   "dataVersion": {
     "major": 1,
-    "minor": 4
+    "minor": 6
   },
   "database": {
     "maxBytes": 1073741824
@@ -47,7 +53,7 @@
         "title": "Plan applied"
       },
       {
-        "id": "run_changed",
+        "id": "babel_run_changed",
         "title": "Run changed"
       }
     ]
@@ -56,24 +62,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "5bcd9d0eabf2b818f781ac9b952c8445c3903fc4d80f4725a3ad1e85f79b773a",
+        "sha256": "03c996d29da0894fc0b75cba4c0614845348fb8a70100c1aadaba8e93cfc41c3",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "5bcd9d0eabf2b818f781ac9b952c8445c3903fc4d80f4725a3ad1e85f79b773a",
+        "entrySha256": "03c996d29da0894fc0b75cba4c0614845348fb8a70100c1aadaba8e93cfc41c3",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "5bcd9d0eabf2b818f781ac9b952c8445c3903fc4d80f4725a3ad1e85f79b773a",
+        "sha256": "03c996d29da0894fc0b75cba4c0614845348fb8a70100c1aadaba8e93cfc41c3",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "5bcd9d0eabf2b818f781ac9b952c8445c3903fc4d80f4725a3ad1e85f79b773a",
+        "entrySha256": "03c996d29da0894fc0b75cba4c0614845348fb8a70100c1aadaba8e93cfc41c3",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -323,6 +329,12 @@
           },
           {
             "literal": "/outputs/outputs"
+          },
+          {
+            "literal": "--material"
+          },
+          {
+            "literal": "/outputs/material"
           }
         ],
         "input": {
@@ -363,14 +375,18 @@
           }
         ],
         "outputs": [
-          "outputs"
+          "outputs",
+          "material"
+        ],
+        "exports": [
+          "material"
         ],
         "network": "none",
         "limits": {
-          "timeoutMs": 300000,
+          "timeoutMs": 1800000,
           "memoryBytes": 1073741824,
           "processes": 64,
-          "outputBytes": 33554432
+          "outputBytes": 536870912
         },
         "stdin": false
       }

@@ -111,7 +111,7 @@ from the repository root unless a working directory is shown.
 | Web typecheck/build | `cd web && bunx tsc --noEmit && bun run build` | Commit rebuilt `web/dist` with a web change. |
 | Browser acceptance | `cd web && bun run test:browser` | Requires Chrome or Chromium, Go and restic; optional `BABEL_TEST_BINARY` selects a prebuilt Babel binary. |
 | Cookbook | `go run ./cmd/babel cookbook check --dir cookbook` | Checks the working tree's versions and semantic content digests; drift exits 1. |
-| Plugin gate | `cd plugins && bun install --frozen-lockfile && bun run check && bun test && bun run pack && bun run verify` | Requires the pinned `../manifold` sibling and its dependencies; read `plugins/README.md` first. |
+| Plugin gate | `cd plugins && bun install --frozen-lockfile && bun run deps:code && bun run check && bun test && bun run pack && bun run verify` | Requires the pinned `../manifold` sibling and its dependencies; `deps:code` fetches atyrode/code at `plugins/CODE_REV` and builds its bundles and omp's, which `verify` composes Babel on top of. Read `plugins/README.md` first. |
 
 The shared-catalog suite uses `BABEL_TEST_POSTGRES=<url>` or provisions a temporary cluster
 with `initdb` and `pg_ctl`; without either it skips locally. Any supplied URL must be a

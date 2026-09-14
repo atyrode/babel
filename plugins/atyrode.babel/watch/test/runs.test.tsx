@@ -326,6 +326,8 @@ test("a door that refuses a read leaves the section standing with the hub's sent
   await settle();
 
   expect(root.textContent).toContain("the store is not open yet");
-  expect(root.textContent).toContain("Babel runs are Code sessions");
+  // The sections that did not fail are still on the screen: a refused runs feed is not a
+  // reason for the operator to lose the form that starts one or the ceilings it runs under.
+  expect(root.textContent).toContain("Start something");
   expect(root.textContent).toContain("Ceilings");
 });

@@ -181,6 +181,47 @@
   background: var(--babel-bg);
 }
 
+/* WHICH CODE PROFILE ANSWERS THE RUN. A profile is three facts on three lines —
+   the workspace, what Code will run it as, and where Code last posted for it —
+   and it is a pressable row rather than a select because the second and third
+   lines are what the choice is actually made on, and an <option> holds one. */
+.plugin-atyrode_babel_watch__profiles {
+  padding-top: var(--babel-space-3);
+  border-top: 1px solid var(--babel-rule);
+}
+
+.plugin-atyrode_babel_watch__profile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--babel-space-2) var(--babel-space-3);
+  border: 1px solid var(--babel-rule);
+  border-radius: var(--babel-radius-sm);
+  color: inherit;
+  background: var(--babel-bg-raised);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--babel-motion-fast) ease-out;
+}
+
+.plugin-atyrode_babel_watch__profile:hover {
+  border-color: var(--babel-rule-strong);
+}
+
+.plugin-atyrode_babel_watch__profile[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--babel-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--babel-accent) 10%, var(--babel-bg-raised));
+}
+
+/* The way out to Code's generator, and back. A link, because it is a navigation
+   the shell performs and not an act of Babel's. */
+.plugin-atyrode_babel_watch__link {
+  color: var(--babel-accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* WHO ANSWERS THE RUN: the same field furniture as a knob, wider, because a model
    reference and an identity key are long and are read character by character. */
 .plugin-atyrode_babel_watch__session-input {

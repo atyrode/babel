@@ -3,20 +3,25 @@ import type { SqlParam, SqlStatement } from "@manifold/plugin";
 import { z } from "zod";
 import {
   BABEL_PLUGIN_ID,
-  ENGINE_PENDING,
   INPUT_FIELD,
   JOB_OUTPUT_FILES,
+  MaterialIndexSchema,
   OPERATIONS,
   OUTPUT_BINDING,
   OUTPUT_LOCATION,
   RUN_STAGES,
   ReceiptSchema,
+  type MaterialEntry,
+  type MaterialIndex,
   type Receipt,
 } from "../contract.ts";
 import type { Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
-import { refusalCode, type RefusalCode } from "../machine/results.ts";
+import { REFUSALS, refusalCode, refusalReason, type RefusalCode } from "../machine/results.ts";
 import type { BabelStore } from "../store/store.ts";
+import { DRAW_PENDING } from "../doors/launch.ts";
+import { readExploreAnswer, unservedLocator } from "./engine/prompts.ts";
+import type { CodeEngine, SessionRead } from "./engine/session.ts";
 
 /*
   THE CONDUCTOR — Babel's loop, on the hub (plan §4: `babel conductor run` becomes a server-half
@@ -346,6 +351,17 @@ export interface ConductorDeps {
   readonly coordinator: Coordinator;
   readonly jobs: JobsSlice;
   readonly machines: MachinesSlice;
+  /**
+   * BABEL'S SIDE OF CODE'S DOORS, over this wake's own authority (#279).
+   *
+   * A run that reaches a model is a job of CODE's, posted by `atyrode.code.runSession` under
+   * `atyrode.omp`'s operation. `ctx.jobs` verbs are bound to the calling plugin's id and
+   * `onJobSettled` is delivered only to the plugin that STARTED the job, so such a job is never
+   * Babel's to poll or to be woken by: the only way this loop learns what became of it is to
+   * ask Code, through `code.readSession`, on a wake something else caused. That is the whole
+   * reason this dependency is here, and it is why `reconcileRuns` has two halves.
+   */
+  readonly engine: CodeEngine;
   /** Where the day's tally is kept between wakes; see {@link KeysSlice}. */
   readonly keys: KeysSlice;
   readonly plan: RunPlan;
@@ -1122,7 +1138,23 @@ export async function ingestOutputs(
 
 // ---------------------------------------------------------------------------- the loop
 
-type PendingRun = { id: string; job_id: string; machine_id: string; kind: string };
+/**
+ * One run the loop is waiting on. `container_id` is the fork in the road: null is a job of
+ * Babel's own, polled through `ctx.jobs`; non-null is a CODE SESSION, whose job belongs to
+ * another plugin and is reconciled through `code.readSession` (#279).
+ */
+type PendingRun = {
+  id: string;
+  job_id: string;
+  machine_id: string;
+  kind: string;
+  container_id: string | null;
+  prepare_job_id: string | null;
+  started_at: string;
+  profile: string | null;
+  preparation: string | null;
+  unreadable: number | bigint;
+};
 /**
  * The `run_progress` row the fold carries between cycles. Every INTEGER column arrives as a
  * bigint from the engine's database (#536), so each one is `Number(...)`-ed the moment it is
@@ -1155,6 +1187,8 @@ type OrphanClaim = {
   /** Two `COUNT(*)` subqueries, so bigints from the engine's database, as {@link Fence} is. */
   runs: number | bigint;
   open_runs: number | bigint;
+  /** The run row's own consecutive-silence count; NULL when no run row stands behind it. */
+  silent: number | bigint | null;
 };
 type MachineCount = { machineId: string; cited: number };
 type MachineRow = { machineId: string };
@@ -1208,14 +1242,22 @@ function receiptRefusal(payload: string | null): RefusalCode | null {
 }
 
 export function conductor(deps: ConductorDeps): Conductor {
-  const { store, coordinator, jobs, machines, keys, plan } = deps;
+  const { store, coordinator, jobs, machines, keys, plan, engine } = deps;
   let cycle = 0;
   /**
-   * How many cycles in a row the hub has failed to report a job the loop is waiting on, by job
-   * id. It lives across ticks because "twice running" is the whole predicate; it is a Map
-   * because its keys are job ids that come and go, and `reconcileRuns` prunes it every cycle.
+   * HOW MANY CYCLES IN A ROW NOBODY COULD SAY WHERE A RUN'S JOB IS, written on the run row.
+   *
+   * It was a `Map` in this closure, and the closure was the bug: `server.ts` builds a NEW
+   * conductor for every wake, so a counter whose whole predicate is "and the cycle before
+   * this one" was reset before it could ever be read a second time and the reaper's bound
+   * could not fire. A run that answers is set back to zero, which is what makes the count
+   * CONSECUTIVE rather than cumulative.
    */
-  const unreadable = new Map<string, number>();
+  async function silence(runId: string, held: number, seen: boolean): Promise<number> {
+    const next = seen ? 0 : held + 1;
+    if (next !== held) await store.db.run(`UPDATE runs SET unreadable = ? WHERE id = ?`, [next, runId]);
+    return next;
+  }
 
   /** Machines are described once per tick: the answer is the same for every draw in it. */
   async function readiness(
@@ -1480,25 +1522,50 @@ export function conductor(deps: ConductorDeps): Conductor {
     // back and its batch slot belongs to the next draw; and charged at the reservation, because
     // releasing a crash at zero is how a crash loop spends the day's allowance many times over
     // (F3, and the 86-minute ghosts of 2026-09-13).
-    const open = await store.db.query<OpenClaim>(
-      `SELECT id, run_id, fence, reserved_cost FROM claims WHERE job_id = ? AND finished_at IS NULL`,
-      [target.jobId],
-    );
     const died = receipt === null && target.closure !== "completed";
-    const outcome =
+    if (died) {
+      const open = await store.db.query<OpenClaim>(
+        `SELECT id, run_id, fence, reserved_cost FROM claims WHERE job_id = ? AND finished_at IS NULL`,
+        [target.jobId],
+      );
+      for (const claim of open) {
+        settled.push(
+          await release(
+            claim,
+            `job ${target.jobId} closed as ${target.closure} and wrote no receipt`,
+          ),
+        );
+      }
+      return;
+    }
+    await settleClaims(
+      target.jobId,
+      receipt?.costUsd ?? 0,
       receipt?.closure === "completed"
         ? "completed"
         : receipt?.closure === "skipped"
           ? "skipped"
-          : "failed";
-    const cost = receipt?.costUsd ?? 0;
+          : "failed",
+      settled,
+    );
+  }
+
+  /**
+   * Closes the open claims of a run this loop settled without an `ingestOutputs` pass, at the
+   * cost the receipt records. It is `settle`'s second half, lifted out because the Code lane
+   * has no sealed output to read and the accounting is identical once the cost is known.
+   */
+  async function settleClaims(
+    jobId: string,
+    cost: number,
+    outcome: "completed" | "failed" | "skipped",
+    settled: SettledClaim[],
+  ): Promise<void> {
+    const open = await store.db.query<OpenClaim>(
+      `SELECT id, run_id, fence, reserved_cost FROM claims WHERE job_id = ? AND finished_at IS NULL`,
+      [jobId],
+    );
     for (const claim of open) {
-      if (died) {
-        settled.push(
-          await release(claim, `job ${target.jobId} closed as ${target.closure} and wrote no receipt`),
-        );
-        continue;
-      }
       const finished = await coordinator.finish({
         id: claim.id,
         runId: claim.run_id,
@@ -1526,6 +1593,282 @@ export function conductor(deps: ConductorDeps): Conductor {
             },
       );
     }
+  }
+
+  /**
+   * THE SELECTION A RUN WAS SERVED, read off the `prepare` job's own receipt.
+   *
+   * `prepare` writes its {@link MaterialIndex} into the sealed material AND into its receipt,
+   * and the receipt is what this hub already ingested into the `runs` row. So verifying a
+   * citation costs ONE query against a row, rather than pulling a sealed archive of every
+   * selected session's records back through the hub to read the twenty lines at the front of
+   * it — which is the whole economy this lane was rebuilt for (post-mortem F1).
+   */
+  async function materialOf(prepareJobId: string | null): Promise<MaterialIndex | null> {
+    if (prepareJobId === null || prepareJobId === "") return null;
+    const rows = await store.db.query<{ payload: string }>(
+      `SELECT payload FROM runs WHERE job_id = ? AND closure IS NOT NULL LIMIT 1`,
+      [prepareJobId],
+    );
+    const payload = rows[0]?.payload;
+    if (payload === undefined) return null;
+    let held: unknown;
+    try {
+      held = (JSON.parse(payload) as Record<string, unknown>)["material"];
+    } catch {
+      return null;
+    }
+    const parsed = MaterialIndexSchema.safeParse(held);
+    return parsed.success ? parsed.data : null;
+  }
+
+  /** The account a launch NAMED, kept on the run row so a drain's total can be attributed. */
+  function namedAccount(profile: string | null): Receipt["account"] {
+    if (profile === null || profile === "") return undefined;
+    let held: unknown;
+    try {
+      held = (JSON.parse(profile) as Record<string, unknown>)["account"];
+    } catch {
+      return undefined;
+    }
+    if (typeof held !== "object" || held === null) return undefined;
+    const account = held as Record<string, unknown>;
+    const provider = account["provider"];
+    const identityKey = account["identityKey"];
+    if (typeof provider !== "string" || typeof identityKey !== "string") return undefined;
+    return { provider, identityKey };
+  }
+
+  /** The run row's own preparation blob, as the receipt carries it back unchanged. */
+  function preparationOf(preparation: string | null): Receipt["preparation"] {
+    if (preparation === null || preparation === "") return undefined;
+    let held: unknown;
+    try {
+      held = JSON.parse(preparation);
+    } catch {
+      return undefined;
+    }
+    return typeof held === "object" && held !== null && !Array.isArray(held)
+      ? (held as Record<string, unknown>)
+      : undefined;
+  }
+
+  /**
+   * ONE FINISHED CODE SESSION, TURNED INTO A RECEIPT AND A SETTLED CLAIM (#279).
+   *
+   * The transcript is Code's; what Babel owns is the CONTRACT the prompt stated, and this is
+   * where it is enforced: the answer is the last fenced block of the final message
+   * ({@link readExploreAnswer}), and every locator it cites must name a file the material's
+   * index served at the digest the index recorded ({@link unservedLocator}).
+   *
+   * A REFUSED SUBMISSION IS SPEND, and that is the sentence the whole function is arranged
+   * around. The model answered; the deployment paid for it; the answer did not stand. So the
+   * receipt is written WITH the cost and the refusal's own code, the claim is FINISHED rather
+   * than abandoned, and the tally counts the refusal by code — a drain that read a refusal as a
+   * free failure would relaunch against a burn rate that never happened, and the park heuristic
+   * would read a recipe's problem as a broken lane (post-mortem F8, F16).
+   */
+  async function settleSession(
+    at: number,
+    run: PendingRun,
+    read: SessionRead,
+    closure: Receipt["closure"],
+    ingested: IngestedRun[],
+    settled: SettledClaim[],
+    notes: string[],
+    refusals: Counter,
+  ): Promise<void> {
+    /*
+      A RECEIPT ONLY EXISTS FOR A JOB THAT EXITED 0 AND SEALED ITS TRANSCRIPT. Code answers
+      `session: null` for a job it cancelled, interrupted or that exited non-zero, and that is
+      a successful READ of a run that produced nothing to read — not a fault, and not a run
+      whose spend is knowable. It settles at zero with the closure the job itself reported,
+      because a receipt is the only thing that could have said what it cost.
+    */
+    const session = read.session;
+    // ONE CALL, because a Code session posted by `runSession` is omp's one-shot: `usage` is the
+    // whole run's, there is no per-call frame to count, and writing `calls: 0` beside real
+    // tokens would make a metered run read as one that never reached a model.
+    const usage = session?.usage ?? null;
+    const inference: InferenceUsage | null =
+      usage === null
+        ? null
+        : {
+            calls: 1,
+            inputTokens: usage.input,
+            outputTokens: usage.output,
+            cachedInputTokens: usage.cacheRead,
+            costMicros: Math.round((usage.cost ?? 0) * 1_000_000),
+          };
+    const costUsd = usage?.cost ?? 0;
+
+    // WHAT THE ANSWER WAS WORTH. A session that never sealed a transcript submitted nothing,
+    // and the reason says which of the job's own endings that was rather than inventing a
+    // schema refusal about a message that was never written.
+    let reason = "";
+    if (session === null) {
+      reason =
+        `${REFUSALS.empty}: the session closed as ${read.job.state} and sealed no transcript, ` +
+        `so it submitted no result`;
+    } else if (session.exitCode !== 0) {
+      reason = `${REFUSALS.schema}: the session exited ${String(session.exitCode)} and submitted no result`;
+    } else {
+      const answer = readExploreAnswer("explore", session.finalMessage);
+      if ("refusal" in answer) {
+        reason = refusalReason(answer.refusal);
+      } else {
+        const material = await materialOf(run.prepare_job_id);
+        const served: readonly MaterialEntry[] = material?.sessions ?? [];
+        const unserved = unservedLocator(answer.result, served);
+        if (unserved !== "") {
+          reason = `${REFUSALS.unknownReference}: ${unserved}`;
+        } else if (material === null) {
+          // The selection is how a claim is checkable at all: a result admitted against a
+          // material nobody can read is an unverifiable claim recorded as a verified one.
+          reason =
+            `${REFUSALS.unknownReference}: the material of prepare job ` +
+            `${run.prepare_job_id ?? "(none)"} is not on any settled run of this hub, so this ` +
+            `run's citations cannot be checked against what it was served`;
+        }
+      }
+    }
+    const refusedCode = reason === "" ? null : refusalCode(reason);
+    if (refusedCode !== null) count(refusals, refusedCode);
+
+    const receipt: Receipt = {
+      runId: run.id,
+      kind: "explore",
+      machineId: run.machine_id,
+      ...(namedAccount(run.profile) === undefined ? {} : { account: namedAccount(run.profile) }),
+      ...(session === null ? {} : { model: session.model }),
+      ...(preparationOf(run.preparation) === undefined
+        ? {}
+        : { preparation: preparationOf(run.preparation) }),
+      startedAt: run.started_at,
+      finishedAt: new Date(at).toISOString(),
+      // A CLOSURE THE JOB REPORTED, not one inferred from the reason: a session an operator
+      // cancelled is `stopped` and not `failed`, and a panel that called every unreadable run
+      // a failure is how a stop looks like a fault.
+      closure: reason === "" ? "completed" : session === null ? closure : "failed",
+      ...(reason === "" ? {} : { reason }),
+      costUsd,
+      tokens: usage === null ? 0 : usage.input + usage.output,
+      ...(session === null ? {} : { models: [session.model] }),
+      counts: {},
+    };
+    // The run row is written through the SAME statement an ingested job's is: one shape for
+    // what a finished run looks like, whoever posted the job. `outputs` is empty because the
+    // rows a result becomes are not in a sealed lease here — the transcript is Code's job's
+    // `session` output, read on demand — and `inference` is what the meter said.
+    await store.db.batch([
+      runStatement(
+        run.id,
+        {
+          runId: run.id,
+          jobId: run.job_id,
+          machineId: run.machine_id,
+          operationId: run.kind,
+          outputs: [],
+          closure: receipt.closure,
+          inference,
+        },
+        receipt,
+        {},
+      ),
+    ]);
+    await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+    store.touch();
+    if (reason !== "") notes.push(`run ${run.id}: ${reason}`);
+    ingested.push({
+      runId: run.id,
+      jobId: run.job_id,
+      closure: receipt.closure,
+      costUsd,
+      rows: {},
+      skipped: 0,
+    });
+    /*
+      WHAT THE CLAIM IS WORTH. A refused SUBMISSION is `failed` and costs what the model was
+      paid; a session that sealed no transcript at all is `skipped` — nobody answered, nothing
+      was submitted, and calling it a failure would feed the park heuristic a streak that is
+      really an operator pressing Stop.
+    */
+    await settleClaims(
+      run.job_id,
+      costUsd,
+      reason === "" ? "completed" : session === null ? "skipped" : "failed",
+      settled,
+    );
+  }
+
+  /**
+   * WHERE ONE CODE SESSION IS, ASKED OF CODE, and what this cycle does about the answer.
+   *
+   * Three outcomes and no fourth: the job is still going and the run stays open; the job is
+   * over and {@link settleSession} closes it; or CODE REFUSED THE READ — a profile that moved,
+   * a consent that lapsed, a Code that is no longer installed.
+   *
+   * THE REFUSAL IS BOUNDED THE WAY THE REAPER BOUNDS AN UNREADABLE JOB, and by the same counter.
+   * One refusal is a hiccup and the note says so; {@link UNREPORTED_CYCLES} in a row is a run
+   * nobody will ever be able to read, and retrying it on every wake for ever is how a dead run
+   * holds a batch slot and a panel row until someone notices. So the sentence is recorded ON THE
+   * RUN as its note while it is still hoped for, and at the bound the run is closed as failed
+   * with that sentence and its claim released.
+   */
+  async function reconcileSession(
+    at: number,
+    run: PendingRun,
+    ingested: IngestedRun[],
+    settled: SettledClaim[],
+    notes: string[],
+    refusals: Counter,
+  ): Promise<{ readonly inFlight: boolean }> {
+    const containerId = run.container_id ?? "";
+    const answered = await engine.readSession({ containerId, jobId: run.job_id });
+    if (!answered.ok) {
+      const silent = await silence(run.id, Number(run.unreadable), false);
+      const note = `session ${run.job_id} in ${containerId} cannot be read: ${answered.refused}`;
+      notes.push(note);
+      if (silent < UNREPORTED_CYCLES) {
+        // Still hoped for: the sentence is on the row so a reader sees it without the journal,
+        // and the run stays open for the next wake to ask again.
+        await store.db.run(`UPDATE runs SET payload = ? WHERE id = ?`, [
+          JSON.stringify({ closure: null, note }),
+          run.id,
+        ]);
+        store.touch();
+        return { inFlight: true };
+      }
+      await store.db.run(
+        `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
+        [new Date(at).toISOString(), JSON.stringify({ closure: "failed", reason: note }), run.id],
+      );
+      await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
+      store.touch();
+      for (const claim of await store.db.query<OpenClaim>(
+        `SELECT id, run_id, fence, reserved_cost FROM claims WHERE job_id = ? AND finished_at IS NULL`,
+        [run.job_id],
+      )) {
+        settled.push(await release(claim, note));
+      }
+      return { inFlight: false };
+    }
+    await silence(run.id, Number(run.unreadable), true);
+    /*
+      CODE ANSWERS FOR A JOB IN ANY STATE, and the vocabulary is the hub's own. A job that is
+      not terminal is still going, and this loop folds no progress for it — the replay ring
+      belongs to `atyrode.omp`'s job and `ctx.jobs.follow` on it is not Babel's to open.
+
+      A TERMINAL ONE CARRIES ITS OWN ENDING, which is what the receipt records when Code
+      sealed no transcript: `cancelled` is an operator's Stop and closes `stopped`, anything
+      else is `failed`. Reading that off the job rather than off the absent receipt is the
+      difference between a stop that looks like a stop and one that looks like a fault.
+    */
+    const job = answered.value.job;
+    if (TERMINAL_STATES[job.state] !== true) return { inFlight: true };
+    const closure: Receipt["closure"] = job.state === "cancelled" ? "stopped" : "failed";
+    await settleSession(at, run, answered.value, closure, ingested, settled, notes, refusals);
+    return { inFlight: false };
   }
 
   /**
@@ -1736,15 +2079,32 @@ export function conductor(deps: ConductorDeps): Conductor {
     refusals: Counter,
   ): Promise<{ inFlight: number; runs: RunsTally }> {
     const pending = await store.db.query<PendingRun>(
-      `SELECT id, job_id, machine_id, kind FROM runs
+      `SELECT id, job_id, machine_id, kind, container_id, prepare_job_id, started_at,
+              profile, preparation, unreadable
+         FROM runs
         WHERE closure IS NULL AND job_id IS NOT NULL AND machine_id IS NOT NULL
         ORDER BY started_at`,
     );
     let inFlight = 0;
     let atModel = 0;
     let stalled = 0;
-    const answered = new Set<string>();
+    // The count of silent cycles is on the row now, so nothing is pruned here: a run that is
+    // no longer waited on is not selected, and one that answers is set back to zero in place.
     for (const run of pending) {
+      // THE FORK: a run with a container is a CODE SESSION, and its job is not Babel's to poll
+      // (#279). `ctx.jobs` verbs are bound to the calling plugin's id, so `jobs.status` on it
+      // answers nothing useful at best; Code is asked instead, through the door that owns it.
+      if (run.container_id !== null && run.container_id !== "") {
+        const reconciled = await reconcileSession(at, run, ingested, settled, notes, refusals);
+        if (reconciled.inFlight) {
+          inFlight += 1;
+          // A Code session is at the model from the moment it starts: Babel composes nothing
+          // and the job's only work is the turn. There is no replay ring of Babel's to fold, so
+          // the count is the honest one rather than a stage nobody read.
+          atModel += 1;
+        }
+        continue;
+      }
       let state: JobRunState | null = null;
       try {
         state = await jobs.status({
@@ -1760,11 +2120,11 @@ export function conductor(deps: ConductorDeps): Conductor {
       // in flight for this cycle and is remembered: a machine that vanished would otherwise keep
       // its claims "running" for ever, and the reaper below counts the cycles.
       if (state === null) {
-        unreadable.set(run.job_id, (unreadable.get(run.job_id) ?? 0) + 1);
+        await silence(run.id, Number(run.unreadable), false);
         inFlight += 1;
         continue;
       }
-      answered.add(run.job_id);
+      await silence(run.id, Number(run.unreadable), true);
       if (TERMINAL_STATES[state.state] !== true) {
         inFlight += 1;
         const folded = await foldRun(at, run, notes);
@@ -1794,12 +2154,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       await store.db.run(`DELETE FROM run_progress WHERE run_id = ?`, [run.id]);
     }
 
-    // The count is CONSECUTIVE cycles of silence: a job that answered this time, and a job that
-    // is no longer waited on at all, start again from nothing.
-    const polled = new Set(pending.map((run) => run.job_id));
-    for (const jobId of unreadable.keys()) {
-      if (answered.has(jobId) || !polled.has(jobId)) unreadable.delete(jobId);
-    }
+
 
     for (const machineId of await knownMachines()) {
       let listed: readonly { job: JobRunState | null }[];
@@ -1879,7 +2234,8 @@ export function conductor(deps: ConductorDeps): Conductor {
     const orphans = await store.db.query<OrphanClaim>(
       `SELECT c.id, c.fence, c.job_id, c.granted_at,
               (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id) AS runs,
-              (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id AND r.closure IS NULL) AS open_runs
+              (SELECT COUNT(*) FROM runs r WHERE r.job_id = c.job_id AND r.closure IS NULL) AS open_runs,
+              (SELECT MAX(r.unreadable) FROM runs r WHERE r.job_id = c.job_id) AS silent
          FROM claims c
         WHERE c.finished_at IS NULL
         ORDER BY c.granted_at`,
@@ -1890,7 +2246,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       // An unparseable grant time is as old as it gets: it can never become fresh.
       const overdue = !Number.isFinite(granted) || granted <= stale;
       const jobId = orphan.job_id;
-      const silent = jobId === null ? 0 : (unreadable.get(jobId) ?? 0);
+      const silent = Number(orphan.silent ?? 0);
       const reason =
         jobId === null
           ? overdue
@@ -2142,20 +2498,24 @@ export function conductor(deps: ConductorDeps): Conductor {
       if (parked !== null) notes.push(`the loop is parked: ${parked.reason}`);
 
       /*
-        AND THEN NOTHING IS DRAWN, because there is nowhere to post it (#279).
+        AND THEN NOTHING IS DRAWN, and the reason is no longer the engine's (#279).
 
-        A drawn review used to become an `atyrode.babel.evaluate` job this loop launched. Babel
-        launches nothing now: a run that reaches a model is a Code session, composed from a Code
-        profile or in Code's generator and posted through Code's own `runSession` door. Drawing
-        anyway would claim a record under a fence, hold a batch slot for a lease, and then
-        abandon it once the posting refused — which is the ghost-claim shape of 2026-09-13, for
-        work nobody could have done. So the cycle states the one true reason it spent nothing
-        and asks the coordinator for no candidate at all.
+        A drawn review used to become an `atyrode.babel.evaluate` job this loop launched. The
+        engine is Code now and this deployment can reach it — the `launch` door posts an explore
+        through `atyrode.code.runSession` — but a DRAWN review is a different thing: the
+        coordinator picks it, claims it under a fence, and the dispatch hands the model a BLINDED
+        projection of the record under review. That dispatch and that projection went with
+        Babel's own launcher in the revert (#290) and have not come back, so the cycle states the
+        one true reason it spent nothing and asks the coordinator for no candidate at all.
+
+        Drawing anyway would claim a record under a fence, hold a batch slot for a lease and then
+        abandon it once the posting refused — the ghost-claim shape of 2026-09-13, for work
+        nobody could have done.
 
         Everything above this line still runs: the settlements, the reaper, the beat, the
         folders, the pulse. The loop is intact and idle, not dismantled.
       */
-      const stop: Stop = { reason: "engine-pending", detail: ENGINE_PENDING };
+      const stop: Stop = { reason: "draw-pending", detail: DRAW_PENDING };
       const gaps: readonly Gap[] = [];
       // The reason this cycle did not spend, counted once.
       count(gapsByReason, stop.reason);
