@@ -8,6 +8,9 @@ import {
   ACTIONS,
   AccountsQuerySchema,
   AccountsResultSchema,
+  DrainQuerySchema,
+  DrainStartResultSchema,
+  DrainStatusResultSchema,
   LaunchResultSchema,
   PANELS,
   PRESET_REACHES_MODEL,
@@ -19,8 +22,11 @@ import {
 } from "../contract.ts";
 import {
   INITIAL_DRAFT,
+  INITIAL_DRAIN,
   NO_ACCOUNTS,
   act,
+  drainStartRequest,
+  drainStopInput,
   launchInput,
   launchRequest,
   read,
@@ -28,6 +34,8 @@ import {
   stopInput,
   unready,
   type AccountsResult,
+  type DrainDraft,
+  type DrainStatus,
   type LaunchAnswer,
   type LaunchDraft,
   type PolicyResult,
@@ -36,6 +44,7 @@ import {
   type TopicsResult,
 } from "./api.ts";
 import { Ceilings } from "./ceilings.tsx";
+import { Drain } from "./drain.tsx";
 import { Recipes } from "./recipes.tsx";
 import { Runs } from "./runs.tsx";
 import { Start } from "./start.tsx";
@@ -43,15 +52,16 @@ import { Start } from "./start.tsx";
 /*
   WATCH — the panel that helps the operator run Babel.
 
-  Four sections in the order the questions are asked: what do I want to happen next, what is
-  happening right now, what is Babel looking for, and what bounds it. There are no identifiers
-  in the first one and no flags anywhere: a preset is a request, a knob is a number in the
-  operator's units, and everything else on the screen is either something a run said or
-  something the panel computed from what it said.
+  Five sections in the order the questions are asked: what do I want to happen next, what is
+  happening right now, how do I spend a window that is about to reset, what is Babel looking for,
+  and what bounds it. There are no identifiers in the first one and no flags anywhere: a preset is
+  a request, a knob is a number in the operator's units, and everything else on the screen is
+  either something a run said or something the panel computed from what it said.
 
   Liveness is `usePolledResource`, one feed per resource, so two sections reading the same runs
-  share one request; the elapsed clocks tick on the panel's own second while the runs feed polls
-  every five. Nothing here holds a socket, and nothing polls while nothing is in flight.
+  share one request; the elapsed clocks tick on the panel's own second while the runs and drains
+  feeds poll every five. Nothing here holds a socket, and nothing polls while nothing is in
+  flight.
 */
 
 const RUNS_POLL_MS = 5_000;
@@ -65,8 +75,18 @@ const PREVIEW_POLL_MS = 120_000;
 /** The clock the elapsed columns advance on. One second, because that is what "ticking" means. */
 const TICK_MS = 1_000;
 const RUNS_PAGE = 25;
+/**
+ * The drains feed polls on the runs feed's own five seconds, and for the same reason: a drain is
+ * watched precisely while its jobs are running, and the go/no-go rule it exists to serve is "a
+ * job says `at the model` within ninety seconds" (runbook §11.3). A slower poll would make the
+ * ninety-second rule unanswerable from the screen.
+ */
+const DRAINS_POLL_MS = 5_000;
+/** How many drains the panel lists: the running one, and enough history to compare against. */
+const DRAINS_LISTED = 6;
 
 const NO_RUNS: RunsResult = { runs: [], total: 0 };
+const NO_DRAINS: readonly DrainStatus[] = [];
 const NO_TOPICS: TopicsResult = { topics: [], proposed: [], unfiled: 0 };
 const NO_MACHINES: readonly MachineSummary[] = [];
 
@@ -77,11 +97,16 @@ function noteOf(reason: unknown): string {
 
 export function Watch({ host }: PanelProps) {
   const [draft, setDraft] = useState<LaunchDraft>(INITIAL_DRAFT);
+  const [drainDraft, setDrainDraft] = useState<DrainDraft>(INITIAL_DRAIN);
   const [limit, setLimit] = useState(RUNS_PAGE);
   const [now, setNow] = useState(() => Date.now());
   const [starting, setStarting] = useState(false);
   const [startNote, setStartNote] = useState("");
   const [stopping, setStopping] = useState("");
+  const [draining, setDraining] = useState(false);
+  const [drainStopping, setDrainStopping] = useState("");
+  const [drainNote, setDrainNote] = useState("");
+  const [drainRead, setDrainRead] = useState("");
   /*
     TWO NOTES, NOT ONE. `readNote` is a failed read and is cleared by the next good answer;
     `stopNote` is what an act of the operator's said, and a successful refresh must not erase
@@ -92,6 +117,7 @@ export function Watch({ host }: PanelProps) {
   const [stopNote, setStopNote] = useState("");
   const [policyNote, setPolicyNote] = useState("");
   const [accountsNote, setAccountsNote] = useState("");
+  const [drainAccountsNote, setDrainAccountsNote] = useState("");
 
   const runs = usePolledResource<RunsResult>(
     () => read(host, ACTIONS.runs, RunsQuerySchema.parse({ limit }), RunsResultSchema),
@@ -126,6 +152,25 @@ export function Watch({ host }: PanelProps) {
     key: "atyrode.babel.machines",
     initial: NO_MACHINES,
   });
+
+  const drains = usePolledResource<readonly DrainStatus[]>(
+    async () =>
+      (
+        await read(
+          host,
+          ACTIONS.drainStatus,
+          DrainQuerySchema.parse({ limit: DRAINS_LISTED }),
+          DrainStatusResultSchema,
+        )
+      ).drains,
+    DRAINS_POLL_MS,
+    {
+      key: "atyrode.babel.drains",
+      initial: NO_DRAINS,
+      onError: (reason) => setDrainRead(noteOf(reason)),
+      onSuccess: () => setDrainRead(""),
+    },
+  );
 
   /*
     WHICH ACCOUNTS THIS RUN COULD SPEND (#279), read per machine because a broker is a machine's
@@ -170,6 +215,42 @@ export function Watch({ host }: PanelProps) {
   const needed = PRESET_REACHES_MODEL[draft.preset];
   const pick = useMemo(() => sessionChoice(draft, offered), [draft, offered]);
   const chosen = needed && pick.ok ? pick.session : null;
+
+  /*
+    AND WHICH ACCOUNT THE DRAIN WOULD SPEND. A second feed rather than a shared one, because the
+    two forms name their own machine: a drain of dev-02 offered dev-01's credentials would be a
+    picker listing rows that do not exist where its jobs will run. Both read the same door and
+    both resolve through the same {@link sessionChoice}, which is the part that must not be two.
+  */
+  const drainAccounts = usePolledResource<AccountsResult>(
+    () =>
+      read(
+        host,
+        ACTIONS.accounts,
+        AccountsQuerySchema.parse({ machineId: drainDraft.machineId }),
+        AccountsResultSchema,
+      ),
+    ACCOUNTS_POLL_MS,
+    {
+      key: "atyrode.babel.drain.accounts",
+      initial: NO_ACCOUNTS,
+      enabled: drainDraft.machineId !== "",
+      restartKey: drainDraft.machineId,
+      onError: (reason) => setDrainAccountsNote(noteOf(reason)),
+      onSuccess: () => setDrainAccountsNote(""),
+    },
+  );
+  const drainOffered = useMemo<AccountsResult>(
+    () =>
+      drainAccountsNote === ""
+        ? drainAccounts.value
+        : { accounts: [], unavailable: drainAccountsNote },
+    [drainAccounts.value, drainAccountsNote],
+  );
+  const drainPick = useMemo(
+    () => sessionChoice(drainDraft, drainOffered),
+    [drainDraft, drainOffered],
+  );
 
   /*
     WHAT WILL RUN is a resource keyed on the request itself: change the machine, the preset or a
@@ -219,14 +300,61 @@ export function Watch({ host }: PanelProps) {
 
   /*
     The clock advances only while something is in flight. A panel that ticked over a page of
-    receipts would be re-rendering a table of fixed numbers once a second forever.
+    receipts would be re-rendering a table of fixed numbers once a second forever — and a RUNNING
+    DRAIN is in flight whatever its jobs are doing, because its own figures (the ETA against the
+    deadline, how long it has been going) advance on the clock rather than on a poll.
   */
-  const inFlight = runs.value.runs.some((run) => run.state === "queued" || run.state === "running");
+  const inFlight =
+    runs.value.runs.some((run) => run.state === "queued" || run.state === "running") ||
+    drains.value.some((drain) => drain.state === "running");
   useEffect(() => {
     if (!inFlight) return;
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);
     return () => clearInterval(timer);
   }, [inFlight]);
+
+  const onDrainStart = useCallback(async () => {
+    if (!drainPick.ok) return;
+    setDraining(true);
+    setDrainNote("");
+    const outcome = await act(
+      host,
+      ACTIONS.drainStart,
+      // The deadline is an instant computed at the press, from the minutes the operator set: a
+      // form left open for ten minutes must not post a deadline ten minutes in the past.
+      drainStartRequest(drainDraft, drainPick.session, Date.now()),
+      DrainStartResultSchema,
+    );
+    setDraining(false);
+    if (outcome.ok) {
+      const started = outcome.value;
+      setDrainNote(
+        `Draining ${started.account} as ${started.drainId}: ${String(started.launched)} of ` +
+          `${String(started.concurrent)} jobs launched.${started.note === "" ? "" : ` ${started.note}`}`,
+      );
+      setNow(Date.now());
+      drains.refresh();
+      runs.refresh();
+      return;
+    }
+    setDrainNote(outcome.message);
+  }, [drainDraft, drainPick, drains, host, runs]);
+
+  const onDrainStop = useCallback(
+    async (drain: DrainStatus) => {
+      setDrainStopping(drain.drainId);
+      const outcome = await act(host, ACTIONS.drainStop, drainStopInput(drain), z.unknown());
+      setDrainStopping("");
+      setDrainNote(
+        outcome.ok
+          ? `Asked ${drain.drainId} to stop: its jobs are cancelled and its overlay cleared.`
+          : outcome.message,
+      );
+      drains.refresh();
+      runs.refresh();
+    },
+    [drains, host, runs],
+  );
 
   const onStart = useCallback(async () => {
     if (blocked !== "" || (needed && chosen === null)) return;
@@ -280,6 +408,21 @@ export function Watch({ host }: PanelProps) {
         note={runsNote === "" ? stopNote : runsNote}
         onStop={onStop}
         onMore={() => setLimit((current) => current + RUNS_PAGE)}
+      />
+      <Drain
+        draft={drainDraft}
+        drains={drains.value}
+        machines={machines.value}
+        topics={topics.value.topics}
+        accounts={drainOffered}
+        session={drainPick}
+        now={now}
+        starting={draining}
+        stopping={drainStopping}
+        note={drainNote === "" ? drainRead : drainNote}
+        onDraft={setDrainDraft}
+        onStart={onDrainStart}
+        onStop={onDrainStop}
       />
       <Recipes recipes={policy.value?.recipes ?? []} now={now} note={policyNote} />
       <Ceilings policy={policy.value} now={now} note={policyNote} />

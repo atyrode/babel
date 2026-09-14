@@ -3,6 +3,7 @@ import type { ActionOutcome, MachineSummary } from "@manifold/protocol";
 import { ACTIONS, OPERATIONS, door, type ActionName } from "../../contract.ts";
 import type {
   AccountsResult,
+  DrainStatus,
   LaunchAnswer,
   PolicyResult,
   RunProgress,
@@ -234,6 +235,41 @@ export function launchAnswer(overrides: Partial<LaunchAnswer> = {}): LaunchAnswe
   };
 }
 
+/**
+ * One drain as the status door answers for it (#258). The defaults are a drain that has just
+ * started and said nothing yet, so a test names only the figures it is about.
+ */
+export function drainStatus(over: Partial<DrainStatus> = {}): DrainStatus {
+  return {
+    drainId: "drn_live",
+    machineId: "m-dev-01",
+    preset: "read-whats-new",
+    state: "running",
+    reason: "",
+    startedAt: new Date(Date.now() - 60_000).toISOString(),
+    startedBy: "operator",
+    finishedAt: "",
+    concurrent: 2,
+    target: { costMicros: 5_000_000 },
+    account: "the-drain-account",
+    model: "anthropic/claude-sonnet-4-5",
+    budgetId: "bdg_one",
+    jobsLaunched: 2,
+    jobsSettled: 0,
+    jobsLive: 2,
+    jobsAtModel: 0,
+    jobsStalled: 0,
+    spent: { calls: 0, inputTokens: 0, outputTokens: 0, costMicros: 0 },
+    settled: { calls: 0, inputTokens: 0, outputTokens: 0, costMicros: 0 },
+    outputTokensPerMinute: 0,
+    costMicrosPerMinute: 0,
+    etaAt: "",
+    refusals: {},
+    closures: {},
+    ...over,
+  };
+}
+
 /** The door table a Watch test mounts against; override one door to make it refuse. */
 export function watchDoors(answers: {
   readonly runs: () => RunsResult;
@@ -245,6 +281,10 @@ export function watchDoors(answers: {
   readonly launchPreview?: (args: unknown) => LaunchAnswer;
   readonly launch?: (args: unknown) => LaunchAnswer;
   readonly stop?: (args: unknown) => unknown;
+  /** What is draining; the panel polls this one every five seconds like the runs feed. */
+  readonly drainStatus?: (args: unknown) => { readonly drains: readonly DrainStatus[] };
+  readonly drainStart?: (args: unknown) => unknown;
+  readonly drainStop?: (args: unknown) => unknown;
 }): Record<string, Doorman> {
   return {
     [door(ACTIONS.runs)]: () => answers.runs(),
@@ -255,5 +295,23 @@ export function watchDoors(answers: {
       (answers.launchPreview ?? (() => launchAnswer({ runId: "", jobId: "" })))(args),
     [door(ACTIONS.launch)]: (args) => (answers.launch ?? (() => launchAnswer()))(args),
     [door(ACTIONS.stop)]: (args) => (answers.stop ?? (() => ({ asked: true })))(args),
+    [door(ACTIONS.drainStatus)]: (args) =>
+      (answers.drainStatus ?? (() => ({ drains: [] })))(args),
+    [door(ACTIONS.drainStart)]: (args) =>
+      (
+        answers.drainStart ??
+        (() => ({
+          drainId: "drn_started",
+          machineId: "m-dev-01",
+          preset: "read-whats-new" as const,
+          concurrent: 4,
+          launched: 4,
+          budgetId: "bdg_one",
+          account: "the-drain-account",
+          model: "anthropic/claude-sonnet-4-5",
+          note: "",
+        }))
+      )(args),
+    [door(ACTIONS.drainStop)]: (args) => (answers.drainStop ?? (() => ({ asked: true })))(args),
   };
 }

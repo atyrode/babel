@@ -14,6 +14,7 @@ import {
   type LaunchDraft,
   type Preset,
   type RecipeRow,
+  type SessionDraft,
   type SessionPick,
   type TopicRow,
 } from "./api.ts";
@@ -203,16 +204,15 @@ function RecipePicks({
  * be the panel guessing at another machine's configuration and hiding the models it guessed
  * wrong about.
  */
-function SessionPicker({
-  draft,
+export function SessionPicker({
+  session,
   accounts,
-  onDraft,
+  onSession,
 }: {
-  readonly draft: LaunchDraft;
+  readonly session: SessionDraft;
   readonly accounts: AccountsResult;
-  readonly onDraft: (draft: LaunchDraft) => void;
+  readonly onSession: (session: SessionDraft) => void;
 }) {
-  const session = draft.session;
   const typed = accounts.unavailable !== "";
   return (
     <Stack gap="var(--babel-space-2)" className="plugin-atyrode_babel_watch__session">
@@ -226,9 +226,7 @@ function SessionPicker({
                 className="plugin-atyrode_babel_watch__session-input"
                 placeholder="anthropic"
                 value={session.provider}
-                onInput={(event) =>
-                  onDraft({ ...draft, session: { ...session, provider: event.currentTarget.value } })
-                }
+                onInput={(event) => onSession({ ...session, provider: event.currentTarget.value })}
               />
             </label>
             <label className="plugin-atyrode_babel_watch__knob">
@@ -238,9 +236,7 @@ function SessionPicker({
                 className="plugin-atyrode_babel_watch__session-input"
                 placeholder="7"
                 value={session.credentialId}
-                onInput={(event) =>
-                  onDraft({ ...draft, session: { ...session, credentialId: event.currentTarget.value } })
-                }
+                onInput={(event) => onSession({ ...session, credentialId: event.currentTarget.value })}
               />
             </label>
             <label className="plugin-atyrode_babel_watch__knob">
@@ -250,9 +246,7 @@ function SessionPicker({
                 className="plugin-atyrode_babel_watch__session-input"
                 placeholder="empty for an api key"
                 value={session.identityKey}
-                onInput={(event) =>
-                  onDraft({ ...draft, session: { ...session, identityKey: event.currentTarget.value } })
-                }
+                onInput={(event) => onSession({ ...session, identityKey: event.currentTarget.value })}
               />
             </label>
           </>
@@ -270,14 +264,11 @@ function SessionPicker({
                   account with another's credential.
                 */
                 const row = accounts.accounts.find((entry) => entry.credentialId === event.target.value);
-                onDraft({
-                  ...draft,
-                  session: {
-                    ...session,
-                    provider: row?.provider ?? "",
-                    credentialId: row?.credentialId ?? "",
-                    identityKey: row?.identityKey ?? "",
-                  },
+                onSession({
+                  ...session,
+                  provider: row?.provider ?? "",
+                  credentialId: row?.credentialId ?? "",
+                  identityKey: row?.identityKey ?? "",
                 });
               }}
             >
@@ -299,7 +290,7 @@ function SessionPicker({
             className="plugin-atyrode_babel_watch__session-input"
             placeholder="provider/model"
             value={session.model}
-            onInput={(event) => onDraft({ ...draft, session: { ...session, model: event.currentTarget.value } })}
+            onInput={(event) => onSession({ ...session, model: event.currentTarget.value })}
           />
         </label>
         <label className="plugin-atyrode_babel_watch__knob">
@@ -307,7 +298,7 @@ function SessionPicker({
           <select
             className="plugin-atyrode_babel_watch__picker"
             value={session.thinking}
-            onChange={(event) => onDraft({ ...draft, session: { ...session, thinking: event.target.value } })}
+            onChange={(event) => onSession({ ...session, thinking: event.target.value })}
           >
             {THINKING_CHOICES.map((choice) => (
               <option key={choice.value} value={choice.value}>
@@ -397,7 +388,11 @@ function WillRun({
         never shows one.
       */}
       {PRESET_REACHES_MODEL[draft.preset] && draft.machineId !== "" ? (
-        <SessionPicker draft={draft} accounts={accounts} onDraft={onDraft} />
+        <SessionPicker
+          session={draft.session}
+          accounts={accounts}
+          onSession={(session) => onDraft({ ...draft, session })}
+        />
       ) : null}
       {preview === null ? (
         <p className="plugin-atyrode_babel_watch__willrun-line plugin-atyrode_babel_watch__muted">
@@ -506,7 +501,13 @@ export function Start({
   */
   const blocked = unready(draft) || (session !== null && !session.ok ? session.reason : "");
   return (
-    <Stack gap="var(--babel-space-3)" className="plugin-atyrode_babel_watch__section">
+    // The section names itself, as the drain's does and for the same reason: two forms on this
+    // screen offer a "Machine" picker and a session, and `watch/test/start.test.tsx` scopes its
+    // reads to this one rather than driving whichever came first in the document.
+    <Stack
+      gap="var(--babel-space-3)"
+      className="plugin-atyrode_babel_watch__section plugin-atyrode_babel_watch__start-section"
+    >
       <Stack gap="var(--babel-space-1)">
         <h2 className="plugin-atyrode_babel_watch__title">Start something</h2>
         <p className="plugin-atyrode_babel_watch__lede">

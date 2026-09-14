@@ -3,6 +3,10 @@ import { z } from "zod";
 import {
   AccountRowSchema,
   AccountsResultSchema,
+  DRAIN_CONCURRENT_MAX,
+  DrainStartRequestSchema,
+  DrainStatusSchema,
+  DrainStopInputSchema,
   LaunchInputSchema,
   LaunchRequestSchema,
   LaunchResultSchema,
@@ -25,6 +29,7 @@ import {
   TopicsResultSchema,
   door,
   type ActionName,
+  type DrainPreset,
   type LaunchInput,
   type SessionChoice,
 } from "../contract.ts";
@@ -196,6 +201,18 @@ export interface SessionDraft {
   readonly identityKey: string;
 }
 
+/**
+ * WHAT THE PICKER NEEDS OF A DRAFT: the half-made session, and the machine whose broker offered
+ * the rows. Both the launch draft and the drain draft hold exactly this, and they hold it the
+ * same way on purpose — the two forms name an account through one picker and resolve it through
+ * one {@link sessionChoice}, because two ways to say "spend this account" is how a fan ended up
+ * spending one nobody could name (post-mortem #267).
+ */
+export interface SessionHolder {
+  readonly session: SessionDraft;
+  readonly machineId: string;
+}
+
 export const INITIAL_SESSION: SessionDraft = {
   model: "",
   thinking: "",
@@ -204,17 +221,14 @@ export const INITIAL_SESSION: SessionDraft = {
   identityKey: "",
 };
 
-export interface LaunchDraft {
+export interface LaunchDraft extends SessionHolder {
   readonly preset: Preset;
-  readonly machineId: string;
   /** The topic for `explore-topic`; empty until one is picked. */
   readonly entityId: string;
   readonly sinceDays: number;
   readonly draws: number;
   readonly minutes: number;
   readonly recipes: readonly string[];
-  /** The model, the thinking level and the account; ignored by a preset that reaches no model. */
-  readonly session: SessionDraft;
 }
 
 export const INITIAL_DRAFT: LaunchDraft = {
@@ -381,7 +395,7 @@ function incomplete(clause: string): SessionPick {
  * slot, so the tag is both admissible and honest — this panel, on this machine, rather than an
  * observation that never happened.
  */
-export function sessionChoice(draft: LaunchDraft, accounts: AccountsResult): SessionPick {
+export function sessionChoice(draft: SessionHolder, accounts: AccountsResult): SessionPick {
   const session = draft.session;
   const model = session.model.trim();
   if (model === "") return incomplete("name the model this run asks for, as provider/model");
@@ -569,3 +583,203 @@ export const STALLED_NOTE =
 export function tokenClause(progress: RunProgress): string {
   return `${figure(progress.inputTokens)} / ${figure(progress.outputTokens)} / ${figure(progress.cacheTokens)}`;
 }
+
+// ------------------------------------------------------------------ draining a window (#258)
+
+/** One drain as the door answers for it; the contract spells the schema and not the type. */
+export type DrainStatus = z.infer<typeof DrainStatusSchema>;
+
+/**
+ * What each drain preset is, in the operator's words, and what its one knob is. It is a table of
+ * its own rather than a reuse of `PRESET_CARDS` because a drain offers three of the five and
+ * says something different about each: what a drain of it SPENDS.
+ */
+export interface DrainCard {
+  readonly title: string;
+  readonly does: string;
+  readonly knob: Knob;
+  /** Whether jobs of this preset reach a model at all; `keep-going` does not. */
+  readonly spends: boolean;
+}
+
+export const DRAIN_CARDS: Record<DrainPreset, DrainCard> = {
+  "read-whats-new": {
+    title: "Read what's new",
+    does: "One exploration per job over the sessions this machine has catalogued lately.",
+    knob: "days",
+    spends: true,
+  },
+  "explore-topic": {
+    title: "Explore a topic",
+    does: "One exploration per job over the sessions this topic's own records cite.",
+    knob: "topic",
+    spends: true,
+  },
+  "keep-going": {
+    title: "Keep going",
+    does: "One scan per job. It reaches no model, so it spends nothing: this is the rehearsal.",
+    knob: "minutes",
+    spends: false,
+  },
+};
+
+/** The bounds of the two knobs a drain owns, read off the contract's own schema. */
+export const DRAIN_BOUNDS = {
+  concurrent: { min: 1, max: DRAIN_CONCURRENT_MAX, step: 1 },
+  minutesToDeadline: { min: 5, max: 24 * 60, step: 5 },
+} as const;
+
+export interface DrainDraft extends SessionHolder {
+  readonly preset: DrainPreset;
+  readonly entityId: string;
+  readonly sinceDays: number;
+  readonly minutes: number;
+  readonly concurrent: number;
+  /**
+   * THE DEADLINE AS MINUTES FROM NOW, which is the figure an operator has: "the window resets at
+   * 13:00 and it is 10:40, so ninety minutes". The instant is computed when the button is
+   * pressed, so a form left open for ten minutes does not post a deadline ten minutes in the
+   * past.
+   */
+  readonly minutesToDeadline: number;
+  /** The cost target in whole dollars; 0 means "no cost target", which the deadline then bounds. */
+  readonly targetUsd: number;
+  readonly reason: string;
+}
+
+export const INITIAL_DRAIN: DrainDraft = {
+  preset: "read-whats-new",
+  machineId: "",
+  entityId: "",
+  sinceDays: 1,
+  minutes: 60,
+  concurrent: 2,
+  minutesToDeadline: 120,
+  targetUsd: 0,
+  session: INITIAL_SESSION,
+  reason: "",
+};
+
+/**
+ * The draft as `drain.start` takes it, plus the OPERATION NODE the door is authorized at — the
+ * same reason `launchRequest` carries one, and the same table it reads the operation from.
+ *
+ * The SESSION is passed in rather than read off the draft, exactly as `launchRequest` takes the
+ * one the picker made: the scope belongs to the broker observation the account was seen in, so
+ * only {@link sessionChoice} — which holds the offered rows — can state it.
+ *
+ * The deadline is turned into an instant HERE, at the moment of the press, from the minutes the
+ * operator set. `targetUsd` becomes `costMicros` because the meter's unit is micro-dollars and
+ * rounding a target to cents would make "stop at five dollars" stop at $4.99 or $5.01 depending
+ * on the direction nobody chose.
+ */
+export function drainStartRequest(
+  draft: DrainDraft,
+  session: SessionChoice,
+  now: number,
+): z.infer<typeof DrainStartRequestSchema> {
+  const card = DRAIN_CARDS[draft.preset];
+  return DrainStartRequestSchema.parse({
+    machineId: draft.machineId,
+    preset: draft.preset,
+    concurrent: draft.concurrent,
+    reason: draft.reason,
+    session,
+    target: {
+      deadline: new Date(now + draft.minutesToDeadline * 60_000).toISOString(),
+      ...(draft.targetUsd > 0 ? { costMicros: Math.round(draft.targetUsd * 1_000_000) } : {}),
+    },
+    recipes: [],
+    ...(card.knob === "topic" && draft.entityId !== "" ? { entityId: draft.entityId } : {}),
+    ...(card.knob === "days" ? { sinceDays: draft.sinceDays } : {}),
+    ...(card.knob === "minutes" ? { minutes: draft.minutes } : {}),
+    operation: {
+      kind: "operation",
+      machineId: draft.machineId,
+      operationId: PRESET_OPERATIONS[draft.preset],
+    },
+  });
+}
+
+/** What `drain.stop` takes: the drain, and the OPERATION NODE its jobs are cancelled at. */
+export function drainStopInput(
+  drain: DrainStatus,
+  reason = "",
+): z.infer<typeof DrainStopInputSchema> {
+  return DrainStopInputSchema.parse({
+    drainId: drain.drainId,
+    operation: {
+      kind: "operation",
+      machineId: drain.machineId,
+      operationId: PRESET_OPERATIONS[drain.preset],
+    },
+    reason,
+  });
+}
+
+/**
+ * Why a drain cannot be started yet, in one clause, or empty when it can — in the order the form
+ * reads, so the sentence beside the button is about the field the operator is looking at.
+ *
+ * THE ACCOUNT IS REFUSED HERE IN THE SAME WORDS A LAUNCH WOULD USE, because a drain NAMES the
+ * account it spends (#267): on 2026-09-13 nothing on the machine could say which account a
+ * running fan was burning, and "start it and find out" is the failure this door exists to
+ * remove. The clause is {@link sessionChoice}'s own — one picker, one refusal — and the drain
+ * adds only what a launch has no equivalent of: the reason the overlay records.
+ */
+export function drainUnready(draft: DrainDraft, session: SessionPick): string {
+  if (draft.machineId === "") return "Pick a machine to drain on.";
+  if (DRAIN_CARDS[draft.preset].knob === "topic" && draft.entityId === "") {
+    return "Pick a topic to explore.";
+  }
+  if (!session.ok) return session.reason;
+  if (draft.reason.trim() === "") return "Say why: the reason is recorded on the overlay.";
+  return "";
+}
+
+/** A micro-dollar figure as money. Four places, because a drain's target is set in cents. */
+export function micros(value: number): string {
+  return `$${(value / 1_000_000).toFixed(4)}`;
+}
+
+/**
+ * A RATE PER MINUTE, and zero written as zero.
+ *
+ * "0/min" is the reading the go/no-go rule is about — tokens per minute flat for three minutes
+ * while jobs say `at the model` is a stop — so it is shown as a number rather than as a dash,
+ * which is what an unmeasured figure looks like. The two are different facts.
+ */
+export function perMinute(value: number): string {
+  return `${figure(Math.round(value))}/min`;
+}
+
+/**
+ * WHEN THIS DRAIN REACHES ITS TARGET, against the deadline it has to beat.
+ *
+ * The comparison is the whole point and it is made here rather than left to the reader: an ETA
+ * after the deadline means the target will NOT be met, which is the operator's cue to raise the
+ * fan or accept the shortfall, and it was the number nobody had on 2026-09-13.
+ */
+export function etaClause(drain: DrainStatus, now: number): string {
+  if (drain.state !== "running") return "—";
+  const deadline = drain.target.deadline === undefined ? null : Date.parse(drain.target.deadline);
+  const left = deadline === null || !Number.isFinite(deadline) ? "" : ` · deadline ${until(drain.target.deadline ?? "", now)}`;
+  if (drain.etaAt === "") {
+    const spends = drain.target.costMicros !== undefined || drain.target.outputTokens !== undefined;
+    return `${spends ? "no rate yet" : "no spend target"}${left}`;
+  }
+  const eta = Date.parse(drain.etaAt);
+  if (!Number.isFinite(eta)) return `—${left}`;
+  const clause = `target ${until(drain.etaAt, now)}`;
+  if (deadline === null || !Number.isFinite(deadline)) return clause;
+  return `${clause}${eta > deadline ? " — after the deadline" : ""}${left}`;
+}
+
+/** What a drain's ending means, spelled where it is shown. */
+export const DRAIN_STATE_NOTE: Record<string, string> = {
+  running: "Launching jobs and folding what they spend.",
+  target: "It stopped itself: the target was met.",
+  deadline: "It stopped itself: the deadline passed.",
+  stopped: "An operator stopped it.",
+  failed: "It could not launch anything and stopped rather than pretending to run.",
+};

@@ -98,7 +98,8 @@
 /* A preset is a request, so the card carries the request's own two lines and
    nothing else: what it is called, and what asking for it does. Pressed is the
    accent's job — one open card at a time, because the knobs below belong to it. */
-.plugin-atyrode_babel_watch__preset {
+.plugin-atyrode_babel_watch__preset,
+.plugin-atyrode_babel_watch__drain-preset {
   display: flex;
   flex-direction: column;
   gap: var(--babel-space-1);
@@ -120,7 +121,8 @@
   border-color: var(--babel-rule-strong);
 }
 
-.plugin-atyrode_babel_watch__preset[aria-pressed="true"] {
+.plugin-atyrode_babel_watch__preset[aria-pressed="true"],
+.plugin-atyrode_babel_watch__drain-preset[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--babel-accent) 55%, transparent);
   background: color-mix(in srgb, var(--babel-accent) 10%, var(--babel-bg-raised));
 }
@@ -213,6 +215,19 @@
   background: color-mix(in srgb, var(--babel-accent) 14%, transparent);
 }
 
+/* A named field rather than a number: the account and the model a drain spends (#258, #267).
+   Wider than a spinner because what goes in it is `anthropic/claude-sonnet-4-5`, and monospaced
+   because every one of these is an identifier that has to be compared by eye. */
+.plugin-atyrode_babel_watch__field {
+  width: 16rem;
+  padding: var(--babel-space-1) var(--babel-space-2);
+  border: 1px solid var(--babel-rule-strong);
+  border-radius: var(--babel-radius-sm);
+  color: var(--babel-ink);
+  background: var(--babel-bg);
+  font-family: var(--babel-font-mono);
+  font-size: 0.86rem;
+}
 .plugin-atyrode_babel_watch__chip {
   padding: 2px var(--babel-space-2);
   border: 1px solid var(--babel-rule);
@@ -454,4 +469,21 @@
 .plugin-atyrode_babel_watch__overlay {
   border-left: 2px solid var(--babel-accent);
   padding-left: var(--babel-space-3);
+}
+
+/* --------------------------------------------------------------------- draining a window */
+
+/* One drain, set apart by a rule the way the overlay strip is: a drain is a bounded exception
+   to what this deployment does every day, and the panel says so with its own frame rather than
+   with a fourth kind of box. */
+.plugin-atyrode_babel_watch__drain {
+  padding: var(--babel-space-3);
+  border: 1px solid var(--babel-rule);
+  border-left: 2px solid var(--babel-accent);
+  border-radius: var(--babel-radius-sm);
+}
+
+.plugin-atyrode_babel_watch__drain-account {
+  padding-bottom: var(--babel-space-2);
+  border-bottom: 1px solid var(--babel-rule);
 }

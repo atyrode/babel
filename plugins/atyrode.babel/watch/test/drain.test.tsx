@@ -1,0 +1,275 @@
+import "./dom.ts";
+import { resetPolledResources } from "@manifold/plugin/hooks";
+import { afterEach, expect, test } from "bun:test";
+import { ACTIONS, DrainStartRequestSchema, OPERATIONS } from "../../contract.ts";
+import { Watch } from "../web.tsx";
+import { BROKER_SCOPE, MACHINES, drainStatus, fakeHost, runsResult, watchDoors, type FakeHost } from "./host.ts";
+import { choose, click, mount, settle, type, unmountAll } from "./render.tsx";
+
+/*
+  DRAINING A WINDOW, as the operator meets it (#258).
+
+  The assertions are about the two things that were missing on 2026-09-13: what reaches the door
+  when the button is pressed, and what the screen says while a drain is running. The first is the
+  contract — a drain that posted the wrong account would spend the wrong window, and the whole
+  point of #267 is that the account is named before the button rather than discovered after. The
+  second is the go/no-go rule: the panel has to make "jobs at the model" and "tokens a minute"
+  readable at a glance, because an operator who cannot read them asks "is anything running?" two
+  hours in.
+*/
+
+const SECTION = ".plugin-atyrode_babel_watch__drain-section";
+const DRAIN_PRESET = ".plugin-atyrode_babel_watch__drain-preset";
+const DRAIN = ".plugin-atyrode_babel_watch__drain";
+const START = "[data-action='atyrode.babel.drainStart']";
+const STOP = "[data-action='atyrode.babel.drainStop']";
+const KNOB_LABEL = ".plugin-atyrode_babel_watch__knob-label";
+const STAT = ".plugin-atyrode_babel_watch__stat";
+
+afterEach(async () => {
+  await unmountAll();
+  resetPolledResources();
+});
+
+/**
+ * The drain section itself. Every read below is scoped to it: the Start form on the same screen
+ * has a "Machine" picker of its own, and a document-wide query would drive that one instead.
+ */
+function section(root: HTMLElement): HTMLElement {
+  const found = root.querySelector<HTMLElement>(SECTION);
+  if (found === null) throw new Error("the drain section is not on the screen");
+  return found;
+}
+
+/** The field or select under the label with this word; the panel shows a dozen at once. */
+function field(root: HTMLElement, label: string): HTMLElement {
+  for (const wrapper of section(root).querySelectorAll("label")) {
+    if (wrapper.querySelector(KNOB_LABEL)?.textContent !== label) continue;
+    const control = wrapper.querySelector("input, select");
+    if (control !== null) return control as HTMLElement;
+  }
+  throw new Error(`no field labelled ${label}`);
+}
+
+/** One figure of the running-drain strip, by its label. */
+function stat(root: HTMLElement, label: string): string {
+  for (const box of section(root).querySelectorAll(STAT)) {
+    if (box.querySelector(".plugin-atyrode_babel_watch__stat-label")?.textContent !== label) continue;
+    return box.querySelector(".plugin-atyrode_babel_watch__stat-value")?.textContent ?? "";
+  }
+  throw new Error(`no figure labelled ${label}`);
+}
+
+async function open(
+  answers: Parameters<typeof watchDoors>[0] = { runs: () => runsResult([]) },
+): Promise<{ readonly root: HTMLElement; readonly fake: FakeHost }> {
+  const fake = fakeHost(watchDoors(answers), MACHINES);
+  const root = await mount(<Watch host={fake.host} />);
+  await settle();
+  return { root, fake };
+}
+
+/** Fills in a startable drain: the machine, the account the broker offers, the model, and why. */
+async function compose(root: HTMLElement): Promise<void> {
+  await choose(field(root, "Machine"), "m-dev-01");
+  await settle();
+  await choose(field(root, "Account"), "7");
+  await type(field(root, "Model"), "anthropic/claude-sonnet-4-5");
+  await type(field(root, "Why"), "the 7-day window resets at 13:00Z");
+}
+
+test("the three drain presets are the ones a drain fans out, and the beat says it spends nothing", async () => {
+  const { root } = await open();
+  const cards = [...section(root).querySelectorAll(DRAIN_PRESET)];
+  expect(cards.map((card) => card.querySelector(".plugin-atyrode_babel_watch__preset-title")?.textContent)).toEqual([
+    "Read what's new",
+    "Explore a topic",
+    "Keep going",
+  ]);
+  // THE DRAWN PRESETS ARE ABSENT BY DESIGN: fanning them out would be a second implementation of
+  // the coordinator, and the panel must not offer what the door refuses.
+  expect(section(root).textContent).not.toContain("Review the backlog");
+  expect(cards[2]?.textContent).toContain("spends nothing");
+});
+
+test("nothing can be started until the account is named: the button says what is missing", async () => {
+  const { root, fake } = await open();
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+  expect(section(root).textContent).toContain("Pick a machine to drain on.");
+
+  await choose(field(root, "Machine"), "m-dev-01");
+  await settle();
+  expect(section(root).textContent).toContain("name the model this run asks for");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+
+  await type(field(root, "Model"), "claude-sonnet-4-5");
+  await settle();
+  // A bare model id is the one omp's gateway misses, so it is refused beside the button rather
+  // than at a launch that answers `gateway_unavailable` and says no more.
+  expect(section(root).textContent).toContain("is not a model reference");
+
+  await type(field(root, "Model"), "anthropic/claude-sonnet-4-5");
+  await settle();
+  expect(section(root).textContent).toContain("choose the account this run spends");
+
+  // The broker says this one is blocked, and a drain of it would be refused on the machine
+  // after the fan was posted and the overlay set — so it is refused here instead.
+  await choose(field(root, "Account"), "9");
+  await settle();
+  expect(section(root).textContent).toContain("account_blocked");
+
+  await choose(field(root, "Account"), "7");
+  await settle();
+  expect(section(root).textContent).toContain("Say why: the reason is recorded on the overlay.");
+  expect(root.querySelector<HTMLButtonElement>(START)?.disabled).toBe(true);
+  expect(fake.callsTo(ACTIONS.drainStart)).toHaveLength(0);
+});
+
+test("the button posts the account, the fan, the deadline and the operation node", async () => {
+  const { root, fake } = await open();
+  await compose(root);
+  await type(field(root, "Jobs at once"), "4");
+  await type(field(root, "Stop after"), "90");
+  await type(field(root, "Or at"), "5");
+  await settle();
+
+  const button = root.querySelector<HTMLButtonElement>(START);
+  expect(button?.disabled).toBe(false);
+  const before = Date.now();
+  await click(button);
+  await settle();
+
+  const calls = fake.callsTo(ACTIONS.drainStart);
+  expect(calls).toHaveLength(1);
+  const posted = DrainStartRequestSchema.parse(calls[0]?.args);
+  expect(posted.session).toEqual({
+    model: "anthropic/claude-sonnet-4-5",
+    account: {
+      provider: "anthropic",
+      // The scope is the broker's own statement about the observation the row was seen in, so
+      // it is read off the offered account rather than typed by the operator.
+      scope: BROKER_SCOPE,
+      credentialId: "7",
+      identityKey: "victorballu",
+    },
+  });
+  expect(posted.concurrent).toBe(4);
+  expect(posted.target.costMicros).toBe(5_000_000);
+  // THE DEADLINE IS COMPUTED AT THE PRESS, from the minutes the operator set: a form left open
+  // for ten minutes must not post a deadline ten minutes in the past.
+  const deadline = Date.parse(posted.target.deadline ?? "");
+  expect(deadline).toBeGreaterThanOrEqual(before + 90 * 60_000);
+  expect(deadline).toBeLessThan(before + 91 * 60_000);
+  // The node is what `machines:run` is discharged at; a request carrying only a machine id is
+  // refused `invalid authority target` before the door is entered.
+  expect(posted.operation).toEqual({
+    kind: "operation",
+    machineId: "m-dev-01",
+    operationId: OPERATIONS.explore,
+  });
+  // The refusal or the receipt is the sentence beside the button, and it names the account.
+  expect(root.textContent).toContain("Draining the-drain-account as drn_started");
+});
+
+test("a running drain shows the six figures the runbook names, and the account it is spending", async () => {
+  const { root } = await open({
+    runs: () => runsResult([]),
+    drainStatus: () => ({
+      drains: [
+        drainStatus({
+          drainId: "drn_live",
+          jobsLive: 3,
+          jobsAtModel: 2,
+          jobsStalled: 1,
+          concurrent: 4,
+          jobsLaunched: 7,
+          jobsSettled: 4,
+          outputTokensPerMinute: 1_240,
+          costMicrosPerMinute: 310_000,
+          spent: { calls: 18, inputTokens: 420_000, outputTokens: 9_100, costMicros: 2_400_000 },
+          settled: { calls: 12, inputTokens: 300_000, outputTokens: 6_000, costMicros: 1_800_000 },
+          target: { costMicros: 5_000_000, deadline: new Date(Date.now() + 40 * 60_000).toISOString() },
+          etaAt: new Date(Date.now() + 8 * 60_000).toISOString(),
+          refusals: { schema: 2 },
+          closures: { completed: 3, failed: 1 },
+        }),
+      ],
+    }),
+  });
+  const strip = root.querySelector(DRAIN);
+  if (strip === null) throw new Error("a running drain is not on the screen");
+
+  expect(stat(root, "Jobs live")).toBe("3 of 4");
+  expect(stat(root, "At the model")).toBe("2");
+  expect(stat(root, "Output tokens")).toBe("1,240/min");
+  expect(stat(root, "Spend")).toBe("$2.4000 of $5.0000");
+  expect(stat(root, "Calls")).toBe("18");
+  // THE ETA AGAINST THE DEADLINE, which is the comparison an operator acts on: eight minutes to
+  // the target and forty to the deadline is a drain that will make it.
+  expect(stat(root, "ETA")).toContain("target for 8m");
+  expect(stat(root, "ETA")).toContain("deadline for 40m");
+  expect(stat(root, "ETA")).not.toContain("after the deadline");
+
+  // A stall is a silence and is said as one, beside the figure it is about.
+  expect(strip.textContent).toContain("1 stalled");
+  // The account and the model are on the row, not only on the form (#267).
+  expect(strip.textContent).toContain("the-drain-account");
+  expect(strip.textContent).toContain("anthropic/claude-sonnet-4-5");
+  // A refused submission is paid work with no result, so it is its own row rather than a failure.
+  expect(strip.textContent).toContain("refused schema");
+  expect(strip.textContent).toContain("completed");
+});
+
+test("an ETA past the deadline says so, because that is the operator's cue to act", async () => {
+  const { root } = await open({
+    runs: () => runsResult([]),
+    drainStatus: () => ({
+      drains: [
+        drainStatus({
+          drainId: "drn_slow",
+          target: { costMicros: 5_000_000, deadline: new Date(Date.now() + 10 * 60_000).toISOString() },
+          etaAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+        }),
+      ],
+    }),
+  });
+  expect(stat(root, "ETA")).toContain("after the deadline");
+});
+
+test("stopping a drain posts its operation node, and an ended drain offers no stop", async () => {
+  const { root, fake } = await open({
+    runs: () => runsResult([]),
+    drainStatus: () => ({ drains: [drainStatus({ drainId: "drn_live" })] }),
+  });
+  await click(root.querySelector(STOP));
+  await settle();
+  const calls = fake.callsTo(ACTIONS.drainStop);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.args).toEqual({
+    drainId: "drn_live",
+    reason: "",
+    operation: { kind: "operation", machineId: "m-dev-01", operationId: OPERATIONS.explore },
+  });
+  expect(root.textContent).toContain("its jobs are cancelled and its overlay cleared");
+});
+
+test("an ended drain says how it ended and is not offered a stop", async () => {
+  const { root } = await open({
+    runs: () => runsResult([]),
+    drainStatus: () => ({
+      drains: [
+        drainStatus({
+          drainId: "drn_done",
+          state: "target",
+          reason: "the target of 5000000 micro-dollars is met at 5100000",
+          finishedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+          etaAt: "",
+        }),
+      ],
+    }),
+  });
+  expect(root.querySelector(STOP)).toBeNull();
+  expect(root.querySelector(DRAIN)?.textContent).toContain("the target of 5000000 micro-dollars");
+  // A drain that has ended has no ETA: what it spent is what it spent.
+  expect(stat(root, "ETA")).toBe("—");
+});

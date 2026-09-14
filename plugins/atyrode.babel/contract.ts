@@ -111,6 +111,10 @@ export const ACTIONS = {
    */
   accounts: "accounts",
   setupInference: "setupInference",
+  /** The three acts of #258: start a drain, read one, end one. */
+  drainStart: "drainStart",
+  drainStatus: "drainStatus",
+  drainStop: "drainStop",
   // the crossing (owner only)
   importLedger: "importLedger",
 } as const;
@@ -1189,4 +1193,220 @@ export const SetupInferenceResultSchema = z.strictObject({
   models: z.array(z.string()),
   /** One sentence naming what the owner now has, or what stopped it. */
   note: z.string(),
+});
+
+// ---------------------------------------------------------------------------- the drain (#258)
+
+/**
+ * WHICH PRESETS A DRAIN MAY FAN OUT, and why it is these three and not all five.
+ *
+ * A drain keeps N jobs in flight and launches the next one itself. The two DRAWN presets
+ * (`review-backlog`, `file-and-tidy`) do not work that way: the coordinator decides what is
+ * reviewed, claims it under a fence and the conductor dispatches it, and a controller that
+ * fanned those out would be a second implementation of the one thing the coordinator exists to
+ * arbitrate — the lane, the fence, the reservation and the day's allowance (`doors/launch.ts`
+ * says this about its own drawn branch). Running the loop faster is what the drain's overlay
+ * does, by raising the bound the conductor admits against.
+ *
+ * So a drain fans out exactly the presets that are launched DIRECTLY: two explores and the
+ * beat. `keep-going` is in the list because it is the one lane that spends no model at all,
+ * which makes it the honest rehearsal of the controller — the fan, the relaunch on settle and
+ * the self-stop, proven without spending a cent of the window the drain exists to protect.
+ */
+export const DRAIN_PRESETS = ["read-whats-new", "explore-topic", "keep-going"] as const;
+export const DrainPresetSchema = z.enum(DRAIN_PRESETS);
+export type DrainPreset = (typeof DRAIN_PRESETS)[number];
+
+/** The presets a drain fans out that reach a model; the rest spend nothing (see above). */
+export const DRAIN_SPENDING_PRESETS: readonly DrainPreset[] = ["read-whats-new", "explore-topic"];
+
+/**
+ * The most jobs one machine may hold for a drain. It is the manifest's own
+ * `limits.concurrentJobs` on the explore and evaluate operations: the hub refuses every posting
+ * past that number at `execute` (atyrode/manifold#551), so a drain that asked for more would
+ * spend its reservations on refusals. The door refuses above it by name rather than discovering
+ * it one refused job at a time.
+ */
+export const DRAIN_CONCURRENT_MAX = 16;
+
+/**
+ * How long the drain's budget overlay lasts when the target names no deadline. Two hours is the
+ * 2026-09-13 drain's own length, and the point of the ceiling is that nobody has to remember to
+ * unwind it: an overlay with no end is an edit of the standing policy wearing another name.
+ */
+export const DRAIN_DEFAULT_TTL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * WHERE A DRAIN STOPS. At least one of the three is required, and the door refuses a target
+ * that names none: "a drain without a target and a deadline is not a drain; it is a loop"
+ * (`docs/runbook.md` §11.1). The two spend targets are measured in what the HUB metered on the
+ * named account — `usage.inference` at settle, `inference_call` while running — and never in
+ * the provider's percentage, which lags by minutes and moves in whole points.
+ */
+export const DrainTargetSchema = z.strictObject({
+  /** Micro-dollars the hub has metered for this drain's jobs. */
+  costMicros: z.number().int().positive().max(1_000_000_000).optional(),
+  /** Output tokens, which is what a provider's window is mostly priced on. */
+  outputTokens: z.number().int().positive().max(10_000_000_000).optional(),
+  /** An ISO-8601 instant after which the drain launches nothing more. */
+  deadline: z.string().min(1).max(64).optional(),
+});
+export type DrainTarget = z.infer<typeof DrainTargetSchema>;
+
+/**
+ * THE FIVE STATES A DRAIN ENDS IN, and the four endings they distinguish. `target` and
+ * `deadline` are the controller stopping itself, which is the whole point of the operation;
+ * `stopped` is the operator's own act; `failed` is the controller unable to continue — the
+ * machine gone, every launch refused — recorded rather than retried for ever.
+ */
+export const DRAIN_STATES = ["running", "stopped", "target", "deadline", "failed"] as const;
+export const DrainStateSchema = z.enum(DRAIN_STATES);
+export type DrainState = (typeof DRAIN_STATES)[number];
+
+/** What a drain has spent, in the meter's own units: micro-dollars, never a rounded dollar. */
+export const DrainSpendSchema = z.strictObject({
+  calls: z.number().int(),
+  inputTokens: z.number().int(),
+  outputTokens: z.number().int(),
+  costMicros: z.number().int(),
+});
+export type DrainSpend = z.infer<typeof DrainSpendSchema>;
+
+/**
+ * What `drain.start` takes. The preset's own knobs travel with it, exactly as
+ * `LaunchInputSchema` carries them, because a drain is that preset launched many times rather
+ * than a different request.
+ *
+ * `session` is REQUIRED here and optional on a launch: a drain names the account it spends
+ * before the button (#267), and "which account did that fan burn" is the question nothing on
+ * the machine could answer on 2026-09-13. `reason` is required for the same reason `setBudget`
+ * requires one — "why is the batch sixty-four today" is what nobody could answer either.
+ */
+export const DrainStartInputSchema = z.strictObject({
+  machineId: bounded(120),
+  preset: DrainPresetSchema,
+  session: SessionChoiceSchema,
+  concurrent: z.number().int().min(1).max(DRAIN_CONCURRENT_MAX),
+  target: DrainTargetSchema,
+  reason: z.string().trim().min(1).max(2000),
+  /** For `explore-topic`: the entity whose cited sessions become the preparation. */
+  entityId: EntityIdSchema.optional(),
+  /** For `read-whats-new`: how far back, in days. */
+  sinceDays: z.number().int().min(1).max(365).optional(),
+  /** For `keep-going`: how long one beat runs, in minutes. */
+  minutes: z.number().int().min(5).max(24 * 60).optional(),
+  recipes: z.array(bounded(80)).max(16).default([]),
+  /** Whether a preparation may hold Babel's own transcripts (#262); absent unless asked. */
+  agentSessions: z.boolean().optional(),
+});
+export type DrainStartInput = z.infer<typeof DrainStartInputSchema>;
+
+/**
+ * What the `drain.start` door takes: the request above plus the OPERATION NODE it is authorized
+ * at, for the reason `LaunchRequestSchema` carries one — `machines:run` is granted at a node and
+ * the host walks the declared target through the raw arguments before the handler is entered.
+ */
+export const DrainStartRequestSchema = DrainStartInputSchema.extend({
+  operation: OperationRefSchema,
+});
+
+export const DrainStartResultSchema = z.strictObject({
+  drainId: z.string(),
+  machineId: z.string(),
+  preset: DrainPresetSchema,
+  concurrent: z.number().int(),
+  /** How many jobs the start actually posted; fewer than `concurrent` is reported, not hidden. */
+  launched: z.number().int(),
+  /** The overlay this drain set, or empty: the standing policy already admits its fan. */
+  budgetId: z.string(),
+  /** The account this drain spends, as the operator reads it back. */
+  account: z.string(),
+  model: z.string(),
+  /** Why fewer jobs than asked were posted, or empty. */
+  note: z.string(),
+});
+
+/**
+ * What `drain.stop` takes. The node is the OPERATION's rather than one job's: a drain holds
+ * several jobs of one operation, a requirement resolves to exactly one node
+ * (`plugin-host.ts`: one `ManifoldRef` per declared target), and the hub reads a job's consent
+ * at its operation anyway (`job-service.ts` `consentFor`) — so consent at the operation is what
+ * cancelling every job of this drain actually needs, and asking for it by name is honest about
+ * the breadth.
+ */
+export const DrainStopInputSchema = z.strictObject({
+  drainId: z.string().min(1).max(200),
+  operation: OperationRefSchema,
+  reason: z.string().max(2000).default(""),
+});
+
+export const DrainStopResultSchema = z.strictObject({
+  drainId: z.string(),
+  state: DrainStateSchema,
+  /** How many in-flight jobs were cancelled. */
+  cancelled: z.number().int(),
+  /** A job the hub would not cancel, and the overlay it could not clear, in its own words. */
+  note: z.string(),
+});
+
+/**
+ * `drain.status` takes one drain or none. None is what a panel opening cold has: it does not
+ * know a drain id until it has read one, and two doors — "list them" and "read this one" — would
+ * be two answers to "what is draining right now".
+ */
+export const DrainQuerySchema = z.strictObject({
+  drainId: z.string().min(1).max(200).optional(),
+  limit: z.number().int().min(1).max(50).default(10),
+});
+
+/**
+ * ONE DRAIN, AS THE PANEL WATCHES IT: the row, and the live fold over its jobs.
+ *
+ * Every field here is one of the numbers `docs/runbook.md` §11.4 says the panel must show, and
+ * each has one thing it must do: `jobsAtModel` must be non-zero within 90 seconds of the first
+ * launch; `outputTokensPerMinute` must be non-zero once a call has been metered; `spent` must
+ * rise toward the target; `etaAt` must stay before `deadline`. A process count, a socket count
+ * or a percentage from a home-made script is none of them (post-mortem O1, O7).
+ *
+ * `spent` is the drain's WHOLE spend — what its settled jobs metered plus what its live ones
+ * have metered so far — because that is the figure a target is judged against. `settled` is the
+ * durable part of it, so a reader can tell a receipt from a fold in progress.
+ */
+export const DrainStatusSchema = z.strictObject({
+  drainId: z.string(),
+  machineId: z.string(),
+  preset: DrainPresetSchema,
+  state: DrainStateSchema,
+  reason: z.string(),
+  startedAt: z.string(),
+  startedBy: z.string(),
+  finishedAt: z.string(),
+  concurrent: z.number().int(),
+  target: DrainTargetSchema,
+  /** The account and model this drain spends (#267), named before the button and after it. */
+  account: z.string(),
+  model: z.string(),
+  budgetId: z.string(),
+  jobsLaunched: z.number().int(),
+  jobsSettled: z.number().int(),
+  jobsLive: z.number().int(),
+  jobsAtModel: z.number().int(),
+  jobsStalled: z.number().int(),
+  spent: DrainSpendSchema,
+  settled: DrainSpendSchema,
+  /** Output tokens a minute over the last three minutes of samples; 0 before two of them. */
+  outputTokensPerMinute: z.number(),
+  /** Micro-dollars a minute over the same window, which is what a cost target closes against. */
+  costMicrosPerMinute: z.number(),
+  /** When this rate reaches the target, or empty: no rate, or no spend target to reach. */
+  etaAt: z.string(),
+  /** Refused submissions by the code `machine/engine/results.ts` names; paid work, no result. */
+  refusals: z.record(z.string(), z.number().int()),
+  /** How each of this drain's jobs closed, by closure. */
+  closures: z.record(z.string(), z.number().int()),
+});
+export type DrainStatus = z.infer<typeof DrainStatusSchema>;
+
+export const DrainStatusResultSchema = z.strictObject({
+  drains: z.array(DrainStatusSchema),
 });

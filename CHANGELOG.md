@@ -11,6 +11,19 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ### Added
 
+- **A drain is a governed, measured, self-stopping operation.** `drain.start` names the account
+  and the model it spends, the fan of jobs to keep in flight and where to stop — a metered cost,
+  a number of output tokens, a deadline, or it is refused; `drain.status` answers jobs live, jobs
+  at the model, tokens and cost a minute over the last three minutes, the spend against the
+  target and the ETA against the deadline, refusals by reason and the account being burned; and
+  `drain.stop` cancels what is in flight and clears the overlay. The controller keeps the fan
+  filled on every settlement through the same launch path the operator's own button uses, stops
+  itself at the target or the deadline, and never edits the standing policy — its concurrency is
+  a `budgets` overlay with a TTL, moved together with the cycle's allowance so that what one run
+  may spend is unchanged. Watch grows a Drain section with those figures and a Stop button. Two
+  hours and fourteen minutes of the 2026-09-13 drain produced fifty reviews, no burn rate, no
+  self-stop that ever fired and no way to say which account was being spent (#258, #267).
+
 - **Babel launches its own engine and meters it through its own inference service.** Code's
   `code engine` is gone (atyrode/code#153) and Manifold has no plugin-to-plugin call, so
   `explore` and `evaluate` now spawn `omp --mode rpc` themselves from a manifest-pinned `omp`
@@ -21,7 +34,6 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   `limits.inference.costMicros`, and a failed launch carries a named cause
   (`broker_unavailable`, `rate_limited`, `inference_unbound`) instead of a sentence about a
   missing ready frame (#279, #277, #267, and the hub half of #256).
-
 - **Babel becomes a manifold plugin family.** `plugins/atyrode.babel` is the
   baseline — one SQLite store of its own (manifold ADR 0034), the doors over it
   and the five event kinds it originates — with `atyrode.babel.feed` (Home, the

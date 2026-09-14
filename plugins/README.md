@@ -9,9 +9,9 @@ directory, each packed as one `<id>.manifold-plugin.json` and installed at
 
 | Plugin                | Directory                | Halves       | What it is                                                                                                                                                                   |
 | --------------------- | ------------------------ | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `atyrode.babel`       | `atyrode.babel/`         | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the machine operations and the conductor. Contributes the five event kinds and no panel. |
+| `atyrode.babel`       | `atyrode.babel/`         | server + web | The baseline: the store (one SQLite file of its own), the nine read doors, the operator's acts, the three drain doors, the machine operations and the conductor. Contributes the five event kinds and no panel. |
 | `atyrode.babel.feed`  | `atyrode.babel/feed/`    | web          | Home — every record Babel produced, ranked by what needs the operator — the peeled record, and a topic with its filings and his interest. Panels `home`, `record`, `topic`.     |
-| `atyrode.babel.watch` | `atyrode.babel/watch/`   | web          | What is running and what will run: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`.                         |
+| `atyrode.babel.watch` | `atyrode.babel/watch/`   | web          | What is running, what will run and what a drain is spending: presets instead of flags, the model and the ceiling up front, the live pulse, the receipt afterwards. Panel `watch`. |
 
 A part is a directory inside its parent's and says so with
 `dependencies: { "atyrode.babel": { type: "required" } }`; assembly refuses it otherwise. The
@@ -385,6 +385,38 @@ Two more things an enrolled machine's operator must arrange, because a manifest 
 `home` anchor needs `~/.omp/agent/sessions`, `~/.codex` and `~/.claude` to **exist** (a job whose
 read location is missing fails to start; `mkdir -p` is the whole fix), and the `runtime` anchor
 must be a dedicated bounded tmpfs, since the named-output lease is cut from it.
+
+## Draining a usage window
+
+A **drain** is the one operation that spends a chosen account's remaining usage on purpose,
+before it resets, and stops itself (#258; `docs/runbook.md` §11 is the procedure). It is three
+doors of the baseline and one section of Watch:
+
+| Door           | Governed at                             | What it does                                                                                                                                                      |
+| -------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `drainStart`   | `machines:run` at the **operation** node | Validates the target, sets a `budgets` overlay sized to the fan, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row. |
+| `drainStatus`  | `containers:read` (a dry read)          | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account.    |
+| `drainStop`    | `jobs:cancel` at the **operation** node | Cancels every job the drain holds, clears the overlay, and marks the row `stopped`.                                                                                  |
+
+Three things are worth knowing before reading `server/drain.ts`:
+
+- **The controller is not a second launcher.** Every job it posts goes through
+  `launchMachinery`'s `startExplore`/`startBeat` — the same code path, the same document, the
+  same pinned installation and the same `runs` row as the `launch` door — so there is never a
+  second answer to what a run is. It fans out only the presets that are launched DIRECTLY
+  (`read-whats-new`, `explore-topic`, `keep-going`); a drawn preset goes through the coordinator,
+  and fanning it out would be a second implementation of the thing the coordinator arbitrates.
+- **It is not a second governor.** The standing `policies` row is never touched: the fan lives in
+  a `budgets` overlay with a TTL (#260), and the overlay moves `concurrentPerMachine` together
+  with `perCycleCost` so that what ONE run may spend is exactly what it was. `dailyCost` is
+  deliberately not moved — a drain's jobs consult no daily allowance, and moving a number nothing
+  reads is the failure #260 exists to remove.
+- **It has no clock.** A tick happens when something has already woken this half, and the wake
+  that matters is a settlement, because a settlement is exactly when a slot opens. Launch ids are
+  DERIVED from the drain and its launch ordinal (`job_<drainId>_<n>`), so a retried tick re-posts
+  the same job rather than a second one. Closing on a target stops launching and ASKS the hub to
+  cancel what is in flight; a tick woken by a settlement holds no `jobs:cancel`, so the refusal is
+  recorded and the drain still ends. `drainStop` is where cancellation really lands.
 
 ## The SDK is a sibling checkout, for now
 
