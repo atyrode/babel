@@ -9,6 +9,8 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-14
+
 ### Removed
 
 - **Babel launches nothing: the self-launch engine, the Start picker and Babel's own inference
@@ -3681,7 +3683,8 @@ storage configuration yet — repository selection is per-invocation
   (ea65a45…85fe13f), replaced in 8636960 and a879067. SPEC.md and README.md
   rewritten around the restic model (5b8d593).
 
-[Unreleased]: https://github.com/atyrode/babel/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/atyrode/babel/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/atyrode/babel/releases/tag/v0.4.0
 [0.3.0]: https://github.com/atyrode/babel/releases/tag/v0.3.0
 [0.2.2]: https://github.com/atyrode/babel/releases/tag/v0.2.2
 [0.2.1]: https://github.com/atyrode/babel/releases/tag/v0.2.1
