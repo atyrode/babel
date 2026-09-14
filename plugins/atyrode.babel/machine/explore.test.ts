@@ -21,7 +21,11 @@ import type { OutputFile, OutputSink } from "./output.ts";
 import { openProgress } from "./progress.ts";
 
 const FIXTURE = join(import.meta.dir, "engine", "fakeengine.ts");
-const PROFILE = { id: "analysis", revision: 3 };
+const SESSION_CHOICE = {
+  model: "anthropic/claude-sonnet-5",
+  thinking: "high" as const,
+  account: { provider: "anthropic", identityKey: "victorballu@gmail.com" },
+};
 const SESSION = { harness: "omp", sourceId: "session-1", selector: "omp/session-1", path: "/archive/omp/session-1.jsonl" };
 const LOCATOR = { path: SESSION.path, line: 12, byte_offset: 480, digest: "sha256:abc" };
 
@@ -187,7 +191,7 @@ async function launch(
       binary: process.execPath,
       args: [FIXTURE, "--fake-prompt-out", promptPath, "--fake-submit", payloadPath, ...(options.fake ?? [])],
     },
-    profile: PROFILE,
+    session: SESSION_CHOICE,
     preparation: { id: "prep_0001", selection: [{ ...SESSION, digest: "sha256:capture" }] },
     recipes: options.recipes ?? [RECIPE],
     stages: options.stages ?? ["explore"],
@@ -292,11 +296,15 @@ test("a run writes every output file in the store's row shapes", async () => {
   expect(question?.text).toBe("which host actually runs the publisher?");
   expect(JSON.parse(String(question?.payload)).blocks).toBe(hypothesis?.id);
 
-  // The receipt states what actually ran, from Code's own report, and what the run produced.
-  expect(receipt.profile?.["id"]).toBe(PROFILE.id);
-  expect(receipt.profile?.["model"]).toBe("synthetic-1");
-  expect(receipt.profile?.["costPer1k"]).toEqual({ input: 0.001, output: 0.002 });
-  expect(receipt.profile?.["containment"]).toBe("synthetic-bwrap");
+  // The receipt states what actually ran, from BABEL'S OWN launch report (#279): the session the
+  // run was asked to be, and the boundary this process observed around itself.
+  expect(receipt.profile?.["schema"]).toBe("babel.launch/1");
+  expect(receipt.profile?.["model"]).toBe(SESSION_CHOICE.model);
+  expect(receipt.profile?.["thinking"]).toBe("high");
+  expect(receipt.profile?.["account"]).toBe(SESSION_CHOICE.account.identityKey);
+  // The flat pair a drain sums: whose window this spent, and what it asked for (#267).
+  expect(receipt.account).toEqual({ provider: "anthropic", identityKey: SESSION_CHOICE.account.identityKey });
+  expect(receipt.model).toBe(SESSION_CHOICE.model);
   expect(receipt.counts["records"]).toBe(records.length);
   expect(receipt.counts["hypotheses"]).toBe(1);
   expect(receipt.counts["findings"]).toBe(1);
@@ -315,8 +323,8 @@ test("a refused containment stops before any prompt and the receipt carries the 
   // Nothing was produced, and the empty files say so rather than being absent.
   expect(sink.rows("records")).toEqual([]);
   expect(receipt.counts["records"]).toBe(0);
-  // The profile is still recorded: it is what the refused engine was launched under.
-  expect(receipt.profile?.["id"]).toBe(PROFILE.id);
+  // The session is still recorded: it is what the refused engine was launched under.
+  expect(receipt.model).toBe(SESSION_CHOICE.model);
 });
 
 test("a malformed result is a failed closure carrying the refusal the model was given", async () => {

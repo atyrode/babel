@@ -142,8 +142,11 @@ export function observeContainment(
   home: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): Containment {
+  // THE HOME MUST BE THE JOB'S OWN, by its absolute path. A check that accepted "HOME with the
+  // XDG directories under it" would be satisfied by any ordinary login shell, and a run that
+  // recorded `manifold-job` there would be recording a boundary nobody built.
   const inside =
-    home !== "" &&
+    home === OMP_HOME &&
     environment["HOME"] === home &&
     (environment["XDG_CACHE_HOME"] ?? "").startsWith(`${home}/`) &&
     (environment["XDG_RUNTIME_DIR"] ?? "").startsWith(`${home}/`);

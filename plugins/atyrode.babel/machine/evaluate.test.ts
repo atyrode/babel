@@ -22,7 +22,11 @@ import type { OperationDeps } from "./explore.ts";
 import type { OutputFile, OutputSink } from "./output.ts";
 
 const FIXTURE = join(import.meta.dir, "engine", "fakeengine.ts");
-const PROFILE = { id: "analysis", revision: 3 };
+const SESSION_CHOICE = {
+  model: "anthropic/claude-sonnet-5",
+  thinking: "high" as const,
+  account: { provider: "anthropic", identityKey: "victorballu@gmail.com" },
+};
 
 const RECIPE = { id: "reception-vote", version: 2, title: "Receive a record", body: "Read it and say what you think." };
 
@@ -131,7 +135,7 @@ async function launch(options: {
       binary: process.execPath,
       args: [FIXTURE, "--fake-prompt-out", promptPath, "--fake-submit", payloadPath],
     },
-    profile: PROFILE,
+    session: SESSION_CHOICE,
     assignment: { ...ASSIGNMENT, ...options.assignment },
     target: options.target ?? TARGET,
     previous: options.previous ?? [],

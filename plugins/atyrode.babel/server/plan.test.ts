@@ -103,7 +103,7 @@ test("the plan drives the engine the machine block binds, under the operation's 
   const plan = runPlan({ manifest: MANIFEST, policy: POLICY, operationId: OPERATIONS.evaluate });
 
   expect(plan.engine).toEqual({ binary: ENGINE_BINARY, args: [] });
-  expect(ENGINE_BINARY).toBe("/runtime/bin/code");
+  expect(ENGINE_BINARY).toBe("/runtime/bin/omp");
   expect(plan.limits.timeoutMs).toBe(3_600_000);
   // The beat is a cheaper operation and its own declaration is what bounds it, not the review's.
   expect(operationLimits(MANIFEST.machine ?? null, OPERATIONS.scan).timeoutMs).toBe(600_000);
