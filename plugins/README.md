@@ -394,11 +394,11 @@ doors of the baseline and one section of Watch:
 
 | Door           | Governed at                             | What it does                                                                                                                                                      |
 | -------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `drainStart`   | `machines:run` at the **operation** node | Validates the target, sets a `budgets` overlay sized to the fan, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row. |
-| `drainStatus`  | `containers:read` (a dry read)          | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account.    |
-| `drainStop`    | `jobs:cancel` at the **operation** node | Cancels every job the drain holds, clears the overlay, and marks the row `stopped`.                                                                                  |
+| `drainStart`   | `machines:run` at the **operation** node | Validates the target, refuses a fan above the manifest's `concurrentJobs`, posts the first fan of jobs through the same launch path the operator's own button uses, and writes the `drains` row. |
+| `drainStatus`  | `containers:read`, delegating `jobs:read` | What is draining: jobs live, jobs at the model, tokens and cost a minute over the last three minutes, spend against target, ETA against deadline, refusals by reason, the account. A cycle follows it, and the delegate is what lets that cycle read a running job back. |
+| `drainStop`    | `jobs:cancel` at the **operation** node | Cancels every job the drain holds, and marks the row `closing` — or `stopped`, when it holds none.                                                                  |
 
-Three things are worth knowing before reading `server/drain.ts`:
+Four things are worth knowing before reading `server/drain.ts`:
 
 - **The controller is not a second launcher.** Every job it posts goes through
   `launchMachinery`'s `startExplore`/`startBeat` — the same code path, the same document, the
@@ -406,17 +406,28 @@ Three things are worth knowing before reading `server/drain.ts`:
   second answer to what a run is. It fans out only the presets that are launched DIRECTLY
   (`read-whats-new`, `explore-topic`, `keep-going`); a drawn preset goes through the coordinator,
   and fanning it out would be a second implementation of the thing the coordinator arbitrates.
-- **It is not a second governor.** The standing `policies` row is never touched: the fan lives in
-  a `budgets` overlay with a TTL (#260), and the overlay moves `concurrentPerMachine` together
-  with `perCycleCost` so that what ONE run may spend is exactly what it was. `dailyCost` is
-  deliberately not moved — a drain's jobs consult no daily allowance, and moving a number nothing
-  reads is the failure #260 exists to remove.
+- **It is not a governor at all, and it sets no overlay.** The standing `policies` row and the
+  `budgets` table are both untouched. A drain's jobs are launched directly and take no claim, so
+  no admission bound in `coordinator.ts` ever counts one: an overlay raising
+  `concurrentPerMachine` bounded nothing of the drain's and raised the CONDUCTOR's review bound
+  on every online machine for the drain's TTL. The fan is bounded where it is real — against the
+  manifest's `limits.concurrentJobs` at the door, and by the drain's own live jobs in the
+  controller — and what ONE run may spend stays the standing policy's `perRunUsd` (#268). A
+  heavier run is a profile change; a longer drain is a deadline, and a drain that names none gets
+  one two hours out.
 - **It has no clock.** A tick happens when something has already woken this half, and the wake
   that matters is a settlement, because a settlement is exactly when a slot opens. Launch ids are
   DERIVED from the drain and its launch ordinal (`job_<drainId>_<n>`), so a retried tick re-posts
-  the same job rather than a second one. Closing on a target stops launching and ASKS the hub to
-  cancel what is in flight; a tick woken by a settlement holds no `jobs:cancel`, so the refusal is
-  recorded and the drain still ends. `drainStop` is where cancellation really lands.
+  the same job rather than a second one — and a job the hub already holds under that id
+  (`job_digest_conflict`, the write that did not land) is taken back onto the row rather than
+  re-posted for ever.
+- **What it cannot cancel, it keeps.** Closing on a target stops launching and ASKS the hub to
+  cancel what is in flight; a tick woken by a settlement holds no `jobs:cancel`, so the jobs keep
+  running and the row goes to `closing` holding them, folding each receipt as it lands and taking
+  its recorded `ending` when none is left. Their spend is the drain's spend: a row that emptied
+  `live` at the close under-reported its own total by up to (N−1) runs. `drainStop` is where
+  cancellation really lands, and a `closing` drain is exactly the one whose stragglers it can
+  still reach.
 
 ## The SDK is a sibling checkout, for now
 

@@ -775,9 +775,10 @@ export function etaClause(drain: DrainStatus, now: number): string {
   return `${clause}${eta > deadline ? " — after the deadline" : ""}${left}`;
 }
 
-/** What a drain's ending means, spelled where it is shown. */
+/** What a drain's state means, spelled where it is shown. */
 export const DRAIN_STATE_NOTE: Record<string, string> = {
   running: "Launching jobs and folding what they spend.",
+  closing: "It has stopped launching; its last jobs' receipts are still owed to its total.",
   target: "It stopped itself: the target was met.",
   deadline: "It stopped itself: the deadline passed.",
   stopped: "An operator stopped it.",

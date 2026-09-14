@@ -236,7 +236,7 @@ test("an ETA past the deadline says so, because that is the operator's cue to ac
   expect(stat(root, "ETA")).toContain("after the deadline");
 });
 
-test("stopping a drain posts its operation node, and an ended drain offers no stop", async () => {
+test("stopping a drain posts its operation node, and the screen says what the door answered", async () => {
   const { root, fake } = await open({
     runs: () => runsResult([]),
     drainStatus: () => ({ drains: [drainStatus({ drainId: "drn_live" })] }),
@@ -250,7 +250,55 @@ test("stopping a drain posts its operation node, and an ended drain offers no st
     reason: "",
     operation: { kind: "operation", machineId: "m-dev-01", operationId: OPERATIONS.explore },
   });
-  expect(root.textContent).toContain("its jobs are cancelled and its overlay cleared");
+  // The door's own `cancelled` count, not an assumption: two of the two jobs it was holding.
+  expect(root.textContent).toContain("2 of 2 in-flight job(s) cancelled");
+});
+
+test("a stop the hub refused says so, with the job it could not cancel and the state it reached", async () => {
+  /*
+    A PROGRESS CLAIM CARRIES ITS NUMBER (runbook §11.6, rule 2). The door answers `cancelled` and
+    a `note` precisely because a stop can be refused — a settlement's tick holds no `jobs:cancel`,
+    and the hub says so by name — and the panel that used to discard both told the operator "its
+    jobs are cancelled" over a drain whose jobs were all still running.
+  */
+  const { root } = await open({
+    runs: () => runsResult([]),
+    drainStatus: () => ({ drains: [drainStatus({ drainId: "drn_live", jobsLive: 2 })] }),
+    drainStop: () => ({
+      drainId: "drn_live",
+      state: "closing" as const,
+      cancelled: 0,
+      note: "job_drn_live_1 was not cancelled: jobs:cancel capability required at target",
+    }),
+  });
+  await click(root.querySelector(STOP));
+  await settle();
+  expect(root.textContent).toContain("0 of 2 in-flight job(s) cancelled");
+  expect(root.textContent).toContain("it ends when their receipts land");
+  expect(root.textContent).toContain("job_drn_live_1 was not cancelled");
+  expect(root.textContent).not.toContain("its jobs are cancelled");
+});
+
+test("a closing drain is the one whose last jobs an operator can still cancel", async () => {
+  const { root } = await open({
+    runs: () => runsResult([]),
+    drainStatus: () => ({
+      drains: [
+        drainStatus({
+          drainId: "drn_closing",
+          state: "closing",
+          jobsLive: 1,
+          reason: "the target of 5000000 micro-dollars is met at 5100000",
+          etaAt: "",
+        }),
+      ],
+    }),
+  });
+  const strip = root.querySelector(DRAIN);
+  expect(strip?.textContent).toContain("closing");
+  expect(strip?.textContent).toContain("folding what its last 1 job(s) spend");
+  // It has stopped launching, so the button is about its stragglers rather than about the drain.
+  expect(root.querySelector(STOP)?.textContent).toBe("Cancel its last jobs");
 });
 
 test("an ended drain says how it ended and is not offered a stop", async () => {

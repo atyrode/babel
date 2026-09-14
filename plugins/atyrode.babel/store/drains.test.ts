@@ -12,20 +12,23 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   MAX_SAMPLES,
   RATE_WINDOW_MS,
+  accountName,
+  activeDrains,
   burnRate,
   closeDrain,
   deadlineOf,
   drainOnMachine,
+  finishDrain,
   insertDrain,
   readDrain,
   recentDrains,
   recordLaunch,
-  runningDrains,
   sample,
   saveFold,
   targetEta,
   targetMet,
   type DrainSample,
+  type LiveJob,
 } from "./drains.ts";
 import { openTestStore, type TestStore } from "./testdb.ts";
 
@@ -62,7 +65,6 @@ async function open(id: string, over: Record<string, unknown> = {}): Promise<voi
     concurrent: 2,
     target: { costMicros: 1_000_000 },
     startedBy: "operator",
-    budgetId: "bdg_one",
     ...over,
   } as Parameters<typeof insertDrain>[1]);
 }
@@ -76,10 +78,10 @@ test("a drain row keeps what a relaunch needs and reads back as it was written",
   // only the preset would quietly widen or narrow the scope between the first job and the last.
   expect(row?.knobs).toEqual({ recipes: ["code-health"], sinceDays: 3 });
   expect(row?.session.account.credentialId).toBe("41");
-  expect(row?.budgetId).toBe("bdg_one");
+  expect(row?.ending).toBe("");
   expect(row?.spent).toEqual({ calls: 0, inputTokens: 0, outputTokens: 0, costMicros: 0 });
 
-  expect((await runningDrains(harness.store)).map((entry) => entry.id)).toEqual(["drn_one"]);
+  expect((await activeDrains(harness.store)).map((entry) => entry.id)).toEqual(["drn_one"]);
   expect((await drainOnMachine(harness.store, "m-dev-01"))?.id).toBe("drn_one");
   expect(await drainOnMachine(harness.store, "m-other")).toBeNull();
 });
@@ -96,18 +98,18 @@ test("a launch is counted once however many times the same job is recorded", asy
   expect(row?.jobsLaunched).toBe(1);
 });
 
-test("a drain ends once: the second close finds nothing to close and the row keeps the first end", async () => {
+test("a drain holding nothing ends at once, and ends only once", async () => {
   await open("drn_one");
-  expect(await closeDrain(harness.store, "drn_one", "target", "the target was met")).toBe(true);
-  expect(await closeDrain(harness.store, "drn_one", "stopped", "and again")).toBe(false);
+  expect(await closeDrain(harness.store, "drn_one", "target", "the target was met", [])).toBe(
+    "ended",
+  );
+  expect(await closeDrain(harness.store, "drn_one", "stopped", "and again", [])).toBe("already");
   const row = await readDrain(harness.store, "drn_one");
   expect(row?.state).toBe("target");
   expect(row?.reason).toBe("the target was met");
   expect(row?.finishedAt).not.toBe("");
-  // A closed drain holds nothing, whether or not its cancels landed: a later tick has no job to
-  // relaunch against.
   expect(row?.live).toEqual([]);
-  expect(await runningDrains(harness.store)).toEqual([]);
+  expect(await activeDrains(harness.store)).toEqual([]);
   // …and the fold of a drain that has ended writes nothing: the guard is the WHERE clause.
   await saveFold(harness.store, "drn_one", {
     live: [{ runId: "run_z", jobId: "job_z", launchedAt: NOW }],
@@ -119,6 +121,62 @@ test("a drain ends once: the second close finds nothing to close and the row kee
   });
   expect((await readDrain(harness.store, "drn_one"))?.live).toEqual([]);
   expect((await readDrain(harness.store, "drn_one"))?.spent.costMicros).toBe(0);
+});
+
+test("a drain that still holds a job closes onto it: the fold goes on until the last receipt", async () => {
+  // THE SPEND OF A JOB NOBODY COULD CANCEL. A target is met on a tick that holds no
+  // `jobs:cancel`, so the jobs keep running; a row that emptied `live` at the close dropped
+  // their receipts out of its own total, which is the figure §11.5 asks an operator to read.
+  await open("drn_one");
+  const held: LiveJob[] = [
+    { runId: "run_a", jobId: "job_a", launchedAt: NOW },
+    { runId: "run_b", jobId: "job_b", launchedAt: NOW },
+  ];
+  expect(await closeDrain(harness.store, "drn_one", "target", "the target was met", held)).toBe(
+    "closing",
+  );
+  const closing = await readDrain(harness.store, "drn_one");
+  expect(closing?.state).toBe("closing");
+  expect(closing?.ending).toBe("target");
+  expect(closing?.finishedAt).toBe("");
+  expect(closing?.live.map((job) => job.jobId)).toEqual(["job_a", "job_b"]);
+  // A closing drain is one a tick still has work for: its receipts are owed to its total.
+  expect((await activeDrains(harness.store)).map((entry) => entry.id)).toEqual(["drn_one"]);
+  // It cannot finish while it holds one…
+  await saveFold(harness.store, "drn_one", {
+    live: [held[1] as LiveJob],
+    spent: { calls: 3, inputTokens: 10, outputTokens: 900, costMicros: 600_000 },
+    closures: { completed: 1 },
+    refusals: {},
+    samples: [],
+    settledNow: 1,
+  });
+  expect(await finishDrain(harness.store, "drn_one")).toBe(false);
+  expect((await readDrain(harness.store, "drn_one"))?.spent.costMicros).toBe(600_000);
+
+  // …and when the last one has settled it takes the ending it was closed with, with the reason
+  // and the spend written while it was closing.
+  await saveFold(harness.store, "drn_one", {
+    live: [],
+    spent: { calls: 6, inputTokens: 20, outputTokens: 1_800, costMicros: 1_500_000 },
+    closures: { completed: 2 },
+    refusals: {},
+    samples: [],
+    settledNow: 1,
+  });
+  harness.at(NOW + MINUTE);
+  expect(await finishDrain(harness.store, "drn_one")).toBe(true);
+  const ended = await readDrain(harness.store, "drn_one");
+  expect(ended?.state).toBe("target");
+  expect(ended?.reason).toBe("the target was met");
+  expect(ended?.finishedAt).not.toBe("");
+  expect(ended?.spent.costMicros).toBe(1_500_000);
+  expect(ended?.jobsSettled).toBe(2);
+  expect(await finishDrain(harness.store, "drn_one")).toBe(false);
+  expect(await activeDrains(harness.store)).toEqual([]);
+  // A closing drain does not hold its machine: a straggler must not stop the next drain.
+  await open("drn_two");
+  expect((await drainOnMachine(harness.store, "m-dev-01"))?.id).toBe("drn_two");
 });
 
 test("a store holding several drains lists the newest first", async () => {
@@ -174,6 +232,38 @@ test("the samples keep an anchor for the window and never grow without bound", a
   expect(burnRate(held, at).outputTokensPerMinute).toBeCloseTo(100, 6);
 });
 
+test("a rate is read over the anchor, so ticks further apart than the window still read one", async () => {
+  /*
+    THE READING THE NO-GO RULE ACTS ON. A tick happens on a settlement or on the 30-second floor
+    behind a wake, so a drain nobody is watching — or one whose explores take longer than the
+    three-minute window to settle — samples further apart than the window is wide. Measuring from
+    the oldest sample INSIDE the window made the newest sample its own left edge in that case and
+    answered `0/min` for the whole drain, which is exactly what §11.4 tells an operator to stop on.
+  */
+  const first: DrainSample = { at: NOW, outputTokens: 500, costMicros: 200_000 };
+  const second: DrainSample = { at: NOW + 5 * MINUTE, outputTokens: 1_700, costMicros: 500_000 };
+  const at = NOW + 5 * MINUTE;
+  expect(at - first.at).toBeGreaterThan(RATE_WINDOW_MS);
+  expect(burnRate([first, second], at)).toEqual({
+    outputTokensPerMinute: 240,
+    costMicrosPerMinute: 60_000,
+  });
+
+  // The same over a whole drain's worth of four-minute ticks at a steady hundred tokens a minute:
+  // every read is that rate, never zero.
+  let held: readonly DrainSample[] = [];
+  for (let minute = 0; minute <= 40; minute += 4) {
+    held = sample(held, NOW + minute * MINUTE, {
+      calls: minute,
+      inputTokens: minute,
+      outputTokens: minute * 100,
+      costMicros: minute * 1_000,
+    });
+    if (minute === 0) continue;
+    expect(burnRate(held, NOW + minute * MINUTE).outputTokensPerMinute).toBeCloseTo(100, 6);
+  }
+});
+
 test("a target is met by whichever figure reaches it, and the ETA is the nearest of them", () => {
   const spent = { calls: 3, inputTokens: 10, outputTokens: 900, costMicros: 400_000 };
   expect(targetMet({ costMicros: 500_000 }, spent)).toBe("");
@@ -215,4 +305,21 @@ test("a state the vocabulary does not admit is refused by the store rather than 
   expect(
     harness.db.run(`UPDATE drains SET state = 'stopped' WHERE id = ?`, ["drn_one"]),
   ).rejects.toThrow();
+  // A closing drain has no end recorded and names the ending it is heading for: a row that was
+  // closing towards nothing would be one nothing could finish.
+  expect(
+    harness.db.run(`UPDATE drains SET state = 'closing' WHERE id = ?`, ["drn_one"]),
+  ).rejects.toThrow();
+  expect(
+    harness.db.run(`UPDATE drains SET ending = 'draining' WHERE id = ?`, ["drn_one"]),
+  ).rejects.toThrow();
+});
+
+test("an account with no identity key is named by its credential rather than left blank", () => {
+  // #267: the api-key case, where the broker's own row IS the account. `Draining  as drn_…` is
+  // what a second reading of this produced on the start door.
+  expect(accountName(SESSION)).toBe("the-drain-account");
+  expect(
+    accountName({ ...SESSION, account: { ...SESSION.account, identityKey: "" } }),
+  ).toBe("anthropic#41");
 });

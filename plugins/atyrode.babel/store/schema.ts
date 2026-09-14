@@ -98,10 +98,18 @@ const BUDGETS_TABLE = `CREATE TABLE budgets(
  * the controller launches afterwards records — a relaunch three settlements later is still
  * that operator's drain, and a tick has no principal of its own to put there.
  *
+ * `ending` is the ending a `closing` drain will be recorded under once the last receipt lands.
+ * A drain stops launching the instant its target is met, but the jobs it holds were paid for and
+ * keep going, so their receipts are still owed to `spent`: the row goes to `closing` with them
+ * still in `live`, folds each as it settles, and takes `ending` as its `state` when none is
+ * left. Without it a self-stop that could not cancel — the ordinary case, since a tick woken by
+ * a settlement holds no `jobs:cancel` — would drop up to (N−1) receipts from its own total.
+ *
  * There is no append-only trigger, and `budgets` says why: the row is one bounded operation
  * with one end, `finished_at` and `state` are that end, and the projections (`spent`, `live`,
  * `samples`, `closures`, `refusals`) are the controller's own working record of it rather than
- * acts.
+ * acts. There is no overlay column either: a drain's jobs are launched directly and consult no
+ * ceiling of the standing policy, so it moves no number and has none to unwind (`doors/drain.ts`).
  */
 const DRAINS_TABLE = `CREATE TABLE drains(
      id TEXT PRIMARY KEY,
@@ -115,7 +123,9 @@ const DRAINS_TABLE = `CREATE TABLE drains(
      started_by TEXT NOT NULL,
      finished_at TEXT,
      state TEXT NOT NULL DEFAULT 'running'
-       CHECK (state IN ('running','stopped','target','deadline','failed')),
+       CHECK (state IN ('running','closing','stopped','target','deadline','failed')),
+     ending TEXT NOT NULL DEFAULT ''
+       CHECK (ending IN ('','stopped','target','deadline','failed')),
      reason TEXT NOT NULL DEFAULT '',
      spent TEXT NOT NULL DEFAULT '{}',
      live TEXT NOT NULL DEFAULT '[]',
@@ -124,8 +134,8 @@ const DRAINS_TABLE = `CREATE TABLE drains(
      refusals TEXT NOT NULL DEFAULT '{}',
      jobs_launched INTEGER NOT NULL DEFAULT 0,
      jobs_settled INTEGER NOT NULL DEFAULT 0,
-     budget_id TEXT,
-     CHECK ((state = 'running') = (finished_at IS NULL))
+     CHECK ((state IN ('running','closing')) = (finished_at IS NULL)),
+     CHECK (state != 'closing' OR ending != '')
    ) STRICT`;
 
 /** Statements of the first migration, in order; each is one `run`. */

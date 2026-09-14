@@ -1230,9 +1230,10 @@ export const DRAIN_SPENDING_PRESETS: readonly DrainPreset[] = ["read-whats-new",
 export const DRAIN_CONCURRENT_MAX = 16;
 
 /**
- * How long the drain's budget overlay lasts when the target names no deadline. Two hours is the
- * 2026-09-13 drain's own length, and the point of the ceiling is that nobody has to remember to
- * unwind it: an overlay with no end is an edit of the standing policy wearing another name.
+ * The deadline a drain gets when its target names none. Two hours is the 2026-09-13 drain's own
+ * length, and a drain that could outlive the window it exists to spend is the failure the
+ * operation was written against: the row carries the instant, so what stops it is one of its own
+ * targets rather than somebody remembering.
  */
 export const DRAIN_DEFAULT_TTL_MS = 2 * 60 * 60 * 1000;
 
@@ -1254,12 +1255,26 @@ export const DrainTargetSchema = z.strictObject({
 export type DrainTarget = z.infer<typeof DrainTargetSchema>;
 
 /**
- * THE FIVE STATES A DRAIN ENDS IN, and the four endings they distinguish. `target` and
- * `deadline` are the controller stopping itself, which is the whole point of the operation;
- * `stopped` is the operator's own act; `failed` is the controller unable to continue — the
- * machine gone, every launch refused — recorded rather than retried for ever.
+ * THE FOUR ENDINGS A DRAIN REACHES. `target` and `deadline` are the controller stopping itself,
+ * which is the whole point of the operation; `stopped` is the operator's own act; `failed` is the
+ * controller unable to continue — the machine gone, every launch refused — recorded rather than
+ * retried for ever.
  */
-export const DRAIN_STATES = ["running", "stopped", "target", "deadline", "failed"] as const;
+export const DRAIN_ENDINGS = ["stopped", "target", "deadline", "failed"] as const;
+export type DrainEnding = (typeof DRAIN_ENDINGS)[number];
+
+/**
+ * THE SIX STATES A DRAIN IS IN: running, the four endings above, and `closing`.
+ *
+ * `closing` IS THE ENDING WITH RECEIPTS STILL OUT. A drain stops launching the moment its target
+ * or its deadline is reached, but the jobs it holds were paid for and keep going — a tick woken
+ * by a settlement holds no `jobs:cancel`, so the cancels it asks for are refused by design — and
+ * what those jobs metered is part of what this drain spent. So the row keeps them until each one
+ * settles, folds their receipts as they land, and only then records the ending it was closed
+ * with. A drain that dropped them would under-report its own spend by up to (N−1) runs, which is
+ * precisely the figure `docs/runbook.md` §11.5 tells an operator to read.
+ */
+export const DRAIN_STATES = ["running", "closing", ...DRAIN_ENDINGS] as const;
 export const DrainStateSchema = z.enum(DRAIN_STATES);
 export type DrainState = (typeof DRAIN_STATES)[number];
 
@@ -1317,8 +1332,8 @@ export const DrainStartResultSchema = z.strictObject({
   concurrent: z.number().int(),
   /** How many jobs the start actually posted; fewer than `concurrent` is reported, not hidden. */
   launched: z.number().int(),
-  /** The overlay this drain set, or empty: the standing policy already admits its fan. */
-  budgetId: z.string(),
+  /** The instant this drain launches nothing past, whether the target named one or not. */
+  deadline: z.string(),
   /** The account this drain spends, as the operator reads it back. */
   account: z.string(),
   model: z.string(),
@@ -1386,7 +1401,6 @@ export const DrainStatusSchema = z.strictObject({
   /** The account and model this drain spends (#267), named before the button and after it. */
   account: z.string(),
   model: z.string(),
-  budgetId: z.string(),
   jobsLaunched: z.number().int(),
   jobsSettled: z.number().int(),
   jobsLive: z.number().int(),

@@ -13,16 +13,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
 
 - **A drain is a governed, measured, self-stopping operation.** `drain.start` names the account
   and the model it spends, the fan of jobs to keep in flight and where to stop — a metered cost,
-  a number of output tokens, a deadline, or it is refused; `drain.status` answers jobs live, jobs
-  at the model, tokens and cost a minute over the last three minutes, the spend against the
-  target and the ETA against the deadline, refusals by reason and the account being burned; and
-  `drain.stop` cancels what is in flight and clears the overlay. The controller keeps the fan
+  a number of output tokens, a deadline, or it is refused; a drain that names no deadline is
+  given one, two hours out. `drain.status` answers jobs live, jobs at the model, tokens and cost
+  a minute over the last three minutes, the spend against the target and the ETA against the
+  deadline, refusals by reason and the account being burned; and `drain.stop` cancels what is in
+  flight and says how many it cancelled and which it could not. The controller keeps the fan
   filled on every settlement through the same launch path the operator's own button uses, stops
-  itself at the target or the deadline, and never edits the standing policy — its concurrency is
-  a `budgets` overlay with a TTL, moved together with the cycle's allowance so that what one run
-  may spend is unchanged. Watch grows a Drain section with those figures and a Stop button. Two
-  hours and fourteen minutes of the 2026-09-13 drain produced fifty reviews, no burn rate, no
-  self-stop that ever fired and no way to say which account was being spent (#258, #267).
+  itself at the target or the deadline, and governs nothing: its jobs are launched directly and
+  take no claim, so no admission bound counts one and there is no overlay to set — the fan is
+  bounded against the manifest's `concurrentJobs` at the door and by the drain's own live jobs in
+  the controller, and what one run may spend stays the standing policy's. What it cannot cancel
+  it keeps: a drain holding jobs is `closing`, folding their receipts until the last one lands,
+  because their spend is its spend. Watch grows a Drain section with those figures and a Stop
+  button. Two hours and fourteen minutes of the 2026-09-13 drain produced fifty reviews, no burn
+  rate, no self-stop that ever fired and no way to say which account was being spent (#258, #267).
 
 - **Babel launches its own engine and meters it through its own inference service.** Code's
   `code engine` is gone (atyrode/code#153) and Manifold has no plugin-to-plugin call, so

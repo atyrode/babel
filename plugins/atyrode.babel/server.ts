@@ -272,8 +272,13 @@ async function cycle(jobs: BabelJobs, machines: MachinesSlice): Promise<void> {
  * something finished, and "flat for three minutes" — the one no-go the runbook names — would be
  * a fact about the wake rather than about the drain. The floor below still applies, so the
  * panel's five-second poll costs one cycle every thirty seconds.
+ *
+ * EVERY DOOR IN THIS LIST MUST DELEGATE `jobs:read`. The dispatcher attenuates `ctx.jobs` to what
+ * the door declared, so a cycle behind one that does not can read back no job at all: nothing
+ * settles, nothing is folded, and the wake is worse than none because `woke` is one floor shared
+ * by every poller. It is exported so `server.test.ts` holds the list itself to that.
  */
-const WAKES: Record<string, true> = {
+export const WAKES: Record<string, true> = {
   [ACTIONS.pulse]: true,
   [ACTIONS.runs]: true,
   [ACTIONS.launch]: true,

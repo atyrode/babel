@@ -1,10 +1,12 @@
 import type { PluginDatabase, SqlParam } from "@manifold/plugin";
 import {
+  DRAIN_ENDINGS,
   DRAIN_PRESETS,
   DRAIN_STATES,
   DrainSpendSchema,
   SessionChoiceSchema,
   RUN_STAGES,
+  type DrainEnding,
   type DrainPreset,
   type DrainSpend,
   type DrainState,
@@ -75,6 +77,8 @@ export interface DrainRow {
   readonly startedBy: string;
   readonly finishedAt: string;
   readonly state: DrainState;
+  /** The ending a `closing` drain takes when its last receipt lands; empty otherwise. */
+  readonly ending: DrainEnding | "";
   readonly reason: string;
   readonly spent: DrainSpend;
   readonly live: readonly LiveJob[];
@@ -83,7 +87,6 @@ export interface DrainRow {
   readonly refusals: Readonly<Record<string, number>>;
   readonly jobsLaunched: number;
   readonly jobsSettled: number;
-  readonly budgetId: string;
 }
 
 /** One settled job of this drain: what it metered, how it closed, and what it had refused. */
@@ -150,12 +153,13 @@ export const NO_SPEND: DrainSpend = { calls: 0, inputTokens: 0, outputTokens: 0,
 
 const PRESETS: readonly string[] = DRAIN_PRESETS;
 const STATES: readonly string[] = DRAIN_STATES;
+const ENDINGS: readonly string[] = DRAIN_ENDINGS;
 
 /** Every column, in one place, so a read and a write cannot come to disagree about the shape. */
 const COLUMNS =
   `id, machine_id, preset, session, knobs, concurrent, target, started_at, started_by, ` +
-  `finished_at, state, reason, spent, live, samples, closures, refusals, jobs_launched, ` +
-  `jobs_settled, budget_id`;
+  `finished_at, state, ending, reason, spent, live, samples, closures, refusals, ` +
+  `jobs_launched, jobs_settled`;
 
 /** A stored row as SQLite hands it back; a type alias, so the query generic accepts it. */
 type DrainDbRow = {
@@ -170,6 +174,7 @@ type DrainDbRow = {
   started_by: string;
   finished_at: string | null;
   state: string;
+  ending: string;
   reason: string;
   spent: string;
   live: string;
@@ -178,7 +183,6 @@ type DrainDbRow = {
   refusals: string;
   jobs_launched: number | bigint;
   jobs_settled: number | bigint;
-  budget_id: string | null;
 };
 
 function count(value: SqlParam | number | bigint | undefined | null): number {
@@ -277,6 +281,9 @@ function rowOf(row: DrainDbRow): DrainRow {
   if (!STATES.includes(row.state)) {
     throw new Error(`drain ${row.id} is in the state ${row.state}, which is not one a drain has`);
   }
+  if (row.ending !== "" && !ENDINGS.includes(row.ending)) {
+    throw new Error(`drain ${row.id} is closing towards ${row.ending}, which is not an ending`);
+  }
   const session = SessionChoiceSchema.safeParse(parsed(row.session));
   if (!session.success) {
     throw new Error(`drain ${row.id} names no account and model a run could be launched under`);
@@ -294,6 +301,7 @@ function rowOf(row: DrainDbRow): DrainRow {
     startedBy: row.started_by,
     finishedAt: row.finished_at ?? "",
     state: row.state as DrainState,
+    ending: row.ending === "" ? "" : (row.ending as DrainEnding),
     reason: row.reason,
     spent: spendOf(row.spent),
     live: liveOf(row.live),
@@ -302,7 +310,6 @@ function rowOf(row: DrainDbRow): DrainRow {
     refusals: tally(row.refusals),
     jobsLaunched: count(row.jobs_launched),
     jobsSettled: count(row.jobs_settled),
-    budgetId: row.budget_id ?? "",
   };
 }
 
@@ -314,10 +321,14 @@ export async function readDrain(store: DrainsStore, id: string): Promise<DrainRo
   return row === undefined ? null : rowOf(row);
 }
 
-/** Every drain still running, oldest first: the order the controller works through them. */
-export async function runningDrains(store: DrainsStore): Promise<readonly DrainRow[]> {
+/**
+ * Every drain a tick still has work for, oldest first: the order the controller works through
+ * them. A `closing` drain is one of them — it launches nothing more, but the receipts of the
+ * jobs it still holds are owed to its own total, and the tick is what folds them.
+ */
+export async function activeDrains(store: DrainsStore): Promise<readonly DrainRow[]> {
   const rows = await store.db.query<DrainDbRow>(
-    `SELECT ${COLUMNS} FROM drains WHERE state = 'running' ORDER BY started_at, id`,
+    `SELECT ${COLUMNS} FROM drains WHERE state IN ('running', 'closing') ORDER BY started_at, id`,
   );
   return rows.map(rowOf);
 }
@@ -331,7 +342,13 @@ export async function recentDrains(store: DrainsStore, limit: number): Promise<r
   return rows.map(rowOf);
 }
 
-/** Whether this machine already has a drain running: one at a time, per machine (see the door). */
+/**
+ * Whether this machine already has a drain running: one at a time, per machine (see the door).
+ *
+ * A `closing` drain is not one: it launches nothing more, and holding the machine until the last
+ * receipt of a job that may run for another half hour would make a straggler the reason the next
+ * drain cannot start.
+ */
 export async function drainOnMachine(
   store: DrainsStore,
   machineId: string,
@@ -355,16 +372,15 @@ export interface NewDrain {
   readonly concurrent: number;
   readonly target: DrainTarget;
   readonly startedBy: string;
-  readonly budgetId: string;
 }
 
 /** The row a `drain.start` leaves behind, before its first job is posted. */
 export async function insertDrain(store: DrainsStore, drain: NewDrain): Promise<void> {
   await store.db.run(
     `INSERT INTO drains(id, machine_id, preset, session, knobs, concurrent, target, started_at,
-                        started_by, state, reason, spent, live, samples, closures, refusals,
-                        jobs_launched, jobs_settled, budget_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', '', ?, '[]', '[]', '{}', '{}', 0, 0, ?)`,
+                        started_by, state, ending, reason, spent, live, samples, closures,
+                        refusals, jobs_launched, jobs_settled)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', '', '', ?, '[]', '[]', '{}', '{}', 0, 0)`,
     [
       drain.id,
       drain.machineId,
@@ -376,7 +392,6 @@ export async function insertDrain(store: DrainsStore, drain: NewDrain): Promise<
       new Date(store.now()).toISOString(),
       drain.startedBy,
       JSON.stringify(NO_SPEND),
-      drain.budgetId === "" ? null : drain.budgetId,
     ],
   );
 }
@@ -411,12 +426,16 @@ export interface DrainFold {
   readonly settledNow: number;
 }
 
-/** The projections of one tick, written in one statement. */
+/**
+ * The projections of one tick, written in one statement. A `closing` drain is folded by the same
+ * statement as a running one: what its last jobs metered is still its own spend, and the only
+ * thing it may not do is launch.
+ */
 export async function saveFold(store: DrainsStore, id: string, fold: DrainFold): Promise<void> {
   await store.db.run(
     `UPDATE drains SET live = ?, spent = ?, closures = ?, refusals = ?, samples = ?,
                        jobs_settled = jobs_settled + ?
-      WHERE id = ? AND state = 'running'`,
+      WHERE id = ? AND state IN ('running', 'closing')`,
     [
       JSON.stringify(fold.live),
       JSON.stringify(fold.spent),
@@ -429,23 +448,62 @@ export async function saveFold(store: DrainsStore, id: string, fold: DrainFold):
   );
 }
 
+/** What a close did: the drain ended, it is closing on its last receipts, or it had already gone. */
+export type Closed = "ended" | "closing" | "already";
+
 /**
  * The drain's end, written once. The guard is the WHERE clause rather than a read before the
  * write: two wakes that both decide the target is met close it once, and the second finds
- * nothing to close. `live` is emptied in the same statement — a closed drain holds nothing,
- * whether or not the cancels landed — so a later tick has no job to relaunch against.
+ * nothing to close.
+ *
+ * A DRAIN THAT STILL HOLDS JOBS DOES NOT END HERE; it goes to `closing` with them. Those jobs
+ * were paid for — a tick woken by a settlement cannot cancel them, and one that could would
+ * still be waiting for the receipt — so what they metered is owed to this drain's total. The
+ * ending it will take is recorded now, in `ending`, and {@link finishDrain} takes it when the
+ * last of them has settled. Emptying `live` here instead, which is what a closed row used to do,
+ * dropped up to (N−1) receipts out of the figure §11.5 asks an operator to read.
  */
 export async function closeDrain(
   store: DrainsStore,
   id: string,
-  state: Exclude<DrainState, "running">,
+  ending: DrainEnding,
   reason: string,
-): Promise<boolean> {
+  live: readonly LiveJob[],
+): Promise<Closed> {
+  if (live.length > 0) {
+    // `closing` → `closing` is the ordinary second close: an operator stopping a drain that had
+    // already met its target cancels its stragglers and changes nothing about why it ended, so
+    // the statement is idempotent rather than a refusal the caller would report as a failure.
+    const closing = await store.db.query<{ id: string }>(
+      `UPDATE drains SET state = 'closing', ending = ?, reason = ?, live = ?
+        WHERE id = ? AND state IN ('running', 'closing')
+        RETURNING id`,
+      [ending, reason, JSON.stringify(live), id],
+    );
+    return closing.length > 0 ? "closing" : "already";
+  }
   const rows = await store.db.query<{ id: string }>(
-    `UPDATE drains SET state = ?, reason = ?, finished_at = ?, live = '[]'
-      WHERE id = ? AND state = 'running'
+    `UPDATE drains SET state = ?, ending = ?, reason = ?, finished_at = ?, live = '[]'
+      WHERE id = ? AND state IN ('running', 'closing')
       RETURNING id`,
-    [state, reason, new Date(store.now()).toISOString(), id],
+    [ending, ending, reason, new Date(store.now()).toISOString(), id],
+  );
+  return rows.length > 0 ? "ended" : "already";
+}
+
+/**
+ * The last receipt of a closing drain has landed: it takes the ending it was closed with.
+ *
+ * `live = '[]'` is a condition and not a hope — a closing drain whose jobs have not all settled
+ * is not finished, whatever a tick thinks — and the ending comes from the row rather than from
+ * the caller, so the reason and the state a reader sees are the ones written when it closed.
+ */
+export async function finishDrain(store: DrainsStore, id: string): Promise<boolean> {
+  const rows = await store.db.query<{ id: string }>(
+    `UPDATE drains SET state = ending, finished_at = ?
+      WHERE id = ? AND state = 'closing' AND live = '[]'
+      RETURNING id`,
+    [new Date(store.now()).toISOString(), id],
   );
   return rows.length > 0;
 }
@@ -600,6 +658,14 @@ export function sample(
 /**
  * What the drain is producing a minute, over the last {@link RATE_WINDOW_MS} of samples.
  *
+ * THE LEFT EDGE OF THE WINDOW IS THE ANCHOR — the newest sample OLDER than it — and only when
+ * there is none is it the oldest sample inside. {@link sample} keeps that anchor for exactly
+ * this reason, and a rate that looked for its left edge inside the window instead found the
+ * newest sample every time the previous one had aged out: a drain whose ticks are more than
+ * three minutes apart (they happen on settlements and on one 30-second floor behind a wake, so
+ * an unwatched drain's are) read `0/min` for its whole life — the one reading the runbook's
+ * no-go rule acts on (§11.4), inverted.
+ *
  * Zero when there is nothing to measure — one sample, or two taken in the same instant — and
  * zero is then the honest answer rather than a division nobody can read: the runbook's rule is
  * about a rate that has STOPPED moving, and a rate that has not been observed twice yet has not
@@ -613,7 +679,8 @@ export function burnRate(
   const newest = samples[samples.length - 1];
   if (newest === undefined) return { outputTokensPerMinute: 0, costMicrosPerMinute: 0 };
   const anchor = at - RATE_WINDOW_MS;
-  const oldest = samples.find((entry) => entry.at >= anchor) ?? samples[0];
+  const older = samples.filter((entry) => entry.at < anchor);
+  const oldest = older[older.length - 1] ?? samples.find((entry) => entry.at >= anchor);
   if (oldest === undefined || oldest.at >= newest.at) {
     return { outputTokensPerMinute: 0, costMicrosPerMinute: 0 };
   }
@@ -675,6 +742,20 @@ export function deadlineOf(target: DrainTarget): number | null {
   return Number.isFinite(at) ? at : null;
 }
 
+/**
+ * THE ACCOUNT AS IT CAN BE NAMED (#267). The identity key is empty for an api-key credential,
+ * where the broker's own row IS the account, so the credential is named rather than leaving a
+ * blank where the answer to "which account is this burning" belongs — and it is one function
+ * rather than two readings, because the drain the door answers for and the drain the panel polls
+ * are the same drain: `Draining  as drn_…` is what two of them produced.
+ */
+export function accountName(session: SessionChoice): string {
+  const account = session.account;
+  return account.identityKey === ""
+    ? `${account.provider}#${account.credentialId}`
+    : account.identityKey;
+}
+
 // ---------------------------------------------------------------------------- the status
 
 /**
@@ -705,15 +786,8 @@ export async function drainStatus(store: DrainsStore, row: DrainRow): Promise<Dr
     finishedAt: row.finishedAt,
     concurrent: row.concurrent,
     target: row.target,
-    // THE ACCOUNT AS IT CAN BE NAMED. The identity key is empty for an api-key credential, where
-    // the broker's own row IS the account, so the credential is named rather than leaving a blank
-    // where the answer to "which account is this burning" belongs (#267).
-    account:
-      row.session.account.identityKey === ""
-        ? `${row.session.account.provider}#${row.session.account.credentialId}`
-        : row.session.account.identityKey,
+    account: accountName(row.session),
     model: row.session.model,
-    budgetId: row.budgetId,
     jobsLaunched: row.jobsLaunched,
     jobsSettled: row.jobsSettled + seen.settled.length,
     jobsLive: seen.holding.length,

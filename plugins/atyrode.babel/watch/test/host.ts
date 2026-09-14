@@ -253,7 +253,6 @@ export function drainStatus(over: Partial<DrainStatus> = {}): DrainStatus {
     target: { costMicros: 5_000_000 },
     account: "the-drain-account",
     model: "anthropic/claude-sonnet-4-5",
-    budgetId: "bdg_one",
     jobsLaunched: 2,
     jobsSettled: 0,
     jobsLive: 2,
@@ -306,12 +305,18 @@ export function watchDoors(answers: {
           preset: "read-whats-new" as const,
           concurrent: 4,
           launched: 4,
-          budgetId: "bdg_one",
+          deadline: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
           account: "the-drain-account",
           model: "anthropic/claude-sonnet-4-5",
           note: "",
         }))
       )(args),
-    [door(ACTIONS.drainStop)]: (args) => (answers.drainStop ?? (() => ({ asked: true })))(args),
+    // The stop's own result shape: a panel that could not read `cancelled` and `note` would have
+    // to assume what happened, which is what #285's review found it saying.
+    [door(ACTIONS.drainStop)]: (args) =>
+      (
+        answers.drainStop ??
+        (() => ({ drainId: "drn_live", state: "stopped" as const, cancelled: 2, note: "" }))
+      )(args),
   };
 }

@@ -195,13 +195,11 @@ function Running({
         <span className="plugin-atyrode_babel_watch__lane">
           model <span className="plugin-atyrode_babel_watch__mono">{drain.model}</span>
         </span>
-        {drain.budgetId === "" ? (
-          <span className="plugin-atyrode_babel_watch__muted">no overlay: the standing bound admits this fan</span>
-        ) : (
-          <span className="plugin-atyrode_babel_watch__lane">
-            overlay <span className="plugin-atyrode_babel_watch__mono">{drain.budgetId}</span>
+        {drain.state === "closing" ? (
+          <span className="plugin-atyrode_babel_watch__muted">
+            launching nothing more: folding what its last {figure(drain.jobsLive)} job(s) spend
           </span>
-        )}
+        ) : null}
       </Cluster>
       <Switcher threshold="18rem" gap="var(--babel-space-4)">
         <Figure
@@ -258,7 +256,7 @@ function Running({
           ))}
         </Cluster>
       )}
-      {drain.state === "running" ? (
+      {drain.state === "running" || drain.state === "closing" ? (
         <Cluster gap="var(--babel-space-3)">
           <button
             type="button"
@@ -267,10 +265,21 @@ function Running({
             disabled={stopping === drain.drainId}
             onClick={() => onStop(drain)}
           >
-            {stopping === drain.drainId ? "Stopping…" : "Stop this drain"}
+            {stopping === drain.drainId
+              ? "Stopping…"
+              : drain.state === "closing"
+                ? "Cancel its last jobs"
+                : "Stop this drain"}
           </button>
+          {/*
+            A CLOSING DRAIN IS THE ONE THE OPERATOR CAN STILL HELP. It stopped launching on its
+            own target, and the tick that ended it held no `jobs:cancel` — this press does, at
+            their shared operation. Either way the drain is over when their receipts land.
+          */}
           <span className="plugin-atyrode_babel_watch__muted">
-            Cancels what is in flight and clears the overlay. Never kill a job by hand.
+            {drain.state === "closing"
+              ? "It has stopped launching; this cancels the jobs it could not. Never kill a job by hand."
+              : "Cancels what is in flight; it ends when their receipts land. Never kill a job by hand."}
           </span>
         </Cluster>
       ) : (

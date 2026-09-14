@@ -11,6 +11,7 @@ import {
   DrainQuerySchema,
   DrainStartResultSchema,
   DrainStatusResultSchema,
+  DrainStopResultSchema,
   LaunchResultSchema,
   PANELS,
   PRESET_REACHES_MODEL,
@@ -306,7 +307,7 @@ export function Watch({ host }: PanelProps) {
   */
   const inFlight =
     runs.value.runs.some((run) => run.state === "queued" || run.state === "running") ||
-    drains.value.some((drain) => drain.state === "running");
+    drains.value.some((drain) => drain.state === "running" || drain.state === "closing");
   useEffect(() => {
     if (!inFlight) return;
     const timer = setInterval(() => setNow(Date.now()), TICK_MS);
@@ -340,16 +341,35 @@ export function Watch({ host }: PanelProps) {
     setDrainNote(outcome.message);
   }, [drainDraft, drainPick, drains, host, runs]);
 
+  /*
+    THE STOP'S ANSWER IS READ, NOT ASSUMED. The door returns `cancelled` and a `note` precisely
+    because a stop can be honoured in part — a job the hub would not cancel names itself there —
+    and a screen that said "its jobs are cancelled" over a refusal would be a progress claim
+    without its number, on the one screen built to stop those (runbook §11.6, rule 2). A drain
+    whose jobs are still running ends as `closing` and says so.
+  */
   const onDrainStop = useCallback(
     async (drain: DrainStatus) => {
       setDrainStopping(drain.drainId);
-      const outcome = await act(host, ACTIONS.drainStop, drainStopInput(drain), z.unknown());
-      setDrainStopping("");
-      setDrainNote(
-        outcome.ok
-          ? `Asked ${drain.drainId} to stop: its jobs are cancelled and its overlay cleared.`
-          : outcome.message,
+      const outcome = await act(
+        host,
+        ACTIONS.drainStop,
+        drainStopInput(drain),
+        DrainStopResultSchema,
       );
+      setDrainStopping("");
+      if (outcome.ok) {
+        const stopped = outcome.value;
+        const jobs = `${String(stopped.cancelled)} of ${String(drain.jobsLive)} in-flight job(s) cancelled`;
+        const ending =
+          stopped.state === "closing"
+            ? "it ends when their receipts land"
+            : `it ended as ${stopped.state}`;
+        setDrainNote(
+          `Asked ${stopped.drainId} to stop: ${jobs}, ${ending}.` +
+            `${stopped.note === "" ? "" : ` ${stopped.note}`}`,
+        );
+      } else setDrainNote(outcome.message);
       drains.refresh();
       runs.refresh();
     },

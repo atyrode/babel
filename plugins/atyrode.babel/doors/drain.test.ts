@@ -309,9 +309,13 @@ test("the roster is a governed start, a dry read and a governed stop, each at a 
   expect(begin?.action.delegates).toEqual(["jobs:read", "locations:read", "locations:write"]);
 
   // The dry read asks no machine anything, so it carries no governed capability and no target —
-  // the panel polls it every five seconds while the operator watches.
+  // the panel polls it every five seconds while the operator watches. It DOES delegate
+  // `jobs:read`, because a cycle follows it (`server.ts`'s `WAKES`) and the dispatcher attenuates
+  // `ctx.jobs` to what the door declared: without it that cycle can read back no job, nothing
+  // settles, and the `run_progress` fold this wake exists for never happens.
   expect(read?.action.caps).toEqual(["containers:read"]);
   expect(read?.action.requirements).toBeUndefined();
+  expect(read?.action.delegates).toEqual(["jobs:read"]);
 
   // A drain holds several jobs and a requirement resolves to exactly one node, so the stop asks
   // for `jobs:cancel` at the OPERATION they share rather than at one of them.
@@ -319,7 +323,7 @@ test("the roster is a governed start, a dry read and a governed stop, each at a 
   expect(stop?.action.requirements).toEqual([{ cap: "jobs:cancel", target: ["operation"] }]);
 });
 
-test("a start posts the whole fan, sets the overlay to it, and names the account it spends", async () => {
+test("a start posts the whole fan, moves no policy number, and names the account it spends", async () => {
   const answer = await start({ concurrent: 3 });
   expect(answer["launched"]).toBe(3);
   expect(answer["account"]).toBe("the-drain-account");
@@ -338,26 +342,16 @@ test("a start posts the whole fan, sets the overlay to it, and names the account
     new Set([OPERATIONS.explore]),
   );
 
-  // THE OVERLAY IS THE FAN, and the standing `policies` row is untouched (#260): the bound moves
-  // to three and the cycle's allowance moves with it, so what ONE run may spend is unchanged.
-  const overlay = await harness.db.query<{
-    id: string;
-    concurrent_per_machine: number | bigint;
-    per_cycle_cost: number;
-    expires_at: string;
-    reason: string;
-  }>(`SELECT id, concurrent_per_machine, per_cycle_cost, expires_at, reason FROM budgets`);
-  expect(overlay).toHaveLength(1);
-  expect(Number(overlay[0]?.concurrent_per_machine)).toBe(3);
-  // THE INVARIANT, not a literal: the standing policy grants 0.25 a cycle over a batch of one,
-  // so one run may spend 0.25; after the overlay the batch is three and the cycle's allowance is
-  // three times as much, so one run may still spend exactly 0.25. A drain changes how many runs
-  // happen at once and never what one run is allowed.
-  expect(overlay[0]?.per_cycle_cost).toBeCloseTo(0.25 * 3, 6);
-  expect((overlay[0]?.per_cycle_cost ?? 0) / 3).toBeCloseTo(0.25, 6);
-  expect(overlay[0]?.reason).toBe("the 7-day window resets at 13:00Z");
-  expect(answer["budgetId"]).toBe(overlay[0]?.id);
+  // A DRAIN MOVES NO GOVERNED NUMBER AT ALL (#260, and the review of #285). Its jobs are launched
+  // directly and take no claim, so no admission bound ever counts one: an overlay raising
+  // `concurrentPerMachine` bounded nothing of the drain's and raised the CONDUCTOR's review fan
+  // on every online machine instead. Neither table is written.
+  expect(await harness.db.query(`SELECT id FROM budgets`)).toEqual([]);
   expect(await harness.db.query(`SELECT version FROM policies`)).toHaveLength(1);
+
+  // What one run may spend is still the standing policy's: 0.25 a cycle over a batch of one.
+  expect(fleet.executed).toHaveLength(3);
+  expect(PLAN.caps.perRunUsd).toBeCloseTo(0.0625, 6);
 
   // The row remembers what it must relaunch with: the account, the fan, and the preset's knobs.
   const row = await readDrain(harness.store, drainId);
@@ -365,6 +359,40 @@ test("a start posts the whole fan, sets the overlay to it, and names the account
   expect(row?.live).toHaveLength(3);
   expect(row?.jobsLaunched).toBe(3);
   expect(row?.session.account.identityKey).toBe("the-drain-account");
+
+  // EVERY DRAIN CARRIES A DEADLINE. This one named none, so it stops two hours out whatever it
+  // has spent: a drain that could outlive the window it exists to spend is the failure this
+  // operation was written against.
+  expect(answer["deadline"]).toBe(new Date(NOW + 2 * HOUR).toISOString());
+  expect(row?.target.deadline).toBe(new Date(NOW + 2 * HOUR).toISOString());
+  expect(String(answer["note"])).toMatch(/names no deadline, so it stops at/);
+});
+
+test("a fan the standing daily ceiling would have refused is admitted: a drain consults none", async () => {
+  /*
+    THE CEILING THAT WAS NOT THE DRAIN'S (the review of #285, finding 3). The overlay was judged
+    by `validateNewPolicy`, which refuses a policy whose `dailyCost` is below its `perCycleCost`;
+    with `perCycleCost = perRunUsd(standing) * concurrent` any fan past `dailyCost / perRunUsd`
+    was refused at the door. On this fixture — 0.25 a cycle over a batch of one, 2 a day — a fan
+    of nine answered "daily cost 2 is below the per-cycle cost 2.25" and posted nothing, naming
+    two numbers a drain's directly-launched jobs never consult.
+  */
+  const answer = await start({ concurrent: 9 });
+  expect(answer["refused"]).toBeUndefined();
+  expect(answer["launched"]).toBe(9);
+  expect(fleet.executed).toHaveLength(9);
+  const daily = await harness.db.query<{ payload: string }>(`SELECT payload FROM policies`);
+  expect(JSON.parse(daily[0]?.payload ?? "{}")["dailyCost"]).toBe(2);
+});
+
+test("an api-key account is named by its credential rather than answered as a blank", async () => {
+  // #267: `SessionChoiceSchema` admits an empty identity key for an api-key credential, where the
+  // broker's own row IS the account. The panel printed `Draining  as drn_…`.
+  const answer = await start({
+    session: { ...SESSION, account: { ...SESSION.account, identityKey: "" } },
+  });
+  expect(answer["account"]).toBe("anthropic#41");
+  expect((await statusOf(String(answer["drainId"])))["account"]).toBe("anthropic#41");
 });
 
 test("a drain without a target is refused, and so is a second drain on the same machine", async () => {
@@ -381,8 +409,9 @@ test("a drain without a target is refused, and so is a second drain on the same 
 });
 
 test("a fan above the machine's ceiling is refused by name rather than posted and rejected", async () => {
-  // `concurrentJobs` is 16 here, and a bound of 16 needs a lease of 320s; the policy grants 900,
-  // so the refusal has to come from the manifest's ceiling rather than from the lease.
+  // `concurrentJobs` is the manifest's `limits.concurrentJobs` for the operation this preset
+  // posts: the hub refuses every posting past it at `execute`, so the door refuses above it by
+  // name rather than spending the drain's first round on refusals.
   doors = drainDoors(harness.store, {
     coordinator: coordinator(harness.store, () => harness.store.now(), 4),
     deps: () => deps,
@@ -425,13 +454,12 @@ test("a settlement relaunches: the fan is refilled and the spend is folded once"
   expect((await readDrain(harness.store, drainId))?.spent.costMicros).toBe(250_000);
 });
 
-test("the target stops the drain, cancels what is in flight, and clears the overlay", async () => {
+test("the target stops the drain and it closes on the job it cancelled, ending when that settles", async () => {
   const answer = await start({ concurrent: 2, target: { costMicros: 500_000 } });
   const drainId = String(answer["drainId"]);
   await settleJob(`run_${drainId}_0`, { costMicros: 600_000 });
 
   const [report] = await drainTick(deps);
-  expect(report?.state).toBe("target");
   expect(report?.reason).toMatch(/target of 500000 micro-dollars is met at 600000/);
   // NOTHING IS LAUNCHED BY THE TICK THAT ENDS IT: the fold happens before the decision, so the
   // job that met the target ends the drain instead of making room for one more.
@@ -442,19 +470,30 @@ test("the target stops the drain, cancels what is in flight, and clears the over
   expect(fleet.cancelled).toEqual([
     { kind: "job", machineId: MACHINE, operationId: OPERATIONS.explore, jobId: `job_${drainId}_1` },
   ]);
-  // …and the overlay is cleared, which is the part waiting could never undo (2026-09-13's
-  // eval-policy-10 outlived its drain by ninety minutes).
-  const cleared = await harness.db.query<{ cleared_at: string | null; cleared_reason: string }>(
-    `SELECT cleared_at, cleared_reason FROM budgets WHERE id = ?`,
-    [String(answer["budgetId"])],
-  );
-  expect(cleared[0]?.cleared_at).not.toBeNull();
-  expect(cleared[0]?.cleared_reason).toMatch(/target of 500000/);
+  // …and the drain is CLOSING on it, not finished: a cancel is a request and a receipt is what
+  // answers it, so what that job metered is still owed to this drain's total.
+  expect(report?.state).toBe("closing");
+  const closing = await readDrain(harness.store, drainId);
+  expect(closing?.state).toBe("closing");
+  expect(closing?.ending).toBe("target");
+  expect(closing?.finishedAt).toBe("");
+  expect(closing?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1`]);
+  // No policy number was moved, so there is none to unwind (#260, and the review of #285).
+  expect(await harness.db.query(`SELECT id FROM budgets`)).toEqual([]);
 
+  // The cancelled job writes its receipt, and the tick behind it folds that spend and records
+  // the end. A drain that dropped it would report 600000 of the 1100000 it actually spent.
+  await settleJob(`run_${drainId}_1`, { costMicros: 500_000, outputTokens: 400 });
+  const [after] = await drainTick(deps);
+  expect(after?.state).toBe("target");
+  expect(after?.launched).toBe(0);
   const row = await readDrain(harness.store, drainId);
   expect(row?.state).toBe("target");
   expect(row?.finishedAt).not.toBe("");
   expect(row?.live).toEqual([]);
+  expect(row?.spent.costMicros).toBe(1_100_000);
+  expect(row?.jobsSettled).toBe(2);
+  expect(row?.reason).toMatch(/target of 500000 micro-dollars is met at 600000/);
 });
 
 test("a deadline that has passed stops the drain even while it is under its cost target", async () => {
@@ -466,50 +505,107 @@ test("a deadline that has passed stops the drain even while it is under its cost
   );
   harness.at(NOW + 2000);
   const [report] = await drainTick(deps);
-  expect(report?.state).toBe("deadline");
   expect(report?.launched).toBe(0);
+  expect(report?.reason).toMatch(/deadline .* has passed/);
+  // It stops launching at once and closes on the job it cancelled; the ending is recorded now
+  // and taken when that job's receipt lands.
+  expect(report?.state).toBe("closing");
+  expect((await readDrain(harness.store, drainId))?.ending).toBe("deadline");
+  await settleJob(`run_${drainId}_0`);
+  expect((await drainTick(deps))[0]?.state).toBe("deadline");
   expect((await readDrain(harness.store, drainId))?.state).toBe("deadline");
 });
 
-test("a stop leaves nothing in flight and no claim open, within one tick", async () => {
-  // THE ACCEPTANCE LINE OF #258. The drain's own jobs are explores and hold no claim, so the
-  // claim this asserts about is one the loop took on the same machine: a stop must not leave it,
-  // and a later tick must find nothing to relaunch.
+test("a stop leaves nothing in flight, takes no claim to release, and relaunches nothing", async () => {
+  // THE ACCEPTANCE LINE OF #258, as it actually holds: the drain's three presets are launched
+  // directly and never `claim`, so "zero open claims after a stop" is true by construction — and
+  // the assertion that matters is that the drain took none in the first place. What a stop must
+  // leave is nothing in flight and nothing to relaunch.
   const answer = await start({ concurrent: 2 });
   const drainId = String(answer["drainId"]);
+  expect(await harness.db.query(`SELECT id FROM claims`)).toEqual([]);
 
   const halted = await halt(drainId, "the operator stopped it");
-  expect(halted["state"]).toBe("stopped");
   expect(halted["cancelled"]).toBe(2);
   expect(fleet.cancelled.map((node) => node.jobId)).toEqual([
     `job_${drainId}_0`,
     `job_${drainId}_1`,
   ]);
-
+  // Both cancels landed, so the drain is closing on two receipts rather than finished.
+  expect(halted["state"]).toBe("closing");
   const row = await readDrain(harness.store, drainId);
-  expect(row?.state).toBe("stopped");
+  expect(row?.state).toBe("closing");
+  expect(row?.ending).toBe("stopped");
   expect(row?.reason).toBe("the operator stopped it");
-  expect(row?.live).toEqual([]);
-  expect(
-    await harness.db.query(`SELECT id FROM claims WHERE finished_at IS NULL`),
-  ).toEqual([]);
+  expect(await harness.db.query(`SELECT id FROM claims`)).toEqual([]);
 
-  // One tick later it is still stopped and has launched nothing more: a stopped drain is not a
-  // paused one, and this is what five rounds of kill-and-restart could not achieve on the day.
-  const reports = await drainTick(deps);
-  expect(reports).toEqual([]);
+  // A STOPPED DRAIN IS NOT A PAUSED ONE: the tick behind it folds and never launches, and this is
+  // what five rounds of kill-and-restart could not achieve on the day.
+  const [report] = await drainTick(deps);
+  expect(report?.launched).toBe(0);
+  expect(report?.state).toBe("closing");
   expect(fleet.executed).toHaveLength(2);
+
+  await settleJob(`run_${drainId}_0`);
+  await settleJob(`run_${drainId}_1`);
+  const [ended] = await drainTick(deps);
+  expect(ended?.state).toBe("stopped");
+  expect((await readDrain(harness.store, drainId))?.state).toBe("stopped");
+  expect(await drainTick(deps)).toEqual([]);
   expect(String((await halt(drainId))["refused"])).toMatch(/already ended as stopped/);
 });
 
-test("a stop the hub will not honour still ends the drain, and says which job it could not cancel", async () => {
-  const drainId = String((await start({ concurrent: 1 }))["drainId"]);
+test("a stop the hub will not honour keeps the job, and its later receipt still lands in spent", async () => {
+  /*
+    THE SPEND OF A JOB NOBODY COULD CANCEL (the review of #285, finding 4). A target or a deadline
+    is met on a settle-woken tick whose credential holds no `jobs:cancel`, so the cancels are
+    refused BY DESIGN and up to N−1 jobs keep running. A row that emptied `live` at the close made
+    them nobody's: their receipts never reached `spent`, `closures` or `jobsSettled`, and the
+    panel's final total — §11.5's "final totals from usage.inference" — was short by their spend.
+  */
+  const drainId = String((await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"]);
   fleet.cancelRefusal = "jobs:cancel capability required at target";
-  const halted = await halt(drainId);
-  expect(halted["cancelled"]).toBe(0);
-  expect(String(halted["note"])).toMatch(/was not cancelled: jobs:cancel capability required/);
-  // The drain is over either way: it has stopped launching, which is what stopping means.
-  expect((await readDrain(harness.store, drainId))?.state).toBe("stopped");
+  await settleJob(`run_${drainId}_0`, { costMicros: 600_000 });
+
+  const [report] = await drainTick(deps);
+  expect(report?.state).toBe("closing");
+  expect(report?.notes.join(" ")).toMatch(/was not cancelled: jobs:cancel capability required/);
+  expect((await readDrain(harness.store, drainId))?.live).toHaveLength(1);
+  // The panel reads the whole spend while it closes: the settled receipt, and the job still out.
+  expect((await statusOf(drainId))["state"]).toBe("closing");
+
+  // The uncancelled job finishes on its own an hour later; its receipt is still this drain's.
+  harness.at(NOW + HOUR);
+  await settleJob(`run_${drainId}_1`, { costMicros: 900_000, outputTokens: 700 });
+  const [after] = await drainTick(deps);
+  expect(after?.state).toBe("target");
+  const row = await readDrain(harness.store, drainId);
+  expect(row?.spent.costMicros).toBe(1_500_000);
+  expect(row?.jobsSettled).toBe(2);
+  expect(row?.closures).toEqual({ completed: 2 });
+  expect(row?.finishedAt).not.toBe("");
+  const status = await statusOf(drainId);
+  expect(status["spent"]).toMatchObject({ costMicros: 1_500_000 });
+  expect(status["jobsSettled"]).toBe(2);
+});
+
+test("an operator's stop cancels the stragglers of a drain that already closed itself", async () => {
+  const drainId = String((await start({ concurrent: 2, target: { costMicros: 500_000 } }))["drainId"]);
+  fleet.cancelRefusal = "jobs:cancel capability required at target";
+  await settleJob(`run_${drainId}_0`, { costMicros: 600_000 });
+  await drainTick(deps);
+  expect((await readDrain(harness.store, drainId))?.state).toBe("closing");
+
+  // The stop door is the one caller that holds `jobs:cancel` at the operation, and a closing
+  // drain is exactly the one whose jobs a tick could not stop. Why it ended does not change.
+  fleet.cancelRefusal = "";
+  const halted = await halt(drainId, "kill the stragglers");
+  expect(halted["cancelled"]).toBe(1);
+  expect(halted["state"]).toBe("closing");
+  const row = await readDrain(harness.store, drainId);
+  expect(row?.ending).toBe("target");
+  expect(row?.reason).toMatch(/target of 500000/);
+  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_1`]);
 });
 
 test("the status folds the live spend, the rate over the last three minutes, and the ETA", async () => {
@@ -566,22 +662,21 @@ test("a refused submission is counted as spend with a result, not as a free fail
   expect((await statusOf(drainId))["refusals"]).toEqual({ schema: 1 });
 });
 
-test("a start that can launch nothing refuses, and leaves no drain and no overlay behind", async () => {
+test("a start that can launch nothing refuses, and leaves a failed drain that says why", async () => {
   fleet.refusal = "dev-01 refused the job: concurrency_limit";
   const refused = String((await start())["refused"]);
   expect(refused).toMatch(/launched nothing/);
   expect(refused).toMatch(/concurrency_limit/);
   // The row is written before the first post and closed when none lands, so what survives is a
-  // `failed` drain that says why rather than a `running` one holding nothing.
-  const rows = await harness.db.query<{ state: string; reason: string }>(
-    `SELECT state, reason FROM drains`,
+  // `failed` drain that says why rather than a `running` one holding nothing. It holds no job, so
+  // it ends outright rather than closing on one.
+  const rows = await harness.db.query<{ state: string; reason: string; finished_at: string }>(
+    `SELECT state, reason, finished_at FROM drains`,
   );
   expect(rows[0]?.state).toBe("failed");
   expect(rows[0]?.reason).toMatch(/concurrency_limit/);
-  const overlay = await harness.db.query<{ cleared_at: string | null }>(
-    `SELECT cleared_at FROM budgets`,
-  );
-  expect(overlay[0]?.cleared_at).not.toBeNull();
+  expect(rows[0]?.finished_at).not.toBeNull();
+  expect(await harness.db.query(`SELECT id FROM budgets`)).toEqual([]);
 });
 
 test("a launch whose run row never landed releases its slot instead of holding it for ever", async () => {
@@ -593,6 +688,43 @@ test("a launch whose run row never landed releases its slot instead of holding i
   expect(report?.notes.join(" ")).toMatch(/no run row to show for it, so its slot is released/);
   expect(report?.launched).toBe(1);
   expect((await readDrain(harness.store, drainId))?.live).toHaveLength(2);
+});
+
+test("a job the hub already holds under this id is taken back rather than re-posted for ever", async () => {
+  /*
+    THE ORPHAN A LOST WRITE MAKES (the review of #285, finding 8). The ordinal is the row's own
+    launch count, and it advances in the write that records the launch — so a tick that overran
+    between `jobs.execute` and that write (a settle hook is bounded at two seconds) leaves a job
+    the hub runs and the row does not hold. The next tick re-derives the same id, and the hub
+    answers `job_digest_conflict` because an explore's selection window has moved: without this
+    the slot was dead for the rest of the drain and the orphan's spend was never folded.
+  */
+  const drainId = String((await start({ concurrent: 1 }))["drainId"]);
+  // A settlement frees the slot and the next tick posts `_1`: the hub takes it and the run row
+  // lands, both inside `startExplore`.
+  await settleJob(`run_${drainId}_0`, { costMicros: 100_000 });
+  await drainTick(deps);
+  expect(fleet.executed.map((job) => job.jobId)).toEqual([`job_${drainId}_0`, `job_${drainId}_1`]);
+
+  // THE WRITE THAT DID NOT LAND: the row is put back exactly as a tick that died between
+  // `jobs.execute` and `recordLaunch` left it — the job running, the run row open, `live` empty
+  // and the ordinal un-advanced — and the hub now refuses that id as a digest conflict.
+  await harness.db.run(`UPDATE drains SET live = '[]', jobs_launched = 1 WHERE id = ?`, [drainId]);
+  fleet.refusal = "job_digest_conflict";
+
+  const [report] = await drainTick(deps);
+  expect(report?.notes.join(" ")).toMatch(/was already posted by an earlier tick, and is taken back/);
+  expect(report?.launched).toBe(1);
+  const row = await readDrain(harness.store, drainId);
+  expect(row?.live.map((job) => job.jobId)).toEqual([`job_${drainId}_1`]);
+  // Nothing was posted a second time: the hub holds one job under that id and so does the row.
+  expect(fleet.executed).toHaveLength(2);
+
+  // And it is a job like any other: its receipt lands in this drain's spend.
+  fleet.refusal = "";
+  await settleJob(`run_${drainId}_1`, { costMicros: 320_000 });
+  await drainTick(deps);
+  expect((await readDrain(harness.store, drainId))?.spent.costMicros).toBe(420_000);
 });
 
 test("disabling the policy mid-drain ends it as an operator's act rather than as a failure", async () => {
@@ -607,8 +739,13 @@ test("disabling the policy mid-drain ends it as an operator's act rather than as
     recorded_at: stamp(NOW + 1000),
   });
   const [report] = await drainTick(deps);
-  expect(report?.state).toBe("stopped");
   expect(report?.reason).toMatch(/was disabled/);
   expect(report?.launched).toBe(0);
+  // Its one job was cancelled, so it closes on that receipt and ends when it lands.
+  expect(report?.state).toBe("closing");
+  expect(fleet.cancelled.map((node) => node.jobId)).toEqual([`job_${drainId}_0`]);
+  await settleJob(`run_${drainId}_0`);
+  const [after] = await drainTick(deps);
+  expect(after?.state).toBe("stopped");
   expect((await readDrain(harness.store, drainId))?.state).toBe("stopped");
 });

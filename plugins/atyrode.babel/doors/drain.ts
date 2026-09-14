@@ -12,16 +12,12 @@ import {
   DrainStopResultSchema,
   EVENTS,
   PRESET_OPERATIONS,
+  type DrainTarget,
 } from "../contract.ts";
-import { ActRefused, newId, setBudget } from "../store/acts.ts";
+import { newId } from "../store/acts.ts";
+import type { Coordinator } from "../store/coordinator.ts";
 import {
-  budgetChanges,
-  perMachineBound,
-  type Budget,
-  type Coordinator,
-} from "../store/coordinator.ts";
-import { perRunUsd } from "../server/plan.ts";
-import {
+  accountName,
   drainOnMachine,
   drainStatus,
   insertDrain,
@@ -65,11 +61,21 @@ import { defineDoor, type Door } from "./door.ts";
   cancelling every job of this drain needs — and asking for it by name is honest about the
   breadth instead of borrowing it one job at a time.
 
-  WHY `drain.status` IS A DRY READ. It answers what is draining, under `containers:read`, asking
-  no machine anything: the panel polls it every five seconds while the operator watches, and
-  requiring version-bound consent at a node merely to READ a burn rate is the interface unable to
-  say what it is doing. Everything it reports comes from this plugin's own tables — the drain row,
-  the runs the drain launched, and the conductor's fold of where each of them is.
+  WHY `drain.status` IS A DRY READ THAT STILL DELEGATES `jobs:read`. It answers what is draining,
+  under `containers:read`, asking no machine anything: the panel polls it every five seconds while
+  the operator watches, and requiring version-bound consent at a node merely to READ a burn rate
+  is the interface unable to say what it is doing. Everything it reports comes from this plugin's
+  own tables — the drain row, the runs the drain launched, and the conductor's fold of where each
+  of them is.
+
+  BUT IT IS ONE OF THE DOORS A CYCLE FOLLOWS (`server.ts`'s `WAKES`), and that is what the
+  delegate is for: the dispatcher attenuates `ctx.jobs` to what the door declared, so a cycle
+  behind a door with no `jobs:read` cannot read back a single job — every `jobs.status` in
+  `reconcileRuns` refuses, nothing settles, and the `run_progress` fold this wake EXISTS for
+  never happens. `pulse` and `runs` carry the same delegate for the same reason
+  (`doors/read.ts`). It widens nothing: a delegate is the native ceiling the door's own job
+  authority may reach, intersected with the caller's capabilities, and the caller still needs
+  only `containers:read`.
 */
 
 /** Posting jobs is governed at the operation node the request names; see the block above. */
@@ -84,6 +90,8 @@ const STOP_REQUIREMENTS = [{ cap: "jobs:cancel" as const, target: ["operation"] 
 
 /** A dry read of this plugin's own tables; it asks no machine anything. */
 const STATUS_CAPS = ["containers:read"] as const;
+/** …but a cycle follows it, and a cycle that cannot read a job folds nothing; see above. */
+const STATUS_DELEGATES = ["jobs:read"] as const;
 
 /** Every act of a drain is news on this plugin's own node, as `doors/acts.ts` explains. */
 const OWN_NODE = { kind: "plugin", pluginId: BABEL_PLUGIN_ID } as const;
@@ -94,7 +102,7 @@ export interface DrainDoorDeps {
   readonly coordinator: Coordinator;
   /** The controller's own dependencies, over this dispatch's authority. */
   deps(ctx: Parameters<Door["handler"]>[0]): DrainDeps;
-  /** The manifest's `concurrentJobs`, which is the ceiling an overlay is judged against. */
+  /** The manifest's `concurrentJobs`: the most jobs of one operation a machine runs at once. */
   readonly concurrentJobs: number;
   now(): number;
 }
@@ -136,19 +144,39 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
             "deadline. A drain without one is not a drain, it is a loop (runbook §11.1)",
         };
       }
-      const deadline =
+      const requested =
         input.target.deadline === undefined ? null : Date.parse(input.target.deadline);
-      if (deadline !== null && !Number.isFinite(deadline)) {
+      if (requested !== null && !Number.isFinite(requested)) {
         return { refused: `${JSON.stringify(input.target.deadline)} is not an instant` };
       }
       const at = doorDeps.now();
-      if (deadline !== null && deadline <= at) {
+      if (requested !== null && requested <= at) {
         return { refused: `the deadline ${input.target.deadline ?? ""} has already passed` };
+      }
+      /*
+        THE FAN IS BOUNDED AGAINST THE MANIFEST, HERE, AND BY THE DRAIN'S OWN JOBS IN THE
+        CONTROLLER — never by the coordinator, which cannot see a drain's jobs at all.
+
+        `concurrentJobs` is `limits.concurrentJobs` on the operation this preset posts: the hub
+        refuses every posting past it at `execute` (atyrode/manifold#551), so a fan above it would
+        spend the drain's first round on refusals. It is refused by name instead. What keeps the
+        fan AT the number the operator asked for is `tickDrain`, which launches only into the
+        slots its own `live` jobs leave free — a drain's jobs take no claim (the direct presets go
+        `ready` → `post` → `jobs.execute`), so no admission bound in `coordinator.ts` has ever
+        counted one.
+      */
+      if (input.concurrent > doorDeps.concurrentJobs) {
+        return {
+          refused:
+            `this drain's fan of ${String(input.concurrent)} cannot be admitted: it is above the ` +
+            `${String(doorDeps.concurrentJobs)} jobs a machine runs at once under this plugin's ` +
+            `manifest, and the hub refuses every posting past that at execute`,
+        };
       }
       // A PRESET THAT SPENDS NOTHING CANNOT MEET A SPEND TARGET, so one is refused rather than
       // started as a fan nothing will ever stop: `keep-going` is a `scan`, it reaches no model,
       // and its metered spend is zero for as long as it runs.
-      if (!SPENDING.includes(input.preset) && deadline === null) {
+      if (!SPENDING.includes(input.preset) && requested === null) {
         return {
           refused:
             `the ${input.preset} preset reaches no model, so its metered spend stays at zero ` +
@@ -176,67 +204,36 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       }
 
       /*
-        THE OVERLAY THE DRAIN RUNS UNDER (#260), and the two numbers it moves.
+        A DRAIN SETS NO BUDGET OVERLAY, and #260's own reasoning is why.
 
-        `concurrentPerMachine` is the fan: it is the ONE admission knob, what the coordinator
-        bounds a machine by, and what makes the loop's own draws and this drain's jobs count
-        against one number rather than two that add up past what the machine runs.
+        AN OVERLAY MOVES ADMISSION NUMBERS, AND A DRAIN'S JOBS CONSULT NONE OF THEM. The three
+        presets a drain fans out are launched DIRECTLY — `startExplore`/`startBeat` go `ready` →
+        `post` → `jobs.execute` — so they take no claim, and `openClaims`/`activeInBatch`, which
+        is all admission counts, never sees one. Raising `concurrentPerMachine` for the drain's
+        TTL therefore bounded nothing of the drain's: what it did was raise the CONDUCTOR's
+        review bound to the fan's size on every online machine (`cap = bound * machines.length`),
+        so a drain on one host widened another host's review fan for two hours — a number moved
+        for something that does not read it, which is the exact failure #260 exists to remove.
 
-        `perCycleCost` moves WITH it, to exactly `perRunUsd(standing) * concurrent`, because
-        `applyBudget` mirrors the bound into the batch and `perRunUsd` is the cycle's allowance
-        DIVIDED by the batch: raising the fan alone would quietly cut what one run may spend to a
-        fraction of it. So a drain changes how many runs happen at once and never what one run is
-        allowed — which is the invariant that makes "a heavier review is a profile change, not a
-        drain change" true (#268).
-
-        `dailyCost` is deliberately NOT moved. A drain's jobs are launched directly and consult
-        no daily allowance; raising it would be an operator moving a number nothing reads, which
-        is the exact failure #260 exists to remove, rebuilt one layer up.
+        WHAT ONE RUN MAY SPEND IS THE POLICY'S, UNTOUCHED. `perRunUsd(standing)` is the ceiling
+        every job of this drain inherits through its plan, and a drain changes how many runs
+        happen at once and never what one run is allowed (#268) — so there is nothing left for an
+        overlay to carry: moving `perCycleCost` alone would divide that ceiling by the batch and
+        break exactly the invariant. A heavier run is a profile change; a longer drain is a
+        deadline. The standing `policies` row and the `budgets` table are both untouched, and the
+        row records no overlay because there is none to unwind.
       */
-      const standing = inForce.standing;
-      const expiresAt = deadline ?? at + DRAIN_DEFAULT_TTL_MS;
-      const perCycleCost = perRunUsd(standing) * input.concurrent;
-      const wanted: Budget = {
-        id: "",
-        createdAt: at,
-        expiresAt,
-        perCycleCost,
-        dailyCost: null,
-        concurrentPerMachine: input.concurrent,
-        reason: input.reason,
-      };
-      let budgetId = "";
-      let note = "";
-      if (budgetChanges(standing, wanted).length === 0) {
-        // A drain asking for what the standing policy already admits needs no exception, and an
-        // overlay that moves no number is refused by `setBudget` for that reason. Saying so is
-        // better than storing a no-op nobody can tell from a mistake.
-        note =
-          `no overlay was set: the standing policy already admits ` +
-          `${String(perMachineBound(standing))} at once on a machine`;
-      } else {
-        try {
-          const overlaid = await setBudget(
-            store,
-            {
-              expiresAt: new Date(expiresAt).toISOString(),
-              perCycleCost,
-              concurrentPerMachine: input.concurrent,
-              reason: input.reason,
-            },
-            ctx.principal.id,
-            doorDeps.concurrentJobs,
-          );
-          budgetId = overlaid.id;
-        } catch (error) {
-          return {
-            refused:
-              error instanceof ActRefused
-                ? `this drain's fan of ${String(input.concurrent)} cannot be admitted: ${error.message}`
-                : `this drain's overlay could not be set: ${message(error)}`,
-          };
-        }
-      }
+      // EVERY DRAIN CARRIES A DEADLINE, whether the operator named one or not: two hours is the
+      // 2026-09-13 drain's own length, and a drain that outlives the window it exists to spend is
+      // what the operation was written against. The instant is on the row, so what stops it is one
+      // of its own targets rather than somebody remembering to.
+      const deadline = requested ?? at + DRAIN_DEFAULT_TTL_MS;
+      const deadlineAt = new Date(deadline).toISOString();
+      const target: DrainTarget = { ...input.target, deadline: deadlineAt };
+      const note =
+        requested === null
+          ? `this drain names no deadline, so it stops at ${deadlineAt} whatever it has spent`
+          : "";
 
       const knobs: DrainKnobs = {
         recipes: input.recipes,
@@ -253,9 +250,8 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         session: input.session,
         knobs,
         concurrent: input.concurrent,
-        target: input.target,
+        target,
         startedBy: ctx.principal.id,
-        budgetId,
       });
 
       /*
@@ -266,8 +262,8 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
 
         A refusal on the first slot is the DRAIN's refusal and not a note: the operator is
         standing at the button, and "started, holding nothing, for the reason below" is the
-        answer the 2026-09-13 fans never gave. The overlay and the row are unwound, so a refused
-        start leaves nothing behind to clear up.
+        answer the 2026-09-13 fans never gave. The row is closed as `failed`, so a refused start
+        leaves nothing running and nothing to clear up.
       */
       const row = await readDrain(store, drainId);
       if (row === null) return { refused: `the drain row for ${drainId} was not written` };
@@ -305,8 +301,8 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
         preset: input.preset,
         concurrent: input.concurrent,
         launched: live.length,
-        budgetId,
-        account: input.session.account.identityKey,
+        deadline: deadlineAt,
+        account: accountName(input.session),
         model: input.session.model,
         note: refused === "" ? note : `${note === "" ? "" : `${note}; `}only ${String(live.length)} of ${String(input.concurrent)} started: ${refused}`,
       };
@@ -318,6 +314,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       name: ACTIONS.drainStatus,
       title: "Read what is draining",
       caps: STATUS_CAPS,
+      delegates: STATUS_DELEGATES,
       input: DrainQuerySchema,
       result: DrainStatusResultSchema,
     }),
@@ -346,7 +343,12 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
     async (ctx, input) => {
       const row = await readDrain(store, input.drainId);
       if (row === null) return { refused: `no drain ${input.drainId}` };
-      if (row.state !== "running") {
+      // A CLOSING DRAIN IS STILL STOPPABLE, and this is the only door that can do it: it has
+      // stopped launching, but the jobs it could not cancel — a settlement's tick holds no
+      // `jobs:cancel` — are still running, and this caller holds the capability at their
+      // operation. The ending it was closed with stands: a stop that cancels the stragglers of a
+      // drain that met its target did not change why it ended.
+      if (row.state !== "running" && row.state !== "closing") {
         return { refused: `${input.drainId} already ended as ${row.state}: ${row.reason}` };
       }
       const operationId = drainOperation(row.preset);
@@ -367,8 +369,14 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       // this press is not something to cancel, and asking the hub to would be a refusal reported
       // as a failure of the stop.
       const seen = await reconcileLive(store, row.live);
-      const reason = input.reason === "" ? `stopped by ${ctx.principal.id}` : input.reason;
-      const ended = await endDrain(doorDeps.deps(ctx), row, "stopped", reason, seen.holding);
+      const reason =
+        row.state === "closing"
+          ? row.reason
+          : input.reason === ""
+            ? `stopped by ${ctx.principal.id}`
+            : input.reason;
+      const ending = row.state === "closing" && row.ending !== "" ? row.ending : "stopped";
+      const ended = await endDrain(doorDeps.deps(ctx), row, ending, reason, seen.holding);
       ctx.emit(OWN_NODE, EVENTS.runChanged, {
         drainId: row.id,
         machineId: row.machineId,
@@ -376,7 +384,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       });
       return {
         drainId: row.id,
-        state: "stopped" as const,
+        state: ended.state,
         cancelled: ended.cancelled,
         note: ended.notes.join("; "),
       };
@@ -384,8 +392,4 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
   );
 
   return [start, status, stop];
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

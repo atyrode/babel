@@ -1,21 +1,21 @@
 import {
-  BABEL_PLUGIN_ID,
   DRAIN_SPENDING_PRESETS,
   PRESET_OPERATIONS,
+  type DrainEnding,
   type DrainPreset,
   type LaunchInput,
   type OperationName,
   type SessionChoice,
 } from "../contract.ts";
-import { clearBudget, ActRefused } from "../store/acts.ts";
 import type { Coordinator, Policy } from "../store/coordinator.ts";
 import {
+  activeDrains,
   addSpend,
   closeDrain,
   deadlineOf,
+  finishDrain,
   reconcileLive,
   recordLaunch,
-  runningDrains,
   sample,
   saveFold,
   targetMet,
@@ -62,6 +62,13 @@ import type { BabelJobs } from "./plan.ts";
   cannot. A job already at the model has been paid for; letting it finish and write its receipt
   is worth more than killing it. The operator's own `drain.stop` holds `jobs:cancel` at the
   operation and is where cancellation really lands.
+
+  AND WHAT IT CANNOT CANCEL, IT KEEPS. A drain that stopped launching with jobs still out goes to
+  `closing` holding them: they were paid for, their receipts are part of what this drain spent,
+  and every later tick folds them until none is left and the recorded ending is taken. Dropping
+  them at the close — which is what emptying `live` did — under-reported the drain's own total by
+  up to (N−1) runs, on the ordinary path rather than in an edge case: the tick that meets a
+  target is usually a settlement's, and a settlement's tick cannot cancel anything.
 */
 
 /** What a drain's tick reports, per drain, so a caller can say what happened. */
@@ -146,43 +153,38 @@ export function drainIdentity(row: DrainRow, ordinal: number): LaunchIdentity {
   return { runId: `run_${tail}`, jobId: `job_${tail}`, authorityId: row.startedBy };
 }
 
+/** What ending a drain did: the state it is in now, what was cancelled, and what it could not do. */
+export interface Ended {
+  /** `closing` while it still holds a job whose receipt is owed, otherwise the ending itself. */
+  readonly state: DrainRow["state"];
+  readonly cancelled: number;
+  readonly notes: readonly string[];
+}
+
 /**
- * Ends a drain: the overlay cleared, the row closed, and the jobs it still holds asked to stop.
- *
- * THE OVERLAY IS CLEARED FIRST, because that is the part an operator cannot undo by waiting: a
- * drain that ended while its bound stayed raised is 2026-09-13's eval-policy-10 outliving its
- * drain by ninety minutes. An overlay that has already expired refuses the clear, and that
- * refusal is the standing policy already being in force — a note, never a failure.
+ * Ends a drain: the jobs it still holds asked to stop, and the row closed on them.
  *
  * The cancels are asked for and not required: a tick woken by a settlement does not hold
  * `jobs:cancel`, and a drain that could not stop its last two jobs has still stopped launching,
  * which is what its target asked for. What could not be cancelled is named.
+ *
+ * WHAT IT HOLDS IT KEEPS HOLDING, cancelled or not. A cancel is a request and a receipt is what
+ * answers it: the job settles later either way, and what it metered is this drain's spend. So the
+ * row goes to `closing` with every job it held — {@link finishDrain} takes the ending when the
+ * last of them has settled — and only a drain holding nothing ends here and now.
+ *
+ * There is NO OVERLAY TO CLEAR. A drain's jobs are launched directly and consult no ceiling of
+ * the standing policy, so it never moved one (`doors/drain.ts` says the whole of it): what used
+ * to be unwound here was a number nothing read.
  */
 export async function endDrain(
   deps: DrainDeps,
   row: DrainRow,
-  state: Exclude<DrainRow["state"], "running">,
+  ending: DrainEnding,
   reason: string,
   live: readonly LiveJob[],
-): Promise<{ readonly cancelled: number; readonly notes: readonly string[] }> {
+): Promise<Ended> {
   const notes: string[] = [];
-  if (row.budgetId !== "") {
-    try {
-      await clearBudget(
-        deps.store,
-        { id: row.budgetId, reason: `drain ${row.id} ended: ${reason}` },
-        // The act's actor is this plugin's own loop: a tick has no principal, and the drain's
-        // own `started_by` is who asked for the drain rather than who ended it.
-        BABEL_PLUGIN_ID,
-      );
-    } catch (error) {
-      notes.push(
-        error instanceof ActRefused
-          ? `the overlay ${row.budgetId} was not cleared: ${error.message}`
-          : `the overlay ${row.budgetId} could not be cleared: ${message(error)}`,
-      );
-    }
-  }
   const operationId = drainOperation(row.preset);
   let cancelled = 0;
   for (const job of live) {
@@ -198,10 +200,18 @@ export async function endDrain(
       notes.push(`${job.jobId} was not cancelled: ${message(error)}`);
     }
   }
-  const closed = await closeDrain(deps.store, row.id, state, reason);
-  if (!closed) notes.push(`drain ${row.id} had already ended when this tick closed it`);
+  const closed = await closeDrain(deps.store, row.id, ending, reason, live);
+  if (closed === "already") {
+    notes.push(`drain ${row.id} had already ended when this tick closed it`);
+  }
+  if (closed === "closing") {
+    notes.push(
+      `${String(live.length)} job(s) of this drain are still running: it ends as ${ending} when ` +
+        `their receipts have landed`,
+    );
+  }
   deps.store.touch();
-  return { cancelled, notes };
+  return { state: closed === "closing" ? "closing" : ending, cancelled, notes };
 }
 
 /**
@@ -210,6 +220,10 @@ export async function endDrain(
  * The order is the whole of it: fold what closed BEFORE deciding, so a target met by the job
  * that just settled ends the drain instead of launching one more; then decide; then launch, so a
  * drain that is already over never posts again.
+ *
+ * A CLOSING DRAIN IS FOLDED AND NOTHING ELSE. Its ending is already recorded and its targets are
+ * already answered; what is left is the receipts of the jobs it was holding when it closed, and
+ * the tick that folds the last of them is the one that records the end.
  */
 async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
   const at = deps.now();
@@ -240,6 +254,32 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     settledNow: seen.settled.length,
   });
 
+  if (row.state === "closing") {
+    const ending = row.ending === "" ? "stopped" : row.ending;
+    if (seen.holding.length > 0) {
+      return {
+        drainId: row.id,
+        launched: 0,
+        settled: seen.settled.length,
+        live: seen.holding.length,
+        state: "closing",
+        reason: row.reason,
+        notes,
+      };
+    }
+    const finished = await finishDrain(deps.store, row.id);
+    if (finished) deps.store.touch();
+    return {
+      drainId: row.id,
+      launched: 0,
+      settled: seen.settled.length,
+      live: 0,
+      state: ending,
+      reason: row.reason,
+      notes,
+    };
+  }
+
   const met = targetMet(row.target, spent);
   if (met !== "") {
     const ended = await endDrain(deps, row, "target", met, seen.holding);
@@ -247,8 +287,8 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       drainId: row.id,
       launched: 0,
       settled: seen.settled.length,
-      live: seen.holding.length - ended.cancelled,
-      state: "target",
+      live: seen.holding.length,
+      state: ended.state,
       reason: met,
       notes: [...notes, ...ended.notes],
     };
@@ -261,8 +301,8 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       drainId: row.id,
       launched: 0,
       settled: seen.settled.length,
-      live: seen.holding.length - ended.cancelled,
-      state: "deadline",
+      live: seen.holding.length,
+      state: ended.state,
       reason: why,
       notes: [...notes, ...ended.notes],
     };
@@ -279,8 +319,8 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       drainId: row.id,
       launched: 0,
       settled: seen.settled.length,
-      live: seen.holding.length - ended.cancelled,
-      state: "stopped",
+      live: seen.holding.length,
+      state: ended.state,
       reason: why,
       notes: [...notes, ...ended.notes],
     };
@@ -299,7 +339,27 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
     const started = SPENDING.includes(row.preset)
       ? await deps.launch.startExplore(identity, deps.jobs, input, plan)
       : await deps.launch.startBeat(identity, deps.jobs, input, plan);
+    const job: LiveJob = { runId: identity.runId, jobId: identity.jobId, launchedAt: at };
     if ("refused" in started) {
+      /*
+        A JOB THIS DRAIN ALREADY POSTED IS ADOPTED RATHER THAN RE-POSTED. `job_digest_conflict`
+        is the hub saying it holds this id under a different request (`job-store.ts`: the digest
+        covers the input, and an explore's selection window moves between ticks), which for a
+        DERIVED id can only mean a tick of this drain posted it and lost the write that recorded
+        it — the 2-second hook lease closing between `execute` and the row. Without this the
+        ordinal never advances, every later tick re-posts the same conflicting id, the slot is
+        dead for the rest of the drain and the orphan's spend is never folded. The run row is
+        already there (it is written by the same call that posted the job), so taking the job
+        back onto `live` is enough: it settles like any other and its receipt lands in `spent`.
+        If the row is NOT there, the next tick's `missing` releases the slot.
+      */
+      if (started.refused.includes("job_digest_conflict")) {
+        notes.push(`${identity.jobId} was already posted by an earlier tick, and is taken back`);
+        await recordLaunch(deps.store, row.id, job, holding);
+        holding.push(job);
+        launched += 1;
+        continue;
+      }
       // ONE REFUSAL ENDS THE ROUND, not the drain. The next slot would ask the same thing of the
       // same machine with the same window and hear the same sentence, and a tick that asked
       // sixteen times would report one fact sixteen times. The drain stays running: the reason
@@ -308,7 +368,6 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
       notes.push(`no further job was launched: ${started.refused}`);
       break;
     }
-    const job: LiveJob = { runId: started.runId, jobId: started.jobId, launchedAt: at };
     // The row is written before the array grows, so what it stores is what this tick actually
     // holds: the write is `live` plus this job, counted once whatever a retry does.
     await recordLaunch(deps.store, row.id, job, holding);
@@ -356,7 +415,7 @@ async function tickDrain(deps: DrainDeps, row: DrainRow): Promise<DrainReport> {
 export async function drainTick(deps: DrainDeps): Promise<readonly DrainReport[]> {
   let drains: readonly DrainRow[];
   try {
-    drains = await runningDrains(deps.store);
+    drains = await activeDrains(deps.store);
   } catch (error) {
     return [
       {
