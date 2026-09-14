@@ -178,14 +178,21 @@ export function launchAnswer(overrides: Partial<LaunchAnswer> = {}): LaunchAnswe
     jobId: "job_new",
     machineId: "m-dev-01",
     kind: "explore",
-    profile: {
-      id: "babel-explore",
-      revision: 4,
-      model: "claude-opus-4",
-      disclosure: "full",
-      costPer1k: { input: 0.015, output: 0.075 },
-    },
+    profile: { model: "anthropic/claude-opus-5", thinking: "high", account: "victorballu" },
     ceiling: { perRunUsd: 2, perDayUsd: 20 },
+    session: {
+      serviceId: "atyrode.babel.inference",
+      account: "victorballu",
+      model: "anthropic/claude-opus-5",
+      priced: true,
+      price: { inputPerMillion: 5_000_000, outputPerMillion: 25_000_000 },
+      ceilingMicros: 2_000_000,
+      policy: "priced",
+      unreadable: "",
+      note:
+        "anthropic/claude-opus-5 is metered at $5.0000 per million input tokens and $25.0000 " +
+        "per million output, on victorballu, under a ceiling of $2.0000 for this run",
+    },
     ...overrides,
   };
 }

@@ -27,7 +27,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { RUN_STAGES, type Receipt } from "../contract.ts";
+import { OMP_HOME, RUN_STAGES, type Receipt } from "../contract.ts";
 import {
   PROGRESS_STAGE,
   runEngineJob,
@@ -37,7 +37,7 @@ import {
 } from "./engine/client.ts";
 import {
   ENGINE_FAILURES,
-  ProfileRefSchema,
+  SessionRefSchema,
   SANDBOXED_RUN,
   UNSANDBOXED,
   type EngineLimits,
@@ -121,7 +121,7 @@ export const ExploreInputSchema = z.strictObject({
     args: z.array(z.string()).default([]),
     cwd: z.string().default(""),
   }),
-  profile: ProfileRefSchema,
+  session: SessionRefSchema,
   preparation: z.strictObject({
     id: z.string().default(""),
     selection: z.array(SelectionSchema).default([]),
@@ -360,7 +360,7 @@ async function runStage(args: {
     const outcome = await runEngineJob(
       {
         runId: `${runId}/${stage}`,
-        profile: input.profile,
+        session: input.session,
         prompt,
         submitSchema: exploreJsonSchema(stage),
         tools,
@@ -383,9 +383,14 @@ async function runStage(args: {
         launch: {
           binary: input.engine.binary,
           args: input.engine.args,
-          profile: input.profile,
-          runtimeInfoPath: join(directory, "runtime.json"),
-          ...(input.engine.cwd === "" ? {} : { cwd: input.engine.cwd }),
+          session: input.session,
+          // The job's private home, where the OWNER materialized `models.yml` and `config.yml`
+          // out of the inference binding; the launch reads that they are there and never their
+          // contents (`machine/engine/launch.ts`).
+          home: process.env["HOME"] ?? OMP_HOME,
+          // A disposable directory per stage. omp starting in `$HOME` would switch itself to a
+          // temp dir of its own; this makes the choice Babel's and the path one it can clean up.
+          cwd: input.engine.cwd === "" ? directory : input.engine.cwd,
         },
         limits: args.limits,
         // The client's `prompt` record is written the instant the job's material leaves Babel,

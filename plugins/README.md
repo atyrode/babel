@@ -48,7 +48,7 @@ manifest and served as `ctx.database`. Three consequences worth knowing before r
   purge deletes `data.db` with its `-wal` and `-shm`. `bun run verify` asserts both halves of
   that: the file exists once the doors have answered, and is gone after the purge.
 
-## The machine half: one bundled file, four runtime tools the machine provides
+## The machine half: one bundled file, one pinned engine, four tools the machine provides
 
 A run is a **job on an enrolled machine** (manifold `docs/PLUGINS.md` §8), and the baseline's
 manifest carries the `machine` block that says what may run there. `atyrode.babel/machine/` is
@@ -77,33 +77,73 @@ anchor, must already exist on the machine for `write` and refuses a second job f
 `scan` and `prepare` run with `network: "none"`; `explore` and `evaluate` reach the host because
 they launch the engine, and `archive` because it reaches the repository and its storage service.
 
-Four tools are **runtime tools the machine's owner provides, not artifacts this manifest pins**:
-`bun`, the executable every operation runs; `code`, the engine `explore` and `evaluate` launch;
-`git`, which reads repository identity for `scan` and `prepare`; and `restic`, which owns the
-archive's repository format. A Manifold job sandbox is built from `/proc`, `/dev`, the job's own
-directories and the declared binds and nothing else — no `/lib64`, no libc — and manifold's own
-rule is that "a dynamically linked executable without its loader cannot run in the empty sandbox"
-(`docs/SELF-HOST.md`). Neither bun nor code ships a static build (the musl bun is dynamic
-against `ld-musl` too), so a pinned artifact could be downloaded and verified and still die at
-`execvp` — which is exactly what happened on the first real job. The owner's
-`execution.runtimeToolClosures` binds a tool WITH its exact closure at Nix build time, per
-machine, under the alias the operation names; the manifest therefore declares
-`runtimeTools: ["bun"]` / `["bun", "code"]` / `["bun", "restic"]` and no `tools` block, so a
-declared artifact can never shadow the owner's binding. Each tool is resolved at
-`/runtime/bin/<alias>` first and on PATH second, so the same code runs in a job and in a test.
-For the operator's fleet that is one dotfiles module:
+**Four tools are runtime tools the machine's owner provides, not artifacts this manifest pins**:
+`bun`, the executable every operation runs; `git`, which reads repository identity for `scan` and
+`prepare`; `restic`, which owns the archive's repository format; and — for the two operations that
+drive a model — `ca-certificates`, the CA bundle `SSL_CERT_FILE` names, and `system`, the reviewed
+libc closure a dynamically linked binary needs. A Manifold job sandbox is built from `/proc`,
+`/dev`, the job's own tmpfs home and the artifacts it declares, and it carries no libc at all, so
+a bare binary cannot `execvp` in one — which is exactly what happened on the first real job. The
+owner's `execution.runtimeToolClosures` binds a tool WITH its exact closure at Nix build time,
+per machine, under the alias the operation names. Each tool is resolved at `/runtime/bin/<alias>`
+first and on PATH second, so the same code runs in a job and in a test. For the operator's fleet
+that is one dotfiles module:
 
 ```nix
 services.manifold.execution = {
   runtimeTools.bun = [{ source = "${pkgs.bun}/bin/bun"; target = "/runtime/bin/bun"; kind = "file"; }];
   runtimeToolClosures.bun = [ pkgs.bun ];
-  runtimeTools.code = [{ source = "${code}/bin/code"; target = "/runtime/bin/code"; kind = "file"; }];
-  runtimeToolClosures.code = [ code ];
   runtimeTools.git = [{ source = "${pkgs.git}/bin/git"; target = "/runtime/bin/git"; kind = "file"; }];
   runtimeToolClosures.git = [ pkgs.git ];
   runtimeTools.restic = [{ source = "${pkgs.restic}/bin/restic"; target = "/runtime/bin/restic"; kind = "file"; }];
   runtimeToolClosures.restic = [ pkgs.restic ];
+  runtimeTools.ca-certificates = [{ source = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"; target = "/runtime/bin/ca-certificates"; kind = "file"; }];
+  runtimeToolClosures.ca-certificates = [ pkgs.cacert ];
+  # `system` is the reviewed libc closure; manifold-omp's runtime-artifacts.json names the exact
+  # interpreter and sonames it must supply per platform.
 };
+```
+
+**`omp` is the one tool this manifest PINS**, by url and digest, from manifold-omp's own
+`runtime-artifacts.json` at SDK 18.1.14 — `machine.tools.omp`, one `MachineArtifact` per platform,
+which the machine agent downloads and verifies against `entrySha256` before binding it read-only
+at `/runtime/bin/omp`. It is pinned rather than delegated because it is the thing being DRIVEN: a
+run's answers come from that exact build, and an owner-bound `omp` would let one machine's engine
+differ from another's with nothing in the record saying so.
+
+### What launches the model, and what it is never given
+
+Until 2026-09-13 `explore` and `evaluate` launched `code engine`, a Code subcommand that owned
+the profile, the credential and the sandbox and wrote a `code.runtime/1` sidecar Babel read before
+writing a prompt. atyrode/code#153 removed that engine, and Manifold has no plugin-to-plugin call
+to replace it with — `ActionCtx` carries no way to reach another plugin's doors, and every
+`ctx.jobs` verb is bound to the calling plugin's own id. So Babel's own job launches the engine
+(atyrode/babel#279):
+
+```
+/runtime/bin/omp --mode rpc --no-tools --no-lsp --no-session --no-extensions --no-rules \
+  --no-skills --no-title --auto-approve --config $HOME/.omp/agent/config.yml --cwd <scratch>
+```
+
+That argv carries nothing about a model, an account or a provider, and it never will: argv is
+world-readable in any process listing on the host. The session travels as two files the OWNER
+materializes into the job's private home out of the job's own inputs —
+`~/.omp/agent/models.yml` and `~/.omp/agent/config.yml`, declared as `inputFiles` with a
+`homePath` — and the inference binding's url and bearer are spliced by the owner into
+`models.yml`'s `providers.*.baseUrl` and `providers.*.apiKey` through `jsonValues`. The bearer
+therefore never passes through Babel's code, its argv, its environment or a log line, and the
+provider credential never enters the sandbox at all.
+
+Admission is over facts rather than over a declaration, which is the substantive improvement on
+the sidecar. Before a byte of prompt is written the machine half checks that the boundary around
+it is a Manifold job sandbox (its `HOME` is the job's private home and the XDG directories are
+inside it) and that the two files above are present and the environment holds no provider
+credential variable. A run that fails either is refused with a named reason — `inference_unbound`
+— and its receipt records what it was asked to be. Babel's own launch report (`babel.launch/1`)
+replaces `code.runtime/1`: the model, the thinking level, the account, the observed boundary,
+the models that answered, the exit status, the bounded retry count, and a named failure
+(`broker_unavailable`, `rate_limited`, `inference_unbound`) instead of "the engine closed its
+stdout before a ready frame".
 ```
 
 **`archive` is declared, and `restic` is a closure like the others.** restic is half of why the

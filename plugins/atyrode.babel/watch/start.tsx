@@ -6,7 +6,6 @@ import {
   PRESET_CARDS,
   unready,
   usd,
-  usdRate,
   type LaunchAnswer,
   type LaunchDraft,
   type Preset,
@@ -224,24 +223,42 @@ function WillRun({
         <p className="plugin-atyrode_babel_watch__willrun-line plugin-atyrode_babel_watch__muted">
           {previewNote === "" ? "Asking the machine what will run…" : previewNote}
         </p>
-      ) : preview.profile === null ? (
+      ) : (
         /*
-          The door answered and the machine named no profile: the ceilings are still facts, and
-          the model being unknown is the sentence the operator needs rather than a blank where a
-          name should be (#251 is exactly this complaint).
+          WHAT WILL RUN AND WHAT IT WILL BE METERED AT, in the owner's own numbers (#279).
+
+          `session` is always present and always says something an operator acts on: the policy
+          is missing, the model is unpriced, the price and the ceiling are facts, or the machine's
+          configuration could not be read from here. `profile` is the different sentence — what
+          the machine's LAST completed run actually ran under — and a machine that has run
+          nothing says so rather than leaving a blank where a model should be (#251).
         */
         <p className="plugin-atyrode_babel_watch__willrun-line">
-          Will run <strong>{preview.kind}</strong>, but the machine has not said under which profile, so the
-          model is unknown · {ceiling}
-        </p>
-      ) : (
-        <p className="plugin-atyrode_babel_watch__willrun-line">
-          Will run <strong>{preview.kind}</strong> as <strong>{preview.profile.model}</strong> under profile{" "}
-          <span className="plugin-atyrode_babel_watch__mono">
-            {preview.profile.id}/{preview.profile.revision}
-          </span>{" "}
-          · {preview.profile.disclosure} · {usdRate(preview.profile.costPer1k.input)} in /{" "}
-          {usdRate(preview.profile.costPer1k.output)} out per 1k tokens · {ceiling}
+          Will run <strong>{preview.kind}</strong>
+          {preview.session.model === "" ? (
+            <> · choose a model and an account</>
+          ) : (
+            <>
+              {" "}
+              as <strong>{preview.session.model}</strong>
+              {preview.session.account === "" ? null : (
+                <>
+                  {" "}
+                  on{" "}
+                  <span className="plugin-atyrode_babel_watch__mono">
+                    {preview.session.account}
+                  </span>
+                </>
+              )}
+            </>
+          )}{" "}
+          · {preview.session.note} · {ceiling}
+          {preview.profile === null ? null : (
+            <>
+              {" "}
+              · last run here: {preview.profile.model || "unknown"}
+            </>
+          )}
         </p>
       )}
     </Stack>

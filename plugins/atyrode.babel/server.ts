@@ -8,7 +8,13 @@ import {
 } from "@manifold/plugin-kit/server";
 import { PluginManifestSchema } from "@manifold/protocol";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
-import { ACTIONS, BABEL_PLUGIN_ID, OPERATIONS, type OperationName } from "./contract.ts";
+import {
+  ACTIONS,
+  BABEL_PLUGIN_ID,
+  OPERATIONS,
+  type OperationName,
+  type SessionChoice,
+} from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
 import {
   conductor,
@@ -26,6 +32,8 @@ import {
   jobsSlice,
   machinesSlice,
   runPlan,
+  servicesSlice,
+  STANDING_SESSION,
   unaskable,
   unauthorized,
 } from "./server/plan.ts";
@@ -148,8 +156,24 @@ const coordinated = coordinator(store, () => store.now(), CONCURRENT_JOBS);
 const COOKBOOK: Readonly<Record<string, Recipe>> = {};
 const ROLE_RECIPES: Readonly<Record<string, string>> = {};
 
-function planFor(policy: Policy, operationId: OperationName): RunPlan {
-  return runPlan({ manifest, policy, cookbook: COOKBOOK, roles: ROLE_RECIPES, operationId });
+/**
+ * THE SESSION AN AUTONOMOUS DRAW RUNS UNDER. `STANDING_SESSION` is null and `server/plan.ts`
+ * says why: an account is a row in one machine's broker and cannot be a constant in a
+ * repository. Naming one here is the same one-line wiring change as installing a cookbook.
+ */
+function planFor(
+  policy: Policy,
+  operationId: OperationName,
+  session?: SessionChoice | undefined,
+): RunPlan {
+  return runPlan({
+    manifest,
+    policy,
+    cookbook: COOKBOOK,
+    roles: ROLE_RECIPES,
+    operationId,
+    session: session ?? STANDING_SESSION,
+  });
 }
 
 function loop(jobs: JobsSlice, machines: MachinesSlice, plan: RunPlan): Conductor {
@@ -218,6 +242,7 @@ const doors = babelDoors(
     cookbook: COOKBOOK,
     jobs: (ctx) => jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive)),
     machines: (ctx) => machinesSlice(ctx.machines),
+    services: (ctx) => servicesSlice(ctx.services),
     plan: planFor,
     cycle: loop,
     now: () => store.now(),

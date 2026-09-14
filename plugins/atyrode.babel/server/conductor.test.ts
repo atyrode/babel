@@ -732,8 +732,17 @@ class Draws {
  * today (#256).
  */
 const PLAN: RunPlan = {
-  engine: { binary: "code", args: [] },
-  profile: { id: "analysis", revision: 3 },
+  engine: { binary: "/runtime/bin/omp", args: [] },
+  session: {
+    model: "anthropic/claude-sonnet-5",
+    thinking: "high",
+    account: {
+      provider: "anthropic",
+      scope: "atyrode.omp.accounts.broker@7/m-dev-01",
+      credentialId: "3",
+      identityKey: "victorballu@gmail.com",
+    },
+  },
   caps: { perRunUsd: 0.25, toolCalls: 40, idleMs: 120000, handshakeMs: 30000 },
   recipes: {
     reception: { id: "reception-vote", version: 1, title: "Reception", body: "Does it hold?" },

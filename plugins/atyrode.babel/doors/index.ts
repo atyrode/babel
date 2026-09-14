@@ -2,6 +2,7 @@ import type { ServerActionDef, ServerHandler } from "@manifold/plugin-kit/server
 import type { BabelStore } from "../store/store.ts";
 import { actDoors } from "./acts.ts";
 import type { Door } from "./door.ts";
+import { inferenceDoors } from "./inference.ts";
 import { launchDoors, type LaunchDeps } from "./launch.ts";
 import { readDoors } from "./read.ts";
 
@@ -11,11 +12,13 @@ import { readDoors } from "./read.ts";
   declaration and the code that answers it — so each module hands back `Door`s and this file is
   where the pair is split into the shape the definition wants.
 
-  Reading (`read.ts`), ruling (`acts.ts`) and starting (`launch.ts`) are the three halves — a
-  reader of the roster should meet the nine answers before the nine acts, and the two doors that
-  spend money last. Only the last two need anything but the store: a launch reaches the machines
-  through the dispatch's own job authority, and an act that writes a bound is judged against
-  `concurrentJobs`, the ceiling this plugin's manifest declares for the operations it launches.
+  Reading (`read.ts`), ruling (`acts.ts`), starting (`launch.ts`) and the model lane
+  (`inference.ts`) are the four halves — a reader of the roster should meet the answers before
+  the acts, and the doors that spend money last. Only two need anything but the store: a launch
+  reaches the machines through the dispatch's own job authority, and an act that writes a bound
+  is judged against `concurrentJobs`, the ceiling this plugin's manifest declares for the
+  operations it launches. `inference.ts` needs neither — it reads and writes SERVICES, through
+  the dispatch's own service authority, and holds no store state at all.
 */
 
 export interface BabelDoors {
@@ -30,6 +33,7 @@ export function babelDoors(store: BabelStore, deps: LaunchDeps, concurrentJobs: 
     ...readDoors(store),
     ...actDoors(store, concurrentJobs),
     ...launchDoors(store, deps),
+    ...inferenceDoors({ now: deps.now }),
   ];
   for (const door of doors) {
     const { name } = door.action;

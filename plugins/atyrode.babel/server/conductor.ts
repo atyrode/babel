@@ -11,10 +11,12 @@ import {
   RUN_STAGES,
   ReceiptSchema,
   type Receipt,
+  type SessionChoice,
 } from "../contract.ts";
 import { perMachineBound } from "../store/coordinator.ts";
 import type { Assignment, Coordinator, Fence, Gap, Policy, Stop } from "../store/coordinator.ts";
 import { refuseRow, type RowRefusal } from "../store/acts.ts";
+import { launchProfile, sessionInputs } from "./plan.ts";
 import { refusalCode, type RefusalCode } from "../machine/engine/results.ts";
 import type { BabelStore } from "../store/store.ts";
 
@@ -180,12 +182,19 @@ export interface MachineReadiness {
     readonly ready: boolean;
   } | null;
 }
-
 export interface JobLimits {
   readonly timeoutMs: number;
   readonly memoryBytes: number;
   readonly processes: number;
   readonly outputBytes: number;
+  /**
+   * THE PER-CALL CEILING THE OWNER ENFORCES (ADR 0038), in integer micro-dollars and only on the
+   * two operations that bind the inference service. The owner refuses the call that would pass
+   * it — HTTP 429 `service_ceiling_exceeded`, never mid-stream — and a run whose model the
+   * policy does not price is refused before its first call, because a ceiling in money without
+   * a price is not a ceiling.
+   */
+  readonly inference?: { readonly costMicros: number } | undefined;
 }
 
 /** A job request as the loop makes one: the engine fills in authority, permit and digest. */
@@ -326,7 +335,16 @@ export interface Recipe {
  */
 export interface RunPlan {
   readonly engine: { readonly binary: string; readonly args?: readonly string[] | undefined };
-  readonly profile: { readonly id: string; readonly revision: number };
+  /**
+   * WHO ANSWERS AND ON WHOSE ACCOUNT, or null when this deployment has named nobody (#279).
+   *
+   * It replaces the Code profile reference: there is no engine to resolve one, so a run states
+   * its model, its thinking level and the account it spends, and `plan.ts` explains why the
+   * standing value is null. A drawn review dispatched with no session is REFUSED BY NAME
+   * (`no-session`) rather than launched: a run with no account to spend cannot reach a model,
+   * and a claim taken for it would be a batch slot held by nothing.
+   */
+  readonly session: SessionChoice | null;
   readonly caps: {
     readonly perRunUsd: number;
     readonly toolCalls: number;
@@ -2104,6 +2122,22 @@ export function conductor(deps: ConductorDeps): Conductor {
       });
       return;
     }
+    // A DRAW WITH NO SESSION IS REFUSED BEFORE A CLAIM IS TAKEN (#279). There is no engine to
+    // resolve a profile into a model and an account any more, so a run that cannot name either
+    // has no route to a model at all — and a claim held for it would be a batch slot spent on
+    // nothing, which is exactly the shape of the ghosts of 2026-09-13.
+    const session = plan.session;
+    if (session === null) {
+      refused.push({
+        assignmentId: assignment.id,
+        recordId: assignment.recordId,
+        reason: "no-session",
+        detail:
+          "this deployment names no model and no account for an autonomous draw, so nothing " +
+          "was launched; an operator's own launch carries its own session",
+      });
+      return;
+    }
     const projection = await project(assignment.recordId);
     if (projection === null) {
       refused.push({
@@ -2158,7 +2192,7 @@ export function conductor(deps: ConductorDeps): Conductor {
       runId,
       machineId: host.machineId,
       engine: { binary: plan.engine.binary, args: plan.engine.args ?? [] },
-      profile: plan.profile,
+      session,
       assignment: {
         id: claim.id,
         recordId: assignment.recordId,
@@ -2197,7 +2231,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         jobId,
         machineId: host.machineId,
         operationId,
-        input: { [INPUT_FIELD]: JSON.stringify(document) },
+        input: { [INPUT_FIELD]: JSON.stringify(document), ...sessionInputs(session) },
         outputs: [{ name: OUTPUT_BINDING, locationId: OUTPUT_LOCATION, components: [jobId] }],
         limits: plan.limits,
         ...(installation === null
@@ -2243,7 +2277,7 @@ export function conductor(deps: ConductorDeps): Conductor {
         host.machineId,
         jobId,
         recipe.id,
-        JSON.stringify(plan.profile),
+        JSON.stringify(launchProfile(session)),
         assignment.policyVersion,
         JSON.stringify({
           claimId: claim.id,

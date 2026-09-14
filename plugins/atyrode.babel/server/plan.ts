@@ -1,6 +1,18 @@
 import { jobLimits, type MachineHalf, type PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs, GuestJobs } from "@manifold/plugin-kit/server";
-import { BABEL_PLUGIN_ID, OPERATIONS, type OperationName } from "../contract.ts";
+import {
+  BABEL_PLUGIN_ID,
+  INFERENCE_SERVICE,
+  OMP_BINARY,
+  OMP_TOOL,
+  OPERATIONS,
+  RUNTIME_TOOL_BIN,
+  SESSION_INPUTS,
+  type ModelPrice,
+  type OperationName,
+  type SessionChoice,
+  type SessionPreview,
+} from "../contract.ts";
 import { DEFAULT_POLICY, type Policy } from "../store/coordinator.ts";
 import type {
   Awaitable,
@@ -55,19 +67,28 @@ import type {
 
 // ---------------------------------------------------------------------------- the engine
 
-/** Where the owner binds a runtime tool inside the job (`agent/src/job-linux.ts`). */
-export const RUNTIME_BIN = "/runtime/bin";
-/** The runtime tool that IS the engine: Code, driven over its own RPC by the machine half. */
-export const ENGINE_TOOL = "code";
+/** Where a runtime tool is bound inside the job (`agent/src/job-linux.ts`). */
+export const RUNTIME_BIN = RUNTIME_TOOL_BIN;
+/** The runtime tool that IS the engine: omp, driven over its own RPC by the machine half. */
+export const ENGINE_TOOL = OMP_TOOL;
 /** The engine's guest path, as the explore and evaluate input documents carry it. */
-export const ENGINE_BINARY = `${RUNTIME_BIN}/${ENGINE_TOOL}`;
+export const ENGINE_BINARY = OMP_BINARY;
 
 /**
- * The Code profile every Babel run asks for. It is a REFERENCE and never a model name: what is
- * behind `analysis@3` — the model, the disclosure class, the price per 1k — is Code's to resolve
- * and to report back, and Babel records what ran rather than what it asked for (plan §5).
+ * THE SESSION AN AUTONOMOUS DRAW RUNS UNDER, when this deployment has named one.
+ *
+ * It replaces the Code profile reference `analysis@3`. A profile was a name Code resolved a
+ * model, an account and a price behind; there is no Code, so the three are the deployment's own
+ * choice and one of them — the account — cannot be a constant in a repository: a credential id
+ * and an identity key name rows in one machine's broker.
+ *
+ * So it is `null` here, and that is a statement rather than a stub, exactly as the empty
+ * `COOKBOOK` beside it in `server.ts` is: a drawn review dispatched with no session is refused
+ * BY NAME (`no-session` in the cycle's report) instead of being launched with an invented model
+ * on nobody's account. An operator's own launch always carries one — `launch` takes it from the
+ * request — so the surface that spends money is the one that names what it spends.
  */
-export const PROFILE = { id: "analysis", revision: 3 } as const;
+export const STANDING_SESSION: SessionChoice | null = null;
 
 /**
  * The caps that are not money. Measured on this deployment rather than chosen: 40 tool calls is
@@ -110,7 +131,19 @@ export function operationLimits(
   operationId: OperationName | string,
 ): JobLimits {
   const declared = machine?.operations[operationId]?.limits;
-  return declared === undefined ? DEFAULT_LIMITS : jobLimits(declared);
+  if (declared === undefined) return DEFAULT_LIMITS;
+  const limits = jobLimits(declared);
+  const costMicros = limits.inference?.costMicros;
+  return {
+    timeoutMs: limits.timeoutMs,
+    memoryBytes: limits.memoryBytes,
+    processes: limits.processes,
+    outputBytes: limits.outputBytes,
+    // Babel sets exactly one inference ceiling and reads exactly one back: a cost. A manifest
+    // that declared a call or token ceiling would be declaring a bound this plugin does not
+    // govern by, and carrying it through unread would be the plan claiming to honour it.
+    ...(costMicros === undefined ? {} : { inference: { costMicros } }),
+  };
 }
 
 /**
@@ -136,10 +169,12 @@ export function jobCeiling(manifest: PluginManifest): number {
 }
 
 /**
- * Asserts the engine is on the machine this plugin ships. `runtimeTools` is what the owner
- * binds; an operation that drives Code and does not require it would exec a path that is not
+ * Asserts the engine is on the machine this plugin ships. `runtimeTools` is what the job gets
+ * bound; an operation that drives omp and does not require it would exec a path that is not
  * there, and the job would fail on the machine with a message about a missing file rather than
- * here with one about the manifest.
+ * here with one about the manifest. Unlike the other aliases this one is the manifest's OWN
+ * pinned artifact (`machine.tools.omp`), so the assertion is over the operation's declaration
+ * and the pin is checked by `test/contract.test.ts`.
  */
 export function engineBinary(machine: MachineHalf | null): string {
   if (machine === null) return ENGINE_BINARY;
@@ -157,6 +192,30 @@ export function engineBinary(machine: MachineHalf | null): string {
   return ENGINE_BINARY;
 }
 
+/**
+ * THE OPERATOR'S CEILING, IN THE UNITS THE OWNER ENFORCES IT IN (ADR 0038).
+ *
+ * The policy states an allowance in dollars; `limits.inference.costMicros` is integer
+ * micro-dollars, and the machine owner refuses the call that would pass it. Rounding is UP so a
+ * ceiling is never quietly tightened by a fraction of a micro-dollar, and a non-positive
+ * allowance yields NO ceiling rather than a zero one — a zero would refuse the first call, and
+ * "the operator set no ceiling" is a different statement from "the operator allowed nothing".
+ */
+export function inferenceCeiling(allowanceUsd: number): number | null {
+  if (!Number.isFinite(allowanceUsd) || allowanceUsd <= 0) return null;
+  return Math.ceil(allowanceUsd * 1_000_000);
+}
+
+/**
+ * WHICH OPERATIONS CARRY AN INFERENCE CEILING: the two that bind the inference service and
+ * drive a model. A ceiling on `scan` would be a bound on calls it cannot make, and the honest
+ * shape of that is no ceiling at all.
+ */
+const METERED_OPERATIONS: Record<string, true> = {
+  [OPERATIONS.explore]: true,
+  [OPERATIONS.evaluate]: true,
+};
+
 // ---------------------------------------------------------------------------- the plan
 
 export interface PlanRequest {
@@ -169,6 +228,11 @@ export interface PlanRequest {
   readonly roles?: Readonly<Record<string, string>> | undefined;
   /** The operation the plan's limits are for; the loop's draws are evaluate jobs. */
   readonly operationId?: OperationName | undefined;
+  /**
+   * The session a run of this plan asks for, or null. An operator's launch overrides it with
+   * the one the request named; see {@link STANDING_SESSION} for why the default is null.
+   */
+  readonly session?: SessionChoice | null | undefined;
 }
 
 /** What one review may spend: the per-cycle allowance divided by the batch it is granted in. */
@@ -206,21 +270,32 @@ export function runPlan(request: PlanRequest): RunPlan {
     // asking a model to perform a method that says nothing.
     if (recipe !== undefined) recipes[role] = recipe;
   }
+  const operationId = request.operationId ?? OPERATIONS.evaluate;
+  const allowance = perRunUsd(request.policy);
+  const ceiling =
+    METERED_OPERATIONS[operationId] === true ? inferenceCeiling(allowance) : null;
   return {
     engine: { binary: engineBinary(machine), args: [] },
-    profile: { id: PROFILE.id, revision: PROFILE.revision },
+    session: request.session ?? STANDING_SESSION,
     caps: {
-      perRunUsd: perRunUsd(request.policy),
+      perRunUsd: allowance,
       toolCalls: TOOL_CALLS,
       idleMs: IDLE_MS,
       handshakeMs: HANDSHAKE_MS,
     },
     recipes,
     metered: meterableOperations(machine),
-    // Every Babel run is contained. The operator relaxes it per run and never by default: an
-    // engine that reports no sandbox is refused by the machine half, which is the check.
+    // Every Babel run is contained. The operator relaxes it per run and never by default: a
+    // launch that cannot state the sandbox it established is refused by the machine half.
     requireContainment: true,
-    limits: operationLimits(machine, request.operationId ?? OPERATIONS.evaluate),
+    limits: {
+      ...operationLimits(machine, operationId),
+      // THE CEILING LEAVES THE HUB HERE and nowhere else: the owner enforces it per call and
+      // refuses the one that would pass it (HTTP 429 `service_ceiling_exceeded`), never
+      // mid-stream. A run whose model the policy does not price is refused before its first
+      // call, because a ceiling in money without a price is not a ceiling.
+      ...(ceiling === null ? {} : { inference: { costMicros: ceiling } }),
+    },
   };
 }
 
@@ -395,4 +470,239 @@ export const HOOK_WITHOUT_MACHINES =
 
 export function unaskable(reason: string): MachinesSlice {
   return { repository: (): RepositoryOutcome => ({ ok: false, reason }) };
+}
+
+// ---------------------------------------------------------------------------- the session
+
+/**
+ * THE THREE JOB INPUTS A SESSION BECOMES (#279).
+ *
+ * Babel's machine half launches `omp --mode rpc` and hands it nothing about a provider: the two
+ * YAML documents below are materialized into the job's private home by the OWNER
+ * (`inputFiles.models`/`inputFiles.config` with a `homePath`), and the url and bearer of the
+ * inference binding are spliced into `models.yml`'s `providers.*.baseUrl` and
+ * `providers.*.apiKey` by the owner too (`jsonValues`). The credential therefore never passes
+ * through this file, the job request, the hub's journal or the sandbox's argv.
+ *
+ * The shapes are manifold-omp's own, copied rather than invented so one omp build reads both:
+ * `models` is `nativeModelConfiguration(pool).models` and `config` is that function's `config`
+ * spread under the run's overlay (`plugins/atyrode.omp/execution.ts`
+ * `nativeModelConfiguration`, and `sessionPreparation`'s `{...overlay, ...native.config}`).
+ * `transport: "pi-native"` with `discovery: {type: "proxy"}` is what makes omp speak the
+ * gateway's `/v1/pi/stream` instead of a provider's own API.
+ *
+ * `accountPool` is NOT a file. It is a `RuntimeAccountPool` the service policy's runtime maps
+ * into the gateway job (`ServiceRuntime.input: {accountPool: {input: "accountPool"}}`, exactly
+ * as manifold-omp's `configureGateway` installs it), which is how one job says which of several
+ * enrolled accounts it spends — the whole of #267, with no new primitive.
+ *
+ * `disabledProviders` is deliberately absent where manifold-omp sets it: omp disables the
+ * providers its bundled catalogue holds and Babel does not have that catalogue. Nothing is lost
+ * — a provider with no `baseUrl` and no `apiKey` in `models.yml`, in a job whose environment
+ * carries no provider variable at all (`machine/engine/launch.ts` inherits a fixed list), has
+ * no route to anything.
+ */
+export function sessionInputs(session: SessionChoice): Record<string, string> {
+  const provider = session.account.provider;
+  const pool = {
+    [provider]: [
+      {
+        scope: session.account.scope,
+        // The two conversions the door's string surface owes the wire; `SessionChoiceSchema`'s
+        // regex is what makes the first total, and an empty key is the api-key case.
+        credentialId: Number(session.account.credentialId),
+        identityKey: session.account.identityKey === "" ? null : session.account.identityKey,
+      },
+    ],
+  };
+  const models = {
+    providers: {
+      [provider]: {
+        baseUrl: "",
+        apiKey: "",
+        transport: "pi-native",
+        discovery: { type: "proxy" },
+      },
+    },
+  };
+  const config = {
+    modelRoles: { default: session.model },
+    ...(session.thinking === undefined ? {} : { defaultThinkingLevel: session.thinking }),
+    extensions: [],
+    extendedContext: true,
+    startup: { setupWizard: false },
+  };
+  return {
+    [SESSION_INPUTS.accountPool]: JSON.stringify(pool),
+    [SESSION_INPUTS.models]: JSON.stringify(models),
+    [SESSION_INPUTS.config]: JSON.stringify(config),
+  };
+}
+
+/** The refusal for a session whose model and account disagree about the provider, or "". */
+export function sessionShortfall(session: SessionChoice): string {
+  const provider = session.model.slice(0, session.model.indexOf("/"));
+  if (provider === session.account.provider) return "";
+  return (
+    `session_provider_mismatch: the model ${JSON.stringify(session.model)} is routed to ` +
+    `${JSON.stringify(provider)} and the account named belongs to ` +
+    `${JSON.stringify(session.account.provider)}`
+  );
+}
+
+/**
+ * BABEL'S OWN LAUNCH PROFILE: the three things a run was asked to be, as the `runs` row records
+ * them before the machine answers and as the receipt restates them afterwards. It replaces
+ * `code.runtime/1`'s profile block, which named a Code profile id and revision that no longer
+ * resolve to anything.
+ */
+export function launchProfile(session: SessionChoice | null): {
+  model: string;
+  thinking: string;
+  account: string;
+} {
+  return {
+    model: session?.model ?? "",
+    thinking: session?.thinking ?? "",
+    account: session?.account.identityKey ?? "",
+  };
+}
+
+// ---------------------------------------------------------------------------- the services slice
+
+/**
+ * ONE OWNER-INSTALLED SERVICE POLICY, narrowed to what a preview reads (ADR 0038): the prices
+ * the owner will meter a model call at. Everything else in a policy — the runtime, the routes,
+ * the concurrency — is the owner's business and none of a preview's.
+ */
+export interface ServicePrices {
+  readonly default?: ModelPrice | undefined;
+  readonly models: Readonly<Record<string, ModelPrice>>;
+}
+
+/**
+ * WHAT THE MACHINE'S SERVICE CONFIGURATION SAYS ABOUT ONE SERVICE. Three answers, because an
+ * operator acts differently on each: the policy is installed (`policy`), the configuration was
+ * readable and the policy is not in it (`policy: null`), or nobody could be asked (`ok: false`).
+ * The third is NOT the second — `services.readConfiguration` is admitted only to a root caller
+ * holding `services:configure` at the machine — and a preview that reported "not installed"
+ * because it was not allowed to look would be telling the operator to install a policy that is
+ * already there.
+ */
+export type ServicePolicyOutcome =
+  | { readonly ok: true; readonly policy: { readonly prices?: ServicePrices | undefined } | null }
+  | { readonly ok: false; readonly reason: string };
+
+/** The one service question this plugin asks of a machine: what the owner installed under an id. */
+export interface ServicesSlice {
+  policy(machineId: string, serviceId: string): Awaitable<ServicePolicyOutcome>;
+}
+
+/**
+ * `ctx.services`, narrowed to that question. The refusal is KEPT rather than thrown because it
+ * is an ordinary answer here: a dispatch under the operator's own credential is not entitled to
+ * read a machine's service configuration, and the preview says what it could not see instead of
+ * failing the door the operator opened to look at something else.
+ */
+export function servicesSlice(services: GuestCtx["services"]): ServicesSlice {
+  return {
+    policy: async (machineId: string, serviceId: string): Promise<ServicePolicyOutcome> => {
+      try {
+        const read = await services.readConfiguration({ machineId });
+        const found = read.configuration.policies.find((entry) => entry.serviceId === serviceId);
+        return { ok: true, policy: found === undefined ? null : { prices: found.prices } };
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  };
+}
+
+/** What a caller that cannot ask has instead; the same shape, and a reason instead of a fact. */
+export function unreadable(reason: string): ServicesSlice {
+  return { policy: (): ServicePolicyOutcome => ({ ok: false, reason }) };
+}
+
+function dollars(micros: number): string {
+  return `$${(micros / 1_000_000).toFixed(4)}`;
+}
+
+/**
+ * WHAT `launchPreview` SAYS ABOUT THE SESSION, in the four states of
+ * {@link SESSION_POLICY_STATES}. It is assembled from the OWNER's numbers and the operator's
+ * choice and never from an estimate of either: the price is the installed policy's, the ceiling
+ * is the one the job request will carry, and a machine whose configuration this caller may not
+ * read is reported as unread rather than as unconfigured.
+ */
+export function sessionPreview(args: {
+  readonly session: SessionChoice | null;
+  readonly outcome: ServicePolicyOutcome;
+  readonly ceilingMicros: number | null;
+}): SessionPreview {
+  const model = args.session?.model ?? "";
+  const account = args.session?.account.identityKey ?? "";
+  const ceiling = args.ceilingMicros === null ? {} : { ceilingMicros: args.ceilingMicros };
+  const bound =
+    args.ceilingMicros === null
+      ? "no cost ceiling"
+      : `a ceiling of ${dollars(args.ceilingMicros)} for this run`;
+  if (!args.outcome.ok) {
+    return {
+      serviceId: INFERENCE_SERVICE.serviceId,
+      account,
+      model,
+      priced: false,
+      ...ceiling,
+      policy: "unreadable",
+      unreadable: args.outcome.reason,
+      note:
+        `this hub may not read the machine's service configuration, so whether ` +
+        `${INFERENCE_SERVICE.serviceId} is installed is unknown here; the launch runs under ${bound}`,
+    };
+  }
+  if (args.outcome.policy === null) {
+    return {
+      serviceId: INFERENCE_SERVICE.serviceId,
+      account,
+      model,
+      priced: false,
+      ...ceiling,
+      policy: "missing",
+      unreadable: "",
+      note:
+        `no ${INFERENCE_SERVICE.serviceId} policy is installed on this machine, so a run has ` +
+        `no lane to a model; setupInference installs one`,
+    };
+  }
+  const prices = args.outcome.policy.prices;
+  const price = model === "" ? undefined : (prices?.models[model] ?? prices?.default);
+  if (price === undefined) {
+    return {
+      serviceId: INFERENCE_SERVICE.serviceId,
+      account,
+      model,
+      priced: false,
+      ...ceiling,
+      policy: "unpriced",
+      unreadable: "",
+      note:
+        model === ""
+          ? `${INFERENCE_SERVICE.serviceId} is installed; choose a model to see what it is priced at`
+          : `${INFERENCE_SERVICE.serviceId} prices no ${model}, so a run with a cost ceiling is ` +
+            `refused service_price_unknown before its first call`,
+    };
+  }
+  return {
+    serviceId: INFERENCE_SERVICE.serviceId,
+    account,
+    model,
+    priced: true,
+    price,
+    ...ceiling,
+    policy: "priced",
+    unreadable: "",
+    note:
+      `${model} is metered at ${dollars(price.inputPerMillion)} per million input tokens and ` +
+      `${dollars(price.outputPerMillion)} per million output, on ${account === "" ? "no account yet" : account}, under ${bound}`,
+  };
 }

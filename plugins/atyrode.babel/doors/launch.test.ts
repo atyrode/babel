@@ -32,7 +32,7 @@ import type {
   RunPlan,
   TickReport,
 } from "../server/conductor.ts";
-import type { BabelJobs } from "../server/plan.ts";
+import type { BabelJobs, ServicePolicyOutcome } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
 import { stamp } from "../store/feedindex.ts";
 import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
@@ -54,9 +54,21 @@ const RECIPE: Recipe = {
 
 const LIMITS = { timeoutMs: 600_000, memoryBytes: 1_073_741_824, processes: 32, outputBytes: 1_048_576 };
 
+/** The session the operator's own launch names: a model, a level, and the account to spend. */
+const SESSION = {
+  model: "anthropic/claude-sonnet-5",
+  thinking: "high" as const,
+  account: {
+    provider: "anthropic",
+    scope: "atyrode.omp.accounts.broker@7/m-dev-01",
+    credentialId: "3",
+    identityKey: "victorballu@gmail.com",
+  },
+};
+
 const PLAN: RunPlan = {
-  engine: { binary: "/runtime/bin/code", args: [] },
-  profile: { id: "analysis", revision: 3 },
+  engine: { binary: "/runtime/bin/omp", args: [] },
+  session: SESSION,
   caps: { perRunUsd: 0.0625, toolCalls: 40, idleMs: 120_000, handshakeMs: 30_000 },
   recipes: {},
   metered: {},
@@ -173,6 +185,8 @@ let fleet: Fleet;
 let cycle: Cycle;
 let cookbook: Record<string, Recipe>;
 let doors: readonly Door[];
+/** What `services.policy` answers; a test overrides it to reach the other three states. */
+let servicePolicy: ServicePolicyOutcome;
 let minted = 0;
 
 const ctx = {
@@ -254,6 +268,14 @@ async function preparationOf(db: TestStore["db"], runId: string): Promise<Record
 }
 
 beforeEach(async () => {
+  servicePolicy = {
+    ok: true,
+    policy: {
+      prices: {
+        models: { [SESSION.model]: { inputPerMillion: 2_000_000, outputPerMillion: 10_000_000 } },
+      },
+    },
+  };
   harness = await openTestStore(NOW);
   fleet = new Fleet();
   cycle = new Cycle();
@@ -285,6 +307,7 @@ beforeEach(async () => {
     jobs: () => fleet,
     // The drawn presets run cycles of the loop, and a cycle asks what the folders a scan
     // catalogued are. These sessions record no workspace, so it is never asked.
+    services: () => ({ policy: () => servicePolicy }),
     machines: () => ({
       repository: () => ({ ok: false, reason: "this test enrolls no machine" }),
     }),

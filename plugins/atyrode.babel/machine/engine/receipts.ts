@@ -4,11 +4,14 @@
   and internal/worker/receipt.go, reduced to `contract.ts`'s ReceiptSchema, which is the shape the
   hub ingests.
 
-  The profile block is the point of it. Code's runtime report states the profile, the model, the
-  disclosure class and the cost per 1k BEFORE the first byte of the prompt is written, so the
-  receipt records what actually ran from the same source Watch states it from — not what a caller
-  asked for. A refused launch therefore still produces a receipt with a profile: the profile is
-  what a refused engine saw, and the reason it was refused is beside it.
+  The profile block is the point of it. It is BABEL'S OWN launch report now (#279): the model the
+  run was asked for, the thinking level, the account it spent, the boundary this process observed
+  around itself and — after the engine exits — the exit status, the models that actually answered
+  and the NAMED cause of a failure. Code's `code.runtime/1` sidecar is gone with Code's engine,
+  and what replaced it is better evidence rather than worse: every field is something the
+  launcher observed or was handed as a job input, not an assertion by the process being judged.
+  A refused launch therefore still produces a receipt with a profile, which is what a refused
+  engine was asked to be, and the reason it was refused is beside it.
 
   What a receipt never carries is what a facility served. §9's asymmetry survives the rewrite for
   the reason it existed: the pipe carries content to the model because a model that cannot read a
@@ -18,7 +21,7 @@
 
 import { ReceiptSchema, type Receipt } from "../../contract.ts";
 import type { EngineOutcome } from "./client.ts";
-import type { RuntimeReport } from "./launch.ts";
+import type { LaunchReport } from "./launch.ts";
 
 /** What one operation's receipt is assembled from. */
 export interface ReceiptInput {
@@ -66,6 +69,7 @@ export function buildReceipt(input: ReceiptInput): Receipt {
     submissions += job.submissions;
   }
   const profile = profileOf(input.jobs);
+  const session = sessionOf(input.jobs);
   const reason = input.reason ?? failureReason(input.jobs);
   const receipt = {
     runId: input.runId,
@@ -74,6 +78,7 @@ export function buildReceipt(input: ReceiptInput): Receipt {
     ...(input.recipeId === undefined ? {} : { recipeId: input.recipeId }),
     ...(input.role === undefined ? {} : { role: input.role }),
     ...(profile === null ? {} : { profile }),
+    ...(session === null ? {} : session),
     ...(input.preparation === undefined ? {} : { preparation: input.preparation }),
     startedAt: input.startedAt.toISOString(),
     finishedAt: input.finishedAt.toISOString(),
@@ -88,40 +93,62 @@ export function buildReceipt(input: ReceiptInput): Receipt {
 }
 
 /**
- * What actually ran, from the runtime report of the last job that got one. The model and the cost
- * are the report's own: a profile block assembled from what the caller asked for would be the one
- * claim in the receipt nobody checked.
+ * WHAT ACTUALLY RAN, from the launch report of the last job that wrote one — the post-exit copy
+ * when there is one, because that is the copy carrying the exit status, the models that answered
+ * and the named cause.
  */
 function profileOf(jobs: readonly EngineOutcome[]): Record<string, unknown> | null {
-  let report: RuntimeReport | null = null;
+  let report: LaunchReport | null = null;
   let unknown: readonly string[] = [];
   for (const job of jobs) {
     if (job.finished !== null) {
       report = job.finished;
-      unknown = job.runtimeUnknown;
-    } else if (job.runtime !== null) {
-      report = job.runtime;
-      unknown = job.runtimeUnknown;
+      unknown = job.reportUnknown;
+    } else if (job.report !== null) {
+      report = job.report;
+      unknown = job.reportUnknown;
     }
   }
   if (report === null) return null;
-  const metadata = report.metadata ?? {};
   return {
-    id: report.profile.id,
-    revision: report.profile.revision,
-    model: metadata["model"] ?? "",
-    provider: metadata["provider"] ?? "",
-    disclosure: report.privacy?.disclosure ?? "",
-    redactionRequired: report.privacy?.redaction_required ?? false,
-    currency: report.cost?.currency ?? "",
-    costPer1k: { input: report.cost?.input_per_1k ?? 0, output: report.cost?.output_per_1k ?? 0 },
-    estimatedRun: report.cost?.estimated_run ?? 0,
-    worker: `${report.worker.name}@${report.worker.version}`,
+    schema: report.schema,
+    engine: `${report.engine.name}@${report.engine.version}`,
+    model: report.session.model,
+    thinking: report.session.thinking ?? "",
+    provider: report.session.account.provider,
+    account: report.session.account.identityKey,
     containment: report.containment?.backend ?? "",
     escape: report.containment?.escape ?? "",
-    ...(report.resources === null || report.resources === undefined ? {} : { resources: report.resources }),
-    ...(unknown.length === 0 ? {} : { unknownRuntimeFields: [...unknown] }),
+    retries: report.retries,
+    ...(report.failure === "" ? {} : { failure: report.failure, failureReason: report.reason }),
+    ...(report.exit_code === null || report.exit_code === undefined
+      ? {}
+      : { exitCode: report.exit_code }),
+    ...(unknown.length === 0 ? {} : { unknownReportFields: [...unknown] }),
   };
+}
+
+/**
+ * THE FLAT PAIR EVERY READER WANTS: whose window this run spent, and which model it asked for
+ * (#267, #279). The profile block above says the same two things in the launcher's words; these
+ * are what the run row, the drain's fold and the receipt page read, because "drain THIS account"
+ * is answered by summing the runs that named it and by nothing else.
+ */
+function sessionOf(
+  jobs: readonly EngineOutcome[],
+): { account: { provider: string; identityKey: string }; model: string } | null {
+  for (const job of jobs) {
+    const report = job.finished ?? job.report;
+    if (report === null) continue;
+    return {
+      account: {
+        provider: report.session.account.provider,
+        identityKey: report.session.account.identityKey,
+      },
+      model: report.session.model,
+    };
+  }
+  return null;
 }
 
 /** The first job failure, as the code and the message an operator reads. */
