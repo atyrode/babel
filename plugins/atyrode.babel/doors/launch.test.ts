@@ -18,7 +18,7 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
-import { ACTIONS, OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
+import { ACTIONS, MACHINE_OPERATIONS, OPERATIONS, PRESET_OPERATIONS } from "../contract.ts";
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import { coordinator } from "../store/coordinator.ts";
@@ -183,48 +183,49 @@ afterEach(() => {
   harness.close();
 });
 
-test("the roster declares a governed launch and a governed stop, and no dry read", () => {
+test("the roster is a launch and a stop, and neither is governed at a node that is gone", () => {
   // The preview went with Babel's own inference policy: what a run costs is a fact about a
   // composition, and a composition is Code's to make.
   expect(doors.map((entry) => entry.action.name)).toEqual([ACTIONS.launch, ACTIONS.stop]);
   const [launch, stop] = doors as readonly Door[];
 
-  // A governed cap without a requirement is refused outright by the dispatcher, and a
-  // requirement whose cap is not declared is refused at assembly: the two lists pair exactly.
-  expect(launch?.action.caps).toEqual(["machines:run"]);
-  expect(launch?.action.requirements).toEqual([{ cap: "machines:run", target: ["operation"] }]);
-  expect(stop?.action.caps).toEqual(["jobs:cancel"]);
-  expect(stop?.action.requirements).toEqual([{ cap: "jobs:cancel", target: ["job"] }]);
+  // A launch starts nothing, so it asks what a reading door asks and names no node: the
+  // governed `machines:run` requirement comes back with Code's operation (#279). It keeps the
+  // one delegate every door a cycle follows keeps, so the cycle behind the press can still
+  // read a job back and settle it.
+  expect(launch?.action.caps).toEqual(["containers:read"]);
+  expect(launch?.action.requirements).toBeUndefined();
+  expect(launch?.action.delegates).toEqual(["jobs:read"]);
+
+  // A stop closes this plugin's own rows and reaches a job through its OWN ceiling: a delegate
+  // rather than a cap the caller must hold at a node no installation declares any more. The
+  // hub still checks consent at the effect, and a cancel it refuses is reported by name.
+  expect(stop?.action.caps).toEqual(["containers:write"]);
+  expect(stop?.action.requirements).toBeUndefined();
+  expect(stop?.action.delegates).toEqual(["jobs:cancel"]);
 });
 
-test("every declared requirement resolves to a node in the arguments the panel posts", () => {
-  // This is the host's own walk (`plugin-host.ts`: follow the target through the RAW arguments,
-  // parse a `ManifoldRef`), and it is the whole reason the node travels in the request. A door
-  // whose target named a field nobody posts is refused `invalid authority target` for every
-  // caller, which is a denial no test of the handler would ever see.
-  const posted: Record<string, Record<string, unknown>> = {
-    [ACTIONS.launch]: {
-      machineId: MACHINE,
-      preset: "keep-going",
-      operation: { kind: "operation", machineId: MACHINE, operationId: OPERATIONS.scan },
-    },
-    [ACTIONS.stop]: {
-      runId: "run_live",
-      job: { kind: "job", machineId: MACHINE, operationId: OPERATIONS.scan, jobId: "job_live" },
-    },
-  };
+test("no door requires a node at an operation no installation declares", () => {
+  /*
+    THE DEFECT THIS PINS. The host discharges a door's `requirements` against the RAW arguments
+    BEFORE the handler runs (`plugin-host.ts`: walk the target, parse a `ManifoldRef`, ask the
+    authority waterfall, then admit against the operator's version-bound CONSENT at that node;
+    `job-service.ts` refuses an operation the installation does not declare). `machines:run` at
+    `atyrode.babel.explore` was exactly that, and this bundle stopped declaring the operation
+    — so every model preset was refused "explicit version-bound consent required" at a node
+    that cannot exist, and `engine_pending` was unreachable. A refusal the caller cannot reach
+    is not a refusal, so neither door may name a node while none is declared.
+  */
   for (const entry of doors) {
-    for (const requirement of entry.action.requirements ?? []) {
-      let value: unknown = posted[entry.action.name];
-      for (const segment of requirement.target) {
-        value =
-          value !== null && typeof value === "object" && Object.hasOwn(value, segment)
-            ? Reflect.get(value, segment)
-            : undefined;
-      }
-      expect(value).toMatchObject({ kind: expect.any(String), machineId: MACHINE });
-    }
+    expect({ door: entry.action.name, requirements: entry.action.requirements }).toEqual({
+      door: entry.action.name,
+      requirements: undefined,
+    });
   }
+  // The two ids a requirement would have named are the two this manifest no longer declares.
+  const declared: readonly string[] = Object.values(MACHINE_OPERATIONS);
+  expect(declared).not.toContain(OPERATIONS.explore);
+  expect(declared).not.toContain(OPERATIONS.evaluate);
 });
 
 test("every preset answers engine_pending, naming manifold#575 and code#170, and posts nothing", async () => {

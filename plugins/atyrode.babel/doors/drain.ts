@@ -79,15 +79,26 @@ import { defineDoor, type Door } from "./door.ts";
   only `containers:read`.
 */
 
-/** Posting jobs is governed at the operation node the request names; see the block above. */
-const START_CAPS = ["machines:run"] as const;
-const START_REQUIREMENTS = [{ cap: "machines:run" as const, target: ["operation"] }];
-/** The native ceiling the launched jobs inherit; `doors/launch.ts` says why these are delegates. */
-const START_DELEGATES = ["jobs:read", "locations:read", "locations:write"] as const;
+/**
+ * WHAT EACH DOOR ASKS ITS CALLER FOR, and why none of it is governed at a node today (#279).
+ *
+ * A drain's jobs are `atyrode.babel.explore`, and no installation declares that operation any
+ * more: the host discharges a requirement's target against the RAW arguments BEFORE the
+ * handler runs, so `machines:run` at that node refuses the dispatch "explicit version-bound
+ * consent required" and the operator never hears `engine_pending` — nor, on a drain v0.3.0
+ * left running, can he stop it at all. `doors/launch.ts` says the whole of it.
+ *
+ * So a start asks `containers:read` (it starts nothing), and a stop asks `containers:write`
+ * — closing the row is a write of this plugin's own rows — and carries `jobs:cancel` as a
+ * DELEGATE, the native ceiling its own job authority may reach. The hub still checks consent
+ * at the effect: a cancel it will not admit is reported by name rather than assumed. The
+ * governed requirements return with the node they are discharged at, which is Code's
+ * operation, once its door posts the job.
+ */
+const START_CAPS = ["containers:read"] as const;
 
-/** Ending a drain cancels every job it holds, which is one consent at their shared operation. */
-const STOP_CAPS = ["jobs:cancel"] as const;
-const STOP_REQUIREMENTS = [{ cap: "jobs:cancel" as const, target: ["operation"] }];
+const STOP_CAPS = ["containers:write"] as const;
+const STOP_DELEGATES = ["jobs:cancel"] as const;
 
 /** A dry read of this plugin's own tables; it asks no machine anything. */
 const STATUS_CAPS = ["containers:read"] as const;
@@ -114,8 +125,6 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       name: ACTIONS.drainStart,
       title: "Drain a usage window on purpose",
       caps: START_CAPS,
-      delegates: START_DELEGATES,
-      requirements: START_REQUIREMENTS,
       input: DrainStartRequestSchema,
       result: DrainStartResultSchema,
     }),
@@ -337,7 +346,7 @@ export function drainDoors(store: BabelStore, doorDeps: DrainDoorDeps): readonly
       name: ACTIONS.drainStop,
       title: "Stop a drain",
       caps: STOP_CAPS,
-      requirements: STOP_REQUIREMENTS,
+      delegates: STOP_DELEGATES,
       input: DrainStopInputSchema,
       result: DrainStopResultSchema,
     }),

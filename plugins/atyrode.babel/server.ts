@@ -8,7 +8,13 @@ import {
 } from "@manifold/plugin-kit/server";
 import { PluginManifestSchema } from "@manifold/protocol";
 import type { PluginDatabase, SqlParam, SqlRow, SqlStatement } from "@manifold/plugin";
-import { ACTIONS, BABEL_PLUGIN_ID, MACHINE_OPERATIONS, type OperationName } from "./contract.ts";
+import {
+  ACTIONS,
+  BABEL_PLUGIN_ID,
+  DRAIN_CONCURRENT_MAX,
+  MACHINE_OPERATIONS,
+  type OperationName,
+} from "./contract.ts";
 import { babelDoors } from "./doors/index.ts";
 import { launchMachinery, type LaunchDeps } from "./doors/launch.ts";
 import { drainTick, type DrainDeps } from "./server/drain.ts";
@@ -127,13 +133,20 @@ const keys: KeysSlice = {
 const store = openStore(database);
 const manifest = PluginManifestSchema.parse(manifestJson);
 /**
- * THE CEILING, READ ONCE, FROM THE MANIFEST THIS BUNDLE SHIPS. `limits.concurrentJobs` on
- * explore and evaluate is what a machine will actually run at once, and the hub refuses the
- * rest at `execute`; the coordinator governs inside it and the acts that write a bound refuse
- * above it, so the hub-side governor and the machine-side ceiling are one number rather than
- * two that drift (#281).
+ * THE CEILING, READ ONCE, FROM THE MANIFEST THIS BUNDLE SHIPS: `limits.concurrentJobs` on the
+ * operations it declares, or `null` when none of them declares one, which is the state today
+ * (#279) — the two that did were the two a launcher posted. The coordinator governs inside it
+ * and the acts that write a bound refuse above it, so the hub-side governor and the
+ * machine-side ceiling are one number rather than two that drift (#281); where there is no
+ * number, there is no bound, and no policy is refused against one nobody wrote.
  */
 const CONCURRENT_JOBS = jobCeiling(manifest);
+/**
+ * WHAT BOUNDS A DRAIN'S FAN while no operation declares a ceiling: the contract's own
+ * `DRAIN_CONCURRENT_MAX`, which is what `DrainStartRequestSchema` already admits. A door that
+ * took `null` as "unbounded" would let one machine be asked for any number of jobs at once.
+ */
+const DRAIN_FAN = CONCURRENT_JOBS ?? DRAIN_CONCURRENT_MAX;
 const coordinated = coordinator(store, () => store.now(), CONCURRENT_JOBS);
 
 /**
@@ -264,7 +277,7 @@ const doors = babelDoors(
     coordinator: coordinated,
     deps: (ctx) =>
       draining(jobsSlice(ctx.jobs, (node, receive) => ctx.jobs.follow(node, receive))),
-    concurrentJobs: CONCURRENT_JOBS,
+    concurrentJobs: DRAIN_FAN,
     now: () => store.now(),
   },
   CONCURRENT_JOBS,

@@ -324,7 +324,7 @@ afterEach(() => {
   harness.close();
 });
 
-test("the roster is a governed start, a dry read and a governed stop, each at a node", () => {
+test("the roster is a start, a dry read and a stop, and none of them names a node", () => {
   expect(doors.map((entry) => entry.action.name)).toEqual([
     ACTIONS.drainStart,
     ACTIONS.drainStatus,
@@ -332,11 +332,14 @@ test("the roster is a governed start, a dry read and a governed stop, each at a 
   ]);
   const [begin, read, stop] = doors as readonly Door[];
 
-  // Posting jobs is `machines:run` at the operation node, paired with its requirement: a
-  // governed cap with no requirement is refused outright by the dispatcher.
-  expect(begin?.action.caps).toEqual(["machines:run"]);
-  expect(begin?.action.requirements).toEqual([{ cap: "machines:run", target: ["operation"] }]);
-  expect(begin?.action.delegates).toEqual(["jobs:read", "locations:read", "locations:write"]);
+  // A start posts nothing today (#279), so it asks what a reading door asks and names no
+  // node. It CANNOT keep `machines:run` at the explore operation: the host discharges that
+  // before the handler runs and no installation declares the operation, so the dispatch was
+  // refused "explicit version-bound consent required" and the operator never heard
+  // `engine_pending`. The governed requirement returns with Code's node.
+  expect(begin?.action.caps).toEqual(["containers:read"]);
+  expect(begin?.action.requirements).toBeUndefined();
+  expect(begin?.action.delegates).toBeUndefined();
 
   // The dry read asks no machine anything, so it carries no governed capability and no target —
   // the panel polls it every five seconds while the operator watches. It DOES delegate
@@ -347,10 +350,15 @@ test("the roster is a governed start, a dry read and a governed stop, each at a 
   expect(read?.action.requirements).toBeUndefined();
   expect(read?.action.delegates).toEqual(["jobs:read"]);
 
-  // A drain holds several jobs and a requirement resolves to exactly one node, so the stop asks
-  // for `jobs:cancel` at the OPERATION they share rather than at one of them.
-  expect(stop?.action.caps).toEqual(["jobs:cancel"]);
-  expect(stop?.action.requirements).toEqual([{ cap: "jobs:cancel", target: ["operation"] }]);
+  // A stop closes this plugin's own row and reaches its jobs through its OWN ceiling. It
+  // asked `jobs:cancel` at the operation they share, and that operation is one no
+  // installation declares any more (#279) — so the host refused the dispatch before the
+  // handler ran and a drain v0.3.0 left running could not be stopped at all. The cancel is a
+  // DELEGATE now; the hub still checks consent at the effect and a refused cancel is
+  // reported by name rather than assumed.
+  expect(stop?.action.caps).toEqual(["containers:write"]);
+  expect(stop?.action.requirements).toBeUndefined();
+  expect(stop?.action.delegates).toEqual(["jobs:cancel"]);
 });
 
 test("a start posts the whole fan, moves no policy number, and names the account it spends", async () => {

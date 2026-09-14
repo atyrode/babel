@@ -1,7 +1,7 @@
 import { jobLimits, type MachineHalf, type PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs, GuestJobs } from "@manifold/plugin-kit/server";
 import { MACHINE_OPERATIONS, type OperationName } from "../contract.ts";
-import { DEFAULT_POLICY, type Policy } from "../store/coordinator.ts";
+import type { Policy } from "../store/coordinator.ts";
 import type {
   Awaitable,
   JobLaunch,
@@ -89,24 +89,29 @@ export function operationLimits(
 
 /**
  * THE MOST JOBS THIS BUNDLE ASKS A MACHINE FOR AT ONCE: the lowest `limits.concurrentJobs` any
- * operation it DECLARES states. The hub enforces it at `execute` and refuses the rest
- * `concurrency_limit` (`packages/server/src/job-service.ts`), so it is the hard bound a fan is
- * held to at the door rather than discovered one refused posting at a time.
+ * operation it DECLARES states, or NULL when none of them states one. The hub enforces the
+ * declared number at `execute` and refuses the rest `concurrency_limit`
+ * (`packages/server/src/job-service.ts`), so it is the hard bound a fan is held to at the door
+ * rather than discovered one refused posting at a time.
  *
  * The LOWEST, because one number governs every lane and a bound honoured by one operation and
- * not another is not a bound. A manifest declaring none is one no operation runs from at all;
- * the batch a policy is written with stands in, as `DEFAULT_LIMITS` does above. The operations
- * that reach a model are not in this table any more (#279) — the job a run becomes is one CODE
- * posts — so the bound that governs a drain's fan moves to Code's operation with the launch.
+ * not another is not a bound.
+ *
+ * AND NULL IS NOT A NUMBER TO INVENT (#279). The two operations that declared a ceiling were
+ * the two a launcher posted, and they are gone: the job a run becomes is one CODE posts, under
+ * CODE's declaration. Standing in the policy's own default batch here would refuse an
+ * operator's stored policy above four with a sentence citing a manifest that declares nothing
+ * — a governor bounded by a number nobody wrote. So the absence travels, and every validator
+ * that takes it skips the bound rather than judging against a fiction.
  */
-export function jobCeiling(manifest: PluginManifest): number {
+export function jobCeiling(manifest: PluginManifest): number | null {
   let ceiling: number | null = null;
   for (const operation of Object.values(manifest.machine?.operations ?? {})) {
     const declared = operation.limits.concurrentJobs;
     if (declared === undefined) continue;
     ceiling = ceiling === null ? declared : Math.min(ceiling, declared);
   }
-  return ceiling ?? DEFAULT_POLICY.batchSize;
+  return ceiling;
 }
 
 // ---------------------------------------------------------------------------- the plan

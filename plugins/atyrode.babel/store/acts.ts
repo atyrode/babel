@@ -1474,7 +1474,7 @@ export async function setPolicy(
   policy: Policy,
   reason: string,
   operator: string,
-  concurrentJobs: number,
+  concurrentJobs: number | null,
 ): Promise<PolicySet> {
   if (operator === "") throw new ActRefused("a policy has no operator");
   const refusal = validateNewPolicy(policy, concurrentJobs);
@@ -1517,7 +1517,7 @@ export async function setBudget(
   store: ActsStore,
   args: z.infer<typeof SetBudgetInputSchema>,
   operator: string,
-  concurrentJobs: number,
+  concurrentJobs: number | null,
 ): Promise<BudgetSet> {
   if (operator === "") throw new ActRefused("an overlay has no operator");
   const expires = Date.parse(args.expiresAt);

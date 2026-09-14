@@ -308,6 +308,41 @@ test("a per-machine bound above the manifest's ceiling is refused, by the policy
   expect(validateBudget(standing, { ...drain, concurrentPerMachine: 8 }, ceiling)).toBeNull();
 });
 
+test("a manifest that declares no ceiling bounds nothing, rather than bounding by an invented number", () => {
+  /*
+    THE DEFECT THIS PINS (#279). The ceiling is read off `limits.concurrentJobs` on the
+    operations this bundle DECLARES, and the two that declared one were the two a launcher
+    posted. With them gone the reader used to fall back to the policy's own default batch —
+    four — so an operator's stored policy at eight was refused by a sentence citing "the jobs a
+    machine runs at once under this plugin's manifest", a manifest that says nothing about it.
+    A bound exists because the hub refuses postings past a DECLARED number; where none is
+    declared there is no refusal to protect anyone from, so the absence travels as `null` and
+    the bound is skipped.
+  */
+  const standing: Policy = { ...DEFAULT_POLICY, enabled: true, leaseSeconds: 900, batchSize: 4 };
+  expect(validatePolicy({ ...standing, concurrentPerMachine: 8 }, null)).toBeNull();
+  expect(validatePolicy({ ...standing, concurrentPerMachine: 256 }, null)).toBeNull();
+  // Everything else a policy is judged by is untouched: the absence lifts ONE rule.
+  expect(validatePolicy({ ...standing, concurrentPerMachine: 0 }, null)).toContain("below one");
+  expect(validateNewPolicy({ ...standing, concurrentPerMachine: 8 }, null)).toBeNull();
+
+  const drain = {
+    id: "bdg_1",
+    createdAt: NOW,
+    expiresAt: NOW + 3_600_000,
+    perCycleCost: 2,
+    dailyCost: 4,
+    concurrentPerMachine: 8,
+    reason: "draining victorballu",
+  };
+  expect(validateBudget(standing, drain, null)).toBeNull();
+  // …and the lease still has to cover the fan the overlay names, which is the rule that is
+  // about this deployment's own numbers rather than about a manifest.
+  expect(
+    validateBudget({ ...standing, leaseSeconds: 300 }, { ...drain, concurrentPerMachine: 16 }, null),
+  ).toContain("320s");
+});
+
 test("the lease floor refuses a new policy that would need renewal to work at all", () => {
   // Measured: 20s per assignment in the batch, never under five minutes.
   expect(leaseFloor(1)).toBe(300);

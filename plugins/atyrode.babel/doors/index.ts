@@ -15,7 +15,8 @@ import { readDoors } from "./read.ts";
   Reading (`read.ts`), ruling (`acts.ts`), starting (`launch.ts`) and draining (`drain.ts`) are
   the four groups — a reader of the roster should meet the answers before the acts, and the
   doors that spend money last. An act that writes a bound is judged against `concurrentJobs`,
-  the ceiling this plugin's manifest declares, and a drain needs that and a fan of launches at
+  the ceiling this plugin's manifest declares — `null` when it declares none, in which case
+  there is no bound to judge against — and a drain needs that and a fan of launches at
   once. There is no model lane here: a run that reaches a model is a Code session, and what
   starts one is Code's `runSession` door (#279), so `launch.ts` refuses and `drain.ts` refuses
   through it.
@@ -30,7 +31,7 @@ export function babelDoors(
   store: BabelStore,
   deps: LaunchDeps,
   drain: DrainDoorDeps,
-  concurrentJobs: number,
+  concurrentJobs: number | null,
 ): BabelDoors {
   const actions: ServerActionDef[] = [];
   const handlers: Record<string, ServerHandler> = {};

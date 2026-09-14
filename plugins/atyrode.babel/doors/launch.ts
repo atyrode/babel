@@ -41,28 +41,42 @@ import { defineDoor, type Door } from "./door.ts";
   itself and the `runs` row it wrote: every one of them was Babel deciding what a model run is,
   and all of them are Code's. They come back as ARGUMENTS to Code's door, not as code here.
 
-  WHY `launch` STILL DECLARES `machines:run` AT A NODE. A governed capability is granted at a
-  NODE and never over a workspace (ADR 0035), and the host walks `operation` through the RAW
-  arguments and discharges the capability there BEFORE the handler is entered. Dropping the
-  requirement would make the refusal unauthenticated; keeping it means the operator's consent is
-  still what admits the request, and what he hears is why nothing was started.
+  WHY NEITHER DOOR DEMANDS A NODE ANY MORE, which is the whole of whether the refusal is
+  REACHABLE. A governed capability is granted at a NODE and never over a workspace (ADR 0035),
+  and the host walks the requirement's target through the RAW arguments and discharges it
+  BEFORE the handler is entered. `machines:run` at `atyrode.babel.explore` was exactly that —
+  and no installation declares that operation any more, so the host refuses the dispatch
+  "explicit version-bound consent required" at a node that cannot exist, and the operator never
+  hears why nothing was started. A refusal the caller cannot reach is not a refusal.
+
+  So `launch` asks the caller for `containers:read`, which is what the reading doors ask and
+  what this door now does: it reads nothing of a machine and starts nothing. The governed
+  `machines:run` requirement comes back with the node it is discharged at — Code's operation,
+  once its door posts the job — and not before.
+
+  `stop` is the same problem with a live subject: a run this deployment already started carries
+  the node it was posted at, and that node is gone too. It asks `containers:write` — an act on
+  this plugin's own rows, which is what closing a run and releasing its claim is — and carries
+  `jobs:cancel` as a DELEGATE, the native ceiling its own job authority may reach. The hub
+  still checks consent at the effect: a cancel it will not admit is refused by name, the
+  handler reports that sentence and the run row stays open rather than being closed over a
+  cancellation that never happened.
 */
 
-/** Governed, at the operation node the request names; see the block above. */
-const LAUNCH_CAPS = ["machines:run"] as const;
-const LAUNCH_REQUIREMENTS = [{ cap: "machines:run" as const, target: ["operation"] }];
+/** A dry act on this plugin's own rows: it starts nothing, so it asks for nothing governed. */
+const LAUNCH_CAPS = ["containers:read"] as const;
 /**
- * The native ceiling a launched job would inherit: reading it back, and its declared locations.
- * They are DELEGATES rather than caps — the ceiling this door's job authority carries, not a
- * second thing to ask the caller for — and they stay declared because the drain's controller
- * and this door share one authority shape, and a shape that changed with the launch would be a
- * second review of the plugin's whole machine half for a door that posts nothing.
+ * …and it still carries the one DELEGATE every door a cycle follows carries. `launch` is in
+ * `server.ts`'s `WAKES`, and the dispatcher attenuates `ctx.jobs` to what the door declared:
+ * without `jobs:read` the cycle behind the press could read back no job, nothing would settle
+ * and the fold that wake exists for would never happen (`doors/read.ts` says the whole of it).
+ * The two `locations:` delegates went with the posting: they were the launched job's ceiling.
  */
-const LAUNCH_DELEGATES = ["jobs:read", "locations:read", "locations:write"] as const;
+const LAUNCH_DELEGATES = ["jobs:read"] as const;
 
-/** Stopping is governed at the JOB node, which the run row carries and the panel posts. */
-const STOP_CAPS = ["jobs:cancel"] as const;
-const STOP_REQUIREMENTS = [{ cap: "jobs:cancel" as const, target: ["job"] }];
+/** Closing a run is a write of this plugin's rows; the cancel is the door's own ceiling. */
+const STOP_CAPS = ["containers:write"] as const;
+const STOP_DELEGATES = ["jobs:cancel"] as const;
 
 /**
  * WHAT A CALLER THAT IS NOT A DISPATCH BRINGS INSTEAD OF A `ctx` (#258).
@@ -137,7 +151,6 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       title: "Start a run on a machine",
       caps: LAUNCH_CAPS,
       delegates: LAUNCH_DELEGATES,
-      requirements: LAUNCH_REQUIREMENTS,
       input: LaunchRequestSchema,
       result: LaunchResultSchema,
     }),
@@ -169,7 +182,7 @@ export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[
       name: ACTIONS.stop,
       title: "Stop a run",
       caps: STOP_CAPS,
-      requirements: STOP_REQUIREMENTS,
+      delegates: STOP_DELEGATES,
       input: StopInputSchema,
       result: StopResultSchema,
     }),

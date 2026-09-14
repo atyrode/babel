@@ -16,7 +16,7 @@ import { expect, test } from "bun:test";
 import { JobLimitsSchema, PluginManifestSchema, type PluginManifest } from "@manifold/protocol";
 import type { GuestCtx, GuestHookJobs, GuestJobs } from "@manifold/plugin-kit/server";
 import { OPERATIONS } from "../contract.ts";
-import { DEFAULT_POLICY, PolicySchema } from "../store/coordinator.ts";
+import { PolicySchema } from "../store/coordinator.ts";
 import type { JobLaunch } from "./conductor.ts";
 import {
   DEFAULT_LIMITS,
@@ -119,10 +119,11 @@ test("the ceiling a bound is judged against is the manifest's, and it never ride
   const shipped = PluginManifestSchema.parse(manifestJson);
   // Nothing this bundle declares states a ceiling any more: the operations that did were the
   // two a launcher posted, and the bound a drain is really held to moves to Code's operation
-  // with the launch. The batch a policy is written with stands in rather than an invented one.
-  expect(jobCeiling(shipped)).toBe(DEFAULT_POLICY.batchSize);
-  expect(jobCeiling(MANIFEST)).toBe(DEFAULT_POLICY.batchSize);
-
+  // with the launch. The ABSENCE is the answer — standing the policy's own default in here
+  // would refuse an operator's stored policy above four citing a manifest that says nothing
+  // (#279), which is what `validatePolicy(_, null)` exists to skip.
+  expect(jobCeiling(shipped)).toBeNull();
+  expect(jobCeiling(MANIFEST)).toBeNull();
   // One number governs every lane, so it is the LOWEST declared: a bound honoured by one
   // operation and refused by another is not a bound.
   const mixed = manifestWith({
