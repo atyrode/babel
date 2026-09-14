@@ -15,9 +15,10 @@ import {
   ProfilesResultSchema,
   StopInputSchema,
   StopResultSchema,
-  materialFile,
+  MaterialIndexSchema,
   type CodeProfile,
   type LaunchInput,
+  type MaterialIndex,
   type OperationName,
   type PresetStart,
 } from "../contract.ts";
@@ -26,7 +27,6 @@ import {
   composeExplorePrompt,
   PARAM,
   PROMPT_VERSION,
-  type PromptSession,
   type Recipe,
 } from "../server/engine/prompts.ts";
 import type { ActionsSlice, CodeEngine } from "../server/engine/session.ts";
@@ -201,6 +201,16 @@ export type Started = { runId: string; jobId: string } | { refused: string };
  * does, because two implementations of "start a run" disagreeing is how an operator's ceiling
  * gets spent twice — which is the whole subject of the post-mortem this lane comes from.
  */
+
+/**
+ * What {@link LaunchMachinery.postPrepared} did about one waiting run: the Code job it posted,
+ * or the sentence the run was closed with. Both are reported, because a wake nobody watched
+ * has to leave its account on the row AND in the cycle's notes.
+ */
+export type Posted =
+  | { readonly runId: string; readonly jobId: string }
+  | { readonly runId: string; readonly refused: string };
+
 export interface LaunchMachinery {
   /**
    * One explore, as a Code session over sealed material. The `engine` is a parameter rather than
@@ -222,6 +232,15 @@ export interface LaunchMachinery {
     input: LaunchInput,
     plan: RunPlan,
   ): Promise<Started>;
+  /**
+   * EVERY RUN WHOSE MATERIAL IS SEALED AND WHOSE SESSION IS NOT POSTED YET, posted now.
+   *
+   * It is a second wake and not a continuation of the first because Manifold's job-inputs
+   * primitive binds a SETTLED job's output (#592): the session cannot be posted while its own
+   * preparation is still running. Called from the cycle, after the conductor has settled what
+   * finished and before the drain decides whether to launch more.
+   */
+  postPrepared(jobs: JobsSlice, engine: CodeEngine, plan: RunPlan): Promise<readonly Posted[]>;
 }
 
 export interface LaunchDeps {
@@ -527,7 +546,7 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
   async function startExplore(
     identity: LaunchIdentity,
     jobs: JobsSlice,
-    engine: CodeEngine,
+    _engine: CodeEngine,
     input: LaunchInput,
     plan: RunPlan,
   ): Promise<Started> {
@@ -632,115 +651,233 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
     );
     if (sealed !== null) return sealed;
 
-    // THE PROMPT SAYS ONLY WHAT IS ALREADY TRUE. `prepare` runs AFTER this posting, so the
-    // digests, the record counts and the sizes are not known here and the prompt does not
-    // invent them: it names the selector and the file the material will hold it in, and sends
-    // the model to `index.json` for everything a citation needs. Both sides derive the file
-    // name from the same ordered selectors with `materialFile`, which is what makes the two
-    // agree without a round trip.
-    const entries: PromptSession[] = prepared.rows.map((row, ordinal) => ({
-      selector: row.selector,
-      file: materialFile(ordinal, row.selector),
-    }));
-    const prompt = composeExplorePrompt({
-      stage: "explore",
-      recipes,
-      sessions: entries,
-      // The preparation's own id is content-addressed by `prepare` and is not known until it has
-      // run; the prompt names the job that seals it, which is the identity a reader can follow.
-      preparationId: prepareJobId,
-      params: {
-        [PARAM.stage]: "explore",
-        [PARAM.runId]: identity.runId,
-        [PARAM.preparation]: prepareJobId,
-      },
-    });
+    /*
+      AND THE SESSION IS NOT POSTED HERE (#592). The job-inputs primitive binds a SETTLED
+      job's sealed output: a binding whose source is still active is refused, and `prepare` is
+      still running at this point — it was posted one statement ago. So the press ends with
+      the preparation in flight and the run recorded as INTENT, and the session is posted by
+      {@link postPrepared} on the wake that `prepare`'s own settlement causes.
 
-    const posted = await engine.runSession({
-      profile,
-      machineId: input.machineId,
-      prompt,
-      prepareJobId,
-    });
-    if (!posted.ok) return { refused: posted.refused };
-    await recordSession(identity, input, profile, posted.value.jobId, prepareJobId, {
-      preset: input.preset,
-      selected: prepared.rows.length,
-      available: prepared.held,
-      excluded: prepared.excluded,
-      bytes: prepared.bytes,
-      overBound: prepared.overBound,
-      promptVersion: PROMPT_VERSION,
-      sessions: entries,
-      recipes: recipes.map((recipe) => ({ id: recipe.id, version: recipe.version })),
-      ...(input.preset === "explore-topic"
-        ? { entityId: input.entityId ?? "" }
-        : { sinceDays: input.sinceDays ?? 1 }),
-    });
-    return { runId: identity.runId, jobId: posted.value.jobId };
-  }
-
-  /**
-   * The run row of a posted Code session. It is written after Code accepted the job, for the
-   * reason {@link post} writes its own then: a row for a session nobody posted is a run an
-   * operator waits for for ever.
-   *
-   * `job_id` is CODE's job and `container_id` is the workspace whose profile answered it. The
-   * pair is not decoration: `code.readSession` takes exactly those two, and they are the whole of
-   * how the conductor reconciles a job `ctx.jobs` refuses to read because it belongs to
-   * `atyrode.omp`.
-   *
-   * `profile` is BABEL'S OWN LAUNCH REPORT — the container it named, and the account the
-   * request named when it named one. Code chooses the account and its session receipt reports
-   * none, so this column is the only place "which window did that run spend" is written; a
-   * drain's total is the sum of the runs that named its account (#267), and on 2026-09-13
-   * nothing on the machine could answer that question at all.
-   */
-  async function recordSession(
-    identity: LaunchIdentity,
-    input: LaunchInput,
-    profile: CodeProfile,
-    jobId: string,
-    prepareJobId: string,
-    preparation: Record<string, unknown>,
-  ): Promise<void> {
-    const session = input.session;
+      That is also why the prompt is not composed here. Composed now it could only name the
+      selectors and guess the file names; composed on the settle it is built from the
+      material's own index — the real file names, the real record counts, and the digests a
+      citation has to copy — which is the document the hub then checks those citations
+      against.
+    */
     await store.db.run(
-      `INSERT INTO runs(id, kind, machine_id, job_id, container_id, prepare_job_id, recipe_id,
-                        profile, authority_kind, authority_id, preparation, started_at, records,
-                        payload)
-       VALUES (?, ?, ?, ?, ?, ?, '', ?, 'operator', ?, ?, ?, 0, ?)
+      `INSERT INTO runs(id, kind, machine_id, container_id, prepare_job_id, recipe_id, profile,
+                        authority_kind, authority_id, preparation, started_at, records, payload)
+       VALUES (?, ?, ?, ?, ?, '', ?, 'operator', ?, ?, ?, 0, ?)
        ON CONFLICT(id) DO NOTHING`,
       [
         identity.runId,
         PRESET_PLANS[input.preset].operationId,
         input.machineId,
-        jobId,
         profile.containerId,
         prepareJobId,
-        JSON.stringify({
-          containerId: profile.containerId,
-          expectedRevision: profile.expectedRevision,
-          ...(session === undefined
-            ? {}
-            : {
-                account: {
-                  provider: session.account.provider,
-                  identityKey: session.account.identityKey,
-                },
-                askedModel: session.model,
-              }),
-        }),
+        launchReport(input, profile),
         identity.authorityId,
-        JSON.stringify(preparation),
+        JSON.stringify({
+          preset: input.preset,
+          selected: prepared.rows.length,
+          available: prepared.held,
+          excluded: prepared.excluded,
+          bytes: prepared.bytes,
+          overBound: prepared.overBound,
+          promptVersion: PROMPT_VERSION,
+          recipes: recipes.map((recipe) => ({ id: recipe.id, version: recipe.version })),
+          ...(input.preset === "explore-topic"
+            ? { entityId: input.entityId ?? "" }
+            : { sinceDays: input.sinceDays ?? 1 }),
+        }),
         new Date(deps.now()).toISOString(),
-        JSON.stringify({ closure: null, requestedAt: deps.now() }),
+        JSON.stringify({ closure: null, preparing: prepareJobId }),
       ],
     );
     store.touch();
+    return { runId: identity.runId, jobId: prepareJobId };
   }
 
-  return { startExplore, startBeat };
+  /**
+   * BABEL'S OWN LAUNCH REPORT, on the run row's `profile` column: the container it named, the
+   * revision it was shown, and the account the request named when it named one.
+   *
+   * Code chooses the account and its session receipt reports none, so this column is the only
+   * place "which window did that run spend" is written; a drain's total is the sum of the runs
+   * that named its account (#267), and on 2026-09-13 nothing on the machine could answer that
+   * question at all.
+   */
+  function launchReport(input: LaunchInput, profile: CodeProfile): string {
+    const session = input.session;
+    return JSON.stringify({
+      containerId: profile.containerId,
+      expectedRevision: profile.expectedRevision,
+      ...(session === undefined
+        ? {}
+        : {
+            account: {
+              provider: session.account.provider,
+              identityKey: session.account.identityKey,
+            },
+            askedModel: session.model,
+          }),
+    });
+  }
+
+  /**
+   * EVERY RUN WHOSE MATERIAL IS SEALED AND WHOSE SESSION IS NOT POSTED YET, posted now (#592).
+   *
+   * The job-inputs primitive binds a SETTLED job's output — a binding whose source is still
+   * active is refused — so the session cannot be posted at the press, when `prepare` has only
+   * just been handed to the machine. This is the other half: a wake that `prepare`'s own
+   * settlement causes finds the run waiting on it and posts the session.
+   *
+   * IT IS IDEMPOTENT AND IT IS A QUERY, not a memory: the rows it acts on are exactly the ones
+   * with a container, no job and a settled preparation, so a wake that ran twice in the same
+   * second finds nothing the first did not already give a job id to.
+   *
+   * A PREPARATION THAT DID NOT COMPLETE CLOSES ITS RUN. There is no material to bind and no
+   * second attempt that would change that: the selection is fixed and the machine has already
+   * read it. Leaving the run open would leave an operator waiting on a session nothing will
+   * ever post.
+   */
+  async function postPrepared(
+    jobs: JobsSlice,
+    engine: CodeEngine,
+    plan: RunPlan,
+  ): Promise<readonly Posted[]> {
+    void jobs;
+    void plan;
+    const waiting = await store.db.query<PreparedRun>(
+      `SELECT r.id AS id, r.machine_id AS machine_id, r.container_id AS container_id,
+              r.prepare_job_id AS prepare_job_id, r.profile AS profile,
+              r.preparation AS preparation, p.closure AS prepare_closure,
+              p.payload AS prepare_payload
+         FROM runs r JOIN runs p ON p.job_id = r.prepare_job_id
+        WHERE r.closure IS NULL AND r.job_id IS NULL AND r.container_id IS NOT NULL
+          AND p.closure IS NOT NULL
+        ORDER BY r.started_at`,
+    );
+    const posted: Posted[] = [];
+    for (const run of waiting) {
+      const at = new Date(deps.now()).toISOString();
+      const material = materialOf(run.prepare_payload);
+      if (run.prepare_closure !== "completed" || material === null) {
+        const reason =
+          run.prepare_closure === "completed"
+            ? `the preparation ${run.prepare_job_id ?? ""} sealed no material this run could read`
+            : `the preparation ${run.prepare_job_id ?? ""} closed as ${run.prepare_closure ?? ""}`;
+        await store.db.run(
+          `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
+          [at, JSON.stringify({ closure: "failed", reason }), run.id],
+        );
+        store.touch();
+        posted.push({ runId: run.id, refused: reason });
+        continue;
+      }
+      const intent = documentOf(run.preparation);
+      const report = documentOf(run.profile);
+      const asked = new Set(
+        (Array.isArray(intent["recipes"]) ? intent["recipes"] : [])
+          .map((entry) => (typeof entry === "object" && entry !== null ? String((entry as Record<string, unknown>)["id"]) : ""))
+          .filter((id) => id !== ""),
+      );
+      const cookbook = await deps.cookbook();
+      const recipes = Object.values(cookbook).filter((recipe) => asked.has(recipe.id));
+      if (recipes.length === 0) {
+        const reason = `this hub no longer holds the recipes this run was started with`;
+        await store.db.run(
+          `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
+          [at, JSON.stringify({ closure: "failed", reason }), run.id],
+        );
+        store.touch();
+        posted.push({ runId: run.id, refused: reason });
+        continue;
+      }
+      // THE PROMPT IS BUILT FROM WHAT WAS ACTUALLY SEALED: the index's own file names, record
+      // counts and digests, rather than the selectors the press could only guess from.
+      const prompt = composeExplorePrompt({
+        stage: "explore",
+        recipes,
+        sessions: material.sessions.map((entry) => ({
+          selector: entry.selector,
+          file: entry.file,
+        })),
+        preparationId: material.preparationId,
+        params: {
+          [PARAM.stage]: "explore",
+          [PARAM.runId]: run.id,
+          [PARAM.preparation]: material.preparationId,
+        },
+      });
+      const answered = await engine.runSession({
+        profile: {
+          containerId: run.container_id ?? "",
+          expectedRevision: Number(report["expectedRevision"] ?? 0),
+        },
+        machineId: run.machine_id ?? "",
+        prompt,
+        prepareJobId: run.prepare_job_id ?? "",
+      });
+      if (!answered.ok) {
+        // A REFUSAL HERE IS FINAL, not a thing to retry on every wake for ever: the material
+        // is sealed and immutable, the profile was named at the press, and nothing a later
+        // wake could do changes what Code just said. The run closes carrying the sentence.
+        await store.db.run(
+          `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
+          [at, JSON.stringify({ closure: "failed", reason: answered.refused }), run.id],
+        );
+        store.touch();
+        posted.push({ runId: run.id, refused: answered.refused });
+        continue;
+      }
+      await store.db.run(
+        `UPDATE runs SET job_id = ?, payload = ? WHERE id = ? AND job_id IS NULL`,
+        [
+          answered.value.jobId,
+          JSON.stringify({ closure: null, requestedAt: deps.now() }),
+          run.id,
+        ],
+      );
+      store.touch();
+      posted.push({ runId: run.id, jobId: answered.value.jobId });
+    }
+    return posted;
+  }
+
+  return { startExplore, startBeat, postPrepared };
+}
+
+/** A run waiting on its preparation, as the poster reads one. */
+type PreparedRun = {
+  id: string;
+  machine_id: string | null;
+  container_id: string | null;
+  prepare_job_id: string | null;
+  profile: string | null;
+  preparation: string | null;
+  prepare_closure: string | null;
+  prepare_payload: string;
+};
+
+/** A JSON column as an object, or an empty one; a column nobody can parse names nothing. */
+function documentOf(value: string | null): Record<string, unknown> {
+  if (value === null || value === "") return {};
+  let held: unknown;
+  try {
+    held = JSON.parse(value);
+  } catch {
+    return {};
+  }
+  return typeof held === "object" && held !== null && !Array.isArray(held)
+    ? (held as Record<string, unknown>)
+    : {};
+}
+
+/** The material index a settled `prepare` wrote into its own receipt, or null. */
+function materialOf(payload: string): MaterialIndex | null {
+  const parsed = MaterialIndexSchema.safeParse(documentOf(payload)["material"]);
+  return parsed.success ? parsed.data : null;
 }
 
 export function launchDoors(store: BabelStore, deps: LaunchDeps): readonly Door[] {

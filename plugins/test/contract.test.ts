@@ -200,24 +200,22 @@ describe("the machine half is declared as the machine half is built", () => {
   /*
     THE TWO DECLARATIONS A CODE SESSION RESTS ON (#279), and the one that is not there yet.
 
-    The dependency is OPTIONAL rather than required, and the distinction is load-bearing:
-    `required` refuses ASSEMBLY when Code is missing, and Babel's baseline — the catalog, the
-    archive, the store, every reading panel and the operator's own acts — works perfectly on a
-    hub that has no Code at all. Only the lane that reaches a model needs it, and that lane
-    refuses itself by name (`engine_unavailable`, rendered as the sentence under Watch's Start
-    section) rather than taking the whole install down with it. The edge is still DECLARED,
-    which is what `ctx.actions.call` requires: an undeclared one is refused
-    `undeclared_dependency` at the host.
+    The dependency is REQUIRED, and that is the operator's architecture rather than a
+    convenience: `atyrode.babel` depends on `atyrode.code`, which depends on `atyrode.omp`,
+    and a hub that enabled Babel without Code would offer a Start section whose every press
+    the HOST refuses (`undeclared_dependency`/`dependency_unavailable`) — assembly refusing
+    the install is the earlier and better answer. It is also what makes `verify` install the
+    three families in order, which is what `bun run deps:code` is for.
 
     `prepare` seals the material as a second output; binding that output into ANOTHER plugin's
     job additionally needs `exports: ["material"]` beside it, and `MachineOperationSchema` has
     no such key at this pin. That is the whole of `MATERIAL_INPUT_PENDING`, and this test pins
     the half that exists so the day the pin moves the other half is a one-line diff here too.
   */
-  test("the baseline declares Code, optionally, and prepare seals the material as its own output", () => {
+  test("the baseline requires Code, and prepare seals the material as its own output", () => {
     expect(babel.dependencies).toEqual({
       [CODE_PLUGIN_ID]: {
-        type: "optional",
+        type: "required",
         reason: expect.stringContaining("runSession") as unknown as string,
       },
     });
@@ -237,6 +235,24 @@ describe("the machine half is declared as the machine half is built", () => {
     // anchor would be a second thing an operator has to arrange per machine.
     expect(prepare.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
     expect(Object.hasOwn(prepare, "exports")).toBe(false);
+  });
+
+  /*
+    ONE CODE REVISION, NAMED IN TWO PLACES. `package.json`'s `@atyrode/manifold-code` is where
+    the TYPES come from — the schemas `server/engine/session.ts` parses every call and reply
+    with — and `CODE_REV` is what `deps:code` fetches and builds the bundles `verify` composes
+    Babel on top of. Verifying against one revision while compiling against another proves
+    nothing about either, so the two are held together here rather than by remembering.
+  */
+  test("the Code the types come from is the Code verification composes", async () => {
+    const pinned = (await Bun.file(new URL("../CODE_REV", import.meta.url)).text()).trim();
+    expect(pinned).toMatch(/^[a-f0-9]{40}$/);
+    const dependency = (
+      JSON.parse(await Bun.file(new URL("../package.json", import.meta.url)).text()) as {
+        dependencies: Record<string, string>;
+      }
+    ).dependencies["@atyrode/manifold-code"];
+    expect(dependency).toBe(`github:atyrode/code#${pinned}`);
   });
 
   test("the roots the adapters read are the roots the job mounts", () => {

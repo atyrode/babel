@@ -16,8 +16,8 @@
   ],
   "dependencies": {
     "atyrode.code": {
-      "type": "optional",
-      "reason": "a run that reaches a model is a Code session, posted through code.runSession; without Code the catalog and every reading panel still work and that lane refuses engine_unavailable"
+      "type": "required",
+      "reason": "a Babel run is a Code session: Code owns the profile (model, thinking level, account) and posts the omp job through its runSession door, which Babel calls with ctx.actions.call"
     }
   },
   "dataVersion": {

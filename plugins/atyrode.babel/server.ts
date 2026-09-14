@@ -282,7 +282,20 @@ async function cycle(
   const policy = (await coordinated.policy()).policy;
   // The beat is the only job this loop still posts itself, so its operation is what the plan's
   // limits are read for; a run that reaches a model is Code's to post (#279).
-  await loop(jobs, machines, actions, planFor(policy, MACHINE_OPERATIONS.scan)).tick();
+  const plan = planFor(policy, MACHINE_OPERATIONS.scan);
+  await loop(jobs, machines, actions, plan).tick();
+  /*
+    …AND THEN THE SESSIONS WHOSE MATERIAL IS NOW SEALED (#592). A job-inputs binding names a
+    SETTLED job's output, so a session cannot be posted while its own `prepare` is still
+    running: the press leaves the preparation in flight and the run recorded as intent, and
+    this is the wake that turns it into a Code session. It runs AFTER the conductor, because
+    the conductor is what settled that preparation and wrote the index this reads.
+  */
+  for (const posted of await machinery.postPrepared(jobs, codeEngine(actions), plan)) {
+    if ("refused" in posted) {
+      console.warn(`${BABEL_PLUGIN_ID}: run ${posted.runId}: ${posted.refused}`);
+    }
+  }
   for (const report of await drainTick(draining(jobs, actions))) {
     for (const note of report.notes) {
       console.warn(`${BABEL_PLUGIN_ID}: drain ${report.drainId}: ${note}`);

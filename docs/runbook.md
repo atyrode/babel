@@ -1286,21 +1286,26 @@ never reaches Babel; a refused submission is still spend, and settles its claim 
 The drain's fan goes through the same launch path and names the same Code profile.
 
 **Exercised, with the evidence.** On this workstation (`workstation-linux`, 2026-09-14): the
-plugin gate (`check`, `bun test` — 513 tests — `pack`, `verify`) against a real engine at
-Manifold `559612c8` with `@atyrode/manifold-code` pinned at `977e6e6`; the Code client's
-refusal translation against the real host sentences and Code's real `{refused: "code_…"}`
-shape (`server/engine/session.test.ts`); the settle path — finished-and-valid,
-finished-and-refused, unfinished, and a read Code refuses — against a fake `readSession`
-(`server/conductor.test.ts`); the sealed material's layout and its digests against a real
-temporary lease (`machine/prepare.test.ts`); Watch's Start section rendered from a fake
-`profiles` door (`watch/test/start.test.tsx`).
+plugin gate — `deps:code`, `check`, `bun test` (**516 tests**), `pack`, `verify` — against a
+real engine at Manifold `559612c8`, with `atyrode/code` pinned at `133ec32b` in BOTH
+`plugins/CODE_REV` and `@atyrode/manifold-code`. `verify` composes **ten bundles** on the
+disposable engine in dependency order: `atyrode.omp` and its two parts, `atyrode.code` and its
+three, then `atyrode.babel` and its two — which is what a `required` dependency costs and what
+it proves. Beside the gate: the Code client's refusal translation against the real host
+sentences (`server/engine/session.test.ts`); the settle path — valid, refused-and-charged,
+still running, cancelled-with-no-transcript, and a read Code refuses twice — against a fake
+`readSession` (`server/conductor.test.ts`); the sealed material's layout and its digests
+against a real temporary lease (`machine/prepare.test.ts`); both launch wakes, the press that
+seals and the settle that posts (`doors/launch.test.ts`, `doors/drain.test.ts`); Watch's Start
+and drain sections rendered from a fake `profiles` door (`watch/test/`).
 
 **Not exercised, and blocked at the last step — every item below is an OPERATOR STEP.** No
 Babel run has reached a model on a real hub and none can yet: Manifold cannot bind one job's
-sealed output into ANOTHER plugin's job, so every posting path — the button's, the drain's fan
-— answers `material_input_pending` after the material has been sealed. There is no real model
-call, no `inference_call` on a real journal and no provider window moved. Nothing here was run
-against a real hub, a real Code install or a real omp account. What remains owed, in order:
+sealed output into ANOTHER plugin's job, so the session the settle wake tries to post is
+answered `material_input_pending` and its run closes carrying that sentence. There is no real
+model call, no `inference_call` on a real journal and no provider window moved. Nothing here
+ran against a real hub, a real Code install or a real omp account. What remains owed, in
+order:
 
 > 1. atyrode/manifold#592, the job-inputs primitive (`inputs: [{name, from: {jobId, output}}]`
 >    on the request, `exports` on the producing operation). **Success:** the primitive is on

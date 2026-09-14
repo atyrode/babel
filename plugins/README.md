@@ -377,10 +377,47 @@ version, and the one thing inlined into every bundle), `typescript`, React with 
 React, `@manifold/plugin` and `@manifold/ui` are **shared externals**, rewritten by `pack` into
 reads from the shell's own module registry, so a bundle never carries a second copy of them.
 
+## Code is a second pin, and verification composes three families
+
+`atyrode.babel` declares `atyrode.code` a **required** dependency, because that is the
+architecture and not a convenience: a hub that enabled Babel without Code would offer a Start
+section whose every press the host itself refuses, and assembly refusing the install is the
+earlier and better answer. A required dependency is a dependency ASSEMBLY CHECKS, so
+`bun run verify` — which installs every bundle on a disposable engine — cannot compose Babel
+until Code, and `atyrode.omp` beneath it, are on disk.
+
+`CODE_REV` is that pin: one commit of atyrode/code, and **the same commit**
+`package.json`'s `@atyrode/manifold-code` names, because verifying against one revision while
+compiling the types against another proves nothing about either. `test/contract.test.ts`
+refuses a tree where the two disagree.
+
+```sh
+bun run deps:code   # fetch atyrode/code @ CODE_REV and build its bundles, and omp's
+bun run pack
+bun run verify      # installs atyrode.omp*, then atyrode.code*, then atyrode.babel*
+```
+
+`scripts/prepare-code.ts` **packs nothing of its own**. It fetches the Code revision into
+`.integration/<rev>/code`, links this tree's Manifold checkout beside it as
+`.integration/<rev>/manifold` — the sibling layout Code's own scripts resolve — and then runs
+CODE's `prepare:integration` (which does the same for omp) and CODE's `pack`. A packer here
+would be a second answer to what a Code bundle is, and the day Code changed its own it would
+be the copy nobody updated. The script refuses a Code whose `plugins/MANIFOLD_REV` is not this
+tree's: three families verified against two different kits would prove nothing about the hub
+they install on.
+
+`.integration/` is gitignored — it is another repository's source and another family's
+bundles — and `pack.sh` prunes it, so this family's `dist/` holds this family's bundles only.
+In CI the same thing happens through the reusable workflow's `prepare-command` hook
+(`manifold-plugins.yml`), which needs no second `actions/checkout`: the fetch is the script's
+own, and the manifold sibling the workflow already lays out is the one `manifold-dir.sh`
+resolves.
+
 ## Build, test, pack, verify, develop
 
 ```sh
 bun install                 # zod, typescript, react + types, happy-dom; nothing else
+bun run deps:code           # atyrode/code @ CODE_REV, and omp beneath it, as bundles to compose against
 bun run check               # tsc over both halves, the store, the panels and the tests
 bun test                    # the manifests against the contract, the doors against a real temporary database, the panels in a document, and `pack` itself
 bun run pack                # builds machine.js, stamps the manifest, dist/<id>.manifold-plugin.json per manifest, parents first, plus dist/SHA256SUMS

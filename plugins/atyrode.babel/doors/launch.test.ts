@@ -401,7 +401,7 @@ test("a hub holding no cookbook recipe refuses an explore rather than posting on
   expect(fleet.executed).toEqual([]);
 });
 
-test("an explore seals its material, then answers material_input_pending and leaves the preparation behind", async () => {
+test("an explore seals its material and records the intent; the session waits for the settle", async () => {
   const answer = await start({
     preset: "read-whats-new",
     sinceDays: 1,
@@ -409,31 +409,39 @@ test("an explore seals its material, then answers material_input_pending and lea
   });
 
   /*
-    THE REFUSAL IS THE FIFTH STEP, and it names the two lines that move when Manifold can bind
-    one job's sealed output into another plugin's job. Everything before it happened.
+    THE PRESS ENDS AT THE PREPARATION (#592). A job-inputs binding names a SETTLED job's
+    output, so the session cannot be posted while its own `prepare` is still running — the
+    answer is the preparation's job, and `postPrepared` turns the run into a Code session on
+    the wake that preparation's settlement causes.
   */
-  const refused = String(answer["refused"]);
-  expect(refused).toStartWith(`${MATERIAL_INPUT_PENDING_CODE}:`);
-  expect(refused).toContain('exports: ["material"]');
-  expect(refused).toContain("server/engine/session.ts");
+  expect(answer["refused"]).toBeUndefined();
+  expect(answer["kind"]).toBe("explore");
+  expect(answer["jobId"]).toBe(`job_${answer["runId"] as string}`.replace("job_run_", "job_") + "_material");
 
   // THE MATERIAL IS REAL WORK, POSTED: one `atyrode.babel.prepare` job with TWO sealed leases,
-  // the ordinary outputs and the material a session will read.
+  // the ordinary outputs and the material a session will read. Code was not called at all.
   expect(fleet.executed).toHaveLength(1);
   const sealed = fleet.executed[0]!;
   expect(sealed.operationId).toBe(OPERATIONS.prepare);
   expect(sealed.outputs.map((output) => output.name)).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
   expect(JSON.parse(String(sealed.input["input"]))["selectors"]).toEqual(["omp/s1"]);
 
-  // …and its run row stands, because the catalog work happened and a later cycle ingests it.
-  // A session that was never posted leaves NO row of its own: a run an operator waits on for
-  // ever is exactly the ghost this ordering exists to avoid.
-  const runs = await harness.db.query<{ id: string; kind: string; container_id: string | null }>(
-    `SELECT id, kind, container_id FROM runs ORDER BY id`,
-  );
-  expect(runs).toHaveLength(1);
-  expect(runs[0]?.kind).toBe(OPERATIONS.prepare);
-  expect(runs[0]?.container_id).toBeNull();
+  // TWO ROWS: the preparation's, and the explore's own — open, in the Code lane by its
+  // container, holding no job yet, and carrying the intent the settle wake composes from.
+  const runs = await harness.db.query<{
+    id: string;
+    kind: string;
+    job_id: string | null;
+    container_id: string | null;
+    prepare_job_id: string | null;
+    preparation: string;
+  }>(`SELECT id, kind, job_id, container_id, prepare_job_id, preparation FROM runs ORDER BY kind`);
+  expect(runs.map((row) => row.kind)).toEqual([OPERATIONS.explore, OPERATIONS.prepare]);
+  const explore = runs[0]!;
+  expect(explore.job_id).toBeNull();
+  expect(explore.container_id).toBe("ctr_workbench");
+  expect(explore.prepare_job_id).toBe(sealed.jobId);
+  expect(JSON.parse(explore.preparation)["recipes"]).toEqual([{ id: "code-health", version: 3 }]);
 });
 
 test("the selection stops at the bytes one preparation may seal, and says how many it left", async () => {
@@ -457,9 +465,9 @@ test("the selection stops at the bytes one preparation may seal, and says how ma
     profile: { containerId: "ctr_workbench", expectedRevision: 7 },
   });
 
-  // It still reaches the material refusal, so the selection was admitted — and it holds the
-  // newest big log and the one small seeded session, not all four.
-  expect(String(answer["refused"])).toStartWith(`${MATERIAL_INPUT_PENDING_CODE}:`);
+  // The selection was admitted and holds the newest big log plus the one small seeded
+  // session, not all four: the bound is on the bytes, not on the count.
+  expect(answer["refused"]).toBeUndefined();
   const sealed = fleet.executed[0]!;
   const selectors = JSON.parse(String(sealed.input["input"]))["selectors"] as string[];
   expect(selectors).toEqual(["omp/big1", "omp/s1"]);

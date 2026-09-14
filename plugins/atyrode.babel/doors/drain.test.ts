@@ -17,6 +17,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
+  MATERIAL_SCHEMA,
   MATERIAL_INPUT_PENDING_CODE,
   OPERATIONS,
   PRESET_OPERATIONS,
@@ -937,48 +938,95 @@ test("disabling the policy mid-drain ends it as an operator's act rather than as
   expect((await readDrain(harness.store, drainId))?.state).toBe("stopped");
 });
 
-test("over the real launch path a start answers material_input_pending and leaves a failed drain", async () => {
+test("over the real launch path a drain's fan seals material, and the settle wake is what Code refuses", async () => {
   /*
-    THE DRAIN AND THE BUTTON REFUSE THE SAME SENTENCE (#279). A drain posts through
-    `launchMachinery`'s own `startExplore`, which is exactly why there is one refusal and not
-    two: whatever the operator's button answers, the fan answers. The controller above is
-    exercised against a path that posts, because keeping a fan filled is not a claim about who
+    THE DRAIN AND THE BUTTON GO THROUGH ONE PATH (#279), which is why there is one answer and
+    not two: whatever the operator's button does, the fan does. The controller above is
+    exercised against a fake that posts, because keeping a fan filled is not a claim about who
     posts; this is the claim about who posts.
 
-    The drain names a CODE PROFILE in its knobs, so the refusal reached is the last one in the
-    sequence rather than `profile_required` — which is the point: everything up to binding the
-    material happens, and the one thing that cannot is named.
+    And the press no longer reaches Code at all (#592): it seals the material and records the
+    intent, and the SESSION is posted by `postPrepared` on the wake that preparation's own
+    settlement causes. So this drain STARTS, and what Code says is said there.
   */
-  deps = {
-    ...deps,
-    launch: launchMachinery(harness.store, {
-      coordinator: deps.coordinator,
-      jobs: () => fleet,
-      engine: () => deps.engine,
-      cookbook: async () =>
-        await Promise.resolve({
-          "code-health": { id: "code-health", version: 3, body: "look for what keeps breaking" },
-        }),
-      plan: () => PLAN,
-      now: () => harness.store.now(),
-    }),
-  };
+  const machinery = launchMachinery(harness.store, {
+    coordinator: deps.coordinator,
+    jobs: () => fleet,
+    engine: () => deps.engine,
+    cookbook: async () =>
+      await Promise.resolve({
+        "code-health": { id: "code-health", version: 3, body: "look for what keeps breaking" },
+      }),
+    plan: () => PLAN,
+    now: () => harness.store.now(),
+  });
+  deps = { ...deps, launch: machinery };
 
   const answer = await start({
-    concurrent: 3,
+    concurrent: 2,
     profile: { containerId: "ctr_workbench", expectedRevision: 7 },
   });
 
-  const refused = String(answer["refused"]);
-  expect(refused).toMatch(/this drain launched nothing/);
-  expect(refused).toContain(`${MATERIAL_INPUT_PENDING_CODE}:`);
+  // TWO PREPARATIONS POSTED, and nothing asked of Code yet.
+  expect(answer["launched"]).toBe(2);
+  expect(fleet.executed.map((job) => job.operationId)).toEqual([
+    OPERATIONS.prepare,
+    OPERATIONS.prepare,
+  ]);
+  const drainId = String(answer["drainId"]);
+  const waiting = await harness.db.query<{ id: string; job_id: string | null }>(
+    `SELECT id, job_id FROM runs WHERE kind = ? ORDER BY id`,
+    [OPERATIONS.explore],
+  );
+  expect(waiting.map((row) => row.id)).toEqual([`run_${drainId}_0`, `run_${drainId}_1`]);
+  expect(waiting.every((row) => row.job_id === null)).toBe(true);
+
+  // THE SETTLE WAKE IS WHERE THE MATERIAL BINDING IS REACHED FOR, and where it is refused.
+  // A settled preparation with no material in its receipt closes its run for that reason;
+  // one that sealed an index reaches `runSession`, which answers `material_input_pending`.
+  await harness.db.run(
+    `UPDATE runs SET closure = 'completed', finished_at = ?, payload = ? WHERE job_id = ?`,
+    [
+      stamp(NOW),
+      JSON.stringify({
+        closure: "completed",
+        material: {
+          schema: MATERIAL_SCHEMA,
+          preparationId: "prep-1",
+          preparedAt: stamp(NOW),
+          machineId: MACHINE,
+          sessions: [
+            {
+              selector: "omp/s1",
+              harness: "omp",
+              sourceId: "s1",
+              captureDigest: "c".repeat(64),
+              sourceDigest: "a".repeat(64),
+              file: "0001-omp-s1.jsonl",
+              records: 4,
+              bytes: 1024,
+            },
+          ],
+        },
+      }),
+      `job_${drainId}_0_material`,
+    ],
+  );
+
+  const posted = await machinery.postPrepared(fleet, deps.engine, PLAN);
+  expect(posted).toHaveLength(1);
+  const outcome = posted[0]!;
+  expect("refused" in outcome).toBe(true);
+  if (!("refused" in outcome)) return;
+  const refused = outcome.refused;
+  expect(refused).toStartWith(`${MATERIAL_INPUT_PENDING_CODE}:`);
   expect(refused).toContain('exports: ["material"]');
   expect(refused).toContain("server/engine/session.ts");
-  // The row is written before the first post and closed when none lands, so what survives says
-  // why rather than sitting at `running` holding nothing.
-  const rows = await harness.db.query<{ id: string; state: string; reason: string }>(
-    `SELECT id, state, reason FROM drains`,
+  // …and the run carries the sentence rather than waiting on a session nothing will post.
+  const closed = await harness.db.query<{ closure: string; payload: string }>(
+    `SELECT closure, payload FROM runs WHERE id = ?`,
+    [`run_${drainId}_0`],
   );
-  expect(rows[0]).toMatchObject({ state: "failed" });
-  expect(rows[0]?.reason).toContain(MATERIAL_INPUT_PENDING_CODE);
+  expect(closed[0]?.closure).toBe("failed");
+  expect(String(closed[0]?.payload)).toContain(MATERIAL_INPUT_PENDING_CODE);
 });

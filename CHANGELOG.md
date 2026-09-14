@@ -45,6 +45,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   two lines that move when Babel's pin reaches it — `materialInput()` in
   `plugins/atyrode.babel/server/engine/session.ts` and `exports: ["material"]` on
   `atyrode.babel.prepare` in its manifest (#279, #268, #258, #264).
+- **A drain names a Code profile, a session is posted when its material is sealed, and the
+  dependency on Code is required.** The drain's five typed fields — provider, credential id,
+  identity key, model, thinking — are gone: a drain picks a Code profile from the same list
+  Start does, and what it records about the model and the account is CODE's own report,
+  copied once at the press and labelled as that (`ctr_x: victorballu (as Code reported at
+  start)`); Code saying it could not resolve an account is said as that and never as "spends
+  nothing". A press now seals the material and records the run's intent, and the session is
+  posted on the wake that preparation's own settlement causes, because a job-inputs binding
+  names a settled job's output; the prompt is therefore composed from the material's real
+  index rather than from guessed file names. A run's session is read, and cancelled, through
+  Code — `readSession` answers a live job with a null receipt instead of a refusal, and an
+  operator's Stop closes the run `stopped` rather than `failed` — and `atyrode.code` is a
+  required dependency, so `bun run deps:code` builds Code's bundles and omp's and `bun run
+  verify` composes all three families in order (#279, #268, #267).
 
 ## [0.3.0] - 2026-09-14
 
