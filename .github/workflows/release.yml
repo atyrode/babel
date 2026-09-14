@@ -53,19 +53,66 @@ jobs:
   # The plugin family is the product (decision 91): the same reusable gate that runs on every
   # PR - check, test, pack, verify against a real engine - packs the tagged revision and uploads
   # dist/ as the `manifold-plugins` artifact. The `uses:` ref and plugins/MANIFOLD_REV are one
-  # revision and move together (.github/workflows/manifold-plugins.yml says why).
+  # revision and move together (.github/workflows/manifold-plugins.yml says why). `deps:code`
+  # builds the dependency closure first, because verify composes omp, then Code, then Babel.
   plugins:
-    uses: atyrode/manifold/.github/workflows/plugins.yml@0bc76660cbc215124738fa82c6d3041656c9c7f6
+    uses: atyrode/manifold/.github/workflows/plugins.yml@476a586ce6cce520bdaf8f8a346ee0eb84b0bb6e
     with:
       plugins-dir: plugins
+      prepare-command: bun run deps:code
+
+  # Babel requires Code, and Code requires omp (plugins/README.md "Code is a second pin"): a
+  # preview that receives Babel alone refuses composition. This job builds the exact dependency
+  # bundles the gate verified against - Code at plugins/CODE_REV, omp at the pin Code names -
+  # through the same `deps:code` the gate runs, in the same sibling layout the reusable workflow
+  # lays out, and hands them to `deliver` so the preview receives the closure in order.
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: caller
+      - name: Read the Manifold pin
+        id: rev
+        working-directory: caller/plugins
+        run: |
+          rev="$(tr -d '[:space:]' < MANIFOLD_REV)"
+          [ -n "$rev" ] || { echo "MANIFOLD_REV is empty"; exit 1; }
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: atyrode/manifold
+          ref: ${{ steps.rev.outputs.rev }}
+          path: manifold
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Install the kit
+        working-directory: manifold
+        run: bun install --frozen-lockfile
+      - name: Build the dependency closure
+        working-directory: caller/plugins
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run deps:code
+          mkdir -p ../../deps
+          cp .integration/code/plugins/.integration/omp/plugins/dist/*.manifold-plugin.json ../../deps/
+          cp .integration/code/plugins/dist/*.manifold-plugin.json ../../deps/
+          (cd ../../deps && sha256sum ./*.manifold-plugin.json | sed "s#\./##" > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dependency-plugins
+          path: deps
+          if-no-files-found: error
 
   # The verified bundles ride the release, then reach the integrated preview through its
-  # receiver: `plugin <asset-url> <sha256>` over the forced-command SSH key, baseline before its
-  # parts, exactly what a developer types from dev-01 (plugins/README.md "Where a change is
-  # proved"). Production (manifold.tyrode.dev) is installed by the operator, by hand, and is not
-  # touched here.
+  # receiver: `plugin <asset-url> <sha256>` over the forced-command SSH key, dependency closure
+  # first and baseline before its parts - omp, then Code, then Babel - exactly what a developer
+  # types from dev-01 (plugins/README.md "Where a change is proved"). Production
+  # (manifold.tyrode.dev) is installed by the operator, by hand, and is not touched here.
   deliver:
-    needs: [release, plugins]
+    needs: [release, plugins, dependencies]
     runs-on: ubuntu-latest
     environment:
       name: development
@@ -78,6 +125,10 @@ jobs:
         with:
           name: manifold-plugins
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: dependency-plugins
+          path: deps
 
       - name: Attach the bundles to the release
         env:
@@ -85,10 +136,12 @@ jobs:
         run: |
           set -euo pipefail
           cp dist/SHA256SUMS dist/manifold-plugins.SHA256SUMS
+          cp deps/SHA256SUMS deps/dependency-plugins.SHA256SUMS
           gh release upload "$TAG" --repo "$REPOSITORY" --clobber \
-            dist/*.manifold-plugin.json dist/manifold-plugins.SHA256SUMS
+            dist/*.manifold-plugin.json dist/manifold-plugins.SHA256SUMS \
+            deps/*.manifold-plugin.json deps/dependency-plugins.SHA256SUMS
 
-      - name: Install on the preview, parents first
+      - name: Install on the preview, dependencies and parents first
         env:
           DEV_DEPLOY_SSH_KEY: ${{ secrets.DEV_DEPLOY_SSH_KEY }}
           DEV_DEPLOY_HOST: ${{ vars.DEV_DEPLOY_HOST }}
@@ -98,9 +151,13 @@ jobs:
           [ -n "$DEV_DEPLOY_HOST" ] || { echo "no preview receiver configured; bundles are on the release"; exit 0; }
           key=$(mktemp); printf '%s\n' "$DEV_DEPLOY_SSH_KEY" > "$key"; chmod 600 "$key"
           trap 'rm -f "$key"' EXIT
-          for id in atyrode.babel atyrode.babel.feed atyrode.babel.watch; do
+          cat dist/SHA256SUMS deps/SHA256SUMS > sums
+          for id in \
+            atyrode.omp atyrode.omp.accounts atyrode.omp.gateway \
+            atyrode.code atyrode.code.accounts atyrode.code.generator atyrode.code.usage \
+            atyrode.babel atyrode.babel.feed atyrode.babel.watch; do
             file="$id.manifold-plugin.json"
-            sha=$(awk -v f="$file" '$2 == f { print $1 }' dist/SHA256SUMS)
+            sha=$(awk -v f="$file" '$2 == f { print $1 }' sums)
             [ -n "$sha" ] || { echo "no sum for $file"; exit 1; }
             url="https://github.com/$REPOSITORY/releases/download/$TAG/$file"
             for attempt in 1 2 3; do
