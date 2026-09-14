@@ -448,12 +448,18 @@ export type JobRef = z.infer<typeof JobRefSchema>;
 
 // ---------------------------------------------------------------------------- events
 
+/**
+ * The five kinds this plugin ORIGINATES. An event id is claimed across the whole assembly,
+ * and Manifold `476a586c` gave `run_changed` to `core.access` — the hub's own word for a
+ * terminal run moving — so Babel's is prefixed. Nothing else is: the other four are Babel's
+ * nouns and nobody else's.
+ */
 export const EVENTS = {
   recordWritten: "record_written",
   ruled: "ruled",
   assessed: "assessed",
   planApplied: "plan_applied",
-  runChanged: "run_changed",
+  runChanged: "babel_run_changed",
 } as const;
 
 // ---------------------------------------------------------------------------- panels
@@ -715,32 +721,19 @@ export const MaterialIndexSchema = z.strictObject({
 });
 export type MaterialIndex = z.infer<typeof MaterialIndexSchema>;
 
-/** The one refusal a real post still answers until Manifold can bind a job's input (#279). */
-export const MATERIAL_INPUT_PENDING_CODE = "material_input_pending";
-
 /**
- * WHY A COMPOSED RUN IS STILL NOT POSTED, in the one sentence every posting path answers with.
+ * WHERE THE MATERIAL IS DECLARED, so another plugin's job may bind it (ADR 0044, #592).
  *
- * Everything up to it is done and durable: the selection is chosen, `prepare` has sealed the
- * material as its own output, the prompt is composed around {@link MATERIAL_ROOT}, and the Code
- * profile is named. What is missing is the Manifold primitive that BINDS one job's sealed output
- * into another job's sandbox — `inputs: [{ name, from: { jobId, output } }]` on the request,
- * with `exports` on the producing operation — and posting the session without it would send a
- * model to read an empty directory and call the answer evidence.
+ * `atyrode.babel.prepare` writes the material into its own second sealed output and DECLARES
+ * it exportable; a session Code posts under `atyrode.omp`'s operation then names it as an
+ * input, and the hub extracts it read-only at {@link MATERIAL_ROOT}. A same-plugin binding
+ * needs no export — this one is cross-plugin, and admission refuses
+ * `input_not_exported:material` without the declaration.
  *
- * It is a constant rather than a sentence each caller writes because the operator's button and
- * the drain's fan are two ways to reach one missing thing, and a refusal nobody can schedule
- * work against is not a refusal. `MATERIAL_INPUT_PENDING` names the two lines that move when it
- * lands, so whoever moves the pin can grep for them.
+ * It is one string because the manifest, the request and `test/contract.test.ts` all name it
+ * and three spellings of one output name is how a binding silently binds nothing.
  */
-export const MATERIAL_INPUT_PENDING =
-  `${MATERIAL_INPUT_PENDING_CODE}: the run is composed and its material is sealed, but a ` +
-  `job's sealed output cannot yet be bound into another plugin's job. Manifold's job-inputs ` +
-  `primitive is what is missing: \`inputs: [{ name: "${MATERIAL_OUTPUT}", from: { jobId, ` +
-  `output: "${MATERIAL_OUTPUT}" } }]\` on the request, and \`exports: ["${MATERIAL_OUTPUT}"]\` ` +
-  `on atyrode.babel.prepare. When the pin moves, two lines move with it: that \`exports\` ` +
-  `declaration in manifest.json, and the \`inputs\` field this refusal stands in for in ` +
-  `server/engine/session.ts. Nothing else about a run changes.`;
+export const MATERIAL_EXPORT = MATERIAL_OUTPUT;
 
 /**
  * THE FOUR NAMES BABEL GIVES AN ENGINE REFUSAL, because the operator acts differently on each.

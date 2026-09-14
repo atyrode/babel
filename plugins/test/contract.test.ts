@@ -5,6 +5,7 @@ import {
   EVENTS,
   FEED_PLUGIN_ID,
   INPUT_FIELD,
+  MATERIAL_EXPORT,
   MATERIAL_OUTPUT,
   OPERATIONS,
   OUTPUT_BINDING,
@@ -207,12 +208,13 @@ describe("the machine half is declared as the machine half is built", () => {
     the install is the earlier and better answer. It is also what makes `verify` install the
     three families in order, which is what `bun run deps:code` is for.
 
-    `prepare` seals the material as a second output; binding that output into ANOTHER plugin's
-    job additionally needs `exports: ["material"]` beside it, and `MachineOperationSchema` has
-    no such key at this pin. That is the whole of `MATERIAL_INPUT_PENDING`, and this test pins
-    the half that exists so the day the pin moves the other half is a one-line diff here too.
+    `prepare` seals the material as a second output and DECLARES it exportable. The export is
+    what lets ANOTHER plugin's job bind it: a same-plugin binding needs none, and Code's job
+    is `atyrode.omp`'s, so admission refuses `input_not_exported:material` without it (ADR
+    0044). Outputs and exports are asserted together because an output nobody may bind is a
+    lease this plugin writes and nothing reads.
   */
-  test("the baseline requires Code, and prepare seals the material as its own output", () => {
+  test("the baseline requires Code, and prepare exports the material it seals", () => {
     expect(babel.dependencies).toEqual({
       [CODE_PLUGIN_ID]: {
         type: "required",
@@ -231,10 +233,17 @@ describe("the machine half is declared as the machine half is built", () => {
     );
     const prepare = machine.operations[OPERATIONS.prepare]!;
     expect(prepare.outputs).toEqual([OUTPUT_BINDING, MATERIAL_OUTPUT]);
+    expect(prepare.exports).toEqual([MATERIAL_EXPORT]);
+    // Every exported name is one this operation actually writes: an export of a lease that is
+    // never cut is a binding that resolves to nothing at the consumer's admission.
+    for (const exported of prepare.exports ?? []) expect(prepare.outputs).toContain(exported);
     // The material's lease is cut from the same managed location the ordinary one is: a second
     // anchor would be a second thing an operator has to arrange per machine.
     expect(prepare.locations).toContainEqual({ locationId: OUTPUT_LOCATION, access: "write" });
-    expect(Object.hasOwn(prepare, "exports")).toBe(false);
+    // …and no other operation exports anything: `scan` and `archive` write for this hub alone.
+    for (const operation of [OPERATIONS.scan, OPERATIONS.archive]) {
+      expect(machine.operations[operation]!.exports ?? []).toEqual([]);
+    }
   });
 
   /*

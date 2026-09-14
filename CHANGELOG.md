@@ -39,12 +39,20 @@ Entries up to v0.1.0 reference commit hashes; development is PR-based from
   settlement of it never reaches Babel: its final message is read for the answer, every
   citation is checked against the material's index, and the receipt is written with the model
   and what it spent — a refused submission included, at its cost, because the model answered
-  and the deployment paid for it. What is still refused is the last step alone: Manifold cannot
-  yet bind one job's sealed output into another plugin's job, so every posting path answers
-  `material_input_pending`, whose sentence names the primitive (atyrode/manifold#592) and the
-  two lines that move when Babel's pin reaches it — `materialInput()` in
-  `plugins/atyrode.babel/server/engine/session.ts` and `exports: ["material"]` on
-  `atyrode.babel.prepare` in its manifest (#279, #268, #258, #264).
+  and the account is CODE's own report. What is left is Code's PROMPT BOUND:
+  `SessionRunInputSchema` takes 16,384 characters and Babel's composed explore prompt is about
+  33,000, so a run closes `prompt_too_large` carrying both figures rather than a Zod issue
+  from Code's parse — what moves is Code's bound or the analysis contract, and no narrower
+  selection fixes it (#279, #268, #258, #264).
+- **The material is a bound job input, and a run is started in two wakes.** Manifold's
+  job-inputs primitive (ADR 0044, atyrode/manifold#592) binds one job's sealed output into
+  another's sandbox, so `atyrode.babel.prepare` now declares `exports: ["material"]` and a
+  posted session carries `inputs: [{name: "material", from: {jobId: <prepare>, output:
+  "material"}}]`. A binding names a job that has SETTLED, so the press seals the material and
+  records the run's intent and the session is posted on the wake that preparation's own
+  settlement causes — which is also why the prompt is composed from the material's real index,
+  with the file names and digests a citation must copy, instead of the layout the press could
+  only guess (#279, #268).
 - **A drain names a Code profile, a session is posted when its material is sealed, and the
   dependency on Code is required.** The drain's five typed fields — provider, credential id,
   identity key, model, thinking — are gone: a drain picks a Code profile from the same list

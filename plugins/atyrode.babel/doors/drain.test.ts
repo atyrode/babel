@@ -18,11 +18,11 @@ import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   MATERIAL_SCHEMA,
-  MATERIAL_INPUT_PENDING_CODE,
   OPERATIONS,
   PRESET_OPERATIONS,
   type ProfileRow,
 } from "../contract.ts";
+import { actionSchemas, type ActionInput } from "@atyrode/manifold-code";
 import type {
   JobLaunch,
   JobRef,
@@ -40,7 +40,12 @@ import { insert, openTestStore, type TestStore } from "../store/testdb.ts";
 import type { Door } from "./door.ts";
 import { drainDoors } from "./drain.ts";
 import { launchMachinery, type LaunchIdentity, type Started } from "./launch.ts";
-import { materialInput, type CodeEngine, type EngineAnswer } from "../server/engine/session.ts";
+import {
+  PROMPT_LIMIT,
+  materialInput,
+  type CodeEngine,
+  type EngineAnswer,
+} from "../server/engine/session.ts";
 
 const NOW = Date.UTC(2026, 8, 14, 12, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -67,26 +72,46 @@ const LISTED: ProfileRow = {
   resolved: true,
 };
 /**
- * CODE, as a drain reaches it. `runSession` answers the real {@link materialInput} refusal,
- * because that is the one line that moves when Manifold's job-inputs primitive lands and a
- * fake sentence here would keep passing the day it does. `listed` is what `drain.start` reads
- * to build its ledger entry, and `cancelled` is what a stop reached for.
+ * CODE, as a drain reaches it.
+ *
+ * `runSession` parses what it was handed with CODE'S OWN published input schema, which is the
+ * point of driving a fake at all here: a request Babel built that Code's schema refuses is
+ * Babel's bug, and a fake that accepted anything would hide it. `posted` keeps the parsed
+ * requests so a test can read the material binding off the one the settle wake sent.
  */
-const code: CodeEngine & { listed: ProfileRow; cancelled: string[]; cancelRefusal: string } = {
+const code: CodeEngine & {
+  listed: ProfileRow;
+  posted: ActionInput<"runSession">[];
+  cancelled: string[];
+  cancelRefusal: string;
+} = {
   listed: LISTED,
+  posted: [],
   cancelled: [],
   cancelRefusal: "",
   profiles: async () => await Promise.resolve({ ok: true, value: [code.listed] }),
   runSession: async (request) => {
-    const material = materialInput(request.prepareJobId);
-    if ("refused" in material) {
-      return await Promise.resolve({
-        ok: false,
-        code: MATERIAL_INPUT_PENDING_CODE,
-        refused: material.refused,
-      } as EngineAnswer<never>);
+    const parsed = actionSchemas.runSession.input.safeParse({
+      containerId: request.profile.containerId,
+      machineId: request.machineId,
+      expectedRevision: request.profile.expectedRevision,
+      prompt: request.prompt,
+      ...materialInput(request.prepareJobId),
+    });
+    if (!parsed.success) {
+      throw new Error(`Babel built a request Code refuses: ${parsed.error.message}`);
     }
-    throw new Error("the material binds now: this fake has to post a session");
+    code.posted.push(parsed.data);
+    return await Promise.resolve({
+      ok: true,
+      value: {
+        jobId: `omp_${String(code.posted.length)}`,
+        machineId: request.machineId,
+        operationId: "atyrode.omp.session",
+        pluginId: "atyrode.omp",
+        state: "queued",
+      },
+    });
   },
   cancelSession: async (args) => {
     if (code.cancelRefusal !== "") {
@@ -341,6 +366,7 @@ function posting(store: TestStore["store"], jobs: () => BabelJobs): DrainLaunch 
 
 beforeEach(async () => {
   harness = await openTestStore(NOW);
+  code.posted.length = 0;
   fleet = new Fleet();
   // The Code fake is one object across the file, so its record of what it was asked is reset
   // here: a count that leaked between tests would pass for the wrong reason.
@@ -938,7 +964,7 @@ test("disabling the policy mid-drain ends it as an operator's act rather than as
   expect((await readDrain(harness.store, drainId))?.state).toBe("stopped");
 });
 
-test("over the real launch path a drain's fan seals material, and the settle wake is what Code refuses", async () => {
+test("over the real launch path a drain's fan seals material, and the settle wake composes it", async () => {
   /*
     THE DRAIN AND THE BUTTON GO THROUGH ONE PATH (#279), which is why there is one answer and
     not two: whatever the operator's button does, the fan does. The controller above is
@@ -1014,19 +1040,56 @@ test("over the real launch path a drain's fan seals material, and the settle wak
   );
 
   const posted = await machinery.postPrepared(fleet, deps.engine, PLAN);
+
+  /*
+    THE SETTLE WAKE IS WHERE THE SESSION IS POSTED, and today it is where Babel meets Code's
+    prompt bound: the analysis contract and the stage's JSON Schema come to about 33,000
+    characters against `SessionRunInputSchema`'s 16,384. The run closes carrying BOTH figures
+    rather than a Zod issue about a door being "asked for something it does not take", so
+    what has to move — Code's bound, or the contract — is legible from the row.
+
+    When it moves, the first assertions here become `{ runId, jobId }`; what the request must
+    carry is pinned by the test below, which drives the same seam `postPrepared` calls.
+  */
   expect(posted).toHaveLength(1);
   const outcome = posted[0]!;
   expect("refused" in outcome).toBe(true);
   if (!("refused" in outcome)) return;
-  const refused = outcome.refused;
-  expect(refused).toStartWith(`${MATERIAL_INPUT_PENDING_CODE}:`);
-  expect(refused).toContain('exports: ["material"]');
-  expect(refused).toContain("server/engine/session.ts");
-  // …and the run carries the sentence rather than waiting on a session nothing will post.
-  const closed = await harness.db.query<{ closure: string; payload: string }>(
+  expect(outcome.refused).toStartWith("prompt_too_large:");
+  expect(outcome.refused).toContain(String(PROMPT_LIMIT));
+  const row = await harness.db.query<{ closure: string; payload: string }>(
     `SELECT closure, payload FROM runs WHERE id = ?`,
     [`run_${drainId}_0`],
   );
-  expect(closed[0]?.closure).toBe("failed");
-  expect(String(closed[0]?.payload)).toContain(MATERIAL_INPUT_PENDING_CODE);
+  expect(row[0]?.closure).toBe("failed");
+  expect(String(row[0]?.payload)).toContain("prompt_too_large");
+
+  // …and nothing was asked of Code, because the bound is read off Code's OWN schema: this is
+  // the verdict Code would give, reached before the call instead of inside its refusal.
+  expect(code.posted).toEqual([]);
+});
+
+test("a session Babel posts carries its material bound to the settled preparation", async () => {
+  /*
+    THE ASSERTION THE WHOLE LANE EXISTS FOR (ADR 0044). The model reads `/inputs/material`,
+    and what puts bytes there is this binding naming the SETTLED `prepare` job's own sealed
+    output; a session posted without it would send a model to an empty directory and have
+    Babel record the answer as evidence-backed analysis.
+
+    It drives the seam rather than `postPrepared` because the composed prompt does not fit
+    Code's bound yet (the test above). The request is the same either way — `postPrepared`
+    calls exactly this — and CODE'S OWN input schema is what parses it in the fake.
+  */
+  const answered = await deps.engine.runSession({
+    profile: { containerId: "ctr_workbench", expectedRevision: 7 },
+    machineId: MACHINE,
+    prompt: "read the material",
+    prepareJobId: "job_drn_1_0_material",
+  });
+
+  expect(answered.ok).toBe(true);
+  expect(code.posted).toHaveLength(1);
+  expect(code.posted[0]?.inputs).toEqual([
+    { name: "material", from: { jobId: "job_drn_1_0_material", output: "material" } },
+  ]);
 });

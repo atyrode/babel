@@ -155,23 +155,28 @@ REFUSED submission settles too, at the cost, because the model answered and the 
 for it. A read Code refuses is recorded on the run as its note and retried once; twice in a row
 closes the run and releases its claim, on the same bound the claim reaper uses.
 
-**WHAT IS STILL REFUSED, AND THE TWO LINES THAT MOVE.** Manifold cannot yet bind one job's
-sealed output into ANOTHER plugin's job, so the fifth step above answers
-`material_input_pending` — the run is composed, the material is sealed, the profile is named,
-and the binding does not exist. The primitive is **atyrode/manifold#592**. When Babel's
-`MANIFOLD_REV` moves to it, exactly two lines change in this repository:
+**THE MATERIAL IS A BOUND JOB INPUT (ADR 0044, atyrode/manifold#592).** `materialInput()`
+returns `inputs: [{ name: "material", from: { jobId: <the prepare job>, output: "material" } }]`
+and `atyrode.babel.prepare` declares `exports: ["material"]` — the second is what lets ANOTHER
+plugin's job bind the first, since a same-plugin binding needs no export and Code's job is
+`atyrode.omp`'s. Admission refuses `input_not_exported:material` without it, and
+`test/contract.test.ts` refuses an operation that exports a name it does not output.
 
-- `atyrode.babel/server/engine/session.ts`, `materialInput()`: its body becomes
-  `return { inputs: [{ name: "material", from: { jobId: prepareJobId, output: "material" } }] }`,
-  and `runSession` already spreads it into the request;
-- `atyrode.babel/manifest.json`: `atyrode.babel.prepare` gains `"exports": ["material"]` beside
-  its existing `"outputs": ["outputs", "material"]`. A same-plugin binding needs no export;
-  Code's job is not Babel's, and hub admission refuses `input_not_exported:material` without it.
+**A BINDING NAMES A SETTLED JOB, which is why a run is started in two wakes.** The hub refuses
+a binding whose source is still active, and `prepare` is running the instant the press posts
+it. So the press seals the material and records the run's intent, and `postPrepared` — reached
+from the cycle once the conductor has settled that preparation — composes the prompt from the
+material's own index and posts the session. The prompt is the better half of that constraint:
+built there, it carries the real file names, record counts and the digests a citation has to
+copy, instead of the layout the press could only guess.
 
-Code's own `runSession` gains the matching pass-through in its own PR, and `limits.inputBytes`
-on Code's operation must cover the sealed material or the binding is `input_too_large` at
-preparation. Watch's Start section says the same sentence the door does, and the drain's fan
-answers it too — one refusal, because there is one launch path.
+**WHAT IS STILL REFUSED: CODE'S PROMPT BOUND.** `SessionRunInputSchema` takes a prompt of
+16,384 characters and Babel's composed explore prompt is about 33,000 — the answering
+protocol, the per-role instructions and the stage's JSON Schema are most of it. `postPrepared`
+measures against CODE'S OWN published number and closes the run `prompt_too_large` with both
+figures, rather than letting Code's parse report it as a door "asked for something it does not
+take". What moves is Code's bound or the analysis contract; it is not a thing a narrower
+selection fixes.
 
 `explore` and `evaluate` survive as NAMES (`OPERATIONS` in `contract.ts`): they are what a run
 is called, the node a launch asks authority at, and the `kind` a run row and a receipt record.

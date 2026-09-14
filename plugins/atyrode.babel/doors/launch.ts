@@ -29,7 +29,8 @@ import {
   PROMPT_VERSION,
   type Recipe,
 } from "../server/engine/prompts.ts";
-import type { ActionsSlice, CodeEngine } from "../server/engine/session.ts";
+import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
+import { PROMPT_LIMIT, type ActionsSlice, type CodeEngine } from "../server/engine/session.ts";
 import type { JobLaunch, JobsSlice, MachineReadiness, RunPlan } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import type { BabelStore } from "../store/store.ts";
@@ -72,12 +73,13 @@ import { defineDoor, type Door } from "./door.ts";
   coordinator exists to arbitrate. So `review-backlog` and `file-and-tidy` answer
   {@link DRAW_PENDING}, which names the lane rather than pretending the engine is missing.
 
-  ONE REFUSAL STANDS BETWEEN A COMPOSED RUN AND A POSTED ONE, and it is Manifold's:
-  `MATERIAL_INPUT_PENDING` (`contract.ts`). Everything above the post is done and durable — the
-  selection chosen, the material sealed, the prompt composed, the profile named — and what is
-  missing is the primitive that binds one job's sealed output into another plugin's job. The
-  refusal is raised inside `server/engine/session.ts`, at the one line that moves when the pin
-  does, so the operator's button and the drain's fan hear one sentence rather than two halves.
+  A RUN IS STARTED IN TWO WAKES, and Manifold's own rule is why. A job input binds a SETTLED
+  job's sealed output (ADR 0044): a binding whose source is still active is refused, and
+  `prepare` is running the instant it is posted. So the press seals the material and records
+  the run's intent, and {@link LaunchMachinery.postPrepared} — reached from the cycle after
+  the conductor settled that preparation — composes the prompt from the material's own index
+  and posts the session. The operator's button and the drain's fan take the same two wakes,
+  because there is one launch path.
 
   WHY `launch` DEMANDS NO NODE. A governed capability is granted at a NODE and never over a
   workspace (ADR 0035), and the host walks the requirement's target through the RAW arguments
@@ -532,16 +534,15 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
    *   1. the SELECTION, from this machine's catalog and nothing else;
    *   2. the RECIPES, the methods this hub holds;
    *   3. the MATERIAL: one `atyrode.babel.prepare` job, posted here, which seals the selection as
-   *      its own output — this is the run's evidence and it exists before the session does;
-   *   4. the PROMPT, composed around `/inputs/material`;
-   *   5. the SESSION: `atyrode.code.runSession`, and the run row that records Code's job, the
-   *      container that answered and the `prepare` job whose material it read.
+   *      its own output — this is the run's evidence and it exists before the session does.
    *
-   * Step 5 is what {@link MATERIAL_INPUT_PENDING} still refuses, and the order is deliberate: the
-   * material is sealed FIRST and its job id recorded, so when the pin moves the only thing that
-   * has to happen is the binding. A run whose session was refused leaves a `prepare` job that ran
-   * and a run row that says what it prepared, which is the catalog work Babel does anyway and not
-   * a ghost: the conductor ingests its sessions and its receipt like any other job's.
+   * …and the press stops there. Steps 4 and 5 — the PROMPT, composed around `/inputs/material`,
+   * and the SESSION, `atyrode.code.runSession` with that material bound — belong to
+   * {@link LaunchMachinery.postPrepared}, because the binding names a job that has SETTLED and
+   * the preparation is still running here. Composing the prompt there is the better half of
+   * that constraint: it is built from the index `prepare` actually wrote, with the real file
+   * names and the digests a citation has to copy, rather than from selectors this end could
+   * only guess the layout of.
    */
   async function startExplore(
     identity: LaunchIdentity,
@@ -810,6 +811,31 @@ export function launchMachinery(store: BabelStore, deps: LaunchDeps): LaunchMach
           [PARAM.preparation]: material.preparationId,
         },
       });
+      /*
+        CODE BOUNDS A SESSION'S PROMPT and Babel's analysis contract is longer than that bound
+        today: the stage's JSON Schema, the answering protocol and the per-role instructions
+        come to about 33,000 characters against `SessionRunInputSchema`'s 16,384. Measured
+        here, against CODE'S OWN published number, the run closes with both figures on it;
+        left to Code's parse it closes with a Zod issue inside a sentence about a door being
+        "asked for something it does not take", which is true and tells an operator nothing.
+
+        It is not a thing a later wake fixes — the prompt is a function of the contract and
+        the selection, both fixed by now — so the run closes rather than being retried.
+      */
+      if (prompt.length > PROMPT_LIMIT) {
+        const reason =
+          `prompt_too_large: this run's prompt is ${String(prompt.length)} characters and ` +
+          `${CODE_PLUGIN_ID}.runSession takes ${String(PROMPT_LIMIT)}. The analysis contract ` +
+          `and the stage's schema are most of it, so what moves is Code's bound or the ` +
+          `contract itself — not this selection.`;
+        await store.db.run(
+          `UPDATE runs SET closure = 'failed', finished_at = ?, payload = ? WHERE id = ?`,
+          [at, JSON.stringify({ closure: "failed", reason }), run.id],
+        );
+        store.touch();
+        posted.push({ runId: run.id, refused: reason });
+        continue;
+      }
       const answered = await engine.runSession({
         profile: {
           containerId: run.container_id ?? "",

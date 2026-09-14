@@ -53,7 +53,7 @@
         "title": "Plan applied"
       },
       {
-        "id": "run_changed",
+        "id": "babel_run_changed",
         "title": "Run changed"
       }
     ]
@@ -62,24 +62,24 @@
     "artifacts": {
       "linux-x64": {
         "bundleFile": "machine.js",
-        "sha256": "f4ee024e618417fdb760bb07a0525e7810e6fb634ca44e009dfa2b4d44c13beb",
+        "sha256": "f9bec9eba7d0b4940d8a639db2d040d7812e88abe8652403e152289af96bb831",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "f4ee024e618417fdb760bb07a0525e7810e6fb634ca44e009dfa2b4d44c13beb",
+        "entrySha256": "f9bec9eba7d0b4940d8a639db2d040d7812e88abe8652403e152289af96bb831",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
       },
       "linux-arm64": {
         "bundleFile": "machine.js",
-        "sha256": "f4ee024e618417fdb760bb07a0525e7810e6fb634ca44e009dfa2b4d44c13beb",
+        "sha256": "f9bec9eba7d0b4940d8a639db2d040d7812e88abe8652403e152289af96bb831",
         "format": "raw",
         "entry": [
           "machine.js"
         ],
-        "entrySha256": "f4ee024e618417fdb760bb07a0525e7810e6fb634ca44e009dfa2b4d44c13beb",
+        "entrySha256": "f9bec9eba7d0b4940d8a639db2d040d7812e88abe8652403e152289af96bb831",
         "maxBytes": 4194304,
         "maxExpandedBytes": 4194304,
         "maxMembers": 1
@@ -376,6 +376,9 @@
         ],
         "outputs": [
           "outputs",
+          "material"
+        ],
+        "exports": [
           "material"
         ],
         "network": "none",

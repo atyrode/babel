@@ -1203,12 +1203,13 @@ posts rather than discovered one refused job at a time.
 >    either, or an install whose grant does not reach Code's doors, answers `engine_unavailable`
 >    or `engine_forbidden` on the `profiles` door before any button. **Success:** the Start
 >    section shows profiles rather than a refusal sentence.
-> 4. **THE MATERIAL BINDING IS PENDING, so no drain can begin.** Manifold cannot yet bind one
->    job's sealed output into another plugin's job (atyrode/manifold#592), so `drain.start`
->    composes the run, seals the material and then answers `material_input_pending`. That
->    refusal names the two lines that move when Babel's `plugins/MANIFOLD_REV` reaches the
->    primitive. Until then this whole section is a rehearsal on paper: it is the honest no-go,
->    and it is not something a setting can be turned off.
+> 4. **CODE'S PROMPT BOUND STOPS EVERY RUN, so no drain can begin.** The material now binds
+>    (ADR 0044): `prepare` exports it and a posted session carries the input. What does not
+>    fit is the prompt — `SessionRunInputSchema` takes 16,384 characters and Babel's composed
+>    explore prompt is about 33,000 — so the settle wake closes each run `prompt_too_large`
+>    with both figures on it. Until Code's bound or Babel's analysis contract moves, this
+>    whole section is a rehearsal on paper: it is the honest no-go, and no setting turns it
+>    off. **Success:** a run posted by the settle wake takes a Code job id instead.
 > 5. The open atyrode/babel issues labelled `drain` have been read. Any still-open one that names
 >    a blocker for this machine is a no-go.
 > 6. A five-minute rehearsal: `drain.start` with `concurrent: 2`, the Code profile from item 2,
@@ -1286,46 +1287,42 @@ never reaches Babel; a refused submission is still spend, and settles its claim 
 The drain's fan goes through the same launch path and names the same Code profile.
 
 **Exercised, with the evidence.** On this workstation (`workstation-linux`, 2026-09-14): the
-plugin gate — `deps:code`, `check`, `bun test` (**516 tests**), `pack`, `verify` — against a
-real engine at Manifold `559612c8`, with `atyrode/code` pinned at `133ec32b` in BOTH
+plugin gate — `deps:code`, `check`, `bun test` (**517 tests**), `pack`, `verify` — against a
+real engine at Manifold `476a586c`, with `atyrode/code` pinned at `c2e3d92e` in BOTH
 `plugins/CODE_REV` and `@atyrode/manifold-code`. `verify` composes **ten bundles** on the
 disposable engine in dependency order: `atyrode.omp` and its two parts, `atyrode.code` and its
 three, then `atyrode.babel` and its two — which is what a `required` dependency costs and what
 it proves. Beside the gate: the Code client's refusal translation against the real host
-sentences (`server/engine/session.test.ts`); the settle path — valid, refused-and-charged,
-still running, cancelled-with-no-transcript, and a read Code refuses twice — against a fake
-`readSession` (`server/conductor.test.ts`); the sealed material's layout and its digests
-against a real temporary lease (`machine/prepare.test.ts`); both launch wakes, the press that
-seals and the settle that posts (`doors/launch.test.ts`, `doors/drain.test.ts`); Watch's Start
-and drain sections rendered from a fake `profiles` door (`watch/test/`).
+sentences (`server/engine/session.test.ts`); the material bound into a posted session, with
+Code's own input schema parsing the request (`server/engine/session.test.ts`,
+`doors/drain.test.ts`); the settle path — valid, refused-and-charged, still running,
+cancelled-with-no-transcript, and a read Code refuses twice — against a fake `readSession`
+(`server/conductor.test.ts`); the sealed material's layout and its digests against a real
+temporary lease (`machine/prepare.test.ts`); both launch wakes, the press that seals and the
+settle that composes (`doors/launch.test.ts`, `doors/drain.test.ts`); Watch's Start and drain
+sections rendered from a fake `profiles` door (`watch/test/`).
 
-**Not exercised, and blocked at the last step — every item below is an OPERATOR STEP.** No
-Babel run has reached a model on a real hub and none can yet: Manifold cannot bind one job's
-sealed output into ANOTHER plugin's job, so the session the settle wake tries to post is
-answered `material_input_pending` and its run closes carrying that sentence. There is no real
+**Not exercised, and blocked at the prompt — every item below is an OPERATOR STEP.** No Babel
+run has reached a model on a real hub and none can yet, for one reason: Code's `runSession`
+takes a prompt of 16,384 characters and Babel's composed explore prompt is about 33,000, so
+the settle wake closes each run `prompt_too_large` with both figures on it. There is no real
 model call, no `inference_call` on a real journal and no provider window moved. Nothing here
 ran against a real hub, a real Code install or a real omp account. What remains owed, in
 order:
 
-> 1. atyrode/manifold#592, the job-inputs primitive (`inputs: [{name, from: {jobId, output}}]`
->    on the request, `exports` on the producing operation). **Success:** the primitive is on
->    Manifold `main` and `plugins/MANIFOLD_REV` moves to it, with the gate green.
-> 2. The two lines that move with that pin, in one commit:
->    `plugins/atyrode.babel/server/engine/session.ts` `materialInput()` returns the binding,
->    and `atyrode.babel.prepare` in `plugins/atyrode.babel/manifest.json` gains
->    `"exports": ["material"]`. **Success:** a launch answers a run id instead of
->    `material_input_pending`.
-> 3. Code's own `runSession` gains the matching `inputs` pass-through, and its operation's
->    `limits.inputBytes` / `outputBytes` cover the sealed material — otherwise the binding is
->    refused `input_too_large` at preparation rather than at the button.
-> 4. A Code profile exists on `dev-01` for the account and model the drain will spend, Code and
->    omp are installed and consented at the revisions in force. **Success:** Watch's Start
+> 1. Code's prompt bound, or Babel's analysis contract, moves. The stage's JSON Schema is
+>    ~8,900 characters of it and the per-role instructions most of the rest, so this is a
+>    decision about the contract rather than about one run. **Success:** the settle wake
+>    answers a Code job id, and `doors/drain.test.ts`'s first assertions flip from
+>    `prompt_too_large` to `{ runId, jobId }`.
+> 2. A Code profile exists on `dev-01` for the account and model the drain will spend; Code
+>    and omp are installed and consented at the revisions in force. **Success:** Watch's Start
 >    section lists it, and a launch reaches Code's door.
-> 5. §11.2 item 6, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`,
+> 3. §11.2 item 6, the five-minute rehearsal, from the Watch drain section: `concurrent: 2`,
 >    target one exploration's price, deadline now + 5 min. **Success:** two rows reach
 >    `at the model` within 90 s and settle with calls > 0; record host, date and the drain row
 >    here.
-> 6. The DRAWN lane (`review-backlog`, `file-and-tidy`) returns with the coordinator's dispatch
+> 4. The DRAWN lane (`review-backlog`, `file-and-tidy`) returns with the coordinator's dispatch
 >    and its blinded projection (#268). Until then both the door and the conductor answer
 >    `draw_pending`, and the conductor draws nothing at all.
 

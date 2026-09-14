@@ -23,7 +23,6 @@ import type { GuestCtx } from "@manifold/plugin-kit/server";
 import {
   ACTIONS,
   MACHINE_OPERATIONS,
-  MATERIAL_INPUT_PENDING_CODE,
   MATERIAL_OUTPUT,
   OPERATIONS,
   OUTPUT_BINDING,
@@ -33,11 +32,9 @@ import {
 import type { JobLaunch, JobRef, JobRunState, MachineReadiness } from "../server/conductor.ts";
 import type { BabelJobs } from "../server/plan.ts";
 import {
-  materialInput,
   type CodeEngine,
   type CodeJob,
   type EngineAnswer,
-  type SessionRequest,
 } from "../server/engine/session.ts";
 import type { Recipe } from "../server/engine/prompts.ts";
 import { coordinator } from "../store/coordinator.ts";
@@ -149,21 +146,14 @@ class Code implements CodeEngine {
   }
 
   /*
-    THE REFUSAL IS THE REAL ONE. `materialInput` is production code and it is the single line
-    that moves when Manifold's job-inputs primitive lands, so the fake asks it rather than
-    inventing a sentence: the day that line returns a binding, this fake stops refusing and
-    the test that pins the refusal fails, which is exactly the reminder that wants leaving.
+    THE PRESS DOES NOT REACH CODE AT ALL (ADR 0044). A job input binds a SETTLED job's output,
+    and `prepare` is running the instant the press posts it, so the session belongs to the
+    settle wake — `postPrepared`, which `doors/drain.test.ts` drives end to end. A `launch`
+    that called this is a `launch` that would bind a job still in flight, and the fake says so
+    rather than quietly answering a job id.
   */
-  async runSession(request: SessionRequest): Promise<EngineAnswer<CodeJob>> {
-    const material = materialInput(request.prepareJobId);
-    if ("refused" in material) {
-      return await Promise.resolve({
-        ok: false,
-        code: MATERIAL_INPUT_PENDING_CODE,
-        refused: material.refused,
-      });
-    }
-    throw new Error("the material binds now: this fake has to post a session");
+  async runSession(): Promise<never> {
+    throw new Error("the press must not post a session: the preparation is still running");
   }
 
 

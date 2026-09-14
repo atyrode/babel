@@ -1,6 +1,7 @@
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import {
   CODE_PLUGIN_ID,
+  SessionRunInputSchema,
   actionSchemas,
   type ActionInput,
   type ActionResult,
@@ -8,8 +9,7 @@ import {
 } from "@atyrode/manifold-code";
 import {
   ENGINE_REFUSALS,
-  MATERIAL_INPUT_PENDING,
-  MATERIAL_INPUT_PENDING_CODE,
+  MATERIAL_OUTPUT,
   type CodeProfile,
   type EngineRefusalCode,
   type ProfileRow,
@@ -59,8 +59,8 @@ export interface ActionsSlice {
   call(args: { plugin: string; action: string; input: unknown }): Promise<unknown>;
 }
 
-/** Every name a refusal from this file carries: the four engine ones, and the missing primitive. */
-export type EngineCode = EngineRefusalCode | typeof MATERIAL_INPUT_PENDING_CODE;
+/** Every name a refusal from this file carries, which is {@link ENGINE_REFUSALS}'s four. */
+export type EngineCode = EngineRefusalCode;
 
 /** What the engine answered, or the named refusal — never an exception across this boundary. */
 export type EngineAnswer<T> =
@@ -107,44 +107,48 @@ export interface SessionRead {
   readonly session: SessionReceipt | null;
 }
 
-/** One sealed output bound into a session's sandbox, as a job request will carry it. */
+/** One sealed output bound into a session's sandbox, as the job request carries it. */
 export interface MaterialBinding {
   readonly name: string;
   readonly from: { readonly jobId: string; readonly output: string };
 }
 
-/** The material as a request carries it, or the sentence saying it cannot be carried yet. */
-export type MaterialInput =
-  | { readonly inputs: readonly MaterialBinding[] }
-  | { readonly refused: string };
-
 /**
- * THE MATERIAL AS ONE JOB INPUT — and THE ONE PLACE IN THIS TREE THAT MOVES when Manifold's
- * job-inputs primitive lands.
+ * THE MATERIAL AS ONE JOB INPUT (ADR 0044, atyrode/manifold#592).
  *
- * What it becomes, in one statement:
+ * A run's evidence is a sealed output of Babel's OWN `prepare` job, bound read-only into the
+ * session's sandbox at `/inputs/material`. Babel holds no tools in the session — a Code
+ * session is omp's job with omp's own tools — so this is how evidence is served: the way a
+ * job serves any input, and the model reads it with the tools it already has.
  *
- *     return { inputs: [{ name: "material",
- *                         from: { jobId: prepareJobId, output: "material" } }] };
+ * THE BINDING NAMES A SETTLED JOB, which is why nothing calls this at the press. The hub
+ * refuses a binding whose source is still active, and `prepare` is running the moment it is
+ * posted; `launchMachinery.postPrepared` is the wake that reaches here, after that
+ * preparation has settled and written the index the prompt was composed from.
  *
- * …and {@link codeEngine}'s `runSession` already spreads it into the request. TWO lines change in
- * the whole repository: this one, and `exports: ["material"]` beside `outputs` on
- * `atyrode.babel.prepare` in `manifest.json` — the declaration that lets ANOTHER plugin's job
- * bind Babel's sealed output at all (a same-plugin binding needs no export; Code's job is not
- * Babel's). Code's own `runSession` gains the matching pass-through in its own PR.
- *
- * WHY IT REFUSES RATHER THAN POSTING WITHOUT IT. The prompt tells the model to read
- * `/inputs/material`; a session posted with no binding would find nothing there and answer out
- * of the prompt alone, and Babel would record that answer as evidence-backed analysis. A refusal
- * that names the missing primitive costs an operator a sentence; the alternative costs him the
- * corpus. `SessionRunInputSchema` has no `inputs` key at this pin either, so the field cannot be
- * smuggled past Code's own parse: the refusal is the honest shape of that, not a placeholder.
+ * IT IS A CROSS-PLUGIN BINDING, and that is what `exports: ["material"]` on
+ * `atyrode.babel.prepare` is for: a same-plugin binding needs no export, but Code's job is
+ * `atyrode.omp`'s and admission refuses `input_not_exported:material` without the
+ * declaration. The two halves are one statement made twice, here and in `manifest.json`, and
+ * `test/contract.test.ts` refuses a tree where the operation exports less than it outputs.
  */
-export function materialInput(prepareJobId: string): MaterialInput {
+export function materialInput(prepareJobId: string): { readonly inputs: MaterialBinding[] } {
   return {
-    refused: `${MATERIAL_INPUT_PENDING} The material is prepare job ${prepareJobId}.`,
+    inputs: [{ name: MATERIAL_OUTPUT, from: { jobId: prepareJobId, output: MATERIAL_OUTPUT } }],
   };
 }
+
+
+/**
+ * CODE'S OWN BOUND ON ONE SESSION'S PROMPT, read off its published schema rather than
+ * mirrored as a number here — a copy would be the thing nobody updated the day Code moved it.
+ *
+ * It is read at all because a prompt over it is refused by Code's PARSE, which reports it as
+ * "asked for something it does not take" with a Zod issue inside: true, and useless to an
+ * operator. `postPrepared` measures against this and refuses by name instead, with both
+ * figures, so what has to change is legible from the run row.
+ */
+export const PROMPT_LIMIT: number = SessionRunInputSchema.shape.prompt.maxLength ?? 0;
 
 /** What a session is posted with: the profile, the destination, the prompt, and the material. */
 export interface SessionRequest {
@@ -329,20 +333,15 @@ export function codeEngine(actions: ActionsSlice | undefined): CodeEngine {
       };
     },
 
-    runSession: async (request: SessionRequest): Promise<EngineAnswer<CodeJob>> => {
-      const material = materialInput(request.prepareJobId);
-      if ("refused" in material) {
-        return { ok: false, code: MATERIAL_INPUT_PENDING_CODE, refused: material.refused };
-      }
-      return await call("runSession", {
+    runSession: async (request: SessionRequest): Promise<EngineAnswer<CodeJob>> =>
+      await call("runSession", {
         containerId: request.profile.containerId,
         machineId: request.machineId,
         expectedRevision: request.profile.expectedRevision,
         prompt: request.prompt,
         // The material, bound from `prepare`'s own sealed output; see {@link materialInput}.
-        ...material,
-      });
-    },
+        ...materialInput(request.prepareJobId),
+      }),
 
     readSession: async (args: {
       containerId: string;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ActionCallError } from "@manifold/plugin-kit/errors";
 import { CODE_PLUGIN_ID } from "@atyrode/manifold-code";
-import { ENGINE_REFUSALS, MATERIAL_INPUT_PENDING_CODE, MATERIAL_OUTPUT } from "../../contract.ts";
+import { ENGINE_REFUSALS, MATERIAL_OUTPUT } from "../../contract.ts";
 import {
   ENGINE_WITHOUT_ACTIONS,
   codeEngine,
@@ -187,10 +187,29 @@ test("a caller with no actions slice is told nobody was asked, and nothing is ca
   expect(answered.refused).toContain(ENGINE_WITHOUT_ACTIONS);
 });
 
-test("a session is refused before it is posted while the material cannot be bound", async () => {
-  const slice = actions(() => {
-    throw new Error("runSession must not be reached while the material cannot bind");
-  });
+test("a session is posted with its material bound, and Code's own schema takes the request", async () => {
+  const slice = actions(() => ({
+    jobId: "omp_7",
+    machineId: "m-dev-01",
+    operationId: "atyrode.omp.session",
+    pluginId: "atyrode.omp",
+    installationRevision: "1",
+    artifactSha256: "a".repeat(64),
+    inputDigest: "b".repeat(64),
+    resourceBindingDigest: "c".repeat(64),
+    inputs: [
+      { name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } },
+    ],
+    state: "queued",
+    nextInputSeq: null,
+    result: null,
+    authority: {
+      origin: { kind: "action", traceId: "t1", door: null },
+      requester: "operator",
+      executor: null,
+      decision: null,
+    },
+  }));
 
   const answered = await codeEngine(slice).runSession({
     profile: { containerId: "ctr_a", expectedRevision: 4 },
@@ -199,22 +218,34 @@ test("a session is refused before it is posted while the material cannot be boun
     prepareJobId: "job_1_material",
   });
 
-  expect(answered.ok).toBe(false);
-  if (answered.ok) return;
-  expect(answered.code).toBe(MATERIAL_INPUT_PENDING_CODE);
-  // NOTHING WAS ASKED OF CODE. Posting a session whose sandbox holds no material would send a
-  // model to read an empty directory and have Babel record the answer as evidence-backed.
-  expect(slice.calls).toEqual([]);
-  expect(answered.refused).toContain("job_1_material");
+  expect(answered.ok).toBe(true);
+  if (!answered.ok) return;
+  expect(answered.value.jobId).toBe("omp_7");
+
+  /*
+    THE BINDING IS WHAT PUTS BYTES AT `/inputs/material` (ADR 0044). The prompt tells the model
+    everything it may read is there; a request posted without this would send it to an empty
+    directory and have Babel record the answer as evidence-backed analysis. The input went
+    through CODE'S OWN schema on the way out — `codeEngine` parses with it before calling — so
+    a shape Code would refuse is this plugin's bug and is caught here, not on a machine.
+  */
+  expect(slice.calls).toHaveLength(1);
+  const sent = slice.calls[0];
+  expect(sent !== null && typeof sent === "object" && "input" in sent ? sent.input : null).toEqual({
+    containerId: "ctr_a",
+    machineId: "m-dev-01",
+    expectedRevision: 4,
+    prompt: "read the material",
+    inputs: [
+      { name: MATERIAL_OUTPUT, from: { jobId: "job_1_material", output: MATERIAL_OUTPUT } },
+    ],
+  });
 });
 
-test("the material input names the two lines that move when the primitive lands", () => {
-  const material = materialInput("job_7_material");
-
-  expect("refused" in material).toBe(true);
-  if (!("refused" in material)) return;
-  expect(material.refused).toContain(`inputs: [{ name: "${MATERIAL_OUTPUT}"`);
-  expect(material.refused).toContain(`exports: ["${MATERIAL_OUTPUT}"]`);
-  expect(material.refused).toContain("manifest.json");
-  expect(material.refused).toContain("server/engine/session.ts");
+test("the material input names one binding: prepare's own sealed output", () => {
+  expect(materialInput("job_7_material")).toEqual({
+    inputs: [
+      { name: MATERIAL_OUTPUT, from: { jobId: "job_7_material", output: MATERIAL_OUTPUT } },
+    ],
+  });
 });
